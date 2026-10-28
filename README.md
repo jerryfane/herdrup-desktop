@@ -107,17 +107,23 @@ requests labelled `macos-smoke`), and uploads a
 screenshot of each.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
-the agent list against herdrup's iPad screenshots (`design/reference/agent-list` in jerryfane/herdrup,
-fetched and checked against their manifest's sha256). On macOS it opens the smoke build once per
-reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the page area in points: the
-reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes the web view render at
-2 pixels per point although the runner's display is 1x. The page signals a drawn state through
-`window.herdrupRef`. `cmd/refdiff` then compares each capture with its reference below the status bar,
-outside the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and iPadOS's resize
-corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`), the detail
-column's glyph field, which herdrup's capture froze before its first picture. It uploads the captures, diff pictures (red: over the tolerance; blue: masked; magenta: size
-mismatch) and a summary table. The thresholds are `PARITY_TOL` and `PARITY_MAX_OVER_PCT` in the
-workflow.
+the agent list against herdrup's iPad screenshots (`design/reference/agent-list` in jerryfane/herdrup at
+the pinned commit `REFERENCES`, fetched and checked against their manifest's sha256). On macOS it opens
+the smoke build once per reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the
+page area in points: the reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes
+the web view render at 2 pixels per point although the runner's display is 1x. The page signals a drawn
+state through `window.herdrupRef`. `cmd/refdiff` then compares each capture with its reference below
+the status bar, outside the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and
+iPadOS's resize corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`),
+the detail column's glyph field, which herdrup's capture froze before its first picture.
+
+refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
+tries moving the capture by up to 2 device pixels, and reports a tile (in the summary and the report's
+`shifted`) when a move fits it much better than leaving it in place. Anti-aliasing and glyph-shape
+differences change pixels in place and no move removes them; something drawn a pixel off is fitted
+almost exactly by moving it back. Any displaced tile fails the comparison. The workflow uploads the
+captures, diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports
+and a summary table. The thresholds are `PARITY_TOL` and `PARITY_MAX_OVER_PCT` in the workflow.
 
 ## License
 
