@@ -132,10 +132,6 @@ jobs:
               capture "$device-$state" "$device" "$state" "$PARITY_SCALE"
             done
           done
-          # Evidence for the 1x/2x question: the display's own scale, no
-          # override. refdiff compares a 1x capture with the reference
-          # box-filtered to 1x.
-          capture "native-ipad-11-populated" ipad-11 populated ""
 
           {
             echo "## Agent list parity"

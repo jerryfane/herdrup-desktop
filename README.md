@@ -113,8 +113,9 @@ reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the page
 reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes the web view render at
 2 pixels per point although the runner's display is 1x. The page signals a drawn state through
 `window.herdrupRef`. `cmd/refdiff` then compares each capture with its reference below the status bar,
-outside the rectangles in `cmd/refdiff/masks` (the tab bar's Liquid Glass capsule and iPadOS's resize
-corner), and uploads the captures, diff pictures (red: over the tolerance; blue: masked; magenta: size
+outside the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and iPadOS's resize
+corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`), the detail
+column's glyph field, which herdrup's capture froze before its first picture. It uploads the captures, diff pictures (red: over the tolerance; blue: masked; magenta: size
 mismatch) and a summary table. The thresholds are `PARITY_TOL` and `PARITY_MAX_OVER_PCT` in the
 workflow.
 
