@@ -3,15 +3,12 @@
 // Image(systemName:).font(.system(size:weight:)) at the same display scale
 // and writes <dir>/swiftui.json and <dir>/swiftui/*.png: SwiftUI's frame and
 // baseline, and how far its pixels are from Symbols.Image's PNG in <dir>/go.
-// It fails when a frame or baseline differs.
+// It fails when a frame or baseline differs. ImageRenderer's bitmap can be
+// a pixel taller than the frame; pixels are compared from the top-left.
 //
 //	swift .github/symbols/swiftui.swift <dir>
-//
-// With "explore" after <dir> it instead logs how AppKit's symbol images are
-// built, for working out how SwiftUI sizes them.
 import AppKit
 import ImageIO
-import ObjectiveC
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -48,21 +45,6 @@ final class Dimensions: @unchecked Sendable {
 }
 
 func fontWeight(_ s: String) -> Font.Weight {
-    switch s {
-    case "ultraLight": return .ultraLight
-    case "thin": return .thin
-    case "light": return .light
-    case "regular": return .regular
-    case "medium": return .medium
-    case "semibold": return .semibold
-    case "bold": return .bold
-    case "heavy": return .heavy
-    case "black": return .black
-    default: fatalError("unknown weight \(s)")
-    }
-}
-
-func nsWeight(_ s: String) -> NSFont.Weight {
     switch s {
     case "ultraLight": return .ultraLight
     case "thin": return .thin
@@ -171,7 +153,7 @@ func compare(_ dir: URL) {
         let r = check(p, dir: dir)
         results.append(r)
         let same = abs(r.goWidth - r.swiftUIWidth) < 0.001 && abs(r.goHeight - r.swiftUIHeight) < 0.001
-            && abs(r.goBaseline - r.swiftUIBaseline) < 0.001 && r.goPixels == r.swiftUIPixels
+            && abs(r.goBaseline - r.swiftUIBaseline) < 0.001
         if !same { bad += 1 }
         print(String(format: "%@ %g %@ @%dx | %.3f×%.3f %.3f | %.3f×%.3f %.3f | %@ vs %@ | %d %.2f %d | %.1f %.1f%@",
                      r.symbol, r.pointSize, r.weight, r.scale,
@@ -190,150 +172,12 @@ func compare(_ dir: URL) {
     }
 }
 
-// MARK: - explore
-
-func shape(_ enc: String) -> (ret: String, zeroArg: Bool) {
-    let ret = String(enc.prefix { !$0.isNumber })
-    let args = enc.dropFirst(ret.count).filter { !$0.isNumber }
-    return (ret, args == "@:")
-}
-
-let skipWords = ["init", "dealloc", "copy", "retain", "release", "autorelease", "destruct", "dispose", "zone",
-                 "new", "draw", "invalidate", "reset", "clear", "purge", "flush", "mutable", "hash", "self",
-                 "superclass", "class", "description", "cgimage", "rasterize", "allowsWeakReference", "retainWeakReference",
-                 "isProxy", "debugQuickLook", "encode", "archive", "data", "load"]
-
-/// Calls every zero-argument getter of obj that returns a number, a
-/// geometry struct or an object, and logs what it returns.
-func dumpGetters(_ obj: AnyObject, label: String, depth: Int, seen: inout Set<ObjectIdentifier>) {
-    guard !seen.contains(ObjectIdentifier(obj)) else { return }
-    seen.insert(ObjectIdentifier(obj))
-    var cls: AnyClass? = object_getClass(obj)
-    var children: [(String, AnyObject)] = []
-    while let c = cls, c != NSObject.self {
-        print("\(label): class \(NSStringFromClass(c))")
-        var n: UInt32 = 0
-        if let ivars = class_copyIvarList(c, &n) {
-            for i in 0..<Int(n) {
-                let iv = ivars[i]
-                let name = ivar_getName(iv).map { String(cString: $0) } ?? "?"
-                let type = ivar_getTypeEncoding(iv).map { String(cString: $0) } ?? "?"
-                var value = ""
-                if type.hasPrefix("@"), let o = object_getIvar(obj, iv) as AnyObject? {
-                    value = " = <\(NSStringFromClass(object_getClass(o)!))> \(String(describing: o).prefix(160))"
-                    children.append(("\(label).\(name)", o))
-                }
-                print("\(label):   ivar \(name) \(type)\(value)")
-            }
-            free(ivars)
-        }
-        if let list = class_copyMethodList(c, &n) {
-            for i in 0..<Int(n) {
-                let m = list[i]
-                let sel = method_getName(m)
-                let name = NSStringFromSelector(sel)
-                let enc = method_getTypeEncoding(m).map { String(cString: $0) } ?? ""
-                let (ret, zeroArg) = shape(enc)
-                let lower = name.lowercased()
-                guard zeroArg, !name.hasPrefix("set"), !skipWords.contains(where: { lower.contains($0.lowercased()) }) else {
-                    print("\(label):   method \(name) \(enc)")
-                    continue
-                }
-                let imp = method_getImplementation(m)
-                var value: String
-                switch ret {
-                case "{CGRect={CGPoint=dd}{CGSize=dd}}":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> CGRect).self)(obj, sel))"
-                case "{CGSize=dd}":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> CGSize).self)(obj, sel))"
-                case "{CGPoint=dd}":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> CGPoint).self)(obj, sel))"
-                case "{NSEdgeInsets=dddd}":
-                    let e = unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> NSEdgeInsets).self)(obj, sel)
-                    value = "insets top \(e.top) left \(e.left) bottom \(e.bottom) right \(e.right)"
-                case "d":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> Double).self)(obj, sel))"
-                case "f":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> Float).self)(obj, sel))"
-                case "q", "l":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> Int).self)(obj, sel))"
-                case "Q", "L":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> UInt).self)(obj, sel))"
-                case "i":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> Int32).self)(obj, sel))"
-                case "I":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> UInt32).self)(obj, sel))"
-                case "B", "c", "C":
-                    value = "\(unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> Bool).self)(obj, sel))"
-                case "@":
-                    if let o = unsafeBitCast(imp, to: (@convention(c) (AnyObject, Selector) -> AnyObject?).self)(obj, sel) {
-                        value = "<\(NSStringFromClass(object_getClass(o)!))> \(String(describing: o).prefix(160))"
-                        children.append(("\(label).\(name)", o))
-                    } else {
-                        value = "nil"
-                    }
-                default:
-                    print("\(label):   method \(name) \(enc)")
-                    continue
-                }
-                print("\(label):   \(name) = \(value)")
-            }
-            free(list)
-        }
-        cls = class_getSuperclass(c)
-    }
-    guard depth > 0 else { return }
-    for (l, o) in children {
-        let name = NSStringFromClass(object_getClass(o)!)
-        if ["Glyph", "Symbol", "CUI", "Vector", "Configuration"].contains(where: { name.contains($0) }) {
-            dumpGetters(o, label: l, depth: depth - 1, seen: &seen)
-        }
-    }
-}
-
-@MainActor
-func explore() {
-    print("screens: \(NSScreen.screens.map { "\($0.frame.size) @\($0.backingScaleFactor)x" })")
-    let cases: [(String, Double, String)] = [
-        ("square.grid.2x2.fill", 21, "medium"), ("chevron.right", 12, "semibold"),
-        ("exclamationmark", 10, "heavy"), ("magnifyingglass", 21, "medium"),
-    ]
-    for (symbol, size, weight) in cases {
-        print("== \(symbol) \(size) \(weight)")
-        for s in 1...3 {
-            let d = swiftUIFrame(symbol, size, weight, scale: s)
-            print("SwiftUI @\(s)x: \(d.width)×\(d.height) baseline \(d.height - d.baselineFromTop)")
-            let cfg = NSImage.SymbolConfiguration(pointSize: size * Double(s), weight: nsWeight(weight), scale: .medium)
-            let big = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!.withSymbolConfiguration(cfg)!
-            print("AppKit at \(size * Double(s)) pt: size \(big.size) alignmentRect \(big.alignmentRect) → /\(s): \(big.size.width / Double(s))×\(big.size.height / Double(s)) baseline \(big.alignmentRect.origin.y / Double(s))")
-        }
-        let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: nsWeight(weight), scale: .medium)
-        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!.withSymbolConfiguration(cfg)!
-        for s in [1.0, 2.0, 3.0] {
-            let t = NSAffineTransform()
-            t.scale(by: s)
-            var r = NSRect.zero
-            let cg = img.cgImage(forProposedRect: &r, context: nil, hints: [.ctm: t])
-            print("cgImage(forProposedRect:) @\(s)x: rect \(r) image \(cg.map { "\($0.width)×\($0.height)" } ?? "nil")")
-        }
-        var seen = Set<ObjectIdentifier>()
-        dumpGetters(img, label: "image", depth: 0, seen: &seen)
-        for (i, rep) in img.representations.enumerated() {
-            dumpGetters(rep, label: "rep\(i)", depth: 2, seen: &seen)
-        }
-    }
-}
-
 @MainActor
 func main() {
     let args = CommandLine.arguments
-    guard args.count >= 2 else { fatalError("usage: swiftui.swift <dir> [explore]") }
+    guard args.count == 2 else { fatalError("usage: swiftui.swift <dir>") }
     _ = NSApplication.shared
-    if args.count == 3 && args[2] == "explore" {
-        explore()
-    } else {
-        compare(URL(fileURLWithPath: args[1]))
-    }
+    compare(URL(fileURLWithPath: args[1]))
 }
 
 MainActor.assumeIsolated { main() }
