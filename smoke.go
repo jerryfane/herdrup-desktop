@@ -46,8 +46,6 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	var once sync.Once
 	finish := func(ok bool, why string) {
 		once.Do(func() {
-			// Give the page time to render the last event.
-			time.Sleep(2 * time.Second)
 			png, err := win.CapturePage()
 			if err != nil {
 				log.Printf("smoke: capture: %v", err)
@@ -63,10 +61,42 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 			mygo.App.Quit()
 		})
 	}
+	// The board reaching Go is not the page showing it: wait until the
+	// page has drawn a row for every agent in the open sections.
+	pageShows := func(want int) {
+		const probe = `return {rows: document.querySelectorAll(".row").length, ` +
+			`text: document.body.innerText.slice(0, 300)}`
+		var last any
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+			v, err := win.Page().Eval(probe)
+			if err != nil {
+				last = err
+				continue
+			}
+			last = v
+			if m, ok := v.(map[string]any); ok {
+				if n, _ := m["rows"].(float64); int(n) == want {
+					// Let the browser paint the frame it just laid out.
+					time.Sleep(500 * time.Millisecond)
+					finish(true, "page shows "+strconv.Itoa(want)+" rows")
+					return
+				}
+			}
+		}
+		log.Printf("smoke: page never showed %d rows; last probe: %v", want, last)
+		finish(false, "page did not render the board")
+	}
+	var started sync.Once
 	desk.mu.Lock()
 	desk.onBoard = func(b BoardUpdate) {
-		if b.Board.Total > 0 {
-			go finish(true, "board with "+strconv.Itoa(b.Board.Total)+" agents")
+		visible := 0
+		for _, s := range b.Board.Sections {
+			if !s.Collapsed {
+				visible += len(s.Rows)
+			}
+		}
+		if visible > 0 {
+			started.Do(func() { go pageShows(visible) })
 		}
 	}
 	desk.mu.Unlock()
