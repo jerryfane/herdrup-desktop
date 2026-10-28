@@ -294,12 +294,16 @@ async function renderRows() {
 let rowsGeneration = 0;
 let drawn = false;
 
-// UIActivityIndicatorView (medium) at rest: 8 spokes fading round.
+// UIActivityIndicatorView (medium) frozen on its first frame, as herdrup's
+// loading references show it (measured on both): 8 round-capped spokes 2.5 pt
+// wide from radius 3.6 to 10 in a 20 pt box, textDim at opacity 0.85 at 9
+// o'clock, then counter-clockwise 0.85 - 0.144 per spoke for three more, and
+// the other four at 0.275.
 const spinnerSVG = (() => {
   let s = `<svg width="20" height="20" viewBox="-10 -10 20 20">`;
   for (let i = 0; i < 8; i++) {
-    const opacity = 1 - i * 0.1;
-    s += `<rect x="-1.25" y="-9" width="2.5" height="5.5" rx="1.25" fill="currentColor" opacity="${opacity.toFixed(2)}" transform="rotate(${-i * 45})"/>`;
+    const opacity = i < 4 ? 0.85 - i * 0.144 : 0.275;
+    s += `<rect x="-1.25" y="-10" width="2.5" height="6.4" rx="1.25" fill="currentColor" opacity="${opacity.toFixed(3)}" transform="rotate(${-90 - i * 45})"/>`;
   }
   return s + "</svg>";
 })();

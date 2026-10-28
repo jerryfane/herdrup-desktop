@@ -358,19 +358,25 @@ html, body {
    A relative offset leaves the card's height (and centring) alone. */
 .archived .note { position: relative; top: var(--pixel); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; }
 
+/* emptyLine: 44 pt below the search field's 6 pt. A <p>: its default 1em
+   margin collapsed with the search's 6 pt and drew the text 9 pt low. */
 .empty-line {
+  margin: 0;
   padding-top: 44px;
   text-align: center;
   color: var(--color-text-dim);
 }
 /* While loading, herdrup's sidebar VStack holds only the bar and a centred
-   spinner, above the tab bar's safe-area inset. */
+   spinner, above the tab bar's safe-area inset. Both loading references put
+   that inset's top 100 pt above the window's bottom (the spinner centred at
+   404.9 and 510.9 pt under a bar ending at 90): 6 pt above the tab bar's own
+   frame, which ends 94 pt up. */
 .loading {
   position: absolute;
   left: 0;
   right: 0;
   top: calc(var(--size-top-bar) + var(--space-stack-medium));
-  bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
+  bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
   display: flex;
   align-items: center;
   justify-content: center;

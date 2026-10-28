@@ -242,35 +242,34 @@ const (
 )
 
 // shifted scans ref and got (the same scale, top-left aligned) in tile×tile
-// squares, leaving out any square within maxPx of a masked pixel (mask is
-// maskW wide) or of either picture's edge. For each square with detail, it
-// tries every move of got up to maxPx in x and y and reports the squares
-// where a move fits (Shift.XPt and YPt in compared pixels here).
+// squares from the top-left, leaving out squares with any masked pixel (mask
+// is maskW wide). For each square with detail that differs, it tries every
+// move of got up to maxPx in x and y that stays inside got, and reports the
+// squares where a move fits (Shift.XPt and YPt in compared pixels here).
+// Only squares that already differ are searched, so a wide maxPx costs
+// little on a close capture.
 func shifted(ref, got plane, mask []bool, maskW, tile, maxPx int) []Shift {
 	var out []Shift
 	w, h := min(ref.w, got.w), min(ref.h, got.h)
 	meanDiff := func(x0, y0, dx, dy int) float64 {
 		var s float64
 		for y := y0; y < y0+tile; y++ {
-			for x := x0; x < x0+tile; x++ {
-				s += math.Abs(ref.v[y*ref.w+x] - got.v[(y+dy)*got.w+x+dx])
+			r, g := ref.v[y*ref.w+x0:], got.v[(y+dy)*got.w+x0+dx:]
+			for x := range tile {
+				s += math.Abs(r[x] - g[x])
 			}
 		}
 		return s / float64(tile*tile)
 	}
-	for y0 := maxPx; y0+tile+maxPx <= h; y0 += tile {
+	for y0 := 0; y0+tile <= h; y0 += tile {
 	tiles:
-		for x0 := maxPx; x0+tile+maxPx <= w; x0 += tile {
+		for x0 := 0; x0+tile <= w; x0 += tile {
 			var sum, sq float64
-			for y := y0 - maxPx; y < y0+tile+maxPx; y++ {
-				for x := x0 - maxPx; x < x0+tile+maxPx; x++ {
+			for y := y0; y < y0+tile; y++ {
+				for x := x0; x < x0+tile; x++ {
 					if mask[y*maskW+x] {
 						continue tiles
 					}
-				}
-			}
-			for y := y0; y < y0+tile; y++ {
-				for x := x0; x < x0+tile; x++ {
 					v := ref.v[y*ref.w+x]
 					sum += v
 					sq += v * v
@@ -285,8 +284,8 @@ func shifted(ref, got plane, mask []bool, maskW, tile, maxPx int) []Shift {
 				continue
 			}
 			best := Shift{XPt: float64(x0), YPt: float64(y0), Mean: e0, Best: e0}
-			for dy := -maxPx; dy <= maxPx; dy++ {
-				for dx := -maxPx; dx <= maxPx; dx++ {
+			for dy := max(-maxPx, -y0); dy <= min(maxPx, got.h-tile-y0); dy++ {
+				for dx := max(-maxPx, -x0); dx <= min(maxPx, got.w-tile-x0); dx++ {
 					if dx == 0 && dy == 0 {
 						continue
 					}

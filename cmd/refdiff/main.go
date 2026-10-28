@@ -47,7 +47,7 @@ func main() {
 	maxOver := flag.Float64("max-over-pct", 0, "fail when more than this percentage of the compared pixels differ by more than -tol")
 	maxDelta := flag.Int("max-delta", 255, "fail when any compared pixel's channel differs by more than this")
 	shiftTile := flag.Float64("shift-tile-pt", 24, "displacement scan tile size in points (0 turns the scan off)")
-	shiftMax := flag.Int("shift-max-px", 2, "the displacement scan's largest move, in compared pixels")
+	shiftMax := flag.Int("shift-max-px", 24, "the displacement scan's largest move, in compared pixels")
 	flag.Parse()
 	if *refPath == "" || *gotPath == "" {
 		flag.Usage()

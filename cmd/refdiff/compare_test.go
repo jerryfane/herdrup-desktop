@@ -123,23 +123,29 @@ func glyph(img *image.RGBA, x, y int) {
 
 func TestShiftScanReportsDisplacedContentNotInPlaceChanges(t *testing.T) {
 	dark := color.RGBA{20, 20, 30, 255}
-	// 1x, 60×40 pt, tiles of 20 pt starting 2 px in (the largest move):
-	// the glyph is inside the tile at x 22-41, y 2-21, away from its edges.
+	// 1x, 60×40 pt, tiles of 20 pt from the top-left: the glyph is inside
+	// the tile at x 20-39, y 0-19, away from its edges.
 	ref := solid(60, 40, dark)
 	glyph(ref, 27, 5)
-	o := Options{RefScale: 1, Tol: 2, ShiftTilePt: 20, ShiftMaxPx: 2}
+	o := Options{RefScale: 1, Tol: 2, ShiftTilePt: 20, ShiftMaxPx: 12}
 
-	moved := solid(60, 40, dark)
-	glyph(moved, 27, 6) // drawn 1 px low
-	r, _, err := Compare(ref, moved, o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Shifted) != 1 {
-		t.Fatalf("moved glyph: shifted %+v, want one tile", r.Shifted)
-	}
-	if s := r.Shifted[0]; s.XPt != 22 || s.YPt != 2 || s.Dx != 0 || s.Dy != 1 {
-		t.Errorf("moved glyph: %+v, want the tile at 22,2 pt moved by 0,+1", s)
+	for _, tc := range []struct{ dx, dy int }{
+		{0, 1},  // a pixel low
+		{-2, 0}, // two to the left
+		{0, 9},  // far: the 9 pt the empty state's text was low by
+	} {
+		moved := solid(60, 40, dark)
+		glyph(moved, 27+tc.dx, 5+tc.dy)
+		r, _, err := Compare(ref, moved, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Shifted) != 1 {
+			t.Fatalf("glyph moved %+d,%+d: shifted %+v, want one tile", tc.dx, tc.dy, r.Shifted)
+		}
+		if s := r.Shifted[0]; s.XPt != 20 || s.YPt != 0 || s.Dx != tc.dx || s.Dy != tc.dy {
+			t.Errorf("glyph moved %+d,%+d: %+v, want the tile at 20,0 pt", tc.dx, tc.dy, s)
+		}
 	}
 
 	// The same glyph in place with different edge shading (what
@@ -150,7 +156,7 @@ func TestShiftScanReportsDisplacedContentNotInPlaceChanges(t *testing.T) {
 		shaded.SetRGBA(27, 5+dy, color.RGBA{120, 120, 120, 255})
 		shaded.SetRGBA(32, 5+dy, color.RGBA{120, 120, 120, 255})
 	}
-	r, _, err = Compare(ref, shaded, o)
+	r, _, err := Compare(ref, shaded, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +167,10 @@ func TestShiftScanReportsDisplacedContentNotInPlaceChanges(t *testing.T) {
 		t.Errorf("shaded glyph in place: shifted %+v, want none", r.Shifted)
 	}
 
-	// A mask over the tile (and its margin) leaves it out of the scan.
-	o.Mask = []Rect{{Name: "glyph", X: 18, Y: 0, W: 24, H: 22}}
+	// A mask touching the tile leaves it out of the scan.
+	moved := solid(60, 40, dark)
+	glyph(moved, 27, 6)
+	o.Mask = []Rect{{Name: "corner", X: 38, Y: 18, W: 4, H: 4}}
 	r, _, err = Compare(ref, moved, o)
 	if err != nil {
 		t.Fatal(err)
