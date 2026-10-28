@@ -14,6 +14,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -135,11 +136,25 @@ func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		s.mu.Lock()
 		s.commands = append(s.commands, payload.Command)
 		s.mu.Unlock()
+		go ssh.DiscardRequests(reqs)
+		// The request channel closes on the client's stdin EOF, which herdr
+		// does not treat as cancellation. A stream ends when the client
+		// closes the channel; probe for that with a request it refuses.
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() {
-			for range reqs { // drain; the client closing ends the loop
+			t := time.NewTicker(50 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+				if _, err := ch.SendRequest("fakeherdr-alive@herdrup", true, nil); err != nil {
+					cancel()
+					return
+				}
 			}
-			cancel()
 		}()
 		code := s.exec(ctx, payload.Command, ch)
 		cancel()

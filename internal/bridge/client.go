@@ -334,7 +334,9 @@ func (c *Client) openStream(ctx context.Context, line []byte) (*Stream, error) {
 		sess.Close()
 		return nil, err
 	}
-	s.stop = context.AfterFunc(ctx, func() { s.Close() })
+	// The callback may run at once on another goroutine, so it must not
+	// read s.stop, which is assigned here.
+	s.stop = context.AfterFunc(ctx, func() { sess.Close() })
 	return s, nil
 }
 
@@ -358,9 +360,7 @@ func (s *Stream) Next() ([]byte, error) {
 // Close ends the stream.
 func (s *Stream) Close() error {
 	s.once.Do(func() {
-		if s.stop != nil {
-			s.stop()
-		}
+		s.stop()
 		s.sess.Close()
 	})
 	return nil
