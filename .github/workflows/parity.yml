@@ -116,7 +116,7 @@ jobs:
             [ "$st" -eq 0 ] || echo "$name: app exited $st" >> "$out/failed"
             if [ -s "$out/captures/$name.png" ]; then
               "$RUNNER_TEMP/refdiff" -ref "$refs/ref-$device-$state.png" -got "$out/captures/$name.png" \
-                -crop-top-pt "$bar" -scale "$refscale" -mask "cmd/refdiff/masks/$device.json" \
+                -crop-top-pt "$bar" -scale "$refscale" -mask "cmd/refdiff/masks/$device.json" -state "$state" \
                 -tol "$PARITY_TOL" -max-over-pct "$PARITY_MAX_OVER_PCT" \
                 -out "$out/diffs/$name.png" -report "$out/reports/$name.json"
               st=$?

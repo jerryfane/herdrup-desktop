@@ -40,6 +40,7 @@ func main() {
 	cropTop := flag.Float64("crop-top-pt", 0, "points cut from the top of the reference (its status bar)")
 	scale := flag.Int("scale", 2, "the reference's pixels per point")
 	maskPath := flag.String("mask", "", "JSON mask file: rects in reference points not to compare")
+	state := flag.String("state", "", "the reference's state (loading, populated, …): applies the mask's rects scoped to it")
 	out := flag.String("out", "", "write the diff picture here (PNG)")
 	reportPath := flag.String("report", "", "write the result here (JSON)")
 	tol := flag.Int("tol", 2, "largest channel difference (0-255) that still counts as equal")
@@ -68,7 +69,8 @@ func main() {
 			fail(fmt.Errorf("%s: %w", *maskPath, err))
 		}
 	}
-	rep.MaskRects = len(mask.Rects)
+	rects := mask.RectsFor(*state)
+	rep.MaskRects = len(rects)
 	ref, refColor, err := load(*refPath)
 	if err != nil {
 		fail(err)
@@ -78,7 +80,7 @@ func main() {
 		fail(err)
 	}
 	rep.RefColor, rep.GotColor = refColor, gotColor
-	res, diff, err := Compare(ref, got, Options{RefScale: *scale, CropTopPt: *cropTop, Tol: *tol, Mask: mask.Rects})
+	res, diff, err := Compare(ref, got, Options{RefScale: *scale, CropTopPt: *cropTop, Tol: *tol, Mask: rects})
 	rep.Result = res
 	if err != nil {
 		fail(err)

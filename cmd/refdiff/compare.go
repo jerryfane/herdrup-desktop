@@ -11,14 +11,16 @@ import (
 )
 
 // Rect is a masked area in reference points: origin at the top-left of
-// the whole reference picture, status bar included.
+// the whole reference picture, status bar included. States, when set,
+// limits it to the references of those states (see Mask.RectsFor).
 type Rect struct {
-	Name string  `json:"name"`
-	X    float64 `json:"x"`
-	Y    float64 `json:"y"`
-	W    float64 `json:"w"`
-	H    float64 `json:"h"`
-	Why  string  `json:"why,omitempty"`
+	Name   string   `json:"name"`
+	X      float64  `json:"x"`
+	Y      float64  `json:"y"`
+	W      float64  `json:"w"`
+	H      float64  `json:"h"`
+	States []string `json:"states,omitempty"`
+	Why    string   `json:"why,omitempty"`
 }
 
 // Mask is a mask file: the areas that are not compared.
@@ -26,6 +28,26 @@ type Mask struct {
 	Device string `json:"device"`
 	Note   string `json:"note,omitempty"`
 	Rects  []Rect `json:"rects"`
+}
+
+// RectsFor returns the rects that apply to a reference of `state`: every
+// rect without States, plus those listing it. An empty state gets only the
+// rects without States.
+func (m Mask) RectsFor(state string) []Rect {
+	var out []Rect
+	for _, r := range m.Rects {
+		if len(r.States) == 0 {
+			out = append(out, r)
+			continue
+		}
+		for _, s := range r.States {
+			if state != "" && s == state {
+				out = append(out, r)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // Options says how to line the two pictures up and what counts as a

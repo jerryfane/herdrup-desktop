@@ -13,6 +13,12 @@
       "why": "The sidebar tab bar's Liquid Glass capsule with its Agents/Gram/Settings items: every pixel differing from the sidebar fill #13162A spans x 24-316, y 938-1000 pt in all six states; the fill around it is exact (no shadow)."
     },
     {
+      "name": "loading-detail-field",
+      "x": 330, "y": 32, "w": 1046, "h": 980,
+      "states": ["loading"],
+      "why": "The detail column's glyph field (x 330 pt to the right edge, from the status bar to 20 pt above the bottom). In the loading reference it is plain ground only because the capture froze the window's layers before the field's first resting picture arrived (reference README, `loading`). herdrup draws the field while loading, and so does the desktop. Compared in every other state."
+    },
+    {
       "name": "window-resize-corner",
       "x": 1344, "y": 1000, "w": 32, "h": 32,
       "why": "iPadOS's bottom-right window-resize arc, system chrome drawn over the app (bright pixels x 1348-1371.5, y 1004-1027.5 pt in all six states), plus its anti-aliasing."

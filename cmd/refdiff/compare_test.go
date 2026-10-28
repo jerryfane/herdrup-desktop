@@ -79,6 +79,34 @@ func TestCropTopAndMaskInReferencePoints(t *testing.T) {
 	}
 }
 
+func TestStateScopedMaskOnlyHidesItsStates(t *testing.T) {
+	// 1x, 2×1 pt: the left point differs (under the "always" rect), the
+	// right point differs (under a rect scoped to loading).
+	ref := solid(2, 1, grey)
+	got := solid(2, 1, color.RGBA{0, 0, 0, 255})
+	mask := Mask{Rects: []Rect{
+		{Name: "always", X: 0, Y: 0, W: 1, H: 1},
+		{Name: "field", X: 1, Y: 0, W: 1, H: 1, States: []string{"empty", "loading"}},
+	}}
+	for _, tc := range []struct {
+		state        string
+		masked, over int
+	}{
+		{"loading", 2, 0},   // both rects apply
+		{"empty", 2, 0},     // any listed state applies
+		{"populated", 1, 1}, // the scoped rect must not hide this state's difference
+		{"", 1, 1},          // no state: only unscoped rects
+	} {
+		r, _, err := Compare(ref, got, Options{RefScale: 1, Tol: 0, Mask: mask.RectsFor(tc.state)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Masked != tc.masked || r.Over != tc.over {
+			t.Errorf("state %q: masked %d over %d, want %d and %d", tc.state, r.Masked, r.Over, tc.masked, tc.over)
+		}
+	}
+}
+
 func TestOneXCaptureComparesAgainstBoxFilteredReference(t *testing.T) {
 	// 2x reference, 2×1 pt. The first point's four pixels average to
 	// (10+20+30+42)/4 = 25.5 → 26 (rounded, not truncated); the second's
