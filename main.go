@@ -27,6 +27,10 @@ func main() {
 			StateKey:        "main",
 			URL:             "/",
 		})
+		if refEnabled() {
+			runRef(desk, win)
+			return
+		}
 		if smokeEnabled() {
 			runSmoke(desk, win)
 			return
