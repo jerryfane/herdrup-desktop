@@ -18,8 +18,23 @@ func smokeEnabled() bool { return smoke == "1" }
 
 // runSmoke connects to the machine named by HERDRUP_SMOKE_* variables,
 // waits for a board with agents, saves a screenshot of the window to
-// HERDRUP_SMOKE_CAPTURE and quits. It exits 1 when no agent was shown.
+// HERDRUP_SMOKE_CAPTURE and quits. It exits 1 when no agent was shown. A
+// Windows GUI program has no stderr, so it logs to HERDRUP_SMOKE_LOG.
 func runSmoke(desk *Desk, win *mygo.Window) {
+	if path := os.Getenv("HERDRUP_SMOKE_LOG"); path != "" {
+		if f, err := os.Create(path); err == nil {
+			log.SetOutput(f)
+		}
+	}
+	go func() {
+		var last ConnState
+		for range time.Tick(200 * time.Millisecond) {
+			if s := desk.State(); s != last {
+				log.Printf("smoke: state %+v", s)
+				last = s
+			}
+		}
+	}()
 	port, _ := strconv.Atoi(os.Getenv("HERDRUP_SMOKE_PORT"))
 	m := Machine{
 		Host:    os.Getenv("HERDRUP_SMOKE_HOST"),

@@ -88,12 +88,15 @@ jobs:
           HERDRUP_SMOKE_USER: ci
           HERDRUP_SMOKE_KEY: ${{ runner.temp }}/client.key
           HERDRUP_SMOKE_CAPTURE: ${{ runner.temp }}/herdrup-${{ runner.os }}.png
+          HERDRUP_SMOKE_LOG: ${{ runner.temp }}/herdrup-smoke.log
         run: |
           bin="$RUNNER_TEMP/fakeherdr$(go env GOEXE)"
           go build -o "$bin" ./cmd/fakeherdr
           "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
           for _ in $(seq 50); do [ -s "$RUNNER_TEMP/client.key" ] && break; sleep 0.2; done
           test -s "$RUNNER_TEMP/client.key" || { cat "$RUNNER_TEMP/fakeherdr.log"; exit 1; }
+          show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
+          trap show_logs EXIT
           case "$RUNNER_OS" in
             Linux) xvfb-run -a -s "-screen 0 1280x900x24" build/linux-amd64/herdrup ;;
             macOS) "$(ls -d build/darwin-*/Herdrup.app)/Contents/MacOS/Herdrup" ;;
@@ -102,7 +105,6 @@ jobs:
               pwsh -NoProfile -Command '$p = Start-Process -FilePath "build/windows-amd64/Herdrup.exe" -Wait -PassThru; exit $p.ExitCode' ;;
           esac
           test -s "$HERDRUP_SMOKE_CAPTURE"
-          cat "$RUNNER_TEMP/fakeherdr.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
