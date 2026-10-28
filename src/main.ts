@@ -4,6 +4,7 @@ import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const rowsEl = $("rows");
+const searchField = $("search-field");
 const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
 const connectError = $("connect-error");
@@ -223,6 +224,9 @@ async function renderRows() {
     }
   }
   if (generation !== rowsGeneration) return; // a newer render won
+  // herdrup shows the spinner or the error in place of the whole list, search
+  // field included (App/HerdrApp.swift: `loading && agents.isEmpty`).
+  searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
   drawn = true;
 }
