@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Herdrup</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="wordmark">herdrup</span>
+      <span id="needs" class="pill" hidden><span class="dot needs"></span><span id="needs-text"></span></span>
+      <span class="spacer"></span>
+      <span id="conn" class="pill"><span id="conn-dot" class="dot"></span><span id="conn-text">not connected</span></span>
+      <button id="disconnect" class="ghost" hidden>Disconnect</button>
+    </header>
+
+    <section id="connect" class="connect" hidden>
+      <h1>Connect to a machine</h1>
+      <p class="dim">Herdrup logs in over SSH and runs <code>herdr api-bridge</code> there.</p>
+      <form id="connect-form" class="card form">
+        <label>Host<input name="host" required autocomplete="off" placeholder="my-server.example" /></label>
+        <label class="short">Port<input name="port" type="number" min="1" max="65535" value="22" /></label>
+        <label>User<input name="user" required autocomplete="off" /></label>
+        <label>Private key file<input name="keyPath" autocomplete="off" placeholder="~/.ssh/id_ed25519" /></label>
+        <label>Password <span class="faint">(if no key, never saved)</span><input name="password" type="password" /></label>
+        <label>herdr session <span class="faint">(optional)</span><input name="session" autocomplete="off" placeholder="default" /></label>
+        <p id="connect-error" class="error" hidden></p>
+        <button type="submit">Connect</button>
+      </form>
+    </section>
+
+    <main id="board" class="board" hidden></main>
+    <footer id="footer" class="footer faint"></footer>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

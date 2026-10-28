@@ -1,0 +1,150 @@
+/* Colours are the iOS app's (App/DesignSystem.swift). Issue #3 replaces
+   these literals with tokens synced from herdrup's design/tokens.json. */
+:root {
+  --ground: #13162a;
+  --surface: #1d2038;
+  --surface-raised: #262a45;
+  --hairline: #2e3358;
+  --hairline-quiet: #232742;
+  --text: #eef0f7;
+  --text-dim: #99a0bc;
+  --text-faint: #666d91;
+  --waiting: #e9a63c;
+  --working: #5b9be8;
+  --done: #5fb37f;
+  --died: #e2584e;
+  --font-app: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-machine: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font: 14px/1.45 var(--font-app);
+  -webkit-font-smoothing: antialiased;
+}
+
+body { display: flex; flex-direction: column; min-height: 100vh; }
+
+code { font-family: var(--font-machine); font-size: 12px; }
+.dim { color: var(--text-dim); }
+.faint { color: var(--text-faint); }
+[hidden] { display: none !important; }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--hairline-quiet);
+}
+.wordmark { font-weight: 600; font-size: 16px; letter-spacing: -0.01em; }
+.spacer { flex: 1; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60vw;
+}
+
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.dot.needs { background: var(--waiting); }
+.dot.working { background: var(--working); }
+.dot.done { background: var(--done); }
+.dot.stopped, .dot.error { background: var(--died); }
+.dot.connected { background: var(--done); }
+.dot.connecting { background: var(--working); }
+
+button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--ground);
+  background: var(--text);
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+button.ghost {
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  padding: 4px 12px;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+.connect { max-width: 520px; width: 100%; margin: 40px auto; padding: 0 20px; }
+.connect h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.form { display: grid; grid-template-columns: 1fr 110px; gap: 12px; padding: 18px; margin-top: 18px; }
+.form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); grid-column: span 2; }
+.form label:first-child { grid-column: 1; }
+.form label.short { grid-column: 2; }
+.form input {
+  font: 14px var(--font-app);
+  color: var(--text);
+  background: var(--ground);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.form input:focus { outline: none; border-color: var(--text-faint); }
+.form button { grid-column: span 2; justify-self: start; }
+.error { color: var(--text); margin: 0; grid-column: span 2; font-size: 13px; }
+.error::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--died); margin-right: 8px; }
+
+.board { flex: 1; padding: 8px 20px 20px; max-width: 980px; width: 100%; margin: 0 auto; }
+.empty { margin: 60px auto; text-align: center; color: var(--text-dim); }
+
+.section { margin-top: 18px; }
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 4px 2px;
+  color: var(--text-dim);
+  font: 600 11px var(--font-machine);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.section-head .count { color: var(--text-faint); }
+.section-head .chev { margin-left: auto; color: var(--text-faint); }
+.rows { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+
+.row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+}
+.row .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .detail { color: var(--text-dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .meta { font: 12px var(--font-machine); color: var(--text-faint); white-space: nowrap; }
+.row.offline .title, .row.offline .detail { color: var(--text-faint); }
+
+.footer { padding: 8px 20px 12px; font: 11px var(--font-machine); text-align: right; }
