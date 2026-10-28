@@ -76,10 +76,11 @@ html, body {
   mask: var(--sym) no-repeat center / 100% 100%;
 }
 
-/* A continuous-corner background drawn by paintShape (continuous.ts): the SVG
-   sits behind the element's content, which is positioned to paint above it. */
-.shaped > .continuous-shape { position: absolute; pointer-events: none; }
-.shaped > :not(.continuous-shape) { position: relative; }
+/* A continuous-corner background drawn by paintShape (continuous.ts): the
+   element is a stacking context and the SVG sits at its bottom, under the
+   content, which needs no positioning of its own. */
+.shaped { isolation: isolate; }
+.shaped > .continuous-shape { position: absolute; z-index: -1; pointer-events: none; }
 
 /* ---- Detail column (App/HerdrApp.swift detailColumn) ---- */
 .detail {
@@ -109,8 +110,10 @@ html, body {
   top: 0;
   bottom: var(--sidebar-inset);
   width: var(--size-sidebar-min);
-  border-radius: var(--sidebar-radius);
-  background: var(--color-ground);
+  /* Background and corner clip: a continuous RoundedRectangle of
+     --sidebar-radius in ground (paintShape). Fitted to the references'
+     corners, the continuous curve matches at 21.25-21.5 pt; a circular
+     border-radius does not. */
   overflow: hidden;
   display: flex;
   flex-direction: column;

@@ -85,6 +85,9 @@ export interface ShapeStyle {
   fill: string;
   stroke?: string;
   strokeWidth?: number;
+  /** Also clip the element's content to the shape (border-radius with
+   * overflow: hidden, for continuous corners). */
+  clip?: boolean;
 }
 
 // The SVG overhangs the element by this many whole points on every side, so
@@ -105,12 +108,13 @@ function draw(el: HTMLElement) {
   svg.setAttribute("viewBox", `0 0 ${w + 2 * PAD} ${h + 2 * PAD}`);
   const d = continuousPath(w, h, r, PAD, PAD);
   for (const path of svg.querySelectorAll("path")) path.setAttribute("d", d);
+  if (style.clip) el.style.clipPath = `path("${continuousPath(w, h, r)}")`;
 }
 
 /** Draws `style` behind `el`'s content as an SVG continuous shape that follows
- * the element's size. The element must be positioned (relative or absolute)
- * and must not paint its own background; its content must be positioned so it
- * paints above the shape (`.shaped > :not(.continuous-shape)` does that). */
+ * the element's size. The element must be positioned and must not paint its
+ * own background; `.shaped` makes it a stacking context with the shape at
+ * z-index -1, under all of its content. */
 export function paintShape(el: HTMLElement, style: ShapeStyle) {
   painted.set(el, style);
   el.classList.add("shaped");
