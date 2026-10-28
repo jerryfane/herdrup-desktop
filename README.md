@@ -47,11 +47,15 @@ herdrup commit:
 - `third_party/herdrup/PROVENANCE.json` records that commit and the sha256 of every copied file;
 - `third_party/herdrup/design/tokens.json` is the copied tokens file, and `public/fonts/` holds the Geist and
   IBM Plex Mono faces with their OFL licences;
-- `public/herdrup/` holds `mascots.svg` (the 12 mascots, one `<symbol id="p-<id>">` each) and the app icon
-  SVG; `resources/icon.png` is herdrup's 1024 px app icon, from which mygo builds every platform's icon;
+- `public/herdrup/` holds `mascots.svg` (the 12 approved mascots, Herdy included, one `<symbol id="p-<id>">`
+  each) and the app icon SVG; `resources/icon.png` is herdrup's 1024 px app icon, from which mygo builds every
+  platform's icon;
 - `public/mermaid/` holds herdrup's bundled mermaid 11.17.2 with its MIT licence and README;
 - `src/tokens.css` (CSS variables and `@font-face`) and `internal/design/tokens_gen.go` (window colours)
   are generated from the tokens.
+
+`public/fonts/`, `public/herdrup/` and `public/mermaid/` belong to the sync: `-check` fails on any file there
+that the pin did not record, since everything in `public/` ships with the app.
 
 Never edit those files here. To change one, change it in herdrup, then move the pin to the
 merged commit:

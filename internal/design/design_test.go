@@ -262,6 +262,9 @@ func edit(t *testing.T, root, rel, from, to string) {
 	if from == "" {
 		out = string(data) + to
 	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +297,8 @@ func TestCheckFindsDrift(t *testing.T) {
 		"keyword width":                   {"src/style.css", "", ".c { border-width: 0 0 0 thick; }\n", "side stripe"},
 		"signed and exponent offsets":     {"src/style.css", "", ".c { box-shadow: +3px +0 var(--status-waiting) inset, 3e0px 0 inset; }\n", "side stripe"},
 		"stray file next to the fonts":    {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
+		"stray script next to mermaid":    {"public/mermaid/evil.js", "", "x", "public/mermaid/evil.js is not from herdrup"},
+		"stray file deep in herdrup dir":  {"public/herdrup/nested/deep.svg", "", "x", "public/herdrup/nested/deep.svg is not from herdrup"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := synced(t)
