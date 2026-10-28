@@ -36,20 +36,13 @@ html, body {
 [hidden] { display: none !important; }
 
 /* Text roles: font, size, weight, case, tracking and digits from text.*.
-   Line heights: Geist and IBM Plex Mono use the font files' line height,
-   (1005 + 295) / 1000 and (1025 + 275) / 1000, which is also UIFont's.
-   The system font differs between the references (iOS SF Pro: ascender
-   1950, descender 494 per 2048) and this WebView (macOS .SFNS: 1980, 432,
-   CoreText on macOS 26.6.2), so its lines are set to where herdrup's
-   baselines fall rather than to a font metric. In the 2x references a row's
-   name baseline is 36-36.5 pt below the row top and its preview's 56-56.5 pt
-   (baselines 20 pt apart). With WebKit's centred half-leading over .SFNS's
-   ascent + descent, 1.25 x the size puts both in the middle of those ranges
-   for the 80 pt row's centred stack (spacing stackTight). The tab label uses
-   the same leading; the `font` shorthand resets line-height, so it is set
-   inside each shorthand. */
+   Line heights are UIFont's (hhea ascender + descender + line gap over the
+   em): Geist (1005 + 295) / 1000, IBM Plex Mono (1025 + 275) / 1000, and for
+   the system font iOS SF Pro's (1950 + 494) / 2048, which herdrup's
+   references were drawn with. The `font` shorthand resets line-height, so it
+   is set inside each shorthand. */
 :root {
-  --leading-system: 1.25;
+  --leading-system: 1.19336;
   --leading-app: 1.3;
   --leading-machine: 1.3;
 }
@@ -212,7 +205,13 @@ html, body {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: var(--space-stack-tight);
+  /* stackTight, plus 1 pt measured against the 2x references: there the
+     name's and preview's baselines are 20 pt apart, and with stackTight alone
+     they are 19 pt apart here (macOS .SFNS in WebKit's line boxes; the name
+     drew 1 device pixel low and the preview 1 high). Shifting each line by a
+     whole device pixel keeps WebKit's pixel snapping unchanged; changing the
+     line height instead moved the two lines unevenly. */
+  gap: calc(var(--space-stack-tight) + 1px);
   position: relative;
 }
 .row .line1 { display: flex; align-items: center; gap: var(--space-stack-small); }
@@ -277,12 +276,9 @@ html, body {
   color: var(--color-ground);
   --badge-fill: var(--color-ground);
 }
-/* The shape (badgeShape in main.ts): fill, then the ground stroke centred on
-   its edge, so the SVG overhangs the 22 pt box by half the stroke. */
-.badge .shape {
-  position: absolute;
-  inset: calc(-1 * var(--size-status-badge-stroke) / 2);
-}
+/* The shape (badgeShape in main.ts, which sets its overhang): fill, then the
+   ground stroke centred on its edge. */
+.badge .shape { position: absolute; }
 .badge .shape svg { display: block; }
 .badge .shape .fill { fill: var(--badge-fill); }
 .badge .shape .edge { fill: none; stroke: var(--color-ground); }

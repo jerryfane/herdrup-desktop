@@ -120,14 +120,21 @@ const px = (name: string) => parseFloat(cssVar(name));
  * then stroked in ground colour centred on the same path, half of it outside.
  * Two SVG paths anti-alias like SwiftUI's; a box-shadow ring over a filled box
  * left a fringe of the fill outside the ring. Circles use herdrup's literal
- * corner radius 11; squares use radius.badgeSquare. */
+ * corner radius 11; squares use radius.badgeSquare.
+ *
+ * The SVG overhangs the badge box by BADGE_PAD (a whole point, more than half
+ * the stroke) on every side, so its origin stays on a device pixel: WebKit
+ * snaps an SVG's origin to the pixel grid, and an overhang of exactly half the
+ * 2.5 pt stroke put it on a half pixel and moved the whole badge 0.5 px. */
+const BADGE_PAD = 2;
 function badgeShape(square: boolean): HTMLElement {
   const size = px("--size-status-badge");
   const stroke = px("--size-status-badge-stroke");
   const radius = square ? px("--radius-badge-square") : 11;
-  const box = size + stroke;
-  const rect = `x="${stroke / 2}" y="${stroke / 2}" width="${size}" height="${size}" rx="${radius}"`;
+  const box = size + 2 * BADGE_PAD;
+  const rect = `x="${BADGE_PAD}" y="${BADGE_PAD}" width="${size}" height="${size}" rx="${radius}"`;
   const shape = el("span", "shape");
+  shape.style.inset = `${-BADGE_PAD}px`;
   shape.innerHTML = `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}"><rect class="fill" ${rect}/><rect class="edge" ${rect} stroke-width="${stroke}"/></svg>`;
   return shape;
 }
