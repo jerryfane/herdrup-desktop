@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/egoist/mygo"
+	"github.com/jerryfane/herdrup-desktop/internal/design"
 )
 
 func main() {
@@ -22,7 +23,7 @@ func main() {
 			Height:          680,
 			MinWidth:        560,
 			MinHeight:       420,
-			BackgroundColor: "#13162A",
+			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
 			URL:             "/",
 		})

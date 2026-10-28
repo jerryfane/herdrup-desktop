@@ -106,7 +106,9 @@ func watch(t *testing.T, c *bridge.Client) (<-chan live.Update, <-chan error) {
 	t.Cleanup(cancel)
 	updates := make(chan live.Update, 64)
 	done := make(chan error, 1)
-	go func() { done <- live.Watch(ctx, live.BridgeCaller{Client: c}, fast, func(u live.Update) { updates <- u }) }()
+	go func() {
+		done <- live.Watch(ctx, live.BridgeCaller{Client: c}, fast, func(u live.Update) { updates <- u })
+	}()
 	return updates, done
 }
 

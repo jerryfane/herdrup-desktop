@@ -145,7 +145,7 @@ func TestErrorReplyIsAPIError(t *testing.T) {
 
 func TestHerdrWithoutMultiFallsBackToOneExecPerRequest(t *testing.T) {
 	for name, stderr := range map[string]string{
-		"reads --multi as a request": "",
+		"reads --multi as a request":     "",
 		"rejects --multi as an argument": "error: unexpected argument '--multi' found",
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,9 +164,9 @@ func (d *Desk) start(m Machine, password string) {
 
 // run connects and watches until ctx ends, reconnecting with backoff.
 func (d *Desk) run(ctx context.Context, m Machine, password string) {
-	label := fmt.Sprintf("%s@%s", m.User, m.Host)
+	label := m.User + "@" + m.Host
 	if m.Port != 22 {
-		label += fmt.Sprintf(":%d", m.Port)
+		label = m.User + "@" + net.JoinHostPort(m.Host, strconv.Itoa(m.Port))
 	}
 	backoff := 2 * time.Second
 	for ctx.Err() == nil {

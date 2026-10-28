@@ -1,0 +1,61 @@
+{
+  "repo": "jerryfane/herdrup",
+  "commit": "d78c0c35a6941f1c1d0244544d3c0a7ced93f4a2",
+  "files": [
+    {
+      "source": "design/tokens.json",
+      "dest": "third_party/herdrup/design/tokens.json",
+      "sha256": "96592eedbbc0579d3405a7106c21e0ab24b447b8285f17cc344a83d4c7b23018"
+    },
+    {
+      "source": "App/Fonts/Geist-Regular.ttf",
+      "dest": "public/fonts/Geist-Regular.ttf",
+      "sha256": "7e200da9c65bb1105fe2a2d2b4d4b8c788db6575938105e77efd466ba6256779"
+    },
+    {
+      "source": "App/Fonts/Geist-Medium.ttf",
+      "dest": "public/fonts/Geist-Medium.ttf",
+      "sha256": "6d1584f88e1368e7f9c8fa177440270cdfa07fcf329fabf2f31c523e45848e43"
+    },
+    {
+      "source": "App/Fonts/Geist-SemiBold.ttf",
+      "dest": "public/fonts/Geist-SemiBold.ttf",
+      "sha256": "793718d1fa0b7b7dbf0e7e5d810a9be20751c66e6010784028925bb213dcc722"
+    },
+    {
+      "source": "App/Fonts/Geist-Bold.ttf",
+      "dest": "public/fonts/Geist-Bold.ttf",
+      "sha256": "d6d052ceb4dc12b2ef12e162a077e4d1d8b176b0968db989bb22c3a1e3ba71f4"
+    },
+    {
+      "source": "App/Fonts/IBMPlexMono-Regular.ttf",
+      "dest": "public/fonts/IBMPlexMono-Regular.ttf",
+      "sha256": "7c6fbddca4b700be918f5f6183d9bd4464fa427fe435f0b480d77fe2bb8c5a43"
+    },
+    {
+      "source": "App/Fonts/IBMPlexMono-Medium.ttf",
+      "dest": "public/fonts/IBMPlexMono-Medium.ttf",
+      "sha256": "98fbd727aae340b236955879dabed4d991aac9e8e90b3b2a67ce4a59221cc97c"
+    },
+    {
+      "source": "App/Fonts/IBMPlexMono-SemiBold.ttf",
+      "dest": "public/fonts/IBMPlexMono-SemiBold.ttf",
+      "sha256": "f04d7c488ddf7d1fa99f2574efc3406ea4cbe17bb1af3a1ab960f84d0c96a172"
+    },
+    {
+      "source": "App/Fonts/IBMPlexMono-Bold.ttf",
+      "dest": "public/fonts/IBMPlexMono-Bold.ttf",
+      "sha256": "74e5eedcfa4596497d34e19023cabdabd3a8c852b903007a5654a59591a72ffb"
+    },
+    {
+      "source": "App/Fonts/Geist-OFL.txt",
+      "dest": "public/fonts/Geist-OFL.txt",
+      "sha256": "1781d2806a07d91c4edf4740b88449fab7d0eadad53f7c351b94cd4d4eb8c00f"
+    },
+    {
+      "source": "App/Fonts/IBMPlexMono-OFL.txt",
+      "dest": "public/fonts/IBMPlexMono-OFL.txt",
+      "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+    }
+  ]
+}
