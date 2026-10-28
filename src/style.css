@@ -326,7 +326,11 @@ html, body {
   padding: var(--space-stack-large);
   border-radius: var(--radius-card);
   background: var(--color-surface);
-  box-shadow: inset 0 0 0 var(--size-hairline) var(--color-hairline);
+  /* herdrup strokes the hairline centred on the card's edge (.stroke, not
+     .strokeBorder): half inside, half outside. */
+  box-shadow:
+    inset 0 0 0 calc(var(--size-hairline) / 2) var(--color-hairline),
+    0 0 0 calc(var(--size-hairline) / 2) var(--color-hairline);
 }
 .archived .pic { display: grid; place-items: center; width: 40px; height: 40px; flex: none; }
 .archived .pic > * { grid-area: 1 / 1; }
