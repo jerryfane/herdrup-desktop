@@ -157,10 +157,12 @@ async function badge(kind: string): Promise<HTMLElement | null> {
       b.append(await symbol("wifi.slash", 10, "heavy"));
       return b;
     case "working": {
-      // TurningRing at rest: 12 pt, 2 pt round-capped stroke, 72% of the
-      // circle from 3 o'clock clockwise (herdrup App/DesignSystem.swift),
-      // over the ground-filled circle the other badges also have.
-      const r = 5;
+      // TurningRing(diameter: 12, lineWidth: 2) at rest (herdrup
+      // App/DesignSystem.swift): Circle().trim(0, 0.72) in a 12 pt frame, so
+      // the path's radius is 6 and the 2 pt round-capped stroke reaches 7,
+      // past the frame (overflow: visible); from 3 o'clock clockwise, over
+      // the ground-filled circle the other badges also have.
+      const r = 6;
       const len = 2 * Math.PI * r;
       b.insertAdjacentHTML(
         "beforeend",
