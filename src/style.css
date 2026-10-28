@@ -62,6 +62,12 @@ html, body {
 .t-tab-label { font: var(--text-tab-label-weight) var(--text-tab-label-size)/var(--leading-system) var(--text-tab-label-font); }
 .t-placeholder { font: var(--text-placeholder-weight) var(--text-placeholder-size)/var(--leading-app) var(--text-placeholder-font); }
 .t-empty { font: var(--text-empty-weight) var(--text-empty-size)/var(--leading-app) var(--text-empty-font); }
+/* The system font's semibold roles (600 in text.*): SwiftUI's .semibold is SF
+   Pro's Semibold instance, wght 590, while WebKit draws CSS 600 on the
+   variable system font at wght 600, which made row names 1.2-2.2% heavier
+   than herdrup's. The axis setting only reaches variable faces; static
+   fallbacks (Segoe UI, Inter) keep their 600. */
+.t-row-name, .t-tab-label { font-variation-settings: "wght" 590; }
 
 /* An SF Symbol (or its open substitute): the glyph is a mask tinted with
    the current colour, sized by the symbol image itself. A block, so a
