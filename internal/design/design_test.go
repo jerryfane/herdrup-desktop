@@ -299,6 +299,7 @@ func TestCheckFindsDrift(t *testing.T) {
 		"stray file next to the fonts":    {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
 		"stray script next to mermaid":    {"public/mermaid/evil.js", "", "x", "public/mermaid/evil.js is not from herdrup"},
 		"stray file deep in herdrup dir":  {"public/herdrup/nested/deep.svg", "", "x", "public/herdrup/nested/deep.svg is not from herdrup"},
+		"stray file at the top of public": {"public/evil.js", "", "x", "public/evil.js is not from herdrup"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := synced(t)
@@ -308,6 +309,27 @@ func TestCheckFindsDrift(t *testing.T) {
 				t.Fatalf("got %v, want an error containing %q", errs, tc.want)
 			}
 		})
+	}
+}
+
+func TestCheckReportsAnUnreadableFolder(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any folder; permissions cannot make one unreadable")
+	}
+	root, _ := synced(t)
+	hidden := filepath.Join(root, "public", "hidden")
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "evil.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(hidden, 0o755) })
+	if errs := Check(root); !strings.Contains(fmt.Sprint(errs), "cannot inspect") {
+		t.Fatalf("got %v", errs)
 	}
 }
 

@@ -54,8 +54,8 @@ herdrup commit:
 - `src/tokens.css` (CSS variables and `@font-face`) and `internal/design/tokens_gen.go` (window colours)
   are generated from the tokens.
 
-`public/fonts/`, `public/herdrup/` and `public/mermaid/` belong to the sync: `-check` fails on any file there
-that the pin did not record, since everything in `public/` ships with the app.
+`public/` belongs to the sync: everything in it ships with the app, so `-check` fails on any file there that
+the pin did not record, and on any folder it cannot read.
 
 Never edit those files here. To change one, change it in herdrup, then move the pin to the
 merged commit:

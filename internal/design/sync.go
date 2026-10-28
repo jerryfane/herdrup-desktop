@@ -115,10 +115,10 @@ var Assets = []Asset{
 	{"App/Resources/Mermaid/mermaid.html", "public/mermaid/mermaid.html"},
 }
 
-// SyncedDirs belong entirely to the sync: everything in them ships with the
-// app (Vite copies public/ into the build), so a file there that no pin
-// recorded would ship unchecked.
-var SyncedDirs = []string{FontDir, "public/herdrup", "public/mermaid"}
+// PublicDir belongs entirely to the sync: Vite copies all of it into the
+// app, and every file in it today comes from herdrup, so a file there that
+// no pin recorded would ship unchecked.
+const PublicDir = "public"
 
 // Sync copies tokens.json, its fonts and the shared assets from Repo at
 // commit, records them in ProvenancePath and regenerates the CSS and Go
@@ -319,17 +319,26 @@ func Check(root string) []error {
 			}
 		}
 	}
-	for _, dir := range SyncedDirs {
-		_ = filepath.WalkDir(filepath.Join(root, filepath.FromSlash(dir)), func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			rel, _ := filepath.Rel(root, p)
-			if rel = filepath.ToSlash(rel); !recordedDest[rel] {
-				errs = append(errs, fmt.Errorf("%s is not from herdrup; remove it or add it to herdrup and re-sync", rel))
+	err = filepath.WalkDir(filepath.Join(root, PublicDir), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				// An unreadable folder could hide files; say so rather
+				// than pass over it.
+				errs = append(errs, fmt.Errorf("cannot inspect %s: %w", p, err))
 			}
 			return nil
-		})
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		if rel = filepath.ToSlash(rel); !recordedDest[rel] {
+			errs = append(errs, fmt.Errorf("%s is not from herdrup; remove it or add it to herdrup and re-sync", rel))
+		}
+		return nil
+	})
+	if err != nil {
+		errs = append(errs, err)
 	}
 	return append(errs, LintStyles(root)...)
 }
