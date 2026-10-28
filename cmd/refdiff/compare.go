@@ -135,8 +135,10 @@ func Compare(ref, got image.Image, o Options) (Result, *image.RGBA, error) {
 				d[0], d[1], d[2], d[3] = 255, 0, 255, 255
 			case delta > o.Tol:
 				r.Over++
-				// Over the tolerance: red, brighter for larger deltas.
-				d[0], d[1], d[2], d[3] = uint8(128+delta*127/255), 0, 0, 255
+				// Over the tolerance: red, brighter for larger deltas,
+				// over the reference's brightness so its shapes show.
+				l := luma(a, nil) / 3
+				d[0], d[1], d[2], d[3] = uint8(128+delta*127/255), l, l, 255
 			case delta > 0:
 				// Within the tolerance but not equal: dim amber.
 				l := luma(a, b) / 4

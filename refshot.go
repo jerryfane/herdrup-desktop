@@ -133,9 +133,13 @@ func parseRefSize(s string) (w, h int, err error) {
 }
 
 // placeRefWindow sizes the page area to w×h points and moves the window
-// to the top-left of the primary display's work area, so a tall window
-// is not pushed off the screen's bottom.
+// to the top-left of the primary display's work area. GitHub's macOS
+// runners have a 1024×768 pt display, smaller than the references.
+// AppKit fits a resizable window's height into the screen, and only a
+// resizable one's (NSWindow constrainFrameRect:toScreen:), so the window
+// is made fixed-size and runs past the screen's bottom instead.
 func placeRefWindow(win *mygo.Window, w, h int) {
+	win.SetResizable(false)
 	wa := mygo.Screen.PrimaryDisplay().WorkArea
 	win.SetPosition(wa.X, wa.Y)
 	win.SetContentSize(w, h)

@@ -41,10 +41,10 @@ func TestSameScaleCountsPixelsOverTolerance(t *testing.T) {
 		t.Fatalf("MeanDelta %v, want %v", r.MeanDelta, want)
 	}
 	// Over the tolerance is red; within it is not.
-	if c := diff.RGBAAt(3, 3); c.R < 128 || c.G != 0 || c.B != 0 {
+	if c := diff.RGBAAt(3, 3); c.R < 128 || c.G >= c.R/2 || c.B >= c.R/2 {
 		t.Fatalf("diff at a large delta is %v, want red", c)
 	}
-	if c := diff.RGBAAt(1, 0); c.G == 0 {
+	if c := diff.RGBAAt(1, 0); c.G < c.R/2 {
 		t.Fatalf("diff within tolerance is %v, want not red", c)
 	}
 }
