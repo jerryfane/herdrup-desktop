@@ -399,16 +399,16 @@ func lintDeclaration(prop, value string) []string {
 		return out
 	}
 	if m := hexLiteral.FindString(value); m != "" {
-		out = append(out, fmt.Sprintf("colour literal %q", m))
+		out = append(out, fmt.Sprintf("colour literal %q; use a token variable from %s", m, CSSPath))
 	}
 	for _, m := range colourFunc.FindAllStringSubmatch(value, -1) {
 		if m[2] == "" {
-			out = append(out, fmt.Sprintf("colour literal %q", m[1]+"("))
+			out = append(out, fmt.Sprintf("colour literal %q; use a token variable from %s", m[1]+"(", CSSPath))
 		}
 	}
 	for _, w := range word.FindAllString(value, -1) {
 		if namedColours[strings.ToLower(w)] {
-			out = append(out, fmt.Sprintf("colour literal %q", w))
+			out = append(out, fmt.Sprintf("colour literal %q; use a token variable from %s", w, CSSPath))
 		}
 	}
 	return out
@@ -458,7 +458,7 @@ func LintStyles(root string) []error {
 			}
 			line := strings.Count(text[:loc[0]], "\n") + 1
 			for _, problem := range lintDeclaration(prop, value) {
-				errs = append(errs, fmt.Errorf("%s:%d: %s; use a token variable from %s", rel, line, problem, CSSPath))
+				errs = append(errs, fmt.Errorf("%s:%d: %s", rel, line, problem))
 			}
 		}
 	}
