@@ -1,11 +1,11 @@
 {
   "repo": "jerryfane/herdrup",
-  "commit": "42f8cf9cfe9fb02b02eea4d068e6c807bfa1f0fd",
+  "commit": "d16720327b904ab056166e8df32b973e2d11328d",
   "files": [
     {
       "source": "design/tokens.json",
       "dest": "third_party/herdrup/design/tokens.json",
-      "sha256": "96592eedbbc0579d3405a7106c21e0ab24b447b8285f17cc344a83d4c7b23018"
+      "sha256": "60390fc9b2d15f5bb5b876bd7ab96e6b3ffb39fc20c84b96ec2a0638a2ad6196"
     },
     {
       "source": "App/Fonts/Geist-Regular.ttf",

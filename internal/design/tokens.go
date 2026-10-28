@@ -65,7 +65,8 @@ func Parse(data []byte) (*Tokens, error) {
 	if v, ok := root["schema_version"].(json.Number); !ok || v.String() != fmt.Sprint(SchemaVersion) {
 		return nil, fmt.Errorf("tokens.json: schema_version %v, this build understands %d", root["schema_version"], SchemaVersion)
 	}
-	known := map[string]bool{"color": true, "status": true, "group": true, "agentGradient": true, "chat": true, "font": true, "type": true}
+	known := map[string]bool{"color": true, "status": true, "group": true, "agentGradient": true, "chat": true,
+		"font": true, "type": true, "space": true, "radius": true, "size": true, "text": true}
 	for k := range root {
 		if k == "schema_version" || strings.HasPrefix(k, "_") {
 			continue
@@ -291,9 +292,16 @@ func (t *Tokens) FontFaces() ([]FontFace, error) {
 			return nil, fmt.Errorf("tokens.json font.%s: want an object", name)
 		}
 		family, _ := f["family"].(string)
+		if family == "" {
+			return nil, fmt.Errorf("tokens.json font.%s: needs a family", name)
+		}
+		if family == systemFamily {
+			// The platform UI font: nothing to bundle, every weight drawn.
+			continue
+		}
 		fm, ok := f["faces"].(map[string]any)
-		if family == "" || !ok {
-			return nil, fmt.Errorf("tokens.json font.%s: needs family and faces", name)
+		if !ok {
+			return nil, fmt.Errorf("tokens.json font.%s: needs faces", name)
 		}
 		for _, w := range sortedKeys(fm) {
 			face, _ := fm[w].(map[string]any)
@@ -320,6 +328,9 @@ func (t *Tokens) FontFiles() ([]string, error) {
 	fonts, _ := t.group("font")
 	for _, name := range sortedKeys(fonts) {
 		f := fonts[name].(map[string]any)
+		if f["family"] == systemFamily {
+			continue
+		}
 		lic, _ := f["license"].(string)
 		if lic == "" {
 			return nil, fmt.Errorf("tokens.json font.%s: needs license", name)
@@ -340,6 +351,97 @@ func (t *Tokens) FontFiles() ([]string, error) {
 		byBase[base] = f
 	}
 	return files, nil
+}
+
+// systemFamily marks the platform UI font (San Francisco on Apple
+// platforms), which is never bundled.
+const systemFamily = "system"
+
+// textRole emits one text or type role as --<group>-<name>-{font,size,
+// weight,transform,tracking,numeric}. Every field may be a reference.
+func (t *Tokens) textRole(group, name string, v any, fonts map[string]any, emit func(name, value string)) error {
+	at := group + "." + name
+	r, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("tokens.json %s: want an object", at)
+	}
+	field := func(k string) (any, error) {
+		if r[k] == nil {
+			return nil, nil
+		}
+		return t.resolve(r[k], nil)
+	}
+	fontV, err := field("font")
+	if err != nil {
+		return fmt.Errorf("tokens.json %s: %w", at, err)
+	}
+	font, _ := fontV.(string)
+	f, ok := fonts[font].(map[string]any)
+	if !ok {
+		return fmt.Errorf("tokens.json %s: font %q is not a key of font", at, font)
+	}
+	sizeV, err := field("size")
+	if err != nil {
+		return fmt.Errorf("tokens.json %s: %w", at, err)
+	}
+	weightV, err := field("weight")
+	if err != nil {
+		return fmt.Errorf("tokens.json %s: %w", at, err)
+	}
+	size, okSize := sizeV.(json.Number)
+	weight, okWeight := weightV.(json.Number)
+	if !okSize || !okWeight {
+		return fmt.Errorf("tokens.json %s: needs a numeric size and weight", at)
+	}
+	if f["family"] != systemFamily {
+		if faces, _ := f["faces"].(map[string]any); faces[weight.String()] == nil {
+			return fmt.Errorf("tokens.json %s: font.%s has no %s face", at, font, weight)
+		}
+	}
+	flag := func(k string) (bool, error) {
+		v, err := field(k)
+		if err != nil || v == nil {
+			return false, err
+		}
+		b, ok := v.(bool)
+		if !ok {
+			return false, fmt.Errorf("tokens.json %s.%s: want true or false", at, k)
+		}
+		return b, nil
+	}
+	upper, err := flag("uppercase")
+	if err != nil {
+		return err
+	}
+	tabular, err := flag("tabular")
+	if err != nil {
+		return err
+	}
+	tracking := "normal"
+	if tv, err := field("tracking"); err != nil {
+		return fmt.Errorf("tokens.json %s: %w", at, err)
+	} else if tv != nil {
+		n, ok := tv.(json.Number)
+		if !ok {
+			return fmt.Errorf("tokens.json %s.tracking: want a number of points", at)
+		}
+		tracking = n.String() + "px"
+	}
+	transform, numeric := "none", "normal"
+	if upper {
+		transform = "uppercase"
+	}
+	if tabular {
+		numeric = "tabular-nums"
+	}
+	base := "--" + kebab(group) + "-" + kebab(name)
+	emit(base+"-font", "var(--font-"+kebab(font)+")")
+	emit(base+"-size", size.String()+"px")
+	emit(base+"-weight", weight.String())
+	emit(base+"-transform", transform)
+	emit(base+"-tracking", tracking)
+	emit(base+"-numeric", numeric)
+	return nil
 }
 
 // FontURL is where the page loads a font file from: Vite serves public/
@@ -381,6 +483,25 @@ func (t *Tokens) CSS(header string) ([]byte, error) {
 			return nil, err
 		}
 	}
+	// Layout numbers are points, which are CSS px.
+	for _, prefix := range []string{"space", "radius", "size"} {
+		g, err := t.group(prefix)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range sortedKeys(g) {
+			p := prefix + "." + k
+			v, err := t.resolve(g[k], nil)
+			if err != nil {
+				return nil, fmt.Errorf("tokens.json %s: %w", p, err)
+			}
+			n, ok := v.(json.Number)
+			if !ok {
+				return nil, fmt.Errorf("tokens.json %s: want a number of points", p)
+			}
+			emit(cssName(p), n.String()+"px")
+		}
+	}
 
 	grads, err := t.group("agentGradient")
 	if err != nil {
@@ -407,7 +528,10 @@ func (t *Tokens) CSS(header string) ([]byte, error) {
 	}
 	for _, name := range sortedKeys(fonts) {
 		f := fonts[name].(map[string]any)
-		stack := []string{fmt.Sprintf("%q", f["family"])}
+		var stack []string
+		if f["family"] != systemFamily {
+			stack = append(stack, fmt.Sprintf("%q", f["family"]))
+		}
 		fallback, _ := f["fallback"].([]any)
 		for _, fb := range fallback {
 			s, _ := fb.(string)
@@ -419,37 +543,16 @@ func (t *Tokens) CSS(header string) ([]byte, error) {
 		emit("--font-"+kebab(name), strings.Join(stack, ", "))
 	}
 
-	types, err := t.group("type")
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range sortedKeys(types) {
-		r, ok := types[name].(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("tokens.json type.%s: want an object", name)
+	for _, group := range []string{"text", "type"} {
+		roles, err := t.group(group)
+		if err != nil {
+			return nil, err
 		}
-		font, _ := r["font"].(string)
-		f, ok := fonts[font].(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("tokens.json type.%s: font %q is not a key of font", name, font)
+		for _, name := range sortedKeys(roles) {
+			if err := t.textRole(group, name, roles[name], fonts, emit); err != nil {
+				return nil, err
+			}
 		}
-		size, okSize := r["size"].(json.Number)
-		weight, okWeight := r["weight"].(json.Number)
-		if !okSize || !okWeight {
-			return nil, fmt.Errorf("tokens.json type.%s: needs a numeric size and weight", name)
-		}
-		if faces, _ := f["faces"].(map[string]any); faces[weight.String()] == nil {
-			return nil, fmt.Errorf("tokens.json type.%s: font.%s has no %s face", name, font, weight)
-		}
-		transform := "none"
-		if up, _ := r["uppercase"].(bool); up {
-			transform = "uppercase"
-		}
-		base := "--type-" + kebab(name)
-		emit(base+"-font", "var(--font-"+kebab(font)+")")
-		emit(base+"-size", size.String()+"px")
-		emit(base+"-weight", weight.String())
-		emit(base+"-transform", transform)
 	}
 	b.WriteString("}\n")
 
