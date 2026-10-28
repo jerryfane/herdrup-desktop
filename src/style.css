@@ -36,14 +36,20 @@ html, body {
 [hidden] { display: none !important; }
 
 /* Text roles: font, size, weight, case, tracking and digits from text.*.
-   Line height is SwiftUI's (UIFont.lineHeight: hhea ascender + descender + line
-   gap, unrounded), not WebKit's `normal`, which rounds ascent and descent to
-   whole points and made the two-line row stack 1 pt short of herdrup's.
-   SF Pro: (1950 + 494) / 2048. Geist: (1005 + 295) / 1000. IBM Plex Mono:
-   (1025 + 275) / 1000. (The `font` shorthand resets line-height, so it is set
-   inside each shorthand.) */
+   Line heights: Geist and IBM Plex Mono use the font files' line height,
+   (1005 + 295) / 1000 and (1025 + 275) / 1000, which is also UIFont's.
+   The system font differs between the references (iOS SF Pro: ascender
+   1950, descender 494 per 2048) and this WebView (macOS .SFNS: 1980, 432,
+   CoreText on macOS 26.6.2), so its lines are set to where herdrup's
+   baselines fall rather than to a font metric. In the 2x references a row's
+   name baseline is 36-36.5 pt below the row top and its preview's 56-56.5 pt
+   (baselines 20 pt apart). With WebKit's centred half-leading over .SFNS's
+   ascent + descent, 1.25 x the size puts both in the middle of those ranges
+   for the 80 pt row's centred stack (spacing stackTight). The tab label uses
+   the same leading; the `font` shorthand resets line-height, so it is set
+   inside each shorthand. */
 :root {
-  --leading-system: 1.19336;
+  --leading-system: 1.25;
   --leading-app: 1.3;
   --leading-machine: 1.3;
 }
