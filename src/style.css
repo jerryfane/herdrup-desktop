@@ -64,9 +64,12 @@ html, body {
 .t-empty { font: var(--text-empty-weight) var(--text-empty-size)/var(--leading-app) var(--text-empty-font); }
 
 /* An SF Symbol (or its open substitute): the glyph is a mask tinted with
-   the current colour, sized by the symbol image itself. */
+   the current colour, sized by the symbol image itself. A block, so a
+   wrapper (.chev, .search-icon) is exactly the symbol's box and is centred
+   like SwiftUI centres the image's frame; inline-block sat it on the
+   wrapper's text baseline, 1.5-2 pt above centre. */
 .sym {
-  display: inline-block;
+  display: block;
   flex: none;
   background-color: currentColor;
   -webkit-mask: var(--sym) no-repeat center / 100% 100%;
@@ -324,7 +327,8 @@ html, body {
   background: var(--color-surface);
   box-shadow: inset 0 0 0 var(--size-hairline) var(--color-hairline);
 }
-.archived .pic { position: relative; width: 40px; height: 40px; flex: none; }
+.archived .pic { display: grid; place-items: center; width: 40px; height: 40px; flex: none; }
+.archived .pic > * { grid-area: 1 / 1; }
 .archived .pic .tile {
   width: 100%;
   height: 100%;
@@ -336,7 +340,7 @@ html, body {
   color: var(--color-on-accent);
   font: 700 17px var(--font-app);
 }
-.archived .pic .sym { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: var(--color-on-accent); }
+.archived .pic .sym { color: var(--color-on-accent); }
 .archived .lines { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .archived .title { color: var(--color-text-dim); }
 .archived .note { color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; }
