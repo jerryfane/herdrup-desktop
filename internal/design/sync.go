@@ -338,8 +338,9 @@ var (
 	word       = regexp.MustCompile(`[A-Za-z-]+`)
 	// A coloured side stripe on a card is against the fleet UI rule.
 	sideBorder = regexp.MustCompile(`(?i)^border-(?:left|right|inline-start|inline-end)(?:-color|-width|-style)?$`)
-	// length is one CSS length or number; the unit is ignored.
-	length = regexp.MustCompile(`(?i)^-?(?:\d+\.?\d*|\.\d+)(?:[a-z%]*)$`)
+	// length is one CSS number with an optional unit: sign, decimals and
+	// exponent allowed (+3px, .5em, 3e0px).
+	length = regexp.MustCompile(`(?i)^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)$`)
 )
 
 const stripe = "side stripe on a box; cards stay neutral (fleet UI rule)"
@@ -384,34 +385,63 @@ func insetStripe(layer string) bool {
 	inset := false
 	var lengths []float64
 	for _, f := range strings.Fields(top.String()) {
-		switch {
-		case f == "inset":
+		if f == "inset" {
 			inset = true
-		case length.MatchString(f):
-			n, _ := strconv.ParseFloat(strings.TrimRight(f, "abcdefghijklmnopqrstuvwxyz%"), 64)
+		} else if n, ok := parseLength(f); ok {
 			lengths = append(lengths, n)
 		}
 	}
 	return inset && len(lengths) >= 2 && lengths[0] != 0 && lengths[1] == 0
 }
 
-// oneSidedWidths reports whether a border-width value sets a width on the
-// left or right only: "0 0 0 3px" or "0 3px 0 0".
+// parseLength reads a CSS length or number, ignoring the unit.
+func parseLength(f string) (float64, bool) {
+	m := length.FindStringSubmatch(f)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	return n, err == nil
+}
+
+// oneSidedWidths reports whether a 4-value border-width draws the left or
+// right side and neither top nor bottom ("0 0 0 3px", "0 thick 0 0"). The
+// 2- and 3-value forms always give left and right the same width, so they
+// cannot draw a side stripe. Keywords (thin, medium, thick), var() and
+// calc() count as non-zero.
 func oneSidedWidths(value string) bool {
-	fields := strings.Fields(value)
+	fields := strings.Fields(strings.ToLower(value))
 	if len(fields) != 4 {
 		return false
 	}
-	nonZero := make([]bool, 4)
+	var nonZero [4]bool
 	for i, f := range fields {
-		if !length.MatchString(f) {
-			return false
-		}
-		n, _ := strconv.ParseFloat(strings.TrimRight(strings.ToLower(f), "abcdefghijklmnopqrstuvwxyz%"), 64)
-		nonZero[i] = n != 0
+		n, ok := parseLength(f)
+		nonZero[i] = !ok || n != 0
 	}
 	top, right, bottom, left := nonZero[0], nonZero[1], nonZero[2], nonZero[3]
-	return !top && !bottom && right != left
+	return !top && !bottom && left != right
+}
+
+var customRef = regexp.MustCompile(`var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,[^()]*)?\)`)
+
+// expandVars substitutes the custom properties declared in the app's
+// stylesheets, a few levels deep, so a stripe hidden behind var(--x) is
+// still seen. Unknown references (tokens) are left as they are.
+func expandVars(value string, custom map[string]string) string {
+	for range 5 {
+		next := customRef.ReplaceAllStringFunc(value, func(ref string) string {
+			if v, ok := custom[customRef.FindStringSubmatch(ref)[1]]; ok {
+				return v
+			}
+			return ref
+		})
+		if next == value {
+			break
+		}
+		value = next
+	}
+	return value
 }
 
 // namedColours are the CSS colour keywords (CSS Color 4) plus the system
@@ -450,16 +480,17 @@ var textProperties = map[string]bool{
 }
 
 // lintDeclaration returns the problems in one CSS declaration.
-func lintDeclaration(prop, value string) []string {
+func lintDeclaration(prop, value string, custom map[string]string) []string {
 	prop = strings.ToLower(prop)
 	// Custom properties are linted too: --accent: #ce58a4 is a raw colour
 	// however it is later used.
 	var out []string
-	if sideBorder.MatchString(prop) || (prop == "border-width" && oneSidedWidths(value)) {
+	geometry := expandVars(value, custom)
+	if sideBorder.MatchString(prop) || (prop == "border-width" && oneSidedWidths(geometry)) {
 		out = append(out, stripe)
 	}
 	if prop == "box-shadow" {
-		for _, layer := range splitLayers(value) {
+		for _, layer := range splitLayers(geometry) {
 			if insetStripe(layer) {
 				out = append(out, stripe)
 			}
@@ -498,6 +529,13 @@ func LintStyles(root string) []error {
 	})
 	sort.Strings(files)
 	blank := func(s string) string { return strings.Repeat(" ", len(s)) }
+	type decl struct {
+		rel       string
+		line      int
+		prop, val string
+	}
+	var decls []decl
+	custom := map[string]string{}
 	for _, p := range files {
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
@@ -521,15 +559,22 @@ func LintStyles(root string) []error {
 		})
 		text = quotedOrURL.ReplaceAllStringFunc(text, blank)
 		for _, loc := range declaration.FindAllStringSubmatchIndex(text, -1) {
-			prop, value := text[loc[2]:loc[3]], text[loc[4]:loc[5]]
 			// A selector with a pseudo-class (a:hover {) is not a declaration.
 			if end := loc[1]; end < len(text) && text[end] == '{' {
 				continue
 			}
-			line := strings.Count(text[:loc[0]], "\n") + 1
-			for _, problem := range lintDeclaration(prop, value) {
-				errs = append(errs, fmt.Errorf("%s:%d: %s", rel, line, problem))
+			d := decl{rel, strings.Count(text[:loc[0]], "\n") + 1, text[loc[2]:loc[3]], strings.TrimSpace(text[loc[4]:loc[5]])}
+			if strings.HasPrefix(d.prop, "--") {
+				custom[d.prop] = d.val
 			}
+			decls = append(decls, d)
+		}
+	}
+	// Custom properties are collected from every stylesheet first, so a
+	// var() resolves wherever it is declared.
+	for _, d := range decls {
+		for _, problem := range lintDeclaration(d.prop, d.val, custom) {
+			errs = append(errs, fmt.Errorf("%s:%d: %s", d.rel, d.line, problem))
 		}
 	}
 	return errs

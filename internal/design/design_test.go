@@ -217,24 +217,29 @@ func TestCheckFindsDrift(t *testing.T) {
 	for name, tc := range map[string]struct {
 		rel, from, to, want string
 	}{
-		"hand-edited generated CSS":      {CSSPath, "#13162a", "#000000", "src/tokens.css is stale or edited"},
-		"edited synced tokens":           {TokensCopy, "#E9A63C", "#FF0000", "differs from jerryfane/herdrup design/tokens.json"},
-		"edited font":                    {"public/fonts/IBMPlexMono-SemiBold.ttf", "font", "FONT", "differs from jerryfane/herdrup App/Fonts/IBMPlexMono-SemiBold.ttf"},
-		"colour literal in a stylesheet": {"src/style.css", "", ".x { color: #fff; }\n", `src/style.css:2: colour literal "#fff"`},
-		"rgb() in a stylesheet":          {"src/style.css", "", ".x { background: rgba(0, 0, 0, 0.5); }\n", "colour literal"},
-		"side stripe":                    {"src/style.css", "", ".card { border-left: 3px solid var(--status-waiting); }\n", "side stripe"},
-		"inset stripe":                   {"src/style.css", "", ".card { box-shadow: inset 4px 0 0 var(--status-waiting); }\n", "side stripe"},
-		"inset stripe, fractional em":    {"src/style.css", "", ".card { box-shadow: inset .5em 0px 0 var(--status-waiting); }\n", "side stripe"},
-		"named colour":                   {"src/style.css", "", ".x { color: white; }\n", `colour literal "white"`},
-		"named colour, upper case":       {"src/style.css", "", ".x {\n  border: 1px solid Red !important;\n}\n", `src/style.css:3: colour literal "Red"`},
-		"colour in a custom property":    {"src/style.css", "", ".x { --accent: #ce58a4; color: var(--accent); }\n", `colour literal "#ce58a4"`},
-		"named colour in a custom prop":  {"src/style.css", "", ".x { --accent: red; }\n", `colour literal "red"`},
-		"inset after the offsets":        {"src/style.css", "", ".card { box-shadow: 4px 0 0 var(--status-waiting) inset; }\n", "side stripe"},
-		"inset in a later layer":         {"src/style.css", "", ".card { box-shadow: 0 1px 2px var(--color-ground), inset -3px 0 var(--status-waiting); }\n", "side stripe"},
-		"one-sided border-width":         {"src/style.css", "", ".card { border: solid var(--status-waiting); border-width: 0 0 0 3px; }\n", "side stripe"},
-		"stripe with a colour-mix":       {"src/style.css", "", ".card { box-shadow: inset 3px 0 color-mix(in srgb, var(--status-waiting) 60%, transparent); }\n", "side stripe"},
-		"stripe, colour function first":  {"src/style.css", "", ".card { box-shadow: inset rgb(from var(--status-waiting) r g b / 50%) 3px 0; }\n", "side stripe"},
-		"stray file next to the fonts":   {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
+		"hand-edited generated CSS":       {CSSPath, "#13162a", "#000000", "src/tokens.css is stale or edited"},
+		"edited synced tokens":            {TokensCopy, "#E9A63C", "#FF0000", "differs from jerryfane/herdrup design/tokens.json"},
+		"edited font":                     {"public/fonts/IBMPlexMono-SemiBold.ttf", "font", "FONT", "differs from jerryfane/herdrup App/Fonts/IBMPlexMono-SemiBold.ttf"},
+		"colour literal in a stylesheet":  {"src/style.css", "", ".x { color: #fff; }\n", `src/style.css:2: colour literal "#fff"`},
+		"rgb() in a stylesheet":           {"src/style.css", "", ".x { background: rgba(0, 0, 0, 0.5); }\n", "colour literal"},
+		"side stripe":                     {"src/style.css", "", ".card { border-left: 3px solid var(--status-waiting); }\n", "side stripe"},
+		"inset stripe":                    {"src/style.css", "", ".card { box-shadow: inset 4px 0 0 var(--status-waiting); }\n", "side stripe"},
+		"inset stripe, fractional em":     {"src/style.css", "", ".card { box-shadow: inset .5em 0px 0 var(--status-waiting); }\n", "side stripe"},
+		"named colour":                    {"src/style.css", "", ".x { color: white; }\n", `colour literal "white"`},
+		"named colour, upper case":        {"src/style.css", "", ".x {\n  border: 1px solid Red !important;\n}\n", `src/style.css:3: colour literal "Red"`},
+		"colour in a custom property":     {"src/style.css", "", ".x { --accent: #ce58a4; color: var(--accent); }\n", `colour literal "#ce58a4"`},
+		"named colour in a custom prop":   {"src/style.css", "", ".x { --accent: red; }\n", `colour literal "red"`},
+		"inset after the offsets":         {"src/style.css", "", ".card { box-shadow: 4px 0 0 var(--status-waiting) inset; }\n", "side stripe"},
+		"inset in a later layer":          {"src/style.css", "", ".card { box-shadow: 0 1px 2px var(--color-ground), inset -3px 0 var(--status-waiting); }\n", "side stripe"},
+		"one-sided border-width":          {"src/style.css", "", ".card { border: solid var(--status-waiting); border-width: 0 0 0 3px; }\n", "side stripe"},
+		"stripe with a colour-mix":        {"src/style.css", "", ".card { box-shadow: inset 3px 0 color-mix(in srgb, var(--status-waiting) 60%, transparent); }\n", "side stripe"},
+		"stripe, colour function first":   {"src/style.css", "", ".card { box-shadow: inset rgb(from var(--status-waiting) r g b / 50%) 3px 0; }\n", "side stripe"},
+		"stripe behind a custom property": {"src/style.css", "", ".c { --sh: inset 3px 0 var(--status-waiting); box-shadow: var(--sh); }\n", "side stripe"},
+		"stripe declared in another rule": {"src/style.css", "", ".c { box-shadow: var(--edge); }\n:root { --edge: var(--edge-x) 0 0 inset; --edge-x: 4px; }\n", "side stripe"},
+		"widths behind a custom property": {"src/style.css", "", ".c { --w: 0 0 0 3px; border: solid var(--status-waiting); border-width: var(--w); }\n", "side stripe"},
+		"keyword width":                   {"src/style.css", "", ".c { border-width: 0 0 0 thick; }\n", "side stripe"},
+		"signed and exponent offsets":     {"src/style.css", "", ".c { box-shadow: +3px +0 var(--status-waiting) inset, 3e0px 0 inset; }\n", "side stripe"},
+		"stray file next to the fonts":    {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := synced(t)
@@ -256,6 +261,7 @@ func TestCheckAllowsTokenDerivedAndNonColourValues(t *testing.T) {
 .q::after { content: "#1 red"; mask: url(#a1b2c3); }
 .f { font-family: var(--font-app); box-shadow: inset 0 1px 0 var(--color-hairline), 0 2px 4px var(--color-ground); }
 .g { --card-pad: 12px; border-width: 1px; border-width: 0 1px 0 1px; box-shadow: 2px 0 4px var(--color-ground); }
+.p { --pad: 0 0 0 3px; padding: var(--pad); border-width: 0 0 3px; box-shadow: var(--lift); --lift: 0 2px 6px var(--color-ground); }
 .h { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-hairline) 60%, 4px 0); }
 a:hover { color: var(--color-text); }
 .border-left:hover { color: var(--color-text); }
