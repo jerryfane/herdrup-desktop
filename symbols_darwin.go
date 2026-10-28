@@ -169,38 +169,12 @@ func measureSymbol(img objc.ID) symbolMetrics {
 	}
 }
 
-func responds(obj objc.ID, selector string) bool {
-	return obj != 0 && msg(obj, "respondsToSelector:", uintptr(sel(selector)))&0xff != 0
-}
-
-// glyphRects returns the alignment rect of img's glyph in the image, in
-// AppKit's coordinates (y up), as CoreUI rounds it to whole points and
-// unrounded. AppKit draws the glyph's unrounded rect with its bottom-left
-// corner at the rounded rect's; SwiftUI draws it with its top-left corner
-// at the rounded rect's. CoreUI's vector glyph is private API: ok is false
-// when it is missing.
-func glyphRects(img objc.ID) (rounded, exact nsRect, ok bool) {
-	reps := msg(img, "representations")
-	if reps == 0 || msg(reps, "count") == 0 {
-		return rounded, exact, false
-	}
-	rep := msg(reps, "objectAtIndex:", 0)
-	if !responds(rep, "vectorGlyph") {
-		return rounded, exact, false
-	}
-	g := msg(rep, "vectorGlyph")
-	if !responds(g, "alignmentRect") || !responds(g, "alignmentRectUnrounded") {
-		return rounded, exact, false
-	}
-	rounded, exact = appKit.rect(g, sel("alignmentRect")), appKit.rect(g, sel("alignmentRectUnrounded"))
-	return rounded, exact, exact.Size.Height > 0 && exact.Size.Height <= rounded.Size.Height
-}
-
-// rasterSymbol draws img at its size, one pixel per point, with its
-// bottom-left corner at origin in a transparent pw by ph bitmap (y up),
-// and returns the coverage: one alpha byte per pixel, rows from the top.
-// It must run in a pool.
-func rasterSymbol(img objc.ID, size nsSize, pw, ph int, origin nsPoint) (*image.Alpha, error) {
+// rasterSymbol draws img at its size into a transparent bitmap of one
+// pixel per point, its size rounded up to whole pixels with the image at
+// the top-left, and returns the coverage: one alpha byte per pixel, rows
+// from the top. It must run in a pool.
+func rasterSymbol(img objc.ID, size nsSize) (*image.Alpha, error) {
+	pw, ph := int(math.Ceil(size.Width-1e-6)), int(math.Ceil(size.Height-1e-6))
 	if pw <= 0 || ph <= 0 {
 		return nil, errors.New("symbols: empty symbol image")
 	}
@@ -219,7 +193,9 @@ func rasterSymbol(img objc.ID, size nsSize, pw, ph int, origin nsPoint) (*image.
 	msg(gc, "saveGraphicsState")
 	msg(gc, "setCurrentContext:", uintptr(ctx))
 	const sourceOver = 2 // NSCompositingOperationSourceOver
-	appKit.draw(img, sel("drawInRect:fromRect:operation:fraction:"), nsRect{Origin: origin, Size: size}, nsRect{}, sourceOver, 1)
+	// AppKit's y axis points up: the image's top edge on the bitmap's.
+	dst := nsRect{Origin: nsPoint{0, float64(ph) - size.Height}, Size: size}
+	appKit.draw(img, sel("drawInRect:fromRect:operation:fraction:"), dst, nsRect{}, sourceOver, 1)
 	msg(ctx, "flushGraphics")
 	msg(gc, "restoreGraphicsState")
 
@@ -244,65 +220,6 @@ func rasterSymbol(img objc.ID, size nsSize, pw, ph int, origin nsPoint) (*image.
 	return a, nil
 }
 
-// shrink averages n by n blocks of a.
-func shrink(a *image.Alpha, n int) *image.Alpha {
-	w, h := a.Rect.Dx()/n, a.Rect.Dy()/n
-	out := image.NewAlpha(image.Rect(0, 0, w, h))
-	for y := range h {
-		for x := range w {
-			sum := 0
-			for yy := y * n; yy < y*n+n; yy++ {
-				for _, v := range a.Pix[yy*a.Stride+x*n : yy*a.Stride+x*n+n] {
-					sum += int(v)
-				}
-			}
-			out.Pix[y*out.Stride+x] = uint8((sum + n*n/2) / (n * n))
-		}
-	}
-	return out
-}
-
-// maxSuperSample and maxSuperPixels bound drawSymbol's supersampling: a
-// glyph is placed to 1/maxSuperSample pixel, in a bitmap of at most
-// maxSuperPixels on a side.
-const maxSuperSample, maxSuperPixels = 8, 2048
-
-// rasterLikeSwiftUI draws img, a symbol image at size points, where
-// SwiftUI draws it in a box of its size: AppKit puts the glyph's
-// unrounded alignment rect on the bottom of the rounded one, SwiftUI on
-// its top, up to a pixel higher. It draws the symbol n times larger with
-// the glyph moved there and averages it down. It must run in a pool.
-func rasterLikeSwiftUI(img objc.ID, name string, size float64, w symbolWeight, box nsSize) (*image.Alpha, error) {
-	pw, ph := int(math.Ceil(box.Width-1e-6)), int(math.Ceil(box.Height-1e-6))
-	rounded, exact, ok := glyphRects(img)
-	n := min(maxSuperSample, maxSuperPixels/max(pw, ph, 1))
-	if !ok || n < 2 {
-		// AppKit's placement, at most a pixel lower than SwiftUI's.
-		return rasterSymbol(img, box, pw, ph, nsPoint{0, float64(ph) - box.Height})
-	}
-	big, err := sfSymbol(name, size*float64(n), w)
-	if err != nil {
-		return nil, err
-	}
-	bigRounded, _, ok := glyphRects(big)
-	if !ok {
-		return rasterSymbol(img, box, pw, ph, nsPoint{0, float64(ph) - box.Height})
-	}
-	k := float64(n)
-	// The glyph's left edge on the rounded rect's, its top on the rounded
-	// rect's top, in the n× bitmap whose top edge is the box's.
-	top := float64(ph) - box.Height
-	origin := nsPoint{
-		X: k*rounded.Origin.X - bigRounded.Origin.X,
-		Y: math.Round(k*(top+rounded.Origin.Y+rounded.Size.Height-exact.Size.Height) - bigRounded.Origin.Y),
-	}
-	a, err := rasterSymbol(big, appKit.size(big, sel("size")), n*pw, n*ph, origin)
-	if err != nil {
-		return nil, err
-	}
-	return shrink(a, n), nil
-}
-
 // whitePNG encodes coverage as a white glyph on transparent.
 func whitePNG(a *image.Alpha) ([]byte, error) {
 	img := image.NewNRGBA(a.Bounds())
@@ -318,10 +235,9 @@ func whitePNG(a *image.Alpha) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// drawSymbol lays the symbol out at pointSize×scale on AppKit's
-// whole-point grid, one pixel per point: that is the symbol at pointSize
-// on the 1/scale point grid of a scale× display, where SwiftUI lays it
-// out.
+// drawSymbol draws the symbol at pointSize×scale on AppKit's whole-point
+// grid, one pixel per point: that is the symbol at pointSize on the
+// 1/scale point grid of a scale× display, where SwiftUI lays it out.
 func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (SymbolImage, error) {
 	if err := loadAppKit(); err != nil {
 		return SymbolImage{}, err
@@ -331,15 +247,14 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (Symb
 		a   *image.Alpha
 		err error
 	)
-	size := pointSize * float64(scale)
 	appKit.mu.Lock()
 	withPool(func() {
 		var img objc.ID
-		if img, err = sfSymbol(name, size, w); err != nil {
+		if img, err = sfSymbol(name, pointSize*float64(scale), w); err != nil {
 			return
 		}
 		m = measureSymbol(img)
-		a, err = rasterLikeSwiftUI(img, name, size, w, m.size)
+		a, err = rasterSymbol(img, m.size)
 	})
 	appKit.mu.Unlock()
 	if err != nil {

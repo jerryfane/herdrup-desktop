@@ -110,27 +110,6 @@ func TestSymbolImageDarwin(t *testing.T) {
 	}
 }
 
-// SwiftUI's placement needs CoreUI's glyph rects, which are private: this
-// fails when a macOS release drops them.
-func TestGlyphRects(t *testing.T) {
-	if err := loadAppKit(); err != nil {
-		t.Fatal(err)
-	}
-	withPool(func() {
-		img, err := sfSymbol("square.grid.2x2.fill", 21, 4)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r, u, ok := glyphRects(img)
-		if !ok {
-			t.Fatal("no CoreUI vector glyph rects: Symbols.Image falls back to AppKit's placement, up to a pixel below SwiftUI's")
-		}
-		if r.Size.Height != math.Round(r.Size.Height) || u.Size.Height > r.Size.Height || u.Size.Height < r.Size.Height-1 {
-			t.Fatalf("rounded rect %+v, unrounded %+v", r, u)
-		}
-	})
-}
-
 // inkBounds is the box of covered pixels, in points from the top-left.
 func inkBounds(m *image.NRGBA, scale float64) (left, top, right, bottom float64) {
 	b := image.Rectangle{}

@@ -29,7 +29,7 @@ jobs:
       - name: Draw the symbols
         run: |
           mkdir -p "$RUNNER_TEMP/symbols"
-          HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run 'TestSymbolImageDarwin|TestGlyphRects|TestSymbolDump' .
+          HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run 'TestSymbolImageDarwin|TestSymbolDump' .
       - name: Compare with SwiftUI
         if: always()
         run: swift .github/symbols/swiftui.swift "$RUNNER_TEMP/symbols"
