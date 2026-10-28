@@ -68,11 +68,28 @@ go run ./cmd/herdrup-sync -commit <full herdrup commit>
 hash or from herdrup at the pin, when a generated file is stale or hand-edited, and when a stylesheet in
 `src/` uses a colour literal instead of a token variable or gives a card a coloured side stripe.
 
+## Symbols
+
+herdrup draws its icons with Apple's SF Symbols, which Apple licenses for its own platforms only. The
+`Symbols` service gives the page each icon as a white-on-transparent image to tint with CSS `mask-image`,
+with the box and baseline SwiftUI gives `Image(systemName:).font(.system(size:weight:))`:
+
+- on macOS, `symbols_darwin.go` draws the real symbol with AppKit at run time; no SF Symbols artwork is in
+  this repository or in any build;
+- on Windows and Linux, `symbols_other.go` draws the nearest [Phosphor](https://phosphoricons.com) icon
+  (`third_party/phosphor/`, MIT, with its licence), fitted to the box where macOS draws the symbol's ink.
+  Those boxes are measured on macOS into `symbols_sfmetrics.go`; only the symbols listed there have a
+  stand-in.
+
+The `Symbols` workflow (on demand, macOS) checks the AppKit images against SwiftUI's at 1x, 2x and 3x,
+checks `symbols_sfmetrics.go` against AppKit, and uploads every image.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `main.go`, `desk.go` | the window and the `Desk` service the page calls (connect, board, state) |
+| `symbols*.go`, `third_party/phosphor` | the `Symbols` service: SF Symbols on macOS, Phosphor stand-ins elsewhere |
 | `internal/bridge` | SSH, host key pinning, `api-bridge --multi` and streams |
 | `internal/herdr` | wire types and the iOS board grouping |
 | `internal/live` | keeps a board current from events |
