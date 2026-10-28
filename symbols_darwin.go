@@ -34,6 +34,8 @@ type nsRect struct {
 var appKit struct {
 	once sync.Once
 	err  error
+	// mu serialises drawing: bound methods run on their own goroutines.
+	mu sync.Mutex
 
 	msgSend           uintptr
 	poolPush, poolPop uintptr
@@ -245,6 +247,7 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (Symb
 		a   *image.Alpha
 		err error
 	)
+	appKit.mu.Lock()
 	withPool(func() {
 		var img objc.ID
 		if img, err = sfSymbol(name, pointSize*float64(scale), w); err != nil {
@@ -253,6 +256,7 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (Symb
 		m = measureSymbol(img)
 		a, err = rasterSymbol(img, m.size)
 	})
+	appKit.mu.Unlock()
 	if err != nil {
 		return SymbolImage{}, err
 	}

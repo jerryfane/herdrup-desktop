@@ -38,7 +38,7 @@ func (s standIn) file(w symbolWeight) string {
 	return "third_party/phosphor/regular/" + s.icon + ".svg"
 }
 
-func drawSymbol(name string, pointSize float64, w symbolWeight, _ int) (SymbolImage, error) {
+func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (SymbolImage, error) {
 	si := slices.IndexFunc(standIns[:], func(s standIn) bool { return s.symbol == name })
 	mi := slices.IndexFunc(sfMetrics[:], func(m sfMetric) bool { return m.symbol == name })
 	if si < 0 || mi < 0 {
@@ -59,9 +59,10 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, _ int) (SymbolIm
 		return SymbolImage{}, fmt.Errorf("symbols: %s: %w", file, err)
 	}
 
-	// Scale the icon's ink into the symbol's, keeping its aspect, and
-	// centre it there.
-	width, height := box.width*pointSize, box.height*pointSize
+	// The box macOS gives the symbol at this size and scale. Scale the
+	// icon's ink into the symbol's, keeping its aspect, and centre it
+	// there.
+	width, height := snap(box.width*pointSize, scale), snap(box.height*pointSize, scale)
 	k := math.Min((box.right-box.left)/(ink[2]-ink[0]), (box.bottom-box.top)/(ink[3]-ink[1])) * pointSize
 	vx := (ink[0]+ink[2])/2 - (box.left+box.right)/2*pointSize/k
 	vy := (ink[1]+ink[3])/2 - (box.top+box.bottom)/2*pointSize/k
@@ -71,8 +72,22 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, _ int) (SymbolIm
 		DataURL:  "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg)),
 		Width:    width,
 		Height:   height,
-		Baseline: box.baseline * pointSize,
+		Baseline: snapBaseline(box.baseline*pointSize, scale),
 	}, nil
+}
+
+// snap rounds a length up to whole pixels at scale, as AppKit sizes a
+// symbol image drawn at pointSize×scale.
+func snap(points float64, scale int) float64 {
+	s := float64(scale)
+	return math.Ceil(points*s-1e-3) / s
+}
+
+// snapBaseline rounds a baseline to the nearest pixel at scale, as AppKit
+// places it in a symbol image drawn at pointSize×scale.
+func snapBaseline(points float64, scale int) float64 {
+	s := float64(scale)
+	return math.Round(points*s) / s
 }
 
 func num(v float64) string { return strconv.FormatFloat(math.Round(v*1e4)/1e4, 'f', -1, 64) }
