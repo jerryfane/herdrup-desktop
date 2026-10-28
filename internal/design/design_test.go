@@ -28,9 +28,18 @@ const fixture = `{
       "fallback": ["ui-monospace", "SF Mono", "monospace"],
       "faces": {"600": {"postscript": "IBMPlexMono-SmBld", "file": "App/Fonts/IBMPlexMono-SemiBold.ttf"}},
       "license": "App/Fonts/IBMPlexMono-OFL.txt"
-    }
+    },
+    "system": {"_comment": "platform font", "family": "system", "fallback": ["-apple-system", "Segoe UI", "sans-serif"]}
   },
-  "type": {"microLabel": {"font": "machine", "size": 11, "weight": 600, "uppercase": true}}
+  "space": {"rowLead": 20, "avatarGap": "{space.rowLead}"},
+  "radius": {"card": 14},
+  "size": {"agentRow": 80, "badgeStroke": 2.5},
+  "text": {
+    "rowName": {"font": "system", "size": 16, "weight": 600},
+    "rowAge": {"font": "system", "size": 14, "weight": 400, "tabular": true},
+    "microLabel": {"font": "machine", "size": 11, "weight": 600, "uppercase": true, "tracking": 1.2}
+  },
+  "type": {"microLabel": {"font": "{text.microLabel.font}", "size": "{text.microLabel.size}", "weight": "{text.microLabel.weight}", "uppercase": "{text.microLabel.uppercase}"}}
 }`
 
 func TestParseRejectsBadTokens(t *testing.T) {
@@ -76,6 +85,13 @@ func TestCSS(t *testing.T) {
 		"  --agent-gradient-claude: linear-gradient(135deg, #ce58a4, #a32e77);\n",
 		"  --font-machine: \"IBM Plex Mono\", ui-monospace, \"SF Mono\", monospace;\n",
 		"  --type-micro-label-font: var(--font-machine);\n  --type-micro-label-size: 11px;\n  --type-micro-label-weight: 600;\n  --type-micro-label-transform: uppercase;\n",
+		"  --space-avatar-gap: 20px;\n  --space-row-lead: 20px;\n",
+		"  --radius-card: 14px;\n",
+		"  --size-agent-row: 80px;\n  --size-badge-stroke: 2.5px;\n",
+		"  --font-system: -apple-system, \"Segoe UI\", sans-serif;\n",
+		"  --text-micro-label-font: var(--font-machine);\n  --text-micro-label-size: 11px;\n  --text-micro-label-weight: 600;\n  --text-micro-label-transform: uppercase;\n  --text-micro-label-tracking: 1.2px;\n  --text-micro-label-numeric: normal;\n",
+		"  --text-row-age-font: var(--font-system);\n  --text-row-age-size: 14px;\n  --text-row-age-weight: 400;\n  --text-row-age-transform: none;\n  --text-row-age-tracking: normal;\n  --text-row-age-numeric: tabular-nums;\n",
+		"  --text-row-name-font: var(--font-system);\n  --text-row-name-size: 16px;\n  --text-row-name-weight: 600;\n",
 		":root[data-theme=\"light\"] {\n  --chat-code-text: #6172b0;\n}\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -85,12 +101,36 @@ func TestCSS(t *testing.T) {
 	if strings.Contains(got, "--color-light") || strings.Contains(got, "dark") {
 		t.Errorf("theme segment leaked into a variable name:\n%s", got)
 	}
+	if strings.Contains(got, `"system"`) || strings.Count(got, "@font-face") != 1 {
+		t.Errorf("the system font must not be bundled or named:\n%s", got)
+	}
+}
+
+func TestParseRejectsBadLayoutTokens(t *testing.T) {
+	for name, tc := range map[string]struct{ from, to, want string }{
+		"space as a string":      {`"radius": {"card": 14}`, `"radius": {"card": "14px"}`, "radius.card: want a number"},
+		"tracking as a string":   {`"tracking": 1.2`, `"tracking": "wide"`, "tracking: want a number"},
+		"tabular not a boolean":  {`"tabular": true`, `"tabular": 1`, "tabular: want true or false"},
+		"text role, no font":     {`"rowName": {"font": "system"`, `"rowName": {"font": "serif"`, `font "serif" is not a key`},
+		"bundled font, no faces": {`"family": "system"`, `"family": "Inter"`, "needs faces"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := strings.Replace(fixture, tc.from, tc.to, 1)
+			if src == fixture {
+				t.Fatal("fixture edit did not apply")
+			}
+			_, err := Parse([]byte(src))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestParseRejectsBadTypeRolesAndFiles(t *testing.T) {
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"type role on a missing face":  {`"weight": 600`, `"weight": 700`, "no 700 face"},
-		"type role without a weight":   {`, "weight": 600`, ``, "needs a numeric size and weight"},
+		"type role on a missing face":  {`"uppercase": true, "tracking": 1.2`, `"uppercase": true, "tracking": 1.2, "weight": 700`, "no 700 face"},
+		"type role without a weight":   {`"size": 16, "weight": 600`, `"size": 16`, "needs a numeric size and weight"},
 		"empty key":                    {`"ground": "#13162A"`, `"": "#13162A"`, `key ""`},
 		"reference to a _ key":         {`"{status.waiting}"`, `"{_comment}"`, "not a token"},
 		"backslash path":               {`App/Fonts/IBMPlexMono-OFL.txt`, `App\\Fonts\\..\\..\\main.go`, "not a clean relative path"},

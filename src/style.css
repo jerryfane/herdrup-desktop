@@ -114,11 +114,11 @@ button.ghost {
   border: 0;
   padding: 4px 2px;
   color: var(--color-text-dim);
-  font-family: var(--type-micro-label-font);
-  font-size: var(--type-micro-label-size);
-  font-weight: var(--type-micro-label-weight);
-  text-transform: var(--type-micro-label-transform);
-  letter-spacing: 0.08em;
+  font-family: var(--text-micro-label-font);
+  font-size: var(--text-micro-label-size);
+  font-weight: var(--text-micro-label-weight);
+  text-transform: var(--text-micro-label-transform);
+  letter-spacing: var(--text-micro-label-tracking);
   cursor: pointer;
 }
 .section-head .count { color: var(--color-text-faint); }
