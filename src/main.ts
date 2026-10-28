@@ -24,9 +24,12 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return e;
 }
 
-// The status dot of each section: amber needs you, blue working.
+// The status dot of each section, as iOS colours groups: amber needs you
+// (and unrecognised: a state this build cannot read wants a look), red
+// stopped, blue working.
 const DOT_BY_SECTION: Record<string, string> = {
   needsYou: "needs",
+  unrecognised: "needs",
   stopped: "stopped",
   working: "working",
 };
