@@ -76,6 +76,11 @@ html, body {
   mask: var(--sym) no-repeat center / 100% 100%;
 }
 
+/* A continuous-corner background drawn by paintShape (continuous.ts): the SVG
+   sits behind the element's content, which is positioned to paint above it. */
+.shaped > .continuous-shape { position: absolute; pointer-events: none; }
+.shaped > :not(.continuous-shape) { position: relative; }
+
 /* ---- Detail column (App/HerdrApp.swift detailColumn) ---- */
 .detail {
   position: fixed;
@@ -131,8 +136,7 @@ html, body {
   height: 100%;
   display: flex;
   padding: 0 var(--space-stack-tight);
-  border-radius: 999px;
-  background: var(--color-surface-raised);
+  /* Background: a continuous Capsule() in surfaceRaised (paintShape). */
 }
 #bar-leading { left: 0; }
 #bar-actions { right: 0; }
@@ -173,8 +177,8 @@ html, body {
   height: var(--size-search-field);
   margin: 0 var(--space-screen-inset) var(--space-stack-small);
   padding: 0 10px;
-  border-radius: 999px;
-  background: var(--color-surface);
+  /* Background: a continuous Capsule() in surface (paintShape). */
+  position: relative;
   color: var(--color-text-dim);
 }
 .search input {
@@ -324,13 +328,9 @@ html, body {
   gap: var(--space-stack-large);
   margin: 4px var(--space-screen-inset);
   padding: var(--space-stack-large);
-  border-radius: var(--radius-card);
-  background: var(--color-surface);
-  /* herdrup strokes the hairline centred on the card's edge (.stroke, not
-     .strokeBorder): half inside, half outside. */
-  box-shadow:
-    inset 0 0 0 calc(var(--size-hairline) / 2) var(--color-hairline),
-    0 0 0 calc(var(--size-hairline) / 2) var(--color-hairline);
+  /* Background: a continuous RoundedRectangle(radius.card) in surface with
+     the hairline stroked centred on its edge (paintShape). */
+  position: relative;
 }
 .archived .pic { display: grid; place-items: center; width: 40px; height: 40px; flex: none; }
 .archived .pic > * { grid-area: 1 / 1; }

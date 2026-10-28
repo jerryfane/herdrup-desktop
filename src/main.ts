@@ -1,4 +1,5 @@
 import { Desk, Symbols, events, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
+import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -116,13 +117,13 @@ async function buildTabBar() {
 
 const px = (name: string) => parseFloat(cssVar(name));
 
-/** The badge's shape as herdrup draws it (AgentAvatar.glyph): the shape filled,
- * then stroked in ground colour centred on the same path, half of it outside.
- * Two SVG paths anti-alias like SwiftUI's; a box-shadow ring over a filled box
- * left a fringe of the fill outside the ring. Circles use herdrup's literal
- * corner radius 11; squares use radius.badgeSquare.
+/** The badge's shape as herdrup draws it (AgentAvatar.glyph): a continuous
+ * RoundedRectangle (continuous.ts) filled, then stroked in ground colour
+ * centred on the same path, half of it outside. "Round" badges use herdrup's
+ * literal corner radius 11, which on the 22 pt box is a continuous capsule,
+ * not a circle; squares use radius.badgeSquare.
  *
- * The SVG overhangs the badge box by BADGE_PAD (a whole point, more than half
+ * The SVG overhangs the badge box by BADGE_PAD (whole points, more than half
  * the stroke) on every side, so its origin stays on a device pixel: WebKit
  * snaps an SVG's origin to the pixel grid, and an overhang of exactly half the
  * 2.5 pt stroke put it on a half pixel and moved the whole badge 0.5 px. */
@@ -132,10 +133,10 @@ function badgeShape(square: boolean): HTMLElement {
   const stroke = px("--size-status-badge-stroke");
   const radius = square ? px("--radius-badge-square") : 11;
   const box = size + 2 * BADGE_PAD;
-  const rect = `x="${BADGE_PAD}" y="${BADGE_PAD}" width="${size}" height="${size}" rx="${radius}"`;
+  const d = continuousPath(size, size, radius, BADGE_PAD, BADGE_PAD);
   const shape = el("span", "shape");
   shape.style.inset = `${-BADGE_PAD}px`;
-  shape.innerHTML = `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}"><rect class="fill" ${rect}/><rect class="edge" ${rect} stroke-width="${stroke}"/></svg>`;
+  shape.innerHTML = `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}"><path class="fill" d="${d}"/><path class="edge" d="${d}" stroke-width="${stroke}"/></svg>`;
   return shape;
 }
 
@@ -245,6 +246,12 @@ async function disclosure(key: "idle" | "archived", title: string, count: number
 
 async function archivedCard(r: Row): Promise<HTMLElement> {
   const c = el("div", "archived");
+  paintShape(c, {
+    radius: px("--radius-card"),
+    fill: "var(--color-surface)",
+    stroke: "var(--color-hairline)",
+    strokeWidth: px("--size-hairline"),
+  });
   const pic = el("div", "pic");
   pic.append(initialTile(r), await symbol("archivebox.fill", 15, "semibold"));
   const lines = el("div", "lines");
@@ -390,8 +397,12 @@ window.addEventListener("resize", () => {
 
 async function init() {
   document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
+  paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   await Promise.all([buildTopBar(), buildTabBar()]);
+  // After buildTopBar, which replaces the capsules' children.
+  paintShape($("bar-leading"), { radius: "capsule", fill: "var(--color-surface-raised)" });
+  paintShape($("bar-actions"), { radius: "capsule", fill: "var(--color-surface-raised)" });
   const [m, s, b] = await Promise.all([Desk.machine(), Desk.state(), Desk.board()]);
   if (m) {
     for (const [k, v] of Object.entries(m)) {
