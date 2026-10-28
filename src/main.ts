@@ -181,14 +181,20 @@ function initialTile(r: Row): HTMLElement {
 /** Puts each tile's initial where SwiftUI puts a centred Text: the run's
  * origin rounded to the nearest device pixel. Left to flex centring, WebKit
  * rounded fractions above a half down, which drew M and W 1 device pixel left
- * of herdrup's. The advance is measured in the letter's computed font, so it
- * is right once that font has loaded (init renders the rows again then). */
-function placeInitials(root: ParentNode) {
-  for (const tile of root.querySelectorAll<HTMLElement>(".tile")) {
+ * of herdrup's. The advance is measured in the letter's computed font, which
+ * is loaded first: canvas text falls back to another face while a web font is
+ * still loading, and `document.fonts.ready` does not wait for a face nothing
+ * had asked for yet (the system font's narrower A put it 1 pixel right). */
+async function placeInitials(root: ParentNode) {
+  const tiles = [...root.querySelectorAll<HTMLElement>(".tile")].flatMap((tile) => {
     const glyph = tile.querySelector<HTMLElement>(".initial");
-    if (!glyph) continue;
+    if (!glyph) return [];
     const s = getComputedStyle(glyph);
-    measure.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+    return [{ tile, glyph, font: `${s.fontWeight} ${s.fontSize} ${s.fontFamily}` }];
+  });
+  await Promise.all([...new Set(tiles.map((t) => t.font))].map((f) => document.fonts.load(f)));
+  for (const { tile, glyph, font } of tiles) {
+    measure.font = font;
     const advance = measure.measureText(glyph.textContent ?? "").width;
     const box = tile.getBoundingClientRect().width;
     glyph.style.left = `${Math.round(((box - advance) / 2) * devicePixelRatio) / devicePixelRatio}px`;
@@ -281,7 +287,8 @@ async function renderRows() {
   // field included (App/HerdrApp.swift: `loading && agents.isEmpty`).
   searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
-  placeInitials(rowsEl);
+  await placeInitials(rowsEl);
+  if (generation !== rowsGeneration) return;
   drawn = true;
 }
 let rowsGeneration = 0;
