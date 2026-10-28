@@ -167,10 +167,37 @@ async function badge(kind: string): Promise<HTMLElement | null> {
   return null;
 }
 
+const measure = document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
+
+/** A tile with the agent's initial. placeInitials positions the letter once
+ * the tile is in the document. */
+function initialTile(r: Row): HTMLElement {
+  const tile = el("div", `tile tint-${r.tint}`);
+  const glyph = el("span", "initial", r.initial);
+  tile.append(glyph);
+  return tile;
+}
+
+/** Puts each tile's initial where SwiftUI puts a centred Text: the run's
+ * origin rounded to the nearest device pixel. Left to flex centring, WebKit
+ * rounded fractions above a half down, which drew M and W 1 device pixel left
+ * of herdrup's. The advance is measured in the letter's computed font, so it
+ * is right once that font has loaded (init renders the rows again then). */
+function placeInitials(root: ParentNode) {
+  for (const tile of root.querySelectorAll<HTMLElement>(".tile")) {
+    const glyph = tile.querySelector<HTMLElement>(".initial");
+    if (!glyph) continue;
+    const s = getComputedStyle(glyph);
+    measure.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+    const advance = measure.measureText(glyph.textContent ?? "").width;
+    const box = tile.getBoundingClientRect().width;
+    glyph.style.left = `${Math.round(((box - advance) / 2) * devicePixelRatio) / devicePixelRatio}px`;
+  }
+}
+
 async function avatar(r: Row): Promise<HTMLElement> {
   const a = el("div", "avatar");
-  const tile = el("div", `tile tint-${r.tint}`, r.initial);
-  a.append(tile);
+  a.append(initialTile(r));
   const b = await badge(r.badge);
   if (b) a.append(b);
   return a;
@@ -209,7 +236,7 @@ async function disclosure(key: "idle" | "archived", title: string, count: number
 async function archivedCard(r: Row): Promise<HTMLElement> {
   const c = el("div", "archived");
   const pic = el("div", "pic");
-  pic.append(el("div", `tile tint-${r.tint}`, r.initial), await symbol("archivebox.fill", 15, "semibold"));
+  pic.append(initialTile(r), await symbol("archivebox.fill", 15, "semibold"));
   const lines = el("div", "lines");
   lines.append(el("span", "title t-card-title", r.title), el("span", "note t-card-subtitle", r.archivedNote ?? "archived"));
   c.append(pic, lines);
@@ -254,6 +281,7 @@ async function renderRows() {
   // field included (App/HerdrApp.swift: `loading && agents.isEmpty`).
   searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
+  placeInitials(rowsEl);
   drawn = true;
 }
 let rowsGeneration = 0;

@@ -254,6 +254,7 @@ html, body {
   width: 100%;
   height: 100%;
   border-radius: 50%;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -333,6 +334,7 @@ html, body {
   width: 100%;
   height: 100%;
   border-radius: 50%;
+  position: relative;
   opacity: 0.5;
   display: flex;
   align-items: center;
@@ -340,6 +342,10 @@ html, body {
   color: var(--color-on-accent);
   font: 700 17px var(--font-app);
 }
+/* The initial: an absolutely positioned flex child keeps the tile's vertical
+   centring (its static position); placeInitials (main.ts) sets its left edge
+   on a device pixel. */
+.tile .initial { position: absolute; }
 .archived .pic .sym { color: var(--color-on-accent); }
 .archived .lines { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .archived .title { color: var(--color-text-dim); }
