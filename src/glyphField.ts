@@ -118,11 +118,18 @@ export function glyphOrigin(cell: number, cols: number, advance: number, scale: 
   return { x: Math.floor(x * scale) / scale, baseline: Math.ceil(baseline * scale) / scale };
 }
 
+/** Loads the faces drawRestingGlyphField measures and draws with. Canvas text does not
+ *  request web fonts itself, and `document.fonts.ready` only waits for faces the page has
+ *  already requested, so without this the first draw can fall back to another monospace. */
+export async function loadGlyphFieldFonts(font: string): Promise<void> {
+  await Promise.all([document.fonts.load(`${GLYPH_SIZE}px ${font}`), document.fonts.load(LABEL_FONT)]);
+}
+
 /** Draws herdrup's resting glyph field into `canvas`, `widthPt`×`heightPt` points at `scale`
  *  device pixels per point: ground, then every kept cell's glyph in hairline at its opacity.
  *  `colours` needs `groundMachine` and `hairline`; `font` is the glyphs' CSS font family
- *  (the page's `--font-machine`). Call it once the IBM Plex Mono and Geist medium faces
- *  have loaded: the glyphs and the label's width (the quiet zone) are measured here. */
+ *  (the page's `--font-machine`). Await loadGlyphFieldFonts(font) first: the glyphs and the
+ *  label's width (the quiet zone) are measured here. */
 export function drawRestingGlyphField(
   canvas: HTMLCanvasElement,
   opts: { widthPt: number; heightPt: number; scale: number; seed: bigint; colours: Record<string, string>; font: string },

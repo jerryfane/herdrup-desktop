@@ -35,24 +35,34 @@ html, body {
 
 [hidden] { display: none !important; }
 
-/* Text roles: font, size, weight, case, tracking and digits from text.*. */
+/* Text roles: font, size, weight, case, tracking and digits from text.*.
+   Line height is SwiftUI's (UIFont.lineHeight: hhea ascender + descender + line
+   gap, unrounded), not WebKit's `normal`, which rounds ascent and descent to
+   whole points and made the two-line row stack 1 pt short of herdrup's.
+   SF Pro: (1950 + 494) / 2048. Geist: (1005 + 295) / 1000. IBM Plex Mono:
+   (1025 + 275) / 1000. (The `font` shorthand resets line-height, so it is set
+   inside each shorthand.) */
+:root {
+  --leading-system: 1.19336;
+  --leading-app: 1.3;
+  --leading-machine: 1.3;
+}
 .t-bar-title, .t-row-name, .t-row-preview, .t-row-age, .t-disclosure-title, .t-disclosure-count,
 .t-search, .t-card-title, .t-card-subtitle, .t-tab-label, .t-placeholder, .t-empty {
-  line-height: normal;
   white-space: nowrap;
 }
-.t-bar-title { font: var(--text-bar-title-weight) var(--text-bar-title-size) var(--text-bar-title-font); }
-.t-row-name { font: var(--text-row-name-weight) var(--text-row-name-size) var(--text-row-name-font); }
-.t-row-preview { font: var(--text-row-preview-weight) var(--text-row-preview-size) var(--text-row-preview-font); }
-.t-row-age { font: var(--text-row-age-weight) var(--text-row-age-size) var(--text-row-age-font); font-variant-numeric: var(--text-row-age-numeric); }
-.t-disclosure-title { font: var(--text-disclosure-title-weight) var(--text-disclosure-title-size) var(--text-disclosure-title-font); }
-.t-disclosure-count { font: var(--text-disclosure-count-weight) var(--text-disclosure-count-size) var(--text-disclosure-count-font); font-variant-numeric: var(--text-disclosure-count-numeric); }
-.t-search { font: var(--text-search-weight) var(--text-search-size) var(--text-search-font); }
-.t-card-title { font: var(--text-card-title-weight) var(--text-card-title-size) var(--text-card-title-font); }
-.t-card-subtitle { font: var(--text-card-subtitle-weight) var(--text-card-subtitle-size) var(--text-card-subtitle-font); }
-.t-tab-label { font: var(--text-tab-label-weight) var(--text-tab-label-size) var(--text-tab-label-font); }
-.t-placeholder { font: var(--text-placeholder-weight) var(--text-placeholder-size) var(--text-placeholder-font); }
-.t-empty { font: var(--text-empty-weight) var(--text-empty-size) var(--text-empty-font); }
+.t-bar-title { font: var(--text-bar-title-weight) var(--text-bar-title-size)/var(--leading-app) var(--text-bar-title-font); }
+.t-row-name { font: var(--text-row-name-weight) var(--text-row-name-size)/var(--leading-system) var(--text-row-name-font); }
+.t-row-preview { font: var(--text-row-preview-weight) var(--text-row-preview-size)/var(--leading-system) var(--text-row-preview-font); }
+.t-row-age { font: var(--text-row-age-weight) var(--text-row-age-size)/var(--leading-app) var(--text-row-age-font); font-variant-numeric: var(--text-row-age-numeric); }
+.t-disclosure-title { font: var(--text-disclosure-title-weight) var(--text-disclosure-title-size)/var(--leading-app) var(--text-disclosure-title-font); }
+.t-disclosure-count { font: var(--text-disclosure-count-weight) var(--text-disclosure-count-size)/var(--leading-app) var(--text-disclosure-count-font); font-variant-numeric: var(--text-disclosure-count-numeric); }
+.t-search { font: var(--text-search-weight) var(--text-search-size)/var(--leading-app) var(--text-search-font); }
+.t-card-title { font: var(--text-card-title-weight) var(--text-card-title-size)/var(--leading-app) var(--text-card-title-font); }
+.t-card-subtitle { font: var(--text-card-subtitle-weight) var(--text-card-subtitle-size)/var(--leading-machine) var(--text-card-subtitle-font); }
+.t-tab-label { font: var(--text-tab-label-weight) var(--text-tab-label-size)/var(--leading-system) var(--text-tab-label-font); }
+.t-placeholder { font: var(--text-placeholder-weight) var(--text-placeholder-size)/var(--leading-app) var(--text-placeholder-font); }
+.t-empty { font: var(--text-empty-weight) var(--text-empty-size)/var(--leading-app) var(--text-empty-font); }
 
 /* An SF Symbol (or its open substitute): the glyph is a mask tinted with
    the current colour, sized by the symbol image itself. */

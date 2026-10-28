@@ -1,5 +1,5 @@
 import { Desk, Symbols, events, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
-import { drawRestingGlyphField } from "./glyphField";
+import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -328,7 +328,7 @@ async function init() {
   }
   state = s;
   board = b ?? null;
-  await document.fonts.ready;
+  await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
   drawField();
   render();
