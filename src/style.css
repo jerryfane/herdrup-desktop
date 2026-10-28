@@ -269,16 +269,23 @@ html, body {
   align-items: center;
   justify-content: center;
   color: var(--color-ground);
-  /* SwiftUI's stroke is centred on the edge: half inside, half outside. */
-  box-shadow:
-    0 0 0 calc(var(--size-status-badge-stroke) / 2) var(--color-ground),
-    inset 0 0 0 calc(var(--size-status-badge-stroke) / 2) var(--color-ground);
+  --badge-fill: var(--color-ground);
 }
-.badge.waiting, .badge.unrecognised { border-radius: 50%; background: var(--status-waiting); }
-.badge.stopped { border-radius: var(--radius-badge-square); background: var(--status-died); }
-.badge.offline { border-radius: var(--radius-badge-square); background: var(--color-surface-raised); color: var(--color-text-dim); }
-.badge.working { border-radius: 50%; background: var(--color-ground); color: var(--status-working); }
-.badge.working svg { display: block; overflow: visible; }
+/* The shape (badgeShape in main.ts): fill, then the ground stroke centred on
+   its edge, so the SVG overhangs the 22 pt box by half the stroke. */
+.badge .shape {
+  position: absolute;
+  inset: calc(-1 * var(--size-status-badge-stroke) / 2);
+}
+.badge .shape svg { display: block; }
+.badge .shape .fill { fill: var(--badge-fill); }
+.badge .shape .edge { fill: none; stroke: var(--color-ground); }
+.badge > :not(.shape) { position: relative; }
+.badge.waiting, .badge.unrecognised { --badge-fill: var(--status-waiting); }
+.badge.stopped { --badge-fill: var(--status-died); }
+.badge.offline { --badge-fill: var(--color-surface-raised); color: var(--color-text-dim); }
+.badge.working { color: var(--status-working); }
+.badge.working > svg { display: block; overflow: visible; }
 
 /* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
 .disclosure {

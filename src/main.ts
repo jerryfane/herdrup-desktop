@@ -114,8 +114,27 @@ async function buildTabBar() {
 
 // ---- Rows ----
 
+const px = (name: string) => parseFloat(cssVar(name));
+
+/** The badge's shape as herdrup draws it (AgentAvatar.glyph): the shape filled,
+ * then stroked in ground colour centred on the same path, half of it outside.
+ * Two SVG paths anti-alias like SwiftUI's; a box-shadow ring over a filled box
+ * left a fringe of the fill outside the ring. Circles use herdrup's literal
+ * corner radius 11; squares use radius.badgeSquare. */
+function badgeShape(square: boolean): HTMLElement {
+  const size = px("--size-status-badge");
+  const stroke = px("--size-status-badge-stroke");
+  const radius = square ? px("--radius-badge-square") : 11;
+  const box = size + stroke;
+  const rect = `x="${stroke / 2}" y="${stroke / 2}" width="${size}" height="${size}" rx="${radius}"`;
+  const shape = el("span", "shape");
+  shape.innerHTML = `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}"><rect class="fill" ${rect}/><rect class="edge" ${rect} stroke-width="${stroke}"/></svg>`;
+  return shape;
+}
+
 async function badge(kind: string): Promise<HTMLElement | null> {
   const b = el("div", "badge " + kind);
+  b.append(badgeShape(kind === "stopped" || kind === "offline"));
   switch (kind) {
     case "waiting":
       b.append(await symbol("exclamationmark", 10, "heavy"));
