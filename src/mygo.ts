@@ -79,7 +79,7 @@ export const Desk = {
   connect(m: Machine, password: string): Promise<void> {
     return call("Desk.Connect", m, password);
   },
-  /** Disconnect closes the connection. */
+  /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");
   },
