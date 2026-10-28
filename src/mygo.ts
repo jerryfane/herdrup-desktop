@@ -42,18 +42,34 @@ export interface Machine {
   session: string;
 }
 
-/** Row is one agent on the board. */
+/**
+ * Row is one agent on the board, with everything herdrup's agent row
+ * (App/HerdrApp.swift card()) draws.
+ */
 export interface Row {
   id: string;
   title: string;
   agent: string;
   status: string;
-  /** Detail is the agent's current activity, or its folder. */
-  detail: string;
-  /** Done marks an idle agent whose last turn finished (shown green). */
-  done: boolean;
-  /** Offline marks a federated agent whose machine is unreachable. */
-  offline: boolean;
+  /**
+   * Badge is the avatar's status badge: waiting, unrecognised, stopped,
+   * working, offline or none (herdrup AgentAvatarBadge).
+   */
+  badge: string;
+  /**
+   * Preview is "folder · activity", or whichever of the two exists, or
+   * the pane id (herdrup subtitle()).
+   */
+  preview: string;
+  /**
+   * Initial and Tint draw the default avatar: the name's first letter on
+   * identity gradient Tint (0 default, 1 claude, 2 codex, 3 gemini), as
+   * herdrup AgentPresentation.initial and colorIndex.
+   */
+  initial: string;
+  tint: number;
+  /** ArchivedNote is "archived by X · reason" for an archived agent. */
+  archivedNote?: string;
 }
 
 /** Section is one group of rows. */
@@ -62,6 +78,36 @@ export interface Section {
   label: string;
   collapsed: boolean;
   rows: Row[];
+}
+
+/**
+ * SymbolImage is a symbol drawn for the page: a white glyph on a
+ * transparent ground, a template the page tints with CSS mask-image and
+ * background-color. Lengths are in points, which are CSS pixels.
+ */
+export interface SymbolImage {
+  /**
+   * DataURL is the glyph filling the Width by Height box: on macOS a PNG
+   * of Width·scale by Height·scale pixels drawn by AppKit, on Windows
+   * and Linux an SVG. Show it as a Width by Height element with
+   * mask-image: url(DataURL) and mask-size: 100% 100%.
+   */
+  dataURL: string;
+  /**
+   * Width and Height are the frame SwiftUI gives
+   * Image(systemName:).font(.system(size:weight:)) on a display of the
+   * scale asked for, in whole pixels of it: the box SwiftUI centres in a
+   * .frame or lines up in a stack.
+   */
+  width: number;
+  height: number;
+  /**
+   * Baseline is the height of the symbol's text baseline above the
+   * bottom of the box, where SwiftUI's .firstTextBaseline alignment puts
+   * the baseline of text beside it. vertical-align: -Baseline (px) on
+   * an inline element puts it there.
+   */
+  baseline: number;
 }
 
 // ---- Services ----
@@ -90,6 +136,23 @@ export const Desk = {
   /** State returns the current connection state. */
   state(): Promise<ConnState> {
     return call("Desk.State");
+  },
+} as const;
+
+/**
+ * Symbols draws SF Symbols for the page: the real ones on macOS, the
+ * nearest open icons on Windows and Linux.
+ */
+export const Symbols = {
+  /**
+   * Image draws the SF Symbol name as SwiftUI draws
+   * Image(systemName: name).font(.system(size: pointSize, weight: weight)).
+   * weight is a SwiftUI Font.Weight name (ultraLight, thin, light, regular,
+   * medium, semibold, bold, heavy, black) and scale the pixels per point, 1
+   * to 3. Results are cached.
+   */
+  image(name: string, pointSize: number, weight: string, scale: number): Promise<SymbolImage> {
+    return call("Symbols.Image", name, pointSize, weight, scale);
   },
 } as const;
 

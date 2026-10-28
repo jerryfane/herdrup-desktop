@@ -1,10 +1,12 @@
 package herdr
 
 import (
+	"encoding/json"
 	"path"
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Group is a section of the status board. The order is the board's point:
@@ -65,18 +67,26 @@ func GroupOf(a AgentInfo, live bool) Group {
 	return Unrecognised
 }
 
-// Row is one agent on the board.
+// Row is one agent on the board, with everything herdrup's agent row
+// (App/HerdrApp.swift card()) draws.
 type Row struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Agent  string `json:"agent"`
 	Status string `json:"status"`
-	// Detail is the agent's current activity, or its folder.
-	Detail string `json:"detail"`
-	// Done marks an idle agent whose last turn finished (shown green).
-	Done bool `json:"done"`
-	// Offline marks a federated agent whose machine is unreachable.
-	Offline bool `json:"offline"`
+	// Badge is the avatar's status badge: waiting, unrecognised, stopped,
+	// working, offline or none (herdrup AgentAvatarBadge).
+	Badge string `json:"badge"`
+	// Preview is "folder · activity", or whichever of the two exists, or
+	// the pane id (herdrup subtitle()).
+	Preview string `json:"preview"`
+	// Initial and Tint draw the default avatar: the name's first letter on
+	// identity gradient Tint (0 default, 1 claude, 2 codex, 3 gemini), as
+	// herdrup AgentPresentation.initial and colorIndex.
+	Initial string `json:"initial"`
+	Tint    int    `json:"tint"`
+	// ArchivedNote is "archived by X · reason" for an archived agent.
+	ArchivedNote string `json:"archivedNote,omitempty"`
 }
 
 // Section is one group of rows.
@@ -97,19 +107,35 @@ type Board struct {
 
 // BuildBoard groups and orders agents: by group, then most recently
 // finished turn first, then pane id so unchanged data never reshuffles.
+// Archived agents come newest-archived first, as in herdrup's AgentList.
 func BuildBoard(agents []AgentInfo) Board {
 	type entry struct {
 		info  AgentInfo
 		group Group
 	}
-	var live []entry
+	var live, archived []entry
 	b := Board{Sections: []Section{}, Archived: []Row{}}
 	for _, a := range agents {
 		if a.IsArchived() {
-			b.Archived = append(b.Archived, rowOf(a))
+			archived = append(archived, entry{a, Idle})
 			continue
 		}
 		live = append(live, entry{a, GroupOf(a, true)})
+	}
+	archivedAt := func(a AgentInfo) string {
+		var arc struct {
+			At string `json:"at"`
+		}
+		_ = json.Unmarshal(a.Archived, &arc)
+		return arc.At
+	}
+	sort.SliceStable(archived, func(i, j int) bool {
+		return archivedAt(archived[i].info) > archivedAt(archived[j].info)
+	})
+	for _, e := range archived {
+		r := rowOf(e.info, Idle)
+		r.ArchivedNote = archivedNote(e.info)
+		b.Archived = append(b.Archived, r)
 	}
 	completed := func(a AgentInfo) int64 {
 		if a.LastCompletedTurn == nil {
@@ -135,7 +161,7 @@ func BuildBoard(agents []AgentInfo) Board {
 			})
 			n++
 		}
-		b.Sections[n-1].Rows = append(b.Sections[n-1].Rows, rowOf(e.info))
+		b.Sections[n-1].Rows = append(b.Sections[n-1].Rows, rowOf(e.info, e.group))
 		if e.group == NeedsYou {
 			b.NeedsYou++
 		}
@@ -144,20 +170,84 @@ func BuildBoard(agents []AgentInfo) Board {
 	return b
 }
 
-func rowOf(a AgentInfo) Row {
-	detail := Activity(str(a.TerminalTitleStripped))
-	if detail == "" && a.Cwd != nil {
-		detail = path.Base(*a.Cwd)
-	}
-	return Row{
+var badgeOf = [...]string{NeedsYou: "waiting", Stopped: "stopped", Unrecognised: "unrecognised", Working: "working", Idle: "none"}
+
+func rowOf(a AgentInfo, g Group) Row {
+	title := DisplayName(a)
+	r := Row{
 		ID:      a.PaneID,
-		Title:   DisplayName(a),
+		Title:   title,
 		Agent:   str(a.Agent),
 		Status:  str(a.AgentStatus),
-		Detail:  detail,
-		Done:    str(a.AgentStatus) == "done",
-		Offline: str(a.Reachability) == "unreachable",
+		Badge:   badgeOf[g],
+		Preview: Preview(a),
+		Initial: Initial(title),
+		Tint:    TintIndex(title),
 	}
+	if str(a.Reachability) == "unreachable" {
+		r.Badge = "offline"
+	}
+	return r
+}
+
+// Preview is herdrup's row subtitle: the folder's last path component and
+// the activity, joined by " · ", or whichever exists, else the pane id.
+func Preview(a AgentInfo) string {
+	folder := ""
+	if a.Cwd != nil {
+		if f := path.Base(*a.Cwd); f != "/" && f != "." {
+			folder = f
+		}
+	}
+	activity := Activity(str(a.TerminalTitleStripped))
+	switch {
+	case folder != "" && activity != "":
+		return folder + " · " + activity
+	case folder != "":
+		return folder
+	case activity != "":
+		return activity
+	}
+	return a.PaneID
+}
+
+// Initial is the name's first character, upper-cased, or "?".
+func Initial(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "?"
+	}
+	r, _ := utf8.DecodeRuneInString(name)
+	return strings.ToUpper(string(r))
+}
+
+// TintIndex picks one of the four identity gradients from the name with
+// FNV-1a, folding the high bits down, exactly as herdrup does so an agent
+// has the same colour in both apps.
+func TintIndex(name string) int {
+	h := uint64(14695981039346656037)
+	for i := range len(name) {
+		h = (h ^ uint64(name[i])) * 1099511628211
+	}
+	return int((h ^ (h >> 32)) % 4)
+}
+
+// archivedNote is herdrup's archivedSubtitle: "archived by X · reason",
+// degrading to "archived" when herdr recorded no one.
+func archivedNote(a AgentInfo) string {
+	var arc struct {
+		By     *string `json:"by"`
+		Reason *string `json:"reason"`
+	}
+	_ = json.Unmarshal(a.Archived, &arc)
+	by := "archived"
+	if arc.By != nil {
+		by = "archived by " + *arc.By
+	}
+	if r := str(arc.Reason); r != "" {
+		return by + " · " + r
+	}
+	return by
 }
 
 // DisplayName is the agent's name, falling back to its terminal title and

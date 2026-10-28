@@ -15,6 +15,7 @@ func main() {
 	}
 	desk := newDesk(dir)
 	mygo.Bind(desk)
+	mygo.Bind(Symbols{})
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
