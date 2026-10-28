@@ -1,0 +1,44 @@
+name: Symbols
+
+# Draws SF Symbols with Symbols.Image on macOS, checks them against SwiftUI
+# and uploads the PNGs. macOS runners are shared with herdrup's iOS CI, so
+# this runs only on demand.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/symbols]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: symbols-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: SF Symbols on macOS
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: sw_vers && uname -m && swift --version
+      - name: Draw the symbols
+        run: |
+          mkdir -p "$RUNNER_TEMP/symbols"
+          HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run 'TestSymbolImageDarwin|TestSymbolDump' .
+      - name: Compare with SwiftUI
+        run: swift .github/symbols/swiftui.swift "$RUNNER_TEMP/symbols"
+      - name: Windows and Linux metrics match AppKit
+        if: always()
+        run: HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run TestSFMetrics .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: symbols-macos
+          retention-days: 14
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/symbols
