@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -54,12 +55,12 @@ jobs:
   # served over SSH, and saves a screenshot once the board shows agents.
   smoke:
     name: Window smoke (${{ matrix.os }})
-    # macOS runners are shared with herdrup's iOS CI: run them on main and
-    # on demand, not on every pull request push.
+    # macOS runners are shared with herdrup's iOS CI: run them on main, on
+    # demand, and on pull requests labelled macos-smoke.
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest","windows-latest"]') || fromJSON('["ubuntu-latest","windows-latest","macos-latest"]') }}
+        os: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos-smoke')) && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]') || fromJSON('["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

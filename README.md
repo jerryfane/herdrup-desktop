@@ -52,7 +52,8 @@ board as JSON, with no window; `-watch 1m` keeps printing updates.
 
 Every push runs the Go and TypeScript checks and cross-builds macOS, Windows and Linux on Ubuntu. The
 window smoke job builds the app with a test hook (`-X main.smoke=1`, never in releases), opens the real
-window against `cmd/fakeherdr` on Linux and Windows (and macOS on `main` and on demand), and uploads a
+window against `cmd/fakeherdr` on Linux and Windows (macOS too on `main`, on demand, and on pull
+requests labelled `macos-smoke`), and uploads a
 screenshot of each.
 
 ## License
