@@ -30,7 +30,28 @@ type FontFace struct {
 	File   string // path in jerryfane/herdrup, e.g. App/Fonts/Geist-Regular.ttf
 }
 
-var refPattern = regexp.MustCompile(`^\{([A-Za-z0-9_.]+)\}$`)
+var (
+	refPattern = regexp.MustCompile(`^\{([A-Za-z0-9_.]+)\}$`)
+	// tokenKey is the alphabet of every key that becomes a CSS or Go name.
+	tokenKey = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+	// repoPath is a clean relative path in herdrup: slash-separated, no
+	// backslashes, no empty, "." or ".." segments.
+	repoPath = regexp.MustCompile(`^[A-Za-z0-9_.@-]+(/[A-Za-z0-9_.@-]+)*$`)
+)
+
+// validRepoPath reports whether p is safe to fetch and to derive a local
+// file name from.
+func validRepoPath(p string) bool {
+	if !repoPath.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
 
 // Parse decodes and validates tokens.json: the schema version, the known
 // top-level groups, and every reference.
@@ -54,10 +75,43 @@ func Parse(data []byte) (*Tokens, error) {
 		}
 	}
 	t := &Tokens{root: root}
+	if err := checkKeys(root, nil); err != nil {
+		return nil, err
+	}
 	if err := t.checkRefs(root, nil); err != nil {
 		return nil, err
 	}
+	// Validate the font files and type roles now, so a bad upstream file
+	// fails as a clear error rather than at generation.
+	if _, err := t.FontFiles(); err != nil {
+		return nil, err
+	}
+	if _, err := t.CSS(""); err != nil {
+		return nil, err
+	}
 	return t, nil
+}
+
+// checkKeys rejects keys that cannot become a CSS or Go name.
+func checkKeys(v any, at []string) error {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, child := range v {
+			if !tokenKey.MatchString(k) {
+				return fmt.Errorf("tokens.json %s: key %q must be letters, digits or _", strings.Join(at, "."), k)
+			}
+			if err := checkKeys(child, append(at, k)); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range v {
+			if err := checkKeys(child, append(at, fmt.Sprint(i))); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // checkRefs resolves every reference once, so dangling ones and cycles fail
@@ -113,6 +167,11 @@ func (t *Tokens) resolve(v any, seen []string) (any, error) {
 		return s, nil
 	}
 	target := m[1]
+	for _, seg := range strings.Split(target, ".") {
+		if seg == "" || strings.HasPrefix(seg, "_") {
+			return nil, fmt.Errorf("reference {%s} points at a key that is not a token", target)
+		}
+	}
 	for _, p := range seen {
 		if p == target {
 			return nil, fmt.Errorf("reference cycle through {%s}", target)
@@ -167,12 +226,19 @@ func kebab(s string) string {
 	return b.String()
 }
 
+// themed reports whether a token path is inside a theme segment
+// (color.dark.x, chat.light.x).
+func themed(p string) bool {
+	segs := strings.Split(p, ".")
+	return len(segs) == 3 && (segs[0] == "color" || segs[0] == "chat") && (segs[1] == "dark" || segs[1] == "light")
+}
+
 // cssName is the variable a token path becomes. The theme segment of the
 // colour and chat groups is dropped: dark values are the defaults and light
 // ones override them under [data-theme="light"].
 func cssName(p string) string {
 	segs := strings.Split(p, ".")
-	if len(segs) == 3 && (segs[0] == "color" || segs[0] == "chat") && (segs[1] == "dark" || segs[1] == "light") {
+	if themed(p) {
 		segs = []string{segs[0], segs[2]}
 	}
 	parts := make([]string, len(segs))
@@ -184,7 +250,9 @@ func cssName(p string) string {
 
 var hexColor = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
-// cssValue renders a leaf; a reference becomes var() of its target.
+// cssValue renders a leaf. A reference becomes var() of its target, except
+// a reference into a theme segment: {color.dark.x} names the dark value, so
+// it renders that literal and does not follow the light override.
 func (t *Tokens) cssValue(p string, v any) (string, error) {
 	switch v := v.(type) {
 	case json.Number:
@@ -193,7 +261,14 @@ func (t *Tokens) cssValue(p string, v any) (string, error) {
 		return fmt.Sprint(v), nil
 	case string:
 		if m := refPattern.FindStringSubmatch(v); m != nil {
-			return "var(" + cssName(m[1]) + ")", nil
+			if !themed(m[1]) {
+				return "var(" + cssName(m[1]) + ")", nil
+			}
+			leaf, err := t.resolve(v, nil)
+			if err != nil {
+				return "", fmt.Errorf("tokens.json %s: %w", p, err)
+			}
+			return t.cssValue(p, leaf)
 		}
 		if hexColor.MatchString(v) {
 			return strings.ToLower(v), nil
@@ -250,6 +325,19 @@ func (t *Tokens) FontFiles() ([]string, error) {
 			return nil, fmt.Errorf("tokens.json font.%s: needs license", name)
 		}
 		files = append(files, lic)
+	}
+	// Each file lands in FontDir under its base name, so the paths must be
+	// clean and the base names distinct.
+	byBase := map[string]string{}
+	for _, f := range files {
+		if !validRepoPath(f) {
+			return nil, fmt.Errorf("tokens.json: font file %q is not a clean relative path", f)
+		}
+		base := path.Base(f)
+		if other, dup := byBase[base]; dup && other != f {
+			return nil, fmt.Errorf("tokens.json: font files %q and %q share the name %q", other, f, base)
+		}
+		byBase[base] = f
 	}
 	return files, nil
 }
@@ -345,8 +433,11 @@ func (t *Tokens) CSS(header string) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("tokens.json type.%s: font %q is not a key of font", name, font)
 		}
-		size, _ := r["size"].(json.Number)
-		weight, _ := r["weight"].(json.Number)
+		size, okSize := r["size"].(json.Number)
+		weight, okWeight := r["weight"].(json.Number)
+		if !okSize || !okWeight {
+			return nil, fmt.Errorf("tokens.json type.%s: needs a numeric size and weight", name)
+		}
 		if faces, _ := f["faces"].(map[string]any); faces[weight.String()] == nil {
 			return nil, fmt.Errorf("tokens.json type.%s: font.%s has no %s face", name, font, weight)
 		}

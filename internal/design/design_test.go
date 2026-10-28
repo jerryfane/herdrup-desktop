@@ -2,6 +2,7 @@ package design
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,7 +71,7 @@ func TestCSS(t *testing.T) {
 		"  --color-on-accent-dim-opacity: 0.82;\n",
 		"  --status-waiting: #e9a63c;\n",
 		"  --group-needs-you: var(--status-waiting);\n",
-		"  --group-idle: var(--color-text-faint);\n",
+		"  --group-idle: #666d91;\n",
 		"  --chat-code-text: #a9b1d6;\n",
 		"  --agent-gradient-claude: linear-gradient(135deg, #ce58a4, #a32e77);\n",
 		"  --font-machine: \"IBM Plex Mono\", ui-monospace, \"SF Mono\", monospace;\n",
@@ -86,13 +87,45 @@ func TestCSS(t *testing.T) {
 	}
 }
 
-func TestTypeRoleMustUseAnExistingFace(t *testing.T) {
-	tok, err := Parse([]byte(strings.Replace(fixture, `"weight": 600`, `"weight": 700`, 1)))
+func TestParseRejectsBadTypeRolesAndFiles(t *testing.T) {
+	for name, tc := range map[string]struct{ from, to, want string }{
+		"type role on a missing face":  {`"weight": 600`, `"weight": 700`, "no 700 face"},
+		"type role without a weight":   {`, "weight": 600`, ``, "needs a numeric size and weight"},
+		"empty key":                    {`"ground": "#13162A"`, `"": "#13162A"`, `key ""`},
+		"reference to a _ key":         {`"{status.waiting}"`, `"{_comment}"`, "not a token"},
+		"backslash path":               {`App/Fonts/IBMPlexMono-OFL.txt`, `App\\Fonts\\..\\..\\main.go`, "not a clean relative path"},
+		"dot-dot path":                 {`App/Fonts/IBMPlexMono-OFL.txt`, `App/../../evil.ttf`, "not a clean relative path"},
+		"two files with the same name": {`App/Fonts/IBMPlexMono-OFL.txt`, `Other/IBMPlexMono-SemiBold.ttf`, "share the name"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := strings.Replace(fixture, tc.from, tc.to, 1)
+			if src == fixture {
+				t.Fatal("fixture edit did not apply")
+			}
+			_, err := Parse([]byte(src))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want an error containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReferenceIntoAThemeKeepsItsTheme(t *testing.T) {
+	src := strings.Replace(fixture, `"light": null`, `"light": {"textFaint": "#AAAAAA"}`, 1)
+	tok, err := Parse([]byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tok.CSS(""); err == nil || !strings.Contains(err.Error(), "no 700 face") {
-		t.Fatalf("got %v, want a missing-face error", err)
+	css, err := tok.CSS("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// group.idle is {color.dark.textFaint}: the dark value, in both themes.
+	if !strings.Contains(string(css), "--group-idle: #666d91;") {
+		t.Fatalf("CSS:\n%s", css)
+	}
+	if !strings.Contains(string(css), ":root[data-theme=\"light\"] {\n  --color-text-faint: #aaaaaa;") {
+		t.Fatalf("light override missing:\n%s", css)
 	}
 }
 
@@ -165,7 +198,7 @@ func edit(t *testing.T, root, rel, from, to string) {
 	t.Helper()
 	p := filepath.Join(root, rel)
 	data, err := os.ReadFile(p)
-	if err != nil {
+	if err != nil && !(from == "" && os.IsNotExist(err)) {
 		t.Fatal(err)
 	}
 	out := strings.Replace(string(data), from, to, 1)
@@ -191,6 +224,10 @@ func TestCheckFindsDrift(t *testing.T) {
 		"rgb() in a stylesheet":          {"src/style.css", "", ".x { background: rgba(0, 0, 0, 0.5); }\n", "colour literal"},
 		"side stripe":                    {"src/style.css", "", ".card { border-left: 3px solid var(--status-waiting); }\n", "side stripe"},
 		"inset stripe":                   {"src/style.css", "", ".card { box-shadow: inset 4px 0 0 var(--status-waiting); }\n", "side stripe"},
+		"inset stripe, fractional em":    {"src/style.css", "", ".card { box-shadow: inset .5em 0px 0 var(--status-waiting); }\n", "side stripe"},
+		"named colour":                   {"src/style.css", "", ".x { color: white; }\n", `colour literal "white"`},
+		"named colour, upper case":       {"src/style.css", "", ".x {\n  border: 1px solid Red !important;\n}\n", `src/style.css:3: colour literal "Red"`},
+		"stray file next to the fonts":   {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := synced(t)
@@ -203,9 +240,18 @@ func TestCheckFindsDrift(t *testing.T) {
 	}
 }
 
-func TestCheckAllowsColoursInComments(t *testing.T) {
+func TestCheckAllowsTokenDerivedAndNonColourValues(t *testing.T) {
 	root, _ := synced(t)
-	edit(t, root, "src/style.css", "", "/* was #13162a\n   before tokens */\n.y { border: 1px solid var(--color-ground); }\n")
+	edit(t, root, "src/style.css", "", `/* was #13162a
+   before tokens */
+.y { border: 1px solid var(--color-ground); }
+.z { background: hsl(from var(--status-waiting) h s l / 0.2); }
+.q::after { content: "#1 red"; mask: url(#a1b2c3); }
+.f { font-family: var(--font-app); box-shadow: inset 0 1px 0 var(--color-hairline); }
+a:hover { color: var(--color-text); }
+.border-left:hover { color: var(--color-text); }
+@media (max-width: 600px) { .w { white-space: nowrap; } }
+`)
 	if errs := Check(root); len(errs) != 0 {
 		t.Fatalf("got %v", errs)
 	}
@@ -230,21 +276,29 @@ func TestVerifyUpstreamCatchesARewrittenRecord(t *testing.T) {
 	}
 }
 
-func TestResyncRemovesFontsTheNewPinDropped(t *testing.T) {
-	root, _ := synced(t)
-	stale := filepath.Join(root, "public/fonts/Old.ttf")
-	if err := os.WriteFile(stale, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+func TestResyncRemovesOnlyFilesTheOldPinCopied(t *testing.T) {
+	root, fetch := synced(t)
+	// The old pin also copied a licence the new one drops; someone also put
+	// an unrelated file next to the fonts.
+	prov, _ := ReadProvenance(root)
+	prov.Files = append(prov.Files, ProvFile{Source: "App/Fonts/Old-OFL.txt", Dest: "public/fonts/Old-OFL.txt", SHA256: sum([]byte("x"))})
+	data, _ := json.MarshalIndent(prov, "", "  ")
+	for rel, content := range map[string][]byte{ProvenancePath: data, "public/fonts/Old-OFL.txt": []byte("x"), "public/fonts/mine.txt": []byte("y")} {
+		if err := os.WriteFile(filepath.Join(root, rel), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	fetch := fakeHerdrup(pin, map[string]string{
-		TokensSource:                         fixture,
-		"App/Fonts/IBMPlexMono-SemiBold.ttf": "font bytes",
-		"App/Fonts/IBMPlexMono-OFL.txt":      "licence",
-	})
 	if err := Sync(context.Background(), root, pin, fetch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Fatal("a font the pin no longer lists was kept")
+	if _, err := os.Stat(filepath.Join(root, "public/fonts/Old-OFL.txt")); !os.IsNotExist(err) {
+		t.Fatal("a file the old pin copied and the new one dropped was kept")
+	}
+	if _, err := os.Stat(filepath.Join(root, "public/fonts/mine.txt")); err != nil {
+		t.Fatal("deleted a file the sync never copied")
+	}
+	// ...but Check flags it, since it would ship unchecked.
+	if errs := Check(root); !strings.Contains(fmt.Sprint(errs), "public/fonts/mine.txt is not from herdrup") {
+		t.Fatalf("got %v", errs)
 	}
 }

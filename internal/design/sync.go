@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -120,6 +121,12 @@ func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
 			return err
 		}
 	}
+	// Files the previous pin copied that this one does not are removed;
+	// anything else in the tree is left alone.
+	old, err := ReadProvenance(root)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	prov := Provenance{Repo: Repo, Commit: commit}
 	add := func(source, dest string) error {
 		data := contents[source]
@@ -134,7 +141,7 @@ func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
 			return err
 		}
 	}
-	if err := removeStaleFonts(root, prov); err != nil {
+	if err := removeDropped(root, old, prov); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(prov, "", "  ")
@@ -147,25 +154,19 @@ func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
 	return Generate(root)
 }
 
-// removeStaleFonts deletes font files a previous pin copied that the new
-// one no longer lists.
-func removeStaleFonts(root string, prov Provenance) error {
+// removeDropped deletes the files old recorded that cur does not.
+func removeDropped(root string, old, cur Provenance) error {
 	keep := map[string]bool{}
-	for _, f := range prov.Files {
+	for _, f := range cur.Files {
 		keep[f.Dest] = true
 	}
-	entries, err := os.ReadDir(filepath.Join(root, FontDir))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if rel := path.Join(FontDir, e.Name()); !keep[rel] {
-			if err := os.Remove(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
-				return err
-			}
+	for _, f := range old.Files {
+		if keep[f.Dest] || !validRepoPath(f.Dest) {
+			continue
+		}
+		err := os.Remove(filepath.Join(root, filepath.FromSlash(f.Dest)))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
 		}
 	}
 	return nil
@@ -234,6 +235,11 @@ func ReadProvenance(root string) (Provenance, error) {
 	if p.Repo != Repo || !fullSHA.MatchString(p.Commit) {
 		return p, fmt.Errorf("%s: want repo %s and a full commit, have %q at %q", ProvenancePath, Repo, p.Repo, p.Commit)
 	}
+	for _, f := range p.Files {
+		if !validRepoPath(f.Source) || !validRepoPath(f.Dest) {
+			return p, fmt.Errorf("%s: %q -> %q is not a pair of clean relative paths", ProvenancePath, f.Source, f.Dest)
+		}
+	}
 	return p, nil
 }
 
@@ -247,8 +253,10 @@ func Check(root string) []error {
 		return []error{err}
 	}
 	recorded := map[string]bool{}
+	recordedDest := map[string]bool{}
 	for _, f := range prov.Files {
 		recorded[f.Source] = true
+		recordedDest[f.Dest] = true
 		data, err := readFile(root, f.Dest)
 		if err != nil {
 			errs = append(errs, err)
@@ -282,6 +290,15 @@ func Check(root string) []error {
 			}
 		}
 	}
+	// FontDir belongs to the sync: a file there that no pin recorded would
+	// ship with the app unchecked.
+	if entries, err := os.ReadDir(filepath.Join(root, FontDir)); err == nil {
+		for _, e := range entries {
+			if rel := path.Join(FontDir, e.Name()); !recordedDest[rel] {
+				errs = append(errs, fmt.Errorf("%s is not from herdrup; remove it or add it to herdrup and re-sync", rel))
+			}
+		}
+	}
 	return append(errs, LintStyles(root)...)
 }
 
@@ -308,13 +325,94 @@ func VerifyUpstream(ctx context.Context, root string, fetch Fetcher) []error {
 }
 
 var (
-	rawColour = regexp.MustCompile(`#[0-9A-Fa-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(`)
-	// A coloured side stripe on a card is against the fleet UI rule:
-	// a border on one inline side, or an inset shadow offset sideways.
-	sideBorder  = regexp.MustCompile(`(?i)\bborder-(?:left|right|inline-start|inline-end)(?:-color|-width|-style)?\s*:`)
-	insetStripe = regexp.MustCompile(`(?i)box-shadow\s*:[^;]*\binset\s+-?[1-9][0-9.]*(?:px|rem|em)?\s+0\b`)
-	comment     = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	comment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	// quoted strings and url() hold text, not colours: content:"#1",
+	// url(#gradient).
+	quotedOrURL = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?i:url)\([^)]*\)`)
+	// declaration is one "property: value" inside a rule or at-rule block.
+	declaration = regexp.MustCompile(`(?i)([a-z-]+)\s*:\s*([^;{}]*)`)
+	hexLiteral  = regexp.MustCompile(`#[0-9A-Fa-f]{3,8}\b`)
+	// A colour function counts as a literal unless it derives from a
+	// token: hsl(from var(--x) h s l).
+	colourFunc = regexp.MustCompile(`(?i)\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*(from\s+var\()?`)
+	word       = regexp.MustCompile(`[A-Za-z-]+`)
+	// A coloured side stripe on a card is against the fleet UI rule.
+	sideBorder = regexp.MustCompile(`(?i)^border-(?:left|right|inline-start|inline-end)(?:-color|-width|-style)?$`)
+	insetPair  = regexp.MustCompile(`(?i)\binset\s+(-?(?:\d+\.?\d*|\.\d+))(?:[a-z%]*)\s+(-?(?:\d+\.?\d*|\.\d+))(?:[a-z%]*)`)
 )
+
+// namedColours are the CSS colour keywords (CSS Color 4) plus the system
+// colours most likely to slip in. currentColor, transparent and the CSS-wide
+// keywords are allowed.
+var namedColours = func() map[string]bool {
+	m := map[string]bool{}
+	for _, c := range strings.Fields(`aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond
+		blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson
+		cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen
+		darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey
+		darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+		forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink
+		indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral
+		lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+		lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta
+		maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue
+		mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin
+		navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen
+		paleturquoise palevioletred papayawhip peru pink plum powderblue purple rebeccapurple red rosybrown
+		royalblue saddlebrown salmon seagreen seashell sienna silver skyblue slateblue slategray slategrey snow
+		springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow
+		yellowgreen canvas canvastext linktext visitedtext activetext buttonface buttontext buttonborder field
+		fieldtext highlight highlighttext selecteditem selecteditemtext mark marktext graytext accentcolor
+		accentcolortext`) {
+		m[c] = true
+	}
+	return m
+}()
+
+// textProperties hold names, not colours ("font-family: Tomato Sans").
+var textProperties = map[string]bool{
+	"font-family": true, "font": true, "content": true, "grid-template-areas": true, "grid-area": true,
+	"animation": true, "animation-name": true, "transition-property": true, "will-change": true,
+	"counter-reset": true, "counter-increment": true, "quotes": true, "src": true,
+}
+
+// lintDeclaration returns the problems in one CSS declaration.
+func lintDeclaration(prop, value string) []string {
+	prop = strings.ToLower(prop)
+	if strings.HasPrefix(prop, "--") {
+		return nil // a custom property here would only hold a token reference
+	}
+	var out []string
+	if sideBorder.MatchString(prop) {
+		out = append(out, "side stripe on a box; cards stay neutral (fleet UI rule)")
+	}
+	if prop == "box-shadow" {
+		for _, m := range insetPair.FindAllStringSubmatch(value, -1) {
+			x, _ := strconv.ParseFloat(m[1], 64)
+			y, _ := strconv.ParseFloat(m[2], 64)
+			if x != 0 && y == 0 {
+				out = append(out, "side stripe on a box; cards stay neutral (fleet UI rule)")
+			}
+		}
+	}
+	if textProperties[prop] {
+		return out
+	}
+	if m := hexLiteral.FindString(value); m != "" {
+		out = append(out, fmt.Sprintf("colour literal %q", m))
+	}
+	for _, m := range colourFunc.FindAllStringSubmatch(value, -1) {
+		if m[2] == "" {
+			out = append(out, fmt.Sprintf("colour literal %q", m[1]+"("))
+		}
+	}
+	for _, w := range word.FindAllString(value, -1) {
+		if namedColours[strings.ToLower(w)] {
+			out = append(out, fmt.Sprintf("colour literal %q", w))
+		}
+	}
+	return out
+}
 
 // LintStyles checks every stylesheet under src except the generated one:
 // colours must come from token variables, and cards get no coloured side
@@ -329,6 +427,7 @@ func LintStyles(root string) []error {
 		return nil
 	})
 	sort.Strings(files)
+	blank := func(s string) string { return strings.Repeat(" ", len(s)) }
 	for _, p := range files {
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
@@ -340,16 +439,26 @@ func LintStyles(root string) []error {
 			errs = append(errs, err)
 			continue
 		}
+		// Blank comments, strings and url() in place so offsets still map
+		// to the original lines.
 		text := comment.ReplaceAllStringFunc(string(data), func(c string) string {
-			return strings.Repeat("\n", strings.Count(c, "\n")) // keep line numbers
+			return strings.Map(func(r rune) rune {
+				if r == '\n' {
+					return r
+				}
+				return ' '
+			}, c)
 		})
-		for i, line := range strings.Split(text, "\n") {
-			at := fmt.Sprintf("%s:%d", rel, i+1)
-			if m := rawColour.FindString(line); m != "" {
-				errs = append(errs, fmt.Errorf("%s: colour literal %q; use a token variable from %s", at, m, CSSPath))
+		text = quotedOrURL.ReplaceAllStringFunc(text, blank)
+		for _, loc := range declaration.FindAllStringSubmatchIndex(text, -1) {
+			prop, value := text[loc[2]:loc[3]], text[loc[4]:loc[5]]
+			// A selector with a pseudo-class (a:hover {) is not a declaration.
+			if end := loc[1]; end < len(text) && text[end] == '{' {
+				continue
 			}
-			if sideBorder.MatchString(line) || insetStripe.MatchString(line) {
-				errs = append(errs, fmt.Errorf("%s: side stripe on a box; cards stay neutral (fleet UI rule)", at))
+			line := strings.Count(text[:loc[0]], "\n") + 1
+			for _, problem := range lintDeclaration(prop, value) {
+				errs = append(errs, fmt.Errorf("%s:%d: %s; use a token variable from %s", rel, line, problem, CSSPath))
 			}
 		}
 	}

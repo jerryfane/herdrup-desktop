@@ -82,7 +82,7 @@
   --status-done: #5fb37f;
   --status-waiting: #e9a63c;
   --status-working: #5b9be8;
-  --group-idle: var(--color-text-faint);
+  --group-idle: #666d91;
   --group-needs-you: var(--status-waiting);
   --group-stopped: var(--status-died);
   --group-unrecognised: var(--status-waiting);
