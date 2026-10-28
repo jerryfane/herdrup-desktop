@@ -103,7 +103,7 @@ type Asset struct {
 
 // Assets are copied on every sync, next to the tokens and fonts.
 var Assets = []Asset{
-	// The 12 Pebbles mascots plus Herdy, one <symbol id="p-<id>"> each.
+	// The 12 approved mascots, Herdy included, one <symbol id="p-<id>"> each.
 	{"Tools/mascots/mascots.svg", "public/herdrup/mascots.svg"},
 	{"design/herdrup-appicon.svg", "public/herdrup/appicon.svg"},
 	// mygo builds every platform's app icon from this 1024x1024 PNG.
@@ -114,6 +114,11 @@ var Assets = []Asset{
 	{"App/Resources/Mermaid/README.md", "public/mermaid/README.md"},
 	{"App/Resources/Mermaid/mermaid.html", "public/mermaid/mermaid.html"},
 }
+
+// PublicDir belongs entirely to the sync: Vite copies all of it into the
+// app, and every file in it today comes from herdrup, so a file there that
+// no pin recorded would ship unchecked.
+const PublicDir = "public"
 
 // Sync copies tokens.json, its fonts and the shared assets from Repo at
 // commit, records them in ProvenancePath and regenerates the CSS and Go
@@ -314,14 +319,26 @@ func Check(root string) []error {
 			}
 		}
 	}
-	// FontDir belongs to the sync: a file there that no pin recorded would
-	// ship with the app unchecked.
-	if entries, err := os.ReadDir(filepath.Join(root, FontDir)); err == nil {
-		for _, e := range entries {
-			if rel := path.Join(FontDir, e.Name()); !recordedDest[rel] {
-				errs = append(errs, fmt.Errorf("%s is not from herdrup; remove it or add it to herdrup and re-sync", rel))
+	err = filepath.WalkDir(filepath.Join(root, PublicDir), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				// An unreadable folder could hide files; say so rather
+				// than pass over it.
+				errs = append(errs, fmt.Errorf("cannot inspect %s: %w", p, err))
 			}
+			return nil
 		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, p)
+		if rel = filepath.ToSlash(rel); !recordedDest[rel] {
+			errs = append(errs, fmt.Errorf("%s is not from herdrup; remove it or add it to herdrup and re-sync", rel))
+		}
+		return nil
+	})
+	if err != nil {
+		errs = append(errs, err)
 	}
 	return append(errs, LintStyles(root)...)
 }
