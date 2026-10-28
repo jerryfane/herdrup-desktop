@@ -1,0 +1,581 @@
+package design
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	// Repo is where the tokens come from.
+	Repo = "jerryfane/herdrup"
+	// ProvenancePath records the pinned commit and every copied file.
+	ProvenancePath = "third_party/herdrup/PROVENANCE.json"
+	// TokensSource is tokens.json's path in Repo; TokensCopy is where the
+	// pinned copy lives here.
+	TokensSource = "design/tokens.json"
+	TokensCopy   = "third_party/herdrup/design/tokens.json"
+	// CSSPath and GoPath are generated from TokensCopy.
+	CSSPath = "src/tokens.css"
+	GoPath  = "internal/design/tokens_gen.go"
+	// FontDir is served by Vite at /fonts.
+	FontDir = "public/fonts"
+)
+
+// Provenance is the record of a sync.
+type Provenance struct {
+	Repo   string     `json:"repo"`
+	Commit string     `json:"commit"`
+	Files  []ProvFile `json:"files"`
+}
+
+// ProvFile is one copied file.
+type ProvFile struct {
+	Source string `json:"source"` // path in Repo at Commit
+	Dest   string `json:"dest"`   // path in this repo
+	SHA256 string `json:"sha256"`
+}
+
+// Fetcher reads a file of Repo at a commit.
+type Fetcher func(ctx context.Context, commit, source string) ([]byte, error)
+
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// GitHubFetcher reads from raw.githubusercontent.com; herdrup is public.
+func GitHubFetcher(ctx context.Context, commit, source string) ([]byte, error) {
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", Repo, commit, source)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+}
+
+func sum(data []byte) string {
+	s := sha256.Sum256(data)
+	return hex.EncodeToString(s[:])
+}
+
+// fontDest is where a font or licence file from Repo is copied to.
+func fontDest(source string) string { return path.Join(FontDir, path.Base(source)) }
+
+func writeFile(root, rel string, data []byte) error {
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, data, 0o644)
+}
+
+func readFile(root, rel string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+}
+
+// Sync copies tokens.json and its fonts from Repo at commit, records them
+// in ProvenancePath and regenerates the CSS and Go files.
+func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
+	if !fullSHA.MatchString(commit) {
+		return fmt.Errorf("pin a full 40-character commit, not %q", commit)
+	}
+	raw, err := fetch(ctx, commit, TokensSource)
+	if err != nil {
+		return err
+	}
+	t, err := Parse(raw)
+	if err != nil {
+		return err
+	}
+	files, err := t.FontFiles()
+	if err != nil {
+		return err
+	}
+	// Fetch everything before writing anything, so a failed sync leaves
+	// the old pin intact.
+	contents := map[string][]byte{TokensSource: raw}
+	for _, f := range files {
+		if contents[f], err = fetch(ctx, commit, f); err != nil {
+			return err
+		}
+	}
+	// Files the previous pin copied that this one does not are removed;
+	// anything else in the tree is left alone.
+	old, err := ReadProvenance(root)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	prov := Provenance{Repo: Repo, Commit: commit}
+	add := func(source, dest string) error {
+		data := contents[source]
+		prov.Files = append(prov.Files, ProvFile{Source: source, Dest: dest, SHA256: sum(data)})
+		return writeFile(root, dest, data)
+	}
+	if err := add(TokensSource, TokensCopy); err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := add(f, fontDest(f)); err != nil {
+			return err
+		}
+	}
+	if err := removeDropped(root, old, prov); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(prov, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeFile(root, ProvenancePath, append(data, '\n')); err != nil {
+		return err
+	}
+	return Generate(root)
+}
+
+// removeDropped deletes the files old recorded that cur does not.
+func removeDropped(root string, old, cur Provenance) error {
+	keep := map[string]bool{}
+	for _, f := range cur.Files {
+		keep[f.Dest] = true
+	}
+	for _, f := range old.Files {
+		if keep[f.Dest] || !validRepoPath(f.Dest) {
+			continue
+		}
+		err := os.Remove(filepath.Join(root, filepath.FromSlash(f.Dest)))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// generatedNote is the first line of every generated file, then how to
+// change a value.
+func generatedNote(commit string) []string {
+	return []string{
+		fmt.Sprintf("Code generated by cmd/herdrup-sync from %s %s at %s. DO NOT EDIT.", Repo, TokensSource, commit),
+		"To change a value, change it in herdrup and move the pin (see README).",
+	}
+}
+
+// generated returns what CSSPath and GoPath must contain for the pinned
+// tokens.
+func generated(root string) (map[string][]byte, error) {
+	prov, err := ReadProvenance(root)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := readFile(root, TokensCopy)
+	if err != nil {
+		return nil, err
+	}
+	t, err := Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	note := generatedNote(prov.Commit)
+	css, err := t.CSS("/* " + note[0] + "\n   " + note[1] + " */\n\n")
+	if err != nil {
+		return nil, err
+	}
+	goSrc, err := t.GoConstants("// " + note[0] + "\n// " + note[1] + "\n\n")
+	if err != nil {
+		return nil, err
+	}
+	return map[string][]byte{CSSPath: css, GoPath: goSrc}, nil
+}
+
+// Generate rewrites CSSPath and GoPath from the pinned tokens.
+func Generate(root string) error {
+	out, err := generated(root)
+	if err != nil {
+		return err
+	}
+	for rel, data := range out {
+		if err := writeFile(root, rel, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReadProvenance reads ProvenancePath.
+func ReadProvenance(root string) (Provenance, error) {
+	var p Provenance
+	data, err := readFile(root, ProvenancePath)
+	if err != nil {
+		return p, err
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return p, fmt.Errorf("%s: %w", ProvenancePath, err)
+	}
+	if p.Repo != Repo || !fullSHA.MatchString(p.Commit) {
+		return p, fmt.Errorf("%s: want repo %s and a full commit, have %q at %q", ProvenancePath, Repo, p.Repo, p.Commit)
+	}
+	for _, f := range p.Files {
+		if !validRepoPath(f.Source) || !validRepoPath(f.Dest) {
+			return p, fmt.Errorf("%s: %q -> %q is not a pair of clean relative paths", ProvenancePath, f.Source, f.Dest)
+		}
+	}
+	return p, nil
+}
+
+// Check verifies, offline, that every copied file still matches its
+// recorded hash, the file list matches what the tokens need, the generated
+// files are current, and the stylesheets use tokens rather than colours.
+func Check(root string) []error {
+	var errs []error
+	prov, err := ReadProvenance(root)
+	if err != nil {
+		return []error{err}
+	}
+	recorded := map[string]bool{}
+	recordedDest := map[string]bool{}
+	for _, f := range prov.Files {
+		recorded[f.Source] = true
+		recordedDest[f.Dest] = true
+		data, err := readFile(root, f.Dest)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if got := sum(data); got != f.SHA256 {
+			errs = append(errs, fmt.Errorf("%s differs from %s %s at %s (sha256 %s, recorded %s); do not edit synced files, change them in herdrup and re-sync",
+				f.Dest, Repo, f.Source, prov.Commit[:12], got[:12], f.SHA256[:12]))
+		}
+	}
+	if raw, err := readFile(root, TokensCopy); err == nil {
+		if t, err := Parse(raw); err != nil {
+			errs = append(errs, err)
+		} else if need, err := t.FontFiles(); err != nil {
+			errs = append(errs, err)
+		} else {
+			for _, f := range append([]string{TokensSource}, need...) {
+				if !recorded[f] {
+					errs = append(errs, fmt.Errorf("%s is needed by the tokens but not synced", f))
+				}
+			}
+		}
+	}
+	if out, err := generated(root); err != nil {
+		errs = append(errs, err)
+	} else {
+		for _, rel := range []string{CSSPath, GoPath} {
+			have, _ := readFile(root, rel)
+			if !bytes.Equal(have, out[rel]) {
+				errs = append(errs, fmt.Errorf("%s is stale or edited; run go run ./cmd/herdrup-sync -generate", rel))
+			}
+		}
+	}
+	// FontDir belongs to the sync: a file there that no pin recorded would
+	// ship with the app unchecked.
+	if entries, err := os.ReadDir(filepath.Join(root, FontDir)); err == nil {
+		for _, e := range entries {
+			if rel := path.Join(FontDir, e.Name()); !recordedDest[rel] {
+				errs = append(errs, fmt.Errorf("%s is not from herdrup; remove it or add it to herdrup and re-sync", rel))
+			}
+		}
+	}
+	return append(errs, LintStyles(root)...)
+}
+
+// VerifyUpstream re-reads every recorded file from Repo at the pinned commit
+// and compares hashes, so a provenance file edited to match a local change
+// is caught.
+func VerifyUpstream(ctx context.Context, root string, fetch Fetcher) []error {
+	prov, err := ReadProvenance(root)
+	if err != nil {
+		return []error{err}
+	}
+	var errs []error
+	for _, f := range prov.Files {
+		data, err := fetch(ctx, prov.Commit, f.Source)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if got := sum(data); got != f.SHA256 {
+			errs = append(errs, fmt.Errorf("%s at %s has sha256 %s, but %s records %s", f.Source, prov.Commit[:12], got[:12], ProvenancePath, f.SHA256[:12]))
+		}
+	}
+	return errs
+}
+
+var (
+	comment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	// quoted strings and url() hold text, not colours: content:"#1",
+	// url(#gradient).
+	quotedOrURL = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?i:url)\([^)]*\)`)
+	// declaration is one "property: value" inside a rule or at-rule block.
+	declaration = regexp.MustCompile(`(?i)([a-z-]+)\s*:\s*([^;{}]*)`)
+	hexLiteral  = regexp.MustCompile(`#[0-9A-Fa-f]{3,8}\b`)
+	// A colour function counts as a literal unless it derives from a
+	// token: hsl(from var(--x) h s l).
+	colourFunc = regexp.MustCompile(`(?i)\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*(from\s+var\()?`)
+	word       = regexp.MustCompile(`[A-Za-z-]+`)
+	// A coloured side stripe on a card is against the fleet UI rule.
+	sideBorder = regexp.MustCompile(`(?i)^border-(?:left|right|inline-start|inline-end)(?:-color|-width|-style)?$`)
+	// length is one CSS number with an optional unit: sign, decimals and
+	// exponent allowed (+3px, .5em, 3e0px).
+	length = regexp.MustCompile(`(?i)^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)$`)
+)
+
+const stripe = "side stripe on a box; cards stay neutral (fleet UI rule)"
+
+// splitLayers splits a comma-separated value at top-level commas.
+func splitLayers(value string) []string {
+	var layers []string
+	depth, start := 0, 0
+	for i, r := range value {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				layers = append(layers, value[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(layers, value[start:])
+}
+
+// insetStripe reports whether a box-shadow layer is an inset shadow offset
+// sideways only. CSS allows "inset" before or after the lengths, and the
+// colour may be a function whose own arguments are not offsets.
+func insetStripe(layer string) bool {
+	var top strings.Builder
+	depth := 0
+	for _, r := range strings.ToLower(layer) {
+		switch {
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+			top.WriteByte(' ')
+		case depth == 0:
+			top.WriteRune(r)
+		}
+	}
+	inset := false
+	var lengths []float64
+	for _, f := range strings.Fields(top.String()) {
+		if f == "inset" {
+			inset = true
+		} else if n, ok := parseLength(f); ok {
+			lengths = append(lengths, n)
+		}
+	}
+	return inset && len(lengths) >= 2 && lengths[0] != 0 && lengths[1] == 0
+}
+
+// parseLength reads a CSS length or number, ignoring the unit.
+func parseLength(f string) (float64, bool) {
+	m := length.FindStringSubmatch(f)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	return n, err == nil
+}
+
+// oneSidedWidths reports whether a 4-value border-width draws the left or
+// right side and neither top nor bottom ("0 0 0 3px", "0 thick 0 0"). The
+// 2- and 3-value forms always give left and right the same width, so they
+// cannot draw a side stripe. Keywords (thin, medium, thick), var() and
+// calc() count as non-zero.
+func oneSidedWidths(value string) bool {
+	fields := strings.Fields(strings.ToLower(value))
+	if len(fields) != 4 {
+		return false
+	}
+	var nonZero [4]bool
+	for i, f := range fields {
+		n, ok := parseLength(f)
+		nonZero[i] = !ok || n != 0
+	}
+	top, right, bottom, left := nonZero[0], nonZero[1], nonZero[2], nonZero[3]
+	return !top && !bottom && left != right
+}
+
+var customRef = regexp.MustCompile(`var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,[^()]*)?\)`)
+
+// expandVars substitutes the custom properties declared in the app's
+// stylesheets, a few levels deep, so a stripe hidden behind var(--x) is
+// still seen. Unknown references (tokens) are left as they are.
+func expandVars(value string, custom map[string]string) string {
+	for range 5 {
+		next := customRef.ReplaceAllStringFunc(value, func(ref string) string {
+			if v, ok := custom[customRef.FindStringSubmatch(ref)[1]]; ok {
+				return v
+			}
+			return ref
+		})
+		if next == value {
+			break
+		}
+		value = next
+	}
+	return value
+}
+
+// namedColours are the CSS colour keywords (CSS Color 4) plus the system
+// colours most likely to slip in. currentColor, transparent and the CSS-wide
+// keywords are allowed.
+var namedColours = func() map[string]bool {
+	m := map[string]bool{}
+	for _, c := range strings.Fields(`aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond
+		blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson
+		cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen
+		darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey
+		darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+		forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink
+		indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral
+		lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+		lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta
+		maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue
+		mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin
+		navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen
+		paleturquoise palevioletred papayawhip peru pink plum powderblue purple rebeccapurple red rosybrown
+		royalblue saddlebrown salmon seagreen seashell sienna silver skyblue slateblue slategray slategrey snow
+		springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow
+		yellowgreen canvas canvastext linktext visitedtext activetext buttonface buttontext buttonborder field
+		fieldtext highlight highlighttext selecteditem selecteditemtext mark marktext graytext accentcolor
+		accentcolortext`) {
+		m[c] = true
+	}
+	return m
+}()
+
+// textProperties hold names, not colours ("font-family: Tomato Sans").
+var textProperties = map[string]bool{
+	"font-family": true, "font": true, "content": true, "grid-template-areas": true, "grid-area": true,
+	"animation": true, "animation-name": true, "transition-property": true, "will-change": true,
+	"counter-reset": true, "counter-increment": true, "quotes": true, "src": true,
+}
+
+// lintDeclaration returns the problems in one CSS declaration.
+func lintDeclaration(prop, value string, custom map[string]string) []string {
+	prop = strings.ToLower(prop)
+	// Custom properties are linted too: --accent: #ce58a4 is a raw colour
+	// however it is later used.
+	var out []string
+	geometry := expandVars(value, custom)
+	if sideBorder.MatchString(prop) || (prop == "border-width" && oneSidedWidths(geometry)) {
+		out = append(out, stripe)
+	}
+	if prop == "box-shadow" {
+		for _, layer := range splitLayers(geometry) {
+			if insetStripe(layer) {
+				out = append(out, stripe)
+			}
+		}
+	}
+	if textProperties[prop] {
+		return out
+	}
+	if m := hexLiteral.FindString(value); m != "" {
+		out = append(out, fmt.Sprintf("colour literal %q; use a token variable from %s", m, CSSPath))
+	}
+	for _, m := range colourFunc.FindAllStringSubmatch(value, -1) {
+		if m[2] == "" {
+			out = append(out, fmt.Sprintf("colour literal %q; use a token variable from %s", m[1]+"(", CSSPath))
+		}
+	}
+	for _, w := range word.FindAllString(value, -1) {
+		if namedColours[strings.ToLower(w)] {
+			out = append(out, fmt.Sprintf("colour literal %q; use a token variable from %s", w, CSSPath))
+		}
+	}
+	return out
+}
+
+// LintStyles checks every stylesheet under src except the generated one:
+// colours must come from token variables, and cards get no coloured side
+// stripes.
+func LintStyles(root string) []error {
+	var errs []error
+	var files []string
+	_ = filepath.WalkDir(filepath.Join(root, "src"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".css") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	blank := func(s string) string { return strings.Repeat(" ", len(s)) }
+	type decl struct {
+		rel       string
+		line      int
+		prop, val string
+	}
+	var decls []decl
+	custom := map[string]string{}
+	for _, p := range files {
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if rel == CSSPath {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		// Blank comments, strings and url() in place so offsets still map
+		// to the original lines.
+		text := comment.ReplaceAllStringFunc(string(data), func(c string) string {
+			return strings.Map(func(r rune) rune {
+				if r == '\n' {
+					return r
+				}
+				return ' '
+			}, c)
+		})
+		text = quotedOrURL.ReplaceAllStringFunc(text, blank)
+		for _, loc := range declaration.FindAllStringSubmatchIndex(text, -1) {
+			// A selector with a pseudo-class (a:hover {) is not a declaration.
+			if end := loc[1]; end < len(text) && text[end] == '{' {
+				continue
+			}
+			d := decl{rel, strings.Count(text[:loc[0]], "\n") + 1, text[loc[2]:loc[3]], strings.TrimSpace(text[loc[4]:loc[5]])}
+			if strings.HasPrefix(d.prop, "--") {
+				custom[d.prop] = d.val
+			}
+			decls = append(decls, d)
+		}
+	}
+	// Custom properties are collected from every stylesheet first, so a
+	// var() resolves wherever it is declared.
+	for _, d := range decls {
+		for _, problem := range lintDeclaration(d.prop, d.val, custom) {
+			errs = append(errs, fmt.Errorf("%s:%d: %s", d.rel, d.line, problem))
+		}
+	}
+	return errs
+}

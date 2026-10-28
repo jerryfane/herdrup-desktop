@@ -30,6 +30,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Bindings match the Go code
         run: bun run generate && git diff --exit-code src/mygo.ts
+      - name: Design tokens and fonts match the pinned herdrup commit
+        run: go run ./cmd/herdrup-sync -check -upstream
       - run: go vet ./...
       - run: go test -race ./...
         env:
