@@ -46,6 +46,8 @@ func main() {
 	tol := flag.Int("tol", 2, "largest channel difference (0-255) that still counts as equal")
 	maxOver := flag.Float64("max-over-pct", 0, "fail when more than this percentage of the compared pixels differ by more than -tol")
 	maxDelta := flag.Int("max-delta", 255, "fail when any compared pixel's channel differs by more than this")
+	shiftTile := flag.Float64("shift-tile-pt", 24, "displacement scan tile size in points (0 turns the scan off)")
+	shiftMax := flag.Int("shift-max-px", 2, "the displacement scan's largest move, in compared pixels")
 	flag.Parse()
 	if *refPath == "" || *gotPath == "" {
 		flag.Usage()
@@ -80,7 +82,8 @@ func main() {
 		fail(err)
 	}
 	rep.RefColor, rep.GotColor = refColor, gotColor
-	res, diff, err := Compare(ref, got, Options{RefScale: *scale, CropTopPt: *cropTop, Tol: *tol, Mask: rects})
+	res, diff, err := Compare(ref, got, Options{RefScale: *scale, CropTopPt: *cropTop, Tol: *tol, Mask: rects,
+		ShiftTilePt: *shiftTile, ShiftMaxPx: *shiftMax})
 	rep.Result = res
 	if err != nil {
 		fail(err)
@@ -106,6 +109,10 @@ func main() {
 	}
 	if res.MaxDelta > *maxDelta {
 		rep.Failures = append(rep.Failures, fmt.Sprintf("max channel delta %d (limit %d)", res.MaxDelta, *maxDelta))
+	}
+	if n := len(res.Shifted); n > 0 {
+		s := res.Shifted[0]
+		rep.Failures = append(rep.Failures, fmt.Sprintf("%d tile(s) displaced, first at %g,%g pt by %+d,%+d px", n, s.XPt, s.YPt, s.Dx, s.Dy))
 	}
 	rep.Pass = len(rep.Failures) == 0
 	writeReport(*reportPath, rep)

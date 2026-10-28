@@ -107,6 +107,71 @@ func TestStateScopedMaskOnlyHidesItsStates(t *testing.T) {
 	}
 }
 
+// glyph draws a 6×10 px bar with soft edges at (x, y): something with
+// detail for the displacement scan to line up.
+func glyph(img *image.RGBA, x, y int) {
+	for dy := range 10 {
+		for dx := range 6 {
+			v := uint8(240)
+			if dx == 0 || dx == 5 || dy == 0 || dy == 9 {
+				v = 170
+			}
+			img.SetRGBA(x+dx, y+dy, color.RGBA{v, v, v, 255})
+		}
+	}
+}
+
+func TestShiftScanReportsDisplacedContentNotInPlaceChanges(t *testing.T) {
+	dark := color.RGBA{20, 20, 30, 255}
+	// 1x, 60×40 pt, tiles of 20 pt starting 2 px in (the largest move):
+	// the glyph is inside the tile at x 22-41, y 2-21, away from its edges.
+	ref := solid(60, 40, dark)
+	glyph(ref, 27, 5)
+	o := Options{RefScale: 1, Tol: 2, ShiftTilePt: 20, ShiftMaxPx: 2}
+
+	moved := solid(60, 40, dark)
+	glyph(moved, 27, 6) // drawn 1 px low
+	r, _, err := Compare(ref, moved, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Shifted) != 1 {
+		t.Fatalf("moved glyph: shifted %+v, want one tile", r.Shifted)
+	}
+	if s := r.Shifted[0]; s.XPt != 22 || s.YPt != 2 || s.Dx != 0 || s.Dy != 1 {
+		t.Errorf("moved glyph: %+v, want the tile at 22,2 pt moved by 0,+1", s)
+	}
+
+	// The same glyph in place with different edge shading (what
+	// anti-aliasing differences look like): over tolerance, not displaced.
+	shaded := solid(60, 40, dark)
+	glyph(shaded, 27, 5)
+	for dy := range 10 {
+		shaded.SetRGBA(27, 5+dy, color.RGBA{120, 120, 120, 255})
+		shaded.SetRGBA(32, 5+dy, color.RGBA{120, 120, 120, 255})
+	}
+	r, _, err = Compare(ref, shaded, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Over == 0 {
+		t.Fatal("shaded glyph: no pixel over tolerance; the case tests nothing")
+	}
+	if len(r.Shifted) != 0 {
+		t.Errorf("shaded glyph in place: shifted %+v, want none", r.Shifted)
+	}
+
+	// A mask over the tile (and its margin) leaves it out of the scan.
+	o.Mask = []Rect{{Name: "glyph", X: 18, Y: 0, W: 24, H: 22}}
+	r, _, err = Compare(ref, moved, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Shifted) != 0 {
+		t.Errorf("masked tile: shifted %+v, want none", r.Shifted)
+	}
+}
+
 func TestOneXCaptureComparesAgainstBoxFilteredReference(t *testing.T) {
 	// 2x reference, 2×1 pt. The first point's four pixels average to
 	// (10+20+30+42)/4 = 25.5 → 26 (rounded, not truncated); the second's

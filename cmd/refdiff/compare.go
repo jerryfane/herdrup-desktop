@@ -61,6 +61,26 @@ type Options struct {
 	// Tol is the largest channel difference that still counts as equal.
 	Tol  int
 	Mask []Rect
+	// ShiftTilePt, when above 0, also looks for displaced content: the
+	// compared area is cut into tiles this many points square, and a tile
+	// is reported in Result.Shifted when the capture matches it clearly
+	// better moved by up to ShiftMaxPx compared pixels (see shifted).
+	ShiftTilePt float64
+	ShiftMaxPx  int
+}
+
+// Shift is a tile whose content sits elsewhere in the capture: moved by
+// (Dx, Dy) compared pixels (positive: right, down) the capture matches the
+// reference's tile with a mean luma difference of Best instead of Mean.
+// XPt and YPt are the tile's top-left in reference points, status bar
+// included, like mask rects.
+type Shift struct {
+	XPt  float64 `json:"xPt"`
+	YPt  float64 `json:"yPt"`
+	Dx   int     `json:"dx"`
+	Dy   int     `json:"dy"`
+	Mean float64 `json:"mean"`
+	Best float64 `json:"best"`
 }
 
 // Result describes a comparison. Pixels are counted at Scale, the lower
@@ -82,6 +102,9 @@ type Result struct {
 	OverPct      float64 `json:"overPct"`
 	MaxDelta     int     `json:"maxDelta"`
 	MeanDelta    float64 `json:"meanDelta"`
+	// Shifted lists displaced tiles (Options.ShiftTilePt); empty when the
+	// scan is off or nothing moved.
+	Shifted []Shift `json:"shifted,omitempty"`
 }
 
 // Compare lines got up with the reference below its status bar, top-left
@@ -176,7 +199,108 @@ func Compare(ref, got image.Image, o Options) (Result, *image.RGBA, error) {
 		r.OverPct = 100 * float64(r.Over) / float64(r.Compared)
 		r.MeanDelta = float64(sum) / float64(r.Compared)
 	}
+	if o.ShiftTilePt > 0 && o.ShiftMaxPx > 0 {
+		tile := int(math.Round(o.ShiftTilePt * float64(r.Scale)))
+		for _, s := range shifted(lumaPlane(rp), lumaPlane(gp), masked, w, tile, o.ShiftMaxPx) {
+			s.XPt /= float64(r.Scale)
+			s.YPt = s.YPt/float64(r.Scale) + o.CropTopPt
+			r.Shifted = append(r.Shifted, s)
+		}
+	}
 	return r, diff, nil
+}
+
+// plane is one value per pixel, row-major.
+type plane struct {
+	w, h int
+	v    []float64
+}
+
+// lumaPlane is img's Rec. 601 luma.
+func lumaPlane(img *image.RGBA) plane {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	p := plane{w, h, make([]float64, w*h)}
+	for y := range h {
+		row := img.Pix[y*img.Stride:]
+		for x := range w {
+			p.v[y*w+x] = 0.299*float64(row[x*4]) + 0.587*float64(row[x*4+1]) + 0.114*float64(row[x*4+2])
+		}
+	}
+	return p
+}
+
+// The displacement scan's thresholds, on 8-bit luma. A tile with less
+// detail than flatStd has nothing to line up by. A tile is displaced when,
+// unmoved, it is off by more than minMean on average and some move fits it
+// to within shiftGain of that: anti-aliasing and glyph-shape differences
+// change pixels in place, and no move removes most of them, while content
+// drawn a pixel off is fitted almost exactly by moving it back.
+const (
+	flatStd   = 4.0
+	minMean   = 1.0
+	shiftGain = 0.6
+)
+
+// shifted scans ref and got (the same scale, top-left aligned) in tile×tile
+// squares, leaving out any square within maxPx of a masked pixel (mask is
+// maskW wide) or of either picture's edge. For each square with detail, it
+// tries every move of got up to maxPx in x and y and reports the squares
+// where a move fits (Shift.XPt and YPt in compared pixels here).
+func shifted(ref, got plane, mask []bool, maskW, tile, maxPx int) []Shift {
+	var out []Shift
+	w, h := min(ref.w, got.w), min(ref.h, got.h)
+	meanDiff := func(x0, y0, dx, dy int) float64 {
+		var s float64
+		for y := y0; y < y0+tile; y++ {
+			for x := x0; x < x0+tile; x++ {
+				s += math.Abs(ref.v[y*ref.w+x] - got.v[(y+dy)*got.w+x+dx])
+			}
+		}
+		return s / float64(tile*tile)
+	}
+	for y0 := maxPx; y0+tile+maxPx <= h; y0 += tile {
+	tiles:
+		for x0 := maxPx; x0+tile+maxPx <= w; x0 += tile {
+			var sum, sq float64
+			for y := y0 - maxPx; y < y0+tile+maxPx; y++ {
+				for x := x0 - maxPx; x < x0+tile+maxPx; x++ {
+					if mask[y*maskW+x] {
+						continue tiles
+					}
+				}
+			}
+			for y := y0; y < y0+tile; y++ {
+				for x := x0; x < x0+tile; x++ {
+					v := ref.v[y*ref.w+x]
+					sum += v
+					sq += v * v
+				}
+			}
+			n := float64(tile * tile)
+			if mean := sum / n; sq/n-mean*mean < flatStd*flatStd {
+				continue
+			}
+			e0 := meanDiff(x0, y0, 0, 0)
+			if e0 <= minMean {
+				continue
+			}
+			best := Shift{XPt: float64(x0), YPt: float64(y0), Mean: e0, Best: e0}
+			for dy := -maxPx; dy <= maxPx; dy++ {
+				for dx := -maxPx; dx <= maxPx; dx++ {
+					if dx == 0 && dy == 0 {
+						continue
+					}
+					if e := meanDiff(x0, y0, dx, dy); e < best.Best {
+						best.Best, best.Dx, best.Dy = e, dx, dy
+					}
+				}
+			}
+			if best.Best < shiftGain*e0 {
+				out = append(out, best)
+			}
+		}
+	}
+	return out
 }
 
 func absDiff(a, b uint8) int {
