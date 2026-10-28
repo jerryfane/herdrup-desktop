@@ -144,25 +144,40 @@ func TestErrorReplyIsAPIError(t *testing.T) {
 }
 
 func TestHerdrWithoutMultiFallsBackToOneExecPerRequest(t *testing.T) {
-	m := startMachine(t, func(s *fakeherdr.Server) { s.NoMulti = true })
-	c := m.dial(t)
-	for _, method := range []string{"agent.list", "agent.list"} {
-		var res struct{ Method string }
-		if err := c.Call(context.Background(), method, nil, &res); err != nil {
-			t.Fatal(err)
-		}
-		if res.Method != method {
-			t.Fatalf("got %q", res.Method)
-		}
+	for name, stderr := range map[string]string{
+		"reads --multi as a request": "",
+		"rejects --multi as an argument": "error: unexpected argument '--multi' found",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := startMachine(t, func(s *fakeherdr.Server) { s.NoMulti = true; s.NoMultiStderr = stderr })
+			c := m.dial(t)
+			for _, method := range []string{"agent.list", "agent.list"} {
+				var res struct{ Method string }
+				if err := c.Call(context.Background(), method, nil, &res); err != nil {
+					t.Fatal(err)
+				}
+				if res.Method != method {
+					t.Fatalf("got %q", res.Method)
+				}
+			}
+			cmds := m.srv.Commands()
+			if len(cmds) != 3 || !strings.Contains(cmds[0], "--multi") {
+				t.Fatalf("want one --multi attempt then two one-shot execs, got %q", cmds)
+			}
+			for _, cmd := range cmds[1:] {
+				if strings.Contains(cmd, "--multi") {
+					t.Fatalf("retried --multi after it was refused: %q", cmds)
+				}
+			}
+		})
 	}
-	cmds := m.srv.Commands()
-	if len(cmds) != 3 || !strings.Contains(cmds[0], "--multi") {
-		t.Fatalf("want one --multi attempt then two one-shot execs, got %q", cmds)
-	}
-	for _, cmd := range cmds[1:] {
-		if strings.Contains(cmd, "--multi") {
-			t.Fatalf("retried --multi after it was refused: %q", cmds)
-		}
+}
+
+func TestHerdrWithoutAPIBridgeIsIncompatible(t *testing.T) {
+	c := startMachine(t, func(s *fakeherdr.Server) { s.NoAPIBridge = true }).dial(t)
+	err := c.Call(context.Background(), "agent.list", nil, nil)
+	if !errors.Is(err, bridge.ErrHerdrIncompatible) {
+		t.Fatalf("got %v, want ErrHerdrIncompatible", err)
 	}
 }
 

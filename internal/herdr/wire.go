@@ -49,9 +49,11 @@ type LastCompletedTurn struct {
 	CompletedUnixMs int64 `json:"completed_unix_ms"`
 }
 
-// IsArchived reports whether herdr marked the agent archived.
+// IsArchived reports whether herdr marked the agent archived. The schema
+// sends an object or null; any other value (false, "") is read as not
+// archived so a live agent never drops off the board.
 func (a AgentInfo) IsArchived() bool {
-	return len(a.Archived) > 0 && string(a.Archived) != "null"
+	return len(a.Archived) > 0 && a.Archived[0] == '{'
 }
 
 // SubscribeParams are the params of `events.subscribe`.

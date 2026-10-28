@@ -67,13 +67,16 @@ func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
 		m.close()
 		var exit *ssh.ExitError
 		switch {
-		case errors.Is(err, ErrHerdrNotInstalled), errors.Is(err, ErrHerdrIncompatible):
+		case errors.Is(err, ErrHerdrNotInstalled):
 			return nil, err
 		case errors.Is(err, context.DeadlineExceeded):
 			return nil, fmt.Errorf("herdr api-bridge --multi did not answer: %w", err)
-		case errors.As(err, &exit):
-			// The process exited before answering: a herdr that predates
-			// --multi reads it as an encoded request and fails.
+		case errors.Is(err, ErrHerdrIncompatible), errors.As(err, &exit):
+			// The process exited before answering. A herdr that predates
+			// --multi rejects it, as a bad encoded request or as an
+			// unknown argument, so fall back to one exec per request. A
+			// herdr with no api-bridge at all fails that exec too, and
+			// reports ErrHerdrIncompatible from there.
 			return nil, fmt.Errorf("%w (%v)", errNoMulti, err)
 		}
 		return nil, err

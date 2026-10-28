@@ -50,6 +50,7 @@ func TestBuildBoardOrdersGroupsThenRecencyAndLeavesArchivedOut(t *testing.T) {
 		agent(t, `{"pane_id":"p-blocked","agent_status":"blocked"}`),
 		agent(t, `{"pane_id":"p-archived","agent_status":"blocked","archived":{"at":"x"}}`),
 		agent(t, `{"pane_id":"p-null-archive","agent_status":"working","archived":null}`),
+		agent(t, `{"pane_id":"p-false-archive","agent_status":"working","archived":false}`),
 	}
 	b := BuildBoard(agents)
 	var got [][]string
@@ -62,13 +63,13 @@ func TestBuildBoardOrdersGroupsThenRecencyAndLeavesArchivedOut(t *testing.T) {
 	}
 	want := [][]string{
 		{"needsYou", "p-blocked"},
-		{"working", "p-null-archive", "p-work"},
+		{"working", "p-false-archive", "p-null-archive", "p-work"},
 		{"idle", "p-idle-new", "p-idle-old", "p-idle-never-a", "p-idle-never-b"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sections\n got %v\nwant %v", got, want)
 	}
-	if b.NeedsYou != 1 || b.Total != 7 || len(b.Archived) != 1 || b.Archived[0].ID != "p-archived" {
+	if b.NeedsYou != 1 || b.Total != 8 || len(b.Archived) != 1 || b.Archived[0].ID != "p-archived" {
 		t.Fatalf("needsYou=%d total=%d archived=%v", b.NeedsYou, b.Total, b.Archived)
 	}
 	if !b.Sections[2].Collapsed || b.Sections[0].Collapsed || b.Sections[1].Collapsed {

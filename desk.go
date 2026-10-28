@@ -125,13 +125,14 @@ func (d *Desk) Connect(m Machine, password string) error {
 	return nil
 }
 
-// Disconnect closes the connection.
+// Disconnect closes the connection and forgets its board.
 func (d *Desk) Disconnect() {
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()
 		d.cancel = nil
 	}
+	d.board = nil
 	d.mu.Unlock()
 	d.setState(context.Background(), ConnState{Phase: "idle"})
 }
@@ -222,15 +223,18 @@ func (d *Desk) session(ctx context.Context, m Machine, password, label string) (
 			})
 		}
 		b := BoardUpdate{Board: u.Board, ListedAt: u.Listed.Format(time.RFC3339)}
+		// Broadcast only queues the message, so it runs under d.mu: a
+		// Disconnect or new Connect cannot slip in between the check and
+		// the publish and be overtaken by this stale board.
 		d.mu.Lock()
 		if ctx.Err() != nil { // replaced by a newer connection
 			d.mu.Unlock()
 			return
 		}
 		d.board = &b
+		BoardChanged.Broadcast(b)
 		observe := d.onBoard
 		d.mu.Unlock()
-		BoardChanged.Broadcast(b)
 		if observe != nil {
 			observe(b)
 		}
@@ -239,15 +243,15 @@ func (d *Desk) session(ctx context.Context, m Machine, password, label string) (
 }
 
 // setState publishes s unless ctx, the connection it describes, has been
-// replaced. Connections are replaced under d.mu, so the check is exact.
+// replaced. Connections are replaced under d.mu, and the publish happens
+// under it too, so a replaced connection never overtakes its successor.
 func (d *Desk) setState(ctx context.Context, s ConnState) {
 	d.mu.Lock()
+	defer d.mu.Unlock()
 	if ctx.Err() != nil {
-		d.mu.Unlock()
 		return
 	}
 	d.state = s
-	d.mu.Unlock()
 	StateChanged.Broadcast(s)
 }
 

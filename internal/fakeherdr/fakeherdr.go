@@ -34,8 +34,12 @@ type Server struct {
 	Password   string
 	// NotInstalled makes every command fail as if herdr were missing.
 	NotInstalled bool
-	// NoMulti emulates a herdr from before `api-bridge --multi`.
-	NoMulti bool
+	// NoMulti emulates a herdr from before `api-bridge --multi`: it exits
+	// 1 with NoMultiStderr ("Error: invalid base64 request" when empty).
+	NoMulti       bool
+	NoMultiStderr string
+	// NoAPIBridge emulates a herdr with no api-bridge subcommand at all.
+	NoAPIBridge bool
 	// Handle answers a request.
 	Handle func(method string, params json.RawMessage) (any, *APIError)
 	// Events is called for each events.subscribe stream and writes event
@@ -174,11 +178,19 @@ func (s *Server) exec(ctx context.Context, cmd string, ch ssh.Channel) int {
 		fmt.Fprintln(ch.Stderr(), "unsupported command")
 		return 2
 	}
+	if s.NoAPIBridge {
+		fmt.Fprintln(ch.Stderr(), "error: unrecognized subcommand 'api-bridge'")
+		return 2
+	}
 	arg := strings.TrimSuffix(strings.TrimSpace(args), "'")
 	if arg == "--multi" {
 		if s.NoMulti {
-			// An old herdr reads --multi as a base64 request.
-			fmt.Fprintln(ch.Stderr(), "Error: invalid base64 request")
+			msg := s.NoMultiStderr
+			if msg == "" {
+				// An old herdr reads --multi as a base64 request.
+				msg = "Error: invalid base64 request"
+			}
+			fmt.Fprintln(ch.Stderr(), msg)
 			return 1
 		}
 		s.multi(ch)

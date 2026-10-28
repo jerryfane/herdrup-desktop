@@ -115,9 +115,15 @@ func Watch(ctx context.Context, c Caller, t Timing, update func(Update)) error {
 	}
 }
 
+// maxFailedOpens is how many subscribe attempts in a row may fail before
+// any line arrives before the watch gives up and reports the error.
+const maxFailedOpens = 3
+
 // follow keeps an events.subscribe open and signals changed on every event
-// or lag notice. A silent or ended stream is reopened, followed by a
-// re-list since events may have been missed.
+// or lag notice. A stream that ended after it was established is reopened,
+// followed by a re-list since events may have been missed. Attempts that
+// fail before any line arrives do not re-list, and after maxFailedOpens in
+// a row the error ends the watch.
 func follow(ctx context.Context, c Caller, silence time.Duration, changed chan<- struct{}) error {
 	signal := func() {
 		select {
@@ -125,17 +131,21 @@ func follow(ctx context.Context, c Caller, silence time.Duration, changed chan<-
 		default:
 		}
 	}
-	for first := true; ; first = false {
-		if !first {
-			signal()
-		}
-		err := followOnce(ctx, c, silence, signal)
+	failed := 0
+	for {
+		established, err := followOnce(ctx, c, silence, signal)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		var fatal *fatalStreamError
 		if errors.As(err, &fatal) {
 			return fatal.err
+		}
+		if established {
+			failed = 0
+			signal()
+		} else if failed++; failed >= maxFailedOpens {
+			return fmt.Errorf("events.subscribe failed %d times in a row: %w", failed, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -151,14 +161,16 @@ type fatalStreamError struct{ err error }
 
 func (e *fatalStreamError) Error() string { return e.err.Error() }
 
-func followOnce(ctx context.Context, c Caller, silence time.Duration, signal func()) error {
+// followOnce runs one subscription until it ends. established reports
+// whether any line arrived on it.
+func followOnce(ctx context.Context, c Caller, silence time.Duration, signal func()) (established bool, err error) {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s, err := c.OpenStream(sctx, "events.subscribe", herdr.SubscribeParams{
 		Subscriptions: herdr.BoardSubscriptions, EventsV2: true,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer s.Close()
 	// Close the stream when it goes silent; Next then returns an error.
@@ -167,8 +179,9 @@ func followOnce(ctx context.Context, c Caller, silence time.Duration, signal fun
 	for {
 		line, err := s.Next()
 		if err != nil {
-			return err
+			return established, err
 		}
+		established = true
 		timer.Reset(silence)
 		var l herdr.StreamLine
 		if err := json.Unmarshal(line, &l); err != nil {
@@ -178,7 +191,7 @@ func followOnce(ctx context.Context, c Caller, silence time.Duration, signal fun
 		case l.Error != nil:
 			// herdr refused the subscription itself; reopening would
 			// fail the same way.
-			return &fatalStreamError{fmt.Errorf("events.subscribe: %s: %s", l.Error.Code, l.Error.Message)}
+			return true, &fatalStreamError{fmt.Errorf("events.subscribe: %s: %s", l.Error.Code, l.Error.Message)}
 		case l.Event != "", l.Control == "lagged":
 			signal()
 		}

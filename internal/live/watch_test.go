@@ -237,3 +237,48 @@ func TestLostConnectionEndsTheWatch(t *testing.T) {
 		t.Fatal("Watch kept running after the connection closed")
 	}
 }
+
+// refusingCaller answers ping and agent.list, and refuses every stream.
+type refusingCaller struct {
+	lists atomic.Int32
+	opens atomic.Int32
+	done  chan struct{}
+}
+
+func (r *refusingCaller) Call(_ context.Context, method string, _, result any) error {
+	switch method {
+	case "ping":
+		return json.Unmarshal([]byte(`{"type":"pong","protocol":22,"capabilities":{"events_v2":true}}`), result)
+	case "agent.list":
+		r.lists.Add(1)
+		return json.Unmarshal([]byte(`{"agents":[]}`), result)
+	}
+	return errors.New("unexpected " + method)
+}
+
+func (r *refusingCaller) OpenStream(context.Context, string, any) (live.Stream, error) {
+	r.opens.Add(1)
+	return nil, errors.New("exec refused")
+}
+
+func (r *refusingCaller) Done() <-chan struct{} { return r.done }
+
+func TestSubscribeThatNeverOpensEndsTheWatchWithoutRelisting(t *testing.T) {
+	r := &refusingCaller{done: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- live.Watch(context.Background(), r, fast, func(live.Update) {}) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "exec refused") {
+			t.Fatalf("got %v, want the subscribe error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Watch kept retrying a subscribe that never opens")
+	}
+	if got := r.opens.Load(); got != 3 {
+		t.Errorf("opened %d times, want 3", got)
+	}
+	if got := r.lists.Load(); got != 1 {
+		t.Errorf("listed %d times, want only the first list", got)
+	}
+}
