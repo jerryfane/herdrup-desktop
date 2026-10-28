@@ -157,10 +157,14 @@ async function badge(kind: string): Promise<HTMLElement | null> {
       return b;
     case "working": {
       // TurningRing at rest: 12 pt, 2 pt round-capped stroke, 72% of the
-      // circle from 3 o'clock clockwise (herdrup App/DesignSystem.swift).
+      // circle from 3 o'clock clockwise (herdrup App/DesignSystem.swift),
+      // over the ground-filled circle the other badges also have.
       const r = 5;
       const len = 2 * Math.PI * r;
-      b.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${len * 0.72} ${len}"/></svg>`;
+      b.insertAdjacentHTML(
+        "beforeend",
+        `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${len * 0.72} ${len}"/></svg>`,
+      );
       return b;
     }
   }
