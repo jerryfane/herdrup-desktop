@@ -37,19 +37,23 @@ bun run build -- -platform darwin/arm64,windows/amd64,linux/amd64 -skip-dmg
 `go run ./cmd/herdrup-probe -host <host> -user <user>` connects the way the app does and prints the
 board as JSON, with no window; `-watch 1m` keeps printing updates.
 
-## Design tokens
+## Design tokens and shared assets
 
-Colours and fonts are shared with the iOS app. Their source of truth is
-[`design/tokens.json`](https://github.com/jerryfane/herdrup/blob/main/design/tokens.json) in herdrup;
-this repo holds a copy pinned to one herdrup commit:
+Colours, fonts, the mascots, the app icon and the mermaid renderer are shared with the iOS app. Their
+source of truth is herdrup ([`design/tokens.json`](https://github.com/jerryfane/herdrup/blob/main/design/tokens.json)
+and the files listed in `Assets` in `internal/design/sync.go`); this repo holds copies pinned to one
+herdrup commit:
 
 - `third_party/herdrup/PROVENANCE.json` records that commit and the sha256 of every copied file;
 - `third_party/herdrup/design/tokens.json` is the copied tokens file, and `public/fonts/` holds the Geist and
   IBM Plex Mono faces with their OFL licences;
+- `public/herdrup/` holds `mascots.svg` (the 12 mascots, one `<symbol id="p-<id>">` each) and the app icon
+  SVG; `resources/icon.png` is herdrup's 1024 px app icon, from which mygo builds every platform's icon;
+- `public/mermaid/` holds herdrup's bundled mermaid 11.17.2 with its MIT licence and README;
 - `src/tokens.css` (CSS variables and `@font-face`) and `internal/design/tokens_gen.go` (window colours)
-  are generated from it.
+  are generated from the tokens.
 
-Never edit those files here. To change a colour or font, change it in herdrup, then move the pin to the
+Never edit those files here. To change one, change it in herdrup, then move the pin to the
 merged commit:
 
 ```sh

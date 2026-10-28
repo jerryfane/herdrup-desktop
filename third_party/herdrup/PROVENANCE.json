@@ -56,6 +56,41 @@
       "source": "App/Fonts/IBMPlexMono-OFL.txt",
       "dest": "public/fonts/IBMPlexMono-OFL.txt",
       "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+    },
+    {
+      "source": "Tools/mascots/mascots.svg",
+      "dest": "public/herdrup/mascots.svg",
+      "sha256": "337cec2921bd18cf1d6376f284956c2bdf0a727e95c605f17fd8ecd32d7b96ee"
+    },
+    {
+      "source": "design/herdrup-appicon.svg",
+      "dest": "public/herdrup/appicon.svg",
+      "sha256": "60cbbec91fd6276e697d4f007353882ac3c9ad71758b6a680d19406d32756bb7"
+    },
+    {
+      "source": "App/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+      "dest": "resources/icon.png",
+      "sha256": "6278eb2bc7d618a367e9c6f1975c4a7e05a6bc3d0fb23ded023fb2a7b002d10a"
+    },
+    {
+      "source": "App/Resources/Mermaid/mermaid.min.js",
+      "dest": "public/mermaid/mermaid.min.js",
+      "sha256": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
+    },
+    {
+      "source": "App/Resources/Mermaid/Mermaid-LICENSE.txt",
+      "dest": "public/mermaid/Mermaid-LICENSE.txt",
+      "sha256": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80"
+    },
+    {
+      "source": "App/Resources/Mermaid/README.md",
+      "dest": "public/mermaid/README.md",
+      "sha256": "716752177f8a92f4d95c3cec042918eeeb44624b8f9d50da54415abdbfafffbc"
+    },
+    {
+      "source": "App/Resources/Mermaid/mermaid.html",
+      "dest": "public/mermaid/mermaid.html",
+      "sha256": "96bd10aff191f8b2cb5dbd49e4a56fc57fc2857238e7d1401ca5b5001d16e4c9"
     }
   ]
 }

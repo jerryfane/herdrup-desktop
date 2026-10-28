@@ -145,14 +145,24 @@ func fakeHerdrup(commit string, files map[string]string) Fetcher {
 
 const pin = "0123456789abcdef0123456789abcdef01234567"
 
-func synced(t *testing.T) (string, Fetcher) {
-	t.Helper()
-	root := t.TempDir()
-	fetch := fakeHerdrup(pin, map[string]string{
+// herdrupFiles is a fake herdrup at pin: the fixture tokens, the font files
+// they name, and every shared asset.
+func herdrupFiles() map[string]string {
+	files := map[string]string{
 		TokensSource:                         fixture,
 		"App/Fonts/IBMPlexMono-SemiBold.ttf": "font bytes",
 		"App/Fonts/IBMPlexMono-OFL.txt":      "licence",
-	})
+	}
+	for _, a := range Assets {
+		files[a.Source] = "asset " + a.Source
+	}
+	return files
+}
+
+func synced(t *testing.T) (string, Fetcher) {
+	t.Helper()
+	root := t.TempDir()
+	fetch := fakeHerdrup(pin, herdrupFiles())
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -167,13 +177,17 @@ func synced(t *testing.T) (string, Fetcher) {
 
 func TestSyncWritesPinnedCopiesAndPassesCheck(t *testing.T) {
 	root, fetch := synced(t)
-	for _, rel := range []string{TokensCopy, "public/fonts/IBMPlexMono-SemiBold.ttf", "public/fonts/IBMPlexMono-OFL.txt", CSSPath, GoPath} {
+	want := []string{TokensCopy, "public/fonts/IBMPlexMono-SemiBold.ttf", "public/fonts/IBMPlexMono-OFL.txt", CSSPath, GoPath}
+	for _, a := range Assets {
+		want = append(want, a.Dest)
+	}
+	for _, rel := range want {
 		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
 			t.Errorf("missing %s", rel)
 		}
 	}
 	prov, err := ReadProvenance(root)
-	if err != nil || prov.Commit != pin || len(prov.Files) != 3 {
+	if err != nil || prov.Commit != pin || len(prov.Files) != 3+len(Assets) {
 		t.Fatalf("provenance %+v, %v", prov, err)
 	}
 	if errs := Check(root); len(errs) != 0 {
@@ -303,6 +317,7 @@ func TestResyncRemovesOnlyFilesTheOldPinCopied(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	if err := Sync(context.Background(), root, pin, fetch); err != nil {
 		t.Fatal(err)
 	}
@@ -314,6 +329,56 @@ func TestResyncRemovesOnlyFilesTheOldPinCopied(t *testing.T) {
 	}
 	// ...but Check flags it, since it would ship unchecked.
 	if errs := Check(root); !strings.Contains(fmt.Sprint(errs), "public/fonts/mine.txt is not from herdrup") {
+		t.Fatalf("got %v", errs)
+	}
+}
+
+func TestSyncFailsWithoutTouchingFilesWhenAnAssetIsMissing(t *testing.T) {
+	root, _ := synced(t)
+	read := func(rel string) string {
+		data, _ := os.ReadFile(filepath.Join(root, rel))
+		return string(data)
+	}
+	prov, tokens := read(ProvenancePath), read(TokensCopy)
+	// The new commit changes a colour but lacks the last asset.
+	files := herdrupFiles()
+	files[TokensSource] = strings.Replace(fixture, "#E9A63C", "#FF0000", 1)
+	delete(files, Assets[len(Assets)-1].Source)
+	other := "fedcba9876543210fedcba9876543210fedcba98"
+	if err := Sync(context.Background(), root, other, fakeHerdrup(other, files)); err == nil {
+		t.Fatal("synced a commit that lacks an asset")
+	}
+	if read(ProvenancePath) != prov || read(TokensCopy) != tokens {
+		t.Fatal("a failed sync changed files")
+	}
+}
+
+func TestCheckFindsAnEditedAsset(t *testing.T) {
+	root, _ := synced(t)
+	edit(t, root, "public/herdrup/mascots.svg", "", "<!-- tweak -->")
+	if errs := Check(root); !strings.Contains(fmt.Sprint(errs), "public/herdrup/mascots.svg differs from jerryfane/herdrup Tools/mascots/mascots.svg") {
+		t.Fatalf("got %v", errs)
+	}
+}
+
+func TestCheckFindsAnAssetLeftOutOfTheProvenance(t *testing.T) {
+	root, _ := synced(t)
+	prov, err := ReadProvenance(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []ProvFile
+	for _, f := range prov.Files {
+		if f.Source != "App/Assets.xcassets/AppIcon.appiconset/icon-1024.png" {
+			kept = append(kept, f)
+		}
+	}
+	prov.Files = kept
+	data, _ := json.MarshalIndent(prov, "", "  ")
+	if err := os.WriteFile(filepath.Join(root, ProvenancePath), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if errs := Check(root); !strings.Contains(fmt.Sprint(errs), "icon-1024.png is needed but not synced") {
 		t.Fatalf("got %v", errs)
 	}
 }

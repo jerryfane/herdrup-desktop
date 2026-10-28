@@ -95,8 +95,29 @@ func readFile(root, rel string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 }
 
-// Sync copies tokens.json and its fonts from Repo at commit, records them
-// in ProvenancePath and regenerates the CSS and Go files.
+// Asset is a herdrup file the app reuses as it is (issue #4).
+type Asset struct {
+	Source string // path in Repo
+	Dest   string // path here
+}
+
+// Assets are copied on every sync, next to the tokens and fonts.
+var Assets = []Asset{
+	// The 12 Pebbles mascots plus Herdy, one <symbol id="p-<id>"> each.
+	{"Tools/mascots/mascots.svg", "public/herdrup/mascots.svg"},
+	{"design/herdrup-appicon.svg", "public/herdrup/appicon.svg"},
+	// mygo builds every platform's app icon from this 1024x1024 PNG.
+	{"App/Assets.xcassets/AppIcon.appiconset/icon-1024.png", "resources/icon.png"},
+	// Bundled mermaid 11.17.2 (version and sha256 in its README), MIT.
+	{"App/Resources/Mermaid/mermaid.min.js", "public/mermaid/mermaid.min.js"},
+	{"App/Resources/Mermaid/Mermaid-LICENSE.txt", "public/mermaid/Mermaid-LICENSE.txt"},
+	{"App/Resources/Mermaid/README.md", "public/mermaid/README.md"},
+	{"App/Resources/Mermaid/mermaid.html", "public/mermaid/mermaid.html"},
+}
+
+// Sync copies tokens.json, its fonts and the shared assets from Repo at
+// commit, records them in ProvenancePath and regenerates the CSS and Go
+// files.
 func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
 	if !fullSHA.MatchString(commit) {
 		return fmt.Errorf("pin a full 40-character commit, not %q", commit)
@@ -109,15 +130,20 @@ func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
 	if err != nil {
 		return err
 	}
-	files, err := t.FontFiles()
+	fonts, err := t.FontFiles()
 	if err != nil {
 		return err
 	}
+	copies := []Asset{{TokensSource, TokensCopy}}
+	for _, f := range fonts {
+		copies = append(copies, Asset{f, fontDest(f)})
+	}
+	copies = append(copies, Assets...)
 	// Fetch everything before writing anything, so a failed sync leaves
 	// the old pin intact.
 	contents := map[string][]byte{TokensSource: raw}
-	for _, f := range files {
-		if contents[f], err = fetch(ctx, commit, f); err != nil {
+	for _, c := range copies[1:] {
+		if contents[c.Source], err = fetch(ctx, commit, c.Source); err != nil {
 			return err
 		}
 	}
@@ -128,16 +154,10 @@ func Sync(ctx context.Context, root, commit string, fetch Fetcher) error {
 		return err
 	}
 	prov := Provenance{Repo: Repo, Commit: commit}
-	add := func(source, dest string) error {
-		data := contents[source]
-		prov.Files = append(prov.Files, ProvFile{Source: source, Dest: dest, SHA256: sum(data)})
-		return writeFile(root, dest, data)
-	}
-	if err := add(TokensSource, TokensCopy); err != nil {
-		return err
-	}
-	for _, f := range files {
-		if err := add(f, fontDest(f)); err != nil {
+	for _, c := range copies {
+		data := contents[c.Source]
+		prov.Files = append(prov.Files, ProvFile{Source: c.Source, Dest: c.Dest, SHA256: sum(data)})
+		if err := writeFile(root, c.Dest, data); err != nil {
 			return err
 		}
 	}
@@ -273,9 +293,13 @@ func Check(root string) []error {
 		} else if need, err := t.FontFiles(); err != nil {
 			errs = append(errs, err)
 		} else {
-			for _, f := range append([]string{TokensSource}, need...) {
+			need = append([]string{TokensSource}, need...)
+			for _, a := range Assets {
+				need = append(need, a.Source)
+			}
+			for _, f := range need {
 				if !recorded[f] {
-					errs = append(errs, fmt.Errorf("%s is needed by the tokens but not synced", f))
+					errs = append(errs, fmt.Errorf("%s is needed but not synced", f))
 				}
 			}
 		}
