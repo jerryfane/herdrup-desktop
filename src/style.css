@@ -353,7 +353,10 @@ html, body {
 .archived .pic .sym { color: var(--color-on-accent); }
 .archived .lines { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .archived .title { color: var(--color-text-dim); }
-.archived .note { color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; }
+/* The subtitle (IBM Plex Mono) drew 1 device pixel above herdrup's with
+   the title exact; moved down by that pixel, measured on the 2x references.
+   A relative offset leaves the card's height (and centring) alone. */
+.archived .note { position: relative; top: var(--pixel); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; }
 
 .empty-line {
   padding-top: 44px;
