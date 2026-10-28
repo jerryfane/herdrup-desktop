@@ -44,7 +44,6 @@ var appKit struct {
 	config     func(cls objc.ID, sel objc.SEL, size, weight float64, scale int) objc.ID
 	size       func(obj objc.ID, sel objc.SEL) nsSize
 	rect       func(obj objc.ID, sel objc.SEL) nsRect
-	float      func(obj objc.ID, sel objc.SEL) float64
 	setSize    func(obj objc.ID, sel objc.SEL, s nsSize)
 	draw       func(obj objc.ID, sel objc.SEL, dst, src nsRect, op uint, fraction float64)
 	initBitmap func(obj objc.ID, sel objc.SEL, planes uintptr, width, height, bitsPerSample, samplesPerPixel int, alpha, planar bool, colorSpace objc.ID, bytesPerRow, bitsPerPixel int) objc.ID
@@ -94,7 +93,6 @@ func openAppKit() error {
 	purego.RegisterFunc(&appKit.config, appKit.msgSend)
 	purego.RegisterFunc(&appKit.size, appKit.msgSend)
 	purego.RegisterFunc(&appKit.rect, stret)
-	purego.RegisterFunc(&appKit.float, appKit.msgSend)
 	purego.RegisterFunc(&appKit.setSize, appKit.msgSend)
 	purego.RegisterFunc(&appKit.draw, appKit.msgSend)
 	purego.RegisterFunc(&appKit.initBitmap, appKit.msgSend)
@@ -135,17 +133,17 @@ func nsString(s string) objc.ID {
 	return msg(str, "autorelease")
 }
 
-// symbolMetrics is an SF Symbol's layout at one size and weight, in
-// points: the image's size and the height of its baseline above its
-// bottom edge.
+// symbolMetrics is an SF Symbol image's layout in points: its size and
+// the height of its baseline above its bottom edge.
 type symbolMetrics struct {
 	size     nsSize
 	baseline float64
 }
 
-// sfSymbol returns the autoreleased NSImage SwiftUI draws for
-// Image(systemName: name).font(.system(size: pointSize, weight: w)), at
-// the default (medium) image scale. It must run in a pool.
+// sfSymbol returns the autoreleased NSImage of the SF Symbol name at
+// pointSize and weight w, at the default (medium) image scale, as
+// Image(systemName:).font(.system(size:weight:)) asks for it. It must run
+// in a pool.
 func sfSymbol(name string, pointSize float64, w symbolWeight) (objc.ID, error) {
 	base := msg(class("NSImage"), "imageWithSystemSymbolName:accessibilityDescription:", uintptr(nsString(name)), 0)
 	if base == 0 {
@@ -160,29 +158,21 @@ func sfSymbol(name string, pointSize float64, w symbolWeight) (objc.ID, error) {
 	return img, nil
 }
 
-// measureSymbol reads img's size and baseline.
+// measureSymbol reads img's size and baseline. NSImage has no baseline
+// property: a symbol image's alignment rect starts at its baseline.
 func measureSymbol(img objc.ID) symbolMetrics {
-	m := symbolMetrics{size: appKit.size(img, sel("size"))}
-	if msg(img, "respondsToSelector:", uintptr(sel("baselineOffsetFromBottom")))&0xff != 0 {
-		m.baseline = appKit.float(img, sel("baselineOffsetFromBottom"))
-	} else {
-		m.baseline = appKit.rect(img, sel("alignmentRect")).Origin.Y
+	return symbolMetrics{
+		size:     appKit.size(img, sel("size")),
+		baseline: appKit.rect(img, sel("alignmentRect")).Origin.Y,
 	}
-	return m
 }
 
-// ceilPixels is the number of whole pixels that cover points at scale,
-// ignoring float noise such as 7.000000001.
-func ceilPixels(points float64, scale int) int {
-	return int(math.Ceil(points*float64(scale) - 1e-6))
-}
-
-// rasterSymbol draws img into a transparent bitmap of scale pixels per
-// point, its size rounded up to whole pixels with the image at the
-// top-left, and returns the coverage: one alpha byte per pixel, rows from
-// the top. It must run in a pool.
-func rasterSymbol(img objc.ID, size nsSize, scale int) (*image.Alpha, error) {
-	pw, ph := ceilPixels(size.Width, scale), ceilPixels(size.Height, scale)
+// rasterSymbol draws img at its size into a transparent bitmap of one
+// pixel per point, its size rounded up to whole pixels with the image at
+// the top-left, and returns the coverage: one alpha byte per pixel, rows
+// from the top. It must run in a pool.
+func rasterSymbol(img objc.ID, size nsSize) (*image.Alpha, error) {
+	pw, ph := int(math.Ceil(size.Width-1e-6)), int(math.Ceil(size.Height-1e-6))
 	if pw <= 0 || ph <= 0 {
 		return nil, errors.New("symbols: empty symbol image")
 	}
@@ -193,9 +183,6 @@ func rasterSymbol(img objc.ID, size nsSize, scale int) (*image.Alpha, error) {
 		return nil, errors.New("symbols: cannot make a bitmap")
 	}
 	msg(rep, "autorelease")
-	// Points to pixels: the bitmap is pw/scale by ph/scale points.
-	canvas := nsSize{float64(pw) / float64(scale), float64(ph) / float64(scale)}
-	appKit.setSize(rep, sel("setSize:"), canvas)
 	ctx := msg(class("NSGraphicsContext"), "graphicsContextWithBitmapImageRep:", uintptr(rep))
 	if ctx == 0 {
 		return nil, errors.New("symbols: cannot draw into a bitmap")
@@ -205,7 +192,7 @@ func rasterSymbol(img objc.ID, size nsSize, scale int) (*image.Alpha, error) {
 	msg(gc, "setCurrentContext:", uintptr(ctx))
 	const sourceOver = 2 // NSCompositingOperationSourceOver
 	// AppKit's y axis points up: the image's top edge on the bitmap's.
-	dst := nsRect{Origin: nsPoint{0, canvas.Height - size.Height}, Size: size}
+	dst := nsRect{Origin: nsPoint{0, float64(ph) - size.Height}, Size: size}
 	appKit.draw(img, sel("drawInRect:fromRect:operation:fraction:"), dst, nsRect{}, sourceOver, 1)
 	msg(ctx, "flushGraphics")
 	msg(gc, "restoreGraphicsState")
@@ -246,6 +233,9 @@ func whitePNG(a *image.Alpha) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// drawSymbol draws the symbol at pointSize×scale on AppKit's whole-point
+// grid, one pixel per point: that is the symbol at pointSize on the
+// 1/scale point grid of a scale× display, where SwiftUI lays it out.
 func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (SymbolImage, error) {
 	if err := loadAppKit(); err != nil {
 		return SymbolImage{}, err
@@ -257,11 +247,11 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (Symb
 	)
 	withPool(func() {
 		var img objc.ID
-		if img, err = sfSymbol(name, pointSize, w); err != nil {
+		if img, err = sfSymbol(name, pointSize*float64(scale), w); err != nil {
 			return
 		}
 		m = measureSymbol(img)
-		a, err = rasterSymbol(img, m.size, scale)
+		a, err = rasterSymbol(img, m.size)
 	})
 	if err != nil {
 		return SymbolImage{}, err
@@ -270,10 +260,11 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (Symb
 	if err != nil {
 		return SymbolImage{}, err
 	}
+	s := float64(scale)
 	return SymbolImage{
 		DataURL:  "data:image/png;base64," + base64.StdEncoding.EncodeToString(data),
-		Width:    m.size.Width,
-		Height:   m.size.Height,
-		Baseline: m.baseline,
+		Width:    float64(a.Rect.Dx()) / s,
+		Height:   float64(a.Rect.Dy()) / s,
+		Baseline: m.baseline / s,
 	}, nil
 }

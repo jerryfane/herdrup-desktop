@@ -9,20 +9,21 @@ import (
 // transparent ground, a template the page tints with CSS mask-image and
 // background-color. Lengths are in points, which are CSS pixels.
 type SymbolImage struct {
-	// DataURL is the glyph. On macOS it is a PNG drawn by AppKit at the
-	// requested scale: ceil(Width·scale) by ceil(Height·scale) pixels with
-	// the Width by Height box at its top-left corner, so give it
-	// mask-size ceil(Width·scale)/scale by ceil(Height·scale)/scale and
-	// mask-position 0 0. On Windows and Linux it is a Width by Height SVG.
+	// DataURL is the glyph filling the Width by Height box: on macOS a PNG
+	// of Width·scale by Height·scale pixels drawn by AppKit, on Windows
+	// and Linux an SVG. Show it as a Width by Height element with
+	// mask-image: url(DataURL) and mask-size: 100% 100%.
 	DataURL string `json:"dataURL"`
 	// Width and Height are the frame SwiftUI gives
-	// Image(systemName:).font(.system(size:weight:)): the box to centre in
-	// a frame or a row, as SwiftUI does.
+	// Image(systemName:).font(.system(size:weight:)) on a display of the
+	// scale asked for, in whole pixels of it: the box SwiftUI centres in a
+	// .frame or lines up in a stack.
 	Width  float64 `json:"width"`
 	Height float64 `json:"height"`
 	// Baseline is the height of the symbol's text baseline above the
-	// bottom of the box. vertical-align: -Baseline puts the symbol on the
-	// baseline of the text around it.
+	// bottom of the box, where SwiftUI's .firstTextBaseline alignment puts
+	// the baseline of text beside it. vertical-align: -Baseline (px) on
+	// an inline element puts it there.
 	Baseline float64 `json:"baseline"`
 }
 
