@@ -338,8 +338,81 @@ var (
 	word       = regexp.MustCompile(`[A-Za-z-]+`)
 	// A coloured side stripe on a card is against the fleet UI rule.
 	sideBorder = regexp.MustCompile(`(?i)^border-(?:left|right|inline-start|inline-end)(?:-color|-width|-style)?$`)
-	insetPair  = regexp.MustCompile(`(?i)\binset\s+(-?(?:\d+\.?\d*|\.\d+))(?:[a-z%]*)\s+(-?(?:\d+\.?\d*|\.\d+))(?:[a-z%]*)`)
+	// length is one CSS length or number; the unit is ignored.
+	length = regexp.MustCompile(`(?i)^-?(?:\d+\.?\d*|\.\d+)(?:[a-z%]*)$`)
 )
+
+const stripe = "side stripe on a box; cards stay neutral (fleet UI rule)"
+
+// splitLayers splits a comma-separated value at top-level commas.
+func splitLayers(value string) []string {
+	var layers []string
+	depth, start := 0, 0
+	for i, r := range value {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				layers = append(layers, value[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(layers, value[start:])
+}
+
+// insetStripe reports whether a box-shadow layer is an inset shadow offset
+// sideways only. CSS allows "inset" before or after the lengths, and the
+// colour may be a function whose own arguments are not offsets.
+func insetStripe(layer string) bool {
+	var top strings.Builder
+	depth := 0
+	for _, r := range strings.ToLower(layer) {
+		switch {
+		case r == '(':
+			depth++
+		case r == ')':
+			depth--
+			top.WriteByte(' ')
+		case depth == 0:
+			top.WriteRune(r)
+		}
+	}
+	inset := false
+	var lengths []float64
+	for _, f := range strings.Fields(top.String()) {
+		switch {
+		case f == "inset":
+			inset = true
+		case length.MatchString(f):
+			n, _ := strconv.ParseFloat(strings.TrimRight(f, "abcdefghijklmnopqrstuvwxyz%"), 64)
+			lengths = append(lengths, n)
+		}
+	}
+	return inset && len(lengths) >= 2 && lengths[0] != 0 && lengths[1] == 0
+}
+
+// oneSidedWidths reports whether a border-width value sets a width on the
+// left or right only: "0 0 0 3px" or "0 3px 0 0".
+func oneSidedWidths(value string) bool {
+	fields := strings.Fields(value)
+	if len(fields) != 4 {
+		return false
+	}
+	nonZero := make([]bool, 4)
+	for i, f := range fields {
+		if !length.MatchString(f) {
+			return false
+		}
+		n, _ := strconv.ParseFloat(strings.TrimRight(strings.ToLower(f), "abcdefghijklmnopqrstuvwxyz%"), 64)
+		nonZero[i] = n != 0
+	}
+	top, right, bottom, left := nonZero[0], nonZero[1], nonZero[2], nonZero[3]
+	return !top && !bottom && right != left
+}
 
 // namedColours are the CSS colour keywords (CSS Color 4) plus the system
 // colours most likely to slip in. currentColor, transparent and the CSS-wide
@@ -379,19 +452,16 @@ var textProperties = map[string]bool{
 // lintDeclaration returns the problems in one CSS declaration.
 func lintDeclaration(prop, value string) []string {
 	prop = strings.ToLower(prop)
-	if strings.HasPrefix(prop, "--") {
-		return nil // a custom property here would only hold a token reference
-	}
+	// Custom properties are linted too: --accent: #ce58a4 is a raw colour
+	// however it is later used.
 	var out []string
-	if sideBorder.MatchString(prop) {
-		out = append(out, "side stripe on a box; cards stay neutral (fleet UI rule)")
+	if sideBorder.MatchString(prop) || (prop == "border-width" && oneSidedWidths(value)) {
+		out = append(out, stripe)
 	}
 	if prop == "box-shadow" {
-		for _, m := range insetPair.FindAllStringSubmatch(value, -1) {
-			x, _ := strconv.ParseFloat(m[1], 64)
-			y, _ := strconv.ParseFloat(m[2], 64)
-			if x != 0 && y == 0 {
-				out = append(out, "side stripe on a box; cards stay neutral (fleet UI rule)")
+		for _, layer := range splitLayers(value) {
+			if insetStripe(layer) {
+				out = append(out, stripe)
 			}
 		}
 	}

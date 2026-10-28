@@ -227,6 +227,13 @@ func TestCheckFindsDrift(t *testing.T) {
 		"inset stripe, fractional em":    {"src/style.css", "", ".card { box-shadow: inset .5em 0px 0 var(--status-waiting); }\n", "side stripe"},
 		"named colour":                   {"src/style.css", "", ".x { color: white; }\n", `colour literal "white"`},
 		"named colour, upper case":       {"src/style.css", "", ".x {\n  border: 1px solid Red !important;\n}\n", `src/style.css:3: colour literal "Red"`},
+		"colour in a custom property":    {"src/style.css", "", ".x { --accent: #ce58a4; color: var(--accent); }\n", `colour literal "#ce58a4"`},
+		"named colour in a custom prop":  {"src/style.css", "", ".x { --accent: red; }\n", `colour literal "red"`},
+		"inset after the offsets":        {"src/style.css", "", ".card { box-shadow: 4px 0 0 var(--status-waiting) inset; }\n", "side stripe"},
+		"inset in a later layer":         {"src/style.css", "", ".card { box-shadow: 0 1px 2px var(--color-ground), inset -3px 0 var(--status-waiting); }\n", "side stripe"},
+		"one-sided border-width":         {"src/style.css", "", ".card { border: solid var(--status-waiting); border-width: 0 0 0 3px; }\n", "side stripe"},
+		"stripe with a colour-mix":       {"src/style.css", "", ".card { box-shadow: inset 3px 0 color-mix(in srgb, var(--status-waiting) 60%, transparent); }\n", "side stripe"},
+		"stripe, colour function first":  {"src/style.css", "", ".card { box-shadow: inset rgb(from var(--status-waiting) r g b / 50%) 3px 0; }\n", "side stripe"},
 		"stray file next to the fonts":   {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -247,7 +254,9 @@ func TestCheckAllowsTokenDerivedAndNonColourValues(t *testing.T) {
 .y { border: 1px solid var(--color-ground); }
 .z { background: hsl(from var(--status-waiting) h s l / 0.2); }
 .q::after { content: "#1 red"; mask: url(#a1b2c3); }
-.f { font-family: var(--font-app); box-shadow: inset 0 1px 0 var(--color-hairline); }
+.f { font-family: var(--font-app); box-shadow: inset 0 1px 0 var(--color-hairline), 0 2px 4px var(--color-ground); }
+.g { --card-pad: 12px; border-width: 1px; border-width: 0 1px 0 1px; box-shadow: 2px 0 4px var(--color-ground); }
+.h { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-hairline) 60%, 4px 0); }
 a:hover { color: var(--color-text); }
 .border-left:hover { color: var(--color-text); }
 @media (max-width: 600px) { .w { white-space: nowrap; } }
