@@ -163,6 +163,11 @@
       "sha256": "4ce589d9aa1dd814469238c1eeeb1aacf59bdca8b533a2fcc04ebe303858278e"
     },
     {
+      "source": "App/Assets.xcassets/ComposerSending.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/sending.svg",
+      "sha256": "0536fa089e4a605acdaa9c2e49faaafce825479d2502484080b65100c8e2553d"
+    },
+    {
       "source": "App/Resources/Mermaid/mermaid.min.js",
       "dest": "public/mermaid/mermaid.min.js",
       "sha256": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"

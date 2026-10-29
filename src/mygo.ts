@@ -159,6 +159,12 @@ export interface GramFile {
   preview: boolean;
 }
 
+/** GramMenuChoice is the item chosen from a message's context menu. */
+export interface GramMenuChoice {
+  id: string;
+  item: string;
+}
+
 /** GramMessage is one row of the feed. */
 export interface GramMessage {
   id: string;
@@ -643,6 +649,14 @@ export const Desk = {
     return call("Desk.GramMarkRead", id);
   },
   /**
+   * GramMenu shows a message's context menu (right-click) with items, the
+   * page's labels in its order, and reports the one chosen through
+   * GramMenuChosen. It reports whether there was a menu to show.
+   */
+  gramMenu(id: string, items: string[]): Promise<boolean> {
+    return call("Desk.GramMenu", id, items);
+  },
+  /**
    * GramOpenFile opens a message's file with the system's default app,
    * downloading it the first time. herdrup's QuickLook and in-app HTML/SVG
    * viewer have no desktop counterpart; a program or script is not opened
@@ -856,6 +870,12 @@ export const events = {
   gramUpload: event<GramUploadProgress>("gram:upload"),
   /** GramDownloadChanged is sent as a file download moves. */
   gramDownload: event<GramDownloadProgress>("gram:download"),
+  /**
+   * GramMenuChosen is sent when an item of a message's context menu is
+   * chosen; the page acts on it (Save to Files needs its call for the save
+   * dialog's window).
+   */
+  gramMenu: event<GramMenuChoice>("gram:menu"),
   /**
    * FolderNamingRequested is sent when a menu asks for a folder name; the
    * window answers with Desk.NameFolder.

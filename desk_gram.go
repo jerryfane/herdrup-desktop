@@ -1059,3 +1059,31 @@ func (d *Desk) GramSenderAvatar(name string) AvatarFace {
 // GramCopyText puts text on the clipboard (a message's Copy, a code
 // block's Copy).
 func (d *Desk) GramCopyText(text string) { d.writeClipboard(text) }
+
+// GramMenuChoice is the item chosen from a message's context menu.
+type GramMenuChoice struct {
+	ID   string `json:"id"`
+	Item string `json:"item"`
+}
+
+// GramMenuChosen is sent when an item of a message's context menu is
+// chosen; the page acts on it (Save to Files needs its call for the save
+// dialog's window).
+var GramMenuChosen = mygo.NewEvent[GramMenuChoice]("gram:menu")
+
+// GramMenu shows a message's context menu (right-click) with items, the
+// page's labels in its order, and reports the one chosen through
+// GramMenuChosen. It reports whether there was a menu to show.
+func (d *Desk) GramMenu(ctx context.Context, id string, items []string) bool {
+	if len(items) == 0 {
+		return false
+	}
+	entries := make([]*mygo.MenuItem, 0, len(items))
+	for _, label := range items {
+		entries = append(entries, &mygo.MenuItem{Label: label, Click: func(*mygo.MenuItem, *mygo.Window) {
+			GramMenuChosen.Broadcast(GramMenuChoice{ID: id, Item: label})
+		}})
+	}
+	mygo.NewMenu(entries).Popup(mygo.CallerWindow(ctx))
+	return true
+}

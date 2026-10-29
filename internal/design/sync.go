@@ -132,6 +132,7 @@ var Assets = []Asset{
 	{"App/Assets.xcassets/ComposerAlert.imageset/glyph.svg", "public/herdrup/composer/alert.svg"},
 	{"App/Assets.xcassets/ComposerFile.imageset/glyph.svg", "public/herdrup/composer/file.svg"},
 	{"App/Assets.xcassets/ComposerPhoto.imageset/glyph.svg", "public/herdrup/composer/photo.svg"},
+	{"App/Assets.xcassets/ComposerSending.imageset/glyph.svg", "public/herdrup/composer/sending.svg"},
 	// Bundled mermaid 11.17.2 (version and sha256 in its README), MIT.
 	{"App/Resources/Mermaid/mermaid.min.js", "public/mermaid/mermaid.min.js"},
 	{"App/Resources/Mermaid/Mermaid-LICENSE.txt", "public/mermaid/Mermaid-LICENSE.txt"},

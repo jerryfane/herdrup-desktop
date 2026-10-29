@@ -3,6 +3,7 @@
    Colours, fonts and sizes come only from tokens.css; herdrup-sync -check
    fails on a colour literal here. Lengths are points (1 pt = 1 CSS px). */
 @import "./tokens.css";
+@import "./gram.css";
 
 :root {
   color-scheme: dark;

@@ -4,6 +4,7 @@ import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
+import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram } from "./gram";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -80,11 +81,23 @@ async function buildTopBar() {
     return s;
   };
   leading.replaceChildren(await slot("chevron.left", "Back"));
-  actions.replaceChildren(
-    await slot("sidebar.leading", "Minimise sidebar"),
-    await slot("terminal", "New terminal"),
-    await slot("plus", "New agent"),
-  );
+  const title = $("bar-title");
+  if (tab === "gram") {
+    // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
+    const count = barCount();
+    title.replaceChildren(document.createTextNode("Gram"), ...(count ? [count] : []));
+    actions.replaceChildren(...(await barActions()));
+  } else {
+    title.replaceChildren(document.createTextNode("Agents"));
+    actions.replaceChildren(
+      await slot("sidebar.leading", "Minimise sidebar"),
+      await slot("terminal", "New terminal"),
+      await slot("plus", "New agent"),
+    );
+  }
+  // The capsules' shapes go with their children.
+  paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
+  paintShape(actions, { radius: "capsule", fill: "var(--color-surface-raised)" });
   placeTitle();
 }
 
@@ -120,6 +133,7 @@ async function buildTabBar() {
       t.addEventListener("click", () => {
         tab = key;
         void buildTabBar();
+        void buildTopBar();
         render();
       });
       return t;
@@ -396,9 +410,12 @@ function drawField() {
 
 function render() {
   const showConnect = tab === "settings" || (!board && state.phase !== "connecting" && state.phase !== "connected");
+  const showsGram = tab === "gram" && !showConnect;
   connectView.hidden = !showConnect;
-  field.hidden = showConnect;
-  select.hidden = showConnect;
+  field.hidden = showConnect || showsGram;
+  select.hidden = showConnect || showsGram;
+  $("roster").hidden = showsGram;
+  showGram(showsGram);
   connectError.hidden = state.phase !== "error";
   connectError.textContent = state.phase === "error" ? `${state.machine}: ${state.message}` : "";
   disconnect.hidden = state.phase === "idle";
@@ -415,6 +432,7 @@ form.addEventListener("submit", async (e) => {
     board = null;
     tab = "agents";
     void buildTabBar();
+    void buildTopBar();
     await Desk.connect(
       { host: get("host"), port: Number(get("port")) || 22, user: get("user"), keyPath: get("keyPath"), session: get("session") },
       String(f.get("password") ?? ""),
@@ -451,6 +469,14 @@ window.addEventListener("resize", () => {
   drawField();
 });
 
+// ⌘F (Ctrl+F off the Mac) on Gram puts the cursor in the sidebar search.
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() === "f" && (e.metaKey || e.ctrlKey) && !e.altKey && gramShowing()) {
+    e.preventDefault();
+    focusGramSearch();
+  }
+});
+
 async function init() {
   document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
@@ -458,9 +484,20 @@ async function init() {
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
   await Promise.all([buildTopBar(), buildTabBar()]);
-  // After buildTopBar, which replaces the capsules' children.
-  paintShape($("bar-leading"), { radius: "capsule", fill: "var(--color-surface-raised)" });
-  paintShape($("bar-actions"), { radius: "capsule", fill: "var(--color-surface-raised)" });
+  await initGram(
+    {
+      el,
+      symbol,
+      placeInitials,
+      spinner: spinnerSVG,
+      barChanged: () => {
+        if (tab === "gram") void buildTopBar();
+      },
+    },
+    $("detail"),
+    $("sidebar"),
+    $("tabbar"),
+  );
   await initListExtras({
     symbol,
     roster: $("roster"),
