@@ -32,6 +32,8 @@ jobs:
         run: bun run generate && git diff --exit-code src/mygo.ts
       - name: Design tokens and fonts match the pinned herdrup commit
         run: go run ./cmd/herdrup-sync -check -upstream
+      - name: herdr API types match the pinned herdr schema
+        run: go run ./cmd/herdr-api-gen -check -upstream
       - run: go vet ./...
       - run: go test -race ./...
         env:

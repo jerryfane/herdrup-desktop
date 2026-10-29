@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocol": 7,
+  "schema_version": 3,
+  "schemas": {
+    "request": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "Color": {
+          "description": "A colour.",
+          "enum": ["red", "light_blue"],
+          "type": "string"
+        },
+        "GetParams": {
+          "properties": {
+            "color": { "$ref": "#/schemas/request/$defs/Color", "default": "red" },
+            "limit": { "format": "uint32", "minimum": 0, "type": ["integer", "null"] },
+            "local_only": { "default": false, "type": "boolean" },
+            "tags": { "items": { "type": "string" }, "type": "array" },
+            "target": { "type": "string" },
+            "wait": { "$ref": "#/schemas/request/$defs/Wait" }
+          },
+          "required": ["target"],
+          "type": "object"
+        },
+        "PingParams": { "type": "object" },
+        "Wait": {
+          "properties": { "seconds": { "format": "uint64", "minimum": 0, "type": "integer" } },
+          "required": ["seconds"],
+          "type": "object"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "method": { "const": "ping", "type": "string" },
+            "params": { "$ref": "#/schemas/request/$defs/PingParams" }
+          },
+          "required": ["method", "params"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": { "const": "thing.get", "type": "string" },
+            "params": { "$ref": "#/schemas/request/$defs/GetParams" }
+          },
+          "required": ["method", "params"],
+          "type": "object"
+        }
+      ],
+      "properties": { "id": { "type": "string" } },
+      "required": ["id"],
+      "title": "Request",
+      "type": "object"
+    },
+    "success_response": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "Color": {
+          "description": "A colour, described differently in this section.",
+          "enum": ["red", "light_blue"],
+          "type": "string"
+        },
+        "Mode": {
+          "oneOf": [
+            { "const": "live", "description": "Applied at once.", "type": "string" },
+            { "enum": ["later"], "type": "string" }
+          ]
+        },
+        "ResponseResult": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": { "const": "pong", "type": "string" },
+                "version": { "type": "string" }
+              },
+              "required": ["type", "version"],
+              "type": "object"
+            },
+            {
+              "description": "The thing.",
+              "properties": {
+                "color": { "$ref": "#/schemas/success_response/$defs/Color" },
+                "extra": true,
+                "labels": { "additionalProperties": { "type": "string" }, "type": "object" },
+                "mode": { "anyOf": [{ "$ref": "#/schemas/success_response/$defs/Mode" }, { "type": "null" }] },
+                "type": { "const": "thing", "type": "string" }
+              },
+              "required": ["type", "color", "extra"],
+              "type": "object"
+            },
+            {
+              "properties": { "type": { "const": "ok", "type": "string" } },
+              "required": ["type"],
+              "type": "object"
+            }
+          ]
+        },
+        "Size": {
+          "oneOf": [
+            { "maximum": 100, "minimum": 0, "type": "integer" },
+            { "pattern": "^[0-9]+%$", "type": "string" }
+          ]
+        }
+      },
+      "properties": {
+        "id": { "type": "string" },
+        "result": { "$ref": "#/schemas/success_response/$defs/ResponseResult" },
+        "size": { "$ref": "#/schemas/success_response/$defs/Size" }
+      },
+      "required": ["id", "result"],
+      "title": "SuccessResponse",
+      "type": "object"
+    }
+  },
+  "title": "Fixture API"
+}

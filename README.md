@@ -29,6 +29,31 @@ Log in with an Ed25519, ECDSA or RSA key file, or a password. The password is ne
 machines (`machines.json` in the app's data folder, one of them active) hold only the key file's path. A
 `machine.json` from an earlier build is read as the active machine until `machines.json` exists.
 
+### herdr API types
+
+`internal/herdrapi` holds herdr's API on the wire. `types_gen.go` is generated from herdr's schema
+(`docs/next/api/herdr-api.schema.json` in jerryfane/herdr), pinned to one herdr commit:
+
+- `third_party/herdr/PROVENANCE.json` records that commit, the schema's sha256, and its `protocol` and
+  `schema_version`;
+- `third_party/herdr/herdr-api.schema.json` is the pinned copy, byte for byte;
+- `methods.go` is the method table the schema lacks (each method's params, result `type` tags, gating
+  capability and whether it streams), and `streams.go` types `pane.stream` and `gram.upload.stream`, which
+  the schema skips. Both are written by hand and cite herdr's source.
+
+Tagged unions (`ResponseResult`, `EventData`, `SubscriptionControlLine`, ...) decode to a wrapper whose
+`Value` holds the variant struct; the package doc says how each schema shape maps to Go. Never edit
+`types_gen.go` or the pinned schema. To follow a newer herdr, move the pin to its commit:
+
+```sh
+go run ./cmd/herdr-api-gen -commit <full herdr commit>
+```
+
+then fix whatever stops compiling and check `methods.go` against herdr's `src/api/schema.rs`.
+`go run ./cmd/herdr-api-gen -generate` regenerates from the pinned copy, and
+`go run ./cmd/herdr-api-gen -check -upstream` (in CI) fails when the copy differs from its record or from
+herdr at the pin, or when `types_gen.go` is stale or hand-edited.
+
 ## Develop
 
 Needs Go 1.27.3+ and Bun. On Linux, the app needs WebKitGTK 4.1 at run time (`libwebkit2gtk-4.1-0`).
