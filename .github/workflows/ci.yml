@@ -59,23 +59,16 @@ jobs:
   # served over SSH, and saves a screenshot once the board shows agents.
   smoke:
     name: Window smoke (${{ matrix.os }})
-    # macOS runs on mcb-air-herdrup-desktop, a runner on the owner's MacBook
-    # Air registered to this repo only (owner decision, 2026-10-29): GitHub's
-    # hosted Macs are shared with herdrup's iOS CI and queued up to an hour.
-    # Outside contributors' workflow runs need approval (repo setting
-    # all_external_contributors), so a fork's pull request cannot run on it
-    # unreviewed.
+    # macOS runners are GitHub's hosted ones, shared with herdrup's iOS CI:
+    # run them on main, on demand, and on pull requests labelled
+    # macos-smoke. (The MacBook Air runner, mcb-air-herdrup-desktop, is
+    # offline since its macOS update on 2026-10-29; jobs pinned to it would
+    # wait forever.)
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            runner: ubuntu-latest
-          - os: windows-latest
-            runner: windows-latest
-          - os: macos
-            runner: [self-hosted, macOS, herdrup-desktop]
-    runs-on: ${{ matrix.runner }}
+        os: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos-smoke')) && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]') || fromJSON('["ubuntu-latest","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
