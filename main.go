@@ -37,6 +37,20 @@ func main() {
 
 	installMenuBar()
 	var win *mygo.Window
+	// One Herdrup at a time, so launching it again brings back the window
+	// that closing hid to the tray, also where no tray icon is drawn
+	// (GNOME without its AppIndicator extension). Test-hook runs may run
+	// side by side and are left out.
+	if !smokeEnabled() && !refEnabled() {
+		if !mygo.App.RequestSingleInstanceLock() {
+			return
+		}
+		mygo.App.OnSecondInstance(func([]string, string) {
+			if win != nil {
+				showWindow(win)
+			}
+		})
+	}
 	onNotificationClick(&win)
 	mygo.App.WhenReady(func() {
 		win = mygo.NewWindow(mygo.WindowOptions{
