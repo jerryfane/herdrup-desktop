@@ -2,7 +2,7 @@ import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, ty
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
-import { avatarFace, forgetFailedPhotos } from "./avatars";
+import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -441,6 +441,7 @@ events.stateChanged.on((s) => {
   render();
 });
 events.boardChanged.on((b) => {
+  boardShown(b.session);
   board = b;
   render();
 });

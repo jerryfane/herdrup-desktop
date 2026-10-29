@@ -223,9 +223,21 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 	// the work session's from the session watcher (SessionSwitchCache).
 	boardsMu.Lock()
 	cleared := slices.ContainsFunc(boards[before:], func(b BoardUpdate) bool { return b.ListedAt == "" })
+	// Every board since the switch names session work, the cleared one
+	// included: the page forgets failed photos when it changes (#42).
+	other, otherSession := slices.IndexFunc(boards[before:], func(b BoardUpdate) bool { return b.Session != "work" }), ""
+	if other >= 0 {
+		otherSession = boards[before+other].Session
+	}
 	boardsMu.Unlock()
 	if !cleared {
 		t.Error("switching session published no unlisted board")
+	}
+	if other >= 0 {
+		t.Errorf("board %d after the switch shows session %q, want work", other, otherSession)
+	}
+	if b := d.Board(); b.Session != "work" {
+		t.Errorf("listed board shows session %q, want work", b.Session)
 	}
 	// A photo is fetched on the session shown and cached on disk.
 	url, err := d.AvatarImage(context.Background(), "t1", shaOf(pngBytes))

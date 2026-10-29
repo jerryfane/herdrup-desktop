@@ -83,6 +83,9 @@ type ConnState struct {
 type BoardUpdate struct {
 	Board    herdr.Board `json:"board"`
 	ListedAt string      `json:"listedAt"`
+	// Session is the herdr session the board shows, "" for the default.
+	// The page forgets photos that failed when it changes (#42).
+	Session string `json:"session"`
 }
 
 var (
@@ -384,7 +387,7 @@ func (d *Desk) selectSession(name string, at *boardSession) error {
 	// Under d.mu, like every board publish, so the new session's first
 	// board cannot be overtaken by this cleared one.
 	l.agents, l.groups = nil, nil
-	cleared := BoardUpdate{Board: herdr.BuildBoard(nil, herdr.View{})}
+	cleared := BoardUpdate{Board: herdr.BuildBoard(nil, herdr.View{}), Session: name}
 	if seeded != nil {
 		cleared.Board = *seeded
 	}
@@ -591,7 +594,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			l.agents, d.peers = u.Agents, peers
-			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339)})
+			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session})
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil
 		restart()
@@ -623,7 +626,7 @@ func (d *Desk) republish(ctx context.Context, l *link) {
 		d.mu.Unlock()
 		return
 	}
-	d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(l.agents, l.groups.view()), ListedAt: d.board.ListedAt})
+	d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(l.agents, l.groups.view()), ListedAt: d.board.ListedAt, Session: l.session})
 }
 
 // setState publishes s unless ctx, the connection it describes, has been
