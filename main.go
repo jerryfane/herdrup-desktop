@@ -51,7 +51,7 @@ func main() {
 			}
 		})
 	}
-	onNotificationClick(&win)
+	onNotificationClick(desk, &win)
 	mygo.App.WhenReady(func() {
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "Herdrup",

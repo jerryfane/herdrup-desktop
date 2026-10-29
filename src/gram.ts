@@ -84,6 +84,9 @@ let draft = "";
 let caret = 0;
 let pickedAgent: GramAgent | null = null;
 let draftPosted: number | null = null;
+let draftRevision = 0;
+let submittedDraftRevision: number | null = null;
+let posting = false;
 let picking = false;
 let wrapped = false;
 let composerFocused = false;
@@ -1392,6 +1395,7 @@ function buildComposer(): HTMLElement {
   };
   input.addEventListener("input", () => {
     draft = input.value;
+    draftRevision++;
     caret = input.selectionStart ?? draft.length;
     if (pickedAgent && !pickStillHolds(draft, agents(), pickedAgent)) pickedAgent = null;
     renderComposer();
@@ -1419,6 +1423,7 @@ function buildComposer(): HTMLElement {
 
 function setDraft(text: string, newCaret: number) {
   draft = text;
+  draftRevision++;
   input.value = text;
   caret = newCaret;
   input.setSelectionRange(newCaret, newCaret);
@@ -1583,10 +1588,20 @@ async function pickFiles() {
 async function send() {
   const a = address();
   const attachments = snap?.attachments ?? [];
-  if (!model.canSend(a, attachments.length, snap?.sending ?? false, picking)) return;
-  // The route is taken now, so a draft changed mid-upload cannot redirect the message.
+  if (!model.canSend(a, attachments.length, (snap?.sending ?? false) || posting, picking)) return;
+  // Capture both route and revision. An acknowledgement belongs to this
+  // submission, never to text typed while its upload or post was pending.
   const to = draftRecipient(a);
-  await Desk.gramPost(a.body, to ? [to] : [], attachments.map((x) => x.path)).catch(() => undefined);
+  const revision = draftRevision;
+  submittedDraftRevision = revision;
+  posting = true;
+  try {
+    await Desk.gramPost(a.body, to ? [to] : [], attachments.map((x) => x.path));
+  } catch {
+    // The backend's banner reports failure; leave unsent text intact.
+  } finally {
+    posting = false;
+  }
 }
 
 // ---- Agents sheet (the "Gram ›" pill) ----
@@ -1744,12 +1759,17 @@ function columnHandles(): HTMLElement[] {
 function onSnapshot(s: GramSnapshot) {
   const prevUnread = snap?.unreadCount ?? 0;
   snap = s;
-  if (draftPosted === null) draftPosted = s.draftPosted;
-  else if (s.draftPosted > draftPosted) {
-    draftPosted = s.draftPosted;
-    pickedAgent = null;
-    setDraft("", 0);
+  if (draftPosted !== null && s.draftPosted > draftPosted) {
+    if (submittedDraftRevision === draftRevision) {
+      pickedAgent = null;
+      setDraft("", 0);
+    }
+    submittedDraftRevision = null;
+  } else if (draftPosted !== null && s.draftPosted < draftPosted) {
+    // Reconnecting replaces the backend composer and resets its counter.
+    submittedDraftRevision = null;
   }
+  draftPosted = s.draftPosted;
   for (const [path, ev] of uploads) {
     const c = s.attachments.find((a) => a.path === path);
     if (!c || c.state !== ev.state) uploads.delete(path);

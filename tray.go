@@ -5,7 +5,6 @@ import (
 	"log"
 	"runtime"
 	"strconv"
-	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
@@ -30,12 +29,11 @@ var (
 	trayColor []byte
 )
 
-// AgentOpen asks the window to show an agent, by pane id: the tray menu's
-// agents and the notifications' clicks send it.
-var AgentOpen = mygo.NewEvent[string]("agent:open")
+// AgentOpen wakes the page for a scoped notification or tray activation.
+// Desk.PendingAgent retains it across window and board startup.
+var AgentOpen = mygo.NewEvent[AgentTarget]("agent:open")
 
-// notificationPrefix starts the ID of a needs-you notification; the pane
-// id follows. A notification of a pane replaces its last one.
+// A notification replaces only a prior notification for the same scoped pane.
 const notificationPrefix = "needs-you/"
 
 // installMenuBar sets the application menu: the standard App, File, Edit
@@ -53,11 +51,13 @@ func installMenuBar() {
 // onNotificationClick opens the agent of a clicked notification. It is
 // registered before App.Run, so a click that launches the app (macOS)
 // reaches it too; win is the window once it exists.
-func onNotificationClick(win **mygo.Window) {
+func onNotificationClick(d *Desk, win **mygo.Window) {
 	mygo.App.OnNotificationClick(func(id string) {
-		pane, ok := strings.CutPrefix(id, notificationPrefix)
-		if ok && *win != nil {
-			openAgent(*win, pane)
+		if target, ok := notificationTarget(id); ok {
+			d.requestAgent(target)
+			if *win != nil {
+				showWindow(*win)
+			}
 		}
 	})
 }
@@ -75,7 +75,7 @@ func startPresence(d *Desk, win *mygo.Window) {
 	}
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID: "herdrup", Icon: icon, IconIsTemplate: template,
-		ToolTip: trayToolTip(0), Menu: trayMenu(win, nil),
+		ToolTip: trayToolTip(0), Menu: trayMenu(d, win, presenceBoard{}),
 	})
 	if err != nil {
 		log.Printf("tray: %v", err)
@@ -98,7 +98,8 @@ func startPresence(d *Desk, win *mygo.Window) {
 			}
 		})
 	}
-	show := func(rows []herdr.Row) {
+	show := func(board presenceBoard) {
+		rows := board.rows
 		if tray == nil {
 			return
 		}
@@ -106,9 +107,9 @@ func startPresence(d *Desk, win *mygo.Window) {
 			tray.SetTitle(trayTitle(len(rows)))
 		}
 		tray.SetToolTip(trayToolTip(len(rows)))
-		tray.SetMenu(trayMenu(win, rows))
+		tray.SetMenu(trayMenu(d, win, board))
 	}
-	go d.presence.serve(show, func(a herdrapi.AgentInfo) { go showNotification(a) })
+	go d.presence.serve(show, func(a attention) { go showNotification(a.agent, a.target) })
 }
 
 // trayTitle is the count beside the icon on macOS, none while nobody
@@ -129,11 +130,14 @@ func trayToolTip(n int) string {
 
 // trayMenu opens the window, or the window on one of the agents needing
 // you, and quits.
-func trayMenu(win *mygo.Window, rows []herdr.Row) *mygo.Menu {
+func trayMenu(d *Desk, win *mygo.Window, board presenceBoard) *mygo.Menu {
 	items := []*mygo.MenuItem{{Label: "Open Herdrup", Click: func(*mygo.MenuItem, *mygo.Window) { showWindow(win) }}}
-	for _, r := range rows {
-		id := r.ID
-		items = append(items, &mygo.MenuItem{Label: r.Title, Click: func(*mygo.MenuItem, *mygo.Window) { openAgent(win, id) }})
+	for _, r := range board.rows {
+		target := AgentTarget{board.machineID, board.session, r.ID}
+		items = append(items, &mygo.MenuItem{Label: r.Title, Click: func(*mygo.MenuItem, *mygo.Window) {
+			d.requestAgent(target)
+			showWindow(win)
+		}})
 	}
 	items = append(items, mygo.Separator(), &mygo.MenuItem{Role: mygo.RoleQuit})
 	return mygo.NewMenu(items)
@@ -147,20 +151,14 @@ func showWindow(win *mygo.Window) {
 	win.Focus()
 }
 
-// openAgent shows the window with the agent's row (src/main.ts).
-func openAgent(win *mygo.Window, pane string) {
-	showWindow(win)
-	AgentOpen.Broadcast(pane)
-}
-
 // showNotification tells that a started needing you, as herdr's push
 // does: "jarvis needs attention", over its row's subtitle.
-func showNotification(a herdrapi.AgentInfo) {
+func showNotification(a herdrapi.AgentInfo, target AgentTarget) {
 	if !mygo.NotificationsSupported() {
 		return
 	}
 	n := mygo.NewNotification(mygo.NotificationOptions{
-		ID:    notificationPrefix + a.PaneID,
+		ID:    target.notificationID(),
 		Title: attentionTitle(a),
 		Body:  herdr.Preview(a),
 	})

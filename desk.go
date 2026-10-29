@@ -86,6 +86,8 @@ type BoardUpdate struct {
 	// Session is the herdr session the board shows, "" for the default.
 	// The page forgets photos that failed when it changes (#42).
 	Session string `json:"session"`
+	// MachineID identifies the saved SSH connection that owns this board.
+	MachineID string `json:"machineID"`
 }
 
 var (
@@ -116,7 +118,8 @@ type Desk struct {
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
 	// (presence.go, tray.go).
-	presence *presence
+	presence     *presence
+	pendingAgent *AgentTarget
 	// openFolders keeps the folders open on this device; alert shows a
 	// folder save that failed.
 	openFolders *openFolders
@@ -394,12 +397,12 @@ func (d *Desk) selectSession(name string, at *boardSession) error {
 	// Under d.mu, like every board publish, so the new session's first
 	// board cannot be overtaken by this cleared one.
 	l.agents, l.groups = nil, nil
-	cleared := BoardUpdate{Board: herdr.BuildBoard(nil, herdr.View{}), Session: name}
+	cleared := BoardUpdate{Board: herdr.BuildBoard(nil, herdr.View{}), Session: name, MachineID: l.id}
 	if seeded != nil {
 		cleared.Board = *seeded
 	}
 	BoardChanged.Broadcast(cleared)
-	d.presence.show(needingRows(cleared.Board))
+	d.presence.show(needingRows(cleared.Board), l.id, name)
 	observe := d.onBoard
 	d.mu.Unlock()
 	if observe != nil {
@@ -455,7 +458,7 @@ func (d *Desk) Disconnect() {
 	}
 	d.link = nil
 	d.board, d.peers = nil, nil
-	d.presence.show(nil)
+	d.presence.show(nil, "", "")
 	d.mu.Unlock()
 	d.gramReset(nil, "")
 	d.gramWipeCacheUnlessOwner("")
@@ -491,7 +494,7 @@ func (d *Desk) start(m Machine, password string) {
 	d.cancel = cancel
 	d.link = l
 	d.board, d.peers = nil, nil
-	d.presence.show(nil)
+	d.presence.show(nil, "", "")
 	d.mu.Unlock()
 	// Gram belongs to the connection; its downloads to the machine.
 	d.gramReset(l, m.Host)
@@ -608,8 +611,8 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			l.agents, d.peers = u.Agents, peers
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
-			d.presence.notify(started)
-			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session})
+			d.presence.notify(started, l.id, l.session)
+			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session, MachineID: l.id})
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil
 		restart()
@@ -626,7 +629,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 func (d *Desk) publishLocked(b BoardUpdate) {
 	d.board = &b
 	BoardChanged.Broadcast(b)
-	d.presence.show(needingRows(b.Board))
+	d.presence.show(needingRows(b.Board), b.MachineID, b.Session)
 	observe := d.onBoard
 	d.mu.Unlock()
 	if observe != nil {
@@ -642,7 +645,7 @@ func (d *Desk) republish(ctx context.Context, l *link) {
 		d.mu.Unlock()
 		return
 	}
-	d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(l.agents, l.groups.view()), ListedAt: d.board.ListedAt, Session: l.session})
+	d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(l.agents, l.groups.view()), ListedAt: d.board.ListedAt, Session: l.session, MachineID: l.id})
 }
 
 // setState publishes s unless ctx, the connection it describes, has been
