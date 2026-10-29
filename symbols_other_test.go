@@ -33,6 +33,20 @@ var pageSymbols = []struct{ symbol, file string }{
 	{"square.grid.2x2.fill", "fill/squares-four-fill.svg"},
 	{"bubble.left.and.bubble.right.fill", "fill/chats-fill.svg"},
 	{"gearshape.fill", "fill/gear-fill.svg"},
+	{"envelope.open", "regular/envelope-open.svg"},
+	{"arrow.clockwise", "regular/arrow-clockwise.svg"},
+	{"bookmark", "regular/bookmark-simple.svg"},
+	{"bookmark.fill", "fill/bookmark-simple-fill.svg"},
+	{"arrow.up", "regular/arrow-up.svg"},
+	{"doc.on.doc", "regular/copy.svg"},
+	{"checkmark", "regular/check.svg"},
+	{"photo", "regular/image.svg"},
+	{"clock.badge.xmark", "regular/clock.svg"},
+	{"tray", "regular/tray.svg"},
+	{"exclamationmark.triangle", "regular/warning.svg"},
+	{"bubble.left.and.exclamationmark.bubble.right", "regular/chats.svg"},
+	{"paperclip", "regular/paperclip.svg"},
+	{"tray.and.arrow.down", "regular/tray-arrow-down.svg"},
 }
 
 // svgOf decodes an Image data URL and reads its root attributes.

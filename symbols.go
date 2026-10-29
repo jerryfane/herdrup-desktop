@@ -126,6 +126,22 @@ var standIns = [...]standIn{
 	{"square.grid.2x2.fill", "squares-four", true},
 	{"bubble.left.and.bubble.right.fill", "chats", true},
 	{"gearshape.fill", "gear", true},
+	// Gram (herdrup App/GramView.swift, GramCards.swift, HerdrApp.swift
+	// gramSidebar, ComposerAttach.swift).
+	{"envelope.open", "envelope-open", false},
+	{"arrow.clockwise", "arrow-clockwise", false},
+	{"bookmark", "bookmark-simple", false},
+	{"bookmark.fill", "bookmark-simple", true},
+	{"arrow.up", "arrow-up", false},
+	{"doc.on.doc", "copy", false},
+	{"checkmark", "check", false},
+	{"photo", "image", false},
+	{"clock.badge.xmark", "clock", false},
+	{"tray", "tray", false},
+	{"exclamationmark.triangle", "warning", false},
+	{"bubble.left.and.exclamationmark.bubble.right", "chats", false},
+	{"paperclip", "paperclip", false},
+	{"tray.and.arrow.down", "tray-arrow-down", false},
 }
 
 // sfMetric is how macOS lays out one stand-in's SF Symbol at each weight

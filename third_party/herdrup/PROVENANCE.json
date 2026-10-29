@@ -133,6 +133,41 @@
       "sha256": "6278eb2bc7d618a367e9c6f1975c4a7e05a6bc3d0fb23ded023fb2a7b002d10a"
     },
     {
+      "source": "App/Assets.xcassets/ComposerSend.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/send.svg",
+      "sha256": "a61d4f2f75e53bdce1bdbde33802efab2c929620a009edde4d9d280512a8f519"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerClose.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/close.svg",
+      "sha256": "6d652c4168ec7add267b380ac6e41400ae6a542b663f3e1b5c68d4d256de717a"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerCheck.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/check.svg",
+      "sha256": "9dd15f780e364c5bd5d5e75508962a5813859d159f0edab7b2c4e09eec03c6af"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerAlert.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/alert.svg",
+      "sha256": "e23e7d09c92c31994039be578cfea9f6cc4ee368fa6f75f79c9e6521d3597da5"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerFile.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/file.svg",
+      "sha256": "50b7e9bfccad5547b57dad23ec152dcd42712b025326295ce4eb056115b53874"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerPhoto.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/photo.svg",
+      "sha256": "4ce589d9aa1dd814469238c1eeeb1aacf59bdca8b533a2fcc04ebe303858278e"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerSending.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/sending.svg",
+      "sha256": "0536fa089e4a605acdaa9c2e49faaafce825479d2502484080b65100c8e2553d"
+    },
+    {
       "source": "App/Resources/Mermaid/mermaid.min.js",
       "dest": "public/mermaid/mermaid.min.js",
       "sha256": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
