@@ -19,6 +19,16 @@ export interface Avatar {
   target?: string;
 }
 
+/**
+ * AvatarFace is a Gram sender's avatar: the roster agent's, else the
+ * initial tile of its bare name.
+ */
+export interface AvatarFace {
+  avatar: Avatar;
+  initial: string;
+  tint: number;
+}
+
 /** Board is the status board for one machine. */
 export interface Board {
   sections: Section[];
@@ -82,6 +92,178 @@ export interface FolderNaming {
    * rename, "" for a new folder.
    */
   name: string;
+}
+
+/**
+ * GramAgent is an agent that has written in Gram, for the @ list and the
+ * agents sheet.
+ */
+export interface GramAgent {
+  /** From is the routing name a post to it is addressed to. */
+  from: string;
+  name: string;
+  machine: string;
+}
+
+/** GramAttachment is a staged file's chip. */
+export interface GramAttachment {
+  path: string;
+  name: string;
+  mime: string;
+  isImage: boolean;
+  size: number;
+  /**
+   * State is the chip's state: ready, waiting, uploading, uploaded,
+   * uploadFailed, sending, sent or failed.
+   */
+  state: string;
+  /** Label is the chip's status line, e.g. "42% · 3.1 MB". */
+  label: string;
+  /** Fraction is a running upload's share when Determinate. */
+  fraction: number;
+  determinate: boolean;
+  indeterminate: boolean;
+  failed: boolean;
+}
+
+/**
+ * GramDownloadProgress is a file download moving: State "downloading",
+ * "done" or "failed".
+ */
+export interface GramDownloadProgress {
+  id: string;
+  done: number;
+  size: number;
+  state: string;
+  /** Label is "<done> of <size>". */
+  label: string;
+}
+
+/** GramFile is an attachment's metadata as a row shows it. */
+export interface GramFile {
+  name: string;
+  mime: string;
+  size: number;
+  /** SizeLabel is herdrup's displaySize: "N B", "N KB" or "N.N MB". */
+  sizeLabel: string;
+  isImage: boolean;
+  /**
+   * Preview is an image the feed fetches on its own (GramImage): at most
+   * 8 MiB.
+   */
+  preview: boolean;
+}
+
+/** GramMessage is one row of the feed. */
+export interface GramMessage {
+  id: string;
+  /** FromAgent is an agent's message to you; false for your own post. */
+  fromAgent: boolean;
+  /** From is the sender's routing name, which a reply is addressed to. */
+  from: string;
+  /**
+   * Name is the sender's bare agent name, as the sender line and the
+   * avatar show it.
+   */
+  name: string;
+  /**
+   * SenderName is the sender with a federated alias read as its machine
+   * label.
+   */
+  senderName: string;
+  /**
+   * Machine is the sender's machine for "name · machine": its label or
+   * alias, else this connection's machine; "" for your own posts.
+   */
+  machine: string;
+  /** To is the agent your post was addressed to; "" for the queue. */
+  to?: string;
+  /** GrabbedBy is the agent that claimed your queue post. */
+  grabbedBy?: string;
+  text: string;
+  createdUnixMs: number;
+  /** Unread is an agent's message you have not read. */
+  unread: boolean;
+  file?: GramFile;
+  expiredFile?: GramFile;
+  /**
+   * AttachmentPreview is the attachment in a one-line preview: its name,
+   * or "<name> (expired)".
+   */
+  attachmentPreview?: string;
+  saved: boolean;
+  /** Pending is your post before a list has shown it. */
+  pending: boolean;
+  /**
+   * StatusVerb and StatusRest are your post's status line, the verb in
+   * semibold: "Grabbed" "by X", "Delivered" "to X" or "Unclaimed" "in
+   * the shared queue".
+   */
+  statusVerb?: string;
+  statusRest?: string;
+}
+
+/** GramSnapshot is Gram as the page draws it. */
+export interface GramSnapshot {
+  /**
+   * Phase is "idle" (no connection), "loading", "loaded" or
+   * "unavailable". A list already held is shown, never a spinner.
+   */
+  phase: string;
+  /** Unavailable is the unavailable state's text. */
+  unavailable?: string;
+  /**
+   * Messages are newest first: your posts not listed yet, then the
+   * held list, without deleted ones.
+   */
+  messages: GramMessage[];
+  unreadCount: number;
+  /** HasMore reports older messages beyond those held. */
+  hasMore: boolean;
+  loadingOlder: boolean;
+  /** OlderError is the sentinel's failure, "Couldn't load older messages." */
+  olderError?: string;
+  /**
+   * Status is the banner over the composer: the first of a send error,
+   * a Read-all note, a refresh acknowledgement ("Refreshing…", "Up to
+   * date", "Refreshed") and a refresh failure.
+   */
+  status?: string;
+  refreshing: boolean;
+  markingAllRead: boolean;
+  /** Agents have written in Gram, most recent first. */
+  agents: GramAgent[];
+  /** Saved are this device's saved messages, newest first. */
+  saved: SavedGram[];
+  /** LocalMachine labels this connection's machine. */
+  localMachine: string;
+  attachments: GramAttachment[];
+  sending: boolean;
+  /**
+   * SendProgress is the byte share of the uploads a send waits on, when
+   * SendProgressShown.
+   */
+  sendProgress: number;
+  sendProgressShown: boolean;
+  /**
+   * DraftPosted counts posts that carried the draft's text; the page
+   * clears its draft when it moves.
+   */
+  draftPosted: number;
+  visible: boolean;
+}
+
+/** GramUploadProgress is a staged file's upload moving. */
+export interface GramUploadProgress {
+  path: string;
+  /** Fraction is the share sent, 0 when not measurable. */
+  fraction: number;
+  /**
+   * State is the chip state (GramAttachment.State); "removed" once the
+   * file left the composer.
+   */
+  state: string;
+  label: string;
 }
 
 /**
@@ -202,6 +384,29 @@ export interface Row {
    * when there is none (herdrup activityText): the needs-you pill's detail.
    */
   activity?: string;
+}
+
+/** SavedFile is a saved copy's attachment metadata; the bytes are never kept. */
+export interface SavedFile {
+  name: string;
+  size: number;
+  mime: string;
+}
+
+/**
+ * SavedGram is a locally saved copy of a Gram message (herdrup SavedGram):
+ * a copy, not an id, since a deleted original cannot be fetched again.
+ */
+export interface SavedGram {
+  id: string;
+  text: string;
+  /** From is the sender as shown when saved (SenderName). */
+  from: string;
+  fromAgent: boolean;
+  createdUnixMs: number;
+  file?: SavedFile;
+  /** ExpiredFile is an attachment the store expired, with nothing to open. */
+  expiredFile?: SavedFile;
 }
 
 /** SavedMachine is one machine in the saved set. */
@@ -379,6 +584,136 @@ export const Desk = {
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
   },
+  /**
+   * GramCancelAttachment removes an attached file: its upload stops, and one
+   * that finished is discarded on herdr.
+   */
+  gramCancelAttachment(path: string): Promise<void> {
+    return call("Desk.GramCancelAttachment", path);
+  },
+  /**
+   * GramCopyText puts text on the clipboard (a message's Copy, a code
+   * block's Copy).
+   */
+  gramCopyText(text: string): Promise<void> {
+    return call("Desk.GramCopyText", text);
+  },
+  /**
+   * GramDelete deletes a message for good. The row goes at once and stays
+   * gone until a list agrees; its downloaded file goes with it.
+   */
+  gramDelete(id: string): Promise<void> {
+    return call("Desk.GramDelete", id);
+  },
+  /**
+   * GramImage returns a picture attachment as a data: URL for the feed's
+   * card: only an image of at most 8 MiB, fetched at most two at a time.
+   * The page decides when a card has shown long enough to ask.
+   */
+  gramImage(id: string): Promise<string> {
+    return call("Desk.GramImage", id);
+  },
+  /**
+   * GramLoadOlder fetches the page older than everything held, as the feed's
+   * top sentinel does, and reports whether the list grew. A page built on a
+   * cursor a head load has since replaced is dropped and asked for once more.
+   */
+  gramLoadOlder(): Promise<boolean> {
+    return call("Desk.GramLoadOlder");
+  },
+  /**
+   * GramMarkAllRead marks every unread message read, older than the held
+   * list too: the ids come from an unread_only list, each marked by its own
+   * gram.mark_read, in two passes so an id another mark had in flight is
+   * tried again. Failures are reported as "N of M could not be marked read."
+   */
+  gramMarkAllRead(): Promise<void> {
+    return call("Desk.GramMarkAllRead");
+  },
+  /**
+   * GramMarkRead marks an unread message read once it shows; the local copy
+   * flips only after herdr confirms.
+   */
+  gramMarkRead(id: string): Promise<void> {
+    return call("Desk.GramMarkRead", id);
+  },
+  /**
+   * GramOpenFile opens a message's file with the system's default app,
+   * downloading it the first time. herdrup's QuickLook and in-app HTML/SVG
+   * viewer have no desktop counterpart; a program or script is not opened
+   * at all, since the system opener would run it.
+   */
+  gramOpenFile(id: string): Promise<void> {
+    return call("Desk.GramOpenFile", id);
+  },
+  /**
+   * GramPickFiles shows the open dialog for files to attach, several at
+   * once, and attaches them; their uploads start at once. It returns the
+   * attached paths; any skipped are named in the banner.
+   */
+  gramPickFiles(): Promise<string[]> {
+    return call("Desk.GramPickFiles");
+  },
+  /**
+   * GramPost sends a Gram: text alone, or each attached file of attachments
+   * as its own Gram with text on the first. to is the agent's routing name,
+   * or empty for the shared queue. A file not attached yet is attached
+   * first. The post shows at once and stays until a list has it; on failure
+   * the banner says why and the files not sent stay attached for a retry.
+   */
+  gramPost(text: string, to: string[], attachments: string[]): Promise<void> {
+    return call("Desk.GramPost", text, to, attachments);
+  },
+  /**
+   * GramRefresh loads the inbox now, as Refresh does: never dropped (a tap
+   * during a load runs after it, "Refreshing…" meanwhile) and acknowledged
+   * "Up to date" or "Refreshed"; a failure shows its own note.
+   */
+  gramRefresh(): Promise<void> {
+    return call("Desk.GramRefresh");
+  },
+  /**
+   * GramRetryAttachment uploads a file whose upload failed again (its
+   * chip's "tap to retry").
+   */
+  gramRetryAttachment(path: string): Promise<void> {
+    return call("Desk.GramRetryAttachment", path);
+  },
+  /**
+   * GramSaveFile saves a message's file where the save dialog says, from the
+   * cache when it was downloaded before.
+   */
+  gramSaveFile(id: string): Promise<void> {
+    return call("Desk.GramSaveFile", id);
+  },
+  /** GramSaved returns this device's saved messages, newest first. */
+  gramSaved(): Promise<SavedGram[]> {
+    return call("Desk.GramSaved");
+  },
+  /**
+   * GramSenderAvatar is the avatar of a Gram sender's routing name: the
+   * roster agent it names (a federated name on its own machine), else the
+   * initial tile of its bare name. A photo is fetched with AvatarImage.
+   */
+  gramSenderAvatar(name: string): Promise<AvatarFace> {
+    return call("Desk.GramSenderAvatar", name);
+  },
+  /** GramSetSaved saves a copy of a message on this device, or forgets it. */
+  gramSetSaved(id: string, saved: boolean): Promise<void> {
+    return call("Desk.GramSetSaved", id, saved);
+  },
+  /**
+   * GramSetVisible tells Gram whether its page shows. While it shows the
+   * inbox is polled every 6 s (30 s after a failure); while it does not, the
+   * unread badge every 15 s, and staged uploads nothing waits on pause.
+   */
+  gramSetVisible(visible: boolean): Promise<void> {
+    return call("Desk.GramSetVisible", visible);
+  },
+  /** GramState returns Gram as the page draws it. */
+  gramState(): Promise<GramSnapshot> {
+    return call("Desk.GramState");
+  },
   /** Machine returns the active saved machine, if any. */
   machine(): Promise<Machine | null> {
     return call("Desk.Machine");
@@ -507,6 +842,15 @@ export const events = {
    * SetMachineFederation has re-read them.
    */
   machineStatusChanged: event<SavedMachineStatus[]>("machine-status:changed"),
+  /** GramChanged is sent with the snapshot whenever Gram changes. */
+  gramChanged: event<GramSnapshot>("gram:changed"),
+  /**
+   * GramUploadChanged is sent as a staged file's upload moves, at most
+   * once per percent.
+   */
+  gramUpload: event<GramUploadProgress>("gram:upload"),
+  /** GramDownloadChanged is sent as a file download moves. */
+  gramDownload: event<GramDownloadProgress>("gram:download"),
   /**
    * FolderNamingRequested is sent when a menu asks for a folder name; the
    * window answers with Desk.NameFolder.

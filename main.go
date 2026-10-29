@@ -25,6 +25,13 @@ func main() {
 		}
 	}
 	desk := newDesk(dir)
+	if !smokeEnabled() {
+		// Downloaded Gram files go under the user cache directory, which the
+		// system may clear; smoke runs keep everything in their temp dir.
+		if cache, err := mygo.App.Path(mygo.PathCache); err == nil {
+			desk.cacheDir = cache
+		}
+	}
 	mygo.Bind(desk)
 	mygo.Bind(Symbols{})
 

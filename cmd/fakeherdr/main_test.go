@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 func agentList(t *testing.T, mode string) (any, bool) {
@@ -61,5 +64,45 @@ func TestModes(t *testing.T) {
 	}
 	if _, err := handler("full", defaultAgents, newWrites()); err == nil {
 		t.Fatal("unknown mode accepted")
+	}
+}
+
+func TestSampleGramsSeed(t *testing.T) {
+	var fixtures []fakeherdr.GramFixture
+	if err := json.Unmarshal(sampleGrams, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	w := newWrites()
+	if err := w.gram.Seed(fixtures, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	msgs := w.gram.Messages()
+	if len(msgs) != len(fixtures) || len(msgs) == 0 {
+		t.Fatalf("%d messages from %d fixtures", len(msgs), len(fixtures))
+	}
+	var files, expired, unread int
+	for i, m := range msgs {
+		if i > 0 && m.CreatedUnixMs < msgs[i-1].CreatedUnixMs {
+			t.Errorf("%s is older than the message before it", m.ID)
+		}
+		if m.File != nil {
+			files++
+			if m.File.Size == 0 || len(m.File.SHA256) != 64 {
+				t.Errorf("%s: file %+v has no bytes", m.ID, m.File)
+			}
+		}
+		if m.ExpiredFile != nil {
+			expired++
+		}
+		if m.Direction == herdrapi.GramDirectionAgentToOwner && !m.ReadByOwner {
+			unread++
+		}
+	}
+	if files < 2 || expired != 1 || unread < 1 {
+		t.Fatalf("files %d expired %d unread %d", files, expired, unread)
+	}
+	res, apiErr, _ := w.gram.Handle("gram.get_file_chunk", json.RawMessage(`{"id":"gs-06","offset":0}`))
+	if apiErr != nil || res == nil {
+		t.Fatalf("get_file_chunk: %v", apiErr)
 	}
 }

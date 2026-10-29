@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -592,5 +593,60 @@ func TestUploadPathSelection(t *testing.T) {
 				t.Errorf("%d gram.upload_chunk calls, want %d", u.chunks, wantChunks)
 			}
 		})
+	}
+}
+
+// shortReader is a file that turned out shorter than its size.
+type shortReader struct{ data []byte }
+
+func (r shortReader) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(r.data)) {
+		return 0, errors.New("short file")
+	}
+	return copy(p, r.data[off:]), nil
+}
+
+func TestUploadFromReportsAcknowledgedBytes(t *testing.T) {
+	for _, streamCap := range []bool{true, false} {
+		piece := engine.UploadChunkBytes
+		if streamCap {
+			piece = engine.UploadStreamChunkBytes
+		}
+		data := payload(2*piece + 100)
+		u, c := uploadHerdr(t, streamCap, nil)
+		var sent []int64
+		id, _, err := c.GramUploadFrom(ctx(t), bytes.NewReader(data), int64(len(data)), func(n int64) { sent = append(sent, n) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []int64{int64(piece), int64(2 * piece), int64(len(data))}
+		if !slices.Equal(sent, want) {
+			t.Errorf("stream %v: progress %v, want %v", streamCap, sent, want)
+		}
+		u.mu.Lock()
+		if !bytes.Equal(u.files[id], data) {
+			t.Errorf("stream %v: staged %d bytes, want %d", streamCap, len(u.files[id]), len(data))
+		}
+		u.mu.Unlock()
+	}
+}
+
+func TestUploadFromFailsOnAShortRead(t *testing.T) {
+	_, c := uploadHerdr(t, false, nil)
+	data := payload(engine.UploadChunkBytes + 10)
+	if _, _, err := c.GramUploadFrom(ctx(t), shortReader{data[:engine.UploadChunkBytes]}, int64(len(data)), nil); err == nil {
+		t.Fatal("a file shorter than its size uploaded")
+	}
+}
+
+func TestUploadFromSendsAnEmptyFileAsOneChunk(t *testing.T) {
+	u, c := uploadHerdr(t, false, nil)
+	if _, _, err := c.GramUploadFrom(ctx(t), bytes.NewReader(nil), 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.chunks != 1 {
+		t.Fatalf("%d chunks for an empty file, want 1", u.chunks)
 	}
 }
