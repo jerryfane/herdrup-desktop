@@ -415,9 +415,11 @@ func (d *Desk) SearchBoard(query string) *herdr.Board {
 		d.mu.Unlock()
 		return nil
 	}
-	agents := l.agents
+	// Both read under d.mu: SelectSession replaces l.groups (and l.agents)
+	// under the same lock, so reading l.groups after unlocking could see nil.
+	agents, groups := l.agents, l.groups
 	d.mu.Unlock()
-	v := l.groups.view()
+	v := groups.view()
 	v.Query = query
 	b := herdr.BuildBoard(agents, v)
 	return &b
