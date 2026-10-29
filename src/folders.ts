@@ -6,7 +6,7 @@ import { Desk, events, type Board, type Folder, type FolderNaming, type Row } fr
 
 /** One line of the roster as drawn. */
 export type Entry =
-  | { kind: "agent"; row: Row }
+  | { kind: "agent"; row: Row; section: string }
   | { kind: "folder"; folder: Folder }
   | { kind: "disclosure"; key: "idle" | "archived"; title: string; count: number }
   | { kind: "archived"; row: Row };
@@ -22,7 +22,7 @@ export function rosterEntries(board: Board, open: { idle: boolean; archived: boo
   const items = (s: Board["sections"][number]) => {
     for (const it of s.items) {
       if (it.kind === "folder" && it.folder) out.push({ kind: "folder", folder: it.folder });
-      else if (it.row) out.push({ kind: "agent", row: it.row });
+      else if (it.row) out.push({ kind: "agent", row: it.row, section: s.key });
     }
   };
   for (const s of board.sections) {

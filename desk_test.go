@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net"
@@ -146,11 +147,16 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 		Handle: func(method string, _ json.RawMessage) (any, *fakeherdr.APIError) {
 			switch method {
 			case "ping":
-				return fakeherdr.Pong(true), nil
+				pong := fakeherdr.Pong(true)
+				pong["capabilities"].(map[string]bool)["agent_avatar"] = true
+				return pong, nil
 			case "agent.list":
 				return map[string]any{"type": "agent_list", "agents": []any{
 					map[string]any{"pane_id": "w1:p1", "agent_status": "working"},
 				}}, nil
+			case "agent.avatar.get":
+				return map[string]any{"type": "agent_avatar_image", "mime": "image/png",
+					"data_base64": base64.StdEncoding.EncodeToString(pngBytes)}, nil
 			}
 			return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
 		},
@@ -197,6 +203,10 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 	if !reflect.DeepEqual(names, []string{"work", "default"}) {
 		t.Fatalf("sessions %+v", sessions)
 	}
+	waitFor(t, "session pills", func() bool {
+		p := d.SessionPills()
+		return len(p) == 2 && p[0].Name == "work" && !p[0].Selected && p[1].Default && p[1].Selected
+	})
 
 	boardsMu.Lock()
 	before := len(boards)
@@ -204,16 +214,31 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 	if err := d.SelectSession("work"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "a board from session work", func() bool { return d.Board() != nil && listedIn("work") })
-	// The default session's agent must not stay on screen until the new
-	// list arrives: the switch itself publishes an empty, unlisted board.
-	boardsMu.Lock()
-	cleared := slices.ContainsFunc(boards[before:], func(b BoardUpdate) bool {
-		return b.ListedAt == "" && b.Board.Total == 0 && len(b.Board.Sections) == 0
+	waitFor(t, "a board from session work", func() bool {
+		b := d.Board()
+		return b != nil && b.ListedAt != "" && listedIn("work")
 	})
+	// The default session's agents must not stay on screen until the new
+	// list arrives: the switch itself publishes an unlisted board, empty or
+	// the work session's from the session watcher (SessionSwitchCache).
+	boardsMu.Lock()
+	cleared := slices.ContainsFunc(boards[before:], func(b BoardUpdate) bool { return b.ListedAt == "" })
 	boardsMu.Unlock()
 	if !cleared {
-		t.Error("switching session published no cleared board")
+		t.Error("switching session published no unlisted board")
+	}
+	// A photo is fetched on the session shown and cached on disk.
+	url, err := d.AvatarImage(context.Background(), "t1", shaOf(pngBytes))
+	if err != nil || url != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(pngBytes) {
+		t.Fatalf("avatar %q, %v", url, err)
+	}
+	if !slices.ContainsFunc(srv.Requests(), func(r fakeherdr.Request) bool {
+		return r.Method == "agent.avatar.get" && r.Session == "work"
+	}) {
+		t.Error("agent.avatar.get did not go to the session shown")
+	}
+	if readAvatar(avatarDir(dir), shaOf(pngBytes)) == nil {
+		t.Error("photo not cached on disk")
 	}
 	if n := srv.Conns(); n != 1 {
 		t.Errorf("%d SSH connections, want the one kept across the session switch", n)

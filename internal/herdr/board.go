@@ -101,6 +101,23 @@ type Row struct {
 	// shown indented under its open folder (herdrup card()).
 	Starred  bool   `json:"starred"`
 	FolderID string `json:"folderID,omitempty"`
+	// Avatar is the picture the avatar draws (herdrup AgentAvatarAppearance).
+	Avatar Avatar `json:"avatar"`
+	// Stale marks a live agent on a degraded federation peer: its status
+	// was not confirmed on the last poll (herdrup showsUnconfirmedMarker).
+	Stale bool `json:"stale,omitempty"`
+	// NoAccount is herdr's account_unresolved: the recorded account is gone
+	// from the registry, so the agent refuses to resume.
+	NoAccount bool `json:"noAccount,omitempty"`
+	// Account is the id of the account the agent runs on, "" when herdr
+	// reports none. The window shows the account's label.
+	Account string `json:"account,omitempty"`
+	// StatusSinceUnixMs is when the agent entered its current status, for
+	// the time-in-state age; absent on an older herdr.
+	StatusSinceUnixMs *uint64 `json:"statusSinceUnixMs,omitempty"`
+	// Activity is the terminal title without its prompt and spinner, ""
+	// when there is none (herdrup activityText): the needs-you pill's detail.
+	Activity string `json:"activity,omitempty"`
 }
 
 // Section is one group of rows.
@@ -253,6 +270,12 @@ func rowOf(a herdrapi.AgentInfo, g Group) Row {
 	if a.Reachability != nil && *a.Reachability == herdrapi.ReachabilityUnreachable {
 		r.Badge = "offline"
 	}
+	r.Avatar = AvatarOf(a)
+	r.Stale = a.Archived == nil && a.Reachability != nil && *a.Reachability == herdrapi.ReachabilityDegraded
+	r.NoAccount = a.AccountUnresolved != nil && *a.AccountUnresolved
+	r.Account = str(a.Account)
+	r.StatusSinceUnixMs = a.StatusSinceUnixMs
+	r.Activity = Activity(str(a.TerminalTitleStripped))
 	return r
 }
 

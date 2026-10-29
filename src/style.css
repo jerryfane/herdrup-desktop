@@ -553,3 +553,159 @@ dialog.folder-naming h2 { margin: 0 0 var(--space-stack-medium); font: 600 15px 
 dialog.folder-naming form { display: flex; flex-direction: column; gap: var(--space-stack-medium); }
 dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: var(--space-stack-medium); }
 /* ---- end folders and stars ---- */
+/* ==== Slice: avatars, sessions and card extras (issue #5) ==== */
+
+/* AgentAvatarView's faces: a mascot (aspect fit), a photo (fill, 1 pt
+   hairline ring) or a plain surfaceRaised circle while the photo loads, all
+   clipped to the avatar's circle (App/AgentAvatarViews.swift). */
+.avatar .face, .archived .pic .face {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+}
+.face.mascot { object-fit: contain; }
+.face.loading { background: var(--color-surface-raised); }
+.face.photo { position: relative; }
+.face.photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.face.photo::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  /* Circle().stroke(hairline, lineWidth: 1): centred on the edge, so the
+     half inside the clip is what shows. */
+  box-shadow: inset 0 0 0 0.5px var(--color-hairline);
+}
+/* The archived card dims its avatar to 0.5 (HerdrApp.swift archivedCard). */
+.archived .pic .face { opacity: 0.5; }
+/* An avatar at another size (the needs-you pill): glyph (size × 0.42)
+   rounded, AgentInitialTile's default. */
+.avatar[style*="--avatar-size"] { width: var(--avatar-size); height: var(--avatar-size); }
+.avatar[style*="--avatar-size"] .tile { font-size: round(calc(var(--avatar-size) * 0.42), 1px); }
+
+/* rowMarkers: capsules after the name, padding 8 × 3 (HerdrApp.swift
+   4660-4690). "no account" in died with a hairline died ring at 50%;
+   "stale" in textDim, no ring. */
+.t-marker-pill { font: var(--text-marker-pill-weight) var(--text-marker-pill-size)/var(--leading-app) var(--text-marker-pill-font); white-space: nowrap; }
+.row .marker { flex: none; padding: 3px 8px; border-radius: 999px; }
+.row .marker.stale {
+  color: var(--color-text-dim);
+  background: color-mix(in srgb, var(--color-text-dim) 12%, transparent);
+}
+.row .marker.no-account {
+  color: var(--status-died);
+  background: color-mix(in srgb, var(--status-died) 12%, transparent);
+  /* Capsule().stroke(died 0.5, lineWidth: hairline), centred on the edge. */
+  box-shadow: 0 0 0 calc(var(--size-hairline) / 2) color-mix(in srgb, var(--status-died) 50%, transparent),
+    inset 0 0 0 calc(var(--size-hairline) / 2) color-mix(in srgb, var(--status-died) 50%, transparent);
+}
+.row .age { flex: none; }
+/* The account line under the preview: machine AccountLabel, textFaint, or
+   died when the account is unresolved. */
+.t-account-label { font: var(--text-account-label-weight) var(--text-account-label-size)/var(--leading-machine) var(--text-account-label-font); white-space: nowrap; }
+.row .account { color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; }
+.row .account.unresolved { color: var(--status-died); }
+
+/* SessionPills: a horizontal strip, 16 pt side padding and 8 pt between
+   pills, 4 pt under the search field and 6 pt above the list
+   (HerdrApp.swift rosterTitleBlock). The search field's own bottom margin
+   then follows the pills instead. */
+.session-pills {
+  display: flex;
+  gap: 8px;
+  padding: 0 var(--space-screen-inset);
+  margin: calc(4px - var(--space-stack-small)) 0 calc(6px + var(--space-stack-small));
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.session-pills::-webkit-scrollbar { display: none; }
+.session-pills[hidden] { display: none; }
+/* A pill: capsule, at least 34 high, 13 pt side padding, 7 pt to the
+   count; surface, or text with ground ink when selected. */
+.session-pill {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.session-pill.selected { background: var(--color-text); color: var(--color-ground); cursor: default; }
+.t-session-pill { font: 500 15px/var(--leading-app) var(--font-app); white-space: nowrap; } /* app(15, medium), SessionPills.swift */
+.t-session-count { font: 700 12px/var(--leading-app) var(--font-app); } /* app(12, bold), SessionPills.swift */
+.session-pill .count {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--status-waiting);
+  color: var(--session-count-ink); /* sessions.ts */
+}
+
+/* NeedsYouPill: pinned under the top bar over the list, stackMedium from
+   it and screenInset from the sides; a 44 pt capsule, 6 leading and 14
+   trailing, 10 between parts; surfaceRaised at 0.96 with a hairline
+   waiting ring at 0.55 inside, and a black 0.45 shadow, radius 12, y 8
+   (App/NeedsYouPill.swift). Moves in from the top with a fade. */
+.needs-you-pill {
+  /* Centred: the pill hugs its content in a full-width overlay. */
+  position: absolute;
+  left: var(--space-screen-inset);
+  right: var(--space-screen-inset);
+  width: fit-content;
+  margin: var(--space-stack-medium) auto 0;
+  height: var(--size-needs-you-pill);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 6px;
+  border: var(--size-hairline) solid color-mix(in srgb, var(--status-waiting) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-surface-raised) 96%, transparent);
+  /* SwiftUI's shadow radius is the blur's standard deviation; CSS blur is
+     twice that. */
+  box-shadow: 0 8px 24px var(--needs-you-shadow); /* sessions.ts */
+  cursor: pointer;
+  z-index: 2;
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
+  /* spring(response: 0.32, dampingFraction: 0.86). */
+  transition: opacity 0.32s cubic-bezier(0.2, 0.9, 0.3, 1), transform 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.needs-you-pill.shown { opacity: 1; transform: none; pointer-events: auto; }
+.needs-you-pill .faces { display: flex; flex: none; }
+/* Overlapping by 10, each ringed 2 pt in the pill's fill. */
+.needs-you-pill .face-ring { display: block; border-radius: 50%; box-shadow: 0 0 0 2px var(--color-surface-raised); }
+.needs-you-pill .face-ring + .face-ring, .needs-you-pill .more { margin-left: -10px; }
+.needs-you-pill .more {
+  width: var(--size-needs-you-avatar);
+  height: var(--size-needs-you-avatar);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 0 0 2px var(--color-surface-raised);
+}
+.t-needs-more { font: 600 12px/var(--leading-app) var(--font-app); } /* app(12, semibold), NeedsYouPill.swift */
+.needs-you-pill .label { display: flex; align-items: center; gap: var(--space-stack-small); min-width: 0; }
+.t-pill-name { font: var(--text-pill-name-weight) var(--text-pill-name-size)/var(--leading-app) var(--text-pill-name-font); white-space: nowrap; }
+.t-pill-detail { font: var(--text-pill-detail-weight) var(--text-pill-detail-size)/var(--leading-app) var(--text-pill-detail-font); white-space: nowrap; }
+.needs-you-pill .name { color: var(--status-waiting); overflow: hidden; text-overflow: ellipsis; }
+.needs-you-pill .detail { color: var(--color-text-dim); max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+.needs-you-pill .chev { color: var(--color-text-dim); flex: none; }
+/* ==== End slice: avatars, sessions and card extras ==== */
