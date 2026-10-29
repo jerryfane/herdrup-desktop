@@ -83,6 +83,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      # mygo's npm launcher (node_modules/.bin/mygo) is a Node script. With no
+      # Node on the machine, Bun runs it, and Bun's process.execve without an
+      # env argument starts mygo with an empty environment (no PATH), so it
+      # cannot find Bun for mygo.config.ts. Hosted runners ship Node; the
+      # MacBook Air runner does not.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
       - run: bun install --frozen-lockfile
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
