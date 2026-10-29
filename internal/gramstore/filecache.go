@@ -113,10 +113,16 @@ func (c FileCache) StoreMoving(src, id, name, mime string) (CachedFile, bool) {
 		func(dst string) { _ = os.Rename(dst, src) })
 }
 
-// StoreCopy stores a copy of the file at src for id; src is left as it
-// is. The desk keeps a file it just posted this way, so opening it never
-// downloads bytes this device uploaded.
-func (c FileCache) StoreCopy(src, id, name, mime string) (CachedFile, bool) {
+// StoreCopy stores a copy of the file at src for id when it is the
+// posted attachment: its bytes must hash to wantSHA256 (herdr's file
+// sha256), else nothing is cached. src is left as it is. The desk keeps a
+// file it just posted this way, so opening it never downloads bytes this
+// device uploaded; herdrup moves the staged copy it uploaded, and the hash
+// gives the same guarantee for a file edited after its upload.
+func (c FileCache) StoreCopy(src, id, name, mime, wantSHA256 string) (CachedFile, bool) {
+	if wantSHA256 == "" {
+		return CachedFile{}, false
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return CachedFile{}, false
@@ -131,12 +137,17 @@ func (c FileCache) StoreCopy(src, id, name, mime string) (CachedFile, bool) {
 		if err != nil {
 			return err
 		}
-		n, err := io.Copy(out, in)
+		h := sha256.New()
+		n, err := io.Copy(io.MultiWriter(out, h), in)
 		if cerr := out.Close(); err == nil {
 			err = cerr
 		}
-		if err == nil && n != st.Size() {
+		switch {
+		case err != nil:
+		case n != st.Size():
 			err = errors.New("file changed while it was copied")
+		case !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), wantSHA256):
+			err = errors.New("file is not the posted attachment")
 		}
 		return err
 	}, nil)

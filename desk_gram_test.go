@@ -232,3 +232,44 @@ func TestGramSenderAvatarFallsBackToTheInitialTile(t *testing.T) {
 		t.Fatalf("%+v", f)
 	}
 }
+
+// #44: a file changed on disk after its upload finished is not taken for
+// the posted attachment: Open shows what herdr holds.
+func TestGramOpenShowsThePostedBytesNotTheFilesLaterContents(t *testing.T) {
+	g := fakeherdr.NewGram("store-1")
+	d := gramDeskFor(t, g)
+	ctx := context.Background()
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "plan.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.openDialog = func(context.Context) ([]string, error) { return []string{path}, nil }
+	if _, err := d.GramPickFiles(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the upload", func() bool {
+		a := d.GramState().Attachments
+		return len(a) == 1 && a[0].State == "uploaded"
+	})
+	if err := os.WriteFile(path, []byte("modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.GramPost(ctx, "", nil, []string{path}); err != nil {
+		t.Fatal(err)
+	}
+	msgs := g.Messages()
+	if len(msgs) != 1 || msgs[0].File == nil {
+		t.Fatalf("posted %+v", msgs)
+	}
+	var opened string
+	d.openPath = func(p string) error { opened = p; return nil }
+	if err := d.GramOpenFile(ctx, msgs[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(opened); string(got) != "original" {
+		t.Fatalf("opened %q, but herdr holds %q", got, "original")
+	}
+}
