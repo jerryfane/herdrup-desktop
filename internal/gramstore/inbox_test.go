@@ -452,16 +452,18 @@ func TestInboxAPageAskedForBeforeConfirmedReadsKeepsThemRead(t *testing.T) {
 	if !b.AppendPage(page(msgs("b", "a"), false, new(3)), gen, asked) {
 		t.Fatal("the page did not land")
 	}
-	if b.UnreadCount() != 0 || slices.ContainsFunc(b.Messages(), IsUnread) {
+	// Its count leaves out b and a, which it shows unread; c lies outside
+	// it and may already be counted (#55), so herdr's number stands for it.
+	if b.UnreadCount() != 1 || slices.ContainsFunc(b.Messages(), IsUnread) {
 		t.Fatalf("a stale page undid confirmed reads: unread %d, %v", b.UnreadCount(), b.Messages())
 	}
 
 	var fresh Inbox
 	fresh.Apply(page(msgs("c"), true, new(3)), after)
-	fresh.MarkRead("older")
+	fresh.MarkRead("b")
 	gen, asked = fresh.Generation(), fresh.ReadStamp()
 	fresh.AppendPage(page(msgs("b", "a"), false, new(2)), gen, asked)
-	if fresh.UnreadCount() != 2 {
+	if fresh.UnreadCount() != 2 || !IsUnread(fresh.Messages()[1]) {
 		t.Fatalf("a page asked for after the read is herdr's word: unread %d, want 2", fresh.UnreadCount())
 	}
 }
@@ -482,5 +484,50 @@ func TestInboxASettledReadStillHoldsAgainstAnOlderPage(t *testing.T) {
 	b.AppendPage(page(msgs("old"), false, new(2)), gen, asked)
 	if b.UnreadCount() != 1 || IsUnread(b.Messages()[1]) {
 		t.Fatalf("unread %d, %v", b.UnreadCount(), b.Messages())
+	}
+}
+
+// #55: herdr's unread_count is the whole store's when it built the page.
+// A read confirmed after the page was asked for may already be in that
+// count: herdr marked the head message h1 read, built the page (41
+// unread), and only then did the acknowledgment arrive. The page count is
+// kept, not lowered again for a read the page does not show.
+func TestInboxAPageCountAlreadyReflectingAReadIsNotLoweredAgain(t *testing.T) {
+	var b Inbox
+	b.Apply(page(msgs("h1", "h2"), true, new(42)), after)
+	gen, asked := b.Generation(), b.ReadStamp()
+	b.MarkRead("h1") // acknowledged before the page lands
+	if b.UnreadCount() != 41 {
+		t.Fatalf("unread %d after the read", b.UnreadCount())
+	}
+	b.AppendPage(page(msgs("o1", "o2"), true, new(41)), gen, asked)
+	if b.UnreadCount() != 41 {
+		t.Fatalf("unread %d, want herdr's 41", b.UnreadCount())
+	}
+	b.MarkRead("o1")
+	if b.UnreadCount() != 40 {
+		t.Fatalf("unread %d after the next read, want 40", b.UnreadCount())
+	}
+	if !IsUnread(b.Messages()[1]) || IsUnread(b.Messages()[0]) {
+		t.Fatal("read flags moved")
+	}
+}
+
+// #55, the other order: herdr built the page (42 unread) before it applied
+// the read of h1. The page does not show h1, so the count cannot be known:
+// herdr's number stands until the next head poll, which the read made
+// unconditional.
+func TestInboxAPageCountMissingAReadOutsideItIsHerdrsNumber(t *testing.T) {
+	var b Inbox
+	b.Apply(page(msgs("h1", "h2"), true, new(42)), after)
+	gen, asked := b.Generation(), b.ReadStamp()
+	b.MarkRead("h1")
+	b.AppendPage(page(msgs("o1"), true, new(42)), gen, asked)
+	if b.UnreadCount() != 42 || b.ConditionalDigest() != "" {
+		t.Fatalf("unread %d digest %q", b.UnreadCount(), b.ConditionalDigest())
+	}
+	b.Apply(page(msgs("h1", "h2"), true, new(41)), b.ReadStamp())
+	if b.UnreadCount() != 41 {
+		t.Fatalf("the next head poll did not settle it: %d", b.UnreadCount())
 	}
 }
