@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 	"golang.org/x/crypto/ssh"
@@ -22,6 +23,13 @@ import (
 
 //go:embed agents.json
 var defaultAgents []byte
+
+// sampleGrams is the Gram inbox -grams sample seeds: agent messages old and
+// new, read and unread, with code, an image, a file, an expired file and a
+// federated sender, and the owner's posts to an agent and the queue.
+//
+//go:embed grams.json
+var sampleGrams []byte
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:2222", "address to serve SSH on")
@@ -31,6 +39,7 @@ func main() {
 	uploadStream := flag.Bool("upload-stream", true, "advertise gram_upload_stream and serve gram.upload.stream")
 	machinesFile := flag.String("machines", "", "saved SSH machines for machine.status and `herdr machine federate|unfederate`: a JSON array of objects with herdr's machine.status fields (default: none, and no machine subcommand)")
 	machineFail := flag.String("machine-fail", "", "make `herdr machine federate|unfederate` exit 1 with this stderr")
+	gramsFile := flag.String("grams", "", "seed the Gram store: \"sample\" for the built-in messages (grams.json), or a JSON array of gram messages with optional ago_seconds, file_base64 or file_text (default: empty)")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -80,6 +89,21 @@ func main() {
 
 	w := newWrites()
 	w.uploadStream = *uploadStream
+	if *gramsFile != "" {
+		raw := sampleGrams
+		if *gramsFile != "sample" {
+			if raw, err = os.ReadFile(*gramsFile); err != nil {
+				log.Fatal(err)
+			}
+		}
+		var fixtures []fakeherdr.GramFixture
+		if err := json.Unmarshal(raw, &fixtures); err != nil {
+			log.Fatalf("grams JSON: %v", err)
+		}
+		if err := w.gram.Seed(fixtures, time.Now()); err != nil {
+			log.Fatal(err)
+		}
+	}
 	handle, err := handler(*mode, agents, w)
 	if err != nil {
 		log.Fatal(err)
@@ -89,7 +113,7 @@ func main() {
 		Authorized:    authorized,
 		Handle:        handle,
 		Events:        func(ctx context.Context, emit func([]byte) error) { <-ctx.Done() },
-		Duplex:        w.duplex,
+		Duplex:        w.gram.Duplex,
 		Machines:      machines,
 		MachineStderr: *machineFail,
 	}

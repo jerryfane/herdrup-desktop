@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -91,18 +92,29 @@ const (
 )
 
 // GramUpload stages data on herdr and returns the upload_id to attach in
-// gram.send or gram.post (herdrup HerdrClient.gramUploadFile). It streams
-// over one gram.upload.stream when herdr advertises gram_upload_stream and
-// the transport can open a duplex channel, and otherwise sends
-// gram.upload_chunk per piece. A stream that fails to open falls back to
-// per-chunk under a fresh id, unless herdr rejected the upload itself
-// (any error but invalid_request or server_unavailable), which a retry
-// would only repeat on a partly written file.
+// gram.send or gram.post (herdrup HerdrClient.gramUploadFile); see
+// GramUploadFrom.
 func (c *Client) GramUpload(ctx context.Context, data []byte) (uploadID string, path UploadPath, err error) {
+	return c.GramUploadFrom(ctx, bytes.NewReader(data), int64(len(data)), nil)
+}
+
+// GramUploadFrom stages the size bytes of src on herdr, reading them a
+// piece at a time, and returns the upload_id. It streams over one
+// gram.upload.stream when herdr advertises gram_upload_stream and the
+// transport can open a duplex channel, and otherwise sends
+// gram.upload_chunk per piece. A stream that fails to open falls back to
+// per-chunk under a fresh id, unless herdr rejected the upload itself (any
+// error but invalid_request or server_unavailable), which a retry would
+// only repeat on a partly written file. progress, when not nil, is told
+// the bytes herdr has acknowledged after each piece.
+func (c *Client) GramUploadFrom(ctx context.Context, src io.ReaderAt, size int64, progress func(sent int64)) (uploadID string, path UploadPath, err error) {
+	if progress == nil {
+		progress = func(int64) {}
+	}
 	uploadID = newUploadID()
 	if d, ok := c.t.(Duplexer); ok {
 		if supported, _ := c.supports(ctx, herdrapi.CapabilityGramUploadStream); supported {
-			err := c.uploadStream(ctx, d, uploadID, data)
+			err := c.uploadStream(ctx, d, uploadID, src, size, progress)
 			if err == nil {
 				return uploadID, UploadStream, nil
 			}
@@ -113,18 +125,42 @@ func (c *Client) GramUpload(ctx context.Context, data []byte) (uploadID string, 
 			uploadID = newUploadID()
 		}
 	}
-	for off := 0; off == 0 || off < len(data); off += UploadChunkBytes {
-		end := min(off+UploadChunkBytes, len(data))
+	buf := make([]byte, min(int64(UploadChunkBytes), size))
+	err = eachPiece(src, size, buf, func(off int64, piece []byte) error {
 		if err := c.GramUploadChunk(ctx, herdrapi.GramUploadChunkParams{
-			UploadID: uploadID, Offset: uint64(off), DataBase64: base64.StdEncoding.EncodeToString(data[off:end]),
+			UploadID: uploadID, Offset: uint64(off), DataBase64: base64.StdEncoding.EncodeToString(piece),
 		}); err != nil {
-			return "", UploadChunked, err
+			return err
 		}
-		if end == len(data) {
-			break
-		}
+		progress(off + int64(len(piece)))
+		return nil
+	})
+	if err != nil {
+		return "", UploadChunked, err
 	}
 	return uploadID, UploadChunked, nil
+}
+
+// eachPiece reads src in pieces of len(buf) bytes and hands each to send
+// with its offset; an empty src is one empty piece, as herdr needs one
+// chunk to create the upload.
+func eachPiece(src io.ReaderAt, size int64, buf []byte, send func(off int64, piece []byte) error) error {
+	for off := int64(0); off == 0 || off < size; {
+		n := min(int64(len(buf)), size-off)
+		piece := buf[:n]
+		// ReadAt may report io.EOF along with a piece that ends the source.
+		if got, err := src.ReadAt(piece, off); err != nil && !(errors.Is(err, io.EOF) && got == len(piece)) {
+			return fmt.Errorf("read upload at %d: %w", off, err)
+		}
+		if err := send(off, piece); err != nil {
+			return err
+		}
+		off += n
+		if off >= size {
+			return nil
+		}
+	}
+	return nil
 }
 
 // newUploadID is a fresh upload_id: herdr keys its staging file and
@@ -152,7 +188,7 @@ func (e *uploadOpenError) fatal() bool {
 	return !slices.Contains([]string{"invalid_request", "server_unavailable"}, api.Code)
 }
 
-func (c *Client) uploadStream(ctx context.Context, dx Duplexer, uploadID string, data []byte) error {
+func (c *Client) uploadStream(ctx context.Context, dx Duplexer, uploadID string, src io.ReaderAt, size int64, progress func(int64)) error {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	d, err := dx.OpenDuplex(sctx)
@@ -182,11 +218,11 @@ func (c *Client) uploadStream(ctx context.Context, dx Duplexer, uploadID string,
 		return &uploadOpenError{err}
 	}
 	var seq uint64
-	for off := 0; off == 0 || off < len(data); off += UploadStreamChunkBytes {
-		end := min(off+UploadStreamChunkBytes, len(data))
+	buf := make([]byte, min(int64(UploadStreamChunkBytes), size))
+	err = eachPiece(src, size, buf, func(off int64, piece []byte) error {
 		seq++
 		frame, _ := json.Marshal(herdrapi.GramUploadFrame{
-			Seq: seq, Offset: uint64(off), DataBase64: base64.StdEncoding.EncodeToString(data[off:end]),
+			Seq: seq, Offset: uint64(off), DataBase64: base64.StdEncoding.EncodeToString(piece),
 		})
 		if err := d.WriteLine(frame); err != nil {
 			return fmt.Errorf("gram.upload.stream: %w", err)
@@ -205,9 +241,11 @@ func (c *Client) uploadStream(ctx context.Context, dx Duplexer, uploadID string,
 		if !ack.Ok || ack.Seq != seq {
 			return fmt.Errorf("gram.upload.stream: frame %d acknowledged as %s", seq, line)
 		}
-		if end == len(data) {
-			break
-		}
+		progress(off + int64(len(piece)))
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	// herdr frees its claim on the upload_id only once it sees end of
 	// file, and refuses to attach an upload a stream still holds, so wait

@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
+	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
@@ -117,6 +118,19 @@ type Desk struct {
 
 	avatars  avatarStore  // desk_avatars.go
 	sessions sessionWatch // desk_sessions.go
+
+	gram gramDesk // desk_gram.go
+	// saved is this device's saved Gram messages, read on first use.
+	saved     *gramstore.Saved
+	savedOnce sync.Once
+	// cacheDir holds downloaded Gram files; "" is <dir>/cache.
+	cacheDir string
+	// The system's file dialogs, opener and clipboard (mygo), replaced in
+	// tests.
+	openDialog     func(ctx context.Context) ([]string, error)
+	saveDialog     func(ctx context.Context, name string) (string, error)
+	openPath       func(path string) error
+	writeClipboard func(text string)
 }
 
 // link is the connection to the active machine. Its fields are guarded by
@@ -146,6 +160,7 @@ func newDesk(dir string) *Desk {
 		dir: dir, state: ConnState{Phase: "idle"},
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
 		alert:       alertGroups,
+		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
 	}
 }
 
@@ -430,6 +445,8 @@ func (d *Desk) Disconnect() {
 	d.link = nil
 	d.board, d.peers = nil, nil
 	d.mu.Unlock()
+	d.gramReset(nil, "")
+	d.gramWipeCacheUnlessOwner("")
 	d.setState(context.Background(), ConnState{Phase: "idle"})
 }
 
@@ -463,6 +480,9 @@ func (d *Desk) start(m Machine, password string) {
 	d.link = l
 	d.board, d.peers = nil, nil
 	d.mu.Unlock()
+	// Gram belongs to the connection; its downloads to the machine.
+	d.gramReset(l, m.Host)
+	d.gramWipeCacheUnlessOwner(l.id)
 	go d.run(ctx, l, m, password)
 }
 
@@ -528,6 +548,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	sctx, stopSessions := context.WithCancel(ctx)
 	defer stopSessions()
 	go d.watchSessions(sctx, l, c)
+	go d.watchGram(sctx, l)
 	defer func() {
 		d.mu.Lock()
 		l.client, l.restart = nil, nil
