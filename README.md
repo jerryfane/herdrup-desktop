@@ -56,6 +56,11 @@ Log in with an Ed25519, ECDSA or RSA key file, or a password. The password is ne
 machines (`machines.json` in the app's data folder, one of them active) hold only the key file's path. A
 `machine.json` from an earlier build is read as the active machine until `machines.json` exists.
 
+Gram loads older messages separately from head refreshes. If an older page changes
+the cached unread count, the next head poll fetches a full answer rather than
+reusing the head digest. This settles delayed page counts even when a read was
+already confirmed by an intervening refresh.
+
 ### Tray, notifications and menus
 
 A tray icon (the menu bar on macOS, with the count beside it; the tooltip elsewhere) counts the agents
