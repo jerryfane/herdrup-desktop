@@ -42,6 +42,29 @@ export interface Machine {
   session: string;
 }
 
+/** PeerReachability is a peer's reachability, the worst across its agents. */
+export type PeerReachability = "reachable" | "degraded" | "offline";
+
+/**
+ * PeerSummary is one remote machine (federation peer) as the agent list
+ * shows it: herdrup's PeerSummary.
+ */
+export interface PeerSummary {
+  /**
+   * Alias is the machine_id the peer's agents carry, the `<alias>/`
+   * prefix of their names. For a saved machine it is its profile id.
+   */
+  alias: string;
+  /**
+   * Label is the first non-empty machine_label of its agents; "" when
+   * none has one.
+   */
+  label: string;
+  /** AgentCount is how many of its agents the list has. */
+  agentCount: number;
+  reachability: PeerReachability;
+}
+
 /**
  * Row is one agent on the board, with everything herdrup's agent row
  * (App/HerdrApp.swift card()) draws.
@@ -89,6 +112,40 @@ export interface SavedMachine {
   session: string;
   /** Active marks the machine the desk connects to. */
   active: boolean;
+}
+
+/**
+ * SavedMachineStatus is one saved SSH machine of the connected herdr, for
+ * the Machines settings: herdrup's SavedMachineStatus with what its
+ * Federation section derives from it.
+ */
+export interface SavedMachineStatus {
+  profileID: string;
+  displayLabel: string;
+  /**
+   * SavedState is disabled, untrusted, coordinator_disabled or
+   * coordinated, or a value a newer herdr adds.
+   */
+  savedState: string;
+  /**
+   * FederationConfigured is whether a federation policy exists for the
+   * machine; nil when herdr left the field out.
+   */
+  federationConfigured: boolean | null;
+  federationReachability: string | null;
+  stale: boolean;
+  /**
+   * HasFederationPolicy is whether the machine is opted into federation:
+   * federationConfigured, or from a herdr without that field, a saved
+   * state only a federated machine has.
+   */
+  hasFederationPolicy: boolean;
+  /**
+   * Peer is the federation peer whose alias is ProfileID among the
+   * current board's agents, for the " · N agents" suffix and the
+   * reachability badge; nil when the board lists none of its agents.
+   */
+  peer: PeerSummary | null;
 }
 
 /** Section is one group of rows. */
@@ -165,9 +222,25 @@ export const Desk = {
   machine(): Promise<Machine | null> {
     return call("Desk.Machine");
   },
+  /**
+   * MachineStatuses lists the saved SSH machines of the connected herdr
+   * (machine.status), sorted by display label, each with its federation
+   * peer on the current board.
+   */
+  machineStatuses(): Promise<SavedMachineStatus[]> {
+    return call("Desk.MachineStatuses");
+  },
   /** Machines returns every saved machine, in the order they were added. */
   machines(): Promise<SavedMachine[]> {
     return call("Desk.Machines");
+  },
+  /**
+   * Peers lists the federation peers among the current board's agents,
+   * sorted by alias; none before the first list. Saved machines match them
+   * by profile id; the rest are peers with no saved machine.
+   */
+  peers(): Promise<PeerSummary[]> {
+    return call("Desk.Peers");
   },
   /**
    * RemoveMachine forgets a saved machine. Removing the active machine
@@ -201,6 +274,16 @@ export const Desk = {
   sessions(): Promise<Session[]> {
     return call("Desk.Sessions");
   },
+  /**
+   * SetMachineFederation opts the saved machine profileID into federation,
+   * or out of it, with `herdr machine federate|unfederate`, then re-reads
+   * the statuses and sends them as MachineStatusChanged (herdrup
+   * changeFederation). A *FederationChangeError says whether the change
+   * failed or was applied but the statuses could not be re-read.
+   */
+  setMachineFederation(profileID: string, enabled: boolean): Promise<void> {
+    return call("Desk.SetMachineFederation", profileID, enabled);
+  },
   /** State returns the current connection state. */
   state(): Promise<ConnState> {
     return call("Desk.State");
@@ -232,4 +315,9 @@ export const events = {
   boardChanged: event<BoardUpdate>("board:changed"),
   /** StateChanged is sent when the connection changes. */
   stateChanged: event<ConnState>("state:changed"),
+  /**
+   * MachineStatusChanged is sent with the saved machines' statuses when
+   * SetMachineFederation has re-read them.
+   */
+  machineStatusChanged: event<SavedMachineStatus[]>("machine-status:changed"),
 } as const;

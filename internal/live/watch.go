@@ -36,7 +36,9 @@ var DefaultTiming = Timing{
 
 // Update is what the watcher reports after each agent.list.
 type Update struct {
-	Board  herdr.Board
+	Board herdr.Board
+	// Agents is the agent.list the board was built from.
+	Agents []herdrapi.AgentInfo
 	Pong   herdrapi.ResponseResultPong
 	Live   bool // true when events_v2 drives updates, false when polling
 	Listed time.Time
@@ -58,7 +60,7 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 		if err != nil {
 			return err
 		}
-		update(Update{Board: herdr.BuildBoard(res.Agents), Pong: pong, Live: live, Listed: time.Now()})
+		update(Update{Board: herdr.BuildBoard(res.Agents), Agents: res.Agents, Pong: pong, Live: live, Listed: time.Now()})
 		return nil
 	}
 	if err := list(); err != nil {
