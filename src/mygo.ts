@@ -4,12 +4,33 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+/**
+ * Avatar is what an agent's avatar draws, resolved the way herdrup's
+ * AgentAvatarAppearance is.
+ */
+export interface Avatar {
+  /** Kind is "initial" (the initial tile), "mascot" or "image". */
+  kind: string;
+  /** Mascot is the mascot id for kind mascot. */
+  mascot?: string;
+  /** SHA256 is the photo's lowercase hex sha256 for kind image. */
+  sha256?: string;
+  /** Target is what agent.avatar.get addresses the agent by. */
+  target?: string;
+}
+
 /** Board is the status board for one machine. */
 export interface Board {
   sections: Section[];
   archived: Row[];
   needsYou: number;
   total: number;
+  /**
+   * EmptyFolders are folders none of whose agents are listed, drawn
+   * after the sections so they can still be renamed or deleted. None
+   * while searching.
+   */
+  emptyFolders: Folder[];
 }
 
 /** BoardUpdate is a new status board. */
@@ -28,6 +49,50 @@ export interface ConnState {
   herdr: string;
   /** Live is true when events_v2 drives updates, false when polling. */
   live: boolean;
+}
+
+/** Folder is what a folder row shows (herdrup AgentFolderSummary). */
+export interface Folder {
+  id: string;
+  name: string;
+  open: boolean;
+  /** Waiting and Stopped count its agents that need you and that stopped. */
+  waiting: number;
+  stopped: number;
+  /** Count is "1 agent" or "N agents". */
+  count: string;
+  /** Summary is "a needs you · b stopped", "N working", "idle" or "empty". */
+  summary: string;
+  /** Picture is its first four agents, for the folder's picture. */
+  picture: Row[];
+}
+
+/**
+ * FolderNaming asks the window for a folder name: a new folder holding
+ * Member ("new"), or a new name for Folder ("rename"), as herdrup's
+ * "New folder" and "Rename folder" alerts.
+ */
+export interface FolderNaming {
+  /** Kind is "new" or "rename". */
+  kind: string;
+  folder: string;
+  member: string;
+  /**
+   * Name is the field's text to start with: the folder's name for a
+   * rename, "" for a new folder.
+   */
+  name: string;
+}
+
+/**
+ * Item is one row of the list once folders and stars are applied: an
+ * agent (Row, with Starred and FolderID set) or a folder.
+ */
+export interface Item {
+  /** Kind is "agent" or "folder". */
+  kind: string;
+  row?: Row;
+  folder?: Folder;
 }
 
 /**
@@ -99,6 +164,44 @@ export interface Row {
    * machine alias) and the terminal title (herdrup visibleSections).
    */
   match: string[];
+  /**
+   * Name is the agent's raw name, which folders and stars are keyed by;
+   * "" for an agent that has none (it cannot be starred or filed).
+   */
+  name: string;
+  /**
+   * Starred draws the star after the name; FolderID is set for an agent
+   * shown indented under its open folder (herdrup card()).
+   */
+  starred: boolean;
+  folderID?: string;
+  /** Avatar is the picture the avatar draws (herdrup AgentAvatarAppearance). */
+  avatar: Avatar;
+  /**
+   * Stale marks a live agent on a degraded federation peer: its status
+   * was not confirmed on the last poll (herdrup showsUnconfirmedMarker).
+   */
+  stale?: boolean;
+  /**
+   * NoAccount is herdr's account_unresolved: the recorded account is gone
+   * from the registry, so the agent refuses to resume.
+   */
+  noAccount?: boolean;
+  /**
+   * Account is the id of the account the agent runs on, "" when herdr
+   * reports none. The window shows the account's label.
+   */
+  account?: string;
+  /**
+   * StatusSinceUnixMs is when the agent entered its current status, for
+   * the time-in-state age; absent on an older herdr.
+   */
+  statusSinceUnixMs?: number;
+  /**
+   * Activity is the terminal title without its prompt and spinner, ""
+   * when there is none (herdrup activityText): the needs-you pill's detail.
+   */
+  activity?: string;
 }
 
 /** SavedMachine is one machine in the saved set. */
@@ -153,7 +256,22 @@ export interface Section {
   key: string;
   label: string;
   collapsed: boolean;
+  /**
+   * Rows are the section's agents, those inside its folders included, in
+   * list order.
+   */
   rows: Row[];
+  /**
+   * Items are the rows the list draws once folders and stars apply:
+   * starred agents, then the folders (and an open folder's agents), then
+   * the other agents (herdrup AgentFolderLayout).
+   */
+  items: Item[];
+  /**
+   * AgentCount counts the section's agents, those in its folders
+   * included; the Idle disclosure shows it.
+   */
+  agentCount: number;
 }
 
 /**
@@ -164,6 +282,23 @@ export interface Session {
   name: string;
   default: boolean;
   running: boolean;
+}
+
+/**
+ * SessionPill is one of the session pills over the agent list (herdrup
+ * App/SessionPills.swift): a running herdr session and how many of its
+ * agents need you.
+ */
+export interface SessionPill {
+  name: string;
+  default: boolean;
+  /** Selected marks the session the board shows. */
+  selected: boolean;
+  /**
+   * NeedsYou counts the session's agents that need you. The window uses
+   * the board's own count for the selected session, which is live.
+   */
+  needsYou: number;
 }
 
 /**
@@ -203,6 +338,25 @@ export interface SymbolImage {
  * its board current. One machine is connected at a time.
  */
 export const Desk = {
+  /** Accounts returns the credential accounts' labels by id. */
+  accounts(): Promise<Record<string, string>> {
+    return call("Desk.Accounts");
+  },
+  /**
+   * AgentMenu shows an agent row's context menu (right-click); it reports
+   * whether there was one.
+   */
+  agentMenu(paneID: string): Promise<boolean> {
+    return call("Desk.AgentMenu", paneID);
+  },
+  /**
+   * AvatarImage returns an agent's avatar photo as a data: URL: target is
+   * the row's Avatar.Target and sha256 its Avatar.SHA256. Photos come from
+   * the disk cache, else agent.avatar.get on the current session.
+   */
+  avatarImage(target: string, sha256: string): Promise<string> {
+    return call("Desk.AvatarImage", target, sha256);
+  },
   /** Board returns the latest board, or nil before the first list. */
   board(): Promise<BoardUpdate | null> {
     return call("Desk.Board");
@@ -217,6 +371,13 @@ export const Desk = {
   /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");
+  },
+  /**
+   * FolderMenu shows a folder row's context menu (right-click); it reports
+   * whether there was one.
+   */
+  folderMenu(id: string): Promise<boolean> {
+    return call("Desk.FolderMenu", id);
   },
   /** Machine returns the active saved machine, if any. */
   machine(): Promise<Machine | null> {
@@ -236,6 +397,13 @@ export const Desk = {
     return call("Desk.Machines");
   },
   /**
+   * NameFolder answers a FolderNamingRequested: it creates the folder or
+   * renames it. A name with nothing left once trimmed does nothing.
+   */
+  nameFolder(n: FolderNaming, text: string): Promise<void> {
+    return call("Desk.NameFolder", n, text);
+  },
+  /**
    * Peers lists the federation peers among the current board's agents,
    * sorted by alias; none before the first list. Saved machines match them
    * by profile id; the rest are peers with no saved machine.
@@ -249,6 +417,14 @@ export const Desk = {
    */
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
+  },
+  /**
+   * SearchBoard is the board for a sidebar search: the agents query matches,
+   * every folder open, no empty folders (herdrup rosterLayout). Nil before
+   * the first list.
+   */
+  searchBoard(query: string): Promise<Board | null> {
+    return call("Desk.SearchBoard", query);
   },
   /**
    * SelectMachine makes a saved machine the active one and connects to it,
@@ -268,12 +444,20 @@ export const Desk = {
   selectSession(name: string): Promise<void> {
     return call("Desk.SelectSession", name);
   },
+  /** SessionPills returns the current session pills. */
+  sessionPills(): Promise<SessionPill[]> {
+    return call("Desk.SessionPills");
+  },
   /**
    * Sessions lists the herdr sessions on the connected machine. A herdr
    * without named sessions has only the default one.
    */
   sessions(): Promise<Session[]> {
     return call("Desk.Sessions");
+  },
+  /** SetFolderOpen opens or closes a folder on this device. */
+  setFolderOpen(id: string, open: boolean): Promise<void> {
+    return call("Desk.SetFolderOpen", id, open);
   },
   /**
    * SetMachineFederation opts the saved machine profileID into federation,
@@ -323,4 +507,19 @@ export const events = {
    * SetMachineFederation has re-read them.
    */
   machineStatusChanged: event<SavedMachineStatus[]>("machine-status:changed"),
+  /**
+   * FolderNamingRequested is sent when a menu asks for a folder name; the
+   * window answers with Desk.NameFolder.
+   */
+  folderNamingRequested: event<FolderNaming>("folder-naming:requested"),
+  /**
+   * SessionsChanged is sent with the session pills: none while fewer than
+   * two sessions run, as herdrup hides them then.
+   */
+  sessionsChanged: event<SessionPill[]>("sessions:changed"),
+  /**
+   * AccountsChanged is sent with the credential accounts' labels by id,
+   * which name the account on an agent row.
+   */
+  accountsChanged: event<Record<string, string>>("accounts:changed"),
 } as const;

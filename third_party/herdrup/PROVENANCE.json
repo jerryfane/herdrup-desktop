@@ -63,6 +63,66 @@
       "sha256": "337cec2921bd18cf1d6376f284956c2bdf0a727e95c605f17fd8ecd32d7b96ee"
     },
     {
+      "source": "App/Assets.xcassets/Mascot-herdy.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/herdy.svg",
+      "sha256": "0ceb3a25fe7f40d3084e716ff69d571e0937b67ef480abca9d1f689620bf80b6"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-bot.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/bot.svg",
+      "sha256": "882fefe4986b61b85242ec9ad58c970190c27a9e028df1e38623921cd8e386b0"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-blip.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/blip.svg",
+      "sha256": "375a1258db54623fe552e988c86c686401a23f0993d9bb934c6510bd95f6cad1"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-tri.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/tri.svg",
+      "sha256": "7a73d23792fd1d8e67bead1f2b9d2f067f6bebddc2146d0ae5d835e5266c5755"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-squib.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/squib.svg",
+      "sha256": "87a2f2684bb008d5513cc321d89af08b180f175b9cacff8a6fc23a4f6cba19ea"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-zag.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/zag.svg",
+      "sha256": "06619463ac8ef2a5e6b7af5810f7651272139973c5d64448ef04da1643f35290"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-cub.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/cub.svg",
+      "sha256": "f1f207e675ec5a238e54ba8c2886aaae62fdcae6f1bbd86ba1bc8ad6a2b1cb89"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-dome.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/dome.svg",
+      "sha256": "4d7fe5330c3a988ff55403ce2ae5f50613764f012a650fab3e12d5a7677e3d50"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-pip.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/pip.svg",
+      "sha256": "b5665268a4b9a6f04bc55cf45dece59ae5564616f52c5392143ef5e678799150"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-prism.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/prism.svg",
+      "sha256": "ee0cb8f3eb80e874867f580c84ce76d1962d880126e8688ae4c4b2da397c6535"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-nib.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/nib.svg",
+      "sha256": "37c696faa6322d3511a2fd2e99c66441403abc9f179f6cdc30f269720e4d1d4a"
+    },
+    {
+      "source": "App/Assets.xcassets/Mascot-drop.imageset/mascot.svg",
+      "dest": "public/herdrup/mascots/drop.svg",
+      "sha256": "75d1be5367f860a97ab34f1d65f5fa62107687bce3bc53fa592da41184c750bc"
+    },
+    {
       "source": "design/herdrup-appicon.svg",
       "dest": "public/herdrup/appicon.svg",
       "sha256": "60cbbec91fd6276e697d4f007353882ac3c9ad71758b6a680d19406d32756bb7"

@@ -94,6 +94,30 @@ type Row struct {
 	// display name, the raw name (a federated agent's still carries the
 	// machine alias) and the terminal title (herdrup visibleSections).
 	Match []string `json:"match"`
+	// Name is the agent's raw name, which folders and stars are keyed by;
+	// "" for an agent that has none (it cannot be starred or filed).
+	Name string `json:"name"`
+	// Starred draws the star after the name; FolderID is set for an agent
+	// shown indented under its open folder (herdrup card()).
+	Starred  bool   `json:"starred"`
+	FolderID string `json:"folderID,omitempty"`
+	// Avatar is the picture the avatar draws (herdrup AgentAvatarAppearance).
+	Avatar Avatar `json:"avatar"`
+	// Stale marks a live agent on a degraded federation peer: its status
+	// was not confirmed on the last poll (herdrup showsUnconfirmedMarker).
+	Stale bool `json:"stale,omitempty"`
+	// NoAccount is herdr's account_unresolved: the recorded account is gone
+	// from the registry, so the agent refuses to resume.
+	NoAccount bool `json:"noAccount,omitempty"`
+	// Account is the id of the account the agent runs on, "" when herdr
+	// reports none. The window shows the account's label.
+	Account string `json:"account,omitempty"`
+	// StatusSinceUnixMs is when the agent entered its current status, for
+	// the time-in-state age; absent on an older herdr.
+	StatusSinceUnixMs *uint64 `json:"statusSinceUnixMs,omitempty"`
+	// Activity is the terminal title without its prompt and spinner, ""
+	// when there is none (herdrup activityText): the needs-you pill's detail.
+	Activity string `json:"activity,omitempty"`
 }
 
 // Section is one group of rows.
@@ -101,7 +125,16 @@ type Section struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
 	Collapsed bool   `json:"collapsed"`
-	Rows      []Row  `json:"rows"`
+	// Rows are the section's agents, those inside its folders included, in
+	// list order.
+	Rows []Row `json:"rows"`
+	// Items are the rows the list draws once folders and stars apply:
+	// starred agents, then the folders (and an open folder's agents), then
+	// the other agents (herdrup AgentFolderLayout).
+	Items []Item `json:"items"`
+	// AgentCount counts the section's agents, those in its folders
+	// included; the Idle disclosure shows it.
+	AgentCount int `json:"agentCount"`
 }
 
 // Board is the status board for one machine.
@@ -110,12 +143,44 @@ type Board struct {
 	Archived []Row     `json:"archived"`
 	NeedsYou int       `json:"needsYou"`
 	Total    int       `json:"total"`
+	// EmptyFolders are folders none of whose agents are listed, drawn
+	// after the sections so they can still be renamed or deleted. None
+	// while searching.
+	EmptyFolders []Folder `json:"emptyFolders"`
+}
+
+// View is how the board is laid out: the owner's folders and stars (nil
+// without them: the plain list), which folders are open on this device,
+// and the search query.
+type View struct {
+	Groups *Groups
+	Open   map[string]bool
+	// Query keeps the agents it matches (Matches); every folder counts as
+	// open and empty folders are left out (herdrup rosterLayout).
+	Query string
+}
+
+// Matches is the sidebar search's test (herdrup visibleSections): the
+// query appears, ignoring case, inside one of the row's match strings. An
+// empty query matches everything.
+func Matches(match []string, query string) bool {
+	if query == "" {
+		return true
+	}
+	q := strings.ToLower(query)
+	for _, s := range match {
+		if strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildBoard groups and orders agents: by group, then most recently
 // finished turn first, then pane id so unchanged data never reshuffles.
 // Archived agents come newest-archived first, as in herdrup's AgentList.
-func BuildBoard(agents []herdrapi.AgentInfo) Board {
+// Folders and stars are then applied as v says.
+func BuildBoard(agents []herdrapi.AgentInfo, v View) Board {
 	type entry struct {
 		info  herdrapi.AgentInfo
 		group Group
@@ -153,7 +218,15 @@ func BuildBoard(agents []herdrapi.AgentInfo) Board {
 		}
 		return a.info.PaneID < b.info.PaneID
 	})
+	var members []member
 	for _, e := range live {
+		if e.group == NeedsYou {
+			b.NeedsYou++
+		}
+		r := rowOf(e.info, e.group)
+		if !Matches(r.Match, v.Query) {
+			continue
+		}
 		n := len(b.Sections)
 		if n == 0 || b.Sections[n-1].Key != e.group.Key() {
 			b.Sections = append(b.Sections, Section{
@@ -161,12 +234,15 @@ func BuildBoard(agents []herdrapi.AgentInfo) Board {
 			})
 			n++
 		}
-		b.Sections[n-1].Rows = append(b.Sections[n-1].Rows, rowOf(e.info, e.group))
-		if e.group == NeedsYou {
-			b.NeedsYou++
-		}
+		b.Sections[n-1].Rows = append(b.Sections[n-1].Rows, r)
+		members = append(members, member{r, e.group})
 	}
 	b.Total = len(live)
+	open := func(id string) bool { return v.Query != "" || v.Open[id] }
+	b.Sections, b.EmptyFolders = layout(b.Sections, members, v.Groups, open)
+	if v.Query != "" {
+		b.EmptyFolders = []Folder{}
+	}
 	return b
 }
 
@@ -184,6 +260,7 @@ func rowOf(a herdrapi.AgentInfo, g Group) Row {
 		Initial: Initial(title),
 		Tint:    TintIndex(title),
 		Match:   []string{title},
+		Name:    str(a.Name),
 	}
 	for _, s := range []string{str(a.Name), str(a.TerminalTitleStripped)} {
 		if s != "" && s != title {
@@ -193,6 +270,12 @@ func rowOf(a herdrapi.AgentInfo, g Group) Row {
 	if a.Reachability != nil && *a.Reachability == herdrapi.ReachabilityUnreachable {
 		r.Badge = "offline"
 	}
+	r.Avatar = AvatarOf(a)
+	r.Stale = a.Archived == nil && a.Reachability != nil && *a.Reachability == herdrapi.ReachabilityDegraded
+	r.NoAccount = a.AccountUnresolved != nil && *a.AccountUnresolved
+	r.Account = str(a.Account)
+	r.StatusSinceUnixMs = a.StatusSinceUnixMs
+	r.Activity = Activity(str(a.TerminalTitleStripped))
 	return r
 }
 

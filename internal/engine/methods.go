@@ -49,6 +49,12 @@ func (c *Client) AgentAnswer(ctx context.Context, p herdrapi.AgentAnswerParams) 
 	return call[herdrapi.ResponseResultAgentAnswer](ctx, c, "agent.answer", p)
 }
 
+// AccountsList is accounts.list: the credential accounts, whose labels
+// name the account an agent row shows.
+func (c *Client) AccountsList(ctx context.Context) (herdrapi.ResponseResultAccountsList, error) {
+	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.list", herdrapi.EmptyParams{})
+}
+
 // AgentAvatarGet is agent.avatar.get (capability agent_avatar).
 func (c *Client) AgentAvatarGet(ctx context.Context, p herdrapi.AgentAvatarGetParams) (herdrapi.ResponseResultAgentAvatarImage, error) {
 	return call[herdrapi.ResponseResultAgentAvatarImage](ctx, c, "agent.avatar.get", p)
