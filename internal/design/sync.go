@@ -565,11 +565,15 @@ func expandDepth(value string, custom map[string][]string, depth int) []string {
 			i = end + next
 			continue
 		}
-		head, tail := value[:i], value[end+1:]
+		head := value[:i]
+		// The tail is expanded once, not once per substitution: with each
+		// var() having several values that recomputation is exponential in
+		// the number of references, though the result is capped (#53).
+		tails := expandDepth(value[end+1:], custom, depth)
 		var out []string
 		for _, s := range subs {
 			for _, v := range expandDepth(s, custom, depth-1) {
-				for _, t := range expandDepth(tail, custom, depth) {
+				for _, t := range tails {
 					if len(out) == maxExpansions {
 						return out
 					}
