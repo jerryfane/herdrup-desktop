@@ -3,6 +3,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/design"
@@ -13,8 +14,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if smokeEnabled() {
+		// Test-hook runs start with no saved state: on a persistent CI
+		// machine the user data would carry the previous run's pinned host
+		// key (each fakeherdr has a new one) into the next. The directory is
+		// in TMPDIR, which a CI runner clears after the job; the runs exit
+		// with os.Exit, so a deferred removal would not run.
+		if dir, err = os.MkdirTemp("", "herdrup-smoke-"); err != nil {
+			log.Fatal(err)
+		}
+	}
 	desk := newDesk(dir)
 	mygo.Bind(desk)
+	mygo.Bind(Symbols{})
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -27,6 +39,10 @@ func main() {
 			StateKey:        "main",
 			URL:             "/",
 		})
+		if refEnabled() {
+			runRef(desk, win)
+			return
+		}
 		if smokeEnabled() {
 			runSmoke(desk, win)
 			return

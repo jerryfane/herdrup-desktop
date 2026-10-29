@@ -1,0 +1,193 @@
+name: Parity
+
+# Draws the agent list in each state of herdrup's iPad references
+# (design/reference/agent-list in jerryfane/herdrup) on macOS and compares
+# it with them pixel by pixel (issue #16). macOS runners are shared with
+# herdrup's iOS CI, so this runs on demand and on feat/parity-* branches
+# only, not on every pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      references:
+        description: Branch, tag or commit of jerryfane/herdrup with the references (default the pinned commit)
+        default: 75e117e291a0cba40dbbc29afb35ddabd223ddc8
+  push:
+    branches: ['feat/parity-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The pinned references: herdrup #564's merge commit on main. Move the pin
+  # only when herdrup regenerates them (design/reference/agent-list/README.md).
+  REFERENCES: ${{ inputs.references || '75e117e291a0cba40dbbc29afb35ddabd223ddc8' }}
+  # refdiff thresholds: a pixel differs when a channel is more than
+  # PARITY_TOL (0-255) off; a capture fails when more than
+  # PARITY_MAX_OVER_PCT percent of its compared pixels differ, or when
+  # anything is displaced (refdiff's shift scan, always on).
+  # 0.15 % (owner decision, 2026-10-28): what is left at 0.13 % at most is
+  # anti-aliasing that iOS and macOS's web view draw differently (glyph
+  # positions snapped to whole pixels on iOS, sub-pixel in WebKit; curve
+  # edge coverage). Any move, size or colour change fails.
+  PARITY_TOL: "2"
+  PARITY_MAX_OVER_PCT: "0.15"
+  # Pixels per point the page renders at (HERDRUP_REF_SCALE). The
+  # references are @2x; a runner's display is 1x.
+  PARITY_SCALE: "2"
+
+jobs:
+  parity:
+    name: Agent list vs herdrup references (macOS)
+    # GitHub's hosted macOS, not the MacBook Air runner the smoke job uses:
+    # the pixel match depends on the macOS version's SF fonts and symbols
+    # (matched on 26.6.2; the Air's 26.2 draws icons and text a pixel off).
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      # mygo's npm launcher (node_modules/.bin/mygo) is a Node script. With no
+      # Node on the machine, Bun runs it, and Bun's process.execve without an
+      # env argument starts mygo with an empty environment (no PATH), so it
+      # cannot find Bun for mygo.config.ts. Hosted runners ship Node; the
+      # MacBook Air runner does not.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Build the app with the smoke hook, fakeherdr and refdiff
+        env:
+          MYGO_LDFLAGS: -X main.smoke=1
+        run: |
+          bun run build -- -skip-dmg
+          go build -o "$RUNNER_TEMP/fakeherdr" ./cmd/fakeherdr
+          go build -o "$RUNNER_TEMP/refdiff" ./cmd/refdiff
+      - name: Fetch the references and check them against their manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          refs="$RUNNER_TEMP/refs"
+          mkdir -p "$refs"
+          # One commit for the manifest and every picture, even if the
+          # branch moves meanwhile.
+          sha=$(gh api "repos/jerryfane/herdrup/commits/$REFERENCES" --jq .sha)
+          echo "references: jerryfane/herdrup $REFERENCES at $sha"
+          echo "$sha" > "$refs/COMMIT"
+          base="https://raw.githubusercontent.com/jerryfane/herdrup/$sha/design/reference/agent-list"
+          curl -fsSL --retry 3 "$base/manifest.json" -o "$refs/manifest.json"
+          jq -r '.files[] | "\(.sha256)  \(.file)"' "$refs/manifest.json" > "$refs/SHA256SUMS"
+          test "$(wc -l < "$refs/SHA256SUMS")" -eq 12
+          for f in $(jq -r '.files[].file' "$refs/manifest.json"); do
+            curl -fsSL --retry 3 "$base/$f" -o "$refs/$f"
+          done
+          (cd "$refs" && shasum -a 256 -c SHA256SUMS)
+      - name: Capture each state and compare it
+        run: |
+          set +e
+          refs="$RUNNER_TEMP/refs"
+          out="$RUNNER_TEMP/parity"
+          mkdir -p "$out/captures" "$out/diffs" "$out/reports" "$out/logs" "$RUNNER_TEMP/keys"
+          app="$(ls -d build/darwin-*/Herdrup.app)/Contents/MacOS/Herdrup"
+          port=2300
+          : > "$out/failed"
+
+          # capture NAME DEVICE STATE SCALE: one window, one fakeherdr, one
+          # PNG, then refdiff against the reference.
+          capture() {
+            local name=$1 device=$2 state=$3 scale=$4
+            local entry w h bar refscale mode key fpid apid wd st
+            entry=$(jq -c --arg d "$device" --arg s "$state" '.files[] | select(.device == $d and .state == $s)' "$refs/manifest.json")
+            w=$(jq -r .points.width <<< "$entry")
+            h=$(jq -r .points.height <<< "$entry")
+            bar=$(jq -r '.statusBar.heightPoints | floor' <<< "$entry")
+            refscale=$(jq -r .scale <<< "$entry")
+            case $state in loading | empty) mode=$state ;; *) mode=populated ;; esac
+            # A new port each time: the app pins fakeherdr's host key, which
+            # is new on every start.
+            port=$((port + 1))
+            key="$RUNNER_TEMP/keys/$name.key"
+            "$RUNNER_TEMP/fakeherdr" -mode "$mode" -listen "127.0.0.1:$port" -client-key "$key" > "$out/logs/$name.fakeherdr.log" 2>&1 &
+            fpid=$!
+            for _ in $(seq 50); do [ -s "$key" ] && break; sleep 0.2; done
+            echo "::group::$name: $device $state, page ${w}x$((h - bar)) pt, fakeherdr -mode $mode, scale ${scale:-native}"
+            HERDRUP_SMOKE_HOST=127.0.0.1 HERDRUP_SMOKE_PORT=$port HERDRUP_SMOKE_USER=ci HERDRUP_SMOKE_KEY="$key" \
+              HERDRUP_SMOKE_LOG="$out/logs/$name.app.log" HERDRUP_REF_STATE="$state" \
+              HERDRUP_REF_SIZE="${w}x$((h - bar))" HERDRUP_REF_CAPTURE="$out/captures/$name.png" \
+              HERDRUP_REF_SCALE="$scale" "$app" &
+            apid=$!
+            (sleep 120 && kill -9 "$apid" 2> /dev/null && echo "$name: app killed after 120 s") &
+            wd=$!
+            wait "$apid"
+            st=$?
+            kill "$wd" "$fpid" 2> /dev/null
+            wait "$fpid" 2> /dev/null
+            cat "$out/logs/$name.app.log"
+            [ "$st" -eq 0 ] || echo "$name: app exited $st" >> "$out/failed"
+            if [ -s "$out/captures/$name.png" ]; then
+              "$RUNNER_TEMP/refdiff" -ref "$refs/ref-$device-$state.png" -got "$out/captures/$name.png" \
+                -crop-top-pt "$bar" -scale "$refscale" -mask "cmd/refdiff/masks/$device.json" -state "$state" \
+                -tol "$PARITY_TOL" -max-over-pct "$PARITY_MAX_OVER_PCT" \
+                -out "$out/diffs/$name.png" -report "$out/reports/$name.json"
+              st=$?
+              [ "$st" -eq 0 ] || echo "$name: refdiff exited $st" >> "$out/failed"
+            else
+              echo "$name: no capture" >> "$out/failed"
+            fi
+            echo "::endgroup::"
+          }
+
+          for device in ipad-11 ipad-pro-13; do
+            for state in loading empty populated idle-expanded archived-expanded all-expanded; do
+              capture "$device-$state" "$device" "$state" "$PARITY_SCALE"
+            done
+          done
+
+          {
+            echo "## Agent list parity"
+            echo
+            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Masks: \`cmd/refdiff/masks\`."
+            echo
+            echo "| capture | page pt | capture px | display scale | override | devicePixelRatio | app | over tol % | max Δ | mean Δ | refdiff |"
+            echo "|---|---|---|---|---|---|---|---|---|---|---|"
+            for side in "$out"/captures/*.png.json; do
+              name=$(basename "$side" .png.json)
+              report="$out/reports/$name.json"
+              [ -s "$report" ] || report=/dev/null
+              jq -rs --arg name "$name" '
+                (.[0]) as $s | (.[1] // {}) as $r |
+                "| \($name) | \($s.contentPt | join("x")) | \($s.capturePx | join("x")) | \($s.backingScale) | \($s.scaleOverride) | \($s.devicePixelRatio) | \(if $s.ok then "ok" else "FAIL: " + ($s.outcome | gsub("\\|"; "/")) end) | \($r.overPct // "-" | tostring | .[0:7]) | \($r.maxDelta // "-") | \($r.meanDelta // "-" | tostring | .[0:6]) | \(if $r.pass then "pass" elif $r.error then "error: " + $r.error elif $r.failures then "FAIL: " + ($r.failures | join("; ")) else "-" end) |"
+              ' "$side" "$report"
+            done
+            echo
+            if [ -s "$out/failed" ]; then
+              echo "### Failures"
+              echo
+              sed 's/^/- /' "$out/failed"
+            fi
+          } > "$out/summary.md"
+          cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "$out/summary.md"
+          cp "$refs/COMMIT" "$refs/manifest.json" "$out/"
+          echo "captures: $(ls "$out"/captures/*.png | wc -l), diffs: $(ls "$out"/diffs/*.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-macos
+          retention-days: 14
+          if-no-files-found: error
+          path: ${{ runner.temp }}/parity/
+      - name: Verdict
+        run: |
+          if [ -s "$RUNNER_TEMP/parity/failed" ]; then
+            cat "$RUNNER_TEMP/parity/failed"
+            exit 1
+          fi

@@ -1,90 +1,455 @@
-/* Colours and fonts come only from tokens.css, generated from herdrup's
-   design/tokens.json. herdrup-sync -check fails on a colour literal here. */
+/* herdrup's regular-width agent list, from herdrup's SwiftUI source and the
+   reference screenshots (design/reference/agent-list in jerryfane/herdrup).
+   Colours, fonts and sizes come only from tokens.css; herdrup-sync -check
+   fails on a colour literal here. Lengths are points (1 pt = 1 CSS px). */
 @import "./tokens.css";
 
 :root {
   color-scheme: dark;
+  /* The iPad's bottom safe area (home indicator). The references draw the
+     detail column and the tab bar above it; herdrup on a Mac has none, but
+     the Mac layout is not measured yet, so the iPad value stays. */
+  --home-inset: 20px;
+  /* A hairline is one device pixel (SwiftUI 1 / displayScale). */
+  --pixel: 1px;
+  /* iPadOS 26 floating sidebar: inset and corner measured on the
+     references (ipad-11 and ipad-pro-13 agree). */
+  --sidebar-inset: 10px;
+  --sidebar-radius: 21.5px;
+  /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
+  --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
 }
 
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
-  background: var(--color-ground);
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-ground-machine);
   color: var(--color-text);
-  font: 14px/1.45 var(--font-app);
   -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-body { display: flex; flex-direction: column; min-height: 100vh; }
-
-code { font-family: var(--font-machine); font-size: 12px; }
-.dim { color: var(--color-text-dim); }
-.faint { color: var(--color-text-faint); }
 [hidden] { display: none !important; }
 
-.bar {
+/* Text roles: font, size, weight, case, tracking and digits from text.*.
+   Line heights are UIFont's (hhea ascender + descender + line gap over the
+   em): Geist (1005 + 295) / 1000, IBM Plex Mono (1025 + 275) / 1000, and for
+   the system font iOS SF Pro's (1950 + 494) / 2048, which herdrup's
+   references were drawn with. The `font` shorthand resets line-height, so it
+   is set inside each shorthand. */
+:root {
+  --leading-system: 1.19336;
+  --leading-app: 1.3;
+  --leading-machine: 1.3;
+}
+.t-bar-title, .t-row-name, .t-row-preview, .t-row-age, .t-disclosure-title, .t-disclosure-count,
+.t-search, .t-card-title, .t-card-subtitle, .t-tab-label, .t-placeholder, .t-empty {
+  white-space: nowrap;
+}
+.t-bar-title { font: var(--text-bar-title-weight) var(--text-bar-title-size)/var(--leading-app) var(--text-bar-title-font); }
+.t-row-name { font: var(--text-row-name-weight) var(--text-row-name-size)/var(--leading-system) var(--text-row-name-font); }
+.t-row-preview { font: var(--text-row-preview-weight) var(--text-row-preview-size)/var(--leading-system) var(--text-row-preview-font); }
+.t-row-age { font: var(--text-row-age-weight) var(--text-row-age-size)/var(--leading-app) var(--text-row-age-font); font-variant-numeric: var(--text-row-age-numeric); }
+.t-disclosure-title { font: var(--text-disclosure-title-weight) var(--text-disclosure-title-size)/var(--leading-app) var(--text-disclosure-title-font); }
+.t-disclosure-count { font: var(--text-disclosure-count-weight) var(--text-disclosure-count-size)/var(--leading-app) var(--text-disclosure-count-font); font-variant-numeric: var(--text-disclosure-count-numeric); }
+.t-search { font: var(--text-search-weight) var(--text-search-size)/var(--leading-app) var(--text-search-font); }
+.t-card-title { font: var(--text-card-title-weight) var(--text-card-title-size)/var(--leading-app) var(--text-card-title-font); }
+.t-card-subtitle { font: var(--text-card-subtitle-weight) var(--text-card-subtitle-size)/var(--leading-machine) var(--text-card-subtitle-font); }
+.t-tab-label { font: var(--text-tab-label-weight) var(--text-tab-label-size)/var(--leading-system) var(--text-tab-label-font); }
+.t-placeholder { font: var(--text-placeholder-weight) var(--text-placeholder-size)/var(--leading-app) var(--text-placeholder-font); }
+.t-empty { font: var(--text-empty-weight) var(--text-empty-size)/var(--leading-app) var(--text-empty-font); }
+/* The system font's semibold roles (600 in text.*): SwiftUI's .semibold is SF
+   Pro's Semibold instance, wght 590, while WebKit draws CSS 600 on the
+   variable system font at wght 600, which made row names 1.2-2.2% heavier
+   than herdrup's. The axis setting only reaches variable faces; static
+   fallbacks (Segoe UI, Inter) keep their 600. */
+.t-row-name, .t-tab-label { font-variation-settings: "wght" 590; }
+
+/* An SF Symbol (or its open substitute): the glyph is a mask tinted with
+   the current colour, sized by the symbol image itself. A block, so a
+   wrapper (.chev, .search-icon) is exactly the symbol's box and is centred
+   like SwiftUI centres the image's frame; inline-block sat it on the
+   wrapper's text baseline, 1.5-2 pt above centre. */
+.sym {
+  display: block;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask: var(--sym) no-repeat center / 100% 100%;
+  mask: var(--sym) no-repeat center / 100% 100%;
+}
+
+/* A continuous-corner background drawn by paintShape (continuous.ts): the
+   element is a stacking context and the SVG sits at its bottom, under the
+   content, which needs no positioning of its own. */
+.shaped { isolation: isolate; }
+.shaped > .continuous-shape { position: absolute; z-index: -1; pointer-events: none; }
+
+/* ---- Detail column (App/HerdrApp.swift detailColumn) ---- */
+.detail {
+  position: fixed;
+  left: calc(var(--sidebar-inset) + var(--size-sidebar-min));
+  right: 0;
+  top: 0;
+  bottom: var(--home-inset);
+  background: var(--color-ground-machine);
+}
+.field { position: absolute; inset: 0; width: 100%; height: 100%; }
+.select {
+  position: absolute;
+  inset: 0;
+  margin: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--color-hairline-quiet);
-}
-.wordmark { font-weight: 600; font-size: 16px; letter-spacing: -0.01em; }
-.spacer { flex: 1; }
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 3px 10px;
-  border: 1px solid var(--color-hairline);
-  border-radius: 999px;
-  background: var(--color-surface);
-  font-size: 12px;
+  justify-content: center;
   color: var(--color-text-dim);
-  white-space: nowrap;
+  font: var(--text-placeholder-weight) var(--text-placeholder-size) var(--text-placeholder-font);
+}
+
+/* ---- Sidebar card ---- */
+.sidebar {
+  position: fixed;
+  left: var(--sidebar-inset);
+  top: 0;
+  bottom: var(--sidebar-inset);
+  width: var(--size-sidebar-min);
+  /* Background and corner clip: a continuous RoundedRectangle of
+     --sidebar-radius in ground (paintShape). Fitted to the references'
+     corners, the continuous curve matches at 21.25-21.5 pt; a circular
+     border-radius does not. */
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 60vw;
+  display: flex;
+  flex-direction: column;
 }
 
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--group-idle); flex: none; }
-.dot.needs { background: var(--group-needs-you); }
-.dot.working { background: var(--group-working); }
-.dot.done { background: var(--status-done); }
-.dot.stopped, .dot.error { background: var(--group-stopped); }
-.dot.connected { background: var(--status-done); }
-.dot.connecting { background: var(--status-working); }
-
-button {
-  font: inherit;
-  font-weight: 600;
-  color: var(--color-ground);
-  background: var(--color-text);
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 16px;
-  cursor: pointer;
+/* SectionTopBar: a 44 pt row 6 pt down a 50 pt bar, 16 pt sides, 8 below. */
+.topbar {
+  flex: none;
+  height: var(--size-top-bar);
+  margin: 0 var(--space-screen-inset) var(--space-stack-medium);
+  position: relative;
 }
-button.ghost {
+.bar-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--space-stack-small);
+  height: var(--size-top-bar-row);
+}
+.capsule {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  padding: 0 var(--space-stack-tight);
+  /* Background: a continuous Capsule() in surfaceRaised (paintShape). */
+}
+#bar-leading { left: 0; }
+#bar-actions { right: 0; }
+.slot {
+  width: 40px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text);
+}
+.bar-title {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  color: var(--color-text);
+  font: var(--text-bar-title-weight) var(--text-bar-title-size) var(--text-bar-title-font);
+  white-space: nowrap;
+}
+
+.roster {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* The tab bar floats over the list's end (safeAreaInset). */
+  padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
+  scrollbar-width: none;
+}
+.roster::-webkit-scrollbar { display: none; }
+
+/* Sidebar search: a 42 pt capsule, 16 pt sides, 6 pt below. */
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-stack-small);
+  height: var(--size-search-field);
+  margin: 0 var(--space-screen-inset) var(--space-stack-small);
+  padding: 0 10px;
+  /* Background: a continuous Capsule() in surface (paintShape). */
+  position: relative;
   color: var(--color-text-dim);
-  background: transparent;
-  border: 1px solid var(--color-hairline);
-  padding: 4px 12px;
-  font-weight: 500;
-  font-size: 12px;
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--color-text);
+  font: var(--text-search-weight) var(--text-search-size) var(--text-search-font);
+}
+/* UIKit's placeholder colour: the label colour at 30% on the field. */
+.search input::placeholder { color: color-mix(in srgb, var(--color-text) 30%, var(--color-surface)); }
+
+/* Agent row (card()): 80 pt, 20 lead, 44 avatar, 12 gap, text, 16 trail. */
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: var(--size-agent-row);
+  padding-left: var(--space-row-lead);
+}
+.row.indented { padding-left: var(--space-row-lead-indented); }
+.row .text {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin-left: var(--space-avatar-gap);
+  padding-right: var(--space-row-trail);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* stackTight, plus 1 pt measured against the 2x references: there the
+     name's and preview's baselines are 20 pt apart, and with stackTight alone
+     they are 19 pt apart here (macOS .SFNS in WebKit's line boxes; the name
+     drew 1 device pixel low and the preview 1 high). Shifting each line by a
+     whole device pixel keeps WebKit's pixel snapping unchanged; changing the
+     line height instead moved the two lines unevenly. */
+  gap: calc(var(--space-stack-tight) + 1px);
+  position: relative;
+}
+.row .line1 { display: flex; align-items: center; gap: var(--space-stack-small); }
+.row .name { color: var(--color-text); overflow: hidden; text-overflow: ellipsis; }
+.row .spacer { flex: 1; min-width: var(--space-stack-small); }
+.row .age { color: var(--color-text-dim); }
+.row .chev { color: var(--color-text-faint); }
+.row .preview {
+  color: var(--color-text-dim);
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.row.waiting .preview { color: var(--color-text); }
+/* The separator spans the text column, one device pixel, hairline. */
+.row .text::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: var(--space-row-trail);
+  bottom: 0;
+  height: var(--pixel);
+  background: var(--color-hairline);
+}
+.row.no-sep .text::after { display: none; }
+
+/* AgentAvatar: a 44 pt circle and its 22 pt badge, offset 4 pt out. */
+.avatar {
+  position: relative;
+  flex: none;
+  width: var(--size-avatar-sidebar);
+  height: var(--size-avatar-sidebar);
+}
+.avatar .tile {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-on-accent);
+  font-family: var(--font-app);
+  font-weight: 700;
+  font-size: var(--size-avatar-glyph-sidebar);
+  line-height: 1;
+}
+.tint-0 { background: var(--agent-gradient-default); }
+.tint-1 { background: var(--agent-gradient-claude); }
+.tint-2 { background: var(--agent-gradient-codex); }
+.tint-3 { background: var(--agent-gradient-gemini); }
+.badge {
+  position: absolute;
+  right: calc(-1 * var(--size-status-badge-offset));
+  bottom: calc(-1 * var(--size-status-badge-offset));
+  width: var(--size-status-badge);
+  height: var(--size-status-badge);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ground);
+  --badge-fill: var(--color-ground);
+}
+/* The shape (badgeShape in main.ts, which sets its overhang): fill, then the
+   ground stroke centred on its edge. */
+.badge .shape { position: absolute; }
+.badge .shape svg { display: block; }
+.badge .shape .fill { fill: var(--badge-fill); }
+.badge .shape .edge { fill: none; stroke: var(--color-ground); }
+.badge > :not(.shape) { position: relative; }
+.badge.waiting, .badge.unrecognised { --badge-fill: var(--status-waiting); }
+.badge.stopped { --badge-fill: var(--status-died); }
+.badge.offline { --badge-fill: var(--color-surface-raised); color: var(--color-text-dim); }
+.badge.working { color: var(--status-working); }
+.badge.working > svg { display: block; overflow: visible; }
+
+/* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
+.disclosure {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-stack-medium);
+  min-height: var(--size-disclosure-row);
+  padding: 0 var(--space-row-trail) 0 var(--space-row-lead);
+  cursor: default;
+}
+.disclosure .title { color: var(--color-text); }
+.disclosure .spacer { flex: 1; min-width: var(--space-stack-medium); }
+.disclosure .count { color: var(--color-text-dim); }
+.disclosure .chev { color: var(--color-text-faint); }
+.disclosure::after {
+  content: "";
+  position: absolute;
+  left: var(--space-row-lead);
+  right: var(--space-row-trail);
+  bottom: 0;
+  height: var(--pixel);
+  background: var(--color-hairline-quiet);
 }
 
-.card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-hairline);
-  border-radius: 12px;
+/* archivedCard: 40 pt dimmed avatar, title, "archived by …". */
+.archived {
+  display: flex;
+  align-items: center;
+  gap: var(--space-stack-large);
+  margin: 4px var(--space-screen-inset);
+  padding: var(--space-stack-large);
+  /* Background: a continuous RoundedRectangle(radius.card) in surface with
+     the hairline stroked centred on its edge (paintShape). */
+  position: relative;
+}
+.archived .pic { display: grid; place-items: center; width: 40px; height: 40px; flex: none; }
+.archived .pic > * { grid-area: 1 / 1; }
+.archived .pic .tile {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  position: relative;
+  opacity: 0.5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-on-accent);
+  font: 700 17px var(--font-app);
+}
+/* The initial: an absolutely positioned flex child keeps the tile's vertical
+   centring (its static position); placeInitials (main.ts) sets its left edge
+   on a device pixel. */
+.tile .initial { position: absolute; }
+.archived .pic .sym { color: var(--color-on-accent); }
+.archived .lines { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.archived .title { color: var(--color-text-dim); }
+/* The subtitle (IBM Plex Mono) drew 1 device pixel above herdrup's with
+   the title exact; moved down by that pixel, measured on the 2x references.
+   A relative offset leaves the card's height (and centring) alone. */
+.archived .note { position: relative; top: var(--pixel); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; }
+
+/* emptyLine: 44 pt below the search field's 6 pt. A <p>: its default 1em
+   margin collapsed with the search's 6 pt and drew the text 9 pt low. */
+.empty-line {
+  margin: 0;
+  padding-top: 44px;
+  text-align: center;
+  color: var(--color-text-dim);
+}
+/* While loading, herdrup's sidebar VStack holds only the bar and a centred
+   spinner, above the tab bar's safe-area inset. Both loading references put
+   that inset's top 100 pt above the window's bottom (the spinner centred at
+   404.9 and 510.9 pt under a bar ending at 90): 6 pt above the tab bar's own
+   frame, which ends 94 pt up. */
+.loading {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--size-top-bar) + var(--space-stack-medium));
+  bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-dim);
 }
 
-.connect { max-width: 520px; width: 100%; margin: 40px auto; padding: 0 20px; }
+/* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
+   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour. */
+.tabbar {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: var(--tabbar-bottom);
+  max-width: var(--size-tab-bar-max-width);
+  margin: 0 auto;
+  height: var(--size-tab-bar);
+  padding: 4px;
+  display: flex;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-surface) 45%, var(--color-ground-machine));
+}
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border-radius: 999px;
+  color: var(--color-text-dim);
+}
+.tab .icon { height: 28px; display: flex; align-items: center; }
+.tab.selected {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-on-accent) 12%, transparent);
+}
+
+/* The connect form (until Settings has its own screen, #7). */
+.connect {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  max-width: 520px;
+  margin: 40px auto;
+  padding: 0 20px;
+  font-family: var(--font-app);
+  -webkit-user-select: text;
+  user-select: text;
+}
 .connect h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
-.form { display: grid; grid-template-columns: 1fr 110px; gap: 12px; padding: 18px; margin-top: 18px; }
+.dim { color: var(--color-text-dim); }
+.faint { color: var(--color-text-faint); }
+code { font-family: var(--font-machine); font-size: 12px; }
+.form {
+  display: grid;
+  grid-template-columns: 1fr 110px;
+  gap: 12px;
+  padding: 18px;
+  margin-top: 18px;
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 var(--size-hairline) var(--color-hairline);
+}
 .form label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--color-text-dim); grid-column: span 2; }
 .form label:first-child { grid-column: 1; }
 .form label.short { grid-column: 2; }
@@ -97,44 +462,16 @@ button.ghost {
   padding: 8px 10px;
 }
 .form input:focus { outline: none; border-color: var(--color-text-faint); }
-.form button { grid-column: span 2; justify-self: start; }
-.error { color: var(--color-text); margin: 0; grid-column: span 2; font-size: 13px; }
-.error::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-died); margin-right: 8px; }
-
-.board { flex: 1; padding: 8px 20px 20px; max-width: 980px; width: 100%; margin: 0 auto; }
-.empty { margin: 60px auto; text-align: center; color: var(--color-text-dim); }
-
-.section { margin-top: 18px; }
-.section-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  background: none;
+.form-actions { grid-column: span 2; display: flex; gap: 8px; }
+button {
+  font: 600 14px var(--font-app);
+  color: var(--color-ground);
+  background: var(--color-text);
   border: 0;
-  padding: 4px 2px;
-  color: var(--color-text-dim);
-  font-family: var(--text-micro-label-font);
-  font-size: var(--text-micro-label-size);
-  font-weight: var(--text-micro-label-weight);
-  text-transform: var(--text-micro-label-transform);
-  letter-spacing: var(--text-micro-label-tracking);
+  border-radius: 8px;
+  padding: 8px 16px;
   cursor: pointer;
 }
-.section-head .count { color: var(--color-text-faint); }
-.section-head .chev { margin-left: auto; color: var(--color-text-faint); }
-.rows { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-
-.row {
-  display: grid;
-  grid-template-columns: 8px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-}
-.row .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .detail { color: var(--color-text-dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .meta { font: 12px var(--font-machine); color: var(--color-text-faint); white-space: nowrap; }
-.row.offline .title, .row.offline .detail { color: var(--color-text-faint); }
-
-.footer { padding: 8px 20px 12px; font: 11px var(--font-machine); text-align: right; }
+button.ghost { color: var(--color-text-dim); background: transparent; box-shadow: inset 0 0 0 1px var(--color-hairline); }
+.error { color: var(--color-text); margin: 0; grid-column: span 2; font-size: 13px; }
+.error::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-died); margin-right: 8px; }

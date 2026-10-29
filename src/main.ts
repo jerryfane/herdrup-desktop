@@ -1,21 +1,63 @@
-import { Desk, events, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
+import { Desk, Symbols, events, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
+import { continuousPath, paintShape } from "./continuous";
+import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
+import { matches } from "./search";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
+const rowsEl = $("rows");
+const searchField = $("search-field");
+const searchInput = $<HTMLInputElement>("search");
 const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
 const connectError = $("connect-error");
-const boardView = $("board");
-const footer = $("footer");
-const needs = $("needs");
-const connDot = $("conn-dot");
-const connText = $("conn-text");
 const disconnect = $<HTMLButtonElement>("disconnect");
+const select = $("select");
+const field = $<HTMLCanvasElement>("field");
 
-// Sections the user opened or closed, by key; others use their default.
-const toggled = new Map<string, boolean>();
 let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", live: false };
 let board: BoardUpdate | null = null;
+let tab: "agents" | "gram" | "settings" = "agents";
+// Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
+const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
+
+// ---- SF Symbols (macOS) or their open substitutes, as tinted masks ----
+
+const symbolCache = new Map<string, Promise<HTMLElement>>();
+
+/** An SF Symbol at a point size and weight, tinted by CSS `color`. Symbols
+ * draws at 1, 2 or 3 pixels per point, so the page's ratio is clamped to
+ * that. A symbol that fails is logged and left empty, not cached, so one
+ * missing icon never stops the page from drawing. */
+function symbol(name: string, size: number, weight: string): Promise<HTMLElement> {
+  const key = `${name}/${size}/${weight}`;
+  let made = symbolCache.get(key);
+  if (!made) {
+    const scale = Math.min(3, Math.max(1, Math.round(devicePixelRatio)));
+    made = Symbols.image(name, size, weight, scale).then((img) => {
+      const el = document.createElement("span");
+      el.className = "sym";
+      el.style.width = `${img.width}px`;
+      el.style.height = `${img.height}px`;
+      el.style.setProperty("--sym", `url("${img.dataURL}")`);
+      return el;
+    });
+    symbolCache.set(key, made);
+    made.catch(() => symbolCache.delete(key));
+  }
+  return made.then(
+    (el) => el.cloneNode(true) as HTMLElement,
+    (err) => {
+      console.error(`symbol ${key}:`, err);
+      return el("span", "sym");
+    },
+  );
+}
+
+/** Puts a symbol into `host`, replacing what was there. */
+async function place(host: HTMLElement, name: string, size: number, weight: string) {
+  host.replaceChildren(await symbol(name, size, weight));
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
   const e = document.createElement(tag);
@@ -24,82 +66,319 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return e;
 }
 
-// The status dot of each section, as iOS colours groups: amber needs you
-// (and unrecognised: a state this build cannot read wants a look), red
-// stopped, blue working.
-const DOT_BY_SECTION: Record<string, string> = {
-  needsYou: "needs",
-  unrecognised: "needs",
-  stopped: "stopped",
-  working: "working",
-};
+// ---- Top bar (SectionTopBar) ----
 
-function renderRow(r: Row, sectionKey: string): HTMLElement {
-  const row = el("div", "card row" + (r.offline ? " offline" : ""));
-  row.title = `${r.id} · ${r.status || "no status"}`;
-  const dot = r.offline ? "" : sectionKey === "idle" && r.done ? "done" : (DOT_BY_SECTION[sectionKey] ?? "");
-  row.append(el("span", "dot " + dot));
-  const text = el("div");
-  text.append(el("div", "title", r.title));
-  if (r.detail) text.append(el("div", "detail", r.detail));
-  row.append(text, el("span", "meta", r.offline ? "offline" : r.agent));
+async function buildTopBar() {
+  const leading = $("bar-leading");
+  const actions = $("bar-actions");
+  const slot = async (name: string, label: string) => {
+    const s = el("div", "slot");
+    s.title = label;
+    await place(s, name, 15, "medium");
+    return s;
+  };
+  leading.replaceChildren(await slot("chevron.left", "Back"));
+  actions.replaceChildren(
+    await slot("sidebar.leading", "Minimise sidebar"),
+    await slot("terminal", "New terminal"),
+    await slot("plus", "New agent"),
+  );
+  placeTitle();
+}
+
+/** SectionBarLayout: centre the title on the bar when it fits, else keep it
+ * 8 pt clear of both capsules (herdrup App/SectionTopBar.swift). */
+function placeTitle() {
+  const bar = $("bar-title").parentElement as HTMLElement;
+  const title = $("bar-title");
+  const leading = $("bar-leading").getBoundingClientRect().width;
+  const actions = $("bar-actions").getBoundingClientRect().width;
+  const width = bar.getBoundingClientRect().width;
+  const titleLeading = leading > 0 ? leading + 8 : 0;
+  const available = Math.max(0, width - titleLeading - actions - 8);
+  const w = Math.min(title.getBoundingClientRect().width, available);
+  const centre = Math.max(titleLeading + w / 2, Math.min(width / 2, titleLeading + available - w / 2));
+  title.style.left = `${centre - w / 2}px`;
+}
+
+// ---- Tab bar ----
+
+async function buildTabBar() {
+  const items: Array<[typeof tab, string, string]> = [
+    ["agents", "square.grid.2x2.fill", "Agents"],
+    ["gram", "bubble.left.and.bubble.right.fill", "Gram"],
+    ["settings", "gearshape.fill", "Settings"],
+  ];
+  const nodes = await Promise.all(
+    items.map(async ([key, icon, label]) => {
+      const t = el("div", "tab" + (key === tab ? " selected" : ""));
+      const i = el("div", "icon");
+      await place(i, icon, 21, "medium");
+      t.append(i, el("span", "t-tab-label", label));
+      t.addEventListener("click", () => {
+        tab = key;
+        void buildTabBar();
+        render();
+      });
+      return t;
+    }),
+  );
+  $("tabbar").replaceChildren(...nodes);
+}
+
+// ---- Rows ----
+
+const px = (name: string) => parseFloat(cssVar(name));
+
+/** The badge's shape as herdrup draws it (AgentAvatar.glyph): a continuous
+ * RoundedRectangle (continuous.ts) filled, then stroked in ground colour
+ * centred on the same path, half of it outside. "Round" badges use herdrup's
+ * literal corner radius 11, which on the 22 pt box is a continuous capsule,
+ * not a circle; squares use radius.badgeSquare.
+ *
+ * The SVG overhangs the badge box by BADGE_PAD (whole points, more than half
+ * the stroke) on every side, so its origin stays on a device pixel: WebKit
+ * snaps an SVG's origin to the pixel grid, and an overhang of exactly half the
+ * 2.5 pt stroke put it on a half pixel and moved the whole badge 0.5 px. */
+const BADGE_PAD = 2;
+function badgeShape(square: boolean): HTMLElement {
+  const size = px("--size-status-badge");
+  const stroke = px("--size-status-badge-stroke");
+  const radius = square ? px("--radius-badge-square") : 11;
+  const box = size + 2 * BADGE_PAD;
+  const d = continuousPath(size, size, radius, BADGE_PAD, BADGE_PAD);
+  const shape = el("span", "shape");
+  shape.style.inset = `${-BADGE_PAD}px`;
+  shape.innerHTML = `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}"><path class="fill" d="${d}"/><path class="edge" d="${d}" stroke-width="${stroke}"/></svg>`;
+  return shape;
+}
+
+async function badge(kind: string): Promise<HTMLElement | null> {
+  const b = el("div", "badge " + kind);
+  b.append(badgeShape(kind === "stopped" || kind === "offline"));
+  switch (kind) {
+    case "waiting":
+      b.append(await symbol("exclamationmark", 10, "heavy"));
+      return b;
+    case "unrecognised":
+      b.append(await symbol("questionmark", 10, "heavy"));
+      return b;
+    case "stopped":
+      b.append(await symbol("xmark", 10, "heavy"));
+      return b;
+    case "offline":
+      b.append(await symbol("wifi.slash", 10, "heavy"));
+      return b;
+    case "working": {
+      // TurningRing(diameter: 12, lineWidth: 2) at rest (herdrup
+      // App/DesignSystem.swift): Circle().trim(0, 0.72) in a 12 pt frame, so
+      // the path's radius is 6 and the 2 pt round-capped stroke reaches 7,
+      // past the frame (overflow: visible); from 3 o'clock clockwise, over
+      // the ground-filled circle the other badges also have.
+      const r = 6;
+      const len = 2 * Math.PI * r;
+      b.insertAdjacentHTML(
+        "beforeend",
+        `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${len * 0.72} ${len}"/></svg>`,
+      );
+      return b;
+    }
+  }
+  return null;
+}
+
+const measure = document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
+
+/** A tile with the agent's initial. placeInitials positions the letter once
+ * the tile is in the document. */
+function initialTile(r: Row): HTMLElement {
+  const tile = el("div", `tile tint-${r.tint}`);
+  const glyph = el("span", "initial", r.initial);
+  tile.append(glyph);
+  return tile;
+}
+
+/** Puts each tile's initial where SwiftUI puts a centred Text: the run's
+ * origin rounded to the nearest device pixel. Left to flex centring, WebKit
+ * rounded fractions above a half down, which drew M and W 1 device pixel left
+ * of herdrup's. The advance is measured in the letter's computed font, which
+ * is loaded first: canvas text falls back to another face while a web font is
+ * still loading, and `document.fonts.ready` does not wait for a face nothing
+ * had asked for yet (the system font's narrower A put it 1 pixel right). */
+async function placeInitials(root: ParentNode) {
+  const tiles = [...root.querySelectorAll<HTMLElement>(".tile")].flatMap((tile) => {
+    const glyph = tile.querySelector<HTMLElement>(".initial");
+    if (!glyph) return [];
+    const s = getComputedStyle(glyph);
+    return [{ tile, glyph, font: `${s.fontWeight} ${s.fontSize} ${s.fontFamily}` }];
+  });
+  await Promise.all([...new Set(tiles.map((t) => t.font))].map((f) => document.fonts.load(f)));
+  for (const { tile, glyph, font } of tiles) {
+    measure.font = font;
+    const advance = measure.measureText(glyph.textContent ?? "").width;
+    const box = tile.getBoundingClientRect().width;
+    glyph.style.left = `${Math.round(((box - advance) / 2) * devicePixelRatio) / devicePixelRatio}px`;
+  }
+}
+
+async function avatar(r: Row): Promise<HTMLElement> {
+  const a = el("div", "avatar");
+  a.append(initialTile(r));
+  const b = await badge(r.badge);
+  if (b) a.append(b);
+  return a;
+}
+
+async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
+  const row = el("div", "row" + (r.badge === "waiting" ? " waiting" : "") + (separator ? "" : " no-sep"));
+  row.dataset.id = r.id;
+  const text = el("div", "text");
+  const line1 = el("div", "line1");
+  const chev = el("span", "chev");
+  chev.append(await symbol("chevron.right", 12, "semibold"));
+  line1.append(el("span", "name t-row-name", r.title), el("span", "spacer"), chev);
+  text.append(line1, el("div", "preview t-row-preview", r.preview));
+  row.append(await avatar(r), text);
   return row;
 }
 
-function renderSection(s: Section): HTMLElement {
-  const open = toggled.get(s.key) ?? !s.collapsed;
-  const wrap = el("section", "section");
-  const head = el("button", "section-head");
-  head.append(el("span", undefined, s.label), el("span", "count", String(s.rows.length)), el("span", "chev", open ? "▾" : "▸"));
-  head.addEventListener("click", () => {
-    toggled.set(s.key, !open);
-    render();
+async function disclosure(key: "idle" | "archived", title: string, count: number): Promise<HTMLElement> {
+  const d = el("div", "disclosure");
+  const chev = el("span", "chev");
+  chev.append(await symbol(open[key] ? "chevron.down" : "chevron.right", 12, "semibold"));
+  d.append(
+    el("span", "title t-disclosure-title", title),
+    el("span", "spacer"),
+    el("span", "count t-disclosure-count", String(count)),
+    chev,
+  );
+  d.addEventListener("click", () => {
+    open[key] = !open[key];
+    void renderRows();
   });
-  wrap.append(head);
-  if (open) {
-    const rows = el("div", "rows");
-    rows.append(...s.rows.map((r) => renderRow(r, s.key)));
-    wrap.append(rows);
+  return d;
+}
+
+async function archivedCard(r: Row): Promise<HTMLElement> {
+  const c = el("div", "archived");
+  paintShape(c, {
+    radius: px("--radius-card"),
+    fill: "var(--color-surface)",
+    stroke: "var(--color-hairline)",
+    strokeWidth: px("--size-hairline"),
+  });
+  const pic = el("div", "pic");
+  pic.append(initialTile(r), await symbol("archivebox.fill", 15, "semibold"));
+  const lines = el("div", "lines");
+  lines.append(el("span", "title t-card-title", r.title), el("span", "note t-card-subtitle", r.archivedNote ?? "archived"));
+  c.append(pic, lines);
+  return c;
+}
+
+/** The roster in herdrup's order: live groups as plain rows, then the
+ * "Idle" and "Archived" disclosure rows (App/HerdrApp.swift agentRosterRows).
+ * While searching, every matching agent is a plain row in that order, Idle's
+ * included, archived agents are left out, and nothing found says so. */
+async function renderRows() {
+  const generation = ++rowsGeneration;
+  const nodes: HTMLElement[] = [];
+  if (!board) {
+    if (state.phase === "connecting") {
+      const spin = el("div", "loading");
+      spin.innerHTML = spinnerSVG;
+      nodes.push(spin);
+    } else {
+      nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? "not connected" : "no machine"));
+    }
+  } else {
+    const sections = board.board.sections;
+    const live = sections.filter((s: Section) => s.key !== "idle");
+    const idle = sections.find((s: Section) => s.key === "idle");
+    const query = searchInput.value;
+    if (live.length === 0 && !idle && board.board.archived.length === 0) {
+      nodes.push(el("p", "empty-line t-empty", "no agents"));
+    } else if (query !== "") {
+      const found = sections.flatMap((s: Section) => s.rows).filter((r: Row) => matches(r.match, query));
+      if (found.length === 0) nodes.push(el("p", "empty-line t-empty", "no matches"));
+      for (const r of found) nodes.push(await agentRow(r, true));
+    } else {
+      for (const s of live) {
+        for (const r of s.rows) nodes.push(await agentRow(r, true));
+      }
+      if (idle) {
+        nodes.push(await disclosure("idle", "Idle", idle.rows.length));
+        if (open.idle) for (const r of idle.rows) nodes.push(await agentRow(r, true));
+      }
+      const archived = board.board.archived;
+      if (archived.length > 0) {
+        nodes.push(await disclosure("archived", "Archived", archived.length));
+        if (open.archived) for (const r of archived) nodes.push(await archivedCard(r));
+      }
+    }
   }
-  return wrap;
+  if (generation !== rowsGeneration) return; // a newer render won
+  // herdrup shows the spinner or the error in place of the whole list, search
+  // field included (App/HerdrApp.swift: `loading && agents.isEmpty`).
+  searchField.hidden = !board;
+  rowsEl.replaceChildren(...nodes);
+  await placeInitials(rowsEl);
+  if (generation !== rowsGeneration) return;
+  drawn = true;
+}
+let rowsGeneration = 0;
+let drawn = false;
+
+// UIActivityIndicatorView (medium) frozen on its first frame, as herdrup's
+// loading references show it (measured on both): 8 round-capped spokes 2.5 pt
+// wide from radius 3.6 to 10 in a 20 pt box, textDim at opacity 0.85 at 9
+// o'clock, then counter-clockwise 0.85 - 0.144 per spoke for three more, and
+// the other four at 0.275.
+const spinnerSVG = (() => {
+  let s = `<svg width="20" height="20" viewBox="-10 -10 20 20">`;
+  for (let i = 0; i < 8; i++) {
+    const opacity = i < 4 ? 0.85 - i * 0.144 : 0.275;
+    s += `<rect x="-1.25" y="-10" width="2.5" height="6.4" rx="1.25" fill="currentColor" opacity="${opacity.toFixed(3)}" transform="rotate(${-90 - i * 45})"/>`;
+  }
+  return s + "</svg>";
+})();
+
+// ---- Detail column ----
+
+function cssVar(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// herdrup DesktopReferenceMock.glyphFieldSeed, the resting picture's seed.
+const glyphFieldSeed = 0x4845524452555031n;
+
+function drawField() {
+  const r = field.getBoundingClientRect();
+  drawRestingGlyphField(field, {
+    widthPt: r.width,
+    heightPt: r.height,
+    scale: devicePixelRatio,
+    seed: glyphFieldSeed,
+    // The resting picture draws every glyph in hairline on groundMachine.
+    colours: {
+      groundMachine: cssVar("--color-ground-machine"),
+      hairline: cssVar("--color-hairline"),
+    },
+    font: cssVar("--font-machine"),
+  });
 }
 
 function render() {
-  const showForm = state.phase === "idle" || (state.phase === "error" && !board);
-  connectView.hidden = !showForm;
-  boardView.hidden = showForm;
+  const showConnect = tab === "settings" || (!board && state.phase !== "connecting" && state.phase !== "connected");
+  connectView.hidden = !showConnect;
+  field.hidden = showConnect;
+  select.hidden = showConnect;
+  connectError.hidden = state.phase !== "error";
+  connectError.textContent = state.phase === "error" ? `${state.machine}: ${state.message}` : "";
   disconnect.hidden = state.phase === "idle";
-
-  connDot.className = "dot " + state.phase;
-  connText.textContent =
-    state.phase === "connected"
-      ? `${state.machine} · ${state.herdr} · ${state.live ? "live" : "polling"}`
-      : state.phase === "connecting"
-        ? `connecting to ${state.machine}…`
-        : state.phase === "error"
-          ? `${state.machine}: ${state.message}`
-          : "not connected";
-  connectError.hidden = !(state.phase === "error" && showForm);
-  connectError.textContent = state.message;
-
-  const n = board?.board.needsYou ?? 0;
-  needs.hidden = n === 0;
-  $("needs-text").textContent = n === 1 ? "1 needs you" : `${n} need you`;
-
-  if (!board) {
-    boardView.replaceChildren(el("p", "empty", state.phase === "connecting" ? "Loading agents…" : ""));
-    footer.textContent = "";
-    return;
-  }
-  const b = board.board;
-  if (b.sections.length === 0) {
-    boardView.replaceChildren(el("p", "empty", "No agents on this machine."));
-  } else {
-    boardView.replaceChildren(...b.sections.map(renderSection));
-  }
-  const at = new Date(board.listedAt).toLocaleTimeString();
-  footer.textContent = `${b.total} agents${b.archived.length ? ` · ${b.archived.length} archived` : ""} · updated ${at}`;
+  void renderRows();
 }
+
+// ---- Wiring ----
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -107,6 +386,8 @@ form.addEventListener("submit", async (e) => {
   const get = (k: string) => String(f.get(k) ?? "").trim();
   try {
     board = null;
+    tab = "agents";
+    void buildTabBar();
     await Desk.connect(
       { host: get("host"), port: Number(get("port")) || 22, user: get("user"), keyPath: get("keyPath"), session: get("session") },
       String(f.get("password") ?? ""),
@@ -116,6 +397,8 @@ form.addEventListener("submit", async (e) => {
     render();
   }
 });
+
+searchInput.addEventListener("input", () => void renderRows());
 
 disconnect.addEventListener("click", () => {
   board = null;
@@ -132,7 +415,20 @@ events.boardChanged.on((b) => {
   render();
 });
 
+window.addEventListener("resize", () => {
+  placeTitle();
+  drawField();
+});
+
 async function init() {
+  document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
+  paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
+  paintShape($("sidebar"), { radius: px("--sidebar-radius"), fill: "var(--color-ground)", clip: true });
+  await place($("search-icon"), "magnifyingglass", 15, "medium");
+  await Promise.all([buildTopBar(), buildTabBar()]);
+  // After buildTopBar, which replaces the capsules' children.
+  paintShape($("bar-leading"), { radius: "capsule", fill: "var(--color-surface-raised)" });
+  paintShape($("bar-actions"), { radius: "capsule", fill: "var(--color-surface-raised)" });
   const [m, s, b] = await Promise.all([Desk.machine(), Desk.state(), Desk.board()]);
   if (m) {
     for (const [k, v] of Object.entries(m)) {
@@ -142,6 +438,26 @@ async function init() {
   }
   state = s;
   board = b ?? null;
+  await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
+  placeTitle();
+  drawField();
   render();
 }
+
+// Reference mode hook for the parity harness (refshot.go): tells it when
+// the current state is drawn and opens the disclosure rows.
+declare global {
+  interface Window {
+    herdrupRef: { ready(): boolean; expand(key: "idle" | "archived", isOpen: boolean): void };
+  }
+}
+window.herdrupRef = {
+  ready: () => drawn && document.fonts.status === "loaded",
+  expand(key, isOpen) {
+    open[key] = isOpen;
+    drawn = false;
+    void renderRows();
+  },
+};
+
 void init();

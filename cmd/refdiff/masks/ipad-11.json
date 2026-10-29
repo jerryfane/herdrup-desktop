@@ -1,0 +1,27 @@
+{
+  "device": "ipad-11",
+  "note": "Areas of herdrup's ipad-11 references (1180x820 pt) that are not compared, in reference points with the status bar included. Measured on the 12 PNGs at herdrup 7d802ebb, byte-identical to the pinned 75e117e2 (main, #564). Add a rect here to stop comparing an area.",
+  "rects": [
+    {
+      "name": "status-bar",
+      "x": 0, "y": 0, "w": 1180, "h": 32,
+      "why": "iPadOS status bar (manifest statusBar.heightPoints 32). refdiff -crop-top-pt 32 already cuts it; listed so the mask names everything not compared."
+    },
+    {
+      "name": "tab-bar-glass",
+      "x": 24, "y": 726, "w": 292, "h": 62,
+      "why": "The sidebar tab bar's Liquid Glass capsule with its Agents/Gram/Settings items: every pixel differing from the sidebar fill #13162A spans x 24-316, y 726-788 pt in all six states; the fill around it is exact (no shadow)."
+    },
+    {
+      "name": "loading-detail-field",
+      "x": 330, "y": 32, "w": 850, "h": 768,
+      "states": ["loading"],
+      "why": "The detail column's glyph field (x 330 pt to the right edge, from the status bar to 20 pt above the bottom). In the loading reference it is plain ground only because the capture froze the window's layers before the field's first resting picture arrived (reference README, `loading`). herdrup draws the field while loading, and so does the desktop. Compared in every other state."
+    },
+    {
+      "name": "window-resize-corner",
+      "x": 1156, "y": 796, "w": 24, "h": 24,
+      "why": "iPadOS's bottom-right window-resize arc, system chrome drawn over the app (bright pixels x 1160.5-1176, y 800-816 pt in all six states), plus its anti-aliasing."
+    }
+  ]
+}

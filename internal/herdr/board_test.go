@@ -111,3 +111,91 @@ func TestActivity(t *testing.T) {
 		}
 	}
 }
+
+// The expected indexes were computed independently with Python's FNV-1a
+// (64-bit, fold high bits, mod 4); the reference screenshots from herdrup
+// show the same gradients for the fixture's agents.
+func TestTintIndexMatchesHerdrup(t *testing.T) {
+	for name, want := range map[string]int{
+		"api-review": 3, "docs": 1, "web": 0, "infra": 2, "release": 1, "notes": 3,
+		"mac-studio/render": 1, "": 1, "é-ünicode": 0,
+	} {
+		if got := TintIndex(name); got != want {
+			t.Errorf("TintIndex(%q) = %d, want %d", name, got, want)
+		}
+	}
+}
+
+func TestPreview(t *testing.T) {
+	for _, tc := range []struct{ js, want string }{
+		{`{"pane_id":"w1:p1","cwd":"/home/dev/api","terminal_title_stripped":"π > migrating"}`, "api · migrating"},
+		{`{"pane_id":"w1:p1","cwd":"/home/dev/api"}`, "api"},
+		{`{"pane_id":"w1:p1","terminal_title_stripped":"⠋ testing"}`, "testing"},
+		{`{"pane_id":"w1:p1","cwd":"/","terminal_title_stripped":"π"}`, "w1:p1"},
+		{`{"pane_id":"w1:p1"}`, "w1:p1"},
+	} {
+		if got := Preview(agent(t, tc.js)); got != tc.want {
+			t.Errorf("Preview(%s) = %q, want %q", tc.js, got, tc.want)
+		}
+	}
+}
+
+func TestInitial(t *testing.T) {
+	for in, want := range map[string]string{"docs": "D", "  web": "W", "élan": "É", "": "?", "   ": "?"} {
+		if got := Initial(in); got != want {
+			t.Errorf("Initial(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBuildBoardBadgesAndArchivedNote(t *testing.T) {
+	b := BuildBoard([]AgentInfo{
+		agent(t, `{"pane_id":"a","agent_status":"blocked"}`),
+		agent(t, `{"pane_id":"b","agent_status":"working","reachability":"unreachable"}`),
+		agent(t, `{"pane_id":"c","agent_status":"compacting"}`),
+		agent(t, `{"pane_id":"d","agent_status":"idle"}`),
+		agent(t, `{"pane_id":"e","agent_status":"idle","archived":{"at":"2026-10-20T10:00:00Z","by":"user","reason":"done"}}`),
+		agent(t, `{"pane_id":"f","agent_status":"idle","archived":{"at":"2026-10-27T10:00:00Z"}}`),
+	})
+	badges := map[string]string{}
+	for _, s := range b.Sections {
+		for _, r := range s.Rows {
+			badges[r.ID] = r.Badge
+		}
+	}
+	want := map[string]string{"a": "waiting", "b": "offline", "c": "unrecognised", "d": "none"}
+	if !reflect.DeepEqual(badges, want) {
+		t.Errorf("badges %v, want %v", badges, want)
+	}
+	// Newest archived first; "archived" alone when herdr recorded no one.
+	var got [][2]string
+	for _, r := range b.Archived {
+		got = append(got, [2]string{r.ID, r.ArchivedNote})
+	}
+	if !reflect.DeepEqual(got, [][2]string{{"f", "archived"}, {"e", "archived by user · done"}}) {
+		t.Errorf("archived %q", got)
+	}
+}
+
+func TestRowMatchIsWhatSearchLooksIn(t *testing.T) {
+	b := BuildBoard([]AgentInfo{
+		// Federated: shown as the machine's label, but the raw name with the
+		// alias and the terminal title must still find it.
+		agent(t, `{"pane_id":"p1","agent_status":"working","name":"studio/render","machine_id":"studio","machine_label":"Studio Mac","terminal_title_stripped":"π > baking lights"}`),
+		// No name: the display name is the terminal title, listed once.
+		agent(t, `{"pane_id":"p2","agent_status":"working","terminal_title_stripped":"docs"}`),
+	})
+	got := map[string][]string{}
+	for _, s := range b.Sections {
+		for _, r := range s.Rows {
+			got[r.ID] = r.Match
+		}
+	}
+	want := map[string][]string{
+		"p1": {"Studio Mac/render", "studio/render", "π > baking lights"},
+		"p2": {"docs"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("match %q, want %q", got, want)
+	}
+}
