@@ -291,7 +291,7 @@ func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := c.ssh.NewSession()
+	sess, err := c.newSession(ctx)
 	if err != nil {
 		return nil, err
 	}

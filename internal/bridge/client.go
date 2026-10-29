@@ -346,10 +346,40 @@ func (c *Client) openStream(ctx context.Context, line []byte) (*Stream, error) {
 	return s, err
 }
 
+// newSession opens an exec channel, returning ctx's error as soon as ctx
+// ends: ssh.Client.NewSession waits for the server's channel-open reply,
+// which a stalled server may never send. A channel that opens after ctx
+// ended is closed.
+func (c *Client) newSession(ctx context.Context) (*ssh.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	type opened struct {
+		sess *ssh.Session
+		err  error
+	}
+	done := make(chan opened, 1)
+	go func() {
+		sess, err := c.ssh.NewSession()
+		done <- opened{sess, err}
+	}()
+	select {
+	case o := <-done:
+		return o.sess, o.err
+	case <-ctx.Done():
+		go func() {
+			if o := <-done; o.sess != nil {
+				o.sess.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
+}
+
 // start runs cmd on a new exec channel, with a stdin pipe when stdin is
 // set. The channel closes when ctx ends.
 func (c *Client) start(ctx context.Context, cmd string, stdin bool) (*Stream, io.WriteCloser, error) {
-	sess, err := c.ssh.NewSession()
+	sess, err := c.newSession(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

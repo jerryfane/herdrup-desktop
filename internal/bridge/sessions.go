@@ -38,7 +38,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := c.ssh.NewSession()
+	sess, err := c.newSession(ctx)
 	if err != nil {
 		return nil, err
 	}

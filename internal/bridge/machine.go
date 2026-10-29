@@ -64,7 +64,7 @@ func (c *Client) SetMachineFederation(ctx context.Context, id string, enabled bo
 	if err != nil {
 		return err
 	}
-	sess, err := c.ssh.NewSession()
+	sess, err := c.newSession(ctx)
 	if err != nil {
 		return err
 	}

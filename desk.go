@@ -118,7 +118,10 @@ type link struct {
 	// session is the herdr session the board shows. Switching it keeps the
 	// SSH connection.
 	session string
-	client  *bridge.Client // nil until connected
+	// sessionGen counts session switches, so a read begun on one session
+	// is not taken for the session it switched back to.
+	sessionGen uint64
+	client     *bridge.Client // nil until connected
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
 }
@@ -323,6 +326,7 @@ func (d *Desk) SelectSession(name string) error {
 		return nil
 	}
 	l.session = name
+	l.sessionGen++
 	d.board, d.peers = nil, nil
 	if l.restart != nil {
 		l.restart()
