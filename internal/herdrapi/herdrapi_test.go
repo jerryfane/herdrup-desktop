@@ -142,6 +142,17 @@ func TestUnionKeepsFieldsAndUnknownTags(t *testing.T) {
 	}
 }
 
+func TestUnknownVariantPointerMarshalsAsItsRawJSON(t *testing.T) {
+	raw := `{"type":"from_the_future","x":[1,2]}`
+	out, err := json.Marshal(ResponseResult{Value: &UnknownVariant{Tag: "from_the_future", Raw: json.RawMessage(raw)}})
+	if err != nil || string(out) != raw {
+		t.Fatalf("*UnknownVariant encoded as %s, %v; want %s", out, err, raw)
+	}
+	if _, err := json.Marshal(ResponseResult{Value: (*UnknownVariant)(nil)}); err == nil {
+		t.Fatal("a nil *UnknownVariant encoded without error")
+	}
+}
+
 func TestSubscriptionLines(t *testing.T) {
 	var c SubscriptionControlLine
 	if err := json.Unmarshal([]byte(`{"control":"lagged","seq":9,"first_missed_seq":4,"last_missed_seq":9}`), &c); err != nil {

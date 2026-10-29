@@ -28,6 +28,7 @@ func main() {
 	clientKey := flag.String("client-key", "fakeherdr-client.key", "write a new client private key here; only it can log in")
 	agentsFile := flag.String("agents", "", "agent.list result JSON (default: built-in sample)")
 	mode := flag.String("mode", "populated", "agent.list behaviour: populated (the agents JSON), empty (no agents) or loading (never answers)")
+	uploadStream := flag.Bool("upload-stream", true, "advertise gram_upload_stream and serve gram.upload.stream")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -40,11 +41,6 @@ func main() {
 	if !json.Valid(agents) {
 		log.Fatal("agents JSON is invalid")
 	}
-	handle, err := handler(*mode, agents)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		log.Fatal(err)
@@ -69,11 +65,18 @@ func main() {
 		log.Fatal(err)
 	}
 
+	w := newWrites()
+	w.uploadStream = *uploadStream
+	handle, err := handler(*mode, agents, w)
+	if err != nil {
+		log.Fatal(err)
+	}
 	s := &fakeherdr.Server{
 		HostKey:    hostKey,
 		Authorized: authorized,
 		Handle:     handle,
 		Events:     func(ctx context.Context, emit func([]byte) error) { <-ctx.Done() },
+		Duplex:     w.duplex,
 	}
 	addr, err := s.Listen(*listen)
 	if err != nil {
@@ -86,9 +89,10 @@ func main() {
 }
 
 // handler answers requests as a herdr whose agent.list behaves as mode
-// says. The modes are the agent-list states of herdrup's desktop
-// references (App/DesktopReferenceMock.swift in herdrup).
-func handler(mode string, agents []byte) (func(string, json.RawMessage) (any, *fakeherdr.APIError), error) {
+// says, and whose write methods change w. The modes are the agent-list
+// states of herdrup's desktop references (App/DesktopReferenceMock.swift
+// in herdrup).
+func handler(mode string, agents []byte, w *writes) (func(string, json.RawMessage) (any, *fakeherdr.APIError), error) {
 	var list func() any
 	switch mode {
 	case "populated":
@@ -100,15 +104,19 @@ func handler(mode string, agents []byte) (func(string, json.RawMessage) (any, *f
 	default:
 		return nil, fmt.Errorf("unknown mode %q: want populated, empty or loading", mode)
 	}
-	return func(method string, _ json.RawMessage) (any, *fakeherdr.APIError) {
+	return func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 		switch method {
 		case "ping":
 			return map[string]any{
 				"type": "pong", "version": "fake", "protocol": 22,
-				"capabilities": map[string]bool{"api_bridge_multi": true, "events_v2": true},
+				"capabilities": map[string]bool{"api_bridge_multi": true, "events_v2": true,
+					"agent_groups": true, "agent_avatar": true, "gram_upload_stream": w.uploadStream},
 			}, nil
 		case "agent.list":
 			return list(), nil
+		}
+		if res, err, ok := w.handle(method, params); ok {
+			return res, err
 		}
 		return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
 	}, nil

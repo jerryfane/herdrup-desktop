@@ -27,6 +27,11 @@ const (
 	defaultOpenRetryAfter = 30 * time.Second
 )
 
+// abandonGrace is how long a request whose caller gave up may hold its
+// --multi slot waiting for herdr's answer before the channel is retired;
+// the default Call timeout. A variable so tests can shorten it.
+var abandonGrace = defaultCallTimeout
+
 // multiStreamingMethods keep their connection open after the first reply,
 // so herdr refuses them on --multi (API_BRIDGE_MULTI_STREAMING_METHODS).
 var multiStreamingMethods = map[string]bool{
@@ -262,12 +267,17 @@ type multiChannel struct {
 	// so no more than maxMultiInFlight are ever outstanding.
 	inFlight chan struct{}
 	dead     chan struct{} // closed by fail
+	// retiredC is closed by retire: the channel takes no new requests.
+	retiredC chan struct{}
+	// abandonGrace is how long an abandoned request may hold its slot.
+	abandonGrace time.Duration
 
 	mu      sync.Mutex
 	pending map[string]chan reply
 	// abandoned are requests whose caller gave up; their in-flight token
 	// returns when herdr answers them.
 	abandoned map[string]bool
+	retired   bool
 	err       error // set once the channel is closed
 }
 
@@ -298,6 +308,7 @@ func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
 	m := &multiChannel{
 		sess: sess, stdin: stdin, stderr: &tailBuffer{},
 		inFlight: make(chan struct{}, maxMultiInFlight), dead: make(chan struct{}),
+		retiredC: make(chan struct{}), abandonGrace: abandonGrace,
 		pending: map[string]chan reply{}, abandoned: map[string]bool{},
 	}
 	sess.Stderr = m.stderr
@@ -346,12 +357,16 @@ func (m *multiChannel) readLoop(r *bufio.Reader) {
 		delete(m.pending, head.ID)
 		abandoned := m.abandoned[head.ID]
 		delete(m.abandoned, head.ID)
+		drained := m.drainedLocked()
 		m.mu.Unlock()
 		if ok || abandoned {
 			<-m.inFlight
 		}
 		if ok {
 			ch <- reply{line: line}
+		}
+		if drained {
+			m.close()
 		}
 	}
 }
@@ -364,6 +379,8 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	case m.inFlight <- struct{}{}:
 	case <-m.dead:
 		return nil, errNotSent
+	case <-m.retiredC:
+		return nil, errNotSent
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -371,6 +388,11 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	m.mu.Lock()
 	if m.err != nil {
 		m.mu.Unlock()
+		return nil, errNotSent
+	}
+	if m.retired {
+		m.mu.Unlock()
+		<-m.inFlight
 		return nil, errNotSent
 	}
 	if _, dup := m.pending[id]; dup {
@@ -420,16 +442,55 @@ func (m *multiChannel) withdraw(id string) {
 }
 
 // abandon stops waiting for a request. herdr still answers it, and its
-// slot returns then.
+// slot returns then. A herdr that never answers would keep the slot
+// forever, so the channel is retired when the request is still unanswered
+// after abandonGrace, or at once when abandoned requests hold every slot.
 func (m *multiChannel) abandon(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.pending[id]; ok {
-		delete(m.pending, id)
-		if m.err == nil {
-			m.abandoned[id] = true
-		}
+	if _, ok := m.pending[id]; !ok {
+		return
 	}
+	delete(m.pending, id)
+	if m.err != nil {
+		return
+	}
+	if m.drainedLocked() {
+		go m.close()
+		return
+	}
+	m.abandoned[id] = true
+	if len(m.abandoned) >= maxMultiInFlight {
+		m.retireLocked()
+		return
+	}
+	time.AfterFunc(m.abandonGrace, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.abandoned[id] {
+			m.retireLocked()
+		}
+	})
+}
+
+// retireLocked stops the channel taking new requests, so the pool opens a
+// fresh one. Requests still waiting on it keep waiting for their replies;
+// the process is closed once none is left. m.mu must be held.
+func (m *multiChannel) retireLocked() {
+	if m.retired || m.err != nil {
+		return
+	}
+	m.retired = true
+	close(m.retiredC)
+	if len(m.pending) == 0 {
+		go m.close()
+	}
+}
+
+// drainedLocked reports whether a retired channel has no request left
+// waiting, so it can close. m.mu must be held.
+func (m *multiChannel) drainedLocked() bool {
+	return m.retired && m.err == nil && len(m.pending) == 0
 }
 
 // fail closes the channel for new requests and fails every waiting one.
@@ -448,10 +509,11 @@ func (m *multiChannel) fail(err error) {
 	clear(m.abandoned)
 }
 
+// alive reports whether the channel takes new requests.
 func (m *multiChannel) alive() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.err == nil
+	return m.err == nil && !m.retired
 }
 
 func (m *multiChannel) close() {

@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -147,7 +148,9 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 			case "ping":
 				return fakeherdr.Pong(true), nil
 			case "agent.list":
-				return map[string]any{"type": "agent_list", "agents": []any{}}, nil
+				return map[string]any{"type": "agent_list", "agents": []any{
+					map[string]any{"pane_id": "w1:p1", "agent_status": "working"},
+				}}, nil
 			}
 			return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
 		},
@@ -163,6 +166,13 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 	dir := t.TempDir()
 	d := newDesk(dir)
 	defer d.Disconnect()
+	var boardsMu sync.Mutex
+	var boards []BoardUpdate
+	d.onBoard = func(b BoardUpdate) {
+		boardsMu.Lock()
+		boards = append(boards, b)
+		boardsMu.Unlock()
+	}
 	if err := d.Connect(Machine{Host: host, Port: port, User: "dev", KeyPath: keyPath}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -188,10 +198,23 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 		t.Fatalf("sessions %+v", sessions)
 	}
 
+	boardsMu.Lock()
+	before := len(boards)
+	boardsMu.Unlock()
 	if err := d.SelectSession("work"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "a board from session work", func() bool { return d.Board() != nil && listedIn("work") })
+	// The default session's agent must not stay on screen until the new
+	// list arrives: the switch itself publishes an empty, unlisted board.
+	boardsMu.Lock()
+	cleared := slices.ContainsFunc(boards[before:], func(b BoardUpdate) bool {
+		return b.ListedAt == "" && b.Board.Total == 0 && len(b.Board.Sections) == 0
+	})
+	boardsMu.Unlock()
+	if !cleared {
+		t.Error("switching session published no cleared board")
+	}
 	if n := srv.Conns(); n != 1 {
 		t.Errorf("%d SSH connections, want the one kept across the session switch", n)
 	}

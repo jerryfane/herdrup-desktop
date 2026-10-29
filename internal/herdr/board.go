@@ -1,12 +1,16 @@
+// Package herdr is the status board of the herdrup iOS app: agents from
+// agent.list (herdrapi.AgentInfo) grouped and ordered the way herdrup
+// shows them.
 package herdr
 
 import (
-	"encoding/json"
 	"path"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 // Group is a section of the status board. The order is the board's point:
@@ -41,26 +45,25 @@ func str(p *string) string {
 }
 
 // GroupOf places an agent the way the iOS app does (HerdrKit
-// AgentRow.resolvedGroup). live is false for a pane that is gone.
-func GroupOf(a AgentInfo, live bool) Group {
+// AgentRow.resolvedGroup). live is false for a pane that is gone. A
+// missing status reads as "", which, like a status this build does not
+// know, is Unrecognised.
+func GroupOf(a herdrapi.AgentInfo, live bool) Group {
 	if !live {
 		return Stopped
 	}
-	if a.InputPending || str(a.AgentStatus) == "blocked" {
+	if (a.InputPending != nil && *a.InputPending) || a.AgentStatus == herdrapi.AgentStatusBlocked {
 		return NeedsYou
 	}
-	if a.AgentStatus == nil {
-		return Unrecognised
-	}
-	switch *a.AgentStatus {
-	case "working":
+	switch a.AgentStatus {
+	case herdrapi.AgentStatusWorking:
 		return Working
-	case "idle", "done":
+	case herdrapi.AgentStatusIdle, herdrapi.AgentStatusDone:
 		return Idle
-	case "unknown":
+	case herdrapi.AgentStatusUnknown:
 		// A federated peer's live status is blanked to unknown when it
 		// drops; its last known blocked still needs you.
-		if str(a.LastKnownStatus) == "blocked" {
+		if a.LastKnownStatus != nil && *a.LastKnownStatus == herdrapi.AgentStatusBlocked {
 			return NeedsYou
 		}
 	}
@@ -112,40 +115,33 @@ type Board struct {
 // BuildBoard groups and orders agents: by group, then most recently
 // finished turn first, then pane id so unchanged data never reshuffles.
 // Archived agents come newest-archived first, as in herdrup's AgentList.
-func BuildBoard(agents []AgentInfo) Board {
+func BuildBoard(agents []herdrapi.AgentInfo) Board {
 	type entry struct {
-		info  AgentInfo
+		info  herdrapi.AgentInfo
 		group Group
 	}
 	var live, archived []entry
 	b := Board{Sections: []Section{}, Archived: []Row{}}
 	for _, a := range agents {
-		if a.IsArchived() {
+		if a.Archived != nil {
 			archived = append(archived, entry{a, Idle})
 			continue
 		}
 		live = append(live, entry{a, GroupOf(a, true)})
 	}
-	archivedAt := func(a AgentInfo) string {
-		var arc struct {
-			At string `json:"at"`
-		}
-		_ = json.Unmarshal(a.Archived, &arc)
-		return arc.At
-	}
 	sort.SliceStable(archived, func(i, j int) bool {
-		return archivedAt(archived[i].info) > archivedAt(archived[j].info)
+		return archived[i].info.Archived.At > archived[j].info.Archived.At
 	})
 	for _, e := range archived {
 		r := rowOf(e.info, Idle)
-		r.ArchivedNote = archivedNote(e.info)
+		r.ArchivedNote = archivedNote(*e.info.Archived)
 		b.Archived = append(b.Archived, r)
 	}
-	completed := func(a AgentInfo) int64 {
+	completed := func(a herdrapi.AgentInfo) int64 {
 		if a.LastCompletedTurn == nil {
 			return -1 << 63
 		}
-		return a.LastCompletedTurn.CompletedUnixMs
+		return int64(a.LastCompletedTurn.CompletedUnixMs)
 	}
 	sort.SliceStable(live, func(i, j int) bool {
 		a, b := live[i], live[j]
@@ -176,13 +172,13 @@ func BuildBoard(agents []AgentInfo) Board {
 
 var badgeOf = [...]string{NeedsYou: "waiting", Stopped: "stopped", Unrecognised: "unrecognised", Working: "working", Idle: "none"}
 
-func rowOf(a AgentInfo, g Group) Row {
+func rowOf(a herdrapi.AgentInfo, g Group) Row {
 	title := DisplayName(a)
 	r := Row{
 		ID:      a.PaneID,
 		Title:   title,
 		Agent:   str(a.Agent),
-		Status:  str(a.AgentStatus),
+		Status:  string(a.AgentStatus),
 		Badge:   badgeOf[g],
 		Preview: Preview(a),
 		Initial: Initial(title),
@@ -194,7 +190,7 @@ func rowOf(a AgentInfo, g Group) Row {
 			r.Match = append(r.Match, s)
 		}
 	}
-	if str(a.Reachability) == "unreachable" {
+	if a.Reachability != nil && *a.Reachability == herdrapi.ReachabilityUnreachable {
 		r.Badge = "offline"
 	}
 	return r
@@ -202,7 +198,7 @@ func rowOf(a AgentInfo, g Group) Row {
 
 // Preview is herdrup's row subtitle: the folder's last path component and
 // the activity, joined by " · ", or whichever exists, else the pane id.
-func Preview(a AgentInfo) string {
+func Preview(a herdrapi.AgentInfo) string {
 	folder := ""
 	if a.Cwd != nil {
 		if f := path.Base(*a.Cwd); f != "/" && f != "." {
@@ -244,15 +240,10 @@ func TintIndex(name string) int {
 
 // archivedNote is herdrup's archivedSubtitle: "archived by X · reason",
 // degrading to "archived" when herdr recorded no one.
-func archivedNote(a AgentInfo) string {
-	var arc struct {
-		By     *string `json:"by"`
-		Reason *string `json:"reason"`
-	}
-	_ = json.Unmarshal(a.Archived, &arc)
+func archivedNote(arc herdrapi.AgentArchivedInfo) string {
 	by := "archived"
-	if arc.By != nil {
-		by = "archived by " + *arc.By
+	if arc.By != "" {
+		by = "archived by " + arc.By
 	}
 	if r := str(arc.Reason); r != "" {
 		return by + " · " + r
@@ -263,7 +254,7 @@ func archivedNote(a AgentInfo) string {
 // DisplayName is the agent's name, falling back to its terminal title and
 // pane id. A federated agent's machine alias is replaced by the machine's
 // label.
-func DisplayName(a AgentInfo) string {
+func DisplayName(a herdrapi.AgentInfo) string {
 	raw := str(a.Name)
 	if raw == "" {
 		raw = str(a.TerminalTitleStripped)

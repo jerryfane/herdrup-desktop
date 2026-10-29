@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
 )
 
@@ -51,10 +53,12 @@ func main() {
 	}
 	enc := json.NewEncoder(os.Stdout)
 	first := true
-	err = live.Watch(ctx, live.BridgeCaller{Client: c}, live.DefaultTiming, func(u live.Update) {
+	err = live.Watch(ctx, engine.New(engine.Bridge(c)), live.DefaultTiming, func(u live.Update) {
 		if first {
 			fmt.Fprintf(os.Stderr, "herdr %s, protocol %d, events_v2=%v, api_bridge_multi=%v\n",
-				u.Pong.Version, u.Pong.Protocol, u.Pong.Capabilities.EventsV2, u.Pong.Capabilities.APIBridgeMulti)
+				u.Pong.Version, u.Pong.Protocol,
+				herdrapi.CapabilityEventsV2.Supported(u.Pong.Capabilities),
+				herdrapi.CapabilityAPIBridgeMulti.Supported(u.Pong.Capabilities))
 		}
 		fmt.Fprintf(os.Stderr, "%s agents=%d needsYou=%d\n", u.Listed.Format(time.TimeOnly), u.Board.Total, u.Board.NeedsYou)
 		if first || *watch > 0 {

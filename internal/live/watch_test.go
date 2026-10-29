@@ -16,16 +16,18 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
 	"golang.org/x/crypto/ssh"
 )
 
 var fast = live.Timing{
-	Debounce: 20 * time.Millisecond,
-	Backstop: time.Hour,
-	Poll:     50 * time.Millisecond,
-	Silence:  300 * time.Millisecond,
+	Debounce:  20 * time.Millisecond,
+	Backstop:  time.Hour,
+	Poll:      50 * time.Millisecond,
+	Silence:   300 * time.Millisecond,
+	Reconnect: engine.Backoff{Initial: 20 * time.Millisecond, Max: 100 * time.Millisecond},
 }
 
 type fake struct {
@@ -107,7 +109,7 @@ func watch(t *testing.T, c *bridge.Client) (<-chan live.Update, <-chan error) {
 	updates := make(chan live.Update, 64)
 	done := make(chan error, 1)
 	go func() {
-		done <- live.Watch(ctx, live.BridgeCaller{Client: c}, fast, func(u live.Update) { updates <- u })
+		done <- live.Watch(ctx, engine.New(engine.Bridge(c)), fast, func(u live.Update) { updates <- u })
 	}()
 	return updates, done
 }
@@ -232,7 +234,7 @@ func TestLostConnectionEndsTheWatch(t *testing.T) {
 		if err == nil || errors.Is(err, context.Canceled) {
 			t.Fatalf("got %v, want a connection error", err)
 		}
-		if !errors.Is(err, live.ErrDisconnected) && !strings.Contains(err.Error(), "closed") {
+		if !errors.Is(err, engine.ErrDisconnected) && !strings.Contains(err.Error(), "closed") {
 			t.Logf("ended with %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -253,12 +255,12 @@ func (r *refusingCaller) Call(_ context.Context, method string, _, result any) e
 		return json.Unmarshal([]byte(`{"type":"pong","protocol":22,"capabilities":{"events_v2":true}}`), result)
 	case "agent.list":
 		r.lists.Add(1)
-		return json.Unmarshal([]byte(`{"agents":[]}`), result)
+		return json.Unmarshal([]byte(`{"type":"agent_list","agents":[]}`), result)
 	}
 	return errors.New("unexpected " + method)
 }
 
-func (r *refusingCaller) OpenStream(context.Context, string, any) (live.Stream, error) {
+func (r *refusingCaller) OpenStream(context.Context, string, any) (engine.Stream, error) {
 	r.opens.Add(1)
 	return nil, errors.New("exec refused")
 }
@@ -268,7 +270,7 @@ func (r *refusingCaller) Done() <-chan struct{} { return r.done }
 func TestSubscribeThatNeverOpensEndsTheWatchWithoutRelisting(t *testing.T) {
 	r := &refusingCaller{done: make(chan struct{})}
 	done := make(chan error, 1)
-	go func() { done <- live.Watch(context.Background(), r, fast, func(live.Update) {}) }()
+	go func() { done <- live.Watch(context.Background(), engine.New(r), fast, func(live.Update) {}) }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "exec refused") {
