@@ -22,4 +22,14 @@ export default defineConfig({
     comment: "Answer your herdr coding agents from the desktop",
     categories: ["Development"],
   },
+  // Developer ID signing and notarization, off until the owner sets them up
+  // (see "Signing macOS builds" in README.md): the release workflow sets
+  // these variables only when the repository variable
+  // MACOS_SIGNING_IDENTITY exists. Without them the app is signed ad hoc.
+  macos: {
+    signingIdentity: process.env.HERDRUP_SIGNING_IDENTITY,
+    notarize: process.env.HERDRUP_NOTARY_KEYCHAIN
+      ? { keychainProfile: "notary", keychain: process.env.HERDRUP_NOTARY_KEYCHAIN }
+      : undefined,
+  },
 });
