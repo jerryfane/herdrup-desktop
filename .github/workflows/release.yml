@@ -3,12 +3,13 @@ name: Release
 # A v* tag builds the installers with mygo build (docs/distribution.md of
 # mygo), checks each one on its OS, and publishes them with SHA256SUMS on
 # the tag's GitHub release: the macOS disk image, the Windows installer, and
-# the Linux Debian package, archive and install.sh. Run on demand, it builds
-# and checks the same files and keeps them as artifacts of the run, without
-# a release.
+# the Linux Debian package, archive and install.sh. Run on demand or on a
+# push to a feat/package-* branch, it builds and checks the same files and
+# keeps them as artifacts of the run, without a release.
 on:
   push:
     tags: ["v*"]
+    branches: ["feat/package-*"]
   workflow_dispatch:
 
 permissions:
