@@ -42,30 +42,51 @@ func (e *FederationChangeError) Error() string {
 
 func (e *FederationChangeError) Unwrap() error { return e.Err }
 
-// herdrClient is a typed client for the herdr session the board shows.
-func (d *Desk) herdrClient() (*engine.Client, error) {
+// ErrSessionChanged is a machine status read whose herdr session or
+// connection was replaced before it finished; its statuses are dropped.
+var ErrSessionChanged = errors.New("the herdr session changed while machine status was read")
+
+// boardSession identifies the connection and herdr session a request was
+// sent to.
+type boardSession struct {
+	link   *link
+	client *bridge.Client
+	gen    uint64
+}
+
+// currentLocked reports whether at is still the board's connection and
+// session. d.mu must be held.
+func (d *Desk) currentLocked(at boardSession) bool {
+	return d.link == at.link && d.link.client == at.client && d.link.sessionGen == at.gen
+}
+
+// herdrClient is a typed client for the herdr session the board shows,
+// and that session.
+func (d *Desk) herdrClient() (*engine.Client, boardSession, error) {
 	d.mu.Lock()
-	var c *bridge.Client
+	var at boardSession
 	var session string
 	if d.link != nil {
-		c, session = d.link.client, d.link.session
+		at = boardSession{link: d.link, client: d.link.client, gen: d.link.sessionGen}
+		session = d.link.session
 	}
 	d.mu.Unlock()
-	if c == nil {
-		return nil, errors.New("not connected")
+	if at.client == nil {
+		return nil, at, errors.New("not connected")
 	}
-	view, err := c.ForSession(session)
+	view, err := at.client.ForSession(session)
 	if err != nil {
-		return nil, err
+		return nil, at, err
 	}
-	return engine.New(engine.Bridge(view)), nil
+	return engine.New(engine.Bridge(view)), at, nil
 }
 
 // MachineStatuses lists the saved SSH machines of the connected herdr
 // (machine.status), sorted by display label, each with its federation
-// peer on the current board.
+// peer on the current board. It is ErrSessionChanged when the session
+// switched during the read.
 func (d *Desk) MachineStatuses(ctx context.Context) ([]SavedMachineStatus, error) {
-	c, err := d.herdrClient()
+	c, at, err := d.herdrClient()
 	if err != nil {
 		return nil, err
 	}
@@ -73,13 +94,19 @@ func (d *Desk) MachineStatuses(ctx context.Context) ([]SavedMachineStatus, error
 	if err != nil {
 		return nil, err
 	}
-	return d.withPeers(statuses), nil
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.currentLocked(at) {
+		return nil, ErrSessionChanged
+	}
+	return d.withPeersLocked(statuses), nil
 }
 
-// withPeers pairs each status with its peer on the current board, matched
-// as herdrup matches them: peer alias == profile id.
-func (d *Desk) withPeers(statuses []engine.SavedMachineStatus) []SavedMachineStatus {
-	peers := d.Peers()
+// withPeersLocked pairs each status with its peer on the current board,
+// matched as herdrup matches them: peer alias == profile id. d.mu must be
+// held.
+func (d *Desk) withPeersLocked(statuses []engine.SavedMachineStatus) []SavedMachineStatus {
+	peers := append([]engine.PeerSummary{}, d.peers...)
 	out := make([]SavedMachineStatus, len(statuses))
 	for i, s := range statuses {
 		out[i] = SavedMachineStatus{SavedMachineStatus: s, HasFederationPolicy: s.HasFederationPolicy()}
@@ -94,9 +121,11 @@ func (d *Desk) withPeers(statuses []engine.SavedMachineStatus) []SavedMachineSta
 // or out of it, with `herdr machine federate|unfederate`, then re-reads
 // the statuses and sends them as MachineStatusChanged (herdrup
 // changeFederation). A *FederationChangeError says whether the change
-// failed or was applied but the statuses could not be re-read.
+// failed or was applied but the statuses could not be re-read; when the
+// session switched meanwhile it is applied with ErrSessionChanged, and
+// nothing is sent.
 func (d *Desk) SetMachineFederation(ctx context.Context, profileID string, enabled bool) error {
-	c, err := d.herdrClient()
+	c, at, err := d.herdrClient()
 	if err != nil {
 		return &FederationChangeError{Err: err}
 	}
@@ -107,7 +136,14 @@ func (d *Desk) SetMachineFederation(ctx context.Context, profileID string, enabl
 	if err != nil {
 		return &FederationChangeError{Applied: true, Err: err}
 	}
-	MachineStatusChanged.Broadcast(d.withPeers(statuses))
+	// Under d.mu, like every board publish, so a session switch cannot
+	// come between the check and the send.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.currentLocked(at) {
+		return &FederationChangeError{Applied: true, Err: ErrSessionChanged}
+	}
+	MachineStatusChanged.Broadcast(d.withPeersLocked(statuses))
 	return nil
 }
 

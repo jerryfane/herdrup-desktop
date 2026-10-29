@@ -225,7 +225,8 @@ export const Desk = {
   /**
    * MachineStatuses lists the saved SSH machines of the connected herdr
    * (machine.status), sorted by display label, each with its federation
-   * peer on the current board.
+   * peer on the current board. It is ErrSessionChanged when the session
+   * switched during the read.
    */
   machineStatuses(): Promise<SavedMachineStatus[]> {
     return call("Desk.MachineStatuses");
@@ -279,7 +280,9 @@ export const Desk = {
    * or out of it, with `herdr machine federate|unfederate`, then re-reads
    * the statuses and sends them as MachineStatusChanged (herdrup
    * changeFederation). A *FederationChangeError says whether the change
-   * failed or was applied but the statuses could not be re-read.
+   * failed or was applied but the statuses could not be re-read; when the
+   * session switched meanwhile it is applied with ErrSessionChanged, and
+   * nothing is sent.
    */
   setMachineFederation(profileID: string, enabled: boolean): Promise<void> {
     return call("Desk.SetMachineFederation", profileID, enabled);
