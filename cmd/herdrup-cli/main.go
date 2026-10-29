@@ -8,6 +8,7 @@
 // whose params are the method's JSON params, plus:
 //
 //	sessions               the machine's herdr sessions
+//	machines               the saved SSH machines (machine.status, sorted by label)
 //	watch [options]        events.subscribe with events_v2, one JSON event per line
 //	pane-stream <pane_id> [params]  pane.stream frames, one per line
 //	gram.upload <file>     stage a file for gram.send/gram.post
@@ -113,7 +114,7 @@ var calls = map[string]handler{
 }
 
 func usage() {
-	names := []string{"sessions", "watch", "pane-stream", "gram.upload"}
+	names := []string{"sessions", "machines", "watch", "pane-stream", "gram.upload"}
 	for n := range calls {
 		names = append(names, n)
 	}
@@ -196,6 +197,12 @@ func run() error {
 			return err
 		}
 		return out.Encode(s)
+	case "machines":
+		m, err := c.MachineStatuses(ctx)
+		if err != nil {
+			return err
+		}
+		return out.Encode(m)
 	case "watch":
 		var opts engine.SubscribeOptions
 		if err := decodeParams(params(0), &opts); err != nil {

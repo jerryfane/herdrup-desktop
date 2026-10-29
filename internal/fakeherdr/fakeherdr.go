@@ -69,15 +69,28 @@ type Server struct {
 	// the fake is a herdr from before named sessions, which has no
 	// `session` subcommand.
 	SessionList string
+	// Machines, when not nil, are the saved SSH machines: machine.status
+	// answers with them before Handle is asked, and `herdr machine
+	// federate|unfederate <id>` opts one in or out. When nil, Handle
+	// answers machine.status and there is no machine subcommand.
+	Machines []Machine
+	// MachineStatusError, when set, makes machine.status fail with it.
+	MachineStatusError *APIError
+	// MachineStdout is written to stdout by every `herdr machine` command.
+	MachineStdout string
+	// MachineStderr, when set, makes `herdr machine federate|unfederate`
+	// write it to stderr and exit 1 without changing anything.
+	MachineStderr string
 
-	mu          sync.Mutex
-	commands    []string
-	requests    []Request
-	inFlight    int // --multi requests being answered now
-	maxInFlight int
-	conns       int
-	ln          net.Listener
-	wg          sync.WaitGroup
+	mu           sync.Mutex
+	commands     []string
+	requests     []Request
+	machineCalls []MachineCall
+	inFlight     int // --multi requests being answered now
+	maxInFlight  int
+	conns        int
+	ln           net.Listener
+	wg           sync.WaitGroup
 }
 
 // Request is one request the fake received.
@@ -266,6 +279,8 @@ func (s *Server) exec(ctx context.Context, cmd string, ch ssh.Channel) int {
 		return 2
 	}
 	switch args[0] {
+	case "machine":
+		return s.machineCommand(ch, session, args[1:])
 	case "session":
 		return s.sessionCommand(ch, session, args[1:])
 	case "api-bridge":
@@ -376,7 +391,10 @@ type request struct {
 }
 
 func (s *Server) reply(req request) map[string]any {
-	result, apiErr := s.Handle(req.Method, req.Params)
+	result, apiErr, ok := s.machineStatus()
+	if req.Method != "machine.status" || !ok {
+		result, apiErr = s.Handle(req.Method, req.Params)
+	}
 	if apiErr != nil {
 		return map[string]any{"id": req.ID, "error": apiErr}
 	}

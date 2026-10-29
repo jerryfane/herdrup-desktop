@@ -88,6 +88,9 @@ var (
 	BoardChanged = mygo.NewEvent[BoardUpdate]("board:changed")
 	// StateChanged is sent when the connection changes.
 	StateChanged = mygo.NewEvent[ConnState]("state:changed")
+	// MachineStatusChanged is sent with the saved machines' statuses when
+	// SetMachineFederation has re-read them.
+	MachineStatusChanged = mygo.NewEvent[[]SavedMachineStatus]("machine-status:changed")
 )
 
 // Desk keeps a set of saved machines, connects to the active one and keeps
@@ -97,9 +100,11 @@ type Desk struct {
 
 	storeMu sync.Mutex // serialises reads and writes of machines.json
 
-	mu     sync.Mutex
-	state  ConnState
-	board  *BoardUpdate
+	mu    sync.Mutex
+	state ConnState
+	board *BoardUpdate
+	// peers are the federation peers of board's agents.
+	peers  []engine.PeerSummary
 	cancel context.CancelFunc
 	link   *link // the current connection; nil when disconnected
 	// onBoard observes boards for the CI smoke capture.
@@ -318,7 +323,7 @@ func (d *Desk) SelectSession(name string) error {
 		return nil
 	}
 	l.session = name
-	d.board = nil
+	d.board, d.peers = nil, nil
 	if l.restart != nil {
 		l.restart()
 	}
@@ -380,7 +385,7 @@ func (d *Desk) Disconnect() {
 		d.cancel = nil
 	}
 	d.link = nil
-	d.board = nil
+	d.board, d.peers = nil, nil
 	d.mu.Unlock()
 	d.setState(context.Background(), ConnState{Phase: "idle"})
 }
@@ -413,7 +418,7 @@ func (d *Desk) start(m Machine, password string) {
 	}
 	d.cancel = cancel
 	d.link = l
-	d.board = nil
+	d.board, d.peers = nil, nil
 	d.mu.Unlock()
 	go d.run(ctx, l, m, password)
 }
@@ -503,6 +508,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				})
 			}
 			b := BoardUpdate{Board: u.Board, ListedAt: u.Listed.Format(time.RFC3339)}
+			peers := engine.PeerSummaries(u.Agents)
 			// Broadcast only queues the message, so it runs under d.mu: a
 			// Disconnect, new Connect or session switch cannot slip in
 			// between the check and the publish and be overtaken by this
@@ -512,7 +518,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				d.mu.Unlock()
 				return
 			}
-			d.board = &b
+			d.board, d.peers = &b, peers
 			BoardChanged.Broadcast(b)
 			observe := d.onBoard
 			d.mu.Unlock()

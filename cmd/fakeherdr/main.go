@@ -29,6 +29,8 @@ func main() {
 	agentsFile := flag.String("agents", "", "agent.list result JSON (default: built-in sample)")
 	mode := flag.String("mode", "populated", "agent.list behaviour: populated (the agents JSON), empty (no agents) or loading (never answers)")
 	uploadStream := flag.Bool("upload-stream", true, "advertise gram_upload_stream and serve gram.upload.stream")
+	machinesFile := flag.String("machines", "", "saved SSH machines for machine.status and `herdr machine federate|unfederate`: a JSON array of objects with herdr's machine.status fields (default: none, and no machine subcommand)")
+	machineFail := flag.String("machine-fail", "", "make `herdr machine federate|unfederate` exit 1 with this stderr")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -40,6 +42,17 @@ func main() {
 	}
 	if !json.Valid(agents) {
 		log.Fatal("agents JSON is invalid")
+	}
+	var machines []fakeherdr.Machine
+	if *machinesFile != "" {
+		raw, err := os.ReadFile(*machinesFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		machines = []fakeherdr.Machine{}
+		if err := json.Unmarshal(raw, &machines); err != nil {
+			log.Fatalf("machines JSON: %v", err)
+		}
 	}
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -72,11 +85,13 @@ func main() {
 		log.Fatal(err)
 	}
 	s := &fakeherdr.Server{
-		HostKey:    hostKey,
-		Authorized: authorized,
-		Handle:     handle,
-		Events:     func(ctx context.Context, emit func([]byte) error) { <-ctx.Done() },
-		Duplex:     w.duplex,
+		HostKey:       hostKey,
+		Authorized:    authorized,
+		Handle:        handle,
+		Events:        func(ctx context.Context, emit func([]byte) error) { <-ctx.Done() },
+		Duplex:        w.duplex,
+		Machines:      machines,
+		MachineStderr: *machineFail,
 	}
 	addr, err := s.Listen(*listen)
 	if err != nil {
