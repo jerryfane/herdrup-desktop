@@ -2,7 +2,7 @@ import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, ty
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
-import { avatarFace } from "./avatars";
+import { avatarFace, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -435,6 +435,9 @@ disconnect.addEventListener("click", () => {
 events.stateChanged.on((s) => {
   state = s;
   if (s.phase === "idle") board = null;
+  // Each connection attempt is a new connection: photos that failed on the
+  // last one are asked for again, as Desk's own store does.
+  if (s.phase === "connecting") forgetFailedPhotos();
   render();
 });
 events.boardChanged.on((b) => {

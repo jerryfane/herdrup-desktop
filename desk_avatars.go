@@ -174,22 +174,21 @@ func loadAvatar(ctx context.Context, dir, sha string, fetch func(context.Context
 func (d *Desk) AvatarImage(ctx context.Context, target, sha256 string) (string, error) {
 	d.mu.Lock()
 	l := d.link
+	var at boardSession
 	var session string
 	if l != nil {
+		at = boardSession{link: l, client: l.client, gen: l.sessionGen}
 		session = l.session
 	}
 	d.mu.Unlock()
-	if l == nil {
+	if at.client == nil {
 		return "", errNotConnected
 	}
-	return d.avatars.get(ctx, avatarDir(d.dir), l, sha256, func(ctx context.Context) (string, error) {
-		d.mu.Lock()
-		c := l.client
-		d.mu.Unlock()
-		if c == nil {
-			return "", errNotConnected
-		}
-		view, err := c.ForSession(session)
+	// Failures belong to this connection and session, as herdrup's
+	// AgentAvatarDirectory does (one per connected home, made anew on each
+	// reconnect or session switch): a reconnect asks again (#36).
+	return d.avatars.get(ctx, avatarDir(d.dir), at, sha256, func(ctx context.Context) (string, error) {
+		view, err := at.client.ForSession(session)
 		if err != nil {
 			return "", err
 		}

@@ -92,6 +92,7 @@ type Server struct {
 	inFlight     int // --multi requests being answered now
 	maxInFlight  int
 	conns        int
+	live         map[*ssh.ServerConn]bool // logged-in connections still open
 	ln           net.Listener
 	wg           sync.WaitGroup
 	channelOpen  func()
@@ -162,6 +163,15 @@ func (s *Server) OpenChannels() int {
 	return s.openChannels
 }
 
+// DropConns closes every open SSH connection, as a network drop does.
+func (s *Server) DropConns() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sc := range s.live {
+		sc.Close()
+	}
+}
+
 func (s *Server) record(r Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, r)
@@ -221,7 +231,16 @@ func (s *Server) serveConn(c net.Conn, cfg *ssh.ServerConfig) {
 	defer sc.Close()
 	s.mu.Lock()
 	s.conns++
+	if s.live == nil {
+		s.live = map[*ssh.ServerConn]bool{}
+	}
+	s.live[sc] = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.live, sc)
+		s.mu.Unlock()
+	}()
 	go ssh.DiscardRequests(reqs)
 	for nc := range chans {
 		if nc.ChannelType() != "session" {

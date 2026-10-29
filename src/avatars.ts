@@ -4,14 +4,33 @@
 import { Desk, type Avatar } from "./mygo";
 
 /** Photos by sha256: the data: URL once fetched, null after a failure, which
- * herdrup draws as the initial tile. Desk caches the bytes on disk. */
+ * herdrup draws as the initial tile. Desk caches the bytes on disk. A failure
+ * is remembered for the connection only, as Desk's own store does: a new
+ * connection forgets it (forgetFailedPhotos) and the photo is asked for
+ * again (#36). */
 const photos = new Map<string, string | null>();
 const loading = new Map<string, Promise<string | null>>();
+/** Counts connections, so a fetch begun on an older one records no failure. */
+let connection = 0;
 
-function loadPhoto(a: Avatar): Promise<string | null> {
+/** What is known of sha's photo: its URL, null after a failure on this
+ * connection, undefined before it is fetched. */
+export function knownPhoto(sha: string): string | null | undefined {
+  return photos.get(sha);
+}
+
+/** Forgets the photos that failed, for a new connection. */
+export function forgetFailedPhotos() {
+  connection++;
+  for (const [sha, url] of photos) if (url === null) photos.delete(sha);
+  loading.clear();
+}
+
+export function loadPhoto(a: Avatar): Promise<string | null> {
   const sha = a.sha256 ?? "";
   let p = loading.get(sha);
   if (!p) {
+    const on = connection;
     p = Desk.avatarImage(a.target ?? "", sha).then(
       (url) => {
         photos.set(sha, url);
@@ -20,8 +39,8 @@ function loadPhoto(a: Avatar): Promise<string | null> {
       (err) => {
         console.error(`avatar ${sha}:`, err);
         // A lost connection is not a broken photo: try again later.
-        if (String(err).includes("not connected")) {
-          loading.delete(sha);
+        if (String(err).includes("not connected") || on !== connection) {
+          if (loading.get(sha) === p) loading.delete(sha);
           return null;
         }
         photos.set(sha, null);
@@ -50,7 +69,7 @@ export function avatarFace(a: Avatar | undefined, initial: () => HTMLElement): H
     return img;
   }
   if (a?.kind === "image" && a.sha256) {
-    const known = photos.get(a.sha256);
+    const known = knownPhoto(a.sha256);
     if (known === null) return initial();
     if (known !== undefined) return photo(known);
     const wait = document.createElement("div");
