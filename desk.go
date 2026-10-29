@@ -126,7 +126,10 @@ type link struct {
 	// session is the herdr session the board shows. Switching it keeps the
 	// SSH connection.
 	session string
-	client  *bridge.Client // nil until connected
+	// sessionGen counts session switches, so a read begun on one session
+	// is not taken for the session it switched back to.
+	sessionGen uint64
+	client     *bridge.Client // nil until connected
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
 	// ctx is the current watch's; it ends when the session or connection
@@ -346,6 +349,7 @@ func (d *Desk) SelectSession(name string) error {
 	// A board of the new session seen in the last minute stands in until
 	// its list arrives, as herdrup's SessionSwitchCache does.
 	seeded := d.sessionSwitched(from, name, d.board, time.Now())
+	l.sessionGen++
 	d.board, d.peers = nil, nil
 	if l.restart != nil {
 		l.restart()

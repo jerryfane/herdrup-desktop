@@ -76,6 +76,9 @@ type Server struct {
 	Machines []Machine
 	// MachineStatusError, when set, makes machine.status fail with it.
 	MachineStatusError *APIError
+	// MachineStatusDelay, when set, is called before each machine.status
+	// is answered, which waits for it to return.
+	MachineStatusDelay func()
 	// MachineStdout is written to stdout by every `herdr machine` command.
 	MachineStdout string
 	// MachineStderr, when set, makes `herdr machine federate|unfederate`
@@ -91,6 +94,17 @@ type Server struct {
 	conns        int
 	ln           net.Listener
 	wg           sync.WaitGroup
+	channelOpen  func()
+	openChannels int
+}
+
+// StallChannelOpens makes every later session channel open wait for hook
+// to return before the fake answers it, as a server that stalls the
+// channel-open confirmation does; nil answers at once again.
+func (s *Server) StallChannelOpens(hook func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.channelOpen = hook
 }
 
 // Request is one request the fake received.
@@ -139,6 +153,13 @@ func (s *Server) Conns() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conns
+}
+
+// OpenChannels returns how many session channels are open now.
+func (s *Server) OpenChannels() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openChannels
 }
 
 func (s *Server) record(r Request) {
@@ -207,11 +228,25 @@ func (s *Server) serveConn(c net.Conn, cfg *ssh.ServerConfig) {
 			_ = nc.Reject(ssh.UnknownChannelType, "only sessions")
 			continue
 		}
-		ch, creqs, err := nc.Accept()
-		if err != nil {
-			continue
-		}
-		go s.serveSession(ch, creqs)
+		go func() {
+			s.mu.Lock()
+			hook := s.channelOpen
+			s.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
+			ch, creqs, err := nc.Accept()
+			if err != nil {
+				return
+			}
+			s.mu.Lock()
+			s.openChannels++
+			s.mu.Unlock()
+			s.serveSession(ch, creqs)
+			s.mu.Lock()
+			s.openChannels--
+			s.mu.Unlock()
+		}()
 	}
 }
 
@@ -391,6 +426,9 @@ type request struct {
 }
 
 func (s *Server) reply(req request) map[string]any {
+	if req.Method == "machine.status" && s.MachineStatusDelay != nil {
+		s.MachineStatusDelay()
+	}
 	result, apiErr, ok := s.machineStatus()
 	if req.Method != "machine.status" || !ok {
 		result, apiErr = s.Handle(req.Method, req.Params)

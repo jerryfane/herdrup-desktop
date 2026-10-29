@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
@@ -166,4 +167,67 @@ func TestDeskSetMachineFederationErrors(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+}
+
+// delayedStatus makes the fake's next machine.status wait: entered is
+// closed when it arrives, and it is answered once release is closed.
+func delayedStatus(entered, release chan struct{}) func(*fakeherdr.Server) {
+	var once sync.Once
+	return func(s *fakeherdr.Server) {
+		s.MachineStatusDelay = func() {
+			first := false
+			once.Do(func() { first = true })
+			if first {
+				close(entered)
+				<-release
+			}
+		}
+	}
+}
+
+// switchSessionDuring switches the board to session work while a delayed
+// machine.status is outstanding, and lets it finish once work's board is
+// on screen.
+func switchSessionDuring(t *testing.T, d *Desk, entered, release chan struct{}) {
+	t.Helper()
+	<-entered
+	if err := d.SelectSession("work"); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	waitFor(t, "a board from session work", func() bool { return d.Board() != nil })
+	close(release)
+}
+
+func TestDeskMachineStatusesRejectsASupersededSession(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	d, _ := federatedDesk(t, delayedStatus(entered, release))
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.MachineStatuses(context.Background())
+		done <- err
+	}()
+	switchSessionDuring(t, d, entered, release)
+	if err := <-done; !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("got %v, want ErrSessionChanged", err)
+	}
+	if _, err := d.MachineStatuses(context.Background()); err != nil {
+		t.Fatalf("a read on the current session: %v", err)
+	}
+}
+
+func TestDeskSetMachineFederationRejectsASupersededSession(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	d, srv := federatedDesk(t, delayedStatus(entered, release))
+	done := make(chan error, 1)
+	go func() { done <- d.SetMachineFederation(context.Background(), studioID, true) }()
+	switchSessionDuring(t, d, entered, release)
+	err := <-done
+	var change *FederationChangeError
+	if !errors.As(err, &change) || !change.Applied || !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("got %v, want an applied change with ErrSessionChanged", err)
+	}
+	if calls := srv.MachineCalls(); len(calls) != 1 || calls[0].Session != "" {
+		t.Fatalf("machine calls %+v", calls)
+	}
 }
