@@ -27,9 +27,14 @@ env:
   REFERENCES: ${{ inputs.references || '75e117e291a0cba40dbbc29afb35ddabd223ddc8' }}
   # refdiff thresholds: a pixel differs when a channel is more than
   # PARITY_TOL (0-255) off; a capture fails when more than
-  # PARITY_MAX_OVER_PCT percent of its compared pixels differ.
+  # PARITY_MAX_OVER_PCT percent of its compared pixels differ, or when
+  # anything is displaced (refdiff's shift scan, always on).
+  # 0.15 % (owner decision, 2026-10-28): what is left at 0.13 % at most is
+  # anti-aliasing that iOS and macOS's web view draw differently (glyph
+  # positions snapped to whole pixels on iOS, sub-pixel in WebKit; curve
+  # edge coverage). Any move, size or colour change fails.
   PARITY_TOL: "2"
-  PARITY_MAX_OVER_PCT: "0"
+  PARITY_MAX_OVER_PCT: "0.15"
   # Pixels per point the page renders at (HERDRUP_REF_SCALE). The
   # references are @2x; a runner's display is 1x.
   PARITY_SCALE: "2"

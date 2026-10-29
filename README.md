@@ -118,12 +118,14 @@ iPadOS's resize corner in every state, and, for `loading` only (a rect's `states
 the detail column's glyph field, which herdrup's capture froze before its first picture.
 
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
-tries moving the capture by up to 2 device pixels, and reports a tile (in the summary and the report's
+tries moving the capture by up to 24 device pixels, and reports a tile (in the summary and the report's
 `shifted`) when a move fits it much better than leaving it in place. Anti-aliasing and glyph-shape
-differences change pixels in place and no move removes them; something drawn a pixel off is fitted
-almost exactly by moving it back. Any displaced tile fails the comparison. The workflow uploads the
-captures, diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports
-and a summary table. The thresholds are `PARITY_TOL` and `PARITY_MAX_OVER_PCT` in the workflow.
+differences change pixels in place and no move removes them; something drawn off is fitted almost
+exactly by moving it back. Any displaced tile fails the comparison. The workflow uploads the captures,
+diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
+summary table. The thresholds are `PARITY_TOL` (2) and `PARITY_MAX_OVER_PCT` (0.15 %) in the workflow:
+the agent list matches the references in place, size and colour, and the at most 0.13 % left is
+anti-aliasing that iOS and macOS's web view draw differently (iOS snaps glyphs to whole pixels).
 
 ## License
 
