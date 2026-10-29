@@ -123,6 +123,15 @@ var Assets = []Asset{
 	{"design/herdrup-appicon.svg", "public/herdrup/appicon.svg"},
 	// mygo builds every platform's app icon from this 1024x1024 PNG.
 	{"App/Assets.xcassets/AppIcon.appiconset/icon-1024.png", "resources/icon.png"},
+	// The Gram composer's glyphs: ComposerActionIcon and
+	// ComposerAttachmentChip (App/ComposerView.swift) draw these image sets
+	// as templates.
+	{"App/Assets.xcassets/ComposerSend.imageset/glyph.svg", "public/herdrup/composer/send.svg"},
+	{"App/Assets.xcassets/ComposerClose.imageset/glyph.svg", "public/herdrup/composer/close.svg"},
+	{"App/Assets.xcassets/ComposerCheck.imageset/glyph.svg", "public/herdrup/composer/check.svg"},
+	{"App/Assets.xcassets/ComposerAlert.imageset/glyph.svg", "public/herdrup/composer/alert.svg"},
+	{"App/Assets.xcassets/ComposerFile.imageset/glyph.svg", "public/herdrup/composer/file.svg"},
+	{"App/Assets.xcassets/ComposerPhoto.imageset/glyph.svg", "public/herdrup/composer/photo.svg"},
 	// Bundled mermaid 11.17.2 (version and sha256 in its README), MIT.
 	{"App/Resources/Mermaid/mermaid.min.js", "public/mermaid/mermaid.min.js"},
 	{"App/Resources/Mermaid/Mermaid-LICENSE.txt", "public/mermaid/Mermaid-LICENSE.txt"},
