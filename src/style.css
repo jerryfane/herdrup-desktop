@@ -475,3 +475,81 @@ button {
 button.ghost { color: var(--color-text-dim); background: transparent; box-shadow: inset 0 0 0 1px var(--color-hairline); }
 .error { color: var(--color-text); margin: 0; grid-column: span 2; font-size: 13px; }
 .error::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-died); margin-right: 8px; }
+
+/* ---- Folders and stars (herdrup#552; App/AgentFolderViews.swift) ---- */
+
+/* The star after a starred agent's name (card(): star.fill, waiting). */
+.row .star { display: flex; color: var(--status-waiting); }
+/* A folder row is an agent row with the folder's picture (AgentFolderRow). */
+.row.folder { cursor: default; }
+.row.folder .count { color: var(--color-text-dim); }
+.row.folder .chev { display: flex; }
+.row.folder .chev.open { transform: rotate(90deg); }
+.row.folder .preview { -webkit-line-clamp: 1; }
+/* Count pill: 13 bold tabular in ground ink, padding 7, at least 22 x 22,
+   a capsule (AgentFolderRow.countPill). */
+.t-count-pill { font: var(--text-count-pill-weight) var(--text-count-pill-size)/var(--leading-app) var(--text-count-pill-font); font-variant-numeric: var(--text-count-pill-numeric); white-space: nowrap; }
+.count-pill {
+  box-sizing: border-box;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ground);
+}
+.count-pill.waiting { background: var(--status-waiting); }
+.count-pill.stopped { background: var(--status-died); }
+/* AgentFolderPicture: a 44 pt surfaceRaised circle with a 1 pt hairline
+   stroke centred on its edge, up to four member pictures two per line, 3 pt
+   apart, each (44 - 17) / 2 = 13.5 pt. */
+.folder-pic {
+  position: relative;
+  flex: none;
+  width: var(--size-avatar-sidebar);
+  height: var(--size-avatar-sidebar);
+  border-radius: 50%;
+  background: var(--color-surface-raised);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+.folder-pic::after {
+  content: "";
+  position: absolute;
+  inset: -0.5px;
+  border-radius: 50%;
+  border: 1px solid var(--color-hairline);
+  pointer-events: none;
+}
+.folder-pic .line { display: flex; gap: 3px; }
+.folder-pic .tile {
+  width: calc((var(--size-avatar-sidebar) - 17px) / 2);
+  height: calc((var(--size-avatar-sidebar) - 17px) / 2);
+  border-radius: 50%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-on-accent);
+  /* AgentAvatarView: glyph (size * 0.45).rounded() = 6 pt at 13.5. */
+  font: 700 6px/1 var(--font-app);
+}
+/* The folder-name prompt (herdrup's "New folder" / "Rename folder" alert). */
+dialog.folder-naming {
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  padding: var(--space-stack-large);
+  min-width: 280px;
+}
+dialog.folder-naming::backdrop { background: color-mix(in srgb, var(--color-ground) 60%, transparent); }
+dialog.folder-naming h2 { margin: 0 0 var(--space-stack-medium); font: 600 15px var(--font-app); }
+dialog.folder-naming form { display: flex; flex-direction: column; gap: var(--space-stack-medium); }
+dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: var(--space-stack-medium); }
+/* ---- end folders and stars ---- */

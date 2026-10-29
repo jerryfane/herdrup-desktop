@@ -18,6 +18,7 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
 )
 
@@ -109,6 +110,10 @@ type Desk struct {
 	link   *link // the current connection; nil when disconnected
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
+	// openFolders keeps the folders open on this device; alert shows a
+	// folder save that failed.
+	openFolders *openFolders
+	alert       func(string)
 }
 
 // link is the connection to the active machine. Its fields are guarded by
@@ -121,10 +126,21 @@ type link struct {
 	client  *bridge.Client // nil until connected
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
+	// ctx is the current watch's; it ends when the session or connection
+	// is replaced.
+	ctx context.Context
+	// agents are the latest list the board was built from, and groups the
+	// session's folders and stars.
+	agents []herdrapi.AgentInfo
+	groups *groupsStore
 }
 
 func newDesk(dir string) *Desk {
-	return &Desk{dir: dir, state: ConnState{Phase: "idle"}}
+	return &Desk{
+		dir: dir, state: ConnState{Phase: "idle"},
+		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
+		alert:       alertGroups,
+	}
 }
 
 func (d *Desk) machinesPath() string { return filepath.Join(d.dir, "machines.json") }
@@ -329,7 +345,8 @@ func (d *Desk) SelectSession(name string) error {
 	}
 	// Under d.mu, like every board publish, so the new session's first
 	// board cannot be overtaken by this cleared one.
-	cleared := BoardUpdate{Board: herdr.BuildBoard(nil)}
+	l.agents, l.groups = nil, nil
+	cleared := BoardUpdate{Board: herdr.BuildBoard(nil, herdr.View{})}
 	BoardChanged.Broadcast(cleared)
 	observe := d.onBoard
 	d.mu.Unlock()
@@ -498,33 +515,33 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			restart()
 			return listed, err
 		}
+		ec := engine.New(engine.Bridge(view))
+		groups := newGroupsStore(d.openFolders, openFoldersKey(m.Host, m.Port, name),
+			func() { d.republish(wctx, l) }, d.alert)
+		d.mu.Lock()
+		l.ctx, l.groups, l.agents = wctx, groups, nil
+		d.mu.Unlock()
 		shown := false
-		err = live.Watch(wctx, engine.New(engine.Bridge(view)), live.DefaultTiming, func(u live.Update) {
+		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
 			if !shown {
 				shown, listed = true, true
+				groups.attach(ec, u.Pong)
 				d.setState(wctx, ConnState{
 					Phase: "connected", Machine: label, Live: u.Live,
 					Herdr: fmt.Sprintf("herdr %s · protocol %d", u.Pong.Version, u.Pong.Protocol),
 				})
 			}
-			b := BoardUpdate{Board: u.Board, ListedAt: u.Listed.Format(time.RFC3339)}
+			// The first list loads the folders, later ones refresh them at
+			// most once a minute, never holding up the list.
+			go groups.refresh(wctx, false)
 			peers := engine.PeerSummaries(u.Agents)
-			// Broadcast only queues the message, so it runs under d.mu: a
-			// Disconnect, new Connect or session switch cannot slip in
-			// between the check and the publish and be overtaken by this
-			// stale board.
 			d.mu.Lock()
 			if wctx.Err() != nil { // replaced by a newer connection or session
 				d.mu.Unlock()
 				return
 			}
-			d.board, d.peers = &b, peers
-			BoardChanged.Broadcast(b)
-			observe := d.onBoard
-			d.mu.Unlock()
-			if observe != nil {
-				observe(b)
-			}
+			l.agents, d.peers = u.Agents, peers
+			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339)})
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil
 		restart()
@@ -532,6 +549,31 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			return listed, err
 		}
 	}
+}
+
+// publishLocked shows b and unlocks d.mu. Broadcast only queues the
+// message, so it runs under d.mu: a Disconnect, new Connect or session
+// switch cannot slip in between the caller's check and the publish and be
+// overtaken by this stale board.
+func (d *Desk) publishLocked(b BoardUpdate) {
+	d.board = &b
+	BoardChanged.Broadcast(b)
+	observe := d.onBoard
+	d.mu.Unlock()
+	if observe != nil {
+		observe(b)
+	}
+}
+
+// republish rebuilds the board of watch ctx from its last list, after its
+// folders, stars or open folders changed.
+func (d *Desk) republish(ctx context.Context, l *link) {
+	d.mu.Lock()
+	if ctx.Err() != nil || d.link != l || l.groups == nil || d.board == nil {
+		d.mu.Unlock()
+		return
+	}
+	d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(l.agents, l.groups.view()), ListedAt: d.board.ListedAt})
 }
 
 // setState publishes s unless ctx, the connection it describes, has been

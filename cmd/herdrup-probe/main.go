@@ -16,6 +16,7 @@ import (
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
+	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
 )
@@ -60,9 +61,10 @@ func main() {
 				herdrapi.CapabilityEventsV2.Supported(u.Pong.Capabilities),
 				herdrapi.CapabilityAPIBridgeMulti.Supported(u.Pong.Capabilities))
 		}
-		fmt.Fprintf(os.Stderr, "%s agents=%d needsYou=%d\n", u.Listed.Format(time.TimeOnly), u.Board.Total, u.Board.NeedsYou)
+		board := herdr.BuildBoard(u.Agents, herdr.View{})
+		fmt.Fprintf(os.Stderr, "%s agents=%d needsYou=%d\n", u.Listed.Format(time.TimeOnly), board.Total, board.NeedsYou)
 		if first || *watch > 0 {
-			_ = enc.Encode(u.Board)
+			_ = enc.Encode(board)
 		}
 		first = false
 		if *watch == 0 {

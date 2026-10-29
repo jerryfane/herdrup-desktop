@@ -1,7 +1,7 @@
-import { Desk, Symbols, events, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
+import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, type Row } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
-import { matches } from "./search";
+import { agentMenu, folderRow, initFolders, rosterEntries, star, type FolderDeps } from "./folders";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -230,13 +230,19 @@ async function avatar(r: Row): Promise<HTMLElement> {
 }
 
 async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
-  const row = el("div", "row" + (r.badge === "waiting" ? " waiting" : "") + (separator ? "" : " no-sep"));
+  const row = el(
+    "div",
+    "row" + (r.badge === "waiting" ? " waiting" : "") + (separator ? "" : " no-sep") + (r.folderID ? " indented" : ""),
+  );
   row.dataset.id = r.id;
   const text = el("div", "text");
   const line1 = el("div", "line1");
   const chev = el("span", "chev");
   chev.append(await symbol("chevron.right", 12, "semibold"));
-  line1.append(el("span", "name t-row-name", r.title), el("span", "spacer"), chev);
+  line1.append(el("span", "name t-row-name", r.title));
+  if (r.starred) line1.append(await star(folderDeps));
+  line1.append(el("span", "spacer"), chev);
+  agentMenu(row, r);
   text.append(line1, el("div", "preview t-row-preview", r.preview));
   row.append(await avatar(r), text);
   return row;
@@ -275,10 +281,11 @@ async function archivedCard(r: Row): Promise<HTMLElement> {
   return c;
 }
 
-/** The roster in herdrup's order: live groups as plain rows, then the
- * "Idle" and "Archived" disclosure rows (App/HerdrApp.swift agentRosterRows).
- * While searching, every matching agent is a plain row in that order, Idle's
- * included, archived agents are left out, and nothing found says so. */
+/** The roster in herdrup's order (rosterEntries, App/HerdrApp.swift
+ * agentRosterRows): live groups with their folders, then the "Idle" and
+ * "Archived" disclosure rows. While searching, every matching agent shows in
+ * that order, Idle's included, archived agents are left out, and nothing
+ * found says so. */
 async function renderRows() {
   const generation = ++rowsGeneration;
   const nodes: HTMLElement[] = [];
@@ -291,28 +298,32 @@ async function renderRows() {
       nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? "not connected" : "no machine"));
     }
   } else {
-    const sections = board.board.sections;
-    const live = sections.filter((s: Section) => s.key !== "idle");
-    const idle = sections.find((s: Section) => s.key === "idle");
     const query = searchInput.value;
-    if (live.length === 0 && !idle && board.board.archived.length === 0) {
+    const b = board.board;
+    // A search lays the list out again in Go (Desk.searchBoard): the
+    // matching agents, every folder open (herdrup rosterLayout).
+    const shown: Board | null = query === "" ? b : await Desk.searchBoard(query);
+    if (generation !== rowsGeneration) return;
+    if (b.sections.length === 0 && b.archived.length === 0) {
       nodes.push(el("p", "empty-line t-empty", "no agents"));
-    } else if (query !== "") {
-      const found = sections.flatMap((s: Section) => s.rows).filter((r: Row) => matches(r.match, query));
-      if (found.length === 0) nodes.push(el("p", "empty-line t-empty", "no matches"));
-      for (const r of found) nodes.push(await agentRow(r, true));
-    } else {
-      for (const s of live) {
-        for (const r of s.rows) nodes.push(await agentRow(r, true));
-      }
-      if (idle) {
-        nodes.push(await disclosure("idle", "Idle", idle.rows.length));
-        if (open.idle) for (const r of idle.rows) nodes.push(await agentRow(r, true));
-      }
-      const archived = board.board.archived;
-      if (archived.length > 0) {
-        nodes.push(await disclosure("archived", "Archived", archived.length));
-        if (open.archived) for (const r of archived) nodes.push(await archivedCard(r));
+    } else if (query !== "" && (!shown || shown.sections.length === 0)) {
+      nodes.push(el("p", "empty-line t-empty", "no matches"));
+    } else if (shown) {
+      for (const e of rosterEntries(shown, open, query !== "")) {
+        switch (e.kind) {
+          case "agent":
+            nodes.push(await agentRow(e.row, true));
+            break;
+          case "folder":
+            nodes.push(await folderRow(e.folder, folderDeps));
+            break;
+          case "disclosure":
+            nodes.push(await disclosure(e.key, e.title, e.count));
+            break;
+          case "archived":
+            nodes.push(await archivedCard(e.row));
+            break;
+        }
       }
     }
   }
@@ -327,6 +338,8 @@ async function renderRows() {
 }
 let rowsGeneration = 0;
 let drawn = false;
+
+const folderDeps: FolderDeps = { el, symbol, picture: initialTile };
 
 // UIActivityIndicatorView (medium) frozen on its first frame, as herdrup's
 // loading references show it (measured on both): 8 round-capped spokes 2.5 pt
@@ -425,6 +438,7 @@ async function init() {
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
   paintShape($("sidebar"), { radius: px("--sidebar-radius"), fill: "var(--color-ground)", clip: true });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
+  initFolders(folderDeps);
   await Promise.all([buildTopBar(), buildTabBar()]);
   // After buildTopBar, which replaces the capsules' children.
   paintShape($("bar-leading"), { radius: "capsule", fill: "var(--color-surface-raised)" });
@@ -448,14 +462,24 @@ async function init() {
 // the current state is drawn and opens the disclosure rows.
 declare global {
   interface Window {
-    herdrupRef: { ready(): boolean; expand(key: "idle" | "archived", isOpen: boolean): void };
+    herdrupRef: { ready(): boolean; expand(key: "idle" | "archived" | `folder:${string}`, isOpen: boolean): void };
   }
 }
 window.herdrupRef = {
   ready: () => drawn && document.fonts.status === "loaded",
   expand(key, isOpen) {
-    open[key] = isOpen;
     drawn = false;
+    if (key.startsWith("folder:")) {
+      // Go sends the board back with the folder open or closed.
+      void Desk.setFolderOpen(key.slice("folder:".length), isOpen)
+        .then(() => Desk.board())
+        .then((b) => {
+          board = b ?? null;
+          return renderRows();
+        });
+      return;
+    }
+    open[key as "idle" | "archived"] = isOpen;
     void renderRows();
   },
 };

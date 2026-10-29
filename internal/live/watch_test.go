@@ -18,12 +18,12 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
 	"golang.org/x/crypto/ssh"
 )
 
 var fast = live.Timing{
-	Debounce:  20 * time.Millisecond,
 	Backstop:  time.Hour,
 	Poll:      50 * time.Millisecond,
 	Silence:   300 * time.Millisecond,
@@ -36,11 +36,14 @@ type fake struct {
 	lists   atomic.Int32
 	streams atomic.Int32
 	events  chan string // lines the next stream writes
+	// hold, while set, keeps each agent.list waiting for release.
+	hold    atomic.Bool
+	release chan struct{}
 }
 
 func newFake(t *testing.T, eventsV2 bool) (*fake, *bridge.Client) {
 	t.Helper()
-	f := &fake{events: make(chan string, 16)}
+	f := &fake{events: make(chan string, 16), release: make(chan struct{})}
 	f.status.Store("working")
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostKey, _ := ssh.NewSignerFromKey(hostPriv)
@@ -56,8 +59,12 @@ func newFake(t *testing.T, eventsV2 bool) (*fake, *bridge.Client) {
 					"capabilities": map[string]bool{"api_bridge_multi": true, "events_v2": eventsV2}}, nil
 			case "agent.list":
 				f.lists.Add(1)
+				status := f.status.Load() // the snapshot is taken when the list starts
+				if f.hold.Load() {
+					<-f.release
+				}
 				return map[string]any{"type": "agent_list", "agents": []any{
-					map[string]any{"pane_id": "w1:p1", "agent_status": f.status.Load()},
+					map[string]any{"pane_id": "w1:p1", "agent_status": status},
 				}}, nil
 			}
 			return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
@@ -126,11 +133,15 @@ func next(t *testing.T, updates <-chan live.Update) live.Update {
 }
 
 func firstGroup(u live.Update) string {
-	if len(u.Board.Sections) == 0 {
+	b := herdr.BuildBoard(u.Agents, herdr.View{})
+	if len(b.Sections) == 0 {
 		return ""
 	}
-	return u.Board.Sections[0].Key
+	return b.Sections[0].Key
 }
+
+// quiet is long enough for a list the watcher should not make to show.
+const quiet = 100 * time.Millisecond
 
 func waitStreams(t *testing.T, f *fake, n int32) {
 	t.Helper()
@@ -143,33 +154,117 @@ func waitStreams(t *testing.T, f *fake, n int32) {
 	}
 }
 
-func TestEventRelistsTheBoard(t *testing.T) {
+func TestStatusEventPatchesTheRowWithoutAList(t *testing.T) {
 	f, c := newFake(t, true)
 	updates, _ := watch(t, c)
 	if u := next(t, updates); !u.Live || firstGroup(u) != "working" {
 		t.Fatalf("first board: live=%v group=%q", u.Live, firstGroup(u))
 	}
 	waitStreams(t, f, 1)
-	f.status.Store("blocked")
-	f.events <- `{"seq":1,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"blocked"}}`
-	if u := next(t, updates); firstGroup(u) != "needsYou" || u.Board.NeedsYou != 1 {
-		t.Fatalf("after event: group=%q needsYou=%d", firstGroup(u), u.Board.NeedsYou)
+	before := f.lists.Load()
+	f.events <- `{"seq":1,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"blocked","workspace_id":"w1"}}`
+	u := next(t, updates)
+	if firstGroup(u) != "needsYou" || u.Agents[0].StatusSinceUnixMs == nil {
+		t.Fatalf("after event: group=%q since=%v", firstGroup(u), u.Agents[0].StatusSinceUnixMs)
+	}
+	time.Sleep(quiet)
+	if got := f.lists.Load() - before; got != 0 {
+		t.Fatalf("a status event for a listed pane caused %d lists", got)
 	}
 }
 
-func TestBurstOfEventsIsOneList(t *testing.T) {
+func TestLifecycleEventsRelistCoalesced(t *testing.T) {
+	f, c := newFake(t, true)
+	updates, _ := watch(t, c)
+	next(t, updates)
+	waitStreams(t, f, 1)
+	f.hold.Store(true)
+	f.status.Store("blocked")
+	for range 5 {
+		f.events <- `{"seq":1,"event":"pane_created","data":{"pane_id":"w1:p2"}}`
+	}
+	waitLists(t, f, 2)
+	time.Sleep(quiet)
+	f.hold.Store(false)
+	f.release <- struct{}{}
+	next(t, updates)
+	if u := next(t, updates); firstGroup(u) != "needsYou" {
+		t.Fatalf("after pane_created: group=%q", firstGroup(u))
+	}
+	time.Sleep(quiet)
+	// One list in flight and one queued behind it, for all five.
+	if got := f.lists.Load(); got != 3 {
+		t.Fatalf("5 lifecycle events in a burst made %d lists after the first, want 2", got-1)
+	}
+}
+
+func TestUnlistedAgentPaneRelistsOnceAndShellsAreIgnored(t *testing.T) {
 	f, c := newFake(t, true)
 	updates, _ := watch(t, c)
 	next(t, updates)
 	waitStreams(t, f, 1)
 	before := f.lists.Load()
-	for range 5 {
-		f.events <- `{"seq":1,"event":"pane.agent_status_changed","data":{}}`
+	f.events <- `{"seq":1,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p9","agent_status":"idle","workspace_id":"w1"}}`
+	time.Sleep(quiet)
+	if got := f.lists.Load() - before; got != 0 {
+		t.Fatalf("an event for a plain shell caused %d lists", got)
 	}
+	f.events <- `{"seq":2,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p9","agent":"pi","agent_status":"idle","workspace_id":"w1"}}`
 	next(t, updates)
-	time.Sleep(4 * fast.Debounce)
 	if got := f.lists.Load() - before; got != 1 {
-		t.Fatalf("5 events in a burst caused %d lists, want 1", got)
+		t.Fatalf("an unlisted agent pane caused %d lists, want 1", got)
+	}
+}
+
+// waitLists waits until n lists have started.
+func waitLists(t *testing.T, f *fake, n int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.lists.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("list %d never started (have %d)", n, f.lists.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestAListInFlightDoesNotUndoAPatch(t *testing.T) {
+	f, c := newFake(t, true)
+	updates, _ := watch(t, c)
+	next(t, updates)
+	waitStreams(t, f, 1)
+	f.hold.Store(true)
+	f.events <- `{"seq":1,"event":"pane_created","data":{"pane_id":"w1:p2"}}`
+	waitLists(t, f, 2) // started with the agent working
+	f.events <- `{"seq":2,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"blocked","workspace_id":"w1"}}`
+	if u := next(t, updates); firstGroup(u) != "needsYou" {
+		t.Fatalf("patch: %q", firstGroup(u))
+	}
+	f.hold.Store(false)
+	f.release <- struct{}{}
+	if u := next(t, updates); firstGroup(u) != "needsYou" {
+		t.Fatalf("the list that was in flight undid the patch: %q", firstGroup(u))
+	}
+}
+
+func TestUnlistedPaneRelistsOnceWhileAListIsInFlight(t *testing.T) {
+	f, c := newFake(t, true)
+	updates, _ := watch(t, c)
+	next(t, updates)
+	waitStreams(t, f, 1)
+	f.hold.Store(true)
+	ev := `{"seq":1,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p9","agent":"pi","agent_status":"idle","workspace_id":"w1"}}`
+	f.events <- ev
+	waitLists(t, f, 2)
+	f.events <- ev
+	f.events <- ev
+	time.Sleep(quiet)
+	f.hold.Store(false)
+	f.release <- struct{}{}
+	next(t, updates)
+	time.Sleep(quiet)
+	if got := f.lists.Load(); got != 2 {
+		t.Fatalf("%d lists, want the first and one for the unlisted pane", got)
 	}
 }
 
@@ -180,7 +275,7 @@ func TestLagAndHeartbeat(t *testing.T) {
 	waitStreams(t, f, 1)
 	before := f.lists.Load()
 	f.events <- `{"control":"heartbeat","seq":4}`
-	time.Sleep(4 * fast.Debounce)
+	time.Sleep(quiet)
 	if f.lists.Load() != before {
 		t.Fatal("a heartbeat caused a list")
 	}

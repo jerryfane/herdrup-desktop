@@ -1,5 +1,5 @@
-// Package live keeps a machine's status board current: one agent.list, then
-// a re-list whenever an events_v2 event says the board changed.
+// Package live keeps a machine's agents current: one agent.list, then the
+// rows events_v2 events patch, and a re-list when the panes change.
 package live
 
 import (
@@ -7,14 +7,11 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
-	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 // Timing of the watcher. Tests shorten these.
 type Timing struct {
-	// Debounce coalesces a burst of events into one agent.list.
-	Debounce time.Duration
 	// Backstop re-lists even when no event arrived.
 	Backstop time.Duration
 	// Poll is the re-list interval on a herdr without events_v2.
@@ -28,24 +25,27 @@ type Timing struct {
 
 // DefaultTiming matches the iOS app.
 var DefaultTiming = Timing{
-	Debounce: 150 * time.Millisecond,
 	Backstop: 30 * time.Second,
 	Poll:     5 * time.Second,
 	Silence:  45 * time.Second,
 }
 
-// Update is what the watcher reports after each agent.list.
+// Update is what the watcher reports after each agent.list and each row
+// an event patched.
 type Update struct {
-	Board herdr.Board
-	// Agents is the agent.list the board was built from.
+	// Agents is the latest agent.list with every live change since applied.
 	Agents []herdrapi.AgentInfo
 	Pong   herdrapi.ResponseResultPong
 	Live   bool // true when events_v2 drives updates, false when polling
 	Listed time.Time
 }
 
-// Watch lists agents and keeps listing as the board changes, calling update
-// after every list. It returns when ctx ends or the connection fails.
+// Watch lists agents and keeps them current, calling update after every
+// list and every patch. A status or turn event patches its listed row with
+// no request; panes appearing or going away, missed events, a reopened
+// stream and an agent pane the list lacks re-list, one list in flight and
+// at most one queued (herdrup receiveLiveEvent and requestRosterReload).
+// It returns when ctx ends or the connection fails.
 func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -55,22 +55,60 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 		return err
 	}
 	live := herdrapi.CapabilityEventsV2.Supported(pong.Capabilities)
-	list := func() error {
-		res, err := c.AgentList(ctx, herdrapi.AgentListParams{})
-		if err != nil {
-			return err
+
+	type listed struct {
+		res   herdrapi.ResponseResultAgentList
+		err   error
+		mark  uint64
+		start time.Time
+	}
+	var (
+		agents   []herdrapi.AgentInfo
+		changes  ledger
+		unlisted = unlistedReloads{}
+		loading  bool
+		queued   bool
+		results  = make(chan listed, 1)
+	)
+	load := func() {
+		loading = true
+		mark, start := changes.mark(), time.Now()
+		go func() {
+			res, err := c.AgentList(ctx, herdrapi.AgentListParams{})
+			results <- listed{res, err, mark, start}
+		}()
+	}
+	reload := func() {
+		if loading {
+			queued = true
+			return
 		}
-		update(Update{Board: herdr.BuildBoard(res.Agents), Agents: res.Agents, Pong: pong, Live: live, Listed: time.Now()})
+		load()
+	}
+	publish := func(r listed) error {
+		loading = false
+		if r.err != nil {
+			return r.err
+		}
+		changes.settle(r.mark)
+		agents = changes.replay(r.res.Agents, r.mark)
+		unlisted.published(r.start)
+		update(Update{Agents: agents, Pong: pong, Live: live, Listed: time.Now()})
+		if queued {
+			queued = false
+			load()
+		}
 		return nil
 	}
-	if err := list(); err != nil {
+	load()
+	if err := publish(<-results); err != nil {
 		return err
 	}
 
-	changed := make(chan struct{}, 1)
+	stream := make(chan streamMsg)
 	streamErr := make(chan error, 1)
 	if live {
-		go func() { streamErr <- follow(ctx, c, t, changed) }()
+		go func() { streamErr <- follow(ctx, c, t, stream) }()
 	}
 	interval := t.Poll
 	if live {
@@ -78,7 +116,6 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
-	var debounce <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -87,30 +124,52 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 			return engine.ErrDisconnected
 		case err := <-streamErr:
 			return err
-		case <-changed:
-			if debounce == nil {
-				debounce = time.After(t.Debounce)
+		case r := <-results:
+			if err := publish(r); err != nil {
+				return err
 			}
-			continue
-		case <-debounce:
 		case <-tick.C:
-		}
-		debounce = nil
-		if err := list(); err != nil {
-			return err
+			reload()
+		case m := <-stream:
+			if m.change == nil {
+				if m.reload {
+					reload()
+				}
+				continue
+			}
+			changes.record(*m.change, m.at)
+			switch effect, patched := m.change.EffectOf(agents, m.at); effect {
+			case Patch:
+				agents = patched
+				update(Update{Agents: agents, Pong: pong, Live: live, Listed: m.at})
+			case ReloadUnlisted:
+				if unlisted.request(m.change.PaneID, m.at) {
+					reload()
+				}
+			}
 		}
 	}
 }
 
-// follow keeps an events.subscribe open (engine.Subscribe) and signals
-// changed on every event or lag notice, and when a stream is reopened,
-// since events may have been missed while it was down. The watcher lists
-// itself, debounced, so Subscribe's own re-lists are off.
-func follow(ctx context.Context, c *engine.Client, t Timing, changed chan<- struct{}) error {
-	signal := func() {
+// streamMsg is one thing the stream says: a change, or that the agents
+// must be re-listed.
+type streamMsg struct {
+	change *Change
+	reload bool
+	at     time.Time
+}
+
+// follow keeps an events.subscribe open (engine.Subscribe) and passes on
+// every status change and finished turn, and a re-list for a lifecycle
+// event, a lag notice and a reopened stream, since events may have been
+// missed while it was down. The watcher lists itself, so Subscribe's own
+// re-lists are off.
+func follow(ctx context.Context, c *engine.Client, t Timing, out chan<- streamMsg) error {
+	send := func(m streamMsg) {
+		m.at = time.Now()
 		select {
-		case changed <- struct{}{}:
-		default:
+		case out <- m:
+		case <-ctx.Done():
 		}
 	}
 	first := true
@@ -118,11 +177,18 @@ func follow(ctx context.Context, c *engine.Client, t Timing, changed chan<- stru
 		switch e.Kind {
 		case engine.EventStarted:
 			if !first {
-				signal()
+				send(streamMsg{reload: true})
 			}
 			first = false
-		case engine.EventLine, engine.EventLagged:
-			signal()
+		case engine.EventLine:
+			if e.Line == nil {
+				return
+			}
+			if change, reload := Decode(*e.Line); change != nil || reload {
+				send(streamMsg{change: change, reload: reload})
+			}
+		case engine.EventLagged:
+			send(streamMsg{reload: true})
 		}
 	})
 }

@@ -54,7 +54,7 @@ func TestBuildBoardOrdersGroupsThenRecencyAndLeavesArchivedOut(t *testing.T) {
 		agent(t, `{"pane_id":"p-null-archive","agent_status":"working","archived":null}`),
 		agent(t, `{"pane_id":"p-false-archive","agent_status":"working","archived":false}`),
 	}
-	b := BuildBoard(agents)
+	b := BuildBoard(agents, View{})
 	var got [][]string
 	for _, s := range b.Sections {
 		ids := []string{s.Key}
@@ -158,7 +158,7 @@ func TestBuildBoardBadgesAndArchivedNote(t *testing.T) {
 		agent(t, `{"pane_id":"d","agent_status":"idle"}`),
 		agent(t, `{"pane_id":"e","agent_status":"idle","archived":{"at":"2026-10-20T10:00:00Z","by":"user","reason":"done"}}`),
 		agent(t, `{"pane_id":"f","agent_status":"idle","archived":{"at":"2026-10-27T10:00:00Z"}}`),
-	})
+	}, View{})
 	badges := map[string]string{}
 	for _, s := range b.Sections {
 		for _, r := range s.Rows {
@@ -186,7 +186,7 @@ func TestRowMatchIsWhatSearchLooksIn(t *testing.T) {
 		agent(t, `{"pane_id":"p1","agent_status":"working","name":"studio/render","machine_id":"studio","machine_label":"Studio Mac","terminal_title_stripped":"π > baking lights"}`),
 		// No name: the display name is the terminal title, listed once.
 		agent(t, `{"pane_id":"p2","agent_status":"working","terminal_title_stripped":"docs"}`),
-	})
+	}, View{})
 	got := map[string][]string{}
 	for _, s := range b.Sections {
 		for _, r := range s.Rows {
