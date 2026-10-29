@@ -73,6 +73,7 @@ those agents, or quits. When an agent moves into needs you, a notification says 
 does ("jarvis needs attention", over the row's subtitle): once per move, not for agents already
 waiting as the app connects or switches session, and again only after the agent has left needs you.
 Clicking it returns to the originating machine and session before revealing the agent.
+If the agent has since been archived, its Archived disclosure opens to reveal the card.
 A launch-time click waits for the window and destination board; a password-only
 machine asks for credentials in the connection form. With a tray, closing the window
 hides it there; quit from the tray or the menu bar (App, File, Edit and Window). On Linux the tray needs
