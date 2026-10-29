@@ -46,11 +46,12 @@ type machine struct {
 	pins *bridge.FilePinStore
 }
 
-// echoHandler answers ping, and any other method with its own name after
-// a delay taken from params, so replies can overtake each other.
+// echoHandler answers ping as a current herdr with api_bridge_multi, and
+// any other method with its own name after a delay taken from params, so
+// replies can overtake each other.
 func echoHandler(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 	if method == "ping" {
-		return map[string]any{"type": "pong", "version": "test", "protocol": 22}, nil
+		return fakeherdr.Pong(true), nil
 	}
 	if method == "fail" {
 		return nil, &fakeherdr.APIError{Code: "not_found", Message: "pane not found"}
@@ -92,10 +93,27 @@ func (m *machine) dial(t *testing.T) *bridge.Client {
 	return c
 }
 
+// routes returns the methods the fake answered on --multi and per request,
+// in the order they arrived.
+func routes(m *machine) (multi, perRequest []string) {
+	for _, r := range m.srv.Requests() {
+		if r.Multi {
+			multi = append(multi, r.Method)
+		} else {
+			perRequest = append(perRequest, r.Method)
+		}
+	}
+	return multi, perRequest
+}
+
 func TestCallsShareOneMultiChannelAndMatchRepliesByID(t *testing.T) {
 	m := startMachine(t, nil)
 	c := m.dial(t)
 	ctx := context.Background()
+	// The ping teaches the client that herdr has --multi.
+	if err := c.Call(ctx, "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	// Earlier requests answer later, so replies arrive out of order.
 	var wg sync.WaitGroup
@@ -125,12 +143,17 @@ func TestCallsShareOneMultiChannelAndMatchRepliesByID(t *testing.T) {
 	for _, cmd := range m.srv.Commands() {
 		if strings.Contains(cmd, "api-bridge --multi") {
 			multi++
-		} else {
-			t.Errorf("unexpected exec %q", cmd)
 		}
 	}
 	if multi != 1 {
 		t.Errorf("opened %d --multi channels, want 1", multi)
+	}
+	onMulti, perRequest := routes(m)
+	if len(perRequest) != 1 || perRequest[0] != "ping" {
+		t.Errorf("per-request %q, want only the first ping", perRequest)
+	}
+	if len(onMulti) != 6 { // the channel's opening ping and m0..m4
+		t.Errorf("on --multi %q, want the opening ping and m0..m4", onMulti)
 	}
 }
 
@@ -143,33 +166,32 @@ func TestErrorReplyIsAPIError(t *testing.T) {
 	}
 }
 
-func TestHerdrWithoutMultiFallsBackToOneExecPerRequest(t *testing.T) {
-	for name, stderr := range map[string]string{
-		"reads --multi as a request":     "",
-		"rejects --multi as an argument": "error: unexpected argument '--multi' found",
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := startMachine(t, func(s *fakeherdr.Server) { s.NoMulti = true; s.NoMultiStderr = stderr })
-			c := m.dial(t)
-			for _, method := range []string{"agent.list", "agent.list"} {
-				var res struct{ Method string }
-				if err := c.Call(context.Background(), method, nil, &res); err != nil {
-					t.Fatal(err)
-				}
-				if res.Method != method {
-					t.Fatalf("got %q", res.Method)
-				}
+func TestHerdrWithoutMultiCapabilityNeverOpensMulti(t *testing.T) {
+	// An older herdr: its pong has no capabilities, and it reads
+	// --multi as a bad request.
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.NoMulti = true
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "ping" {
+				return map[string]any{"type": "pong", "version": "0.4.0", "protocol": 10}, nil
 			}
-			cmds := m.srv.Commands()
-			if len(cmds) != 3 || !strings.Contains(cmds[0], "--multi") {
-				t.Fatalf("want one --multi attempt then two one-shot execs, got %q", cmds)
-			}
-			for _, cmd := range cmds[1:] {
-				if strings.Contains(cmd, "--multi") {
-					t.Fatalf("retried --multi after it was refused: %q", cmds)
-				}
-			}
-		})
+			return echoHandler(method, params)
+		}
+	})
+	c := m.dial(t)
+	for _, method := range []string{"ping", "agent.list", "agent.list"} {
+		var res struct{ Method string }
+		if err := c.Call(context.Background(), method, nil, &res); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range m.srv.Commands() {
+		if strings.Contains(cmd, "--multi") {
+			t.Fatalf("tried --multi on a herdr that does not advertise it: %q", m.srv.Commands())
+		}
+	}
+	if _, perRequest := routes(m); len(perRequest) != 3 {
+		t.Fatalf("per-request %q, want all three", perRequest)
 	}
 }
 

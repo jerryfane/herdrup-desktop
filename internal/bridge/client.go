@@ -63,20 +63,25 @@ func (e *APIError) Error() string { return "herdr: " + e.Code + ": " + e.Message
 
 var (
 	errChannelClosed = errors.New("herdr api-bridge channel closed")
-	// errNoMulti means the remote herdr has no `api-bridge --multi`.
-	errNoMulti = errors.New("herdr api-bridge --multi unsupported")
+	// errNotSent means a request was not written to the --multi channel, so
+	// it may safely go down the per-request path instead.
+	errNotSent = errors.New("herdr api-bridge --multi channel unavailable")
 )
 
-// Client is one SSH connection to a machine running herdr.
+// Client is a view of one SSH connection to a machine running herdr,
+// addressing one herdr session. ForSession makes views of other sessions
+// that share the connection.
 type Client struct {
-	cfg  Config
-	conn *ssh.Client
+	cfg Config
+	*conn
+}
+
+// conn is the state every session view of one SSH connection shares.
+type conn struct {
+	ssh  *ssh.Client
 	seq  atomic.Uint64
 	done chan struct{}
-
-	mu      sync.Mutex
-	multi   *multiChannel
-	noMulti bool
+	pool pool
 }
 
 // Dial connects and authenticates. The host key is pinned on first contact
@@ -120,9 +125,13 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	_ = tcp.SetDeadline(time.Time{})
-	c := &Client{cfg: cfg, conn: ssh.NewClient(sc, chans, reqs), done: make(chan struct{})}
+	c := &Client{cfg: cfg, conn: &conn{
+		ssh:  ssh.NewClient(sc, chans, reqs),
+		done: make(chan struct{}),
+		pool: pool{openRetryAfter: defaultOpenRetryAfter},
+	}}
 	go func() {
-		_ = c.conn.Wait()
+		_ = c.ssh.Wait()
 		close(c.done)
 	}()
 	go c.keepAlive()
@@ -161,7 +170,7 @@ func authMethods(cfg Config) ([]ssh.AuthMethod, error) {
 
 // keepAlive closes the connection when the server stops answering, so a
 // dead network shows up instead of hanging.
-func (c *Client) keepAlive() {
+func (c *conn) keepAlive() {
 	t := time.NewTicker(keepAliveInterval)
 	defer t.Stop()
 	for {
@@ -172,17 +181,17 @@ func (c *Client) keepAlive() {
 		}
 		answered := make(chan error, 1)
 		go func() {
-			_, _, err := c.conn.SendRequest("keepalive@openssh.com", true, nil)
+			_, _, err := c.ssh.SendRequest("keepalive@openssh.com", true, nil)
 			answered <- err
 		}()
 		select {
 		case err := <-answered:
 			if err != nil {
-				c.conn.Close()
+				c.ssh.Close()
 				return
 			}
 		case <-time.After(keepAliveInterval / 2):
-			c.conn.Close()
+			c.ssh.Close()
 			return
 		case <-c.done:
 			return
@@ -193,8 +202,26 @@ func (c *Client) keepAlive() {
 // Done is closed when the SSH connection ends.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
-// Close ends the connection and every channel on it.
-func (c *Client) Close() error { return c.conn.Close() }
+// Close ends the connection and every channel on it, for every session
+// view of it.
+func (c *Client) Close() error { return c.ssh.Close() }
+
+// Session returns the herdr session this client addresses; "" is the
+// default session.
+func (c *Client) Session() string { return c.cfg.Session }
+
+// ForSession returns a client for another herdr session on the same
+// machine. It shares this client's SSH connection, so switching costs no
+// handshake, but it can only ever address its own session. Closing either
+// closes the shared connection.
+func (c *Client) ForSession(session string) (*Client, error) {
+	if !ValidSession(session) {
+		return nil, fmt.Errorf("invalid herdr session name %q", session)
+	}
+	cfg := c.cfg
+	cfg.Session = session
+	return &Client{cfg: cfg, conn: c.conn}, nil
+}
 
 func (c *Client) nextID(method string) string {
 	return "herdrup:" + method + ":" + strconv.FormatUint(c.seq.Add(1), 10)
@@ -234,9 +261,13 @@ func decodeReply(line []byte, result any) error {
 	return nil
 }
 
-// Call sends one request and decodes its result into result. Requests share
-// one `api-bridge --multi` channel; on a herdr without --multi each request
-// gets its own exec channel.
+// Call sends one request and decodes its result into result.
+//
+// On a herdr that advertises api_bridge_multi, requests share one
+// `api-bridge --multi` channel per session. Otherwise, while that is not
+// yet known, when the channel cannot open, and for requests --multi cannot
+// carry, each request gets its own exec channel. A request never fails only
+// because the --multi channel is unavailable.
 func (c *Client) Call(ctx context.Context, method string, params, result any) error {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -248,39 +279,17 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 	if err != nil {
 		return err
 	}
-	m, err := c.channel(ctx)
-	var reply []byte
-	switch {
-	case errors.Is(err, errNoMulti):
+	reply, err := c.viaMulti(ctx, method, id, line)
+	if errors.Is(err, errNotSent) {
 		reply, err = c.oneShot(ctx, line)
-	case err == nil:
-		reply, err = m.do(ctx, id, line)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)
 	}
+	if method == "ping" {
+		c.learnCapability(reply)
+	}
 	return decodeReply(reply, result)
-}
-
-// channel returns the open --multi channel, opening one if needed.
-func (c *Client) channel(ctx context.Context) (*multiChannel, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.noMulti {
-		return nil, errNoMulti
-	}
-	if c.multi != nil && c.multi.alive() {
-		return c.multi, nil
-	}
-	m, err := openMulti(ctx, c)
-	if errors.Is(err, errNoMulti) {
-		c.noMulti = true
-	}
-	if err != nil {
-		return nil, err
-	}
-	c.multi = m
-	return m, nil
 }
 
 func (c *Client) oneShot(ctx context.Context, line []byte) ([]byte, error) {
@@ -319,7 +328,7 @@ func (c *Client) openStream(ctx context.Context, line []byte) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := c.conn.NewSession()
+	sess, err := c.ssh.NewSession()
 	if err != nil {
 		return nil, err
 	}

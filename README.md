@@ -13,14 +13,21 @@ shows its agents, grouped like the iOS app and updated live.
 
 Like the iOS app, it logs in over SSH and runs herdr's bridge on the machine:
 
-- requests go one per line through a single `herdr api-bridge --multi` process, and replies are matched by
-  `id` (a herdr without `--multi` gets one `herdr api-bridge <base64>` exec per request);
+- on a herdr whose `ping` advertises `api_bridge_multi`, requests go one per line through a single
+  `herdr api-bridge --multi` process per herdr session, at most 16 in flight (more wait their turn), and
+  replies are matched by `id`;
+- every other request gets its own `herdr api-bridge <base64>` exec: while the capability is unknown, on an
+  older herdr, when the `--multi` process will not start (retried after 30 s), for requests over 1 MiB, and
+  for the streaming methods herdr refuses on `--multi`;
 - `events.subscribe` with `events_v2` runs on its own exec channel; every event re-lists the board, with a
   30 s backstop (polling every 5 s on a herdr without `events_v2`);
+- herdr sessions come from `herdr session list --json` (default only on an older herdr); switching session
+  keeps the SSH connection;
 - the host key is pinned on first contact (SHA-256 of the key, per `host:port`); a changed key is refused.
 
 Log in with an Ed25519, ECDSA or RSA key file, or a password. The password is never saved; the saved
-machine (`machine.json` in the app's data folder) holds only the key file's path.
+machines (`machines.json` in the app's data folder, one of them active) hold only the key file's path. A
+`machine.json` from an earlier build is read as the active machine until `machines.json` exists.
 
 ## Develop
 
