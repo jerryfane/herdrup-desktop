@@ -1,11 +1,13 @@
 import { Desk, Symbols, events, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
+import { matches } from "./search";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const rowsEl = $("rows");
 const searchField = $("search-field");
+const searchInput = $<HTMLInputElement>("search");
 const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
 const connectError = $("connect-error");
@@ -23,12 +25,16 @@ const open: Record<"idle" | "archived", boolean> = { idle: false, archived: fals
 
 const symbolCache = new Map<string, Promise<HTMLElement>>();
 
-/** An SF Symbol at a point size and weight, tinted by CSS `color`. */
+/** An SF Symbol at a point size and weight, tinted by CSS `color`. Symbols
+ * draws at 1, 2 or 3 pixels per point, so the page's ratio is clamped to
+ * that. A symbol that fails is logged and left empty, not cached, so one
+ * missing icon never stops the page from drawing. */
 function symbol(name: string, size: number, weight: string): Promise<HTMLElement> {
   const key = `${name}/${size}/${weight}`;
   let made = symbolCache.get(key);
   if (!made) {
-    made = Symbols.image(name, size, weight, Math.max(1, Math.round(devicePixelRatio))).then((img) => {
+    const scale = Math.min(3, Math.max(1, Math.round(devicePixelRatio)));
+    made = Symbols.image(name, size, weight, scale).then((img) => {
       const el = document.createElement("span");
       el.className = "sym";
       el.style.width = `${img.width}px`;
@@ -37,8 +43,15 @@ function symbol(name: string, size: number, weight: string): Promise<HTMLElement
       return el;
     });
     symbolCache.set(key, made);
+    made.catch(() => symbolCache.delete(key));
   }
-  return made.then((el) => el.cloneNode(true) as HTMLElement);
+  return made.then(
+    (el) => el.cloneNode(true) as HTMLElement,
+    (err) => {
+      console.error(`symbol ${key}:`, err);
+      return el("span", "sym");
+    },
+  );
 }
 
 /** Puts a symbol into `host`, replacing what was there. */
@@ -263,7 +276,9 @@ async function archivedCard(r: Row): Promise<HTMLElement> {
 }
 
 /** The roster in herdrup's order: live groups as plain rows, then the
- * "Idle" and "Archived" disclosure rows (App/HerdrApp.swift agentRosterRows). */
+ * "Idle" and "Archived" disclosure rows (App/HerdrApp.swift agentRosterRows).
+ * While searching, every matching agent is a plain row in that order, Idle's
+ * included, archived agents are left out, and nothing found says so. */
 async function renderRows() {
   const generation = ++rowsGeneration;
   const nodes: HTMLElement[] = [];
@@ -279,20 +294,26 @@ async function renderRows() {
     const sections = board.board.sections;
     const live = sections.filter((s: Section) => s.key !== "idle");
     const idle = sections.find((s: Section) => s.key === "idle");
+    const query = searchInput.value;
     if (live.length === 0 && !idle && board.board.archived.length === 0) {
       nodes.push(el("p", "empty-line t-empty", "no agents"));
-    }
-    for (const s of live) {
-      for (const r of s.rows) nodes.push(await agentRow(r, true));
-    }
-    if (idle) {
-      nodes.push(await disclosure("idle", "Idle", idle.rows.length));
-      if (open.idle) for (const r of idle.rows) nodes.push(await agentRow(r, true));
-    }
-    const archived = board.board.archived;
-    if (archived.length > 0) {
-      nodes.push(await disclosure("archived", "Archived", archived.length));
-      if (open.archived) for (const r of archived) nodes.push(await archivedCard(r));
+    } else if (query !== "") {
+      const found = sections.flatMap((s: Section) => s.rows).filter((r: Row) => matches(r.match, query));
+      if (found.length === 0) nodes.push(el("p", "empty-line t-empty", "no matches"));
+      for (const r of found) nodes.push(await agentRow(r, true));
+    } else {
+      for (const s of live) {
+        for (const r of s.rows) nodes.push(await agentRow(r, true));
+      }
+      if (idle) {
+        nodes.push(await disclosure("idle", "Idle", idle.rows.length));
+        if (open.idle) for (const r of idle.rows) nodes.push(await agentRow(r, true));
+      }
+      const archived = board.board.archived;
+      if (archived.length > 0) {
+        nodes.push(await disclosure("archived", "Archived", archived.length));
+        if (open.archived) for (const r of archived) nodes.push(await archivedCard(r));
+      }
     }
   }
   if (generation !== rowsGeneration) return; // a newer render won
@@ -376,6 +397,8 @@ form.addEventListener("submit", async (e) => {
     render();
   }
 });
+
+searchInput.addEventListener("input", () => void renderRows());
 
 disconnect.addEventListener("click", () => {
   board = null;

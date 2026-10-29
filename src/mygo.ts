@@ -70,6 +70,12 @@ export interface Row {
   tint: number;
   /** ArchivedNote is "archived by X · reason" for an archived agent. */
   archivedNote?: string;
+  /**
+   * Match is what the sidebar search looks in, each on its own: the
+   * display name, the raw name (a federated agent's still carries the
+   * machine alias) and the terminal title (herdrup visibleSections).
+   */
+  match: string[];
 }
 
 /** Section is one group of rows. */

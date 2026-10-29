@@ -87,6 +87,10 @@ type Row struct {
 	Tint    int    `json:"tint"`
 	// ArchivedNote is "archived by X · reason" for an archived agent.
 	ArchivedNote string `json:"archivedNote,omitempty"`
+	// Match is what the sidebar search looks in, each on its own: the
+	// display name, the raw name (a federated agent's still carries the
+	// machine alias) and the terminal title (herdrup visibleSections).
+	Match []string `json:"match"`
 }
 
 // Section is one group of rows.
@@ -183,6 +187,12 @@ func rowOf(a AgentInfo, g Group) Row {
 		Preview: Preview(a),
 		Initial: Initial(title),
 		Tint:    TintIndex(title),
+		Match:   []string{title},
+	}
+	for _, s := range []string{str(a.Name), str(a.TerminalTitleStripped)} {
+		if s != "" && s != title {
+			r.Match = append(r.Match, s)
+		}
 	}
 	if str(a.Reachability) == "unreachable" {
 		r.Badge = "offline"

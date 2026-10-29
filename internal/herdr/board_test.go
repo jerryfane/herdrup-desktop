@@ -176,3 +176,26 @@ func TestBuildBoardBadgesAndArchivedNote(t *testing.T) {
 		t.Errorf("archived %q", got)
 	}
 }
+
+func TestRowMatchIsWhatSearchLooksIn(t *testing.T) {
+	b := BuildBoard([]AgentInfo{
+		// Federated: shown as the machine's label, but the raw name with the
+		// alias and the terminal title must still find it.
+		agent(t, `{"pane_id":"p1","agent_status":"working","name":"studio/render","machine_id":"studio","machine_label":"Studio Mac","terminal_title_stripped":"π > baking lights"}`),
+		// No name: the display name is the terminal title, listed once.
+		agent(t, `{"pane_id":"p2","agent_status":"working","terminal_title_stripped":"docs"}`),
+	})
+	got := map[string][]string{}
+	for _, s := range b.Sections {
+		for _, r := range s.Rows {
+			got[r.ID] = r.Match
+		}
+	}
+	want := map[string][]string{
+		"p1": {"Studio Mac/render", "studio/render", "π > baking lights"},
+		"p2": {"docs"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("match %q, want %q", got, want)
+	}
+}
