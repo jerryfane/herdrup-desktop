@@ -257,8 +257,9 @@ func (b *Inbox) AppendPage(a Answer, generation, asked int) bool {
 	// herdr's count is the whole store's when it built the page. Only a
 	// read the page itself shows unread is known to be missing from it; a
 	// read of a message outside the page may already be counted (herdr
-	// applied it before building the page), so herdr's number stands and
-	// the next head poll, unconditional since the read, settles it (#55).
+	// applied it before building the page), so herdr's number stands.
+	// A changed count invalidates the head digest below, even if a head
+	// refresh settled the read while this page was in flight (#55, #59).
 	for id, stamp := range b.confirmedReads {
 		if stamp <= asked {
 			continue
@@ -281,6 +282,12 @@ func (b *Inbox) AppendPage(a Answer, generation, asked int) bool {
 	}
 	b.hasMore = a.HasMore
 	if unread != nil {
+		if b.serverUnread == nil || *b.serverUnread != *unread {
+			// The retained head digest does not certify this page's count.
+			// Force the next head poll to reconcile it instead of accepting
+			// an unchanged reply indefinitely.
+			b.digest = ""
+		}
 		b.serverUnread = unread
 	}
 	b.hasLoaded = true
