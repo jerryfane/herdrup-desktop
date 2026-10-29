@@ -305,3 +305,24 @@ func TestSafeFileName(t *testing.T) {
 		}
 	}
 }
+
+// #47: a move whose metadata cannot be written leaves the file where it
+// was, so the caller still holds its download.
+func TestCacheAFailedCommitGivesAMovedFileBack(t *testing.T) {
+	c := newCache(t)
+	src := filepath.Join(t.TempDir(), "download-1")
+	if err := os.WriteFile(src, []byte("downloaded"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeMeta = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+	defer func() { writeMeta = os.WriteFile }()
+	if _, ok := c.StoreMoving(src, "msg-1", "f.txt", ""); ok {
+		t.Fatal("cached without metadata")
+	}
+	if got, err := os.ReadFile(src); err != nil || string(got) != "downloaded" {
+		t.Fatalf("the download is gone: %q %v", got, err)
+	}
+	if _, err := os.Stat(c.Dir("msg-1")); !os.IsNotExist(err) {
+		t.Fatalf("a failed entry was left: %v", err)
+	}
+}

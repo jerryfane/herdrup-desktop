@@ -192,8 +192,13 @@ func (d *Desk) gramDownload(ctx context.Context, l *link, epoch int, id string, 
 		f.path, f.mime = hit.Path, hit.Mime
 		return
 	}
-	// Not cacheable (an empty file): use the download where it is; the
-	// partial directory goes with the next reset.
+	// Not cached (an empty file, or the cache could not commit it, which
+	// gives the download back): use it where it is; the partial directory
+	// goes with the next reset.
+	if _, err := os.Stat(tmp.Name()); err != nil {
+		f.err = err
+		return
+	}
 	keepTmp = true
 	f.path, f.mime = tmp.Name(), mime
 }
