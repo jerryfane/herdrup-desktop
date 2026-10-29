@@ -35,8 +35,25 @@ func main() {
 	mygo.Bind(desk)
 	mygo.Bind(Symbols{})
 
+	installMenuBar()
+	var win *mygo.Window
+	// One Herdrup at a time, so launching it again brings back the window
+	// that closing hid to the tray, also where no tray icon is drawn
+	// (GNOME without its AppIndicator extension). Test-hook runs may run
+	// side by side and are left out.
+	if !smokeEnabled() && !refEnabled() {
+		if !mygo.App.RequestSingleInstanceLock() {
+			return
+		}
+		mygo.App.OnSecondInstance(func([]string, string) {
+			if win != nil {
+				showWindow(win)
+			}
+		})
+	}
+	onNotificationClick(&win)
 	mygo.App.WhenReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{
+		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "Herdrup",
 			Width:           960,
 			Height:          680,
@@ -45,7 +62,11 @@ func main() {
 			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
 			URL:             "/",
+			// The menu bar of Linux and Windows windows stays out of the
+			// way of herdrup's layout until Alt or F10; its shortcuts work.
+			AutoHideMenuBar: true,
 		})
+		startPresence(desk, win)
 		if refEnabled() {
 			runRef(desk, win)
 			return

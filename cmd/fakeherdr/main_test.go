@@ -11,7 +11,7 @@ import (
 
 func agentList(t *testing.T, mode string) (any, bool) {
 	t.Helper()
-	handle, err := handler(mode, defaultAgents, newWrites())
+	handle, err := handler(mode, newAgentSet(defaultAgents).get, newWrites())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestModes(t *testing.T) {
 	if v, ok = agentList(t, "loading"); ok {
 		t.Fatalf("loading answered agent.list with %v", v)
 	}
-	if _, err := handler("full", defaultAgents, newWrites()); err == nil {
+	if _, err := handler("full", newAgentSet(defaultAgents).get, newWrites()); err == nil {
 		t.Fatal("unknown mode accepted")
 	}
 }

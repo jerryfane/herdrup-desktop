@@ -114,6 +114,9 @@ type Desk struct {
 	link   *link // the current connection; nil when disconnected
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
+	// presence takes the agents needing you to the tray and notifications
+	// (presence.go, tray.go).
+	presence *presence
 	// openFolders keeps the folders open on this device; alert shows a
 	// folder save that failed.
 	openFolders *openFolders
@@ -156,6 +159,9 @@ type link struct {
 	// session's folders and stars.
 	agents []herdrapi.AgentInfo
 	groups *groupsStore
+	// needing are the panes that needed you in the watch's last list, nil
+	// before its first: startedNeedingYou's baseline.
+	needing map[string]bool
 }
 
 func newDesk(dir string) *Desk {
@@ -164,6 +170,7 @@ func newDesk(dir string) *Desk {
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
 		alert:       alertGroups,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
+		presence: newPresence(),
 	}
 }
 
@@ -392,6 +399,7 @@ func (d *Desk) selectSession(name string, at *boardSession) error {
 		cleared.Board = *seeded
 	}
 	BoardChanged.Broadcast(cleared)
+	d.presence.show(needingRows(cleared.Board))
 	observe := d.onBoard
 	d.mu.Unlock()
 	if observe != nil {
@@ -447,6 +455,7 @@ func (d *Desk) Disconnect() {
 	}
 	d.link = nil
 	d.board, d.peers = nil, nil
+	d.presence.show(nil)
 	d.mu.Unlock()
 	d.gramReset(nil, "")
 	d.gramWipeCacheUnlessOwner("")
@@ -482,6 +491,7 @@ func (d *Desk) start(m Machine, password string) {
 	d.cancel = cancel
 	d.link = l
 	d.board, d.peers = nil, nil
+	d.presence.show(nil)
 	d.mu.Unlock()
 	// Gram belongs to the connection; its downloads to the machine.
 	d.gramReset(l, m.Host)
@@ -572,7 +582,9 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 		groups := newGroupsStore(d.openFolders, openFoldersKey(m.Host, m.Port, name),
 			func() { d.republish(wctx, l) }, d.alert)
 		d.mu.Lock()
-		l.ctx, l.groups, l.agents = wctx, groups, nil
+		// A new watch, on a new connection or session, starts from a new
+		// baseline: what needs you as it connects is not news.
+		l.ctx, l.groups, l.agents, l.needing = wctx, groups, nil, nil
 		d.mu.Unlock()
 		shown := false
 		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
@@ -594,6 +606,9 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			l.agents, d.peers = u.Agents, peers
+			var started []herdrapi.AgentInfo
+			l.needing, started = startedNeedingYou(l.needing, u.Agents)
+			d.presence.notify(started)
 			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session})
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil
@@ -611,6 +626,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 func (d *Desk) publishLocked(b BoardUpdate) {
 	d.board = &b
 	BoardChanged.Broadcast(b)
+	d.presence.show(needingRows(b.Board))
 	observe := d.onBoard
 	d.mu.Unlock()
 	if observe != nil {

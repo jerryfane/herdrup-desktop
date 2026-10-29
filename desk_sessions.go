@@ -306,11 +306,18 @@ func pillsOf(running []bridge.Session, current string, counts map[string]int) []
 func needsYouCount(agents []herdrapi.AgentInfo) int {
 	n := 0
 	for _, a := range agents {
-		if a.Archived == nil && herdr.GroupOf(a, true) == herdr.NeedsYou {
+		if needsYou(a) {
 			n++
 		}
 	}
 	return n
+}
+
+// needsYou reports whether a is a live agent in the needs-you group, as
+// herdr.BuildBoard groups it for the board and so for the tray. The session
+// pills count with it and the notifications watch it.
+func needsYou(a herdrapi.AgentInfo) bool {
+	return a.Archived == nil && herdr.GroupOf(a, true) == herdr.NeedsYou
 }
 
 // standardLess orders like Foundation's localizedStandardCompare for the
