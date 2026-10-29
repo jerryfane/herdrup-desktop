@@ -97,7 +97,7 @@ func (c FileCache) StoreData(data []byte, id, name, mime string) (CachedFile, bo
 	}
 	return c.place(id, name, mime, int64(len(data)), func(dst string) error {
 		return os.WriteFile(dst, data, 0o600)
-	})
+	}, nil)
 }
 
 // StoreMoving stores the file at src for id by moving it in; src is gone
@@ -107,13 +107,22 @@ func (c FileCache) StoreMoving(src, id, name, mime string) (CachedFile, bool) {
 	if err != nil || !st.Mode().IsRegular() || st.Size() <= 0 {
 		return CachedFile{}, false
 	}
-	return c.place(id, name, mime, st.Size(), func(dst string) error { return os.Rename(src, dst) })
+	// A move that cannot be committed is moved back: the file is the
+	// caller's download, not the cache's.
+	return c.place(id, name, mime, st.Size(), func(dst string) error { return os.Rename(src, dst) },
+		func(dst string) { _ = os.Rename(dst, src) })
 }
 
-// StoreCopy stores a copy of the file at src for id; src is left as it
-// is. The desk keeps a file it just posted this way, so opening it never
-// downloads bytes this device uploaded.
-func (c FileCache) StoreCopy(src, id, name, mime string) (CachedFile, bool) {
+// StoreCopy stores a copy of the file at src for id when it is the
+// posted attachment: its bytes must hash to wantSHA256 (herdr's file
+// sha256), else nothing is cached. src is left as it is. The desk keeps a
+// file it just posted this way, so opening it never downloads bytes this
+// device uploaded; herdrup moves the staged copy it uploaded, and the hash
+// gives the same guarantee for a file edited after its upload.
+func (c FileCache) StoreCopy(src, id, name, mime, wantSHA256 string) (CachedFile, bool) {
+	if wantSHA256 == "" {
+		return CachedFile{}, false
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return CachedFile{}, false
@@ -128,19 +137,26 @@ func (c FileCache) StoreCopy(src, id, name, mime string) (CachedFile, bool) {
 		if err != nil {
 			return err
 		}
-		n, err := io.Copy(out, in)
+		h := sha256.New()
+		n, err := io.Copy(io.MultiWriter(out, h), in)
 		if cerr := out.Close(); err == nil {
 			err = cerr
 		}
-		if err == nil && n != st.Size() {
+		switch {
+		case err != nil:
+		case n != st.Size():
 			err = errors.New("file changed while it was copied")
+		case !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), wantSHA256):
+			err = errors.New("file is not the posted attachment")
 		}
 		return err
-	})
+	}, nil)
 }
 
 // place writes one entry: the payload through write, then its metadata.
-func (c FileCache) place(id, name, mime string, size int64, write func(dst string) error) (CachedFile, bool) {
+// When the metadata fails, undo (if any) is handed the written payload
+// before the entry is removed.
+func (c FileCache) place(id, name, mime string, size int64, write func(dst string) error, undo func(dst string)) (CachedFile, bool) {
 	if size > c.max() {
 		return CachedFile{}, false
 	}
@@ -159,9 +175,16 @@ func (c FileCache) place(id, name, mime string, size int64, write func(dst strin
 	if err := write(dst); err != nil {
 		return fail()
 	}
+	if undo != nil {
+		removeEntry := fail
+		fail = func() (CachedFile, bool) {
+			undo(dst)
+			return removeEntry()
+		}
+	}
 	meta, _ := json.Marshal(cacheMeta{ID: id, Name: safe, Mime: mime, Size: size})
 	tmp := filepath.Join(dir, metaName+".tmp")
-	if err := os.WriteFile(tmp, meta, 0o600); err != nil {
+	if err := writeMeta(tmp, meta, 0o600); err != nil {
 		return fail()
 	}
 	if err := os.Rename(tmp, filepath.Join(dir, metaName)); err != nil {
@@ -170,6 +193,9 @@ func (c FileCache) place(id, name, mime string, size int64, write func(dst strin
 	c.Evict(c.max())
 	return CachedFile{Path: dst, Name: safe, Mime: mime, Size: size}, true
 }
+
+// writeMeta writes an entry's metadata; tests make it fail.
+var writeMeta = os.WriteFile
 
 // Remove drops the entry of id: on delete only, never on unsave.
 func (c FileCache) Remove(id string) { _ = os.RemoveAll(c.Dir(id)) }

@@ -21,8 +21,9 @@ import (
 
 // newGramComposer is the composer of connection l. The desk uploads the
 // picked file itself rather than a staged copy, so nothing is removed
-// after a post; a posted file is copied into the download cache so
-// opening it never downloads the bytes this device sent.
+// after a post; a posted file still holding the bytes it posted (its
+// sha256 matches herdr's) is copied into the download cache, so opening it
+// never downloads the bytes this device sent.
 func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 	upload := func(ctx context.Context, a gramstore.Attachment, progress func(sent, total int64)) (string, error) {
 		ec, err := d.gramEngine(l)
@@ -61,8 +62,16 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 	g := &d.gram
 	epoch := g.epoch // built under g.mu by the reset that set it
 	c.Keep = func(a gramstore.Attachment) {
+		// Only the bytes herdr holds: the file may have changed since it
+		// uploaded, so the copy must hash to the posted file.
+		g.mu.Lock()
+		m, ok := g.findLocked(a.MessageID)
+		g.mu.Unlock()
+		if !ok || m.File == nil {
+			return
+		}
 		cache := d.gramCache()
-		if _, ok := cache.StoreCopy(a.Path, a.MessageID, a.Name, a.Mime); !ok {
+		if _, ok := cache.StoreCopy(a.Path, a.MessageID, a.Name, a.Mime, m.File.SHA256); !ok {
 			return
 		}
 		g.mu.Lock()

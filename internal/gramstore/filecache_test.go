@@ -2,6 +2,8 @@ package gramstore
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -259,14 +261,25 @@ func TestCacheAnAttachmentNamedMetaJSONRoundTrips(t *testing.T) {
 }
 
 // GramFileCache.store(movingFile:) and keep: a moved file is gone from its
-// source; a copy (the desk's own upload) leaves the source alone.
+// source; a copy (the desk's own upload) leaves the source alone and is
+// kept only when it hashes to the posted attachment (#44).
 func TestCacheStoreMovingAndCopy(t *testing.T) {
 	c := newCache(t)
 	src := filepath.Join(t.TempDir(), "up.bin")
 	if err := os.WriteFile(src, []byte("uploaded"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := c.StoreCopy(src, "msg-1", "up.bin", "application/octet-stream"); !ok {
+	sum := sha256.Sum256([]byte("uploaded"))
+	if _, ok := c.StoreCopy(src, "msg-0", "up.bin", "", hex.EncodeToString(sha256.New().Sum(nil))); ok {
+		t.Fatal("cached a copy that is not the posted attachment")
+	}
+	if _, ok := c.Cached("msg-0"); ok {
+		t.Fatal("a refused copy left an entry")
+	}
+	if _, ok := c.StoreCopy(src, "msg-0", "up.bin", "", ""); ok {
+		t.Fatal("cached a copy with nothing to check it against")
+	}
+	if _, ok := c.StoreCopy(src, "msg-1", "up.bin", "application/octet-stream", hex.EncodeToString(sum[:])); !ok {
 		t.Fatal("copy not stored")
 	}
 	if string(read(t, src)) != "uploaded" {
@@ -303,5 +316,26 @@ func TestSafeFileName(t *testing.T) {
 		if got := SafeFileName(in); got != want {
 			t.Errorf("SafeFileName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// #47: a move whose metadata cannot be written leaves the file where it
+// was, so the caller still holds its download.
+func TestCacheAFailedCommitGivesAMovedFileBack(t *testing.T) {
+	c := newCache(t)
+	src := filepath.Join(t.TempDir(), "download-1")
+	if err := os.WriteFile(src, []byte("downloaded"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeMeta = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+	defer func() { writeMeta = os.WriteFile }()
+	if _, ok := c.StoreMoving(src, "msg-1", "f.txt", ""); ok {
+		t.Fatal("cached without metadata")
+	}
+	if got, err := os.ReadFile(src); err != nil || string(got) != "downloaded" {
+		t.Fatalf("the download is gone: %q %v", got, err)
+	}
+	if _, err := os.Stat(c.Dir("msg-1")); !os.IsNotExist(err) {
+		t.Fatalf("a failed entry was left: %v", err)
 	}
 }

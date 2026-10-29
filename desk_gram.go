@@ -791,7 +791,7 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 			time.Sleep(gramWaitStep)
 		}
 		g.mu.Lock()
-		cursor, generation := g.inbox.NextCursor(), g.inbox.Generation()
+		cursor, generation, asked := g.inbox.NextCursor(), g.inbox.Generation(), g.inbox.ReadStamp()
 		g.mu.Unlock()
 		if cursor == "" {
 			return false, nil
@@ -814,7 +814,7 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 			g.mu.Unlock()
 			return false, nil
 		}
-		grew := g.inbox.AppendPage(answer, generation)
+		grew := g.inbox.AppendPage(answer, generation, asked)
 		stale := g.inbox.Generation() != generation
 		g.mu.Unlock()
 		if grew {

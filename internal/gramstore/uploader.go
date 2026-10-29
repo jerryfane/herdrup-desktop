@@ -83,7 +83,11 @@ type uploadJob struct {
 }
 
 type runningUpload struct {
-	path    string
+	path string
+	// job is the upload's file: a file removed and attached again at the
+	// same path is another job, which the removed one's result never
+	// reaches.
+	job     *uploadJob
 	attempt int
 	cancel  context.CancelFunc
 	// discardOnLanding is set when the file was removed mid-upload: an
@@ -245,7 +249,7 @@ func (u *Uploader) Pause() {
 		}
 		j.phase = Phase{Kind: PhasePaused}
 		paused = append(paused, p)
-		if u.running != nil && u.running.path == p {
+		if u.running != nil && u.running.job == j {
 			u.running.cancel()
 		}
 	}
@@ -324,7 +328,7 @@ func (u *Uploader) dropLocked(path string, discardIfItLands bool) {
 	}
 	delete(u.jobs, path)
 	u.order = slices.DeleteFunc(u.order, func(p string) bool { return p == path })
-	if u.running != nil && u.running.path == path {
+	if u.running != nil && u.running.job == j {
 		u.running.discardOnLanding = discardIfItLands
 		u.running.cancel()
 	}
@@ -369,7 +373,7 @@ func (u *Uploader) startNextLocked() (*runningUpload, Attachment, context.Contex
 		u.attempts++
 		ctx, cancel := context.WithCancel(context.Background())
 		j.phase = Phase{Kind: PhaseUploading, Total: j.file.Size}
-		u.running = &runningUpload{path: p, attempt: u.attempts, cancel: cancel}
+		u.running = &runningUpload{path: p, job: j, attempt: u.attempts, cancel: cancel}
 		return u.running, j.file, ctx
 	}
 	return nil, Attachment{}, nil
@@ -378,7 +382,7 @@ func (u *Uploader) startNextLocked() (*runningUpload, Attachment, context.Contex
 func (u *Uploader) progress(path string, attempt int, sent, total int64) {
 	u.mu.Lock()
 	j := u.jobs[path]
-	if u.running == nil || u.running.attempt != attempt || j == nil || j.phase.Kind != PhaseUploading {
+	if u.running == nil || u.running.attempt != attempt || j == nil || j != u.running.job || j.phase.Kind != PhaseUploading {
 		u.mu.Unlock()
 		return
 	}
@@ -392,9 +396,9 @@ func (u *Uploader) complete(started *runningUpload, id string, err error) {
 	discardOnLanding := u.running != nil && u.running.discardOnLanding
 	u.running = nil
 	j := u.jobs[started.path]
-	if j == nil {
-		// Removed mid-upload; one that landed anyway would hold staging
-		// until the sweep.
+	if j == nil || j != started.job {
+		// Removed mid-upload (and maybe attached again since, as another
+		// job); one that landed anyway would hold staging until the sweep.
 		u.mu.Unlock()
 		if err == nil && discardOnLanding {
 			go u.discard(id)
