@@ -1,4 +1,4 @@
-import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, type Row } from "./mygo";
+import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEntries, star, type FolderDeps } from "./folders";
