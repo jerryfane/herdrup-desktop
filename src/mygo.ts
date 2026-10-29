@@ -78,12 +78,35 @@ export interface Row {
   match: string[];
 }
 
+/** SavedMachine is one machine in the saved set. */
+export interface SavedMachine {
+  /** ID is user@host:port, which identifies a machine in the set. */
+  id: string;
+  host: string;
+  port: number;
+  user: string;
+  keyPath: string;
+  session: string;
+  /** Active marks the machine the desk connects to. */
+  active: boolean;
+}
+
 /** Section is one group of rows. */
 export interface Section {
   key: string;
   label: string;
   collapsed: boolean;
   rows: Row[];
+}
+
+/**
+ * Session is one herdr session on a machine, as `herdr session list
+ * --json` reports it (herdr session::SessionInfo).
+ */
+export interface Session {
+  name: string;
+  default: boolean;
+  running: boolean;
 }
 
 /**
@@ -118,7 +141,10 @@ export interface SymbolImage {
 
 // ---- Services ----
 
-/** Desk connects to one machine and keeps its board current. */
+/**
+ * Desk keeps a set of saved machines, connects to the active one and keeps
+ * its board current. One machine is connected at a time.
+ */
 export const Desk = {
   /** Board returns the latest board, or nil before the first list. */
   board(): Promise<BoardUpdate | null> {
@@ -135,9 +161,43 @@ export const Desk = {
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");
   },
-  /** Machine returns the saved connection, if any. */
+  /** Machine returns the active saved machine, if any. */
   machine(): Promise<Machine | null> {
     return call("Desk.Machine");
+  },
+  /** Machines returns every saved machine, in the order they were added. */
+  machines(): Promise<SavedMachine[]> {
+    return call("Desk.Machines");
+  },
+  /**
+   * RemoveMachine forgets a saved machine. Removing the active machine
+   * disconnects it and leaves no machine active.
+   */
+  removeMachine(id: string): Promise<void> {
+    return call("Desk.RemoveMachine", id);
+  },
+  /**
+   * SelectMachine makes a saved machine the active one and connects to it,
+   * replacing any current connection. password is used only when the
+   * machine has no key file.
+   */
+  selectMachine(id: string, password: string): Promise<void> {
+    return call("Desk.SelectMachine", id, password);
+  },
+  /**
+   * SelectSession switches the active machine to another herdr session and
+   * remembers it. A connected machine keeps its SSH connection; only the
+   * board changes.
+   */
+  selectSession(name: string): Promise<void> {
+    return call("Desk.SelectSession", name);
+  },
+  /**
+   * Sessions lists the herdr sessions on the connected machine. A herdr
+   * without named sessions has only the default one.
+   */
+  sessions(): Promise<Session[]> {
+    return call("Desk.Sessions");
   },
   /** State returns the current connection state. */
   state(): Promise<ConnState> {
