@@ -42,6 +42,17 @@ export function rosterEntries(board: Board, open: { idle: boolean; archived: boo
   return out;
 }
 
+/** The line the roster shows instead of its rows, or null to draw
+ * rosterEntries. `board` is the unsearched board and `shown` the one to
+ * draw (the search board while searching). Saved folders with none of their
+ * agents listed still count: they are drawn so they can be opened, renamed
+ * or deleted (#34). */
+export function rosterEmptyLine(board: Board, shown: Board | null, searching: boolean): string | null {
+  if (board.sections.length === 0 && board.archived.length === 0 && board.emptyFolders.length === 0) return "no agents";
+  if (searching && (!shown || shown.sections.length === 0)) return "no matches";
+  return null;
+}
+
 /** What folders.ts borrows from main.ts to draw. */
 export interface FolderDeps {
   el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K];

@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
@@ -115,5 +117,55 @@ func TestStandardLess(t *testing.T) {
 		if got := standardLess(tc.a, tc.b); got != tc.want {
 			t.Errorf("%q < %q: got %v", tc.a, tc.b, got)
 		}
+	}
+}
+
+// #35: a poll that began on session work finds work stopped, but the user
+// switched to session other while it was out; the fallback to the default
+// session must not undo that switch.
+func TestStalePollDoesNotUndoANewerSessionSwitch(t *testing.T) {
+	const all = `{"sessions":[{"name":"default","default":true,"running":true},{"name":"work","running":true},{"name":"other","running":true}]}`
+	const workStopped = `{"sessions":[{"name":"default","default":true,"running":true},{"name":"other","running":true}]}`
+	var armed atomic.Bool
+	var accountReads atomic.Int32
+	entered, release := make(chan struct{}), make(chan struct{})
+	d, srv := federatedDesk(t, func(s *fakeherdr.Server) {
+		s.SessionList = all
+		handle := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method != "accounts.list" {
+				return handle(method, params)
+			}
+			if armed.Load() && accountReads.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+			return map[string]any{"type": "accounts_list", "accounts": []any{}}, nil
+		}
+	})
+	waitFor(t, "the default session's pills", func() bool { return len(d.SessionPills()) == 3 })
+	armed.Store(true)
+	// The switch wakes the session watcher: its poll of work waits in
+	// accounts.list.
+	if err := d.SelectSession("work"); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	srv.SetSessionList(workStopped)
+	if err := d.SelectSession("other"); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	close(release)
+	// The next poll starts only once the stale one has returned.
+	waitFor(t, "the next session poll", func() bool { return accountReads.Load() >= 2 })
+	d.mu.Lock()
+	shown := d.link.session
+	d.mu.Unlock()
+	if shown != "other" {
+		t.Errorf("board shows session %q, want other", shown)
+	}
+	if m, _ := d.Machine(); m == nil || m.Session != "other" {
+		t.Errorf("saved machine %+v, want session other", m)
 	}
 }

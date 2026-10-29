@@ -147,6 +147,7 @@ func (d *Desk) watchSessions(ctx context.Context, l *link, c *bridge.Client) {
 func (d *Desk) pollSessions(ctx context.Context, l *link, c *bridge.Client) {
 	d.mu.Lock()
 	current := l.session
+	at := boardSession{link: l, client: c, gen: l.sessionGen}
 	d.mu.Unlock()
 	view, err := c.ForSession(current)
 	if err != nil {
@@ -162,8 +163,9 @@ func (d *Desk) pollSessions(ctx context.Context, l *link, c *bridge.Client) {
 	running := runningSessions(sessions)
 	if sessionGone(running, current) {
 		// herdrup falls back to the default session when the chosen one
-		// stops (watchSessions).
-		_ = d.SelectSession("")
+		// stops (watchSessions); only if it is still the one shown, so a
+		// switch made meanwhile stands (#35).
+		_ = d.selectSession("", &at)
 		return
 	}
 	counts := map[string]int{}
@@ -185,7 +187,7 @@ func (d *Desk) pollSessions(ctx context.Context, l *link, c *bridge.Client) {
 		}
 	}
 	d.mu.Lock()
-	stillCurrent := d.link == l && l.session == current
+	stillCurrent := d.currentLocked(at)
 	d.mu.Unlock()
 	if !stillCurrent || ctx.Err() != nil {
 		return

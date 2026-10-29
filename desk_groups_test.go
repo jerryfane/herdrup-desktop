@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +36,9 @@ type groupsServer struct {
 	sets  []herdrapi.AgentGroupsSetParams
 	err   map[string]*bridge.APIError // by method, for every call
 	other func()                      // runs before each set: another device saving first
+	// refuse, when set, may refuse a set that is not stale, as herdr
+	// refuses an invalid document.
+	refuse func(herdrapi.AgentGroupsSetParams) *bridge.APIError
 }
 
 func (g *groupsServer) Call(_ context.Context, method string, params, result any) error {
@@ -65,6 +69,11 @@ func (g *groupsServer) Call(_ context.Context, method string, params, result any
 			current, _ := json.Marshal(map[string]any{"type": "agent_groups", "revision": g.doc.Revision, "folders": g.doc.Folders, "stars": g.doc.Stars})
 			raw, _ := json.Marshal(map[string]any{"code": "groups_conflict", "message": "stale", "current": json.RawMessage(current)})
 			return &bridge.APIError{Code: "groups_conflict", Message: "stale", Raw: raw}
+		}
+		if g.refuse != nil {
+			if e := g.refuse(p); e != nil {
+				return e
+			}
 		}
 		g.doc = herdr.Groups{Revision: p.Revision + 1, Folders: p.Folders, Stars: p.Stars}
 		return reply(map[string]any{"type": "agent_groups", "revision": g.doc.Revision, "folders": g.doc.Folders, "stars": g.doc.Stars})
@@ -240,6 +249,41 @@ func TestGroupsRefusedEditIsDropped(t *testing.T) {
 	}
 	if got := stars(h.store.document()); len(got) != 0 {
 		t.Fatalf("a refused edit is still shown: %q", got)
+	}
+}
+
+// #37: another device fills the stars to the limit before this device's
+// conflicting star is replayed, and the replay is refused. The document the
+// conflict reported is what the server has: the store keeps it, rather
+// than the one from before the conflict.
+func TestGroupsRefusedReplayKeepsTheConflictDocument(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   *bridge.APIError
+		alert string
+	}{
+		{"invalid_groups", &bridge.APIError{Code: "invalid_groups", Message: "too many stars"}, "The server refused the change: too many stars"},
+		{"other error", &bridge.APIError{Code: "server_unavailable", Message: "reloading"}, "Couldn't save folders: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newStoreHarness(t, true, herdr.Groups{Revision: 1})
+			ctx := context.Background()
+			h.store.refresh(ctx, false)
+			h.srv.doc = herdr.Groups{Revision: 2, Stars: []string{"b", "c"}}
+			h.srv.refuse = func(herdrapi.AgentGroupsSetParams) *bridge.APIError { return tc.err }
+			h.store.apply(ctx, herdr.Edit{Kind: herdr.EditSetStar, Name: "a", Star: true})
+			h.settle(t)
+			if len(h.srv.sets) != 2 {
+				t.Fatalf("sets %+v, want the edit and its replay", h.srv.sets)
+			}
+			if m := <-h.alerts; !strings.HasPrefix(m, tc.alert) {
+				t.Fatalf("alert %q", m)
+			}
+			got := h.store.document()
+			if got == nil || got.Revision != 2 || !reflect.DeepEqual(got.Stars, []string{"b", "c"}) {
+				t.Fatalf("after the refused replay: %+v, want the server's revision 2 with b and c", got)
+			}
+		})
 	}
 }
 

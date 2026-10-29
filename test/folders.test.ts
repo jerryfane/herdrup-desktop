@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { rosterEntries, type Entry } from "../src/folders";
+import { rosterEmptyLine, rosterEntries, type Entry } from "../src/folders";
 import type { Board, Folder, Row } from "../src/mygo";
 
 const row = (id: string): Row =>
@@ -41,4 +41,16 @@ test("open disclosures show their items, empty folders after the sections", () =
 
 test("a search shows every item with no disclosure, empty folder or archived agent", () => {
   expect(names(rosterEntries(board, { idle: false, archived: true }, true))).toEqual(["a", "[f]", "b"]);
+});
+
+// #34: every agent gone but a saved folder left: the folder is drawn, so it
+// can still be opened, renamed or deleted, instead of "no agents".
+test("an empty roster with a saved empty folder draws the folder", () => {
+  const empty: Board = { sections: [], archived: [], needsYou: 0, total: 0, emptyFolders: [folder("e")] };
+  expect(rosterEmptyLine(empty, empty, false)).toBeNull();
+  expect(names(rosterEntries(empty, { idle: false, archived: false }, false))).toEqual(["[e]"]);
+  const none: Board = { ...empty, emptyFolders: [] };
+  expect(rosterEmptyLine(none, none, false)).toBe("no agents");
+  // A search hides empty folders, so it finds nothing.
+  expect(rosterEmptyLine(empty, none, true)).toBe("no matches");
 });

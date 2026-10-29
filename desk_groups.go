@@ -247,8 +247,10 @@ func (s *groupsStore) send(ctx context.Context) {
 
 // commit sends e made on base. On groups_conflict it applies e once more
 // to the server's current document and sends that; a second conflict
-// gives up with the newest document. An edit that changes nothing is not
-// sent. off is true when the server has no folders for this connection.
+// gives up with the newest document. A replay that fails otherwise still
+// returns the document the conflict reported, the newest the server has
+// confirmed (#37). An edit that changes nothing is not sent. off is true
+// when the server has no folders for this connection.
 func commit(ctx context.Context, c *engine.Client, e herdr.Edit, base herdr.Groups) (saved *herdr.Groups, failure string, off bool) {
 	set := func(g herdr.Groups) (herdr.Groups, error) {
 		return c.AgentGroupsSet(ctx, herdrapi.AgentGroupsSetParams{Revision: g.Revision, Folders: g.Folders, Stars: nonNil(g.Stars)})
@@ -258,12 +260,16 @@ func commit(ctx context.Context, c *engine.Client, e herdr.Edit, base herdr.Grou
 		return &base, "", false
 	}
 	r, err := set(next)
+	// known is the newest document the server has confirmed, nil while
+	// that is still base.
+	var known *herdr.Groups
 	var conflict *engine.GroupsConflictError
 	if errors.As(err, &conflict) {
 		current := conflict.Current
+		known = &current
 		replayed := e.Apply(current)
 		if herdr.GroupsEqual(replayed, current) {
-			return &current, "", false
+			return known, "", false
 		}
 		r, err = set(replayed)
 		if errors.As(err, &conflict) {
@@ -277,9 +283,9 @@ func commit(ctx context.Context, c *engine.Client, e herdr.Edit, base herdr.Grou
 	case groupsOff(err):
 		return nil, "", true
 	case errors.As(err, &api) && api.Code == "invalid_groups":
-		return nil, "The server refused the change: " + api.Message, false
+		return known, "The server refused the change: " + api.Message, false
 	}
-	return nil, "Couldn't save folders: " + err.Error(), false
+	return known, "Couldn't save folders: " + err.Error(), false
 }
 
 func nonNil(s []string) []string {

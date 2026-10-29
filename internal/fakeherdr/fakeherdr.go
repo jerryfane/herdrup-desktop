@@ -67,7 +67,7 @@ type Server struct {
 	Duplex DuplexFunc
 	// SessionList is the output of `herdr session list --json`. When empty
 	// the fake is a herdr from before named sessions, which has no
-	// `session` subcommand.
+	// `session` subcommand. Change it while serving with SetSessionList.
 	SessionList string
 	// Machines, when not nil, are the saved SSH machines: machine.status
 	// answers with them before Handle is asked, and `herdr machine
@@ -92,6 +92,7 @@ type Server struct {
 	inFlight     int // --multi requests being answered now
 	maxInFlight  int
 	conns        int
+	live         map[*ssh.ServerConn]bool // logged-in connections still open
 	ln           net.Listener
 	wg           sync.WaitGroup
 	channelOpen  func()
@@ -162,6 +163,15 @@ func (s *Server) OpenChannels() int {
 	return s.openChannels
 }
 
+// DropConns closes every open SSH connection, as a network drop does.
+func (s *Server) DropConns() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sc := range s.live {
+		sc.Close()
+	}
+}
+
 func (s *Server) record(r Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, r)
@@ -221,7 +231,16 @@ func (s *Server) serveConn(c net.Conn, cfg *ssh.ServerConfig) {
 	defer sc.Close()
 	s.mu.Lock()
 	s.conns++
+	if s.live == nil {
+		s.live = map[*ssh.ServerConn]bool{}
+	}
+	s.live[sc] = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.live, sc)
+		s.mu.Unlock()
+	}()
 	go ssh.DiscardRequests(reqs)
 	for nc := range chans {
 		if nc.ChannelType() != "session" {
@@ -407,7 +426,10 @@ func (s *Server) duplex(ctx context.Context, ch ssh.Channel, session string) int
 // sessionCommand answers `herdr session list --json`, which is
 // machine-level: herdr refuses it with --session.
 func (s *Server) sessionCommand(ch ssh.Channel, session string, args []string) int {
-	if s.SessionList == "" {
+	s.mu.Lock()
+	list := s.SessionList
+	s.mu.Unlock()
+	if list == "" {
 		fmt.Fprintln(ch.Stderr(), "error: unrecognized subcommand 'session'")
 		return 2
 	}
@@ -415,8 +437,16 @@ func (s *Server) sessionCommand(ch ssh.Channel, session string, args []string) i
 		fmt.Fprintln(ch.Stderr(), "usage: herdr session list [--json]")
 		return 2
 	}
-	fmt.Fprintln(ch, s.SessionList)
+	fmt.Fprintln(ch, list)
 	return 0
+}
+
+// SetSessionList changes SessionList while the fake is serving, as sessions
+// starting and stopping on a machine do.
+func (s *Server) SetSessionList(list string) {
+	s.mu.Lock()
+	s.SessionList = list
+	s.mu.Unlock()
 }
 
 type request struct {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 )
 
 // A PNG signature is enough for the content sniffer.
@@ -141,5 +144,50 @@ func TestAvatarGetRejectsWrongBytes(t *testing.T) {
 	}
 	if _, err := s.get(context.Background(), dir, owner, "nope", nil); err == nil {
 		t.Fatal("accepted an invalid sha")
+	}
+}
+
+// #36: a photo whose fetch failed on one SSH connection is asked for again
+// once the desk has reconnected, not drawn as the initial tile for good.
+func TestDeskAvatarFailureIsForgottenOnReconnect(t *testing.T) {
+	var gets atomic.Int32
+	d, srv := federatedDesk(t, func(s *fakeherdr.Server) {
+		handle := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			switch method {
+			case "ping":
+				pong := fakeherdr.Pong(true)
+				pong["capabilities"].(map[string]bool)["agent_avatar"] = true
+				return pong, nil
+			case "agent.avatar.get":
+			default:
+				return handle(method, params)
+			}
+			if gets.Add(1) == 1 {
+				return nil, &fakeherdr.APIError{Code: "server_unavailable", Message: "reloading"}
+			}
+			return map[string]any{"type": "agent_avatar_image", "mime": "image/png",
+				"data_base64": base64.StdEncoding.EncodeToString(pngBytes)}, nil
+		}
+	})
+	sha := shaOf(pngBytes)
+	if _, err := d.AvatarImage(context.Background(), "t1", sha); err == nil {
+		t.Fatal("the first fetch succeeded")
+	}
+	if _, err := d.AvatarImage(context.Background(), "t1", sha); !errors.Is(err, errAvatarFailed) {
+		t.Fatalf("same connection: %v, want the failure remembered", err)
+	}
+	srv.DropConns()
+	waitFor(t, "a second connection with a board", func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return srv.Conns() == 2 && d.link != nil && d.link.client != nil && d.board != nil
+	})
+	url, err := d.AvatarImage(context.Background(), "t1", sha)
+	if err != nil || !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("after reconnecting: %q, %v", url, err)
+	}
+	if n := gets.Load(); n != 2 {
+		t.Fatalf("%d agent.avatar.get, want 2", n)
 	}
 }

@@ -381,3 +381,34 @@ func TestSubscribeThatNeverOpensEndsTheWatchWithoutRelisting(t *testing.T) {
 		t.Errorf("listed %d times, want only the first list", got)
 	}
 }
+
+// #38: the agent goes blocked while a list is in flight, then more events
+// arrive than the ledger keeps. The list was begun with the agent working:
+// it must not be published and undo the blocked patch; a fresh list is.
+func TestLedgerOverflowDoesNotLetALateListUndoAPatch(t *testing.T) {
+	f, c := newFake(t, true)
+	updates, _ := watch(t, c)
+	next(t, updates)
+	waitStreams(t, f, 1)
+	f.hold.Store(true)
+	f.events <- `{"seq":1,"event":"pane_created","data":{"pane_id":"w1:p2"}}`
+	waitLists(t, f, 2) // started with the agent working
+	f.status.Store("blocked")
+	f.events <- `{"seq":2,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"blocked","workspace_id":"w1"}}`
+	if u := next(t, updates); firstGroup(u) != "needsYou" {
+		t.Fatalf("patch: %q", firstGroup(u))
+	}
+	// A plain shell's status events are recorded but change no row.
+	for i := range 256 {
+		f.events <- `{"seq":` + strconv.Itoa(3+i) + `,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p9","agent_status":"idle","workspace_id":"w1"}}`
+	}
+	time.Sleep(quiet)
+	f.hold.Store(false)
+	f.release <- struct{}{}
+	if u := next(t, updates); firstGroup(u) != "needsYou" {
+		t.Fatalf("the list that was in flight undid the patch: %q", firstGroup(u))
+	}
+	if got := f.lists.Load(); got != 3 {
+		t.Fatalf("%d lists, want a fresh one after the overflowed list", got)
+	}
+}

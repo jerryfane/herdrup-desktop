@@ -100,8 +100,8 @@ func TestLedgerKeepsChangesALateListWouldUndo(t *testing.T) {
 	l.record(Change{PaneID: "zz", Status: "blocked"}, at)
 	stale := []herdrapi.AgentInfo{info(t, `{"pane_id":"a","agent_status":"idle"}`)}
 	l.settle(mark)
-	got := l.replay(stale, mark)
-	if got[0].AgentStatus != "blocked" || len(got) != 1 {
+	got, complete := l.replay(stale, mark)
+	if !complete || got[0].AgentStatus != "blocked" || len(got) != 1 {
 		t.Fatalf("replayed %+v", got)
 	}
 	if len(l.entries) != 2 {
@@ -112,6 +112,31 @@ func TestLedgerKeepsChangesALateListWouldUndo(t *testing.T) {
 	}
 	if len(l.entries) != ledgerCapacity || l.entries[len(l.entries)-1].index != l.mark() {
 		t.Errorf("capacity: %d entries", len(l.entries))
+	}
+}
+
+// #38: pane a went blocked while a list was in flight, then more changes
+// came than the ledger keeps. The list cannot be brought up to date, so
+// replay says so rather than return it with a's change lost.
+func TestLedgerOverflowPastAMarkIsReported(t *testing.T) {
+	var l ledger
+	at := time.UnixMilli(1)
+	mark := l.mark()
+	l.record(Change{PaneID: "a", Status: "blocked"}, at)
+	for range ledgerCapacity - 1 {
+		l.record(Change{PaneID: "b", Status: "working"}, at)
+	}
+	stale := []herdrapi.AgentInfo{info(t, `{"pane_id":"a","agent_status":"working"}`)}
+	if got, complete := l.replay(stale, mark); !complete || got[0].AgentStatus != "blocked" {
+		t.Fatalf("at capacity: %+v complete=%v", got, complete)
+	}
+	l.record(Change{PaneID: "b", Status: "working"}, at) // a's change is dropped
+	if _, complete := l.replay(stale, mark); complete {
+		t.Fatal("replay is complete after a change past the mark was dropped")
+	}
+	// A list begun after the drop is unaffected.
+	if _, complete := l.replay(stale, l.mark()); !complete {
+		t.Fatal("a later list is reported incomplete")
 	}
 }
 

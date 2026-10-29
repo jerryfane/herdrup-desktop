@@ -177,6 +177,8 @@ const ledgerCapacity = 256
 type ledger struct {
 	entries []ledgerEntry
 	counter uint64
+	// evicted is the index of the newest change dropped for capacity.
+	evicted uint64
 }
 
 type ledgerEntry struct {
@@ -191,13 +193,20 @@ func (l *ledger) record(c Change, at time.Time) {
 	l.counter++
 	l.entries = append(l.entries, ledgerEntry{l.counter, c, at})
 	if n := len(l.entries) - ledgerCapacity; n > 0 {
+		l.evicted = l.entries[n-1].index
 		l.entries = slices.Delete(l.entries, 0, n)
 	}
 }
 
 // replay applies every change recorded after mark, in arrival order;
-// changes for panes absent from agents are skipped.
-func (l *ledger) replay(agents []herdrapi.AgentInfo, mark uint64) []herdrapi.AgentInfo {
+// changes for panes absent from agents are skipped. complete is false
+// when a change recorded after mark was dropped for capacity: the list
+// cannot be brought up to date, and publishing it could undo that change
+// (#38).
+func (l *ledger) replay(agents []herdrapi.AgentInfo, mark uint64) (_ []herdrapi.AgentInfo, complete bool) {
+	if l.evicted > mark {
+		return agents, false
+	}
 	for _, e := range l.entries {
 		if e.index <= mark {
 			continue
@@ -206,7 +215,7 @@ func (l *ledger) replay(agents []herdrapi.AgentInfo, mark uint64) []herdrapi.Age
 			agents = next
 		}
 	}
-	return agents
+	return agents, true
 }
 
 // settle forgets the changes recorded at or before mark.
