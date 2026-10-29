@@ -57,9 +57,23 @@ type Config struct {
 type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Raw is the whole error object as herdr sent it, for the fields some
+	// errors add beyond code and message (agent.groups.set's
+	// groups_conflict carries "current").
+	Raw json.RawMessage `json:"-"`
 }
 
 func (e *APIError) Error() string { return "herdr: " + e.Code + ": " + e.Message }
+
+// UnmarshalJSON decodes code and message and keeps the object in Raw.
+func (e *APIError) UnmarshalJSON(b []byte) error {
+	type plain APIError
+	if err := json.Unmarshal(b, (*plain)(e)); err != nil {
+		return err
+	}
+	e.Raw = append(json.RawMessage(nil), b...)
+	return nil
+}
 
 var (
 	errChannelClosed = errors.New("herdr api-bridge channel closed")
@@ -328,26 +342,74 @@ func (c *Client) openStream(ctx context.Context, line []byte) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
+	s, _, err := c.start(ctx, cmd, false)
+	return s, err
+}
+
+// start runs cmd on a new exec channel, with a stdin pipe when stdin is
+// set. The channel closes when ctx ends.
+func (c *Client) start(ctx context.Context, cmd string, stdin bool) (*Stream, io.WriteCloser, error) {
 	sess, err := c.ssh.NewSession()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var in io.WriteCloser
+	if stdin {
+		if in, err = sess.StdinPipe(); err != nil {
+			sess.Close()
+			return nil, nil, err
+		}
 	}
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		sess.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	s := &Stream{sess: sess, r: bufio.NewReaderSize(stdout, 64<<10), stderr: &tailBuffer{}}
 	sess.Stderr = s.stderr
 	if err := sess.Start(cmd); err != nil {
 		sess.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	// The callback may run at once on another goroutine, so it must not
 	// read s.stop, which is assigned here.
 	s.stop = context.AfterFunc(ctx, func() { sess.Close() })
-	return s, nil
+	return s, in, nil
 }
+
+// Duplex is a two-way channel to the herdr API socket, `herdr
+// remote-api-bridge`: what is written goes to the socket as is, and every
+// line herdr writes back comes from Next. A streaming method that reads
+// from the client after its acknowledgement, such as gram.upload.stream,
+// needs one; api-bridge only forwards the one request.
+type Duplex struct {
+	*Stream
+	in io.WriteCloser
+}
+
+// OpenDuplex starts a duplex channel. The caller writes the request line
+// first. It closes when ctx ends.
+func (c *Client) OpenDuplex(ctx context.Context) (*Duplex, error) {
+	cmd, err := remoteCommand(c.cfg.Session, "remote-api-bridge")
+	if err != nil {
+		return nil, err
+	}
+	s, in, err := c.start(ctx, cmd, true)
+	if err != nil {
+		return nil, err
+	}
+	return &Duplex{Stream: s, in: in}, nil
+}
+
+// WriteLine writes line and a newline.
+func (d *Duplex) WriteLine(line []byte) error {
+	_, err := d.in.Write(append(line[:len(line):len(line)], '\n'))
+	return err
+}
+
+// CloseWrite ends what the client sends; herdr sees end of file, and Next
+// still returns what it writes after that.
+func (d *Duplex) CloseWrite() error { return d.in.Close() }
 
 // Next returns the next line. When the remote command ends it returns the
 // classified exit error, or io.EOF after a clean exit.

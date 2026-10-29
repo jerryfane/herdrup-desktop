@@ -22,10 +22,17 @@ type UnknownVariant struct {
 func (u UnknownVariant) variantTag() string { return u.Tag }
 
 // marshalVariant writes v's fields with its tag under key; a union holding
-// no variant is null.
+// no variant is null. An UnknownVariant, by value or by pointer, is written
+// back as its raw JSON.
 func marshalVariant(key string, v variant) ([]byte, error) {
 	if v == nil {
 		return []byte("null"), nil
+	}
+	if p, ok := v.(*UnknownVariant); ok {
+		if p == nil {
+			return nil, fmt.Errorf("nil *UnknownVariant in a %q union", key)
+		}
+		v = *p
 	}
 	if u, ok := v.(UnknownVariant); ok {
 		if len(u.Raw) == 0 {

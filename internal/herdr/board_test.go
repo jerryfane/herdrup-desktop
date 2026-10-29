@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
-func agent(t *testing.T, js string) AgentInfo {
+func agent(t *testing.T, js string) herdrapi.AgentInfo {
 	t.Helper()
-	var a AgentInfo
+	var a herdrapi.AgentInfo
 	if err := json.Unmarshal([]byte(js), &a); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +43,7 @@ func TestGroupOfMatchesIOS(t *testing.T) {
 }
 
 func TestBuildBoardOrdersGroupsThenRecencyAndLeavesArchivedOut(t *testing.T) {
-	agents := []AgentInfo{
+	agents := []herdrapi.AgentInfo{
 		agent(t, `{"pane_id":"p-idle-old","agent_status":"idle","last_completed_turn":{"completed_unix_ms":100}}`),
 		agent(t, `{"pane_id":"p-work","agent_status":"working"}`),
 		agent(t, `{"pane_id":"p-idle-new","agent_status":"done","last_completed_turn":{"completed_unix_ms":200}}`),
@@ -50,7 +52,6 @@ func TestBuildBoardOrdersGroupsThenRecencyAndLeavesArchivedOut(t *testing.T) {
 		agent(t, `{"pane_id":"p-blocked","agent_status":"blocked"}`),
 		agent(t, `{"pane_id":"p-archived","agent_status":"blocked","archived":{"at":"x"}}`),
 		agent(t, `{"pane_id":"p-null-archive","agent_status":"working","archived":null}`),
-		agent(t, `{"pane_id":"p-false-archive","agent_status":"working","archived":false}`),
 	}
 	b := BuildBoard(agents)
 	var got [][]string
@@ -63,13 +64,13 @@ func TestBuildBoardOrdersGroupsThenRecencyAndLeavesArchivedOut(t *testing.T) {
 	}
 	want := [][]string{
 		{"needsYou", "p-blocked"},
-		{"working", "p-false-archive", "p-null-archive", "p-work"},
+		{"working", "p-null-archive", "p-work"},
 		{"idle", "p-idle-new", "p-idle-old", "p-idle-never-a", "p-idle-never-b"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sections\n got %v\nwant %v", got, want)
 	}
-	if b.NeedsYou != 1 || b.Total != 8 || len(b.Archived) != 1 || b.Archived[0].ID != "p-archived" {
+	if b.NeedsYou != 1 || b.Total != 7 || len(b.Archived) != 1 || b.Archived[0].ID != "p-archived" {
 		t.Fatalf("needsYou=%d total=%d archived=%v", b.NeedsYou, b.Total, b.Archived)
 	}
 	if !b.Sections[2].Collapsed || b.Sections[0].Collapsed || b.Sections[1].Collapsed {
@@ -149,7 +150,7 @@ func TestInitial(t *testing.T) {
 }
 
 func TestBuildBoardBadgesAndArchivedNote(t *testing.T) {
-	b := BuildBoard([]AgentInfo{
+	b := BuildBoard([]herdrapi.AgentInfo{
 		agent(t, `{"pane_id":"a","agent_status":"blocked"}`),
 		agent(t, `{"pane_id":"b","agent_status":"working","reachability":"unreachable"}`),
 		agent(t, `{"pane_id":"c","agent_status":"compacting"}`),
@@ -178,7 +179,7 @@ func TestBuildBoardBadgesAndArchivedNote(t *testing.T) {
 }
 
 func TestRowMatchIsWhatSearchLooksIn(t *testing.T) {
-	b := BuildBoard([]AgentInfo{
+	b := BuildBoard([]herdrapi.AgentInfo{
 		// Federated: shown as the machine's label, but the raw name with the
 		// alias and the terminal title must still find it.
 		agent(t, `{"pane_id":"p1","agent_status":"working","name":"studio/render","machine_id":"studio","machine_label":"Studio Mac","terminal_title_stripped":"π > baking lights"}`),

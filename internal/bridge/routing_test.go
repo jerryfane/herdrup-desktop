@@ -45,8 +45,10 @@ func TestRequestsGoPerRequestUntilTheCapabilityIsKnown(t *testing.T) {
 	if err := c.Call(ctx, "agent.list", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if onMulti, _ := routes(m); len(onMulti) != 0 {
-		t.Fatalf("sent %q on --multi before the capability was known", onMulti)
+	// The background capability ping may already have opened --multi (its
+	// opening ping goes there), so check the request itself, not the channel.
+	if onMulti, perRequest := routes(m); slices.Contains(onMulti, "agent.list") || !slices.Contains(perRequest, "agent.list") {
+		t.Fatalf("first agent.list: on --multi %q, per-request %q; want it per-request before the capability was known", onMulti, perRequest)
 	}
 	// A background ping learns it and opens the channel.
 	eventually(t, "the --multi channel to open", func() bool {
@@ -244,5 +246,87 @@ func TestForSessionSharesTheConnection(t *testing.T) {
 	}
 	if _, err := c.ForSession("no spaces"); err == nil {
 		t.Error("accepted an invalid session name")
+	}
+}
+
+// hangingMachine answers "hang" only once the test ends, as a herdr whose
+// request is stuck, and opens the --multi channel.
+func hangingMachine(t *testing.T) (*machine, *bridge.Client) {
+	t.Helper()
+	release := make(chan struct{})
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "hang" {
+				<-release
+			}
+			return echoHandler(method, params)
+		}
+	})
+	t.Cleanup(func() { close(release) })
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the --multi channel to open", func() bool {
+		onMulti, _ := routes(m)
+		return slices.Contains(onMulti, "ping")
+	})
+	return m, c
+}
+
+func TestAbandonedRequestsHoldingEverySlotReopenTheChannel(t *testing.T) {
+	m, c := hangingMachine(t)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			if err := c.Call(ctx, "hang", nil, nil); !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("hang: got %v, want its deadline", err)
+			}
+		}()
+	}
+	wg.Wait()
+	// Every slot of the first channel is held by a request herdr never
+	// answers; a new request must not wait for one.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := c.Call(ctx, "agent.list", nil, nil); err != nil {
+		t.Fatalf("a request after 16 abandoned ones: %v", err)
+	}
+	if n := multiOpens(m); n != 2 {
+		t.Errorf("opened --multi %d times, want a second channel", n)
+	}
+	if onMulti, _ := routes(m); !slices.Contains(onMulti, "agent.list") {
+		t.Errorf("the request did not use the new channel: %q", onMulti)
+	}
+}
+
+func TestAbandonedRequestUnansweredPastTheGraceRetiresTheChannel(t *testing.T) {
+	bridge.SetAbandonGrace(t, 100*time.Millisecond)
+	m, c := hangingMachine(t)
+	// A live request on the first channel, answered after the retirement.
+	live := make(chan error, 1)
+	go func() { live <- c.Call(context.Background(), "slow", map[string]int{"DelayMs": 600}, nil) }()
+	eventually(t, "the slow request to arrive", func() bool {
+		onMulti, _ := routes(m)
+		return slices.Contains(onMulti, "slow")
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := c.Call(ctx, "hang", nil, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("hang: got %v, want its deadline", err)
+	}
+	time.Sleep(250 * time.Millisecond) // past the grace
+	if err := c.Call(context.Background(), "agent.list", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := multiOpens(m); n != 2 {
+		t.Errorf("opened --multi %d times, want a second channel after the grace", n)
+	}
+	if err := <-live; err != nil {
+		t.Errorf("the live request on the retired channel failed: %v", err)
 	}
 }

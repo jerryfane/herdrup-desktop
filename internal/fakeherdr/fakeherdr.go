@@ -24,7 +24,19 @@ import (
 type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Current is the stored document agent.groups.set's groups_conflict
+	// carries.
+	Current any `json:"current,omitempty"`
 }
+
+// StreamFunc answers one streaming request on its own channel: it writes
+// every line, the acknowledgement included, until ctx ends or it returns.
+type StreamFunc func(ctx context.Context, id string, params json.RawMessage, emit func(line []byte) error)
+
+// DuplexFunc answers a `remote-api-bridge` channel whose first line was a
+// request: read returns each later line the client writes (io.EOF once it
+// closes its side) and emit writes a line back.
+type DuplexFunc func(ctx context.Context, id, method string, params json.RawMessage, read func() ([]byte, error), emit func(line []byte) error)
 
 // Server is one fake machine.
 type Server struct {
@@ -47,6 +59,12 @@ type Server struct {
 	// Events is called for each events.subscribe stream and writes event
 	// lines until ctx ends or it returns.
 	Events func(ctx context.Context, emit func(line []byte) error)
+	// Streams answers streaming methods by name, overriding Events for
+	// events.subscribe.
+	Streams map[string]StreamFunc
+	// Duplex answers `herdr remote-api-bridge`. When nil the fake is a
+	// herdr without that subcommand.
+	Duplex DuplexFunc
 	// SessionList is the output of `herdr session list --json`. When empty
 	// the fake is a herdr from before named sessions, which has no
 	// `session` subcommand.
@@ -251,6 +269,11 @@ func (s *Server) exec(ctx context.Context, cmd string, ch ssh.Channel) int {
 	case "session":
 		return s.sessionCommand(ch, session, args[1:])
 	case "api-bridge":
+	case "remote-api-bridge":
+		if s.Duplex != nil && len(args) == 1 {
+			return s.duplex(ctx, ch, session)
+		}
+		fallthrough
 	default:
 		fmt.Fprintf(ch.Stderr(), "error: unrecognized subcommand '%s'\n", args[0])
 		return 2
@@ -288,6 +311,11 @@ func (s *Server) exec(ctx context.Context, cmd string, ch ssh.Channel) int {
 		return 1
 	}
 	s.record(Request{Method: req.Method, Session: session, Bytes: len(raw)})
+	if f, ok := s.Streams[req.Method]; ok {
+		var mu sync.Mutex
+		f(ctx, req.ID, req.Params, func(line []byte) error { return writeRaw(ch, &mu, line) })
+		return 0
+	}
 	if req.Method == "events.subscribe" {
 		writeLine(ch, nil, map[string]any{"id": req.ID, "result": map[string]any{"type": "subscription_started"}})
 		if s.Events != nil {
@@ -297,6 +325,32 @@ func (s *Server) exec(ctx context.Context, cmd string, ch ssh.Channel) int {
 		return 0
 	}
 	writeLine(ch, nil, s.reply(req))
+	return 0
+}
+
+// duplex answers `remote-api-bridge`: its first line is a request, and
+// Duplex reads the rest of what the client writes.
+func (s *Server) duplex(ctx context.Context, ch ssh.Channel, session string) int {
+	r := bufio.NewReader(ch)
+	read := func() ([]byte, error) {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			return bytes.TrimSuffix(line, []byte("\n")), nil
+		}
+		return nil, err
+	}
+	first, err := read()
+	if err != nil {
+		return 0
+	}
+	var req request
+	if err := json.Unmarshal(first, &req); err != nil {
+		writeLine(ch, nil, map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "bad json"}})
+		return 0
+	}
+	s.record(Request{Method: req.Method, Session: session, Bytes: len(first)})
+	var mu sync.Mutex
+	s.Duplex(ctx, req.ID, req.Method, req.Params, read, func(line []byte) error { return writeRaw(ch, &mu, line) })
 	return 0
 }
 
@@ -361,14 +415,14 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				// parse it whole.
 				_ = json.Unmarshal(line, &req)
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
-				writeLine(ch, &mu, map[string]any{"id": req.ID, "error": APIError{"invalid_request",
-					fmt.Sprintf("api-bridge: request line exceeds %d bytes", multiMaxLineBytes)}})
+				writeLine(ch, &mu, map[string]any{"id": req.ID, "error": APIError{Code: "invalid_request",
+					Message: fmt.Sprintf("api-bridge: request line exceeds %d bytes", multiMaxLineBytes)}})
 			case json.Unmarshal(line, &req) != nil:
-				writeLine(ch, &mu, map[string]any{"id": "", "error": APIError{"invalid_request", "bad json"}})
+				writeLine(ch, &mu, map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "bad json"}})
 			case multiStreamingMethods[req.Method]:
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
-				writeLine(ch, &mu, map[string]any{"id": req.ID, "error": APIError{"unsupported_method",
-					"api-bridge --multi does not forward streaming method " + req.Method}})
+				writeLine(ch, &mu, map[string]any{"id": req.ID, "error": APIError{Code: "unsupported_method",
+					Message: "api-bridge --multi does not forward streaming method " + req.Method}})
 			default:
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				s.mu.Lock()

@@ -187,7 +187,9 @@ export const Desk = {
   /**
    * SelectSession switches the active machine to another herdr session and
    * remembers it. A connected machine keeps its SSH connection; only the
-   * board changes.
+   * board changes. The window is sent an empty board at once, with no
+   * ListedAt, so it stops showing the old session's agents before the new
+   * session's list arrives.
    */
   selectSession(name: string): Promise<void> {
     return call("Desk.SelectSession", name);

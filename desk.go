@@ -16,6 +16,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
 )
@@ -286,7 +287,9 @@ func (d *Desk) Sessions(ctx context.Context) ([]bridge.Session, error) {
 
 // SelectSession switches the active machine to another herdr session and
 // remembers it. A connected machine keeps its SSH connection; only the
-// board changes.
+// board changes. The window is sent an empty board at once, with no
+// ListedAt, so it stops showing the old session's agents before the new
+// session's list arrives.
 func (d *Desk) SelectSession(name string) error {
 	if !bridge.ValidSession(name) {
 		return fmt.Errorf("invalid herdr session name %q", name)
@@ -309,13 +312,24 @@ func (d *Desk) SelectSession(name string) error {
 		return err
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if l := d.link; l != nil && l.id == st.Active && l.session != name {
-		l.session = name
-		d.board = nil
-		if l.restart != nil {
-			l.restart()
-		}
+	l := d.link
+	if l == nil || l.id != st.Active || l.session == name {
+		d.mu.Unlock()
+		return nil
+	}
+	l.session = name
+	d.board = nil
+	if l.restart != nil {
+		l.restart()
+	}
+	// Under d.mu, like every board publish, so the new session's first
+	// board cannot be overtaken by this cleared one.
+	cleared := BoardUpdate{Board: herdr.BuildBoard(nil)}
+	BoardChanged.Broadcast(cleared)
+	observe := d.onBoard
+	d.mu.Unlock()
+	if observe != nil {
+		observe(cleared)
 	}
 	return nil
 }
@@ -480,7 +494,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			return listed, err
 		}
 		shown := false
-		err = live.Watch(wctx, live.BridgeCaller{Client: view}, live.DefaultTiming, func(u live.Update) {
+		err = live.Watch(wctx, engine.New(engine.Bridge(view)), live.DefaultTiming, func(u live.Update) {
 			if !shown {
 				shown, listed = true, true
 				d.setState(wctx, ConnState{
