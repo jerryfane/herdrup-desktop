@@ -45,8 +45,10 @@ func TestRequestsGoPerRequestUntilTheCapabilityIsKnown(t *testing.T) {
 	if err := c.Call(ctx, "agent.list", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if onMulti, _ := routes(m); len(onMulti) != 0 {
-		t.Fatalf("sent %q on --multi before the capability was known", onMulti)
+	// The background capability ping may already have opened --multi (its
+	// opening ping goes there), so check the request itself, not the channel.
+	if onMulti, perRequest := routes(m); slices.Contains(onMulti, "agent.list") || !slices.Contains(perRequest, "agent.list") {
+		t.Fatalf("first agent.list: on --multi %q, per-request %q; want it per-request before the capability was known", onMulti, perRequest)
 	}
 	// A background ping learns it and opens the channel.
 	eventually(t, "the --multi channel to open", func() bool {
