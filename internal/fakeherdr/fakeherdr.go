@@ -67,7 +67,7 @@ type Server struct {
 	Duplex DuplexFunc
 	// SessionList is the output of `herdr session list --json`. When empty
 	// the fake is a herdr from before named sessions, which has no
-	// `session` subcommand.
+	// `session` subcommand. Change it while serving with SetSessionList.
 	SessionList string
 	// Machines, when not nil, are the saved SSH machines: machine.status
 	// answers with them before Handle is asked, and `herdr machine
@@ -407,7 +407,10 @@ func (s *Server) duplex(ctx context.Context, ch ssh.Channel, session string) int
 // sessionCommand answers `herdr session list --json`, which is
 // machine-level: herdr refuses it with --session.
 func (s *Server) sessionCommand(ch ssh.Channel, session string, args []string) int {
-	if s.SessionList == "" {
+	s.mu.Lock()
+	list := s.SessionList
+	s.mu.Unlock()
+	if list == "" {
 		fmt.Fprintln(ch.Stderr(), "error: unrecognized subcommand 'session'")
 		return 2
 	}
@@ -415,8 +418,16 @@ func (s *Server) sessionCommand(ch ssh.Channel, session string, args []string) i
 		fmt.Fprintln(ch.Stderr(), "usage: herdr session list [--json]")
 		return 2
 	}
-	fmt.Fprintln(ch, s.SessionList)
+	fmt.Fprintln(ch, list)
 	return 0
+}
+
+// SetSessionList changes SessionList while the fake is serving, as sessions
+// starting and stopping on a machine do.
+func (s *Server) SetSessionList(list string) {
+	s.mu.Lock()
+	s.SessionList = list
+	s.mu.Unlock()
 }
 
 type request struct {

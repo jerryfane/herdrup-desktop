@@ -318,27 +318,39 @@ func (d *Desk) Sessions(ctx context.Context) ([]bridge.Session, error) {
 // ListedAt, so it stops showing the old session's agents before the new
 // session's list arrives.
 func (d *Desk) SelectSession(name string) error {
+	return d.selectSession(name, nil)
+}
+
+// selectSession is SelectSession. When at is not nil the switch is made
+// only if the board still shows the link and session generation at names;
+// that is checked under d.storeMu and d.mu and they are held until the
+// switch is saved and made, so no other switch can come in between.
+func (d *Desk) selectSession(name string, at *boardSession) error {
 	if !bridge.ValidSession(name) {
 		return fmt.Errorf("invalid herdr session name %q", name)
 	}
 	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
+	d.mu.Lock()
+	if at != nil && !d.currentLocked(*at) {
+		d.mu.Unlock()
+		return nil
+	}
 	st, err := d.load()
 	if err != nil {
-		d.storeMu.Unlock()
+		d.mu.Unlock()
 		return err
 	}
 	i := st.find(st.Active)
 	if st.Active == "" || i < 0 {
-		d.storeMu.Unlock()
+		d.mu.Unlock()
 		return errors.New("no active machine")
 	}
 	st.Machines[i].Session = name
-	err = d.store(st)
-	d.storeMu.Unlock()
-	if err != nil {
+	if err := d.store(st); err != nil {
+		d.mu.Unlock()
 		return err
 	}
-	d.mu.Lock()
 	l := d.link
 	if l == nil || l.id != st.Active || l.session == name {
 		d.mu.Unlock()
