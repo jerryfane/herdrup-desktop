@@ -109,6 +109,9 @@ jobs:
           HERDRUP_SMOKE_KEY: ${{ runner.temp }}/client.key
           HERDRUP_SMOKE_CAPTURE: ${{ runner.temp }}/herdrup-${{ runner.os }}.png
           HERDRUP_SMOKE_LOG: ${{ runner.temp }}/herdrup-smoke.log
+          # The app's throwaway user data (main.go) goes here, which the
+          # runner clears after the job, also on the self-hosted MacBook Air.
+          TMPDIR: ${{ runner.temp }}
         run: |
           bin="$RUNNER_TEMP/fakeherdr$(go env GOEXE)"
           go build -o "$bin" ./cmd/fakeherdr
