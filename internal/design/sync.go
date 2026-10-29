@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path"
@@ -422,31 +423,51 @@ func splitLayers(value string) []string {
 
 // insetStripe reports whether a box-shadow layer is an inset shadow offset
 // sideways only. CSS allows "inset" before or after the lengths, and the
-// colour may be a function whose own arguments are not offsets.
+// colour may be a function whose own arguments are not offsets; calc() and
+// the other maths functions count as non-zero lengths.
 func insetStripe(layer string) bool {
-	var top strings.Builder
-	depth := 0
-	for _, r := range strings.ToLower(layer) {
+	inset := false
+	var lengths []float64
+	for _, f := range topFields(strings.ToLower(layer)) {
+		if f == "inset" {
+			inset = true
+		} else if n, ok := parseLength(f); ok {
+			lengths = append(lengths, n)
+		} else if mathFunc.MatchString(f) {
+			lengths = append(lengths, 1)
+		}
+	}
+	return inset && len(lengths) >= 2 && lengths[0] != 0 && lengths[1] == 0
+}
+
+var mathFunc = regexp.MustCompile(`^(?:calc|min|max|clamp)\(`)
+
+// topFields splits a value at whitespace outside parentheses, so
+// calc( 3px ) stays one field.
+func topFields(value string) []string {
+	var fields []string
+	depth, start := 0, -1
+	for i, r := range value {
 		switch {
 		case r == '(':
 			depth++
 		case r == ')':
 			depth--
-			top.WriteByte(' ')
-		case depth == 0:
-			top.WriteRune(r)
+		case depth == 0 && (r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'):
+			if start >= 0 {
+				fields = append(fields, value[start:i])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
 		}
 	}
-	inset := false
-	var lengths []float64
-	for _, f := range strings.Fields(top.String()) {
-		if f == "inset" {
-			inset = true
-		} else if n, ok := parseLength(f); ok {
-			lengths = append(lengths, n)
-		}
+	if start >= 0 {
+		fields = append(fields, value[start:])
 	}
-	return inset && len(lengths) >= 2 && lengths[0] != 0 && lengths[1] == 0
+	return fields
 }
 
 // parseLength reads a CSS length or number, ignoring the unit.
@@ -459,44 +480,106 @@ func parseLength(f string) (float64, bool) {
 	return n, err == nil
 }
 
-// oneSidedWidths reports whether a 4-value border-width draws the left or
-// right side and neither top nor bottom ("0 0 0 3px", "0 thick 0 0"). The
-// 2- and 3-value forms always give left and right the same width, so they
-// cannot draw a side stripe. Keywords (thin, medium, thick), var() and
+// oneSidedWidths reports whether a 2-, 3- or 4-value border-width draws
+// the left or right side (or both) and neither top nor bottom ("0 3px",
+// "0 3px 0", "0 0 0 3px"). Keywords (thin, medium, thick), var() and
 // calc() count as non-zero.
 func oneSidedWidths(value string) bool {
-	fields := strings.Fields(strings.ToLower(value))
-	if len(fields) != 4 {
+	fields := topFields(strings.ToLower(value))
+	if len(fields) < 2 || len(fields) > 4 {
 		return false
 	}
-	var nonZero [4]bool
+	nonZero := make([]bool, len(fields))
 	for i, f := range fields {
 		n, ok := parseLength(f)
 		nonZero[i] = !ok || n != 0
 	}
-	top, right, bottom, left := nonZero[0], nonZero[1], nonZero[2], nonZero[3]
-	return !top && !bottom && left != right
+	// Expand to top, right, bottom, left as CSS does.
+	var top, right, bottom, left bool
+	switch len(nonZero) {
+	case 2:
+		top, right, bottom, left = nonZero[0], nonZero[1], nonZero[0], nonZero[1]
+	case 3:
+		top, right, bottom, left = nonZero[0], nonZero[1], nonZero[2], nonZero[1]
+	case 4:
+		top, right, bottom, left = nonZero[0], nonZero[1], nonZero[2], nonZero[3]
+	}
+	return !top && !bottom && (left || right)
 }
 
-var customRef = regexp.MustCompile(`var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,[^()]*)?\)`)
+var customName = regexp.MustCompile(`^\s*(--[A-Za-z0-9_-]+)\s*(?:,|$)`)
 
-// expandVars substitutes the custom properties declared in the app's
-// stylesheets, a few levels deep, so a stripe hidden behind var(--x) is
-// still seen. Unknown references (tokens) are left as they are.
-func expandVars(value string, custom map[string]string) string {
-	for range 5 {
-		next := customRef.ReplaceAllStringFunc(value, func(ref string) string {
-			if v, ok := custom[customRef.FindStringSubmatch(ref)[1]]; ok {
-				return v
+// maxExpansions bounds how many variants of one value are checked.
+const maxExpansions = 256
+
+// expandVars returns every value a declaration can take once the custom
+// properties declared in the app's stylesheets are substituted, a few
+// levels deep, so a stripe hidden behind var(--x) is still seen. Each
+// declared value of a variable is tried, as is a var() fallback, since
+// custom properties cascade per element and the lint cannot tell which
+// rule applies. Unknown references without a fallback (tokens) are left
+// as they are.
+func expandVars(value string, custom map[string][]string) []string {
+	return expandDepth(value, custom, 5)
+}
+
+func expandDepth(value string, custom map[string][]string, depth int) []string {
+	lower := strings.ToLower(value)
+	for i := strings.Index(lower, "var("); i >= 0; {
+		// Find the matching close paren.
+		end, d := -1, 0
+		for j := i + 3; j < len(value); j++ {
+			if value[j] == '(' {
+				d++
+			} else if value[j] == ')' {
+				d--
+				if d == 0 {
+					end = j
+					break
+				}
 			}
-			return ref
-		})
-		if next == value {
+		}
+		if end < 0 {
 			break
 		}
-		value = next
+		inner := value[i+4 : end]
+		m := customName.FindStringSubmatch(inner)
+		if m == nil || depth == 0 {
+			next := strings.Index(lower[end:], "var(")
+			if next < 0 {
+				break
+			}
+			i = end + next
+			continue
+		}
+		var subs []string
+		subs = append(subs, custom[m[1]]...)
+		if comma := strings.IndexByte(inner, ','); comma >= 0 {
+			subs = append(subs, inner[comma+1:])
+		}
+		if len(subs) == 0 {
+			next := strings.Index(lower[end:], "var(")
+			if next < 0 {
+				break
+			}
+			i = end + next
+			continue
+		}
+		head, tail := value[:i], value[end+1:]
+		var out []string
+		for _, s := range subs {
+			for _, v := range expandDepth(s, custom, depth-1) {
+				for _, t := range expandDepth(tail, custom, depth) {
+					if len(out) == maxExpansions {
+						return out
+					}
+					out = append(out, head+v+t)
+				}
+			}
+		}
+		return out
 	}
-	return value
+	return []string{value}
 }
 
 // namedColours are the CSS colour keywords (CSS Color 4) plus the system
@@ -535,21 +618,13 @@ var textProperties = map[string]bool{
 }
 
 // lintDeclaration returns the problems in one CSS declaration.
-func lintDeclaration(prop, value string, custom map[string]string) []string {
+func lintDeclaration(prop, value string, custom map[string][]string) []string {
 	prop = strings.ToLower(prop)
 	// Custom properties are linted too: --accent: #ce58a4 is a raw colour
 	// however it is later used.
 	var out []string
-	geometry := expandVars(value, custom)
-	if sideBorder.MatchString(prop) || (prop == "border-width" && oneSidedWidths(geometry)) {
+	if sideBorder.MatchString(prop) || isStripe(prop, expandVars(value, custom)) {
 		out = append(out, stripe)
-	}
-	if prop == "box-shadow" {
-		for _, layer := range splitLayers(geometry) {
-			if insetStripe(layer) {
-				out = append(out, stripe)
-			}
-		}
 	}
 	if textProperties[prop] {
 		return out
@@ -570,6 +645,24 @@ func lintDeclaration(prop, value string, custom map[string]string) []string {
 	return out
 }
 
+// isStripe reports whether any variant of a border-width or box-shadow
+// value draws a side stripe.
+func isStripe(prop string, variants []string) bool {
+	for _, v := range variants {
+		if prop == "border-width" && oneSidedWidths(v) {
+			return true
+		}
+		if prop == "box-shadow" {
+			for _, layer := range splitLayers(v) {
+				if insetStripe(layer) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // LintStyles checks every stylesheet under src except the generated one:
 // colours must come from token variables, and cards get no coloured side
 // stripes.
@@ -588,9 +681,13 @@ func LintStyles(root string) []error {
 		rel       string
 		line      int
 		prop, val string
+		rule      int
 	}
 	var decls []decl
-	custom := map[string]string{}
+	custom := map[string][]string{}
+	// local holds the custom properties each rule block declares itself.
+	local := map[int]map[string][]string{}
+	rules := 0
 	for _, p := range files {
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
@@ -613,22 +710,50 @@ func LintStyles(root string) []error {
 			}, c)
 		})
 		text = quotedOrURL.ReplaceAllStringFunc(text, blank)
+		// block[i] numbers the innermost { } block holding offset i.
+		block := make([]int, len(text))
+		stack := []int{-1}
+		for i := range len(text) {
+			switch text[i] {
+			case '{':
+				rules++
+				stack = append(stack, rules)
+			case '}':
+				if len(stack) > 1 {
+					stack = stack[:len(stack)-1]
+				}
+			}
+			block[i] = stack[len(stack)-1]
+		}
 		for _, loc := range declaration.FindAllStringSubmatchIndex(text, -1) {
 			// A selector with a pseudo-class (a:hover {) is not a declaration.
 			if end := loc[1]; end < len(text) && text[end] == '{' {
 				continue
 			}
-			d := decl{rel, strings.Count(text[:loc[0]], "\n") + 1, text[loc[2]:loc[3]], strings.TrimSpace(text[loc[4]:loc[5]])}
+			d := decl{rel, strings.Count(text[:loc[0]], "\n") + 1, text[loc[2]:loc[3]], strings.TrimSpace(text[loc[4]:loc[5]]), block[loc[0]]}
 			if strings.HasPrefix(d.prop, "--") {
-				custom[d.prop] = d.val
+				custom[d.prop] = append(custom[d.prop], d.val)
+				if local[d.rule] == nil {
+					local[d.rule] = map[string][]string{}
+				}
+				local[d.rule][d.prop] = append(local[d.rule][d.prop], d.val)
 			}
 			decls = append(decls, d)
 		}
 	}
 	// Custom properties are collected from every stylesheet first, so a
-	// var() resolves wherever it is declared.
+	// var() resolves wherever it is declared. A variable the rule itself
+	// declares resolves to that rule's values only; any other resolves to
+	// every value declared anywhere, since the lint cannot tell which rule
+	// reaches the element.
 	for _, d := range decls {
-		for _, problem := range lintDeclaration(d.prop, d.val, custom) {
+		scope := custom
+		if own := local[d.rule]; own != nil {
+			scope = make(map[string][]string, len(custom))
+			maps.Copy(scope, custom)
+			maps.Copy(scope, own)
+		}
+		for _, problem := range lintDeclaration(d.prop, d.val, scope) {
 			errs = append(errs, fmt.Errorf("%s:%d: %s", d.rel, d.line, problem))
 		}
 	}
