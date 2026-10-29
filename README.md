@@ -9,6 +9,29 @@ the system webview (WKWebView, WebKitGTK, WebView2).
 [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)). It connects to one machine over SSH and
 shows its agents, grouped like the iOS app and updated live.
 
+## Install
+
+Each [release](https://github.com/jerryfane/herdrup-desktop/releases) has the installers and their
+`SHA256SUMS` (`sha256sum -c --ignore-missing SHA256SUMS` checks the files you downloaded):
+
+- **macOS** (Apple silicon and Intel): `herdrup-<version>.dmg`. Open it and drag Herdrup to
+  Applications. The app is not yet signed with a Developer ID or notarized, so Gatekeeper blocks its
+  first launch: open it once, then System Settings > Privacy & Security > Open Anyway (or
+  `xattr -dr com.apple.quarantine /Applications/Herdrup.app`).
+- **Windows** (x64): `herdrup-setup-<version>-amd64.exe` installs for the current user in
+  `%LOCALAPPDATA%\Programs\Herdrup`, without administrator rights, with a Start menu shortcut and an
+  uninstaller in Settings > Apps. It is not signed: SmartScreen asks first (More info > Run anyway).
+  `/S` installs silently.
+- **Linux** (x64), either:
+  - the Debian package, for Debian and Ubuntu: `sudo apt install ./herdrup_<version>_amd64.deb`
+    installs the app in `/opt/herdrup`, with its entry in the applications menu, and pulls in GTK 3
+    and WebKitGTK 4.1;
+  - or, on any distribution, without root: download `herdrup-<version>-linux-amd64.tar.gz` and
+    `install.sh` into one folder and run `sh install.sh`. It installs the app in
+    `~/.local/herdrup.app` with its menu entry (`sh install.sh --uninstall` removes it and keeps your
+    settings). The app needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`); the script says how to install it
+    when it is missing.
+
 ## How it talks to herdr
 
 Like the iOS app, it logs in over SSH and runs herdr's bridge on the machine:
@@ -172,6 +195,45 @@ diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), t
 summary table. The thresholds are `PARITY_TOL` (2) and `PARITY_MAX_OVER_PCT` (0.15 %) in the workflow:
 the agent list matches the references in place, size and colour, and the at most 0.13 % left is
 anti-aliasing that iOS and macOS's web view draw differently (iOS snaps glyphs to whole pixels).
+
+## Releases
+
+`.github/workflows/release.yml` builds the installers with `mygo build`: the universal macOS disk image
+on GitHub's hosted macOS (its only macOS job), and the Windows installer (NSIS) and the Linux Debian
+package, archive and `install.sh` cross-built on Ubuntu. It then checks each on its OS: the macOS job
+mounts the disk image, checks the app's architectures and signature and runs it; a Windows job installs
+silently (`/S`), runs the app and uninstalls it; a fresh Ubuntu 24.04 container installs the Debian
+package with apt, runs the app under Xvfb, and installs and uninstalls with `install.sh` as a user. A
+last job writes `SHA256SUMS` of all the files.
+
+To release, set `version` in `package.json`, commit, and push the tag `v<version>` (the workflow fails
+on a tag that does not match). The files and `SHA256SUMS` go on the tag's GitHub release, published
+as soon as every check passes (a prerelease for a tag like `v0.2.0-beta.1`). Run on demand
+(`gh workflow run release.yml --ref <branch>`), the workflow builds and checks the same files and
+keeps them as artifacts of the run, with no release.
+
+### Signing macOS builds
+
+macOS builds are signed ad hoc for now. Developer ID signing and notarization are wired but off: the
+step "Import the Developer ID certificate and notary credentials" runs only when the repository
+variable `MACOS_SIGNING_IDENTITY` is set. To turn them on, add (see mygo's
+[GitHub Actions](https://github.com/egoist/mygo/blob/main/docs/github-actions.md#signing-and-notarizing-macos-apps)
+guide):
+
+```sh
+gh variable set MACOS_SIGNING_IDENTITY --body "Developer ID Application: <name> (<TEAMID>)"
+base64 -i certificate.p12 | gh secret set MACOS_CERTIFICATE
+gh secret set MACOS_CERTIFICATE_PASSWORD   # the password of the .p12
+gh secret set APPLE_ID
+gh secret set APPLE_TEAM_ID
+gh secret set APPLE_APP_PASSWORD           # an app-specific password of the Apple ID
+```
+
+The step imports the certificate into a keychain of the job, stores the notary credentials there as
+the profile `notary`, and sets `HERDRUP_SIGNING_IDENTITY` and `HERDRUP_NOTARY_KEYCHAIN`, which
+`mygo.config.ts` turns into `macos.signingIdentity` and `macos.notarize`: `mygo build` then signs
+with the hardened runtime, notarizes the disk image and staples it. Locally, `HERDRUP_SIGNING_IDENTITY`
+alone signs; `HERDRUP_NOTARY_KEYCHAIN` set to the keychain holding a `notary` profile also notarizes.
 
 ## License
 
