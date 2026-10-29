@@ -209,8 +209,8 @@ last job writes `SHA256SUMS` of all the files.
 To release, set `version` in `package.json`, commit, and push the tag `v<version>` (the workflow fails
 on a tag that does not match). The files and `SHA256SUMS` go on the tag's GitHub release, published
 as soon as every check passes (a prerelease for a tag like `v0.2.0-beta.1`). Run on demand
-(`gh workflow run release.yml --ref <branch>`) or on a push to a `feat/package-*` branch, the workflow
-builds and checks the same files and keeps them as artifacts of the run, with no release.
+(`gh workflow run release.yml --ref <branch>`), the workflow builds and checks the same files and
+keeps them as artifacts of the run, with no release.
 
 ### Signing macOS builds
 
