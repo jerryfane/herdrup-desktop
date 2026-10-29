@@ -102,9 +102,10 @@ checks `symbols_sfmetrics.go` against AppKit, and uploads every image.
 
 Every push runs the Go and TypeScript checks and cross-builds macOS, Windows and Linux on Ubuntu. The
 window smoke job builds the app with a test hook (`-X main.smoke=1`, never in releases), opens the real
-window against `cmd/fakeherdr` on Linux and Windows (macOS too on `main`, on demand, and on pull
-requests labelled `macos-smoke`), and uploads a
-screenshot of each.
+window against `cmd/fakeherdr` on Linux, Windows and macOS, and uploads a screenshot of each. The macOS
+jobs (smoke and parity) run on `mcb-air-herdrup-desktop`, a self-hosted runner on the owner's MacBook
+Air registered to this repository only (label `herdrup-desktop`); workflow runs from outside
+contributors need approval before they start.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
 the agent list against herdrup's iPad screenshots (`design/reference/agent-list` in jerryfane/herdrup at

@@ -42,7 +42,9 @@ env:
 jobs:
   parity:
     name: Agent list vs herdrup references (macOS)
-    runs-on: macos-latest
+    # mcb-air-herdrup-desktop (see the smoke job in ci.yml): the owner's
+    # MacBook Air, registered to this repo only.
+    runs-on: [self-hosted, macOS, herdrup-desktop]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
