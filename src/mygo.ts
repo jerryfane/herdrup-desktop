@@ -871,4 +871,9 @@ export const events = {
    * which name the account on an agent row.
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
+  /**
+   * AgentOpen asks the window to show an agent, by pane id: the tray menu's
+   * agents and the notifications' clicks send it.
+   */
+  agentOpen: event<string>("agent:open"),
 } as const;

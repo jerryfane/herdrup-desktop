@@ -34,7 +34,7 @@ var sampleGrams []byte
 func main() {
 	listen := flag.String("listen", "127.0.0.1:2222", "address to serve SSH on")
 	clientKey := flag.String("client-key", "fakeherdr-client.key", "write a new client private key here; only it can log in")
-	agentsFile := flag.String("agents", "", "agent.list result JSON (default: built-in sample)")
+	agentsFile := flag.String("agents", "", "agent.list result JSON (default: built-in sample); served anew, and announced to event streams, whenever the file changes")
 	mode := flag.String("mode", "populated", "agent.list behaviour: populated (the agents JSON), empty (no agents) or loading (never answers)")
 	uploadStream := flag.Bool("upload-stream", true, "advertise gram_upload_stream and serve gram.upload.stream")
 	machinesFile := flag.String("machines", "", "saved SSH machines for machine.status and `herdr machine federate|unfederate`: a JSON array of objects with herdr's machine.status fields (default: none, and no machine subcommand)")
@@ -104,7 +104,8 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	handle, err := handler(*mode, agents, w)
+	set := newAgentSet(agents)
+	handle, err := handler(*mode, set.get, w)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func main() {
 		HostKey:       hostKey,
 		Authorized:    authorized,
 		Handle:        handle,
-		Events:        func(ctx context.Context, emit func([]byte) error) { <-ctx.Done() },
+		Events:        set.events,
 		Duplex:        w.gram.Duplex,
 		Machines:      machines,
 		MachineStderr: *machineFail,
@@ -124,6 +125,9 @@ func main() {
 	log.Printf("fakeherdr listening on %s; client key %s", addr, *clientKey)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if *agentsFile != "" {
+		go set.follow(ctx, *agentsFile, 300*time.Millisecond)
+	}
 	<-ctx.Done()
 }
 
@@ -131,11 +135,11 @@ func main() {
 // says, and whose write methods change w. The modes are the agent-list
 // states of herdrup's desktop references (App/DesktopReferenceMock.swift
 // in herdrup).
-func handler(mode string, agents []byte, w *writes) (func(string, json.RawMessage) (any, *fakeherdr.APIError), error) {
+func handler(mode string, agents func() []byte, w *writes) (func(string, json.RawMessage) (any, *fakeherdr.APIError), error) {
 	var list func() any
 	switch mode {
 	case "populated":
-		list = func() any { return json.RawMessage(agents) }
+		list = func() any { return json.RawMessage(agents()) }
 	case "empty":
 		list = func() any { return json.RawMessage(`{"type":"agent_list","agents":[]}`) }
 	case "loading":

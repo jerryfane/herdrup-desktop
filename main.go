@@ -35,8 +35,11 @@ func main() {
 	mygo.Bind(desk)
 	mygo.Bind(Symbols{})
 
+	installMenuBar()
+	var win *mygo.Window
+	onNotificationClick(&win)
 	mygo.App.WhenReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{
+		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "Herdrup",
 			Width:           960,
 			Height:          680,
@@ -45,7 +48,11 @@ func main() {
 			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
 			URL:             "/",
+			// The menu bar of Linux and Windows windows stays out of the
+			// way of herdrup's layout until Alt or F10; its shortcuts work.
+			AutoHideMenuBar: true,
 		})
+		startPresence(desk, win)
 		if refEnabled() {
 			runRef(desk, win)
 			return

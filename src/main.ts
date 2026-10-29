@@ -446,6 +446,28 @@ events.boardChanged.on((b) => {
   render();
 });
 
+// The tray menu and the notifications open an agent (tray.go): the Agents
+// tab, the search cleared if it hides the agent, and its row, or the closed
+// folder holding it, scrolled into view.
+events.agentOpen.on((id) => void openAgent(id));
+
+async function openAgent(id: string) {
+  if (tab !== "agents") {
+    tab = "agents";
+    void buildTabBar();
+    render();
+  }
+  const row = () => rowsEl.querySelector<HTMLElement>(`.row[data-id="${CSS.escape(id)}"]`);
+  await renderRows();
+  if (!row() && searchInput.value !== "") {
+    searchInput.value = "";
+    await renderRows();
+  }
+  const folder = board?.board.sections.flatMap((s: Section) => s.rows).find((r: Row) => r.id === id)?.folderID;
+  const target = row() ?? (folder ? rowsEl.querySelector<HTMLElement>(`[data-folder="${CSS.escape(folder)}"]`) : null);
+  target?.scrollIntoView({ block: "nearest" });
+}
+
 window.addEventListener("resize", () => {
   placeTitle();
   drawField();
