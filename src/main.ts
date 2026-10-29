@@ -1,7 +1,7 @@
 import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
-import { agentMenu, folderRow, initFolders, rosterEntries, star, type FolderDeps } from "./folders";
+import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { avatarFace } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 
@@ -309,10 +309,9 @@ async function renderRows() {
     // matching agents, every folder open (herdrup rosterLayout).
     const shown: Board | null = query === "" ? b : await Desk.searchBoard(query);
     if (generation !== rowsGeneration) return;
-    if (b.sections.length === 0 && b.archived.length === 0) {
-      nodes.push(el("p", "empty-line t-empty", "no agents"));
-    } else if (query !== "" && (!shown || shown.sections.length === 0)) {
-      nodes.push(el("p", "empty-line t-empty", "no matches"));
+    const emptyLine = rosterEmptyLine(b, shown, query !== "");
+    if (emptyLine !== null) {
+      nodes.push(el("p", "empty-line t-empty", emptyLine));
     } else if (shown) {
       for (const e of rosterEntries(shown, open, query !== "")) {
         switch (e.kind) {
