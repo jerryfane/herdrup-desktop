@@ -198,13 +198,11 @@ jobs:
           su tester -c 'cd && sh install.sh --uninstall'
           test ! -e /home/tester/.local/herdrup.app
 
-  publish:
-    name: Checksums, and the release of a tag
+  checksums:
+    name: Checksums
     needs: [build, check-windows, check-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: write # the release of a tag
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -222,11 +220,28 @@ jobs:
           name: SHA256SUMS
           retention-days: 14
           path: dist/SHA256SUMS
+
+  # Only a pushed v* tag publishes. A run on demand never does, even when
+  # dispatched on a tag ref, and never gets a token that can write.
+  publish:
+    name: Release of a tag
+    needs: checksums
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the release
+    steps:
+      # Every artifact of the run: the installers (herdrup-*) and SHA256SUMS.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ls -l dist
           prerelease=
           case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
