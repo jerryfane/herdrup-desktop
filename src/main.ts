@@ -483,6 +483,9 @@ async function init() {
     }
   }
   state = s;
+  // The session of a board the page opens on is recorded too, so a photo
+  // that fails on it is forgotten at the first switch (#49).
+  if (b) boardShown(b.session);
   board = b ?? null;
   await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
@@ -506,6 +509,7 @@ window.herdrupRef = {
       void Desk.setFolderOpen(key.slice("folder:".length), isOpen)
         .then(() => Desk.board())
         .then((b) => {
+          if (b) boardShown(b.session);
           board = b ?? null;
           return renderRows();
         });
