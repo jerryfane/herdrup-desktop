@@ -290,6 +290,7 @@ async function disclosure(key: "idle" | "archived", title: string, count: number
 
 async function archivedCard(r: Row): Promise<HTMLElement> {
   const c = el("div", "archived");
+  c.dataset.id = r.id;
   paintShape(c, {
     radius: px("--radius-card"),
     fill: "var(--color-surface)",
@@ -513,15 +514,16 @@ function revealPendingAgent() {
   if (!pageReady || !target || !board?.listedAt || tab !== "agents") return;
   const session = board.session === "default" ? "" : board.session;
   if (board.machineID !== target.machineID || session !== target.session) return;
-  const row = rowsEl.querySelector<HTMLElement>(`.row[data-id="${CSS.escape(target.paneID)}"]`);
+  const row = rowsEl.querySelector<HTMLElement>(`:is(.row, .archived)[data-id="${CSS.escape(target.paneID)}"]`);
   if (!row && searchInput.value !== "") {
     searchInput.value = "";
     void renderRows();
     return;
   }
   const section = board.board.sections.find((s: Section) => s.rows.some((r: Row) => r.id === target.paneID));
-  if (!row && section && (section.key === "idle" || section.key === "archived") && !open[section.key]) {
-    open[section.key] = true;
+  const disclosure = board.board.archived.some((r: Row) => r.id === target.paneID) ? "archived" : section?.key === "idle" ? "idle" : null;
+  if (!row && disclosure && !open[disclosure]) {
+    open[disclosure] = true;
     void renderRows();
     return;
   }
