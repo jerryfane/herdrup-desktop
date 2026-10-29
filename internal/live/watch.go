@@ -91,7 +91,16 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 			return r.err
 		}
 		changes.settle(r.mark)
-		agents = changes.replay(r.res.Agents, r.mark)
+		replayed, complete := changes.replay(r.res.Agents, r.mark)
+		if !complete {
+			// More changes came while the list was out than the ledger
+			// keeps: the rows patched live stand, and a list begun now
+			// replaces this one (#38).
+			queued = false
+			load()
+			return nil
+		}
+		agents = replayed
 		unlisted.published(r.start)
 		update(Update{Agents: agents, Pong: pong, Live: live, Listed: time.Now()})
 		if queued {
