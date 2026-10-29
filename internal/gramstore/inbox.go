@@ -231,8 +231,8 @@ func sameMessages(a, b []herdrapi.GramMessageInfo) bool {
 // messages appended, de-duplicated by id. generation and asked are
 // Generation and ReadStamp as they were when the page was asked for: a
 // page built before a replacement is dropped, and reads confirmed after it
-// was asked for stay read, its whole-store count leaving them out as
-// Apply's does (herdrup's appendPage adopts the page's flags and count as
+// was asked for stay read, its whole-store count leaving out those it
+// shows unread (herdrup's appendPage adopts the page's flags and count as
 // they are). It reports whether the list grew. The digest is never
 // adopted.
 func (b *Inbox) AppendPage(a Answer, generation, asked int) bool {
@@ -254,16 +254,20 @@ func (b *Inbox) AppendPage(a Answer, generation, asked int) bool {
 	if a.UnreadCount != nil {
 		unread = new(*a.UnreadCount)
 	}
+	// herdr's count is the whole store's when it built the page. Only a
+	// read the page itself shows unread is known to be missing from it; a
+	// read of a message outside the page may already be counted (herdr
+	// applied it before building the page), so herdr's number stands and
+	// the next head poll, unconditional since the read, settles it (#55).
 	for id, stamp := range b.confirmedReads {
 		if stamp <= asked {
 			continue
 		}
-		if i := indexOf(a.Messages, id); i >= 0 {
-			if !IsUnread(a.Messages[i]) {
-				continue
-			}
-			a.Messages[i].ReadByOwner = true
+		i := indexOf(a.Messages, id)
+		if i < 0 || !IsUnread(a.Messages[i]) {
+			continue
 		}
+		a.Messages[i].ReadByOwner = true
 		if unread != nil {
 			*unread = max(0, *unread-1)
 		}
