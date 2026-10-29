@@ -109,6 +109,9 @@ type Desk struct {
 	link   *link // the current connection; nil when disconnected
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
+
+	avatars  avatarStore  // desk_avatars.go
+	sessions sessionWatch // desk_sessions.go
 }
 
 // link is the connection to the active machine. Its fields are guarded by
@@ -322,7 +325,11 @@ func (d *Desk) SelectSession(name string) error {
 		d.mu.Unlock()
 		return nil
 	}
+	from := l.session
 	l.session = name
+	// A board of the new session seen in the last minute stands in until
+	// its list arrives, as herdrup's SessionSwitchCache does.
+	seeded := d.sessionSwitched(from, name, d.board, time.Now())
 	d.board, d.peers = nil, nil
 	if l.restart != nil {
 		l.restart()
@@ -330,6 +337,9 @@ func (d *Desk) SelectSession(name string) error {
 	// Under d.mu, like every board publish, so the new session's first
 	// board cannot be overtaken by this cleared one.
 	cleared := BoardUpdate{Board: herdr.BuildBoard(nil)}
+	if seeded != nil {
+		cleared.Board = *seeded
+	}
 	BoardChanged.Broadcast(cleared)
 	observe := d.onBoard
 	d.mu.Unlock()
@@ -482,6 +492,9 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	d.mu.Lock()
 	l.client = c
 	d.mu.Unlock()
+	sctx, stopSessions := context.WithCancel(ctx)
+	defer stopSessions()
+	go d.watchSessions(sctx, l, c)
 	defer func() {
 		d.mu.Lock()
 		l.client, l.restart = nil, nil

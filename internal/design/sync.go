@@ -105,6 +105,20 @@ type Asset struct {
 var Assets = []Asset{
 	// The 12 approved mascots, Herdy included, one <symbol id="p-<id>"> each.
 	{"Tools/mascots/mascots.svg", "public/herdrup/mascots.svg"},
+	// Each mascot as the app draws it in an avatar (AgentAvatarView renders
+	// the Mascot-<id> image set, App/AgentAvatarViews.swift).
+	{"App/Assets.xcassets/Mascot-herdy.imageset/mascot.svg", "public/herdrup/mascots/herdy.svg"},
+	{"App/Assets.xcassets/Mascot-bot.imageset/mascot.svg", "public/herdrup/mascots/bot.svg"},
+	{"App/Assets.xcassets/Mascot-blip.imageset/mascot.svg", "public/herdrup/mascots/blip.svg"},
+	{"App/Assets.xcassets/Mascot-tri.imageset/mascot.svg", "public/herdrup/mascots/tri.svg"},
+	{"App/Assets.xcassets/Mascot-squib.imageset/mascot.svg", "public/herdrup/mascots/squib.svg"},
+	{"App/Assets.xcassets/Mascot-zag.imageset/mascot.svg", "public/herdrup/mascots/zag.svg"},
+	{"App/Assets.xcassets/Mascot-cub.imageset/mascot.svg", "public/herdrup/mascots/cub.svg"},
+	{"App/Assets.xcassets/Mascot-dome.imageset/mascot.svg", "public/herdrup/mascots/dome.svg"},
+	{"App/Assets.xcassets/Mascot-pip.imageset/mascot.svg", "public/herdrup/mascots/pip.svg"},
+	{"App/Assets.xcassets/Mascot-prism.imageset/mascot.svg", "public/herdrup/mascots/prism.svg"},
+	{"App/Assets.xcassets/Mascot-nib.imageset/mascot.svg", "public/herdrup/mascots/nib.svg"},
+	{"App/Assets.xcassets/Mascot-drop.imageset/mascot.svg", "public/herdrup/mascots/drop.svg"},
 	{"design/herdrup-appicon.svg", "public/herdrup/appicon.svg"},
 	// mygo builds every platform's app icon from this 1024x1024 PNG.
 	{"App/Assets.xcassets/AppIcon.appiconset/icon-1024.png", "resources/icon.png"},

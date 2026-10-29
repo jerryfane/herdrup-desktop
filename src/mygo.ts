@@ -4,6 +4,21 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+/**
+ * Avatar is what an agent's avatar draws, resolved the way herdrup's
+ * AgentAvatarAppearance is.
+ */
+export interface Avatar {
+  /** Kind is "initial" (the initial tile), "mascot" or "image". */
+  kind: string;
+  /** Mascot is the mascot id for kind mascot. */
+  mascot?: string;
+  /** SHA256 is the photo's lowercase hex sha256 for kind image. */
+  sha256?: string;
+  /** Target is what agent.avatar.get addresses the agent by. */
+  target?: string;
+}
+
 /** Board is the status board for one machine. */
 export interface Board {
   sections: Section[];
@@ -99,6 +114,33 @@ export interface Row {
    * machine alias) and the terminal title (herdrup visibleSections).
    */
   match: string[];
+  /** Avatar is the picture the avatar draws (herdrup AgentAvatarAppearance). */
+  avatar: Avatar;
+  /**
+   * Stale marks a live agent on a degraded federation peer: its status
+   * was not confirmed on the last poll (herdrup showsUnconfirmedMarker).
+   */
+  stale?: boolean;
+  /**
+   * NoAccount is herdr's account_unresolved: the recorded account is gone
+   * from the registry, so the agent refuses to resume.
+   */
+  noAccount?: boolean;
+  /**
+   * Account is the id of the account the agent runs on, "" when herdr
+   * reports none. The window shows the account's label.
+   */
+  account?: string;
+  /**
+   * StatusSinceUnixMs is when the agent entered its current status, for
+   * the time-in-state age; absent on an older herdr.
+   */
+  statusSinceUnixMs?: number;
+  /**
+   * Activity is the terminal title without its prompt and spinner, ""
+   * when there is none (herdrup activityText): the needs-you pill's detail.
+   */
+  activity?: string;
 }
 
 /** SavedMachine is one machine in the saved set. */
@@ -167,6 +209,23 @@ export interface Session {
 }
 
 /**
+ * SessionPill is one of the session pills over the agent list (herdrup
+ * App/SessionPills.swift): a running herdr session and how many of its
+ * agents need you.
+ */
+export interface SessionPill {
+  name: string;
+  default: boolean;
+  /** Selected marks the session the board shows. */
+  selected: boolean;
+  /**
+   * NeedsYou counts the session's agents that need you. The window uses
+   * the board's own count for the selected session, which is live.
+   */
+  needsYou: number;
+}
+
+/**
  * SymbolImage is a symbol drawn for the page: a white glyph on a
  * transparent ground, a template the page tints with CSS mask-image and
  * background-color. Lengths are in points, which are CSS pixels.
@@ -203,6 +262,18 @@ export interface SymbolImage {
  * its board current. One machine is connected at a time.
  */
 export const Desk = {
+  /** Accounts returns the credential accounts' labels by id. */
+  accounts(): Promise<Record<string, string>> {
+    return call("Desk.Accounts");
+  },
+  /**
+   * AvatarImage returns an agent's avatar photo as a data: URL: target is
+   * the row's Avatar.Target and sha256 its Avatar.SHA256. Photos come from
+   * the disk cache, else agent.avatar.get on the current session.
+   */
+  avatarImage(target: string, sha256: string): Promise<string> {
+    return call("Desk.AvatarImage", target, sha256);
+  },
   /** Board returns the latest board, or nil before the first list. */
   board(): Promise<BoardUpdate | null> {
     return call("Desk.Board");
@@ -267,6 +338,10 @@ export const Desk = {
   selectSession(name: string): Promise<void> {
     return call("Desk.SelectSession", name);
   },
+  /** SessionPills returns the current session pills. */
+  sessionPills(): Promise<SessionPill[]> {
+    return call("Desk.SessionPills");
+  },
   /**
    * Sessions lists the herdr sessions on the connected machine. A herdr
    * without named sessions has only the default one.
@@ -320,4 +395,14 @@ export const events = {
    * SetMachineFederation has re-read them.
    */
   machineStatusChanged: event<SavedMachineStatus[]>("machine-status:changed"),
+  /**
+   * SessionsChanged is sent with the session pills: none while fewer than
+   * two sessions run, as herdrup hides them then.
+   */
+  sessionsChanged: event<SessionPill[]>("sessions:changed"),
+  /**
+   * AccountsChanged is sent with the credential accounts' labels by id,
+   * which name the account on an agent row.
+   */
+  accountsChanged: event<Record<string, string>>("accounts:changed"),
 } as const;

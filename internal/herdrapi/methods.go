@@ -95,6 +95,8 @@ var Methods = []Method{
 	{Name: "ping", Params: typeOf[PingParams](), Results: []Result{result[ResponseResultPong]("pong")}},
 	// schema.rs:64; src/app/api/machines.rs:14.
 	{Name: "machine.status", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultMachineStatus]("machine_status")}},
+	// schema.rs:154; src/app/api/accounts.rs:125.
+	{Name: "accounts.list", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
 	// schema.rs:82; src/app/api/gram.rs:389.
 	{Name: "gram.send", Params: typeOf[GramSendParams](), Results: []Result{result[ResponseResultGramSent]("gram_sent")}},
 	// schema.rs:83; gram.rs:469.
