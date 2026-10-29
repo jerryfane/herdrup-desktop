@@ -296,6 +296,13 @@ func TestCheckFindsDrift(t *testing.T) {
 		"widths behind a custom property": {"src/style.css", "", ".c { --w: 0 0 0 3px; border: solid var(--status-waiting); border-width: var(--w); }\n", "side stripe"},
 		"keyword width":                   {"src/style.css", "", ".c { border-width: 0 0 0 thick; }\n", "side stripe"},
 		"signed and exponent offsets":     {"src/style.css", "", ".c { box-shadow: +3px +0 var(--status-waiting) inset, 3e0px 0 inset; }\n", "side stripe"},
+		"stripe hidden by a later --s":    {"src/style.css", "", ".x { --s: inset 3px 0 var(--status-waiting); }\n.y { --s: none; }\n.c { box-shadow: var(--s); }\n", "side stripe"},
+		"2-value side-only widths":        {"src/style.css", "", ".c { border-width: 0 3px; }\n", "side stripe"},
+		"3-value side-only widths":        {"src/style.css", "", ".c { border-width: 0 3px 0; }\n", "side stripe"},
+		"var() with a fallback in widths": {"src/style.css", "", ".c { border-width: 0 0 0 var(--bw, 3px); }\n", "side stripe"},
+		"spaced calc() in widths":         {"src/style.css", "", ".c { border-width: 0 0 0 calc( 3px ); }\n", "side stripe"},
+		"spaced calc() in a shadow":       {"src/style.css", "", ".c { box-shadow: inset calc( 3px ) 0; }\n", "side stripe"},
+		"stripe in a var() fallback":      {"src/style.css", "", ".c { box-shadow: var(--none, inset 3px 0); }\n", "side stripe"},
 		"stray file next to the fonts":    {"public/fonts/extra.ttf", "", "x", "public/fonts/extra.ttf is not from herdrup"},
 		"stray script next to mermaid":    {"public/mermaid/evil.js", "", "x", "public/mermaid/evil.js is not from herdrup"},
 		"stray file deep in herdrup dir":  {"public/herdrup/nested/deep.svg", "", "x", "public/herdrup/nested/deep.svg is not from herdrup"},
@@ -341,9 +348,12 @@ func TestCheckAllowsTokenDerivedAndNonColourValues(t *testing.T) {
 .z { background: hsl(from var(--status-waiting) h s l / 0.2); }
 .q::after { content: "#1 red"; mask: url(#a1b2c3); }
 .f { font-family: var(--font-app); box-shadow: inset 0 1px 0 var(--color-hairline), 0 2px 4px var(--color-ground); }
-.g { --card-pad: 12px; border-width: 1px; border-width: 0 1px 0 1px; box-shadow: 2px 0 4px var(--color-ground); }
+.g { --card-pad: 12px; border-width: 1px; border-width: 0 1px 1px 1px; box-shadow: 2px 0 4px var(--color-ground); }
 .p { --pad: 0 0 0 3px; padding: var(--pad); border-width: 0 0 3px; box-shadow: var(--lift); --lift: 0 2px 6px var(--color-ground); }
 .h { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-hairline) 60%, 4px 0); }
+.a { --w: 1px; border-width: var(--w); }
+.b { --w: 0 0 0 3px; }
+.e { border-width: 1px var(--bw, calc( 2px + 1px )); box-shadow: var(--soft, 0 1px 2px var(--color-ground)); }
 a:hover { color: var(--color-text); }
 .border-left:hover { color: var(--color-text); }
 @media (max-width: 600px) { .w { white-space: nowrap; } }
