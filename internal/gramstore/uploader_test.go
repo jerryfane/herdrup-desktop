@@ -391,3 +391,42 @@ func TestUploaderLeavingPausesAndComingBackResumes(t *testing.T) {
 		t.Fatalf("waited %q", id)
 	}
 }
+
+// #45: a removed upload that lands anyway belongs to the removed file. A
+// file attached again at the same path uploads its own bytes, and the
+// removed upload is discarded.
+func TestUploaderARemovedUploadNeverLandsOnItsReplacement(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var calls int
+	var discarded []string
+	u := NewUploader(func(ctx context.Context, a Attachment, _ func(int64, int64)) (string, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			<-release // version A ignores the cancel and lands late
+			return "upload-A", nil
+		}
+		return "upload-B", nil
+	}, func(id string) {
+		mu.Lock()
+		discarded = append(discarded, id)
+		mu.Unlock()
+	}, nil, nil)
+	u.Start(file("p.txt"))
+	until(t, "A starts", func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	u.Remove(file("p.txt"))
+	u.Start(file("p.txt"))
+	close(release)
+	id, ok, err := u.Wait(context.Background(), "p.txt")
+	if err != nil || !ok || id != "upload-B" {
+		t.Fatalf("the replacement waited %q %v %v, want its own upload-B", id, ok, err)
+	}
+	until(t, "the removed upload is discarded", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Equal(discarded, []string{"upload-A"})
+	})
+}
