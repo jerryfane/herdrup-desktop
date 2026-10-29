@@ -83,35 +83,49 @@ func deref(p *string) string {
 	return *p
 }
 
+// presenceBoard and attention keep scope alongside queued rows and transitions;
+// a later connection change must not relabel work already in the queue.
+type presenceBoard struct {
+	rows               []herdr.Row
+	machineID, session string
+}
+
+type attention struct {
+	agent  herdrapi.AgentInfo
+	target AgentTarget
+}
+
 // presence carries what needs you from the desk to the tray and the
 // notifications (tray.go). The desk queues under d.mu, so its order is the
 // boards' order; serve applies the queue on a goroutine of its own, as the
 // tray waits for the main thread, which may itself be waiting for d.mu.
 type presence struct {
 	mu      sync.Mutex
-	rows    []herdr.Row // the agents needing you, when changed
+	board   presenceBoard
 	changed bool
-	started []herdrapi.AgentInfo
+	started []attention
 	wake    chan struct{}
 }
 
 func newPresence() *presence { return &presence{wake: make(chan struct{}, 1)} }
 
 // show queues the agents that need you now. Only the latest is applied.
-func (p *presence) show(rows []herdr.Row) {
+func (p *presence) show(rows []herdr.Row, machineID, session string) {
 	p.mu.Lock()
-	p.rows, p.changed = rows, true
+	p.board, p.changed = presenceBoard{rows, machineID, sessionKey(session)}, true
 	p.mu.Unlock()
 	p.poke()
 }
 
 // notify queues agents that started needing you.
-func (p *presence) notify(agents []herdrapi.AgentInfo) {
+func (p *presence) notify(agents []herdrapi.AgentInfo, machineID, session string) {
 	if len(agents) == 0 {
 		return
 	}
 	p.mu.Lock()
-	p.started = append(p.started, agents...)
+	for _, a := range agents {
+		p.started = append(p.started, attention{a, AgentTarget{machineID, sessionKey(session), a.PaneID}})
+	}
 	p.mu.Unlock()
 	p.poke()
 }
@@ -125,14 +139,14 @@ func (p *presence) poke() {
 
 // serve applies the queue for good: the latest rows to show, then each
 // agent to notify of.
-func (p *presence) serve(show func([]herdr.Row), notify func(herdrapi.AgentInfo)) {
+func (p *presence) serve(show func(presenceBoard), notify func(attention)) {
 	for range p.wake {
 		p.mu.Lock()
-		rows, changed, started := p.rows, p.changed, p.started
-		p.rows, p.changed, p.started = nil, false, nil
+		board, changed, started := p.board, p.changed, p.started
+		p.board, p.changed, p.started = presenceBoard{}, false, nil
 		p.mu.Unlock()
 		if changed {
-			show(rows)
+			show(board)
 		}
 		for _, a := range started {
 			notify(a)

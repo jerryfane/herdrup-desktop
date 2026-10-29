@@ -56,11 +56,11 @@ func TestDeskNotifiesEachMoveIntoNeedsYou(t *testing.T) {
 	presenceState := func() (rows, started []string) {
 		d.presence.mu.Lock()
 		defer d.presence.mu.Unlock()
-		for _, r := range d.presence.rows {
+		for _, r := range d.presence.board.rows {
 			rows = append(rows, r.ID)
 		}
 		for _, a := range d.presence.started {
-			started = append(started, a.PaneID)
+			started = append(started, a.agent.PaneID)
 		}
 		return rows, started
 	}

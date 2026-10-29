@@ -225,7 +225,7 @@
 .gexpired-icon { width: 32px; height: 40px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--color-text-faint); }
 
 /* Image cards: 440 x 236 at most, the picture's shape once known. */
-.gimage { position: relative; width: min(var(--box-w), 100%); overflow: hidden; }
+.gimage { position: relative; width: var(--box-w); max-width: 100%; overflow: hidden; }
 .gimage-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .gimage-ring { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 9px; border-radius: 50%; background: color-mix(in srgb, var(--color-surface) 82%, transparent); }
 .gimage-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }

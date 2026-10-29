@@ -118,18 +118,30 @@ func TestNeedingRows(t *testing.T) {
 // board never shows, and every agent that started needing you.
 func TestPresenceKeepsTheLatestRowsAndEveryStart(t *testing.T) {
 	p := newPresence()
-	p.show([]herdr.Row{{ID: "old"}})
-	p.notify([]herdrapi.AgentInfo{{PaneID: "a"}})
-	p.show([]herdr.Row{{ID: "new"}})
-	p.notify(nil)
-	p.notify([]herdrapi.AgentInfo{{PaneID: "b"}})
+	p.show([]herdr.Row{{ID: "old"}}, "machine-a", "")
+	p.notify([]herdrapi.AgentInfo{{PaneID: "a"}}, "machine-a", "")
+	p.show([]herdr.Row{{ID: "new"}}, "machine-b", "work")
+	p.notify(nil, "machine-b", "work")
+	p.notify([]herdrapi.AgentInfo{{PaneID: "b"}}, "machine-b", "work")
 	close(p.wake) // serve drains what is queued, then returns
 	var shown, notified []string
-	p.serve(func(rows []herdr.Row) {
-		for _, r := range rows {
+	p.serve(func(board presenceBoard) {
+		if board.machineID != "machine-b" || board.session != "work" {
+			t.Errorf("latest rows have the wrong scope: %+v", board)
+		}
+		for _, r := range board.rows {
 			shown = append(shown, r.ID)
 		}
-	}, func(a herdrapi.AgentInfo) { notified = append(notified, a.PaneID) })
+	}, func(a attention) {
+		notified = append(notified, a.agent.PaneID)
+		want := AgentTarget{"machine-a", "", "a"}
+		if a.agent.PaneID == "b" {
+			want = AgentTarget{"machine-b", "work", "b"}
+		}
+		if a.target != want {
+			t.Errorf("queued attention target %+v, want %+v", a.target, want)
+		}
+	})
 	if !slices.Equal(shown, []string{"new"}) {
 		t.Errorf("shown %v, want new", shown)
 	}

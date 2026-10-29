@@ -5,6 +5,16 @@ import { call, event } from "mygo-runtime";
 // ---- Types ----
 
 /**
+ * AgentTarget identifies a pane within its originating connection and session.
+ * Pane IDs alone can name unrelated agents on other machines or sessions.
+ */
+export interface AgentTarget {
+  machineID: string;
+  session: string;
+  paneID: string;
+}
+
+/**
  * Avatar is what an agent's avatar draws, resolved the way herdrup's
  * AgentAvatarAppearance is.
  */
@@ -52,6 +62,8 @@ export interface BoardUpdate {
    * The page forgets photos that failed when it changes (#42).
    */
   session: string;
+  /** MachineID identifies the saved SSH connection that owns this board. */
+  machineID: string;
 }
 
 /** ConnState is the connection as the window shows it. */
@@ -559,11 +571,22 @@ export const Desk = {
     return call("Desk.Accounts");
   },
   /**
+   * ActivateAgent selects the originating machine and session. A password-only
+   * connection may need the connection form; the pending activation survives it.
+   */
+  activateAgent(target: AgentTarget): Promise<void> {
+    return call("Desk.ActivateAgent", target);
+  },
+  /**
    * AgentMenu shows an agent row's context menu (right-click); it reports
    * whether there was one.
    */
   agentMenu(paneID: string): Promise<boolean> {
     return call("Desk.AgentMenu", paneID);
+  },
+  /** AgentOpened acknowledges only the activation the page actually displayed. */
+  agentOpened(target: AgentTarget): Promise<void> {
+    return call("Desk.AgentOpened", target);
   },
   /**
    * AvatarImage returns an agent's avatar photo as a data: URL: target is
@@ -765,6 +788,10 @@ export const Desk = {
   peers(): Promise<PeerSummary[]> {
     return call("Desk.Peers");
   },
+  /** PendingAgent returns a notification or tray activation not yet displayed. */
+  pendingAgent(): Promise<AgentTarget | null> {
+    return call("Desk.PendingAgent");
+  },
   /**
    * RemoveMachine forgets a saved machine. Removing the active machine
    * disconnects it and leaves no machine active.
@@ -892,8 +919,8 @@ export const events = {
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
   /**
-   * AgentOpen asks the window to show an agent, by pane id: the tray menu's
-   * agents and the notifications' clicks send it.
+   * AgentOpen wakes the page for a scoped notification or tray activation.
+   * Desk.PendingAgent retains it across window and board startup.
    */
-  agentOpen: event<string>("agent:open"),
+  agentOpen: event<AgentTarget>("agent:open"),
 } as const;

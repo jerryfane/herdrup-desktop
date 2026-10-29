@@ -1,4 +1,4 @@
-import { Desk, Symbols, events, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
+import { Desk, Symbols, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
@@ -21,6 +21,10 @@ const field = $<HTMLCanvasElement>("field");
 let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", live: false };
 let board: BoardUpdate | null = null;
 let tab: "agents" | "gram" | "settings" = "agents";
+let pendingAgent: AgentTarget | null = null;
+let activationVersion = 0;
+let activationWork = Promise.resolve();
+let pageReady = false;
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
 
@@ -361,6 +365,7 @@ async function renderRows() {
   await Promise.all([placeInitials(rowsEl), updateNeedsYou(needsYou, last ? last.offsetTop + last.offsetHeight : null)]);
   if (generation !== rowsGeneration) return;
   drawn = true;
+  revealPendingAgent();
 }
 let rowsGeneration = 0;
 let drawn = false;
@@ -464,26 +469,68 @@ events.boardChanged.on((b) => {
   render();
 });
 
-// The tray menu and the notifications open an agent (tray.go): the Agents
-// tab, the search cleared if it hides the agent, and its row, or the closed
-// folder holding it, scrolled into view.
-events.agentOpen.on((id) => void openAgent(id));
+// Retain activation until the originating board has actually rendered. The
+// backend also retains it, so an event before this page exists is not lost.
+events.agentOpen.on((target) => openAgent(target));
 
-async function openAgent(id: string) {
-  if (tab !== "agents") {
-    tab = "agents";
-    void buildTabBar();
-    render();
-  }
-  const row = () => rowsEl.querySelector<HTMLElement>(`.row[data-id="${CSS.escape(id)}"]`);
-  await renderRows();
-  if (!row() && searchInput.value !== "") {
+function openAgent(target: AgentTarget) {
+  pendingAgent = target;
+  const version = ++activationVersion;
+  if (!pageReady) return;
+  tab = "agents";
+  void buildTabBar();
+  render();
+  // Serialize connection/session changes; a superseded request must not
+  // finish after the latest one and leave the wrong connection selected.
+  activationWork = activationWork.then(async () => {
+    if (version !== activationVersion) return;
+    try {
+      await Desk.activateAgent(target);
+    } catch (err) {
+      if (version !== activationVersion) return;
+      const machines = await Desk.machines().catch(() => []);
+      if (version !== activationVersion) return;
+      const saved = machines.find((m) => m.id === target.machineID);
+      const password = form.elements.namedItem("password");
+      if (password instanceof HTMLInputElement) password.value = "";
+      if (saved) {
+        for (const [key, value] of Object.entries({ ...saved, session: target.session })) {
+          const input = form.elements.namedItem(key);
+          if (input instanceof HTMLInputElement) input.value = String(value ?? "");
+        }
+      }
+      // Password-only machines cannot reconnect unattended. Show the form;
+      // the activation remains pending while the user supplies credentials.
+      tab = "settings";
+      state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
+      render();
+    }
+  });
+}
+
+function revealPendingAgent() {
+  const target = pendingAgent;
+  if (!pageReady || !target || !board?.listedAt || tab !== "agents") return;
+  const session = board.session === "default" ? "" : board.session;
+  if (board.machineID !== target.machineID || session !== target.session) return;
+  const row = rowsEl.querySelector<HTMLElement>(`.row[data-id="${CSS.escape(target.paneID)}"]`);
+  if (!row && searchInput.value !== "") {
     searchInput.value = "";
-    await renderRows();
+    void renderRows();
+    return;
   }
-  const folder = board?.board.sections.flatMap((s: Section) => s.rows).find((r: Row) => r.id === id)?.folderID;
-  const target = row() ?? (folder ? rowsEl.querySelector<HTMLElement>(`[data-folder="${CSS.escape(folder)}"]`) : null);
-  target?.scrollIntoView({ block: "nearest" });
+  const section = board.board.sections.find((s: Section) => s.rows.some((r: Row) => r.id === target.paneID));
+  if (!row && section && (section.key === "idle" || section.key === "archived") && !open[section.key]) {
+    open[section.key] = true;
+    void renderRows();
+    return;
+  }
+  const folder = section?.rows.find((r: Row) => r.id === target.paneID)?.folderID;
+  const element = row ?? (folder ? rowsEl.querySelector<HTMLElement>(`[data-folder="${CSS.escape(folder)}"]`) : null);
+  if (!element) return;
+  element.scrollIntoView({ block: "nearest" });
+  pendingAgent = null;
+  void Desk.agentOpened(target).catch(() => undefined);
 }
 
 window.addEventListener("resize", () => {
@@ -550,6 +597,11 @@ async function init() {
   placeTitle();
   drawField();
   render();
+  const version = activationVersion;
+  const retained = await Desk.pendingAgent();
+  if (version === activationVersion) pendingAgent = retained;
+  pageReady = true;
+  if (pendingAgent) openAgent(pendingAgent);
 }
 
 // Reference mode hook for the parity harness (refshot.go): tells it when

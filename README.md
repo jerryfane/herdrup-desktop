@@ -61,6 +61,10 @@ the cached unread count, the next head poll fetches a full answer rather than
 reusing the head digest. This settles delayed page counts even when a read was
 already confirmed by an intervening refresh.
 
+Successful Gram sends clear only the submitted draft revision. Text edited while
+a send is pending stays in the composer, and reconnecting resets the send
+acknowledgement baseline.
+
 ### Tray, notifications and menus
 
 A tray icon (the menu bar on macOS, with the count beside it; the tooltip elsewhere) counts the agents
@@ -68,8 +72,10 @@ that need you, the board's needs-you section. Its menu opens the window, opens t
 those agents, or quits. When an agent moves into needs you, a notification says so as herdr's push
 does ("jarvis needs attention", over the row's subtitle): once per move, not for agents already
 waiting as the app connects or switches session, and again only after the agent has left needs you.
-Clicking it opens the window on the agent. With a tray, closing the window hides it there; quit from
-the tray or the menu bar (App, File, Edit and Window). On Linux the tray needs
+Clicking it returns to the originating machine and session before revealing the agent.
+A launch-time click waits for the window and destination board; a password-only
+machine asks for credentials in the connection form. With a tray, closing the window
+hides it there; quit from the tray or the menu bar (App, File, Edit and Window). On Linux the tray needs
 `libayatana-appindicator3-1`; without it the app runs without one and closing the window quits.
 
 ### herdr API types
