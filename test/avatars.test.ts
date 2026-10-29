@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { forgetFailedPhotos, knownPhoto, loadPhoto } from "../src/avatars";
+import { boardShown, forgetFailedPhotos, knownPhoto, loadPhoto } from "../src/avatars";
 import { Desk, type Avatar } from "../src/mygo";
 
 // Desk.avatarImage answers from this queue, one reply per call.
@@ -46,4 +46,28 @@ test("a failure from the connection before is not remembered", async () => {
   fail(new Error("ssh: connection lost"));
   expect(await stale).toBeNull();
   expect(knownPhoto(other)).toBeUndefined();
+});
+
+// #42: switching session keeps the SSH connection, so no "connecting" state
+// arrives; the board's session changing must forget the failure all the same.
+test("a failed photo is asked for again in another session", async () => {
+  const sha2 = "c".repeat(64);
+  const a = { ...avatar, sha256: sha2 };
+  boardShown("");
+  replies.push(() => Promise.reject(new Error("agent.avatar.get: not_found")));
+  expect(await loadPhoto(a)).toBeNull();
+  const before = calls;
+
+  // Another board of the same session keeps the failure.
+  boardShown("");
+  expect(knownPhoto(sha2)).toBeNull();
+  expect(await loadPhoto(a)).toBeNull();
+  expect(calls).toBe(before);
+
+  // The board now shows session work: the photo is fetched again.
+  boardShown("work");
+  expect(knownPhoto(sha2)).toBeUndefined();
+  replies.push(() => Promise.resolve("data:image/png;base64,BB=="));
+  expect(await loadPhoto(a)).toBe("data:image/png;base64,BB==");
+  expect(calls).toBe(before + 1);
 });

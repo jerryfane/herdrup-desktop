@@ -47,6 +47,11 @@ export interface Board {
 export interface BoardUpdate {
   board: Board;
   listedAt: string;
+  /**
+   * Session is the herdr session the board shows, "" for the default.
+   * The page forgets photos that failed when it changes (#42).
+   */
+  session: string;
 }
 
 /** ConnState is the connection as the window shows it. */

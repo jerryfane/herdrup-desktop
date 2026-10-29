@@ -5,13 +5,16 @@ import { Desk, type Avatar } from "./mygo";
 
 /** Photos by sha256: the data: URL once fetched, null after a failure, which
  * herdrup draws as the initial tile. Desk caches the bytes on disk. A failure
- * is remembered for the connection only, as Desk's own store does: a new
- * connection forgets it (forgetFailedPhotos) and the photo is asked for
- * again (#36). */
+ * is remembered for the connection and session only, as Desk's own store
+ * does: a new connection or another session forgets it (forgetFailedPhotos,
+ * boardShown) and the photo is asked for again (#36, #42). */
 const photos = new Map<string, string | null>();
 const loading = new Map<string, Promise<string | null>>();
-/** Counts connections, so a fetch begun on an older one records no failure. */
+/** Counts connections and sessions, so a fetch begun on an older one
+ * records no failure. */
 let connection = 0;
+/** The session of the last board shown, undefined before the first. */
+let shownSession: string | undefined;
 
 /** What is known of sha's photo: its URL, null after a failure on this
  * connection, undefined before it is fetched. */
@@ -19,11 +22,20 @@ export function knownPhoto(sha: string): string | null | undefined {
   return photos.get(sha);
 }
 
-/** Forgets the photos that failed, for a new connection. */
+/** Forgets the photos that failed, for a new connection or session. */
 export function forgetFailedPhotos() {
   connection++;
   for (const [sha, url] of photos) if (url === null) photos.delete(sha);
   loading.clear();
+}
+
+/** Notes the session a board shows. A switch keeps the SSH connection, so
+ * no "connecting" state marks it: photos that failed on the session before
+ * are forgotten here, whether the user switched or the board fell back to
+ * the default session (#42). */
+export function boardShown(session: string) {
+  if (shownSession !== undefined && session !== shownSession) forgetFailedPhotos();
+  shownSession = session;
 }
 
 export function loadPhoto(a: Avatar): Promise<string | null> {
