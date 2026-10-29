@@ -85,6 +85,10 @@ type Inbox struct {
 	// localReads are ids read locally, by stamp, until a head answer asked
 	// for after the read settles them.
 	localReads map[string]int
+	// confirmedReads are every read herdr confirmed, by stamp, kept until
+	// the store changes: a page asked for before a read can land after a
+	// head answer settled it.
+	confirmedReads map[string]int
 }
 
 // Messages is the held list, newest first. It must not be modified.
@@ -224,10 +228,14 @@ func sameMessages(a, b []herdrapi.GramMessageInfo) bool {
 }
 
 // AppendPage folds in an answer to a page request (before_id): older
-// messages appended, de-duplicated by id. generation is the one read
-// before the page was asked for; a page built before a replacement is
-// dropped. It reports whether the list grew. The digest is never adopted.
-func (b *Inbox) AppendPage(a Answer, generation int) bool {
+// messages appended, de-duplicated by id. generation and asked are
+// Generation and ReadStamp as they were when the page was asked for: a
+// page built before a replacement is dropped, and reads confirmed after it
+// was asked for stay read, its whole-store count leaving them out as
+// Apply's does (herdrup's appendPage adopts the page's flags and count as
+// they are). It reports whether the list grew. The digest is never
+// adopted.
+func (b *Inbox) AppendPage(a Answer, generation, asked int) bool {
 	if generation != b.generation {
 		return false
 	}
@@ -242,6 +250,24 @@ func (b *Inbox) AppendPage(a Answer, generation int) bool {
 	for _, m := range b.messages {
 		known[m.ID] = true
 	}
+	var unread *int
+	if a.UnreadCount != nil {
+		unread = new(*a.UnreadCount)
+	}
+	for id, stamp := range b.confirmedReads {
+		if stamp <= asked {
+			continue
+		}
+		if i := indexOf(a.Messages, id); i >= 0 {
+			if !IsUnread(a.Messages[i]) {
+				continue
+			}
+			a.Messages[i].ReadByOwner = true
+		}
+		if unread != nil {
+			*unread = max(0, *unread-1)
+		}
+	}
 	before := len(b.messages)
 	for _, m := range a.Messages {
 		if !known[m.ID] {
@@ -250,8 +276,8 @@ func (b *Inbox) AppendPage(a Answer, generation int) bool {
 		}
 	}
 	b.hasMore = a.HasMore
-	if a.UnreadCount != nil {
-		b.serverUnread = new(*a.UnreadCount)
+	if unread != nil {
+		b.serverUnread = unread
 	}
 	b.hasLoaded = true
 	return len(b.messages) > before
@@ -294,7 +320,8 @@ func (b *Inbox) MarkRead(id string) {
 	b.digest = ""
 	b.readStamp++
 	if b.localReads == nil {
-		b.localReads = map[string]int{}
+		b.localReads, b.confirmedReads = map[string]int{}, map[string]int{}
 	}
 	b.localReads[id] = b.readStamp
+	b.confirmedReads[id] = b.readStamp
 }

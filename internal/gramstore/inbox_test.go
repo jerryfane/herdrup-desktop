@@ -178,7 +178,7 @@ func TestInboxAppendingAPageExtendsTheListAndMovesTheCursor(t *testing.T) {
 	if b.NextCursor() != "b" {
 		t.Fatalf("cursor %q", b.NextCursor())
 	}
-	b.AppendPage(page(msgs("b", "a"), false, nil), b.Generation())
+	b.AppendPage(page(msgs("b", "a"), false, nil), b.Generation(), b.ReadStamp())
 	if !slices.Equal(ids(&b), []string{"c", "b", "a"}) || b.HasMore() || b.NextCursor() != "" {
 		t.Fatalf("%v more %v cursor %q", ids(&b), b.HasMore(), b.NextCursor())
 	}
@@ -188,7 +188,7 @@ func TestInboxAppendingAPageExtendsTheListAndMovesTheCursor(t *testing.T) {
 func TestInboxChangedHeadAnswerDropsOlderPages(t *testing.T) {
 	var b Inbox
 	b.Apply(page(msgs("c", "b"), true, nil), after)
-	b.AppendPage(page(msgs("a"), false, nil), b.Generation())
+	b.AppendPage(page(msgs("a"), false, nil), b.Generation(), after)
 	b.Apply(page(msgs("d", "c", "b"), true, nil), after)
 	if !slices.Equal(ids(&b), []string{"d", "c", "b"}) || !b.HasMore() {
 		t.Fatalf("%v more %v", ids(&b), b.HasMore())
@@ -199,7 +199,7 @@ func TestInboxChangedHeadAnswerDropsOlderPages(t *testing.T) {
 func TestInboxUnchangedAnswerKeepsDeepPagesLoaded(t *testing.T) {
 	var b Inbox
 	b.Apply(page(msgs("c"), true, nil), after)
-	b.AppendPage(page(msgs("b", "a"), false, nil), b.Generation())
+	b.AppendPage(page(msgs("b", "a"), false, nil), b.Generation(), b.ReadStamp())
 	if b.Apply(answer(nil, "d"), after) || !slices.Equal(ids(&b), []string{"c", "b", "a"}) {
 		t.Fatalf("%v", ids(&b))
 	}
@@ -232,7 +232,7 @@ func TestInboxAPageBuiltBeforeAHeadRefreshIsDropped(t *testing.T) {
 	b.Apply(page(msgs("c", "b"), true, nil), after)
 	gen := b.Generation()
 	b.Apply(page(msgs("d", "c"), true, nil), after)
-	if b.AppendPage(page(msgs("a"), false, nil), gen) {
+	if b.AppendPage(page(msgs("a"), false, nil), gen, after) {
 		t.Error("a stale page landed")
 	}
 	if !slices.Equal(ids(&b), []string{"d", "c"}) || b.NextCursor() != "c" {
@@ -244,7 +244,7 @@ func TestInboxAPageBuiltBeforeAHeadRefreshIsDropped(t *testing.T) {
 func TestInboxAPageOfKnownMessagesReportsNoGrowth(t *testing.T) {
 	var b Inbox
 	b.Apply(page(msgs("c", "b"), true, nil), after)
-	if b.AppendPage(page(msgs("c", "b"), true, nil), b.Generation()) {
+	if b.AppendPage(page(msgs("c", "b"), true, nil), b.Generation(), after) {
 		t.Error("nothing new arrived, yet it grew")
 	}
 	if !slices.Equal(ids(&b), []string{"c", "b"}) {
@@ -271,7 +271,7 @@ func TestInboxAnIdenticalHeadAnswerKeepsAnInFlightPageValid(t *testing.T) {
 	if b.Apply(page(msgs("c", "b"), true, nil), after) {
 		t.Error("an identical answer reported as a change")
 	}
-	if !b.AppendPage(page(msgs("a"), false, nil), gen) {
+	if !b.AppendPage(page(msgs("a"), false, nil), gen, after) {
 		t.Error("the page was still contiguous, so it must land")
 	}
 	if !slices.Equal(ids(&b), []string{"c", "b", "a"}) {
@@ -316,7 +316,7 @@ func TestInboxAppendingAPageNeverAdoptsItsDigest(t *testing.T) {
 	b.Apply(head, after)
 	older := page(msgs("b"), false, nil)
 	older.Digest = "page"
-	b.AppendPage(older, b.Generation())
+	b.AppendPage(older, b.Generation(), after)
 	if b.ConditionalDigest() != "head" {
 		t.Fatalf("digest %q", b.ConditionalDigest())
 	}
@@ -433,5 +433,54 @@ func TestFromList(t *testing.T) {
 	u := FromList(nil, &herdrapi.ResponseResultGramListUnchanged{Digest: "d", StoreID: "s"})
 	if !u.Unchanged || u.Messages != nil || u.StoreID != "s" {
 		t.Fatalf("unchanged answer %+v", u)
+	}
+}
+
+// #46: a page asked for before reads herdr confirmed (a Read all while
+// the sentinel's page was in flight) keeps them read and its whole-store
+// count leaves them out; a page asked for after them is herdr's word.
+func TestInboxAPageAskedForBeforeConfirmedReadsKeepsThemRead(t *testing.T) {
+	var b Inbox
+	b.Apply(page(msgs("c"), true, new(3)), after)
+	gen, asked := b.Generation(), b.ReadStamp()
+	for _, id := range []string{"c", "b", "a"} {
+		b.MarkRead(id)
+	}
+	if b.UnreadCount() != 0 {
+		t.Fatalf("unread %d after three reads", b.UnreadCount())
+	}
+	if !b.AppendPage(page(msgs("b", "a"), false, new(3)), gen, asked) {
+		t.Fatal("the page did not land")
+	}
+	if b.UnreadCount() != 0 || slices.ContainsFunc(b.Messages(), IsUnread) {
+		t.Fatalf("a stale page undid confirmed reads: unread %d, %v", b.UnreadCount(), b.Messages())
+	}
+
+	var fresh Inbox
+	fresh.Apply(page(msgs("c"), true, new(3)), after)
+	fresh.MarkRead("older")
+	gen, asked = fresh.Generation(), fresh.ReadStamp()
+	fresh.AppendPage(page(msgs("b", "a"), false, new(2)), gen, asked)
+	if fresh.UnreadCount() != 2 {
+		t.Fatalf("a page asked for after the read is herdr's word: unread %d, want 2", fresh.UnreadCount())
+	}
+}
+
+// #46: a head answer settling a read does not let a page asked for before
+// the read bring it back.
+func TestInboxASettledReadStillHoldsAgainstAnOlderPage(t *testing.T) {
+	var b Inbox
+	b.Apply(page(msgs("c"), true, new(2)), after)
+	gen, asked := b.Generation(), b.ReadStamp()
+	b.MarkRead("old")
+	// The next head poll, asked for after the read, settles it; its rows are
+	// the same, so the page in flight is still contiguous.
+	b.Apply(page(msgs("c"), true, new(1)), b.ReadStamp())
+	if b.Generation() != gen {
+		t.Fatal("an identical head answer replaced the list")
+	}
+	b.AppendPage(page(msgs("old"), false, new(2)), gen, asked)
+	if b.UnreadCount() != 1 || IsUnread(b.Messages()[1]) {
+		t.Fatalf("unread %d, %v", b.UnreadCount(), b.Messages())
 	}
 }
