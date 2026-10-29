@@ -107,17 +107,20 @@ jobs:
           sleep 15
           kill -0 "$pid" || { cat "$RUNNER_TEMP/app.log"; exit 1; }
           kill "$pid"; wait "$pid" || true
+      # Into one folder, so that the artifact holds the files themselves and
+      # not the build/<os>-<arch>/ folders around them.
+      - name: Collect the installers
+        run: |
+          mkdir "$RUNNER_TEMP/installers"
+          find build -mindepth 2 -maxdepth 2 -type f \( -name '*.dmg' -o -name '*-setup-*.exe' \
+            -o -name '*.deb' -o -name '*.tar.gz' -o -name install.sh \) -exec cp {} "$RUNNER_TEMP/installers/" \;
+          ls -l "$RUNNER_TEMP/installers"
       - uses: actions/upload-artifact@v4
         with:
           name: herdrup-${{ matrix.name }}
           if-no-files-found: error
           retention-days: 14
-          path: |
-            build/darwin-universal/*.dmg
-            build/windows-amd64/*-setup-*.exe
-            build/linux-amd64/*.deb
-            build/linux-amd64/*.tar.gz
-            build/linux-amd64/install.sh
+          path: ${{ runner.temp }}/installers/
 
   check-windows:
     name: Check the Windows installer
