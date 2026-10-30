@@ -16,6 +16,18 @@ var smoke string
 
 func smokeEnabled() bool { return smoke == "1" }
 
+// Capture failures before the application's module starts. An empty board alone
+// cannot distinguish a failed module load from a connected but empty roster.
+func smokePreload() string {
+	if !smokeEnabled() {
+		return ""
+	}
+	return `window.__herdrupSmokeErrors = [];
+const record = value => window.__herdrupSmokeErrors.push(String(value));
+window.addEventListener("error", event => record(event.error?.stack || event.message || event.target?.src || event.target?.href || "resource error"), true);
+window.addEventListener("unhandledrejection", event => record(event.reason?.stack || event.reason));`
+}
+
 // runSmoke connects to the machine named by HERDRUP_SMOKE_* variables,
 // waits for a board with agents, saves a screenshot of the window to
 // HERDRUP_SMOKE_CAPTURE and quits. It exits 1 when no agent was shown. A
@@ -65,7 +77,8 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	// page has drawn a row for every agent in the open sections.
 	pageShows := func(want int) {
 		const probe = `return {rows: document.querySelectorAll(".row").length, ` +
-			`text: document.body.innerText.slice(0, 300)}`
+			`text: document.body.innerText.slice(0, 300), errors: window.__herdrupSmokeErrors, ` +
+			`scripts: Array.from(document.scripts, script => script.src), ready: document.readyState}`
 		var last any
 		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 			v, err := win.Page().Eval(probe)

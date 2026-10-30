@@ -388,6 +388,9 @@ window against `cmd/fakeherdr` on Linux and Windows, and on macOS on `main`, on 
 requests labelled `macos-smoke` (GitHub's hosted Macs are shared with herdrup's iOS CI), and uploads a
 screenshot of each. The parity check below also runs on GitHub's hosted macOS, whose version the pixel
 match was made on.
+Smoke builds capture early script/resource errors and unhandled promise rejections
+before the frontend module starts. A failed row probe reports those errors, script
+URLs and document readiness alongside the page text; release builds omit the hook.
 The existing Linux and Windows smoke jobs also compile the pinned offline speech
 helper and package its model and licences. That checks the platform toolchain and
 bundle contents; the board screenshot is not microphone or dictation acceptance.
