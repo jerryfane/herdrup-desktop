@@ -67,14 +67,24 @@ Native file-drop events share the picker/upload path in Chat and Gram. The vendo
 MyGo correction accepts real Linux GTK URI-list drops even when WebKit exposes no
 DOM File, and prevents an outside drop from navigating away. Only native-selected
 paths authorize file access: plain URI text, synthetic events and in-page drags do
-not. Clipboard attachment parity is still pending.
+not. Chat and Gram also accept native clipboard files and images. File lists take
+precedence over accompanying text; otherwise plain text keeps browser paste/undo.
+WebKit image pastes with empty DOM metadata are resolved through the OS clipboard,
+not by treating text as a local path. Pasted bytes use a private temporary source:
+failed sends retain it for retry, while removal, successful sending and composer
+closure retire it after upload/cache readers close. Picker/drop files stay borrowed
+and are never deleted. Linux native-window checks covered file/image paste, matching
+received hashes, plain-URI text, and staged-source cleanup; Windows clipboard
+interaction acceptance remains outstanding.
 The parity branch also has a shared offline microphone control for Chat and Gram.
 The local whisper.cpp helper captures audio and streams partial text; no audio
 provider, network upload or cloud fallback is used. Linux native-window smoke has
 exercised recognition through an isolated PulseAudio monitor and microphone release
 when leaving Chat. This is not physical-microphone or Windows acceptance. Linux
-resource packaging also passes a native-window capture-start smoke; Windows/macOS
-packaging and the remaining visual comparison still need verification.
+resource packaging also passes a native-window capture-start smoke. Windows CI
+built the speech helper and installer and launched the app against the sample SSH
+backend; it did not exercise Windows speech capture. macOS packaging and the
+remaining visual comparison still need verification.
 
 This is not the completed first release: full Settings/preferences, visual parity,
 shared-agent invites/guest access and remaining federation UI are unfinished.

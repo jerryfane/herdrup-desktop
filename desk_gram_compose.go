@@ -57,6 +57,10 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 		if !ok || m.File == nil {
 			return
 		}
+		if !a.RetainSource() {
+			return
+		}
+		defer a.ReleaseSource()
 		cache := d.gramCache()
 		if _, ok := cache.StoreCopy(a.Path, a.MessageID, a.Name, a.Mime, m.File.SHA256); !ok {
 			return
@@ -72,6 +76,10 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 }
 
 func uploadComposerFile(ctx context.Context, ec *engine.Client, a gramstore.Attachment, progress func(sent, total int64)) (string, error) {
+	if !a.RetainSource() {
+		return "", context.Canceled
+	}
+	defer a.ReleaseSource()
 	f, err := os.Open(a.Path)
 	if err != nil {
 		return "", err

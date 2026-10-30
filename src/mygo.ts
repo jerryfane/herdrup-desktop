@@ -824,6 +824,9 @@ export const Desk = {
   gramOpenFile(id: string): Promise<void> {
     return call("Desk.GramOpenFile", id);
   },
+  gramPasteClipboard(): Promise<boolean> {
+    return call("Desk.GramPasteClipboard");
+  },
   /**
    * GramPickFiles shows the open dialog for files to attach, several at
    * once, and attaches them; their uploads start at once. It returns the
@@ -926,6 +929,9 @@ export const Desk = {
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
     return call("Desk.PaneAttachFiles", token, paths);
+  },
+  panePasteClipboard(token: string): Promise<boolean> {
+    return call("Desk.PanePasteClipboard", token);
   },
   panePickFiles(token: string): Promise<void> {
     return call("Desk.PanePickFiles", token);

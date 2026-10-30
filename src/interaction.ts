@@ -6,7 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
 import type { AgentTarget, AgentView, BoardUpdate, GramAttachment } from "./mygo";
-import { closeWriter, ComposerEditor, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop } from "./composer";
+import { closeWriter, ComposerEditor, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
@@ -148,6 +148,7 @@ class Detail {
  editor: ComposerEditor | null = null;
  composerResize: ResizeObserver | null = null;
  stopFileDrop: (() => void) | null = null;
+ stopClipboardPaste: (() => void) | null = null;
  send = button("Send", () => { void this.sendPrompt(); });
  prompts = new SavedPromptsMenu(text => {
   if (this.disposed || this.sending || this.dictation.busy) return;
@@ -363,6 +364,7 @@ class Detail {
   this.dismissChatSheets();
   this.editor?.dispose(); this.editor = null;
   this.stopFileDrop?.(); this.stopFileDrop = null;
+  this.stopClipboardPaste?.(); this.stopClipboardPaste = null;
   this.chatResize?.disconnect(); this.chatResize = null;
   this.prompts.dispose();
   this.dictation.dispose();
@@ -544,6 +546,9 @@ class Detail {
   this.attachmentStrip.hidden = true;
   composer.append(this.attachmentStrip, this.dictation.strip, this.input, actions);
   this.stopFileDrop = composerFileDrop(composer, paths => { void this.pickFiles(paths); });
+  this.stopClipboardPaste = composerClipboardPaste(this.input, () => Desk.panePasteClipboard(this.token), error => {
+   if (!this.disposed) this.status.textContent = String(error);
+  });
   this.mountKeys();
   const probe = el("div", "composer-text-probe");
   composer.append(probe);

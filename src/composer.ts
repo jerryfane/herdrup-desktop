@@ -25,6 +25,31 @@ export function composerFileDrop(card: HTMLElement, attach: (paths: string[]) =>
   return () => { card.removeEventListener("dragover", dragover); unsubscribe(); };
 }
 
+// WebKit can hide native image metadata. Ask the OS for file/empty-metadata
+// pastes; plain text (including a typed file URI) keeps native paste and undo.
+export function composerClipboardPaste(input: HTMLTextAreaElement, paste: () => Promise<boolean>, report: (error: unknown) => void): () => void {
+  let disposed = false, pending = false;
+  const listener = (event: ClipboardEvent) => {
+    const data = event.clipboardData;
+    if (!event.isTrusted || !data || input.disabled || input.readOnly || !input.getClientRects().length) return;
+    if (data.types.length && !data.types.includes("Files") && !data.types.includes("text/uri-list")) return;
+    event.preventDefault();
+    if (pending) { report(new Error("Wait for the current paste to finish.")); return; }
+    const text = data.getData("text/plain"), before = input.value, start = input.selectionStart, end = input.selectionEnd;
+    pending = true;
+    void paste().then(handled => {
+      if (handled || disposed || !input.isConnected || !input.getClientRects().length) return;
+      if (!text) throw new Error("The clipboard does not offer a supported file representation.");
+      if (input.value !== before || document.activeElement !== input || input.selectionStart !== start || input.selectionEnd !== end) {
+        throw new Error("The reply changed before the paste completed. Paste again at the new cursor.");
+      }
+      if (!document.execCommand("insertText", false, text)) throw new Error("The clipboard text could not be inserted.");
+    }).catch(error => { if (!disposed) report(error); }).finally(() => { pending = false; });
+  };
+  input.addEventListener("paste", listener);
+  return () => { disposed = true; input.removeEventListener("paste", listener); };
+}
+
 export class ComposerEditor {
   readonly handle = document.createElement("button");
   private height: number | null = null;

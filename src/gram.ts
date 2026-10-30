@@ -7,7 +7,7 @@
 import { avatarFace } from "./avatars";
 import { paintShape } from "./continuous";
 import { rowTime, separator } from "./gramDates";
-import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop } from "./composer";
+import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import {
@@ -1367,6 +1367,11 @@ function buildComposer(): HTMLElement {
   editor = new ComposerEditor(card, input, layoutComposer);
   stopFileDrop?.();
   stopFileDrop = composerFileDrop(card, paths => { void pickFiles(paths); });
+  stopClipboardPaste?.();
+  stopClipboardPaste = composerClipboardPaste(input, () => {
+    if (picking || posting || snap?.sending || !shown) return Promise.reject(new Error("Wait for the current attachment operation to finish."));
+    return Desk.gramPasteClipboard();
+  }, error => { banner.hidden = false; banner.textContent = String(error); });
   mentionHost = el("div", "gmentions");
   mentionHost.hidden = true;
   dictation = new ComposerDictation(input, renderComposer, () => editor.collapse());
@@ -1432,6 +1437,7 @@ function renderMirror(a: DraftAddress) {
 let lineProbe: HTMLElement | null = null;
 let editor: ComposerEditor;
 let stopFileDrop: (() => void) | undefined;
+let stopClipboardPaste: (() => void) | undefined;
 
 /** The text's lines at `width`, measured as the field draws it (ComposerTextMetrics.lines). */
 function linesAt(width: number): number {
