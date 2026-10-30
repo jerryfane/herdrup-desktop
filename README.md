@@ -5,9 +5,16 @@ the status board of the [herdrup](https://github.com/jerryfane/herdrup) iOS app,
 computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screens as a web page in
 the system webview (WKWebView, WebKitGTK, WebView2).
 
-**Status: spike** ([#1](https://github.com/jerryfane/herdrup-desktop/issues/1), epic
-[#13](https://github.com/jerryfane/herdrup-desktop/issues/13)). It connects to one machine over SSH and
-shows its agents, grouped like the iOS app and updated live.
+**Status: preview** ([v0.1.0-preview.1](https://github.com/jerryfane/herdrup-desktop/releases/tag/v0.1.0-preview.1),
+epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)). Try the live agent board,
+Gram messages and attachments, and desktop tray/notifications. Saved SSH connections and
+session switching are available.
+
+This is not the completed first release: the redesigned Settings UI, full visual parity,
+shared-access UI and remaining federation UI are unfinished. Chat and Terminal are not included.
+Mac and Windows builds are not developer-signed; macOS notarization and real Mac/Windows
+tray/notification acceptance are still outstanding. Use the preview to evaluate the implemented
+features, not as a claim that those release gates have passed.
 
 ## Install
 
@@ -16,8 +23,8 @@ Each [release](https://github.com/jerryfane/herdrup-desktop/releases) has the in
 
 - **macOS** (Apple silicon and Intel): `herdrup-<version>.dmg`. Open it and drag Herdrup to
   Applications. The app is not yet signed with a Developer ID or notarized, so Gatekeeper blocks its
-  first launch: open it once, then System Settings > Privacy & Security > Open Anyway (or
-  `xattr -dr com.apple.quarantine /Applications/Herdrup.app`).
+  first launch: open it once, then System Settings > Privacy & Security > Open Anyway.
+  Only approve this specific app if you trust the download; do not disable Gatekeeper.
 - **Windows** (x64): `herdrup-setup-<version>-amd64.exe` installs for the current user in
   `%LOCALAPPDATA%\Programs\Herdrup`, without administrator rights, with a Start menu shortcut and an
   uninstaller in Settings > Apps. It is not signed: SmartScreen asks first (More info > Run anyway).
