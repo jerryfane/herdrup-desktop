@@ -19,6 +19,15 @@ func TestDeskNotifiesEachMoveIntoNeedsYou(t *testing.T) {
 	var bStatus atomic.Value
 	bStatus.Store("working")
 	var version atomic.Int64
+	eventsReady := make(chan struct{}, 2)
+	waitEvents := func() {
+		t.Helper()
+		select {
+		case <-eventsReady:
+		case <-time.After(10 * time.Second):
+			t.Fatal("event fixture did not subscribe")
+		}
+	}
 	change := func(status string) {
 		bStatus.Store(status)
 		version.Add(1)
@@ -38,6 +47,7 @@ func TestDeskNotifiesEachMoveIntoNeedsYou(t *testing.T) {
 		// A pane.created line after each change makes the desk list again.
 		s.Events = func(ctx context.Context, emit func([]byte) error) {
 			seen := version.Load()
+			eventsReady <- struct{}{}
 			for seq := 1; ; seq++ {
 				select {
 				case <-ctx.Done():
@@ -81,6 +91,7 @@ func TestDeskNotifiesEachMoveIntoNeedsYou(t *testing.T) {
 
 	waitFor(t, "the first board", board("", 1))
 	check("connected with w1:p1 blocked", []string{"w1:p1"}, nil)
+	waitEvents() // Watch publishes its initial list before opening the stream.
 
 	change("blocked")
 	waitFor(t, "w1:p2 blocked", board("", 2))
@@ -96,6 +107,7 @@ func TestDeskNotifiesEachMoveIntoNeedsYou(t *testing.T) {
 	}
 	waitFor(t, "session work's board", board("work", 2))
 	check("switched to work", []string{"w1:p1", "w1:p2"}, []string{"w1:p2"})
+	waitEvents()
 
 	change("working")
 	waitFor(t, "w1:p2 working", board("work", 1))
