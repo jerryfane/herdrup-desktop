@@ -7,6 +7,7 @@
 import { avatarFace } from "./avatars";
 import { paintShape } from "./continuous";
 import { rowTime, separator } from "./gramDates";
+import { expandWriter } from "./composer";
 import {
   activeQuery,
   addressing,
@@ -1520,7 +1521,9 @@ function renderComposer() {
   const attach = actionIcon("attach", "Attach file", () => void pickFiles());
   attach.append(icon("paperclip", 18, "regular", "dim"));
   attach.disabled = sending || picking;
-  const nodes: HTMLElement[] = [attach];
+  const expand = actionIcon("expand", "Expand writing", () => expandWriter(input, "Write a Gram message"));
+  expand.textContent = "Expand"; expand.classList.add("gexpand");
+  const nodes: HTMLElement[] = [attach, expand];
   // Send takes the saved prompts' place once there is something to send.
   if (attachments.length > 0 || draft.trim() !== "") {
     const s = actionIcon("primary", "Send gram", () => void send());

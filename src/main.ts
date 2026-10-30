@@ -1,3 +1,4 @@
+import "core-js/actual/promise/with-resolvers";
 import { Desk, Symbols, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
@@ -5,6 +6,9 @@ import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram } from "./gram";
+import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
+import { initHosts } from "./hosts";
+import { closeWriter } from "./composer";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -84,7 +88,12 @@ async function buildTopBar() {
     await place(s, name, 15, "medium");
     return s;
   };
-  leading.replaceChildren(await slot("chevron.left", "Back"));
+  const back = await slot("chevron.left", "Choose host");
+  back.tabIndex = 0; back.setAttribute("role", "button");
+  const chooseHost = () => { closeWriter(); tab = "settings"; void buildTabBar(); void buildTopBar(); render(); };
+  back.onclick = chooseHost;
+  back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
+  leading.replaceChildren(back);
   const title = $("bar-title");
   if (tab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
@@ -92,12 +101,8 @@ async function buildTopBar() {
     title.replaceChildren(document.createTextNode("Gram"), ...(count ? [count] : []));
     actions.replaceChildren(...(await barActions()));
   } else {
-    title.replaceChildren(document.createTextNode("Agents"));
-    actions.replaceChildren(
-      await slot("sidebar.leading", "Minimise sidebar"),
-      await slot("terminal", "New terminal"),
-      await slot("plus", "New agent"),
-    );
+    title.replaceChildren(document.createTextNode(tab === "settings" ? "Hosts" : "Agents"));
+    actions.replaceChildren();
   }
   // The capsules' shapes go with their children.
   paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
@@ -255,6 +260,15 @@ async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
     "row" + (r.badge === "waiting" ? " waiting" : "") + (separator ? "" : " no-sep") + (r.folderID ? " indented" : ""),
   );
   row.dataset.id = r.id;
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  const openDetail = () => {
+    if (!board) return;
+    void selectInteraction({ machineID: board.machineID, session: board.session === "default" ? "" : board.session, paneID: r.id }).then(render);
+    select.hidden = true;
+  };
+  row.addEventListener("click", openDetail);
+  row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(); } });
   const text = el("div", "text");
   const line1 = el("div", "line1");
   const chev = el("span", "chev");
@@ -419,7 +433,8 @@ function render() {
   const showsGram = tab === "gram" && !showConnect;
   connectView.hidden = !showConnect;
   field.hidden = showConnect || showsGram;
-  select.hidden = showConnect || showsGram;
+  select.hidden = showConnect || showsGram || interactionVisible();
+  showInteraction(!showConnect && !showsGram);
   $("roster").hidden = showsGram;
   showGram(showsGram);
   connectError.hidden = state.phase !== "error";
@@ -436,6 +451,7 @@ form.addEventListener("submit", async (e) => {
   const get = (k: string) => String(f.get(k) ?? "").trim();
   try {
     board = null;
+    closeInteraction();
     tab = "agents";
     void buildTabBar();
     void buildTopBar();
@@ -458,6 +474,7 @@ disconnect.addEventListener("click", () => {
 
 events.stateChanged.on((s) => {
   state = s;
+  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
   // Each connection attempt is a new connection: photos that failed on the
   // last one are asked for again, as Desk's own store does.
@@ -467,6 +484,7 @@ events.stateChanged.on((s) => {
 events.boardChanged.on((b) => {
   boardShown(b.session);
   board = b;
+  interactionBoard(b);
   render();
 });
 
@@ -532,6 +550,7 @@ function revealPendingAgent() {
   if (!element) return;
   element.scrollIntoView({ block: "nearest" });
   pendingAgent = null;
+  void selectInteraction(target).then(render);
   void Desk.agentOpened(target).catch(() => undefined);
 }
 
@@ -555,6 +574,8 @@ async function init() {
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
   await Promise.all([buildTopBar(), buildTabBar()]);
+  initInteraction($("detail"));
+  initHosts(connectView, form, () => { tab = "agents"; void buildTabBar(); void buildTopBar(); render(); });
   await initGram(
     {
       el,
