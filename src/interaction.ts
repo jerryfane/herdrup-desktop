@@ -195,6 +195,7 @@ class Detail {
  }
  openChat(generation: number) {
   this.entries = []; this.chat = null; this.subagent = ""; this.oldestCursor = undefined; this.chatEpoch++;
+  this.input.disabled = false; this.send.disabled = this.sending;
   const tools = el("div", "chat-tools");
   this.subagents.replaceChildren(new Option("Main conversation", ""));
   this.subagents.onchange = () => { this.chatEpoch++; this.subagent = this.subagents.value; this.entries = []; this.chat = null; this.oldestCursor = undefined; this.input.disabled = !!this.subagent; this.send.disabled = !!this.subagent || this.sending; clearTimeout(this.refreshTimer); void this.refreshChat(generation); };
@@ -223,7 +224,7 @@ class Detail {
   const epoch = this.chatEpoch;
   try {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, subagent));
-   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session) return;
+   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session || this.chat?.session_id !== session) return;
    const oldHeight = this.transcript.scrollHeight;
    this.entries = mergeTranscript(this.entries, page.entries, true); this.oldestCursor = page.before;
    this.drawChat(false); this.transcript.scrollTop += this.transcript.scrollHeight - oldHeight;

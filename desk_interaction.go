@@ -53,7 +53,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 	}
 	d.mu.Lock()
 	l := d.link
-	if l == nil || l.client == nil || l.ctx == nil || l.id != target.MachineID || l.session != target.Session {
+	if l == nil || l.client == nil || l.ctx == nil || l.id != target.MachineID || sessionKey(l.session) != sessionKey(target.Session) {
 		d.mu.Unlock()
 		return AgentView{}, errors.New("agent belongs to another connection or session")
 	}

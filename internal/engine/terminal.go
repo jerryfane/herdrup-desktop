@@ -128,7 +128,8 @@ func (p *PaneInput) Send(ctx context.Context, text string) error {
 				Text string `json:"text"`
 				Ack  bool   `json:"ack"`
 			}{p.seq, part, true})
-			stop := context.AfterFunc(ctx, func() { p.stream.Close() })
+			stream := p.stream
+			stop := context.AfterFunc(ctx, func() { stream.Close() })
 			err = p.stream.WriteLine(frame)
 			if err == nil {
 				var line []byte

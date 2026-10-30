@@ -113,3 +113,28 @@ func TestTerminalSurfaceRejectsStaleInputAndResize(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAgentViewAcceptsExplicitDefaultSession(t *testing.T) {
+	d, _ := federatedDesk(t, nil)
+	machine, err := d.Machine()
+	if err != nil || machine == nil {
+		t.Fatalf("saved machine: %v", err)
+	}
+	d.Disconnect()
+	machine.Session = "default"
+	if err := d.Connect(*machine, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "explicit default session board", func() bool { return d.Board() != nil })
+	b := d.Board()
+	for _, session := range []string{"", "default"} {
+		view, err := d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: session, PaneID: "w1:p1"}, "view")
+		if err != nil {
+			t.Fatalf("default session spelling %q rejected: %v", session, err)
+		}
+		if view.PaneID != "w1:p1" {
+			t.Fatalf("wrong selected pane: %s", view.PaneID)
+		}
+		d.CloseAgentView("view")
+	}
+}

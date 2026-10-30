@@ -14,6 +14,8 @@ Select an agent to open its detail view. Terminal supports live PTY input/output
 resize, retained scrollback, search, copy and web links. Chat is available for omp
 agents: paged history, Markdown and diagrams, folded thinking/tools, prompt sending
 and supported single-choice questions. Other harnesses open Terminal.
+External images in transcript diagrams are blocked before the browser fetches them.
+Invalid diagrams stay as source text; history from an old transcript session is discarded.
 **Expand writing** opens a full-height editor without sending; **Done writing**
 or Escape returns the same draft. Cmd/Ctrl+Enter sends only from the compact composer.
 Chat drafts stay local and are scoped to the host, herdr session and pane.

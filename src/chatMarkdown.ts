@@ -13,7 +13,7 @@ function mermaid(): Promise<Mermaid> {
   const script = document.createElement("script"); script.src = "/mermaid/mermaid.min.js";
   script.onload = () => {
    if (!window.mermaid) { reject(new Error("Diagram renderer unavailable")); return; }
-   window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark", htmlLabels: false, flowchart: { htmlLabels: false } });
+   window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "dark", htmlLabels: false, flowchart: { htmlLabels: false } });
    resolve(window.mermaid);
   };
   script.onerror = () => reject(new Error("Could not load diagram renderer"));
