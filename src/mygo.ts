@@ -4,6 +4,20 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+export interface AccountLoginState {
+  url: string;
+  phase: string;
+  message: string;
+  email: string;
+}
+
+export interface AccountMenuChoice {
+  token: string;
+  id: string;
+  action: string;
+  agentCount: number;
+}
+
 /** AgentAnswerStatus values a newer herdr adds decode as they are; see Known. */
 export type AgentAnswerStatus = "answered" | "sent_unconfirmed";
 
@@ -729,8 +743,14 @@ export const Desk = {
   chatTranscript(token: string, after: string, before: string, subagent: string): Promise<string> {
     return call("Desk.ChatTranscript", token, after, before, subagent);
   },
+  closeAccountLogin(token: string, loginID: string): Promise<void> {
+    return call("Desk.CloseAccountLogin", token, loginID);
+  },
   closeAgentView(token: string): Promise<void> {
     return call("Desk.CloseAgentView", token);
+  },
+  closeSettings(token: string): Promise<void> {
+    return call("Desk.CloseSettings", token);
   },
   /**
    * Connect saves the machine and connects to it, replacing any current
@@ -738,6 +758,9 @@ export const Desk = {
    */
   connect(m: Machine, password: string): Promise<void> {
     return call("Desk.Connect", m, password);
+  },
+  createSettingsAccount(token: string, kind: string, label: string): Promise<string> {
+    return call("Desk.CreateSettingsAccount", token, kind, label);
   },
   /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
@@ -895,6 +918,9 @@ export const Desk = {
   gramState(): Promise<GramSnapshot> {
     return call("Desk.GramState");
   },
+  logoutSettingsAccount(token: string, id: string): Promise<string> {
+    return call("Desk.LogoutSettingsAccount", token, id);
+  },
   /** Machine returns the active saved machine, if any. */
   machine(): Promise<Machine | null> {
     return call("Desk.Machine");
@@ -926,6 +952,9 @@ export const Desk = {
   openExternalURL(raw: string): Promise<void> {
     return call("Desk.OpenExternalURL", raw);
   },
+  openSettings(machineID: string, session: string, token: string): Promise<void> {
+    return call("Desk.OpenSettings", machineID, session, token);
+  },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
     return call("Desk.PaneAttachFiles", token, paths);
@@ -954,6 +983,9 @@ export const Desk = {
   pendingAgent(): Promise<AgentTarget | null> {
     return call("Desk.PendingAgent");
   },
+  pollAccountLogin(token: string, loginID: string): Promise<AccountLoginState> {
+    return call("Desk.PollAccountLogin", token, loginID);
+  },
   /** ReadAgentText powers the native pane menu's Copy screen / Copy recent output. */
   readAgentText(token: string, recent: boolean): Promise<string> {
     return call("Desk.ReadAgentText", token, recent);
@@ -964,6 +996,9 @@ export const Desk = {
    */
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
+  },
+  removeSettingsAccount(token: string, id: string): Promise<string> {
+    return call("Desk.RemoveSettingsAccount", token, id);
   },
   /**
    * SaveMachine updates the saved profile without opening a connection. A running
@@ -1025,6 +1060,19 @@ export const Desk = {
   setMachineFederation(profileID: string, enabled: boolean): Promise<void> {
     return call("Desk.SetMachineFederation", profileID, enabled);
   },
+  /**
+   * SettingsAccountMenu snapshots one account. A menu selection is only an intent;
+   * the actual mutation still requires a current Settings token and confirmation.
+   */
+  settingsAccountMenu(token: string, id: string, accountID: string): Promise<void> {
+    return call("Desk.SettingsAccountMenu", token, id, accountID);
+  },
+  settingsAccounts(token: string): Promise<string> {
+    return call("Desk.SettingsAccounts", token);
+  },
+  startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
+    return call("Desk.StartAccountLogin", token, loginID, id, setupToken);
+  },
   startTerminal(token: string, streamID: string): Promise<void> {
     return call("Desk.StartTerminal", token, streamID);
   },
@@ -1034,6 +1082,16 @@ export const Desk = {
   },
   stopTerminal(token: string, streamID: string): Promise<void> {
     return call("Desk.StopTerminal", token, streamID);
+  },
+  submitAccountLogin(token: string, loginID: string, code: string): Promise<void> {
+    return call("Desk.SubmitAccountLogin", token, loginID, code);
+  },
+  /**
+   * SwapSettingsAccount checks the roster again; a displayed account is not proof
+   * that it can resume an agent. The daemon also enforces readiness per restart.
+   */
+  swapSettingsAccount(token: string, id: string): Promise<string> {
+    return call("Desk.SwapSettingsAccount", token, id);
   },
   terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {
     return call("Desk.TerminalHistory", token, cursor);
@@ -1126,6 +1184,7 @@ export const events = {
    * which name the account on an agent row.
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
+  settingsAccountMenu: event<AccountMenuChoice>("settings:account-menu"),
   dictationChanged: event<DictationEvent>("dictation:changed"),
   /**
    * AgentOpen wakes the page for a scoped notification or tray activation.

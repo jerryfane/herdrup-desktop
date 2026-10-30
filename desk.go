@@ -116,6 +116,7 @@ type Desk struct {
 	cancel      context.CancelFunc
 	link        *link // the current connection; nil when disconnected
 	interaction *interaction
+	settings    *settingsSession
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
@@ -433,6 +434,9 @@ func (d *Desk) selectSession(name string, at *boardSession) error {
 	// its list arrives, as herdrup's SessionSwitchCache does.
 	seeded := d.sessionSwitched(from, name, d.board, time.Now())
 	l.sessionGen++
+	if d.settings != nil {
+		d.settings.cancel()
+	}
 	d.board, d.peers = nil, nil
 	if l.restart != nil {
 		l.restart()

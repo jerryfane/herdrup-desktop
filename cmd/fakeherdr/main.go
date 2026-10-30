@@ -41,6 +41,7 @@ func main() {
 	machineFail := flag.String("machine-fail", "", "make `herdr machine federate|unfederate` exit 1 with this stderr")
 	gramsFile := flag.String("grams", "", "seed the Gram store: \"sample\" for the built-in messages (grams.json), or a JSON array of gram messages with optional ago_seconds, file_base64 or file_text (default: empty)")
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
+	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -141,6 +142,16 @@ func main() {
 			} else {
 				w.gram.Duplex(ctx, id, method, params, read, emit)
 			}
+		}
+	}
+	if *accounts {
+		fixture := fakeherdr.NewAccounts()
+		previous := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if value, err, handled := fixture.Handle(method, params); handled {
+				return value, err
+			}
+			return previous(method, params)
 		}
 	}
 	addr, err := s.Listen(*listen)

@@ -1,6 +1,8 @@
 import { Desk, events } from "./mygo";
 import type { BoardUpdate, ConnState, Machine, PeerSummary, SavedMachineStatus } from "./mygo";
 import { changeTextSize, onTextSizeChanged, textSize } from "./textSize";
+import { AccountSettings } from "./settingsAccounts";
+import accountIcon from "../third_party/phosphor/web/user-circle.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
 import textSizeIcon from "../third_party/phosphor/web/text-aa.svg?url";
@@ -14,10 +16,11 @@ const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
   "lock.shield": privacyIcon, "doc.text": termsIcon,
   "chevron.left.forwardslash.chevron.right": codeIcon, "plus.circle": addIcon,
+  "person.crop.circle": accountIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
-type Page = "machines" | "textSize";
+type Page = "machines" | "accounts" | "textSize";
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
@@ -40,6 +43,22 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let reconnectButton: HTMLButtonElement | null = null, reach: HTMLElement | null = null;
   let openDialog: HTMLDialogElement | null = null;
   const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
+  let settingsToken = "";
+  const accounts = new AccountSettings(report);
+  function closeScope() {
+    accounts.setScope("");
+    const token = settingsToken; settingsToken = "";
+    if (token) void Desk.closeSettings(token).catch(report);
+  }
+  async function openScope(at: number) {
+    if (state?.phase !== "connected" || !board) return;
+    const token = crypto.randomUUID(), target = board; settingsToken = token;
+    try {
+      await Desk.openSettings(target.machineID, target.session, token);
+      if (at !== generation || !visible) { void Desk.closeSettings(token); return; }
+      accounts.setScope(token);
+    } catch (error) { if (at === generation) report(error); }
+  }
   function glyph(name: string, size = 20) {
     const slot = el("span", "settings-glyph"); slot.setAttribute("aria-hidden", "true");
     if (!navigator.platform.startsWith("Mac") && settingIcons[name]) {
@@ -72,7 +91,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   function link(label: string, icon: string, url: string) {
     return row(label, icon, () => { void Desk.openExternalURL(url).catch(report); });
   }
-  function choose(next: Page) { selected = next; message.hidden = true; renderIndex(); renderPage(); }
+  function choose(next: Page) { if (next !== "accounts") accounts.closeDialogs(); selected = next; message.hidden = true; renderIndex(); renderPage(); }
   function renderIndex() {
     machineNameNodes = []; connectionNodes = [];
     const card = button("", () => choose("machines")); card.className = "settings-machine-card";
@@ -81,9 +100,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     machineNameNodes.push(label);
     const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
     lines.append(label, connection); card.append(disc(60, name()), lines, glyph("chevron.right", 12));
+    const accountRow = row("Accounts", "person.crop.circle", () => choose("accounts"), "Subscriptions on your home box");
+    accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
     const sizing = row("Text size", "textformat.size", () => choose("textSize"), "", `${textSize("terminal")} pt`);
     sizing.setAttribute("aria-current", selected === "textSize" ? "page" : "false");
-    index.replaceChildren(card, group("PREFERENCES", [sizing]), group("HELP", [
+    index.replaceChildren(card, group("HERD", [accountRow]), group("PREFERENCES", [sizing]), group("HELP", [
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", "bubble.left.and.bubble.right.fill", "https://discord.gg/pq7qj4dDqt"),
@@ -116,8 +137,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     reconnectButton = null; reach = null;
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
-    title.textContent = selected === "machines" ? "Machines" : "Text size";
+    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : "Text size";
     body.replaceChildren();
+    if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "textSize") {
       const preview = el("div", "settings-size-preview");
       const text = el("span", "settings-terminal-preview", "~ $ herdr"); text.style.fontSize = `${textSize("terminal")}px`;
@@ -209,6 +231,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   async function refresh() {
     const at = ++generation; busy = ""; federationError = "";
+    closeScope(); void openScope(at);
     const [saved, machines, remotePeers] = await Promise.allSettled([Desk.machine(), Desk.machineStatuses(), Desk.peers()]);
     if (at !== generation || !visible) return;
     machine = saved.status === "fulfilled" ? saved.value : null;
@@ -237,7 +260,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       const nextID = `${nextBoard?.machineID ?? ""}\0${nextBoard?.session ?? ""}`;
       const reload = show && (!visible || identity !== nextID || state?.phase !== nextState.phase);
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
-      if (!show) { generation++; busy = ""; openDialog?.close(); }
+      if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); }
       updateConnection();
       if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); }
     },

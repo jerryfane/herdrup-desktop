@@ -97,6 +97,13 @@ var Methods = []Method{
 	{Name: "machine.status", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultMachineStatus]("machine_status")}},
 	// schema.rs:154; src/app/api/accounts.rs:125.
 	{Name: "accounts.list", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
+	{Name: "accounts.create", Params: typeOf[AccountsCreateParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
+	{Name: "accounts.remove", Params: typeOf[AccountsRemoveParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
+	{Name: "agent.restart", Params: typeOf[AgentRestartParams](), Results: []Result{result[ResponseResultAgentInfo]("agent_info")}},
+	{Name: "pane.split", Params: typeOf[PaneSplitParams](), Results: []Result{result[ResponseResultPaneInfo]("pane_info")}},
+	{Name: "pane.close", Params: typeOf[PaneTarget](), Results: []Result{result[ResponseResultOk]("ok")}},
+	{Name: "pane.read", Params: typeOf[PaneReadParams](), Results: []Result{result[ResponseResultPaneRead]("pane_read")}},
+	{Name: "pane.send_keys", Params: typeOf[PaneSendKeysParams](), Results: []Result{result[ResponseResultOk]("ok")}},
 	// schema.rs:82; src/app/api/gram.rs:389.
 	{Name: "gram.send", Params: typeOf[GramSendParams](), Results: []Result{result[ResponseResultGramSent]("gram_sent")}},
 	// schema.rs:83; gram.rs:469.

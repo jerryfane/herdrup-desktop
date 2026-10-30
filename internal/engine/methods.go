@@ -60,6 +60,40 @@ func (c *Client) AccountsList(ctx context.Context) (herdrapi.ResponseResultAccou
 	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.list", herdrapi.EmptyParams{})
 }
 
+func (c *Client) AccountsCreate(ctx context.Context, kind, label string) (herdrapi.ResponseResultAccountsList, error) {
+	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.create", herdrapi.AccountsCreateParams{Kind: kind, Label: label})
+}
+
+func (c *Client) AccountsRemove(ctx context.Context, id string) (herdrapi.ResponseResultAccountsList, error) {
+	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.remove", herdrapi.AccountsRemoveParams{ID: id})
+}
+
+func (c *Client) AgentRestart(ctx context.Context, pane, account string) error {
+	_, err := call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.restart", herdrapi.AgentRestartParams{Target: pane, Account: &account})
+	return err
+}
+
+func (c *Client) BackgroundPane(ctx context.Context) (string, error) {
+	result, err := call[herdrapi.ResponseResultPaneInfo](ctx, c, "pane.split", herdrapi.PaneSplitParams{Direction: herdrapi.SplitDirectionDown, Focus: false})
+	return result.Pane.PaneID, err
+}
+
+func (c *Client) PaneClose(ctx context.Context, pane string) error {
+	_, err := c.do(ctx, "pane.close", herdrapi.PaneTarget{PaneID: pane})
+	return err
+}
+
+func (c *Client) PaneReadText(ctx context.Context, pane string) (string, error) {
+	format := herdrapi.ReadFormatText
+	result, err := call[herdrapi.ResponseResultPaneRead](ctx, c, "pane.read", herdrapi.PaneReadParams{PaneID: pane, Source: herdrapi.ReadSourceRecentUnwrapped, Format: &format})
+	return result.Read.Text, err
+}
+
+func (c *Client) PaneEnter(ctx context.Context, pane string) error {
+	_, err := c.do(ctx, "pane.send_keys", herdrapi.PaneSendKeysParams{PaneID: pane, Keys: []string{"Enter"}})
+	return err
+}
+
 // AgentAvatarGet is agent.avatar.get (capability agent_avatar).
 func (c *Client) AgentAvatarGet(ctx context.Context, p herdrapi.AgentAvatarGetParams) (herdrapi.ResponseResultAgentAvatarImage, error) {
 	return call[herdrapi.ResponseResultAgentAvatarImage](ctx, c, "agent.avatar.get", p)

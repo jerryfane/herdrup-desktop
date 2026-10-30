@@ -54,3 +54,19 @@
 .settings-sheet button { padding:9px 14px; border:1px solid var(--color-hairline); border-radius:99px; color:var(--color-text); background:var(--color-surface); }
 .settings-plain-row + .settings-plain-row { border-top:1px solid var(--color-hairline); }
 .settings-sheet > button + button { margin-left:8px; }
+.settings-account-row { display:flex; align-items:center; gap:12px; padding:12px 18px; }
+.settings-account-identity { display:grid; place-items:center; width:40px; height:40px; flex:none; border:1px solid var(--color-hairline); border-radius:10px; font:700 18px var(--font-app); background:var(--color-surface-raised); }
+.settings-account-email { font:400 11px var(--font-machine); color:var(--color-text-faint); overflow:hidden; text-overflow:ellipsis; }
+.settings-account-trailing { flex:none; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+.settings-account-status { display:flex; align-items:center; gap:6px; white-space:nowrap; font:400 12px var(--font-app); color:var(--color-text-dim); }
+.settings-usage { display:flex; align-items:center; gap:6px; min-width:0; font:400 11px var(--font-machine); color:var(--color-text-dim); }
+.settings-usage progress { flex:none; width:34px; height:4px; accent-color:var(--color-text-dim); }
+.settings-account-row > button { border:0; background:none; color:var(--color-text-dim); cursor:pointer; padding:8px; }
+.settings-account-empty { padding:14px 18px; }
+.settings-account-form { display:flex; flex-direction:column; gap:10px; margin:14px 0; }
+.settings-account-form input, .settings-account-form select { width:100%; min-width:0; box-sizing:border-box; padding:12px; border:1px solid var(--color-hairline); border-radius:11px; color:var(--color-text); background:var(--color-surface); font:400 13px var(--font-machine); }
+.settings-account-form label { font:600 12px var(--font-app); color:var(--color-text-faint); }
+.settings-sheet button:disabled { opacity:.45; cursor:default; }
+.settings-usage-essential { flex:none; white-space:nowrap; }
+.settings-usage-reset { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.settings-account-exhausted { border:1px solid var(--color-hairline); border-radius:99px; padding:3px 8px; font-size:11px; }
