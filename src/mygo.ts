@@ -1000,6 +1000,9 @@ export const Desk = {
   removeSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.RemoveSettingsAccount", token, id);
   },
+  revokeGuestAccess(token: string, machine: string, id: string, invite: boolean): Promise<void> {
+    return call("Desk.RevokeGuestAccess", token, machine, id, invite);
+  },
   /**
    * SaveMachine updates the saved profile without opening a connection. A running
    * connection keeps its existing credentials until the user reconnects.
@@ -1048,6 +1051,9 @@ export const Desk = {
   setFolderOpen(id: string, open: boolean): Promise<void> {
     return call("Desk.SetFolderOpen", id, open);
   },
+  setGuestGramSharing(token: string, machine: string, guestID: string, share: boolean): Promise<void> {
+    return call("Desk.SetGuestGramSharing", token, machine, guestID, share);
+  },
   /**
    * SetMachineFederation opts the saved machine profileID into federation,
    * or out of it, with `herdr machine federate|unfederate`, then re-reads
@@ -1069,6 +1075,13 @@ export const Desk = {
   },
   settingsAccounts(token: string): Promise<string> {
     return call("Desk.SettingsAccounts", token);
+  },
+  /**
+   * SettingsGuestMachine keeps listing and audit failures distinct: an unreadable
+   * activity log is not evidence that a guest has done nothing.
+   */
+  settingsGuestMachine(token: string, machine: string): Promise<string> {
+    return call("Desk.SettingsGuestMachine", token, machine);
   },
   startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
     return call("Desk.StartAccountLogin", token, loginID, id, setupToken);

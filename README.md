@@ -86,8 +86,19 @@ opened. Closing Settings or changing host/session invalidates its requests.
 Linux native-window checks exercised create, rejected code, identity-confirmed
 sign-in, pane cleanup, logout and remove against the isolated SSH fixture. They
 did not authenticate with a real provider or restart a live agent.
-This is not complete Settings parity: shared access, notifications, additional
-preferences, daemon updates and full reference comparison remain.
+Shared access combines people, pending invitations and activity from the home box
+and its federated peers. Gram-sharing switches serialize rapid changes and retain
+the latest choice. Revocation requires confirmation; cancelling an invitation
+expires it on its own machine. Unavailable stores and unreadable logs remain
+visible rather than appearing empty. The owner name is saved on this device.
+The `fakeherdr -guests` fixture provides independent local/peer guest stores with
+overlapping IDs, a retrying relay and an unavailable peer, without real relay
+credentials or grants. Native Linux checks exercised sharing on/off, rapid
+reversal, peer invite cancellation, confirmed peer revocation and owner-name
+persistence across an app restart; server reads verified the other machine stayed
+unchanged. The regression check also covers same-ID cross-machine isolation.
+This is not complete Settings parity: notifications, additional preferences,
+daemon updates, invite creation and full reference comparison remain.
 
 Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:

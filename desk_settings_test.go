@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 func accountSettingsDesk(t *testing.T) *Desk {
@@ -102,4 +103,67 @@ func TestSettingsRejectsClosedScopeMutations(t *testing.T) {
 		t.Fatalf("wrong scope mutated accounts: %s, %v", accounts, err)
 	}
 	d.CloseSettings("replacement")
+}
+
+func TestSharedAccessKeepsSameIDsOnDifferentMachinesSeparate(t *testing.T) {
+	fixture := fakeherdr.NewGuests()
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		previous := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if result, err, handled := fixture.Handle(method, raw); handled {
+				return result, err
+			}
+			return previous(method, raw)
+		}
+	})
+	board := d.Board()
+	if err := d.OpenSettings(board.MachineID, board.Session, "guests"); err != nil {
+		t.Fatal(err)
+	}
+	defer d.CloseSettings("guests")
+	ctx := context.Background()
+	const peer = "11111111111111111111111111111111"
+	list := func(machine string) herdrapi.ResponseResultGuestList {
+		t.Helper()
+		raw, err := d.SettingsGuestMachine(ctx, "guests", machine)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			Listing *herdrapi.ResponseResultGuestList `json:"listing"`
+			Error   string                            `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Listing == nil {
+			t.Fatalf("guest list failed: %s", result.Error)
+		}
+		return *result.Listing
+	}
+	if err := d.SetGuestGramSharing(ctx, "guests", peer, "guest-1", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetGuestGramSharing(ctx, "guests", "", "guest-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if !list("").Guests[0].ShareGram || list(peer).Guests[0].ShareGram {
+		t.Fatal("Gram sharing crossed machine boundaries for the same guest id")
+	}
+	if err := d.RevokeGuestAccess(ctx, "guests", peer, "guest-1", false); err != nil {
+		t.Fatal(err)
+	}
+	if list("").Guests[0].Revoked || !list(peer).Guests[0].Revoked {
+		t.Fatal("revoking the peer guest changed the local guest with the same id")
+	}
+	if err := d.RevokeGuestAccess(ctx, "guests", "", "invite-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if list("").Invites[0].ExpiresMs != 0 || list(peer).Invites[0].ExpiresMs == 0 {
+		t.Fatal("cancelling the local invite changed the peer invite with the same id")
+	}
+	d.CloseSettings("guests")
+	if err := d.SetGuestGramSharing(ctx, "guests", "", "guest-1", false); err == nil {
+		t.Fatal("a closed Settings page could change sharing permissions")
+	}
 }
