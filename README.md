@@ -52,7 +52,7 @@ you are at the tail; history prepends and switching through Terminal preserve
 your reading position. Find hides the jump button while a result is selected.
 Chat drafts stay local and are scoped to the host, herdr session and pane.
 
-Use the top-left back button or Settings to choose or add a saved SSH host.
+Use the top-left back button to choose or add a saved SSH host.
 Right-click a saved host (or press Shift+F10) to edit its nickname and connection
 details, or delete it. Save updates the profile without connecting. The host home
 uses the native readable column and app logo; pairing scans and guest invites are
@@ -62,6 +62,19 @@ Connection and session changes invalidate open agent views. Unacknowledged termi
 input is never replayed automatically. A definite prompt rejection preserves the
 draft; written or uncertain delivery clears the submitted draft and asks the reader
 to check Terminal rather than accidentally submit it twice.
+
+Settings opens a split index and Machines page, not the host chooser. It shows
+the connected host, saved federation states and unmatched peers. Federate requires
+an explicit SSH-authority confirmation; Unfederate removes that policy immediately.
+Disabled profiles cannot be enabled here. Reconnect preserves host-key checks and
+asks again for an unsaved password. Copy diagnostics includes only the host label
+and app version. The setup guide explains saving a machine separately from granting
+federation authority. Text size exposes the saved terminal controls; Help and About
+open the upstream issue tracker, community, legal pages and source.
+Linux native-window checks exercised cancellation, federation and revocation through
+the SSH fixture, and read the resulting machine status back from the server.
+This is not complete Settings parity: accounts, shared access, notifications,
+additional preferences and daemon updates remain to be integrated.
 
 Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:

@@ -141,5 +141,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   else message.hidden = true;
   void refresh();
  });
- void refresh(); return refresh;
+ void refresh();
+ return {
+  refresh,
+  async reconnect() {
+   const machine = (await Desk.machines()).find(machine => machine.active);
+   if (!machine) throw new Error("Choose a saved host before reconnecting.");
+   const secret = machine.keyPath ? "" : await password(machine);
+   if (secret !== null) await Desk.selectMachine(machine.id, secret);
+  },
+ };
 }

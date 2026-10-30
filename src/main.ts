@@ -8,6 +8,7 @@ import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, up
 import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
+import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -23,6 +24,8 @@ const field = $<HTMLCanvasElement>("field");
 let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", live: false };
 let board: BoardUpdate | null = null;
 let tab: "agents" | "gram" | "settings" = "agents";
+let choosingHost = false;
+let settings: ReturnType<typeof initSettings> | null = null;
 let pendingAgent: AgentTarget | null = null;
 let activationVersion = 0;
 let activationWork = Promise.resolve();
@@ -88,7 +91,7 @@ async function buildTopBar() {
   };
   const back = await slot("chevron.left", "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
-  const chooseHost = () => { closeWriter(); tab = "settings"; void buildTabBar(); void buildTopBar(); render(); };
+  const chooseHost = () => { closeWriter(); choosingHost = true; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
   leading.replaceChildren(back);
@@ -99,7 +102,7 @@ async function buildTopBar() {
     title.replaceChildren(document.createTextNode("Gram"), ...(count ? [count] : []));
     actions.replaceChildren(...(await barActions()));
   } else {
-    title.replaceChildren(document.createTextNode(tab === "settings" ? "Hosts" : "Agents"));
+    title.replaceChildren(document.createTextNode(tab === "settings" ? "Settings" : "Agents"));
     actions.replaceChildren();
   }
   // The capsules' shapes go with their children.
@@ -139,6 +142,7 @@ async function buildTabBar() {
       t.append(i, el("span", "t-tab-label", label));
       t.addEventListener("click", () => {
         tab = key;
+        choosingHost = false;
         void buildTabBar();
         void buildTopBar();
         render();
@@ -372,7 +376,7 @@ async function renderRows() {
   searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
   renderSessionPills();
-  const needsYou = board && searchInput.value === "" ? (board.board.sections.find((s: Section) => s.key === "needsYou")?.rows ?? []) : [];
+  const needsYou = tab === "agents" && !choosingHost && board && searchInput.value === "" ? (board.board.sections.find((s: Section) => s.key === "needsYou")?.rows ?? []) : [];
   const waitingRows = [...rowsEl.querySelectorAll<HTMLElement>('[data-section="needsYou"]')];
   const last = waitingRows[waitingRows.length - 1];
   await Promise.all([placeInitials(rowsEl), updateNeedsYou(needsYou, last ? last.offsetTop + last.offsetHeight : null)]);
@@ -427,17 +431,19 @@ function drawField() {
 }
 
 function render() {
-  const showConnect = tab === "settings" || (!board && state.phase !== "connecting" && state.phase !== "connected");
+  const showConnect = choosingHost || (!board && state.phase !== "connecting" && state.phase !== "connected");
   const showsGram = tab === "gram" && !showConnect;
+  const showsSettings = tab === "settings" && !showConnect;
   connectView.hidden = !showConnect;
-  document.body.classList.toggle("host-home-visible", showConnect && !board);
+  document.body.classList.toggle("host-home-visible", showConnect);
   const fieldWasHidden = field.hidden;
-  field.hidden = showConnect || showsGram;
+  field.hidden = showConnect || showsGram || showsSettings;
   if (fieldWasHidden && !field.hidden) drawField();
-  select.hidden = showConnect || showsGram || interactionVisible();
-  showInteraction(!showConnect && !showsGram);
-  $("roster").hidden = showsGram;
+  select.hidden = showConnect || showsGram || showsSettings || interactionVisible();
+  showInteraction(!showConnect && !showsGram && !showsSettings);
+  $("roster").hidden = showConnect || showsGram || showsSettings;
   showGram(showsGram);
+  settings?.show(showsSettings, state, board);
   void renderRows();
 }
 
@@ -472,6 +478,7 @@ function openAgent(target: AgentTarget) {
   const version = ++activationVersion;
   if (!pageReady) return;
   tab = "agents";
+  choosingHost = false;
   void buildTabBar();
   render();
   // Serialize connection/session changes; a superseded request must not
@@ -495,7 +502,7 @@ function openAgent(target: AgentTarget) {
       }
       // Password-only machines cannot reconnect unattended. Show the form;
       // the activation remains pending while the user supplies credentials.
-      tab = "settings";
+      choosingHost = true;
       state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
       render();
     }
@@ -550,7 +557,8 @@ async function init() {
   initFolders(folderDeps);
   await Promise.all([buildTopBar(), buildTabBar()]);
   initInteraction($("detail"), symbol);
-  initHosts(connectView, form, () => { closeInteraction(); tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
+  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);
   await initGram(
     {
       el,
