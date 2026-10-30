@@ -7,8 +7,6 @@ import (
 	"strconv"
 
 	"github.com/egoist/mygo"
-	"github.com/jerryfane/herdrup-desktop/internal/herdr"
-	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 // The tray icons are the app icon (public/herdrup/appicon.svg): in colour
@@ -109,7 +107,7 @@ func startPresence(d *Desk, win *mygo.Window) {
 		tray.SetToolTip(trayToolTip(len(rows)))
 		tray.SetMenu(trayMenu(d, win, board))
 	}
-	go d.presence.serve(show, func(a attention) { go showNotification(a.agent, a.target) })
+	go d.presence.serve(show, func(a attention) { go d.showAgentNotification(a) })
 }
 
 // trayTitle is the count beside the icon on macOS, none while nobody
@@ -149,20 +147,4 @@ func showWindow(win *mygo.Window) {
 	}
 	win.Show()
 	win.Focus()
-}
-
-// showNotification tells that a started needing you, as herdr's push
-// does: "jarvis needs attention", over its row's subtitle.
-func showNotification(a herdrapi.AgentInfo, target AgentTarget) {
-	if !mygo.NotificationsSupported() {
-		return
-	}
-	n := mygo.NewNotification(mygo.NotificationOptions{
-		ID:    target.notificationID(),
-		Title: attentionTitle(a),
-		Body:  herdr.Preview(a),
-	})
-	if err := n.Show(); err != nil {
-		log.Printf("notification: %v", err)
-	}
 }

@@ -248,6 +248,9 @@ type gramDesk struct {
 	badge                                           int
 	visible                                         bool
 	wake                                            chan struct{}
+	notificationBaseline                            bool
+	notificationNewest                              uint64
+	notificationIDs                                 map[string]bool
 
 	composer *gramstore.Composer
 	// lastUpload is the last upload event per path, to send one a percent.
@@ -288,6 +291,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 	g.epoch++
 	g.inbox = gramstore.Inbox{}
 	g.pending, g.deleted, g.markingRead = nil, map[string]bool{}, map[string]bool{}
+	g.notificationBaseline, g.notificationNewest, g.notificationIDs = false, 0, nil
 	g.phase, g.unavailable = "loading", ""
 	g.sendError, g.markAllNote, g.refreshAck, g.refreshNote = "", "", "", ""
 	g.ackToken++
@@ -570,11 +574,16 @@ func (d *Desk) gramBadge(ctx context.Context, l *link) {
 	if err != nil {
 		return
 	}
-	n, ok := gramstore.FromList(listing.List, listing.Unchanged).BadgeCount()
+	answer := gramstore.FromList(listing.List, listing.Unchanged)
+	n, ok := answer.BadgeCount()
 	g := &d.gram
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !ok || g.link != l || g.badge == n {
+	if !ok || g.link != l {
+		return
+	}
+	d.gramNotificationsLocked(answer.Messages)
+	if g.badge == n {
 		return
 	}
 	g.badge = n
@@ -662,6 +671,9 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 		}
 		d.publishGramLocked()
 		return gramFailed
+	}
+	if !answer.Unchanged {
+		d.gramNotificationsLocked(answer.Messages)
 	}
 	changed := g.inbox.Apply(answer, asked)
 	g.phase, g.unavailable, g.refreshNote, g.failures = "loaded", "", "", 0

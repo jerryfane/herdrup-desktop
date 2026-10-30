@@ -93,6 +93,7 @@ type presenceBoard struct {
 type attention struct {
 	agent  herdrapi.AgentInfo
 	target AgentTarget
+	kind   string
 }
 
 // presence carries what needs you from the desk to the tray and the
@@ -124,8 +125,15 @@ func (p *presence) notify(agents []herdrapi.AgentInfo, machineID, session string
 	}
 	p.mu.Lock()
 	for _, a := range agents {
-		p.started = append(p.started, attention{a, AgentTarget{machineID, sessionKey(session), a.PaneID}})
+		p.started = append(p.started, attention{agent: a, target: AgentTarget{machineID, sessionKey(session), a.PaneID}, kind: "needsInput"})
 	}
+	p.mu.Unlock()
+	p.poke()
+}
+
+func (p *presence) notifyEvent(a herdrapi.AgentInfo, machineID, session, kind string) {
+	p.mu.Lock()
+	p.started = append(p.started, attention{agent: a, target: AgentTarget{machineID, sessionKey(session), a.PaneID}, kind: kind})
 	p.mu.Unlock()
 	p.poke()
 }

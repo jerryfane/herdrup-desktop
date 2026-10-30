@@ -365,6 +365,23 @@ export interface Machine {
   session: string;
 }
 
+/**
+ * NotificationPreferences are device-local: changing hosts does not silently
+ * change which desktop alerts the owner has enabled.
+ */
+export interface NotificationPreferences {
+  needsInput: boolean;
+  dies: boolean;
+  finishes: boolean;
+  gram: boolean;
+}
+
+export interface NotificationSettings {
+  preferences: NotificationPreferences;
+  supported: boolean;
+  lastError: string;
+}
+
 export interface PaneAttachments {
   token: string;
   files: GramAttachment[];
@@ -773,6 +790,9 @@ export const Desk = {
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
   },
+  getNotificationSettings(): Promise<NotificationSettings> {
+    return call("Desk.GetNotificationSettings");
+  },
   /** GramAttachFiles stages native dropped files through the existing uploader. */
   gramAttachFiles(paths: string[]): Promise<string[]> {
     return call("Desk.GramAttachFiles", paths);
@@ -1066,6 +1086,9 @@ export const Desk = {
   setMachineFederation(profileID: string, enabled: boolean): Promise<void> {
     return call("Desk.SetMachineFederation", profileID, enabled);
   },
+  setNotificationPreference(kind: string, enabled: boolean): Promise<void> {
+    return call("Desk.SetNotificationPreference", kind, enabled);
+  },
   /**
    * SettingsAccountMenu snapshots one account. A menu selection is only an intent;
    * the actual mutation still requires a current Settings token and confirmation.
@@ -1114,6 +1137,9 @@ export const Desk = {
   },
   terminalSize(token: string, streamID: string, cols: number, rows: number): Promise<void> {
     return call("Desk.TerminalSize", token, streamID, cols, rows);
+  },
+  testNotification(): Promise<void> {
+    return call("Desk.TestNotification");
   },
 } as const;
 

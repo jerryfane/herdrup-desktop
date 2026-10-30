@@ -106,7 +106,8 @@ var (
 type Desk struct {
 	dir string // per-user data directory
 
-	storeMu sync.Mutex // serialises reads and writes of machines.json
+	storeMu       sync.Mutex // serialises reads and writes of machines.json
+	notifications notificationSettings
 
 	mu    sync.Mutex
 	state ConnState
@@ -639,6 +640,19 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 		d.mu.Unlock()
 		shown := false
 		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
+			if u.ExitedPaneID != "" {
+				d.mu.Lock()
+				if wctx.Err() == nil {
+					for _, a := range l.agents {
+						if a.PaneID == u.ExitedPaneID && a.Archived == nil {
+							d.presence.notifyEvent(a, l.id, l.session, "dies")
+							break
+						}
+					}
+				}
+				d.mu.Unlock()
+				return
+			}
 			if !shown {
 				shown, listed = true, true
 				groups.attach(ec, u.Pong)
@@ -660,6 +674,14 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
 			d.presence.notify(started, l.id, l.session)
+			if u.FinishedPaneID != "" {
+				for _, a := range u.Agents {
+					if a.PaneID == u.FinishedPaneID {
+						d.presence.notifyEvent(a, l.id, l.session, "finishes")
+						break
+					}
+				}
+			}
 			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session, MachineID: l.id})
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil

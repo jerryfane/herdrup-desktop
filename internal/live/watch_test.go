@@ -412,3 +412,47 @@ func TestLedgerOverflowDoesNotLetALateListUndoAPatch(t *testing.T) {
 		t.Fatalf("%d lists, want a fresh one after the overflowed list", got)
 	}
 }
+
+func TestLifecycleAlertsIgnoreBaselineAndReplay(t *testing.T) {
+	f, c := newFake(t, true)
+	updates, _ := watch(t, c)
+	// Project additive alert fields so this same check also builds on the old
+	// watcher: missing delivery must fail an assertion, not compilation.
+	type alerts struct{ FinishedPaneID, ExitedPaneID string }
+	nextAlerts := func() alerts {
+		t.Helper()
+		raw, err := json.Marshal(next(t, updates))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var a alerts
+		if err := json.Unmarshal(raw, &a); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	initial := nextAlerts()
+	if initial.FinishedPaneID != "" || initial.ExitedPaneID != "" {
+		t.Fatal("connecting to an existing roster produced a lifecycle alert")
+	}
+	waitStreams(t, f, 1)
+	sendTurn := func(seq, turn, epoch int, want string) {
+		t.Helper()
+		f.events <- `{"seq":` + strconv.Itoa(seq) + `,"event":"pane.turn_completed","data":{"turn":` + strconv.Itoa(turn) + `,"turn_epoch":` + strconv.Itoa(epoch) + `,"completed_unix_ms":1234,"pane":{"pane_id":"w1:p1","agent_status":"done","agent":"claude"}}}`
+		if got := nextAlerts().FinishedPaneID; got != want {
+			t.Fatalf("turn %d epoch %d: notified %q, want %q", turn, epoch, got, want)
+		}
+	}
+	sendTurn(1, 1, 1, "w1:p1")
+	sendTurn(2, 1, 1, "")
+	sendTurn(3, 2, 1, "w1:p1")
+	sendTurn(4, 1, 2, "w1:p1")
+	f.events <- `{"seq":5,"event":"pane.closed","data":{"pane_id":"w1:p1","workspace_id":"w1"}}`
+	if u := nextAlerts(); u.ExitedPaneID != "" {
+		t.Fatal("closing a pane was incorrectly reported as an agent dying")
+	}
+	f.events <- `{"seq":6,"event":"pane.exited","data":{"pane_id":"w1:p1","workspace_id":"w1"}}`
+	if got := nextAlerts().ExitedPaneID; got != "w1:p1" {
+		t.Fatalf("actual process exit notified %q", got)
+	}
+}

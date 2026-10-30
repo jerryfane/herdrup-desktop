@@ -97,8 +97,21 @@ credentials or grants. Native Linux checks exercised sharing on/off, rapid
 reversal, peer invite cancellation, confirmed peer revocation and owner-name
 persistence across an app restart; server reads verified the other machine stayed
 unchanged. The regression check also covers same-ID cross-machine isolation.
-This is not complete Settings parity: notifications, additional preferences,
-daemon updates, invite creation and full reference comparison remain.
+Notifications has four device-local switches: input requests, process exits,
+finished turns and arriving Gram messages. Choices are saved atomically and a
+failed save restores the prior switch state. A test button requests an actual
+desktop alert; API support does not establish OS permission or visible delivery.
+The app must stay running and connected. Exit/finished-turn alerts require live
+daemon events; closing or filtering out a pane is not an exit. Existing rosters
+and replayed completed turns do not alert. Gram alerts use the hidden-page unread
+poll, without notifying for existing unread messages on connection.
+Native Linux checks used an isolated SSH fixture and a real desktop notification
+daemon: all four categories delivered, disabled categories stayed silent, keyboard
+switch changes and restart persistence worked, and a failed write left the prior
+choice intact. The lifecycle regression passes with the race detector and fails
+on the prior implementation. Windows notification interaction is not verified.
+This is not complete Settings parity: additional preferences, daemon updates,
+invite creation and full reference comparison remain.
 
 Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:

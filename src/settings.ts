@@ -5,6 +5,8 @@ import { AccountSettings } from "./settingsAccounts";
 import accountIcon from "../third_party/phosphor/web/user-circle.svg?url";
 import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
+import { NotificationsSettings } from "./settingsNotifications";
+import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
 import textSizeIcon from "../third_party/phosphor/web/text-aa.svg?url";
@@ -20,10 +22,11 @@ const settingIcons: Record<string, string> = {
   "chevron.left.forwardslash.chevron.right": codeIcon, "plus.circle": addIcon,
   "person.crop.circle": accountIcon,
   "person.2": guestsIcon,
+  "bell": notificationIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
-type Page = "machines" | "accounts" | "sharedAccess" | "textSize";
+type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize";
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
@@ -49,6 +52,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let settingsToken = "";
   const accounts = new AccountSettings(report);
   const guests = new GuestSettings(report);
+  const notifications = new NotificationsSettings(report);
   function closeScope() {
     accounts.setScope("");
     guests.setScope("");
@@ -116,7 +120,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     sharedRow.setAttribute("aria-current", selected === "sharedAccess" ? "page" : "false");
     const sizing = row("Text size", "textformat.size", () => choose("textSize"), "", `${textSize("terminal")} pt`);
     sizing.setAttribute("aria-current", selected === "textSize" ? "page" : "false");
-    index.replaceChildren(card, group("HERD", [accountRow, sharedRow]), group("PREFERENCES", [sizing]), group("HELP", [
+    const notificationRow = row("Notifications", "bell", () => choose("notifications"), "Input, stopped agents, finished turns and Gram");
+    notificationRow.setAttribute("aria-current", selected === "notifications" ? "page" : "false");
+    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing]), group("HELP", [
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", "bubble.left.and.bubble.right.fill", "https://discord.gg/pq7qj4dDqt"),
@@ -149,10 +155,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     reconnectButton = null; reach = null;
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
-    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : "Text size";
+    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : "Text size";
     body.replaceChildren();
     if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "sharedAccess") { body.append(guests.root); return; }
+    if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }
     if (selected === "textSize") {
       const preview = el("div", "settings-size-preview");
       const text = el("span", "settings-terminal-preview", "~ $ herdr"); text.style.fontSize = `${textSize("terminal")}px`;
