@@ -15,6 +15,17 @@ export interface AgentTarget {
 }
 
 /**
+ * AgentView identifies one mounted detail view, not just a pane name. All writes
+ * require its token, and its lifetime ends on any connection/session change.
+ */
+export interface AgentView {
+  token: string;
+  paneID: string;
+  name: string;
+  harness: string;
+}
+
+/**
  * Avatar is what an agent's avatar draws, resolved the way herdrup's
  * AgentAvatarAppearance is.
  */
@@ -312,6 +323,42 @@ export interface Machine {
   session: string;
 }
 
+/**
+ * PaneStreamFrame is one line on a pane.stream after its stream_started
+ * acknowledgement (StreamFrameLine, pane_output_stream.rs:57-81). A line
+ * may instead be an ErrorResponse (a guest paused or revoked mid-stream);
+ * see DecodePaneStreamLine.
+ */
+export interface PaneStreamFrame {
+  stream: string;
+  frame: PaneStreamFrameKind;
+  /** Seq is an absolute byte offset into the pane's output. */
+  seq: number;
+  /** Epoch identifies the pane runtime's generation. */
+  epoch: number;
+  cols?: number;
+  rows?: number;
+  data_b64?: string;
+  lagged?: boolean;
+  /**
+   * HistoryB64 is base64 ANSI scrollback above a reset keyframe's screen,
+   * oldest first; empty when the pane has no history to give.
+   */
+  history_b64?: string;
+  /**
+   * HistoryCursor is the pane.history cursor for the first row of
+   * HistoryB64, present only when older rows remain (capability
+   * pane_history).
+   */
+  history_cursor?: string;
+}
+
+/**
+ * PaneStreamFrameKind is a pane.stream frame's "frame" field
+ * (pane_output_stream.rs:99-135).
+ */
+export type PaneStreamFrameKind = "reset" | "data" | "resize" | "ping" | "exited";
+
 /** PeerReachability is a peer's reachability, the worst across its agents. */
 export type PeerReachability = "reachable" | "degraded" | "offline";
 
@@ -333,6 +380,20 @@ export interface PeerSummary {
   /** AgentCount is how many of its agents the list has. */
   agentCount: number;
   reachability: PeerReachability;
+}
+
+/**
+ * ResponseResultPaneHistory is the "pane_history" variant of ResponseResult.
+ *
+ * Rows directly above a `pane.history` cursor's row, oldest first, as
+ * base64 ANSI rendered like a keyframe's `history_b64`. `cursor` pages
+ * further back and is `null` once the start of retained history is reached.
+ */
+export interface ResponseResultPaneHistory {
+  cursor?: string;
+  history_b64: string;
+  pane_id: string;
+  rows: number;
 }
 
 /**
@@ -559,6 +620,13 @@ export interface SymbolImage {
   baseline: number;
 }
 
+export interface TerminalEvent {
+  token: string;
+  streamID: string;
+  frame?: PaneStreamFrame;
+  error?: string;
+}
+
 // ---- Services ----
 
 /**
@@ -599,6 +667,22 @@ export const Desk = {
   /** Board returns the latest board, or nil before the first list. */
   board(): Promise<BoardUpdate | null> {
     return call("Desk.Board");
+  },
+  chatAnswer(token: string, askID: string, option: string): Promise<string> {
+    return call("Desk.ChatAnswer", token, askID, option);
+  },
+  chatPrompt(token: string, text: string): Promise<string> {
+    return call("Desk.ChatPrompt", token, text);
+  },
+  /**
+   * ChatTranscript returns protocol JSON so unknown transcript variants survive the
+   * binding generator; the frontend renders them as explicit unsupported entries.
+   */
+  chatTranscript(token: string, after: string, before: string, subagent: string): Promise<string> {
+    return call("Desk.ChatTranscript", token, after, before, subagent);
+  },
+  closeAgentView(token: string): Promise<void> {
+    return call("Desk.CloseAgentView", token);
   },
   /**
    * Connect saves the machine and connects to it, replacing any current
@@ -780,6 +864,13 @@ export const Desk = {
   nameFolder(n: FolderNaming, text: string): Promise<void> {
     return call("Desk.NameFolder", n, text);
   },
+  openAgentView(target: AgentTarget, token: string): Promise<AgentView> {
+    return call("Desk.OpenAgentView", target, token);
+  },
+  /** OpenExternalURL deliberately excludes executable/file URLs from model output. */
+  openExternalURL(raw: string): Promise<void> {
+    return call("Desk.OpenExternalURL", raw);
+  },
   /**
    * Peers lists the federation peers among the current board's agents,
    * sorted by alias; none before the first list. Saved machines match them
@@ -852,9 +943,24 @@ export const Desk = {
   setMachineFederation(profileID: string, enabled: boolean): Promise<void> {
     return call("Desk.SetMachineFederation", profileID, enabled);
   },
+  startTerminal(token: string, streamID: string): Promise<void> {
+    return call("Desk.StartTerminal", token, streamID);
+  },
   /** State returns the current connection state. */
   state(): Promise<ConnState> {
     return call("Desk.State");
+  },
+  stopTerminal(token: string, streamID: string): Promise<void> {
+    return call("Desk.StopTerminal", token, streamID);
+  },
+  terminalHistory(token: string, cursor: string): Promise<ResponseResultPaneHistory> {
+    return call("Desk.TerminalHistory", token, cursor);
+  },
+  terminalInput(token: string, streamID: string, text: string): Promise<void> {
+    return call("Desk.TerminalInput", token, streamID, text);
+  },
+  terminalSize(token: string, streamID: string, cols: number, rows: number): Promise<void> {
+    return call("Desk.TerminalSize", token, streamID, cols, rows);
   },
 } as const;
 
@@ -908,6 +1014,7 @@ export const events = {
    * window answers with Desk.NameFolder.
    */
   folderNamingRequested: event<FolderNaming>("folder-naming:requested"),
+  terminalChanged: event<TerminalEvent>("terminal:changed"),
   /**
    * SessionsChanged is sent with the session pills: none while fewer than
    * two sessions run, as herdrup hides them then.

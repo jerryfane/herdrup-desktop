@@ -133,6 +133,8 @@ var Methods = []Method{
 	{Name: "guest.update", Params: typeOf[GuestUpdateParams](), Results: []Result{result[ResponseResultGuestUpdated]("guest_updated")}},
 	// schema.rs:102; guest_owner.rs:164.
 	{Name: "guest.audit", Params: typeOf[GuestAuditParams](), Results: []Result{result[ResponseResultGuestAudit]("guest_audit")}},
+	{Name: "pane.send_text", Params: typeOf[PaneSendTextParams](), Results: []Result{result[ResponseResultOk]("ok")}},
+	{Name: "pane.set_pty_size", Params: typeOf[PaneSetPtySizeParams](), Results: []Result{result[ResponseResultPanePTYSize]("pane_pty_size")}},
 	// schema.rs:131; src/app/api/agents.rs:59.
 	{Name: "agent.list", Params: typeOf[AgentListParams](), Results: []Result{result[ResponseResultAgentList]("agent_list")}},
 	// schema.rs:134; src/app/api/transcript.rs:122.

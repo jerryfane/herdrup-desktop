@@ -5,13 +5,28 @@ the status board of the [herdrup](https://github.com/jerryfane/herdrup) iOS app,
 computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screens as a web page in
 the system webview (WKWebView, WebKitGTK, WebView2).
 
-**Status: preview** ([v0.1.0-preview.1](https://github.com/jerryfane/herdrup-desktop/releases/tag/v0.1.0-preview.1),
-epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)). Try the live agent board,
-Gram messages and attachments, and desktop tray/notifications. Saved SSH connections and
-session switching are available.
+**Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
+`v0.1.0-preview.2` adds interactive agent Terminal, omp Chat,
+expanded writing for Chat and Gram, and a saved-host selection page to the
+agent board, Gram attachments and desktop tray/notifications.
 
-This is not the completed first release: the redesigned Settings UI, full visual parity,
-shared-access UI and remaining federation UI are unfinished. Chat and Terminal are not included.
+Select an agent to open its detail view. Terminal supports live PTY input/output,
+resize, retained scrollback, search, copy and web links. Chat is available for omp
+agents: paged history, Markdown and diagrams, folded thinking/tools, prompt sending
+and supported single-choice questions. Other harnesses open Terminal.
+**Expand writing** opens a full-height editor without sending; **Done writing**
+or Escape returns the same draft. Cmd/Ctrl+Enter sends only from the compact composer.
+Chat drafts stay local and are scoped to the host, herdr session and pane.
+
+Use the top-left back button or Settings to choose, add or remove a saved SSH host.
+Password connections ask again when reconnecting; passwords are not saved.
+Connection and session changes invalidate open agent views. Unacknowledged terminal
+input is never replayed automatically; unconfirmed prompts keep their draft.
+
+This is not the completed first release: full Settings/preferences, visual parity,
+shared-agent invites/guest access and remaining federation UI are unfinished.
+The native Linux interaction checks use an isolated sample SSH backend; macOS and
+Windows desktop interaction acceptance remains separate from cross-platform builds.
 Mac and Windows builds are not developer-signed; macOS notarization and real Mac/Windows
 tray/notification acceptance are still outstanding. Use the preview to evaluate the implemented
 features, not as a claim that those release gates have passed.

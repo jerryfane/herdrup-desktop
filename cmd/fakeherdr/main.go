@@ -40,6 +40,7 @@ func main() {
 	machinesFile := flag.String("machines", "", "saved SSH machines for machine.status and `herdr machine federate|unfederate`: a JSON array of objects with herdr's machine.status fields (default: none, and no machine subcommand)")
 	machineFail := flag.String("machine-fail", "", "make `herdr machine federate|unfederate` exit 1 with this stderr")
 	gramsFile := flag.String("grams", "", "seed the Gram store: \"sample\" for the built-in messages (grams.json), or a JSON array of gram messages with optional ago_seconds, file_base64 or file_text (default: empty)")
+	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -117,6 +118,30 @@ func main() {
 		Duplex:        w.gram.Duplex,
 		Machines:      machines,
 		MachineStderr: *machineFail,
+	}
+	if *interactions {
+		x := fakeherdr.NewInteraction()
+		s.Streams = map[string]fakeherdr.StreamFunc{"pane.stream": x.Stream}
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if value, err, handled := x.Handle(method, params); handled {
+				return value, err
+			}
+			value, err := handle(method, params)
+			if method == "ping" && err == nil {
+				caps := value.(map[string]any)["capabilities"].(map[string]bool)
+				for _, name := range []string{"pane_stream", "pane_input_stream", "pane_history", "agent_transcript", "agent_prompt", "agent_answer"} {
+					caps[name] = true
+				}
+			}
+			return value, err
+		}
+		s.Duplex = func(ctx context.Context, id, method string, params json.RawMessage, read func() ([]byte, error), emit func([]byte) error) {
+			if method == "pane.input.stream" {
+				x.Duplex(ctx, id, method, params, read, emit)
+			} else {
+				w.gram.Duplex(ctx, id, method, params, read, emit)
+			}
+		}
 	}
 	addr, err := s.Listen(*listen)
 	if err != nil {

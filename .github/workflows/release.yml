@@ -113,6 +113,12 @@ jobs:
           mkdir "$RUNNER_TEMP/installers"
           find build -mindepth 2 -maxdepth 2 -type f \( -name '*.dmg' -o -name '*-setup-*.exe' \
             -o -name '*.deb' -o -name '*.tar.gz' -o -name install.sh \) -exec cp {} "$RUNNER_TEMP/installers/" \;
+          # GitHub normalizes '~' to '.' in asset names. Do it before the
+          # artifacts and checksum manifest diverge; package metadata stays intact.
+          for file in "$RUNNER_TEMP/installers/"*'~'*.deb; do
+            [ -f "$file" ] || continue
+            mv -- "$file" "${file//\~/.}"
+          done
           ls -l "$RUNNER_TEMP/installers"
       - uses: actions/upload-artifact@v4
         with:

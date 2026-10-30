@@ -111,9 +111,10 @@ type Desk struct {
 	state ConnState
 	board *BoardUpdate
 	// peers are the federation peers of board's agents.
-	peers  []engine.PeerSummary
-	cancel context.CancelFunc
-	link   *link // the current connection; nil when disconnected
+	peers       []engine.PeerSummary
+	cancel      context.CancelFunc
+	link        *link // the current connection; nil when disconnected
+	interaction *interaction
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
