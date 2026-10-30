@@ -1,4 +1,6 @@
 import { mkdir, copyFile, appendFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { resolve, join } from "node:path";
 
 const revision = "927cfce34f31707e17f2bff35c349632fb9e2c3a";
@@ -24,7 +26,9 @@ if (!(await Bun.file(model).exists())) {
   else {
     const response = await fetch("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin");
     if (!response.ok) throw new Error(`Model download failed: HTTP ${response.status}`);
-    await Bun.write(model, response);
+    // Bun 1.3.14 on Linux stalls when its Response-to-file fast path consumes
+    // this redirected download. Stream it with backpressure instead.
+    await pipeline(response.body!, createWriteStream(model));
   }
 }
 const hash = new Bun.CryptoHasher("sha256");

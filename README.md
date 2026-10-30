@@ -213,6 +213,8 @@ bun run build -- -platform linux/amd64
 The speech source must be at `927cfce34f31707e17f2bff35c349632fb9e2c3a`.
 The resource builder requires CMake and a C++17 compiler. It verifies the model's
 SHA-256 and bundles the helper, multilingual tiny model and license notices.
+Model downloads use a backpressured Node stream pipeline: Bun 1.3.14 on Linux
+can stall when writing the redirected HTTP response directly with `Bun.write`.
 Set `HERDRUP_SPEECH_MODEL` to reuse an existing verified model instead of downloading
 it during the build. There is no model download or audio upload at app runtime.
 Use a separate resource directory per target. Build Windows speech on Windows with
