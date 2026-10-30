@@ -204,6 +204,8 @@ it during the build. There is no model download or audio upload at app runtime.
 Use a separate resource directory per target. Build Windows speech on Windows with
 Visual Studio's C++ tools and a current Windows SDK; Ubuntu's MinGW headers lack
 required thread power-throttling APIs. The macOS universal build needs Xcode.
+The Windows helper defines `NOMINMAX` so the native audio headers do not replace
+the standard C++ `min` and `max` functions with Windows macros.
 Release CI prepares these resources before building each installer.
 
 `go run ./cmd/herdrup-probe -host <host> -user <user>` connects the way the app does and prints the
