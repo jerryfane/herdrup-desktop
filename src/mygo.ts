@@ -4,6 +4,9 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+/** AgentAnswerStatus values a newer herdr adds decode as they are; see Known. */
+export type AgentAnswerStatus = "answered" | "sent_unconfirmed";
+
 /**
  * AgentTarget identifies a pane within its originating connection and session.
  * Pane IDs alone can name unrelated agents on other machines or sessions.
@@ -23,6 +26,10 @@ export interface AgentView {
   paneID: string;
   name: string;
   harness: string;
+  heading: string;
+  group: string;
+  status: string;
+  statusSinceUnixMs?: number;
 }
 
 /**
@@ -77,6 +84,18 @@ export interface BoardUpdate {
   machineID: string;
 }
 
+export interface ChatAnswerReply {
+  status?: AgentAnswerStatus;
+  code?: string;
+  message?: string;
+}
+
+/** ChatMenuChoice identifies a snapshot of a message, not a mutable transcript row. */
+export interface ChatMenuChoice {
+  id: string;
+  item: string;
+}
+
 /** ConnState is the connection as the window shows it. */
 export interface ConnState {
   /** Phase is "idle", "connecting", "connected" or "error". */
@@ -87,6 +106,14 @@ export interface ConnState {
   herdr: string;
   /** Live is true when events_v2 drives updates, false when polling. */
   live: boolean;
+}
+
+export interface DictationEvent {
+  token: string;
+  state: string;
+  text?: string;
+  level?: number;
+  error?: string;
 }
 
 /** Folder is what a folder row shows (herdrup AgentFolderSummary). */
@@ -316,11 +343,18 @@ export interface Item {
  * file and a password is never written down.
  */
 export interface Machine {
+  nickname: string;
   host: string;
   port: number;
   user: string;
   keyPath: string;
   session: string;
+}
+
+export interface PaneAttachments {
+  token: string;
+  files: GramAttachment[];
+  note: string;
 }
 
 /**
@@ -497,6 +531,7 @@ export interface SavedGram {
 export interface SavedMachine {
   /** ID is user@host:port, which identifies a machine in the set. */
   id: string;
+  nickname: string;
   host: string;
   port: number;
   user: string;
@@ -627,6 +662,15 @@ export interface TerminalEvent {
   error?: string;
 }
 
+/**
+ * TerminalHistoryPage distinguishes an expired/unsupported server cursor from a
+ * transport failure. Only the latter may be retried with the same cursor.
+ */
+export interface TerminalHistoryPage {
+  page?: ResponseResultPaneHistory;
+  unavailable?: string;
+}
+
 // ---- Services ----
 
 /**
@@ -668,8 +712,12 @@ export const Desk = {
   board(): Promise<BoardUpdate | null> {
     return call("Desk.Board");
   },
-  chatAnswer(token: string, askID: string, option: string): Promise<string> {
+  chatAnswer(token: string, askID: string, option: string): Promise<ChatAnswerReply> {
     return call("Desk.ChatAnswer", token, askID, option);
+  },
+  /** ChatMenu uses an OS menu so transcript polling cannot replace an open menu. */
+  chatMenu(id: string, offersMarkdown: boolean): Promise<void> {
+    return call("Desk.ChatMenu", id, offersMarkdown);
   },
   chatPrompt(token: string, text: string): Promise<string> {
     return call("Desk.ChatPrompt", token, text);
@@ -701,6 +749,10 @@ export const Desk = {
    */
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
+  },
+  /** GramAttachFiles stages native dropped files through the existing uploader. */
+  gramAttachFiles(paths: string[]): Promise<string[]> {
+    return call("Desk.GramAttachFiles", paths);
   },
   /**
    * GramCancelAttachment removes an attached file: its upload stops, and one
@@ -871,6 +923,19 @@ export const Desk = {
   openExternalURL(raw: string): Promise<void> {
     return call("Desk.OpenExternalURL", raw);
   },
+  /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
+  paneAttachFiles(token: string, paths: string[]): Promise<void> {
+    return call("Desk.PaneAttachFiles", token, paths);
+  },
+  panePickFiles(token: string): Promise<void> {
+    return call("Desk.PanePickFiles", token);
+  },
+  paneRemoveAttachment(token: string, path: string): Promise<void> {
+    return call("Desk.PaneRemoveAttachment", token, path);
+  },
+  paneRetryAttachment(token: string, path: string): Promise<void> {
+    return call("Desk.PaneRetryAttachment", token, path);
+  },
   /**
    * Peers lists the federation peers among the current board's agents,
    * sorted by alias; none before the first list. Saved machines match them
@@ -883,12 +948,23 @@ export const Desk = {
   pendingAgent(): Promise<AgentTarget | null> {
     return call("Desk.PendingAgent");
   },
+  /** ReadAgentText powers the native pane menu's Copy screen / Copy recent output. */
+  readAgentText(token: string, recent: boolean): Promise<string> {
+    return call("Desk.ReadAgentText", token, recent);
+  },
   /**
    * RemoveMachine forgets a saved machine. Removing the active machine
    * disconnects it and leaves no machine active.
    */
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
+  },
+  /**
+   * SaveMachine updates the saved profile without opening a connection. A running
+   * connection keeps its existing credentials until the user reconnects.
+   */
+  saveMachine(m: Machine, replacing: string): Promise<void> {
+    return call("Desk.SaveMachine", m, replacing);
   },
   /**
    * SearchBoard is the board for a sidebar search: the agents query matches,
@@ -953,7 +1029,7 @@ export const Desk = {
   stopTerminal(token: string, streamID: string): Promise<void> {
     return call("Desk.StopTerminal", token, streamID);
   },
-  terminalHistory(token: string, cursor: string): Promise<ResponseResultPaneHistory> {
+  terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {
     return call("Desk.TerminalHistory", token, cursor);
   },
   terminalInput(token: string, streamID: string, text: string): Promise<void> {
@@ -978,6 +1054,23 @@ export const Symbols = {
    */
   image(name: string, pointSize: number, weight: string, scale: number): Promise<SymbolImage> {
     return call("Symbols.Image", name, pointSize, weight, scale);
+  },
+} as const;
+
+/**
+ * Dictation runs one bundled, offline-only microphone recognizer. It has no
+ * provider selection, URL, API key, network client or cloud fallback.
+ */
+export const Dictation = {
+  start(token: string, locale: string): Promise<void> {
+    return call("Dictation.Start", token, locale);
+  },
+  /**
+   * Stop preserves the last partial result, matching SpeechDictator.stop. Killing
+   * inference releases capture immediately; no late result can overwrite typed text.
+   */
+  stop(token: string): Promise<void> {
+    return call("Dictation.Stop", token);
   },
 } as const;
 
@@ -1015,6 +1108,8 @@ export const events = {
    */
   folderNamingRequested: event<FolderNaming>("folder-naming:requested"),
   terminalChanged: event<TerminalEvent>("terminal:changed"),
+  chatMenu: event<ChatMenuChoice>("chat:menu"),
+  paneAttachments: event<PaneAttachments>("pane:attachments"),
   /**
    * SessionsChanged is sent with the session pills: none while fewer than
    * two sessions run, as herdrup hides them then.
@@ -1025,6 +1120,7 @@ export const events = {
    * which name the account on an agent row.
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
+  dictationChanged: event<DictationEvent>("dictation:changed"),
   /**
    * AgentOpen wakes the page for a scoped notification or tray activation.
    * Desk.PendingAgent retains it across window and board startup.

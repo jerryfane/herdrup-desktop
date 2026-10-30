@@ -245,6 +245,17 @@ func (c *Composer) Chip(path string) (Chip, bool) {
 // the composer and a failed one stays for a retry. Nothing is sent when
 // there is neither text nor a staged file of paths.
 func (c *Composer) Send(ctx context.Context, text string, paths []string, post PostFunc) error {
+	return c.send(ctx, text, paths, post, nil)
+}
+
+// SendPrompt retains posted file identities until finish reports that the prompt
+// reached (or may have reached) the agent. A definite rejection preserves the
+// batch for retry without posting its Grams twice.
+func (c *Composer) SendPrompt(ctx context.Context, paths []string, post PostFunc, finish func([]Attachment) (bool, error)) error {
+	return c.send(ctx, "", paths, post, finish)
+}
+
+func (c *Composer) send(ctx context.Context, text string, paths []string, post PostFunc, finish func([]Attachment) (bool, error)) error {
 	c.mu.Lock()
 	if c.sending {
 		c.mu.Unlock()
@@ -314,10 +325,23 @@ func (c *Composer) Send(ctx context.Context, text string, paths []string, post P
 		c.changed(a.Path)
 	})
 
+	consume := finish == nil
+	var finishErr error
+	if finish != nil && failure == nil {
+		c.mu.Lock()
+		for i := range batch {
+			if index := c.index(batch[i].Path); index >= 0 {
+				batch[i] = c.files[index]
+			}
+		}
+		c.mu.Unlock()
+		consume, finishErr = finish(batch)
+	}
+
 	c.mu.Lock()
 	var posted []string
 	c.files = slices.DeleteFunc(c.files, func(a Attachment) bool {
-		if a.MessageID != "" {
+		if consume && a.MessageID != "" && slices.Contains(paths, a.Path) {
 			posted = append(posted, a.Path)
 			return true
 		}
@@ -329,7 +353,7 @@ func (c *Composer) Send(ctx context.Context, text string, paths []string, post P
 	c.mu.Unlock()
 	c.up.Forget(posted)
 	if failure == nil {
-		return nil
+		return finishErr
 	}
 	reason := "Couldn't send. Try again."
 	var api *bridge.APIError

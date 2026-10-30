@@ -94,6 +94,24 @@ jobs:
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-0 xvfb
+      - name: Fetch pinned offline speech engine
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        uses: actions/checkout@v5
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
+          path: .speech-source
+      - name: Build offline speech resources for the existing smoke runner
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        shell: bash
+        env:
+          WHISPER_SOURCE: ${{ github.workspace }}/.speech-source
+          HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
+        run: |
+          case "$RUNNER_OS" in
+            Linux) bun speech/build.ts linux/amd64 ;;
+            Windows) bun speech/build.ts windows/amd64 ;;
+          esac
       - name: Build the app with the smoke hook
         shell: bash
         env:

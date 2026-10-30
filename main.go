@@ -34,6 +34,10 @@ func main() {
 	}
 	mygo.Bind(desk)
 	mygo.Bind(Symbols{})
+	dictation := &Dictation{}
+	mygo.Bind(dictation)
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { dictation.stopAll() })
+	mygo.App.OnDidResignActive(dictation.stopAll)
 
 	installMenuBar()
 	var win *mygo.Window
@@ -67,6 +71,7 @@ func main() {
 			AutoHideMenuBar: true,
 		})
 		startPresence(desk, win)
+		win.OnClose(func(*mygo.CloseEvent) { dictation.stopAll() })
 		if refEnabled() {
 			runRef(desk, win)
 			return

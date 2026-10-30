@@ -1,0 +1,33 @@
+.connect .host-home { max-width:560px; box-sizing:border-box; margin:0 auto; padding:22px; display:flex; flex-direction:column; gap:18px; }
+.connect:has(.host-home) { padding:0; }
+.host-home-header { display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:10px 4px 6px; }
+.host-home-mark { width:44px; height:44px; border-radius:11px; }
+.connect .host-home h1 { font-size:34px; font-weight:700; margin:0; line-height:41px; }
+.host-home-header p { font-size:16px; line-height:20px; margin:2px 0 0; color:var(--color-text-dim); }
+.host-home-saved h2 { font-size:12px; line-height:15px; font-weight:600; letter-spacing:1.4px; color:var(--color-text-dim); margin:0 18px 8px; }
+.host-home-rows { overflow:hidden; border-radius:18px; border:1px solid var(--color-hairline); background:var(--color-surface); }
+.host-home .host-home-row { position:relative; display:flex; align-items:center; gap:14px; width:100%; min-height:60px; box-sizing:border-box; padding:10px 18px; text-align:left; border:0; border-radius:0; background:none; color:var(--color-text); font-weight:400; }
+.host-home-row + .host-home-row::before { content:""; position:absolute; top:0; left:54px; right:0; height:1px; background:var(--color-hairline); }
+.host-home-icon { width:22px; flex:none; display:flex; align-items:center; justify-content:center; color:var(--color-text-dim); }
+.host-computer-glyph { width:22px; height:22px; display:block; background:currentColor; mask:var(--host-computer) center/contain no-repeat; -webkit-mask:var(--host-computer) center/contain no-repeat; }
+.host-home-lines { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.host-home-name { font-size:17px; line-height:22px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.host-home-address { font-size:14px; line-height:18px; color:var(--color-text-dim); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.host-home-chevron { color:var(--color-text-faint); flex:none; }
+.host-home .host-add { min-height:50px; border-radius:25px; border:1px solid var(--color-hairline); background:var(--color-surface); color:var(--color-text); font-size:16px; font-weight:600; }
+.host-home-message { font-size:14px; color:var(--color-text-dim); }
+.host-editor { width:min(520px,calc(100vw - 40px)); max-height:calc(100vh - 40px); overflow:auto; padding:0; border:1px solid var(--color-hairline); border-radius:20px; color:var(--color-text); background:var(--color-ground); }
+.host-editor-header { display:flex; align-items:center; justify-content:center; position:relative; min-height:56px; font-size:17px; }
+.host-editor-header button { position:absolute; left:16px; border:0; padding:8px 0; background:none; color:var(--color-text-dim); font-size:17px; font-weight:400; }
+.host-editor .form { display:flex; flex-direction:column; gap:10px; padding:0 20px 20px; margin:0; background:none; box-shadow:none; border-radius:0; }
+.host-editor .form > label { display:flex; flex-direction:row; align-items:center; gap:12px; min-height:52px; font-size:16px; }
+.host-editor .form > label > input { margin:0; margin-left:auto; min-width:0; width:60%; flex:none; }
+.host-editor .form-actions { display:flex; flex-direction:column; }
+.host-editor .form-actions > button[type=submit] { min-height:50px; border-radius:25px; color:var(--color-ground); background:var(--color-text); }
+.host-editor .host-save-only { border:0; background:none; color:var(--color-text-dim); font-size:14px; font-weight:400; }
+.host-editor-error { font-size:14px; margin:0; }
+.host-editor::backdrop { background:color-mix(in srgb,var(--color-ground) 65%,transparent); }
+.host-context-menu { position:fixed; z-index:100; min-width:180px; padding:6px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
+.host-context-menu button { display:block; width:100%; text-align:left; border:0; background:none; font-size:15px; font-weight:400; padding:10px 12px; }
+body.host-home-visible > .detail { left:0; }
+body.host-home-visible > .sidebar { display:none; }

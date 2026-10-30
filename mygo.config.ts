@@ -1,5 +1,15 @@
 import { defineConfig } from "mygo-cli";
 import pkg from "./package.json" with { type: "json" };
+import { join } from "node:path";
+import { existsSync } from "node:fs";
+
+const speech = process.env.HERDRUP_SPEECH_RESOURCES;
+const speechFiles = speech ? [
+  join(speech, existsSync(join(speech, "herdrup-speech.exe")) ? "herdrup-speech.exe" : "herdrup-speech"),
+  join(speech, "ggml-tiny.bin"),
+  join(speech, "whisper-LICENSE"),
+  join(speech, "speech-LICENSES"),
+] : [];
 
 export default defineConfig({
   name: "Herdrup",
@@ -17,6 +27,7 @@ export default defineConfig({
   frontendDist: "dist",
   bindings: "src/mygo.ts",
   out: "build",
+  resources: speechFiles,
   linux: {
     maintainer: "Jerry Fane <jerryfane@users.noreply.github.com>",
     comment: "Answer your herdr coding agents from the desktop",

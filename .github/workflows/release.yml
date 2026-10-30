@@ -23,6 +23,9 @@ jobs:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -31,9 +34,9 @@ jobs:
           # Intel Macs. GitHub's hosted Macs are shared with herdrup's iOS
           # CI: this is the workflow's only macOS job.
           - { name: macOS, os: macos-latest, platform: darwin/universal }
-          # MyGo needs no cgo, so Ubuntu cross-builds Windows, with NSIS for
-          # the installer.
-          - { name: Windows, os: ubuntu-latest, platform: windows/amd64 }
+          # The offline speech engine requires a current Windows SDK.
+          # Build it with MSVC rather than Ubuntu's older MinGW headers.
+          - { name: Windows, os: windows-latest, platform: windows/amd64 }
           - { name: Linux, os: ubuntu-latest, platform: linux/amd64 }
     steps:
       - uses: actions/checkout@v5
@@ -49,7 +52,10 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Install NSIS for the Windows installer
         if: matrix.name == 'Windows'
-        run: sudo apt-get update && sudo apt-get install -y nsis
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       # Signing hook, off: it runs only once the repository variable
       # MACOS_SIGNING_IDENTITY ("Developer ID Application: … (TEAMID)") and
       # the secrets MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD, APPLE_ID,
@@ -81,6 +87,17 @@ jobs:
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
           echo "HERDRUP_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
           echo "HERDRUP_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Fetch pinned offline speech engine
+        uses: actions/checkout@v5
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
+          path: speech-source
+      - name: Build offline speech resources
+        env:
+          WHISPER_SOURCE: ${{ github.workspace }}/speech-source
+          HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
+        run: bun speech/build.ts "${{ matrix.platform }}"
       - name: Build
         run: bun run build -- -platform "${{ matrix.platform }}"
       # The disk image is checked here rather than in a job of its own, to

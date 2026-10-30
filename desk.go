@@ -26,11 +26,12 @@ import (
 // Machine is a saved connection. It holds no secret: the key stays in its
 // file and a password is never written down.
 type Machine struct {
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	User    string `json:"user"`
-	KeyPath string `json:"keyPath"`
-	Session string `json:"session"`
+	Nickname string `json:"nickname"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	KeyPath  string `json:"keyPath"`
+	Session  string `json:"session"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -263,6 +264,47 @@ func (d *Desk) Machines() ([]SavedMachine, error) {
 	return out, nil
 }
 
+// SaveMachine updates the saved profile without opening a connection. A running
+// connection keeps its existing credentials until the user reconnects.
+func (d *Desk) SaveMachine(m Machine, replacing string) error {
+	m.Nickname = strings.TrimSpace(m.Nickname)
+	m.Host = strings.TrimSpace(m.Host)
+	m.User = strings.TrimSpace(m.User)
+	m.KeyPath = expandHome(strings.TrimSpace(m.KeyPath))
+	if m.Port == 0 {
+		m.Port = 22
+	}
+	if m.Host == "" || m.User == "" {
+		return errors.New("host and user are required")
+	}
+	if !bridge.ValidSession(m.Session) {
+		return fmt.Errorf("invalid herdr session name %q", m.Session)
+	}
+	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
+	st, err := d.load()
+	if err != nil {
+		return err
+	}
+	id := machineID(m)
+	index := st.find(replacing)
+	if replacing != "" && index < 0 {
+		return errors.New("the saved host no longer exists")
+	}
+	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
+		return errors.New("that host and user are already saved")
+	}
+	if index < 0 {
+		st.Machines = append(st.Machines, m)
+	} else {
+		st.Machines[index] = m
+		if st.Active == replacing {
+			st.Active = id
+		}
+	}
+	return d.store(st)
+}
+
 // SelectMachine makes a saved machine the active one and connects to it,
 // replacing any current connection. password is used only when the
 // machine has no key file.
@@ -429,6 +471,7 @@ func (d *Desk) Board() *BoardUpdate {
 // Connect saves the machine and connects to it, replacing any current
 // connection. password is used only when the machine has no key file.
 func (d *Desk) Connect(m Machine, password string) error {
+	m.Nickname = strings.TrimSpace(m.Nickname)
 	m.Host = strings.TrimSpace(m.Host)
 	m.User = strings.TrimSpace(m.User)
 	m.KeyPath = expandHome(strings.TrimSpace(m.KeyPath))

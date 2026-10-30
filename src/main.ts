@@ -17,8 +17,6 @@ const searchField = $("search-field");
 const searchInput = $<HTMLInputElement>("search");
 const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
-const connectError = $("connect-error");
-const disconnect = $<HTMLButtonElement>("disconnect");
 const select = $("select");
 const field = $<HTMLCanvasElement>("field");
 
@@ -432,45 +430,22 @@ function render() {
   const showConnect = tab === "settings" || (!board && state.phase !== "connecting" && state.phase !== "connected");
   const showsGram = tab === "gram" && !showConnect;
   connectView.hidden = !showConnect;
+  document.body.classList.toggle("host-home-visible", showConnect && !board);
+  const fieldWasHidden = field.hidden;
   field.hidden = showConnect || showsGram;
+  if (fieldWasHidden && !field.hidden) drawField();
   select.hidden = showConnect || showsGram || interactionVisible();
   showInteraction(!showConnect && !showsGram);
   $("roster").hidden = showsGram;
   showGram(showsGram);
-  connectError.hidden = state.phase !== "error";
-  connectError.textContent = state.phase === "error" ? `${state.machine}: ${state.message}` : "";
-  disconnect.hidden = state.phase === "idle";
   void renderRows();
 }
 
 // ---- Wiring ----
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const f = new FormData(form);
-  const get = (k: string) => String(f.get(k) ?? "").trim();
-  try {
-    board = null;
-    closeInteraction();
-    tab = "agents";
-    void buildTabBar();
-    void buildTopBar();
-    await Desk.connect(
-      { host: get("host"), port: Number(get("port")) || 22, user: get("user"), keyPath: get("keyPath"), session: get("session") },
-      String(f.get("password") ?? ""),
-    );
-  } catch (err) {
-    state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
-    render();
-  }
-});
 
 searchInput.addEventListener("input", () => void renderRows());
 
-disconnect.addEventListener("click", () => {
-  board = null;
-  void Desk.disconnect();
-});
 
 events.stateChanged.on((s) => {
   state = s;
@@ -574,8 +549,8 @@ async function init() {
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
   await Promise.all([buildTopBar(), buildTabBar()]);
-  initInteraction($("detail"));
-  initHosts(connectView, form, () => { tab = "agents"; void buildTabBar(); void buildTopBar(); render(); });
+  initInteraction($("detail"), symbol);
+  initHosts(connectView, form, () => { closeInteraction(); tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
   await initGram(
     {
       el,

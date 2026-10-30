@@ -16,14 +16,65 @@ agents: paged history, Markdown and diagrams, folded thinking/tools, prompt send
 and supported single-choice questions. Other harnesses open Terminal.
 External images in transcript diagrams are blocked before the browser fetches them.
 Invalid diagrams stay as source text; history from an old transcript session is discarded.
-**Expand writing** opens a full-height editor without sending; **Done writing**
-or Escape returns the same draft. Cmd/Ctrl+Enter sends only from the compact composer.
+The current parity branch replaces the separate writing dialog with the Swift
+composer's in-card drag handle. Expanding keeps the same field, selection and draft.
+Terminal quick keys are grouped, with Return pinned outside the scrollable row.
+Earlier terminal output loads above the live screen, without a separate window or
+replaying the terminal stream. Paging preserves live input, cursor state and search;
+expired cursors stop paging, while transport failures remain retryable. History is
+bounded to 20,000 rows. The prepend adapter uses private buffer and hyperlink
+registry APIs, so xterm is pinned to 6.0.0 and upgrades require terminal-history
+checks, including real hyperlink activation. Historical OSC8 targets are remapped
+into the live registry; both OSC8 and visible URL links use the guarded OS opener.
+Chat shows the current to-do plan once, at the end of the conversation. Its
+collapsed card follows the active task; expand it to see completed and later work.
+Single-choice questions appear inline, with the recommended option (or the first
+option) styled as primary. Multi-part and multi-select questions direct you to Terminal.
+Open question shows the full card and its prompt context; an answer updates both
+the sheet and the transcript without closing the sheet.
+Answer refusals stay inside that card. Changed options or an unavailable terminal
+question UI offer Answer in Terminal, which dismisses the sheet and focuses the
+live terminal. A successful answer stays visible while the transcript catches up;
+server-reported answers supersede the local choice.
+Transcript notes show their source, time and sender in a compact card. Open a note
+to view its sheet; Show context expands the selectable Markdown body.
+Right-click a prompt, reply or expanded thought (or press Shift+F10 while it is
+focused) for Copy and Select Text. Replies also offer Copy as Markdown. Copy
+uses readable text; Select Text opens one selectable surface with formatting,
+list markers and table cells preserved. An open native menu keeps its original
+message while the transcript updates.
+Scrolling back reveals Jump to latest message. New content follows only while
+you are at the tail; history prepends and switching through Terminal preserve
+your reading position. Find hides the jump button while a result is selected.
 Chat drafts stay local and are scoped to the host, herdr session and pane.
 
-Use the top-left back button or Settings to choose, add or remove a saved SSH host.
+Use the top-left back button or Settings to choose or add a saved SSH host.
+Right-click a saved host (or press Shift+F10) to edit its nickname and connection
+details, or delete it. Save updates the profile without connecting. The host home
+uses the native readable column and app logo; pairing scans and guest invites are
+not implemented yet, so this is not complete host-selection parity.
 Password connections ask again when reconnecting; passwords are not saved.
 Connection and session changes invalidate open agent views. Unacknowledged terminal
-input is never replayed automatically; unconfirmed prompts keep their draft.
+input is never replayed automatically. A definite prompt rejection preserves the
+draft; written or uncertain delivery clears the submitted draft and asks the reader
+to check Terminal rather than accidentally submit it twice.
+
+Pane attachments upload when picked, then post to the named agent on Send. One
+prompt references the whole batch. A rejected prompt retains the posted file IDs:
+retrying does not upload or post those files again. Saved prompts are device-local;
+selecting one sends it immediately, as in Swift.
+Native file-drop events share the picker/upload path in Chat and Gram. The vendored
+MyGo correction accepts real Linux GTK URI-list drops even when WebKit exposes no
+DOM File, and prevents an outside drop from navigating away. Only native-selected
+paths authorize file access: plain URI text, synthetic events and in-page drags do
+not. Clipboard attachment parity is still pending.
+The parity branch also has a shared offline microphone control for Chat and Gram.
+The local whisper.cpp helper captures audio and streams partial text; no audio
+provider, network upload or cloud fallback is used. Linux native-window smoke has
+exercised recognition through an isolated PulseAudio monitor and microphone release
+when leaving Chat. This is not physical-microphone or Windows acceptance. Linux
+resource packaging also passes a native-window capture-start smoke; Windows/macOS
+packaging and the remaining visual comparison still need verification.
 
 This is not the completed first release: full Settings/preferences, visual parity,
 shared-agent invites/guest access and remaining federation UI are unfinished.
@@ -138,8 +189,22 @@ bun install
 bun run dev        # app with hot reload
 go test ./...      # Go tests, against an in-process SSH server (internal/fakeherdr)
 bun run typecheck
-bun run build -- -platform darwin/arm64,windows/amd64,linux/amd64 -skip-dmg
+# For an installer with offline speech, build one target at a time:
+export WHISPER_SOURCE=/path/to/whisper.cpp
+export HERDRUP_SPEECH_RESOURCES=/path/to/owned/local-build-scratch/speech-linux
+bun speech/build.ts linux/amd64
+bun run build -- -platform linux/amd64
 ```
+
+The speech source must be at `927cfce34f31707e17f2bff35c349632fb9e2c3a`.
+The resource builder requires CMake and a C++17 compiler. It verifies the model's
+SHA-256 and bundles the helper, multilingual tiny model and license notices.
+Set `HERDRUP_SPEECH_MODEL` to reuse an existing verified model instead of downloading
+it during the build. There is no model download or audio upload at app runtime.
+Use a separate resource directory per target. Build Windows speech on Windows with
+Visual Studio's C++ tools and a current Windows SDK; Ubuntu's MinGW headers lack
+required thread power-throttling APIs. The macOS universal build needs Xcode.
+Release CI prepares these resources before building each installer.
 
 `go run ./cmd/herdrup-probe -host <host> -user <user>` connects the way the app does and prints the
 board as JSON, with no window; `-watch 1m` keeps printing updates.
@@ -214,6 +279,8 @@ with the box and baseline SwiftUI gives `Image(systemName:).font(.system(size:we
   (`third_party/phosphor/`, MIT, with its licence), fitted to the box where macOS draws the symbol's ink.
   Those boxes are measured on macOS into `symbols_sfmetrics.go`; only the symbols listed there have a
   stand-in.
+  Additional web-only glyphs in `third_party/phosphor/web` are pinned to
+  `@phosphor-icons/core@2.1.1` and use the same MIT licence.
 
 The `Symbols` workflow (on demand, macOS) checks the AppKit images against SwiftUI's at 1x, 2x and 3x,
 checks `symbols_sfmetrics.go` against AppKit, and uploads every image.
@@ -243,6 +310,13 @@ window against `cmd/fakeherdr` on Linux and Windows, and on macOS on `main`, on 
 requests labelled `macos-smoke` (GitHub's hosted Macs are shared with herdrup's iOS CI), and uploads a
 screenshot of each. The parity check below also runs on GitHub's hosted macOS, whose version the pixel
 match was made on.
+The existing Linux and Windows smoke jobs also compile the pinned offline speech
+helper and package its model and licences. That checks the platform toolchain and
+bundle contents; the board screenshot is not microphone or dictation acceptance.
+
+The current pin is Swift merge `9845ecf0743c7dce8073dc4a00db23b1fec069a8`.
+The reference manifests retain each screenshot's producing head; that delivery
+commit is not a claim that the desktop matches all 64 native reference images.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
 the agent list against herdrup's iPad screenshots (`design/reference/agent-list` in jerryfane/herdrup at

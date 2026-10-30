@@ -34,6 +34,11 @@ func (c *Client) AgentList(ctx context.Context, p herdrapi.AgentListParams) (her
 	return call[herdrapi.ResponseResultAgentList](ctx, c, "agent.list", p)
 }
 
+// AgentRead returns the visible screen or retained output, as text or ANSI.
+func (c *Client) AgentRead(ctx context.Context, p herdrapi.AgentReadParams) (herdrapi.ResponseResultPaneRead, error) {
+	return call[herdrapi.ResponseResultPaneRead](ctx, c, "agent.read", p)
+}
+
 // AgentTranscript is agent.transcript (capability agent_transcript).
 func (c *Client) AgentTranscript(ctx context.Context, p herdrapi.AgentTranscriptParams) (herdrapi.ResponseResultAgentTranscript, error) {
 	return call[herdrapi.ResponseResultAgentTranscript](ctx, c, "agent.transcript", p)
