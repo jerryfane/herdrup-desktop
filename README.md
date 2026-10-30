@@ -19,6 +19,10 @@ Invalid diagrams stay as source text; history from an old transcript session is 
 The current parity branch replaces the separate writing dialog with the Swift
 composer's in-card drag handle. Expanding keeps the same field, selection and draft.
 Terminal quick keys are grouped, with Return pinned outside the scrollable row.
+The pane's Text size menu independently remembers Chat (12–24 pt, default 16) and
+Terminal (9–24 pt, default 12.5). Ctrl/Cmd +, − and 0 change or reset terminal text
+without sending those shortcuts to the PTY. Font changes refit the live terminal;
+Chat text reflows without scaling the surrounding controls.
 Earlier terminal output loads above the live screen, without a separate window or
 replaying the terminal stream. Paging preserves live input, cursor state and search;
 expired cursors stop paging, while transport failures remain retryable. History is

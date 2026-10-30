@@ -13,6 +13,7 @@ import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import type { ByteFrame, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
+import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -46,8 +47,14 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
   if (event.note) current.status.textContent = event.note;
  });
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
+ onTextSizeChanged(() => current?.resizeText());
  window.addEventListener("keydown", event => {
   if (!current || root.hidden) return;
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && ["=", "+", "-", "0"].includes(event.key)) {
+   event.preventDefault(); event.stopPropagation();
+   current.changeTextSize("terminal", event.key === "0" ? "reset" : event.key === "-" ? -1 : 1);
+   return;
+  }
   if (event.key.toLowerCase() === "f" && (event.metaKey || event.ctrlKey) && !event.altKey) { event.preventDefault(); event.stopPropagation(); current.toggleFind(true); }
   if (event.key === "Escape" && current.findOpen) { event.preventDefault(); event.stopPropagation(); current.toggleFind(false); }
  }, true);
@@ -110,6 +117,7 @@ class Detail {
  search: SearchAddon | null = null;
  resize: ResizeObserver | null = null;
  resizeTimer: number | undefined;
+ fitTerminal: (() => void) | null = null;
  refreshTimer: number | undefined;
  inputQueue: Promise<void> = Promise.resolve();
  inputFailed = false;
@@ -255,6 +263,13 @@ class Detail {
    }));
   }
   this.actions.append(button("Copy selection", () => { this.actions.hidden = true; void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); }));
+  this.actions.append(el("div", "pane-action-heading", "Text size"));
+  for (const [label, delta] of [["Increase", 1], ["Decrease", -1], ["Reset", "reset"]] as const) {
+   this.actions.append(button(label, () => {
+    this.actions.hidden = true;
+    this.changeTextSize(this.mode, delta);
+   }));
+  }
   this.findInput.type = "search"; this.findInput.placeholder = "Find";
   this.findInput.oninput = () => this.updateFind(true);
   this.findInput.onkeydown = event => {
@@ -281,6 +296,15 @@ class Detail {
    modes.hidden = !chatAvailable;
    await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? (localStorage.getItem("chat.ompOpensIn") === "terminal" ? "terminal" : "chat")) : "terminal");
   } catch (e) { if (!this.disposed) this.status.textContent = String(e); }
+ }
+ changeTextSize(surface: TextSurface, delta: number | "reset") {
+  try { changeTextSize(surface, delta); }
+  catch (error) { this.status.textContent = String(error); }
+ }
+ resizeText() {
+  if (this.terminal) this.terminal.options.fontSize = textSize("terminal");
+  this.fitTerminal?.();
+  this.followChat();
  }
  updateStatus(group: string, label: string, since?: number) {
   clearInterval(this.statusTimer);
@@ -374,6 +398,7 @@ class Detail {
   clearTimeout(this.resizeTimer);
   clearTimeout(this.historyTimer); this.historyRequest++;
   this.resize?.disconnect(); this.resize = null;
+  this.fitTerminal = null;
   this.terminalReady = false;
   this.terminal?.dispose(); this.terminal = null; this.fit = null;
  }
@@ -413,6 +438,7 @@ class Detail {
   clearTimeout(this.resizeTimer);
   clearTimeout(this.historyTimer); this.historyRequest++;
   this.resize?.disconnect(); this.resize = null;
+  this.fitTerminal = null;
   this.terminal?.dispose(); this.terminal = null;
   await Desk.stopTerminal(this.token, this.terminalID);
   if (this.disposed) return;
@@ -428,7 +454,7 @@ class Detail {
   this.terminalSurface.append(canvas, this.historyButton);
   const styles = getComputedStyle(document.documentElement);
   // SearchAddon decorations require xterm's proposed decoration API.
-  const term = new Terminal({ fontFamily: styles.getPropertyValue("--font-machine"), fontSize: 14, scrollback: HISTORY_ROWS, allowProposedApi: true, theme: { background: styles.getPropertyValue("--color-ground-machine").trim(), foreground: styles.getPropertyValue("--color-text").trim() } });
+  const term = new Terminal({ fontFamily: styles.getPropertyValue("--font-machine"), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: { background: styles.getPropertyValue("--color-ground-machine").trim(), foreground: styles.getPropertyValue("--color-text").trim() } });
   this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false;
   term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = String(e); }); } };
   term.loadAddon(this.fit); term.loadAddon(this.search);
@@ -462,6 +488,7 @@ class Detail {
    this.updateHistoryPaging();
    void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => { if (generation === this.generation && streamID === this.terminalID) this.status.textContent = "Resize: " + String(e); });
   };
+  this.fitTerminal = fit;
   this.resize = new ResizeObserver(() => { clearTimeout(this.resizeTimer); this.resizeTimer = window.setTimeout(fit, 120); });
   this.resize.observe(canvas);
   try { await Desk.startTerminal(this.token, streamID); if (generation !== this.generation || streamID !== this.terminalID || this.disposed) return; this.terminalReady = true; fit(); if (this.mode === "terminal") term.focus(); }
