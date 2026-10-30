@@ -151,4 +151,6 @@ jobs:
           name: smoke-${{ runner.os }}
           retention-days: 14
           if-no-files-found: ignore
-          path: ${{ runner.temp }}/herdrup-${{ runner.os }}.png
+          path: |
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png-preview-*.png

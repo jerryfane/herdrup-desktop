@@ -115,6 +115,20 @@ daemon: all four categories delivered, disabled categories stayed silent, keyboa
 switch changes and restart persistence worked, and a failed write left the prior
 choice intact. The lifecycle regression passes with the race detector and fails
 on the prior implementation. Windows notification interaction is not verified.
+Received HTML/SVG attachments open in an isolated in-app preview, not the system
+browser. Scripts are off unless the device's “Run JavaScript in previews” setting
+is enabled; changes apply to the next preview. The document has no app origin,
+native bridge or storage access. Inline images/styles remain visible; network
+loads, popups and navigation out of the document are blocked. With scripts enabled,
+non-URL transports such as WebRTC can still signal that the document was opened,
+so the setting warns about that limit. A failed protection setup never falls back
+to the system browser. Other documents keep their system opener; programs remain
+save-only.
+Linux native checks rendered the same document with scripts off and on, verified
+bridge/storage/parent isolation, and blocked fetch, WebSocket and navigation
+requests against a local server whose unprotected browser control did load.
+The existing Windows/Linux CI window smoke also exercises these boundaries and
+saves each preview screenshot.
 This is not complete Settings parity: additional preferences, daemon updates,
 invite creation and full reference comparison remain.
 

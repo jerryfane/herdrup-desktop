@@ -91,7 +91,11 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 				if n, _ := m["rows"].(float64); int(n) == want {
 					// Let the browser paint the frame it just laid out.
 					time.Sleep(500 * time.Millisecond)
-					finish(true, "page shows "+strconv.Itoa(want)+" rows")
+					if err := smokePreviews(win, out); err != nil {
+						finish(false, err.Error())
+						return
+					}
+					finish(true, "page shows "+strconv.Itoa(want)+" rows; received-document preview isolation passed")
 					return
 				}
 			}

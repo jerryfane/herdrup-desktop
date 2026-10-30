@@ -793,6 +793,13 @@ export const Desk = {
   getNotificationSettings(): Promise<NotificationSettings> {
     return call("Desk.GetNotificationSettings");
   },
+  /**
+   * GetPreviewJavaScript defaults off. A malformed preference is an error rather
+   * than permission to run a received document's scripts.
+   */
+  getPreviewJavaScript(): Promise<boolean> {
+    return call("Desk.GetPreviewJavaScript");
+  },
   /** GramAttachFiles stages native dropped files through the existing uploader. */
   gramAttachFiles(paths: string[]): Promise<string[]> {
     return call("Desk.GramAttachFiles", paths);
@@ -859,10 +866,8 @@ export const Desk = {
     return call("Desk.GramMenu", id, items);
   },
   /**
-   * GramOpenFile opens a message's file with the system's default app,
-   * downloading it the first time. herdrup's QuickLook and in-app HTML/SVG
-   * viewer have no desktop counterpart; a program or script is not opened
-   * at all, since the system opener would run it.
+   * GramOpenFile previews received HTML/SVG in an isolated window. Other documents
+   * use the system opener; programs and scripts remain save-only.
    */
   gramOpenFile(id: string): Promise<void> {
     return call("Desk.GramOpenFile", id);
@@ -1088,6 +1093,9 @@ export const Desk = {
   },
   setNotificationPreference(kind: string, enabled: boolean): Promise<void> {
     return call("Desk.SetNotificationPreference", kind, enabled);
+  },
+  setPreviewJavaScript(enabled: boolean): Promise<void> {
+    return call("Desk.SetPreviewJavaScript", enabled);
   },
   /**
    * SettingsAccountMenu snapshots one account. A menu selection is only an intent;

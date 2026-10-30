@@ -96,3 +96,5 @@
 .settings-app-preview { font:400 15px var(--font-app); }
 .settings-preference-row { display:grid; grid-template-columns:22px minmax(0,1fr); }
 .settings-preference-select { grid-column:2; justify-self:start; max-width:100%; padding:4px 8px; border:1px solid var(--color-hairline); border-radius:6px; background:var(--color-surface); color:var(--color-text-dim); font:400 13px var(--font-app); }
+.settings-preference-row > .settings-switch { grid-column:2; }
+.settings-preference-status { grid-column:2; overflow-wrap:anywhere; }

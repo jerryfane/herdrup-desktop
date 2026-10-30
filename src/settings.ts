@@ -7,6 +7,7 @@ import accountIcon from "../third_party/phosphor/web/user-circle.svg?url";
 import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
+import { PreviewSettings } from "./settingsPreviews";
 import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
@@ -54,6 +55,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const accounts = new AccountSettings(report);
   const guests = new GuestSettings(report);
   const notifications = new NotificationsSettings(report);
+  const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right"));
   function closeScope() {
     accounts.setScope("");
     guests.setScope("");
@@ -136,7 +138,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const chatPreferenceRow = el("label", "settings-row settings-preference-row"), chatPreferenceLines = el("span", "settings-row-lines");
     chatPreferenceLines.append(el("span", "settings-row-label", "omp agents open in"), el("span", "settings-row-subtitle", "Claude Code and Codex agents always open in the terminal."));
     chatPreferenceRow.append(glyph("bubble.left.and.bubble.right.fill", 20), chatPreferenceLines, chatChoice);
-    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, chatPreferenceRow]), group("HELP", [
+    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, chatPreferenceRow, previews.root]), group("HELP", [
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", "bubble.left.and.bubble.right.fill", "https://discord.gg/pq7qj4dDqt"),
@@ -314,7 +316,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); }
       updateConnection();
-      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); }
+      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); }
     },
   };
 }
