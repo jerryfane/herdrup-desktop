@@ -10,6 +10,7 @@ import { initInteraction, selectInteraction, interactionVisible, showInteraction
 import { initHosts } from "./hosts";
 import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
+import { onTextSizeChanged } from "./textSize";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -244,6 +245,7 @@ async function placeInitials(root: ParentNode) {
     measure.font = font;
     const advance = measure.measureText(glyph.textContent ?? "").width;
     const box = tile.getBoundingClientRect().width;
+    if (box <= 0) continue; // A hidden page is positioned when its layout becomes visible.
     glyph.style.left = `${Math.round(((box - advance) / 2) * devicePixelRatio) / devicePixelRatio}px`;
   }
 }
@@ -427,8 +429,15 @@ function drawField() {
       hairline: cssVar("--color-hairline"),
     },
     font: cssVar("--font-machine"),
+    labelFont: getComputedStyle(select).font,
   });
 }
+
+onTextSizeChanged(() => {
+  placeTitle();
+  void placeInitials(document);
+  if (!field.hidden) drawField();
+});
 
 function render() {
   const showConnect = choosingHost || (!board && state.phase !== "connecting" && state.phase !== "connected");

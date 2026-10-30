@@ -14,6 +14,7 @@ import { bytes, currentPlan, groupTranscript, mergeTranscript, planDone, planWin
 import type { ByteFrame, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
+import { defaultChatMode } from "./chatPreference";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -110,8 +111,8 @@ class Detail {
  chatSurface = el("div", "chat-surface");
  mounted = false;
  terminalStartup: Promise<void> | null = null;
- chatButton = button("Chat", () => { void this.switchMode("chat"); });
- terminalButton = button("Terminal", () => { void this.switchMode("terminal"); });
+ chatButton = button("Chat", () => { void this.chooseMode("chat"); });
+ terminalButton = button("Terminal", () => { void this.chooseMode("terminal"); });
  terminal: Terminal | null = null;
  fit: FitAddon | null = null;
  search: SearchAddon | null = null;
@@ -294,7 +295,7 @@ class Detail {
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    const chatAvailable = /^omp(?:$| |-)/i.test(view.harness);
    modes.hidden = !chatAvailable;
-   await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? (localStorage.getItem("chat.ompOpensIn") === "terminal" ? "terminal" : "chat")) : "terminal");
+   await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal");
   } catch (e) { if (!this.disposed) this.status.textContent = String(e); }
  }
  changeTextSize(surface: TextSurface, delta: number | "reset") {
@@ -403,6 +404,10 @@ class Detail {
   this.terminal?.dispose(); this.terminal = null; this.fit = null;
  }
  dispose() { this.disposed = true; this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
+ async chooseMode(mode: "chat" | "terminal") {
+  modeChoices.set(JSON.stringify(this.target), mode);
+  await this.switchMode(mode);
+ }
  async switchMode(mode: "chat" | "terminal") {
   const generation = this.generation;
   this.mode = mode; this.status.textContent = "";
@@ -410,7 +415,6 @@ class Detail {
   this.body.dataset.mode = mode;
   this.setCtrl(false);
   this.column.setVisible(mode === "chat");
-  modeChoices.set(JSON.stringify(this.target), mode);
   this.chatButton.setAttribute("aria-pressed", String(mode === "chat"));
   this.terminalButton.setAttribute("aria-pressed", String(mode === "terminal"));
   this.chatSurface.hidden = mode !== "chat";
@@ -830,7 +834,7 @@ class Detail {
   const problem = this.answerProblem?.askID === entry.id ? this.answerProblem : null;
   if (problem) card.append(el("p", "chat-question-problem", problem.message));
   if (problem ? problem.offersTerminal : !canAnswer) {
-   const terminal = button("Answer in Terminal", () => { void this.switchMode("terminal"); });
+   const terminal = button("Answer in Terminal", () => { void this.chooseMode("terminal"); });
    terminal.className = "chat-question-terminal"; card.append(terminal);
   }
   return row;

@@ -1,4 +1,4 @@
-.settings-index { flex:1; min-height:0; overflow:auto; padding:14px 0 16px; background:var(--color-ground); }
+.settings-index { flex:1; min-height:0; overflow:auto; padding:14px 0 calc(var(--size-tab-bar) + var(--tabbar-bottom) + 16px); background:var(--color-ground); }
 .settings-index[hidden], .settings-detail[hidden] { display:none; }
 .settings-detail { position:absolute; inset:0; display:flex; flex-direction:column; color:var(--color-text); background:var(--color-ground); min-width:0; }
 .settings-page-title { flex:none; display:grid; place-items:center; height:56px; margin:0; font:600 17px var(--font-app); }
@@ -93,3 +93,6 @@
 .settings-switch:checked::before { left:22px; }
 .settings-switch:focus-visible { outline:2px solid var(--color-text); outline-offset:3px; }
 .settings-switch:disabled { opacity:.45; cursor:default; }
+.settings-app-preview { font:400 15px var(--font-app); }
+.settings-preference-row { display:grid; grid-template-columns:22px minmax(0,1fr); }
+.settings-preference-select { grid-column:2; justify-self:start; max-width:100%; padding:4px 8px; border:1px solid var(--color-hairline); border-radius:6px; background:var(--color-surface); color:var(--color-text-dim); font:400 13px var(--font-app); }

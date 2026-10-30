@@ -10,6 +10,7 @@ import { rowTime, separator } from "./gramDates";
 import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
+import { onTextSizeChanged } from "./textSize";
 import {
   activeQuery,
   addressing,
@@ -386,7 +387,7 @@ function buildPage(): HTMLElement {
   banner = el("div", "gram-banner gcol");
   composer = buildComposer();
   page.append(body, banner, composer);
-  new ResizeObserver(() => {
+  const relayout = () => {
     column.update();
     const h = header.offsetHeight;
     if (Math.abs(h - headerHeight) > 0.5) {
@@ -395,8 +396,12 @@ function buildPage(): HTMLElement {
       observeFeed();
     }
     measureFolds(page);
+    void deps.placeInitials(page);
     layoutComposer();
-  }).observe(page);
+    requestAnimationFrame(() => { for (const name of page.querySelectorAll<HTMLElement>(".gram-middle-name")) fitMiddleName(name); });
+  };
+  new ResizeObserver(relayout).observe(page);
+  onTextSizeChanged(relayout);
   return page;
 }
 
@@ -1156,16 +1161,19 @@ const measureCtx = document.createElement("canvas").getContext("2d") as CanvasRe
 
 /** A name cut in the middle to fit its line once laid out (SwiftUI `.truncationMode(.middle)`). */
 function middleName(cls: string, name: string): HTMLElement {
-  const n = el("span", cls, name);
+  const n = el("span", `${cls} gram-middle-name`, name);
   n.title = name;
-  requestAnimationFrame(() => {
-    const max = n.clientWidth;
-    if (max <= 0 || n.scrollWidth <= max) return;
-    const s = getComputedStyle(n);
-    measureCtx.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
-    n.textContent = model.middleTruncate(name, max, (t) => measureCtx.measureText(t).width);
-  });
+  requestAnimationFrame(() => fitMiddleName(n));
   return n;
+}
+function fitMiddleName(n: HTMLElement) {
+  const name = n.title;
+  n.textContent = name;
+  const max = n.clientWidth;
+  if (max <= 0 || n.scrollWidth <= max) return;
+  const s = getComputedStyle(n);
+  measureCtx.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+  n.textContent = model.middleTruncate(name, max, (t) => measureCtx.measureText(t).width);
 }
 
 function openFile(id: string) {

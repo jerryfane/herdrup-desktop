@@ -1,6 +1,7 @@
 import { Desk, events } from "./mygo";
 import type { BoardUpdate, ConnState, Machine, PeerSummary, SavedMachineStatus } from "./mygo";
-import { changeTextSize, onTextSizeChanged, textSize } from "./textSize";
+import { changeTextSize, changeUIFontScale, onTextSizeChanged, textSize, uiFontScale } from "./textSize";
+import { defaultChatMode, changeDefaultChatMode } from "./chatPreference";
 import { AccountSettings } from "./settingsAccounts";
 import accountIcon from "../third_party/phosphor/web/user-circle.svg?url";
 import { GuestSettings } from "./settingsGuests";
@@ -118,11 +119,24 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
     const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "People, invites and activity");
     sharedRow.setAttribute("aria-current", selected === "sharedAccess" ? "page" : "false");
-    const sizing = row("Text size", "textformat.size", () => choose("textSize"), "", `${textSize("terminal")} pt`);
+    const sizing = row("Text size", "textformat.size", () => choose("textSize"), `${Math.round(uiFontScale() * 100)}% · ${textSize("terminal")} pt`);
     sizing.setAttribute("aria-current", selected === "textSize" ? "page" : "false");
     const notificationRow = row("Notifications", "bell", () => choose("notifications"), "Input, stopped agents, finished turns and Gram");
     notificationRow.setAttribute("aria-current", selected === "notifications" ? "page" : "false");
-    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing]), group("HELP", [
+    const chatChoice = el("select", "settings-preference-select");
+    chatChoice.setAttribute("aria-label", "omp agents open in");
+    for (const [value, label] of [["chat", "Chat"], ["terminal", "Terminal"]] as const) {
+      const option = el("option", "", label); option.value = value; chatChoice.append(option);
+    }
+    chatChoice.value = defaultChatMode();
+    chatChoice.onchange = () => {
+      try { changeDefaultChatMode(chatChoice.value === "terminal" ? "terminal" : "chat"); }
+      catch (error) { chatChoice.value = defaultChatMode(); report(error); }
+    };
+    const chatPreferenceRow = el("label", "settings-row settings-preference-row"), chatPreferenceLines = el("span", "settings-row-lines");
+    chatPreferenceLines.append(el("span", "settings-row-label", "omp agents open in"), el("span", "settings-row-subtitle", "Claude Code and Codex agents always open in the terminal."));
+    chatPreferenceRow.append(glyph("bubble.left.and.bubble.right.fill", 20), chatPreferenceLines, chatChoice);
+    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, chatPreferenceRow]), group("HELP", [
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", "bubble.left.and.bubble.right.fill", "https://discord.gg/pq7qj4dDqt"),
@@ -161,16 +175,23 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     if (selected === "sharedAccess") { body.append(guests.root); return; }
     if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }
     if (selected === "textSize") {
-      const preview = el("div", "settings-size-preview");
-      const text = el("span", "settings-terminal-preview", "~ $ herdr"); text.style.fontSize = `${textSize("terminal")}px`;
-      preview.append(text, el("span", "", `${textSize("terminal")} pt`));
-      const controls = el("div", "settings-size-controls");
-      for (const [label, delta] of [["A−", -1], ["Reset", "reset"], ["A+", 1]] as const) {
-        const control = button(label, () => { try { changeTextSize("terminal", delta); } catch (error) { report(error); } });
-        control.disabled = delta === -1 ? textSize("terminal") <= 9 : delta === 1 ? textSize("terminal") >= 24 : textSize("terminal") === 12.5;
-        controls.append(control);
+      for (const size of [
+        { key:"app", title:"App text — lists, menus & settings", sample:"The quick brown fox", value:uiFontScale(), label:`${Math.round(uiFontScale() * 100)}%`, min:0.9, max:1.4, default:1, step:0.1, change:changeUIFontScale },
+        { key:"terminal", title:"Terminal text — agent output", sample:"~ $ herdr", value:textSize("terminal"), label:`${textSize("terminal")} pt`, min:9, max:24, default:12.5, step:1, change:(delta: number | "reset") => changeTextSize("terminal", delta) },
+      ]) {
+        const preview = el("div", "settings-size-preview"), text = el("span", `settings-${size.key}-preview`, size.sample);
+        if (size.key === "terminal") text.style.fontSize = `${size.value}px`;
+        preview.append(text, el("span", "", size.label));
+        const controls = el("div", "settings-size-controls");
+        for (const [label, delta] of [["A−", -size.step], ["Reset", "reset"], ["A+", size.step]] as const) {
+          const control = button(label, () => { try { size.change(delta); } catch (error) { report(error); } });
+          control.dataset.textControl = `${size.key}-${label}`;
+          control.disabled = delta === "reset" ? size.value === size.default : delta < 0 ? size.value <= size.min : size.value >= size.max;
+          controls.append(control);
+        }
+        body.append(group(size.title, [preview, controls]));
       }
-      body.append(group("Terminal text — agent output", [preview, controls])); return;
+      return;
     }
     const hero = el("div", "settings-machine-hero"), label = el("h2", "settings-machine-hero-name", name());
     machineNameNodes.push(label); const connection = el("p", "settings-machine-connection"); connectionNodes.push(connection);
@@ -279,7 +300,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       if (selected === "machines") renderPage();
     }).catch(error => { if (at === generation) report(error); });
   });
-  onTextSizeChanged(() => { if (visible) { renderIndex(); renderPage(); } });
+  onTextSizeChanged(() => {
+    if (!visible) return;
+    const focused = (document.activeElement as HTMLElement | null)?.dataset.textControl;
+    renderIndex(); renderPage();
+    if (focused) body.querySelector<HTMLButtonElement>(`[data-text-control="${focused}"]`)?.focus();
+  });
   renderIndex(); renderPage();
   return {
     show(show: boolean, nextState: ConnState, nextBoard: BoardUpdate | null) {

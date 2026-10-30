@@ -69,8 +69,13 @@ an explicit SSH-authority confirmation; Unfederate removes that policy immediate
 Disabled profiles cannot be enabled here. Reconnect preserves host-key checks and
 asks again for an unsaved password. Copy diagnostics includes only the host label
 and app version. The setup guide explains saving a machine separately from granting
-federation authority. Text size exposes the saved terminal controls; Help and About
-open the upstream issue tracker, community, legal pages and source.
+federation authority. Text size saves app text scaling (90–140%) separately from
+terminal point size (9–24 pt). Chat combines app scaling with its own text-size
+control; terminal glyphs do not change when app text changes. Both settings survive
+restart. The OMP preference chooses Chat or Terminal on opening an agent; an explicit
+mode choice overrides it for that agent until the app quits. Opening the default
+does not pin an override. Claude Code and Codex always open in Terminal.
+Help and About open the upstream issue tracker, community, legal pages and source.
 Linux native-window checks exercised cancellation, federation and revocation through
 the SSH fixture, and read the resulting machine status back from the server.
 Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
