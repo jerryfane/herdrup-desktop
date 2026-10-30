@@ -28,6 +28,10 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
+      - name: Vendored MyGo correction matches its pinned source patch
+        run: |
+          bun run vendor:mygo
+          test -z "$(git status --porcelain -- vendor)"
       - name: Bindings match the Go code
         run: bun run generate && git diff --exit-code src/mygo.ts
       - name: Design tokens and fonts match the pinned herdrup commit

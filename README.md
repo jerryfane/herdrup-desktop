@@ -151,6 +151,26 @@ one herdr API method through `internal/engine` and prints the result as JSON (`s
 fake saved machines (a JSON array with `machine.status`'s fields) and a `herdr machine federate|unfederate`
 that changes them (`-machine-fail <stderr>` makes it fail).
 
+### MyGo native-drop correction
+
+Go builds use the committed `vendor/` tree. `third_party/mygo/upstream.json` pins
+MyGo v0.7.1, its upstream commit and module checksum; `native-drop.patch` beside it
+is the readable source correction for [#72](https://github.com/jerryfane/herdrup-desktop/issues/72).
+The upstream Go implementation is unchanged. Its original TypeScript build inputs
+are retained with the rebuilt embedded bridge, so application builds need no patch step.
+
+To change Go dependencies or regenerate the correction, use Bun **1.3.14**, Go and
+GNU patch, then run `bun run vendor:mygo`. This replaces `vendor/` from `go.mod`,
+checks the MyGo base, applies the patch without fuzz and rebuilds the bridge.
+Do not run plain `go mod vendor` or build with `-mod=mod`: those remove or bypass
+the correction. CI regenerates the tree and rejects any difference.
+
+Acceptance uses a real GTK drag into Chat and Gram, a posted-file byte/hash
+read-back, an outside-composer drop, and rejected synthetic, in-page, plain-text
+URI and non-file URI cases. A synthetic DOM `File` alone does not test this path.
+The recorded Linux scenarios do not establish Windows physical-device acceptance.
+
+
 ## Design tokens and shared assets
 
 Colours, fonts, the mascots, the app icon and the mermaid renderer are shared with the iOS app. Their
