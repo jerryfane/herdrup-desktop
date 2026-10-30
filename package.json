@@ -7,6 +7,7 @@
     "dev": "mygo dev",
     "build": "mygo build",
     "generate": "mygo generate",
+    "vendor:mygo": "bun run third_party/mygo/vendor.ts",
     "dev:web": "vite",
     "build:web": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",

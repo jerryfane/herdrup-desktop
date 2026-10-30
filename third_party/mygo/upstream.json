@@ -1,0 +1,8 @@
+{
+  "module": "github.com/egoist/mygo",
+  "version": "v0.7.1",
+  "commit": "76dd068b72cc15526cda19db84d70a63c7a8843a",
+  "sum": "h1:hCEgDRz3j6YWby2oAbby4vtMRUUnZZ5AZ/I1yMNBRbs=",
+  "bun": "1.3.14",
+  "issue": "https://github.com/jerryfane/herdrup-desktop/issues/72"
+}

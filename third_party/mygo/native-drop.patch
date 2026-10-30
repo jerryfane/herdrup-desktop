@@ -1,0 +1,38 @@
+--- a/packages/bridge/src/bridge.ts
++++ b/packages/bridge/src/bridge.ts
+@@ -115,16 +115,21 @@
+   let inPage = false; // a drag started in this page: none of our business
+   w.addEventListener("dragstart", () => (inPage = true), true);
+   w.addEventListener("dragend", () => (inPage = false), true);
++  // WebKitGTK may expose an OS file drop only as text/uri-list, with an
++  // empty FileList. This event requests native paths; URI text is never read.
++  // Synthetic events must not consume paths captured by a real native drag.
+   const external = (e: DragEvent) =>
+-    !inPage && !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
++    e.isTrusted && !inPage && !!e.dataTransfer &&
++    (e.dataTransfer.types.includes("Files") ||
++      (__MYGO_CONFIG__.platform === "linux" && e.dataTransfer.types.includes("text/uri-list")));
+   w.addEventListener(
+     "drop",
+     (e: DragEvent) => {
+-      const files = e.dataTransfer?.files;
+-      if (inPage || !files?.length) return;
++      if (!external(e)) return;
++      const files = e.dataTransfer!.files;
+       const m = __MYGO_CONFIG__.secret + JSON.stringify({ t: "drop", x: Math.round(e.clientX), y: Math.round(e.clientY) });
+       try {
+-        raw.postWithFiles ? raw.postWithFiles(m, files) : raw.post(m);
++        raw.postWithFiles && files.length ? raw.postWithFiles(m, files) : raw.post(m);
+       } catch {
+         try {
+           raw.post(m); // e.g. File objects not backed by a file
+@@ -140,6 +145,9 @@
+   const accept = (e: DragEvent) => {
+     if (external(e) && !e.defaultPrevented) e.preventDefault();
+   };
++  // WebKitGTK can navigate on release without another dragover; accepting
++  // dragenter is necessary for the page to receive that drop.
++  w.addEventListener("dragenter", accept);
+   w.addEventListener("dragover", accept);
+   w.addEventListener("drop", accept);
+ 
