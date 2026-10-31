@@ -679,7 +679,8 @@ class Detail {
    const stacked = this.editor!.open || this.attachments.length > 0 || (!this.dictation.strip.hidden && !!this.input.value) || measure(width - actions.offsetWidth) > 1;
    composer.classList.toggle("expanded", stacked);
    const lines = measure(stacked ? width : width - actions.offsetWidth);
-   const room = Math.max(0, this.body.clientHeight - 68);
+   // Swift gives the writer the warm terminal's room, including its key-row allowance.
+   const room = this.terminalSurface.clientHeight;
    this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
    const composerHeight = composer.offsetHeight + 12;
    this.body.style.setProperty("--composer-height", `${composerHeight}px`);
