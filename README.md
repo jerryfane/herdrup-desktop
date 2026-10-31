@@ -224,6 +224,13 @@ Native Linux checks exercise cancellation, refusal, download progress, success,
 pending restart and manual-update cards against an isolated SSH fixture. They
 do not install a real daemon or establish Windows/macOS update UI acceptance.
 
+The Settings index shows live account/exhaustion counts, shared people/agents/invites,
+enabled notification categories and text sizes. It reuses the page models and updates
+only the value nodes, preserving keyboard focus. Unavailable home-box data is not
+shown as an empty list. Linux native checks covered empty and mixed data, revoked
+guests, expired/used invites, missing APIs, long-value truncation and keyboard
+notification changes from three to four enabled categories and back.
+
 Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
 registers a Claude, Codex or Kimi account on the home box. Its context menu can move
 same-kind agents after confirmation, log a Claude account in or out, or remove the

@@ -13,7 +13,7 @@ export class NotificationsSettings {
   private running = new Set<keyof NotificationPreferences>();
   private status = el("p", "settings-row-subtitle");
 
-  constructor(private report: (error: unknown) => void) { this.render(); }
+  constructor(private report: (error: unknown) => void, private summarize: (value: string) => void) { this.render(); }
   async refresh() {
     if (this.loading || this.running.size) return;
     this.loading = true;
@@ -25,6 +25,7 @@ export class NotificationsSettings {
     const focused = this.root.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.preference : undefined;
     const card = el("div", "settings-group");
     const rows: [keyof NotificationPreferences, string][] = [["needsInput", "An agent needs input"], ["dies", "An agent dies"], ["finishes", "An agent finishes"], ["gram", "A gram message arrives"]];
+    this.summarize(this.state ? `${rows.filter(([key]) => this.pending.get(key) ?? this.state!.preferences[key]).length} of ${rows.length}` : "");
     for (const [key, title] of rows) {
       const row = el("label", "settings-row settings-notification-toggle"), input = el("input", "settings-switch");
       input.type = "checkbox"; input.setAttribute("role", "switch"); input.setAttribute("aria-label", title);

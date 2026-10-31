@@ -72,9 +72,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let openDialog: HTMLDialogElement | null = null;
   const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
   let settingsToken = "";
-  const accounts = new AccountSettings(report);
-  const guests = new GuestSettings(report);
-  const notifications = new NotificationsSettings(report);
+  const accountSummary = el("span", "settings-row-value"), guestSummary = el("span", "settings-row-value"), notificationSummary = el("span", "settings-row-value");
+  const accounts = new AccountSettings(report, value => { accountSummary.textContent = value; });
+  const guests = new GuestSettings(report, value => { guestSummary.textContent = value; });
+  const notifications = new NotificationsSettings(report, value => { notificationSummary.textContent = value; });
   const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right"));
   const updates = new ServerUpdateSettings(report);
   function closeScope() {
@@ -134,12 +135,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     section.append(el("h2", "settings-section-label", label));
     const card = el("div", "settings-group"); card.append(...rows); section.append(card); return section;
   }
-  function row(label: string, icon: string, action: () => void, subtitle = "", value = "") {
+  function row(label: string, icon: string, action: () => void, subtitle = "", value: string | HTMLElement = "") {
     const node = button("", action); node.className = "settings-row";
     const lines = el("span", "settings-row-lines"); lines.append(el("span", "settings-row-label", label));
     if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
     node.append(glyph(icon), lines);
-    if (value) node.append(el("span", "settings-row-value", value));
+    if (value) node.append(typeof value === "string" ? el("span", "settings-row-value", value) : value);
     return node;
   }
   function link(label: string, icon: string, url: string) {
@@ -160,13 +161,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     machineNameNodes.push(label);
     const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
     lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines, glyph("chevron.right", 12));
-    const accountRow = row("Accounts", "person.crop.circle", () => choose("accounts"), "Subscriptions on your home box");
+    const accountRow = row("Accounts", "person.crop.circle", () => choose("accounts"), "", accountSummary);
     accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
-    const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "People, invites and activity");
+    const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "", guestSummary);
     sharedRow.setAttribute("aria-current", selected === "sharedAccess" ? "page" : "false");
-    const sizing = row("Text size", "textformat.size", () => choose("textSize"), `${Math.round(uiFontScale() * 100)}% · ${textSize("terminal")} pt`);
+    const sizing = row("Text size", "textformat.size", () => choose("textSize"), "", `${Math.round(uiFontScale() * 100)}% · ${textSize("terminal")} pt`);
     sizing.setAttribute("aria-current", selected === "textSize" ? "page" : "false");
-    const notificationRow = row("Notifications", "bell", () => choose("notifications"), "Input, stopped agents, finished turns and Gram");
+    const notificationRow = row("Notifications", "bell", () => choose("notifications"), "", notificationSummary);
     notificationRow.setAttribute("aria-current", selected === "notifications" ? "page" : "false");
     const chatChoice = el("select", "settings-preference-select");
     chatChoice.setAttribute("aria-label", "omp agents open in");
@@ -441,7 +442,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();
-      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); }
+      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); void notifications.refresh(); }
     },
   };
 }

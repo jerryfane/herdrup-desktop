@@ -23,7 +23,7 @@ export class AccountSettings {
   private loading = false;
   private error = "";
   private menu: { id: string; token: string; account: Account } | null = null;
-  constructor(private report: (message: unknown) => void) {
+  constructor(private report: (message: unknown) => void, private summarize: (value: string) => void) {
     events.settingsAccountMenu.on(choice => {
       const menu = this.menu;
       if (!menu || menu.id !== choice.id || menu.token !== choice.token || this.token !== choice.token) return;
@@ -47,11 +47,15 @@ export class AccountSettings {
   }
   private async refresh() {
     const token = this.token;
-    try { const accounts = accountsFrom(await Desk.settingsAccounts(token)); if (this.token === token) this.accounts = accounts; }
+    try { const accounts = accountsFrom(await Desk.settingsAccounts(token)); if (this.token === token) { this.accounts = accounts; this.error = ""; } }
     catch (error) { if (this.token === token) this.error = String(error); }
     finally { if (this.token === token) { this.loading = false; this.render(); } }
   }
   private render() {
+    const exhausted = this.accounts.filter(account => !account.active).length;
+    this.summarize(!this.token || this.loading ? "" : this.accounts.length
+      ? `${this.accounts.length}${exhausted ? ` · ${exhausted} exhausted` : ""}`
+      : this.error ? "Unavailable" : "None");
     const card = el("div", "settings-group");
     for (const account of this.accounts) card.append(this.accountRow(account));
     if (!this.accounts.length) {

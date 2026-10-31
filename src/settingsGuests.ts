@@ -35,7 +35,7 @@ export class GuestSettings {
   private pending = new Map<string, { value: boolean }>();
   private running = new Set<string>();
   private revoking = new Set<string>();
-  constructor(private report: (message: unknown) => void) {
+  constructor(private report: (message: unknown) => void, private summarize: (value: string) => void) {
     const input = el("input"); input.placeholder = "Your name"; input.setAttribute("aria-label", "Your name"); input.autocomplete = "name";
     const explanation = el("p", "settings-row-subtitle");
     let saved = ""; try { saved = localStorage.getItem("guest.ownerName") ?? ""; } catch { /* empty until a name can be saved */ }
@@ -75,6 +75,14 @@ export class GuestSettings {
     const people = this.results.flatMap(result => (result.listing?.guests ?? []).filter(guest => !guest.revoked).map(guest => ({ machine: result.machine, guest }))).sort((a, b) => (b.guest.last_seen_ms ?? 0) - (a.guest.last_seen_ms ?? 0));
     const invites = this.results.flatMap(result => (result.listing?.invites ?? []).filter(invite => !invite.used_by && (invite.expires_ms === undefined || invite.expires_ms > Date.now())).map(invite => ({ machine: result.machine, invite }))).sort((a, b) => (b.invite.created_ms ?? 0) - (a.invite.created_ms ?? 0));
     const failures = this.results.filter(result => result.error && (!result.missingFeature || !result.machine.alias));
+    const summary: string[] = [];
+    if (people.length) {
+      const agents = new Set(people.map(({ machine, guest }) => JSON.stringify([machine.alias, guest.grant?.terminal_id ?? guest.grant?.agent_name ?? ""])));
+      summary.push(`${people.length} ${people.length === 1 ? "person" : "people"}`, `${agents.size} agent${agents.size === 1 ? "" : "s"}`);
+    }
+    if (invites.length) summary.push(`${invites.length} invite${invites.length === 1 ? "" : "s"}`);
+    this.summarize(!this.loaded ? "" : summary.length ? summary.join(" · ")
+      : failures.some(result => !result.machine.alias) ? "Unavailable" : "Nobody yet");
     const peopleRows = people.map(({ machine, guest }) => this.personRow(machine, guest));
     if (!peopleRows.length) peopleRows.push(note(!this.token ? "Connect to a home box to manage shared access." : !this.loaded ? "Loading…" : failures.length ? "Shared access could not be loaded from every machine." : "Nobody has access. Share an agent from its ••• menu."));
     this.content.replaceChildren(group("PEOPLE", peopleRows));
