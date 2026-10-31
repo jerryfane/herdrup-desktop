@@ -75,7 +75,7 @@ Right-click a saved host (or press Shift+F10) to edit its nickname and connectio
 details, or delete it. Save updates the profile without connecting. The host home
 uses the native readable column and app logo. Scan pairing code reads the one-time
 QR printed by `herdr pair`; Add host remains available for manual setup.
-Guest invitation acceptance is still missing, so host-selection parity is incomplete.
+Open invitation reviews a guest link before accepting it; accepted shares appear under Shared with you.
 Password connections ask again when reconnecting; passwords are not saved.
 Connection and session changes invalidate open agent views. Unacknowledged terminal
 input is never replayed automatically. A definite prompt rejection preserves the
@@ -92,6 +92,27 @@ retried automatically. A late camera permission result is stopped after dismissa
 and decoding or leaving the window stops capture. Linux native checks used a real
 canvas MediaStream and an isolated TCP pairing endpoint; physical-camera capture
 and Windows/macOS camera acceptance are not verified.
+
+Guest invitations accept `herdrup://guest-invite#…` links, matching HTTPS relay
+links, or pasted invitation text. Review shows the owner, shared agent, guest name
+and this device's key fingerprint before any relay connection. Acceptance uses
+Noise IK over WebSocket, authenticates the host key from the invitation, and
+binds the grant to this installation's persistent X25519 identity. The private
+key stays in the app's private data directory; invitation bearer secrets are not
+saved with grants. Missing or corrupt identities are not silently replaced while
+saved shares exist.
+
+A saved share opens a separate Agents/Settings home with only its granted agent.
+Terminal, supported omp Chat and owner-enabled Gram use fresh authenticated relay
+sessions. Guest Gram uses its own read marks and reply schema; it never decodes
+owner claim/read metadata. Agent renames retain the grant and update Gram routing.
+Leave share forgets local access without deleting this device's identity.
+The Linux native smoke exercised invalid input, cancellation before redemption,
+authenticated refusal, acceptance, saved-access reload, shared pane/Gram,
+rename routing, reconnect, revocation and leaving. Packaged OS link activation,
+live external relay interoperability and Windows/macOS guest UI acceptance remain
+unverified; handling an injected launch link is not proof of OS registration.
+
 
 The Agents section's New agent action browses remote folders and installed
 harnesses, creates a pane, and starts the chosen agent. Its task is placed in the
@@ -245,7 +266,8 @@ backend; it did not exercise Windows speech capture. macOS packaging and the
 remaining visual comparison still need verification.
 
 This is not the completed first release: full Settings/preferences, visual parity,
-shared-agent invites/guest access and remaining federation UI are unfinished.
+and remaining federation UI are unfinished. Guest invitation acceptance and saved
+shared connections are implemented, but do not establish whole-app parity.
 The native Linux interaction checks use an isolated sample SSH backend; macOS and
 Windows desktop interaction acceptance remains separate from cross-platform builds.
 Mac and Windows builds are not developer-signed; macOS notarization and real Mac/Windows
@@ -588,8 +610,8 @@ Host selection seeds only saved metadata before page startup and does not connec
 Its saved-host column uses Swift's system-font roles and application text scale,
 with the native 22 pt outer inset and 60 pt minimum machine rows. It no longer
 inherits the old connection form's additional 24 pt top margin. The ground
-continues below the home inset. Pairing-code scanning is implemented; guest invite
-acceptance remains missing. Matching saved-host geometry does not complete onboarding.
+continues below the home inset. Pairing-code scanning and guest invitation acceptance
+are implemented. Their device/platform limits above still prevent full onboarding acceptance.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it

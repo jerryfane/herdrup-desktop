@@ -18,6 +18,7 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
+	"github.com/jerryfane/herdrup-desktop/internal/guest"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
@@ -80,7 +81,8 @@ type ConnState struct {
 	// Herdr is the version and protocol of the connected herdr.
 	Herdr string `json:"herdr"`
 	// Live is true when events_v2 drives updates, false when polling.
-	Live bool `json:"live"`
+	Live  bool             `json:"live"`
+	Guest *GuestConnection `json:"guest,omitempty"`
 }
 
 // BoardUpdate is a new status board.
@@ -112,11 +114,14 @@ type Desk struct {
 	storeMu       sync.Mutex // serialises reads and writes of machines.json
 	notifications notificationSettings
 	pairingMu     sync.Mutex
+	guestAcceptMu sync.Mutex
+	guestStore    *guest.Store
 	pins          *bridge.FilePinStore
 
-	mu    sync.Mutex
-	state ConnState
-	board *BoardUpdate
+	mu                 sync.Mutex
+	pendingGuestInvite string
+	state              ConnState
+	board              *BoardUpdate
 	// peers are the federation peers of board's agents.
 	peers       []engine.PeerSummary
 	cancel      context.CancelFunc
@@ -162,8 +167,11 @@ type link struct {
 	session string
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
-	sessionGen uint64
-	client     *bridge.Client // nil until connected
+	sessionGen  uint64
+	client      *bridge.Client // nil until connected
+	guest       *guest.Transport
+	guestClient *engine.Client
+	access      *guest.Access
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
 	// ctx is the current watch's; it ends when the session or connection
@@ -183,6 +191,7 @@ func newDesk(dir string) *Desk {
 		dir: dir, state: ConnState{Phase: "idle"},
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
 		terminals:   &terminalStore{path: filepath.Join(dir, "terminals.json")},
+		guestStore:  guest.NewStore(filepath.Join(dir, "shared-connections.json")),
 		pins:        bridge.NewFilePinStore(filepath.Join(dir, "host-keys.json")),
 		alert:       alertGroups,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,

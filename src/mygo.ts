@@ -4,6 +4,17 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+export interface Access {
+  guestID: string;
+  guestName: string;
+  machineLabel: string;
+  ownerName: string;
+  agentName: string;
+  agentTarget: string;
+  endpoint: Endpoint;
+  acceptedAt: string;
+}
+
 export interface AccountLoginState {
   url: string;
   phase: string;
@@ -51,6 +62,8 @@ export interface AgentView {
   group: string;
   status: string;
   statusSinceUnixMs?: number;
+  guest: boolean;
+  guestGram: boolean;
   plainTerminal: boolean;
 }
 
@@ -128,6 +141,7 @@ export interface ConnState {
   herdr: string;
   /** Live is true when events_v2 drives updates, false when polling. */
   live: boolean;
+  guest?: GuestConnection;
 }
 
 export interface DictationEvent {
@@ -136,6 +150,17 @@ export interface DictationEvent {
   text?: string;
   level?: number;
   error?: string;
+}
+
+export interface Endpoint {
+  relay: string;
+  hostID: string;
+  hostPublicKey: string;
+}
+
+export interface Features {
+  gram: boolean;
+  push: boolean;
 }
 
 /** Folder is what a folder row shows (herdrup AgentFolderSummary). */
@@ -347,6 +372,22 @@ export interface GramUploadProgress {
    */
   state: string;
   label: string;
+}
+
+export interface GuestConnection {
+  access: Access;
+  features: Features;
+  fingerprint: string;
+}
+
+/** GuestInvitation contains display information, not the invitation bearer. */
+export interface GuestInvitation {
+  machineLabel: string;
+  ownerName: string;
+  agentName: string;
+  guestName: string;
+  expires: string;
+  fingerprint: string;
 }
 
 /**
@@ -758,6 +799,9 @@ export interface TerminalHistoryPage {
  * its board current. One machine is connected at a time.
  */
 export const Desk = {
+  acceptGuestInvitation(text: string): Promise<Access> {
+    return call("Desk.AcceptGuestInvitation", text);
+  },
   /** Accounts returns the credential accounts' labels by id. */
   accounts(): Promise<Record<string, string>> {
     return call("Desk.Accounts");
@@ -831,6 +875,9 @@ export const Desk = {
   connect(m: Machine, password: string): Promise<void> {
     return call("Desk.Connect", m, password);
   },
+  connectGuest(id: string): Promise<void> {
+    return call("Desk.ConnectGuest", id);
+  },
   createAgent(token: string, folder: string, kind: string): Promise<AgentCreationResult> {
     return call("Desk.CreateAgent", token, folder, kind);
   },
@@ -863,6 +910,9 @@ export const Desk = {
    */
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
+  },
+  forgetGuestConnection(id: string): Promise<void> {
+    return call("Desk.ForgetGuestConnection", id);
   },
   forgetTerminal(target: AgentTarget): Promise<void> {
     return call("Desk.ForgetTerminal", target);
@@ -1020,8 +1070,15 @@ export const Desk = {
   gramState(): Promise<GramSnapshot> {
     return call("Desk.GramState");
   },
+  /** GuestChatAvailable follows the authenticated host's transcript capability. */
+  guestChatAvailable(token: string): Promise<boolean> {
+    return call("Desk.GuestChatAvailable", token);
+  },
   guestShareDetails(token: string): Promise<GuestShareDetails> {
     return call("Desk.GuestShareDetails", token);
+  },
+  inspectGuestInvitation(text: string): Promise<GuestInvitation> {
+    return call("Desk.InspectGuestInvitation", text);
   },
   logoutSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.LogoutSettingsAccount", token, id);
@@ -1221,6 +1278,9 @@ export const Desk = {
   settingsMachineVersion(token: string): Promise<string> {
     return call("Desk.SettingsMachineVersion", token);
   },
+  sharedConnections(): Promise<Access[]> {
+    return call("Desk.SharedConnections");
+  },
   startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
     return call("Desk.StartAccountLogin", token, loginID, id, setupToken);
   },
@@ -1243,6 +1303,10 @@ export const Desk = {
    */
   swapSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.SwapSettingsAccount", token, id);
+  },
+  /** TakeGuestInvitation hands a launch URL to the page once, without persisting it. */
+  takeGuestInvitation(): Promise<string> {
+    return call("Desk.TakeGuestInvitation");
   },
   terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {
     return call("Desk.TerminalHistory", token, cursor);
@@ -1325,6 +1389,7 @@ export const events = {
    * window answers with Desk.NameFolder.
    */
   folderNamingRequested: event<FolderNaming>("folder-naming:requested"),
+  guestInvitationOpened: event<boolean>("guest-invitation:opened"),
   terminalChanged: event<TerminalEvent>("terminal:changed"),
   chatMenu: event<ChatMenuChoice>("chat:menu"),
   paneAttachments: event<PaneAttachments>("pane:attachments"),

@@ -270,9 +270,32 @@ func (d *Desk) GramPost(ctx context.Context, text string, to []string, attachmen
 		if err != nil {
 			return "", err
 		}
+		d.mu.Lock()
+		if l.guest != nil {
+			recipient = nil
+			for _, agent := range l.agents {
+				if agent.Name != nil && strings.TrimSpace(*agent.Name) != "" {
+					name := *agent.Name
+					recipient = &name
+					break
+				}
+			}
+			if recipient == nil {
+				d.mu.Unlock()
+				return "", errors.New("The shared agent is not available for Gram")
+			}
+		}
+		d.mu.Unlock()
 		p := herdrapi.GramPostParams{Text: body, To: recipient}
 		if a != nil {
 			p.File = &herdrapi.GramFileUpload{UploadID: a.UploadID, Name: a.Name, Mime: a.Mime}
+		}
+		if l.guest != nil {
+			id, err := l.guest.GramPost(ctx, p)
+			if err == nil {
+				d.gramRefresh(ctx, l)
+			}
+			return id, err
 		}
 		res, err := ec.GramPost(ctx, p)
 		if err != nil {

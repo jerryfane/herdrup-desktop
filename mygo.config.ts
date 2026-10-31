@@ -18,6 +18,7 @@ export default defineConfig({
   // items to it.
   identifier: "com.jerryfane.herdrup-desktop",
   version: pkg.version,
+  urlSchemes: ["herdrup"],
   copyright: "© 2026 Jerry Fane",
   // `mygo dev` runs devCommand and loads devUrl; `mygo build` runs
   // buildCommand and embeds frontendDist into the app.

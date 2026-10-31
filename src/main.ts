@@ -5,7 +5,7 @@ import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
-import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram } from "./gram";
+import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram, setGuestGramRecipient } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
 import { initSettings } from "./settings";
@@ -14,6 +14,7 @@ import { onTextSizeChanged } from "./textSize";
 import { initSidebarRail } from "./sidebar";
 import { showNewAgent, showNewTerminal } from "./create";
 import { terminalRows } from "./terminals";
+import { initGuestHome } from "./guestHome";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -38,6 +39,9 @@ let activationWork = Promise.resolve();
 let pageReady = false;
 // Connection events retain state immediately; drawing waits for every view's dependencies.
 let renderReady = false;
+let guestHome: ReturnType<typeof initGuestHome> | null = null;
+let guestTab: "agents" | "settings" = "agents";
+let guestGram = false;
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
 
@@ -498,7 +502,22 @@ onTextSizeChanged(() => {
 
 function render() {
   if (!renderReady) return;
-  const showConnect = choosingHost || (!board && state.phase !== "connecting" && state.phase !== "connected");
+  const showConnect = choosingHost || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
+  const guestVisible = !!state.guest && !showConnect;
+  if (state.guest && !state.guest.features.gram) guestGram = false;
+  setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
+  document.body.classList.toggle("guest-mode", guestVisible);
+  guestHome?.update(state, board, guestTab, guestGram, guestVisible);
+  if (guestVisible) {
+    connectView.hidden = true; document.body.classList.remove("host-home-visible");
+    rail?.update("agents", null, false);
+    field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
+    $("roster").hidden = true;
+    settings?.show(false, state, board);
+    showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
+    showInteraction(guestTab === "agents" && !guestGram);
+    return;
+  }
   const showsGram = tab === "gram" && !showConnect;
   const showsSettings = tab === "settings" && !showConnect;
   connectView.hidden = !showConnect;
@@ -521,7 +540,15 @@ function render() {
 searchInput.addEventListener("input", () => void renderRows());
 
 
+window.addEventListener("guest-gram", () => {
+  if (!state.guest?.features.gram) return;
+  guestTab = "agents"; guestGram = true; render();
+});
+
 events.stateChanged.on((s) => {
+  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
+    guestTab = "agents"; guestGram = false;
+  }
   state = s;
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
@@ -627,6 +654,13 @@ async function init() {
     tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
   }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
+  guestHome = initGuestHome($("sidebar"), $("detail"), {
+    agents: () => { guestTab = "agents"; guestGram = false; render(); },
+    settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; render(); },
+    hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
+    terminal: () => { guestGram = false; render(); },
+    open: target => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
+  });
   initInteraction($("detail"), symbol, target => { selectedAgent = target; refreshRowSelection(); });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
   settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);

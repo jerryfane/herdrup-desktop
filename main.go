@@ -49,6 +49,11 @@ func main() {
 
 	installMenuBar()
 	var win *mygo.Window
+	mygo.App.OnOpenURL(func(url string) {
+		if desk.queueGuestInvitation(url) && win != nil {
+			showWindow(win)
+		}
+	})
 	// One Herdrup at a time, so launching it again brings back the window
 	// that closing hid to the tray, also where no tray icon is drawn
 	// (GNOME without its AppIndicator extension). Test-hook runs may run
@@ -56,6 +61,9 @@ func main() {
 	if !smokeEnabled() && !refEnabled() {
 		if !mygo.App.RequestSingleInstanceLock() {
 			return
+		}
+		if err := mygo.App.RegisterURLScheme("herdrup"); err != nil {
+			log.Printf("Could not register invitation links: %v", err)
 		}
 		mygo.App.OnSecondInstance(func([]string, string) {
 			if win != nil {

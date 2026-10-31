@@ -30,6 +30,8 @@ type AgentView struct {
 	Group             string  `json:"group"`
 	Status            string  `json:"status"`
 	StatusSinceUnixMs *uint64 `json:"statusSinceUnixMs,omitempty"`
+	Guest             bool    `json:"guest"`
+	GuestGram         bool    `json:"guestGram"`
 	PlainTerminal     bool    `json:"plainTerminal"`
 }
 
@@ -66,7 +68,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 	}
 	d.mu.Lock()
 	l := d.link
-	if l == nil || l.client == nil || l.ctx == nil || l.id != target.MachineID || sessionKey(l.session) != sessionKey(target.Session) {
+	if l == nil || (l.client == nil && l.guest == nil) || l.ctx == nil || l.id != target.MachineID || sessionKey(l.session) != sessionKey(target.Session) {
 		d.mu.Unlock()
 		return AgentView{}, errors.New("agent belongs to another connection or session")
 	}
@@ -82,7 +84,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 		return AgentView{}, errors.New("agent is no longer on this board")
 	}
 	at := boardSession{l, l.client, l.sessionGen}
-	view, err := l.client.ForSession(l.session)
+	client, err := l.engineLocked()
 	if err != nil {
 		d.mu.Unlock()
 		return AgentView{}, err
@@ -109,8 +111,9 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			Token: token, PaneID: agent.PaneID, Name: name, Harness: harness,
 			Heading: strings.Join(parts, " · "), Group: group.Key(), Status: group.Label(),
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
+			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
 		},
-		at: at, ctx: ctx, cancel: cancel, client: engine.New(engine.Bridge(view)),
+		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),
 	}
 	if agent.Name != nil {
@@ -351,16 +354,26 @@ func (d *Desk) ChatPrompt(ctx context.Context, token, text string) (string, erro
 		}
 		return submitPanePrompt(ctx, v, text)
 	}
-	if v.recipient == "" {
-		return "", errors.New("choose a named agent to attach files")
+	if _, err := d.paneRecipient(v); err != nil {
+		return "", err
 	}
 	paths := make([]string, len(chips))
 	for i, chip := range chips {
 		paths[i] = chip.Path
 	}
 	post := func(ctx context.Context, _ string, a *gramstore.Attachment) (string, error) {
+		recipient, err := d.paneRecipient(v)
+		if err != nil {
+			return "", err
+		}
+		if v.at.link.guest != nil {
+			return v.at.link.guest.GramPost(ctx, herdrapi.GramPostParams{
+				Text: "Attachment from " + v.at.link.access.GuestName + ".", To: &recipient,
+				File: &herdrapi.GramFileUpload{UploadID: a.UploadID, Name: a.Name, Mime: a.Mime},
+			})
+		}
 		result, err := v.client.GramPost(ctx, herdrapi.GramPostParams{
-			Text: "Attachment from the terminal composer.", To: &v.recipient,
+			Text: "Attachment from the terminal composer.", To: &recipient,
 			File: &herdrapi.GramFileUpload{UploadID: a.UploadID, Name: a.Name, Mime: a.Mime},
 		})
 		if err != nil {

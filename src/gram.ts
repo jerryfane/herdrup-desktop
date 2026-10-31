@@ -39,6 +39,14 @@ import {
   type SavedGram,
 } from "./mygo";
 
+let guestRecipient: string | null = null;
+export function setGuestGramRecipient(name: string | null) {
+  if (name === guestRecipient) return;
+  guestRecipient = name;
+  renderComposer();
+  if (header) renderHeader();
+}
+
 export type GramDeps = {
   el: <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => HTMLElementTagNameMap[K];
   symbol: (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -411,6 +419,7 @@ function renderHeader() {
   // headerIdentity: the cluster over the "Gram ›" pill, which opens the agents sheet.
   const identity = el("button", "gidentity");
   identity.type = "button";
+  identity.disabled = guestRecipient !== null;
   identity.setAttribute("aria-label", "Gram");
   const cluster = el("div", "gcluster");
   for (const p of model.clusterPlaces((snap?.messages ?? []).filter((m) => m.fromAgent).map((m) => m.from))) {
@@ -420,7 +429,8 @@ function renderHeader() {
     cluster.append(a);
   }
   const pill = el("span", "gpill glass");
-  pill.append(el("span", "", "Gram"), icon("chevron.right", 9, "bold", "faint"));
+  pill.append(el("span", "", "Gram"));
+  if (!guestRecipient) pill.append(icon("chevron.right", 9, "bold", "faint"));
   identity.append(cluster, pill);
   identity.addEventListener("click", openAgentsSheet);
   // headerTrailing: Saved alone, since the sidebar owns search here.
@@ -487,7 +497,7 @@ function renderContent() {
   }
   const messages = snap.messages;
   const visible = visibleMessages();
-  const setup = model.showsSetupCard(localStorage.getItem(SETUP_DISMISSED) === "1", messages);
+  const setup = !guestRecipient && model.showsSetupCard(localStorage.getItem(SETUP_DISMISSED) === "1", messages);
   const view = model.inboxView({
     phase: snap.phase,
     unavailable: snap.unavailable,
@@ -942,7 +952,7 @@ function messageRow(m: GramMessage, startsGroup: boolean, endsGroup: boolean): H
   const imageFile = m.file?.isImage ? m.file : undefined;
   const hasCard = (!!m.file && !m.file.isImage) || !!m.expiredFile;
   const hasText = segs.length > 0 || hasCard;
-  const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false });
+  const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false }).filter(item => !guestRecipient || item !== "Delete");
   const menu = (part: HTMLElement) =>
     part.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1353,6 +1363,7 @@ function agents(): GramAgent[] {
 }
 
 function address(): DraftAddress {
+  if (guestRecipient) return { route: { kind: "queue" }, body: draft, leading: false, accent: null };
   return draftAddress(draft, agents(), pickedAgent);
 }
 
@@ -1494,9 +1505,9 @@ function actionIcon(cls: string, label: string, action: () => void): HTMLButtonE
 function renderComposer() {
   if (!card) return;
   const a = address();
-  const list = activeQuery(draft, caret);
+  const list = guestRecipient ? null : activeQuery(draft, caret);
   const matches = list ? model.mentionMatches(agents(), list.query) : [];
-  const hint = model.shownHint(draftHint(a.route), matches.length > 0);
+  const hint = guestRecipient ? `To ${guestRecipient}` : model.shownHint(draftHint(a.route), matches.length > 0);
   hintEl.hidden = hint === null;
   hintEl.textContent = hint ?? "";
   renderMirror(a);
@@ -1599,6 +1610,7 @@ async function send() {
 // ---- Agents sheet (the "Gram ›" pill) ----
 
 function openAgentsSheet() {
+  if (guestRecipient) return;
   const d = el("dialog", "gsheet");
   const draw = () => {
     const a = address();

@@ -24,9 +24,9 @@ const (
 	// without --multi exits instead of answering.
 	openPingTimeout   = 10 * time.Second
 	keepAliveInterval = 30 * time.Second
-	// maxLineBytes bounds one reply line. agent.list on a busy machine runs
+	// MaxReplyLineBytes bounds one reply line. agent.list on a busy machine runs
 	// to megabytes; anything near this is a broken stream.
-	maxLineBytes = 64 << 20
+	MaxReplyLineBytes = 64 << 20
 	// maxArgRequestBytes keeps a base64 request under Linux's 128 KiB limit
 	// for one argument.
 	maxArgRequestBytes = 90 << 10
@@ -244,7 +244,8 @@ func (c *Client) nextID(method string) string {
 	return "herdrup:" + method + ":" + strconv.FormatUint(c.seq.Add(1), 10)
 }
 
-func encodeRequest(id, method string, params any) ([]byte, error) {
+// EncodeRequest builds the API envelope shared by SSH and guest relay transports.
+func EncodeRequest(id, method string, params any) ([]byte, error) {
 	if params == nil {
 		params = struct{}{}
 	}
@@ -261,7 +262,8 @@ type replyLine struct {
 	Error  *APIError       `json:"error"`
 }
 
-func decodeReply(line []byte, result any) error {
+// DecodeReply decodes a complete API response, preserving structured API errors.
+func DecodeReply(line []byte, result any) error {
 	var r replyLine
 	if err := json.Unmarshal(line, &r); err != nil {
 		return fmt.Errorf("decode herdr reply: %w", err)
@@ -292,7 +294,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 		defer cancel()
 	}
 	id := c.nextID(method)
-	line, err := encodeRequest(id, method, params)
+	line, err := EncodeRequest(id, method, params)
 	if err != nil {
 		return err
 	}
@@ -306,7 +308,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 	if method == "ping" {
 		c.learnCapability(reply)
 	}
-	return decodeReply(reply, result)
+	return DecodeReply(reply, result)
 }
 
 func (c *Client) oneShot(ctx context.Context, line []byte) ([]byte, error) {
@@ -330,7 +332,7 @@ type Stream struct {
 
 // OpenStream starts a streaming request. The stream closes when ctx ends.
 func (c *Client) OpenStream(ctx context.Context, method string, params any) (*Stream, error) {
-	line, err := encodeRequest(c.nextID(method), method, params)
+	line, err := EncodeRequest(c.nextID(method), method, params)
 	if err != nil {
 		return nil, err
 	}
@@ -476,8 +478,8 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 	for {
 		chunk, err := r.ReadSlice('\n')
 		buf = append(buf, chunk...)
-		if len(buf) > maxLineBytes {
-			return nil, fmt.Errorf("herdr reply line over %d bytes", maxLineBytes)
+		if len(buf) > MaxReplyLineBytes {
+			return nil, fmt.Errorf("herdr reply line over %d bytes", MaxReplyLineBytes)
 		}
 		switch {
 		case err == nil:

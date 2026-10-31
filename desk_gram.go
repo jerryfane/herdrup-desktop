@@ -316,6 +316,15 @@ func (d *Desk) gramReset(l *link, machine string) {
 // gramEngine is an engine client on the current session of l.
 func (d *Desk) gramEngine(l *link) (*engine.Client, error) {
 	d.mu.Lock()
+	if d.link == l && l != nil && l.guest != nil {
+		if !l.guest.Features().Gram {
+			d.mu.Unlock()
+			return nil, errors.New("Gram is not enabled for this shared agent")
+		}
+		client, err := l.engineLocked()
+		d.mu.Unlock()
+		return client, err
+	}
 	var c *bridge.Client
 	var session string
 	if d.link == l && l != nil {
@@ -566,15 +575,10 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 // gramBadge reads the unread count while Gram does not show: an
 // unconditional unread_only list, counted by the daemon's unread_count.
 func (d *Desk) gramBadge(ctx context.Context, l *link) {
-	ec, err := d.gramEngine(l)
+	answer, err := d.gramAnswer(ctx, l, herdrapi.GramListParams{UnreadOnly: true})
 	if err != nil {
 		return
 	}
-	listing, err := ec.GramList(ctx, herdrapi.GramListParams{UnreadOnly: true})
-	if err != nil {
-		return
-	}
-	answer := gramstore.FromList(listing.List, listing.Unchanged)
 	n, ok := answer.BadgeCount()
 	g := &d.gram
 	g.mu.Lock()
@@ -629,14 +633,8 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 	d.publishGramLocked()
 	g.mu.Unlock()
 
-	var listing engine.GramListing
-	ec, err := d.gramEngine(l)
+	answer, err := d.gramAnswer(ctx, l, params)
 	if err == nil {
-		listing, err = ec.GramList(ctx, params)
-	}
-	var answer gramstore.Answer
-	if err == nil {
-		answer = gramstore.FromList(listing.List, listing.Unchanged)
 		if _, xerr := d.savedGrams().ExpireFiles(answer.Messages); xerr != nil {
 			d.alertSaved(xerr)
 		}
@@ -788,10 +786,6 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 		}
 		g.mu.Unlock()
 	}()
-	ec, err := d.gramEngine(l)
-	if err != nil {
-		return false, err
-	}
 	for range 2 {
 		for range gramWaitSteps {
 			g.mu.Lock()
@@ -808,7 +802,7 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 		if cursor == "" {
 			return false, nil
 		}
-		listing, err := ec.GramList(ctx, herdrapi.GramListParams{Limit: new(uint64(gramPageSize)), BeforeID: &cursor})
+		answer, err := d.gramAnswer(ctx, l, herdrapi.GramListParams{Limit: new(uint64(gramPageSize)), BeforeID: &cursor})
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, err
@@ -820,7 +814,6 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 			g.mu.Unlock()
 			return false, err
 		}
-		answer := gramstore.FromList(listing.List, listing.Unchanged)
 		g.mu.Lock()
 		if g.link != l {
 			g.mu.Unlock()
@@ -858,10 +851,7 @@ func (d *Desk) GramMarkRead(ctx context.Context, id string) error {
 	}
 	g.markingRead[id] = true
 	g.mu.Unlock()
-	ec, err := d.gramEngine(l)
-	if err == nil {
-		err = ec.GramMarkRead(ctx, herdrapi.GramMarkReadParams{ID: &id})
-	}
+	err = d.gramRead(ctx, l, id)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link != l {
@@ -903,13 +893,9 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 		}
 		g.mu.Unlock()
 	}()
-	ec, err := d.gramEngine(l)
-	if err != nil {
-		return err
-	}
 	var pending []string
-	if listing, err := ec.GramList(ctx, herdrapi.GramListParams{UnreadOnly: true}); err == nil {
-		for _, m := range gramstore.FromList(listing.List, listing.Unchanged).Messages {
+	if answer, err := d.gramAnswer(ctx, l, herdrapi.GramListParams{UnreadOnly: true}); err == nil {
+		for _, m := range answer.Messages {
 			if gramstore.IsUnread(m) {
 				pending = append(pending, m.ID)
 			}
@@ -945,7 +931,7 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 			g.markingRead[id] = true
 			attempted++
 			g.mu.Unlock()
-			err := ec.GramMarkRead(ctx, herdrapi.GramMarkReadParams{ID: &id})
+			err := d.gramRead(ctx, l, id)
 			g.mu.Lock()
 			if err == nil {
 				marked[id] = true

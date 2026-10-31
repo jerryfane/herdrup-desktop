@@ -2,6 +2,7 @@ import { Desk, events } from "./mygo";
 import type { Machine, SavedMachine } from "./mygo";
 import "./hosts.css";
 import { showPairing } from "./pairing";
+import { showGuestAccept } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -39,7 +40,16 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const add = action("Add host", () => edit()); add.className = "host-add";
  void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
  const pair = action("Scan pairing code", () => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit())); pair.className = "host-pair";
- home.append(header, section, pair, add, message); container.replaceChildren(home);
+ const shared = element("section", "host-home-saved");
+ const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
+ const invite = action("Open invitation", () => showGuestAccept(refresh, showAgents)); invite.className = "host-pair";
+ home.append(header, section, shared, pair, add, invite, message); container.replaceChildren(home);
+ async function openPendingInvitation() {
+  const text = await Desk.takeGuestInvitation();
+  if (text) showGuestAccept(refresh, showAgents, text);
+ }
+ events.guestInvitationOpened.on(() => { void openPendingInvitation().catch(report); });
+ void openPendingInvitation().catch(report);
  let editing: SavedMachine | null = null;
  let saving = false;
  let connecting = false;
@@ -100,7 +110,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  async function refresh() {
   const generation = ++version;
   try {
-   const machines = await Desk.machines(); if (generation !== version) return;
+   const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
+   shared.hidden = shares.length === 0;
+   sharedRows.replaceChildren(...shares.map(access => {
+    const row = action("", () => { row.disabled = true; void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(showAgents).catch(report).finally(() => { row.disabled = false; }); });
+    row.className = "host-home-row";
+    const labels = element("span", "host-home-label"); labels.append(element("strong", "", access.agentName), element("span", "", `${access.machineLabel} · Shared by ${access.ownerName}`));
+    row.append(labels); return row;
+   }));
    section.hidden = machines.length === 0;
    const next: HTMLElement[] = [];
    for (const machine of machines) {

@@ -56,6 +56,14 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
   if (event.note) current.status.textContent = event.note;
  });
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
+ events.stateChanged.on(state => {
+  const view = current?.view, access = state.guest?.access;
+  if (!current || !view?.guest || !access || current.target.machineID !== `guest:${access.endpoint.hostID}/${access.guestID}`) return;
+  view.guestGram = !!state.guest?.features.gram;
+  current.attach.hidden = !view.guestGram;
+  if (current.guestGramButton) current.guestGramButton.hidden = !view.guestGram;
+  if (current.guestModes) current.guestModes.hidden = !current.guestChat && !view.guestGram;
+ });
  onTextSizeChanged(() => current?.resizeText());
  window.addEventListener("keydown", event => {
   if (!current || root.hidden) return;
@@ -132,6 +140,9 @@ class Detail {
  terminal: Terminal | null = null;
  prediction: TerminalPrediction | null = null;
  guestShareSheet: HTMLDialogElement | null = null;
+ guestGramButton: HTMLButtonElement | null = null;
+ guestModes: HTMLElement | null = null;
+ guestChat = false;
  fit: FitAddon | null = null;
  search: SearchAddon | null = null;
  resize: ResizeObserver | null = null;
@@ -291,12 +302,13 @@ class Detail {
    }));
   }
   this.actions.append(button("Copy selection", () => { this.actions.hidden = true; void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); }));
-  if (!this.plainTerminal) this.actions.append(button("Share with someone", () => {
+  const share = button("Share with someone", () => {
    this.actions.hidden = true;
-   if (!this.view || this.disposed) return;
+   if (!this.view || this.view.guest || this.disposed) return;
    this.guestShareSheet?.close();
    this.guestShareSheet = openGuestShare(this.token, this.view.name);
-  }));
+  });
+  if (!this.plainTerminal) this.actions.append(share);
   this.actions.append(el("div", "pane-action-heading", "Text size"));
   for (const [label, delta] of [["Increase", 1], ["Decrease", -1], ["Reset", "reset"]] as const) {
    this.actions.append(button(label, () => {
@@ -326,8 +338,17 @@ class Detail {
    if (this.disposed) { await Desk.closeAgentView(this.token); return; }
    this.view = view; this.title.textContent = view.heading;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
-   const chatAvailable = /^omp(?:$| |-)/i.test(view.harness);
-   modes.hidden = !chatAvailable;
+   share.hidden = view.guest;
+   const chatAvailable = /^omp(?:$| |-)/i.test(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
+   if (this.disposed) return;
+   this.attach.hidden = view.guest && !view.guestGram;
+   modes.hidden = !chatAvailable && !view.guestGram;
+   if (view.guest) {
+    this.guestChat = chatAvailable; this.guestModes = modes;
+    const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram")));
+    gram.hidden = !view.guestGram; this.guestGramButton = gram;
+    modes.replaceChildren(...(chatAvailable ? [this.chatButton] : []), this.terminalButton, gram);
+   }
    await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal");
   } catch (e) { if (!this.disposed) this.status.textContent = String(e); }
  }

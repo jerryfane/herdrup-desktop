@@ -26,6 +26,9 @@ var PaneAttachmentsChanged = mygo.NewEvent[PaneAttachments]("pane:attachments")
 
 func (d *Desk) newPaneComposer(v *interaction) *gramstore.Composer {
 	upload := func(ctx context.Context, a gramstore.Attachment, progress func(int64, int64)) (string, error) {
+		if _, err := d.paneRecipient(v); err != nil {
+			return "", err
+		}
 		ctx, cancel := viewRequest(ctx, v.ctx)
 		defer cancel()
 		return uploadComposerFile(ctx, v.client, a, progress)
@@ -54,8 +57,8 @@ func (d *Desk) PanePickFiles(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	if v.recipient == "" {
-		return errors.New("choose a named agent to attach files")
+	if _, err := d.paneRecipient(v); err != nil {
+		return err
 	}
 	if !v.sendMu.TryLock() {
 		return gramstore.ErrSending
@@ -79,8 +82,8 @@ func (d *Desk) PaneAttachFiles(token string, paths []string) error {
 	if err != nil {
 		return err
 	}
-	if v.recipient == "" {
-		return errors.New("choose a named agent to attach files")
+	if _, err := d.paneRecipient(v); err != nil {
+		return err
 	}
 	if !v.sendMu.TryLock() {
 		return gramstore.ErrSending
