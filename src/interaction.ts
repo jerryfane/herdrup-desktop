@@ -884,7 +884,7 @@ class Detail {
    try {
     const next: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, older ? "" : page?.after ?? "", older ? before! : "", id));
     if (!open || this.disposed || (older && (next.session_id !== session || page?.session_id !== session))) return;
-    const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80, height = messages.scrollHeight;
+    const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 8, height = messages.scrollHeight;
     if (page?.session_id !== next.session_id) { entries = []; before = next.before; }
     entries = mergeTranscript(entries, next.entries, older);
     if (older) before = next.before; else page = next;
