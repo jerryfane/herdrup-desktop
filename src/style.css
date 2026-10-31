@@ -16,7 +16,6 @@
   /* iOS 27's accepted regular-width references start the 320 pt sidebar
      at the window edge, without the former floating card's inset. */
   --sidebar-inset: 0px;
-  --sidebar-radius: 0px;
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
 }
@@ -117,8 +116,8 @@ html, body {
   top: 0;
   bottom: var(--sidebar-inset);
   width: var(--size-sidebar-min);
-  /* The sidebar's ground is drawn by paintShape, with square outer corners
-     in the accepted iOS 27 regular-width references. */
+  /* HerdrApp.iPadLayout paints Palette.ground directly behind the column. */
+  background: var(--color-ground);
   overflow: hidden;
   display: flex;
   flex-direction: column;

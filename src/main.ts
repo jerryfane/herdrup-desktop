@@ -655,7 +655,6 @@ window.addEventListener("keydown", (e) => {
 async function init() {
   document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
-  paintShape($("sidebar"), { radius: px("--sidebar-radius"), fill: "var(--color-ground)", clip: true });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
   rail = await initSidebarRail($("sidebar"), next => {

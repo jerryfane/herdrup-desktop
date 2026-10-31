@@ -318,6 +318,9 @@ live. Activity counts use the roster's strict needs-you count, not uncertain
 agents, and its complete working count, including closed folders. Zero counts
 and their separator are hidden. Linux native reference capture exercised the
 accepted three-needs-you/twenty-working state; final pixel comparison is pending.
+Its square column paints the ground directly, as Swift does, rather than through
+a zero-radius SVG and clip path. Native Linux tab changes and keyboard rail
+collapse/expand retain the correct ground pixels and column geometry.
 
 Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:
