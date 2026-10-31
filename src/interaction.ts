@@ -22,6 +22,9 @@ import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
 import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
+import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
+import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
+import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
 
 const noteStyles: Record<string, { label: string; symbol: string; icon?: string }> = {
  gitmoot: { label: "Gitmoot", symbol: "envelope", icon: envelopeIcon },
@@ -717,6 +720,8 @@ class Detail {
  }
  renderPlan(items: PlanItem[], container = this.transcript, session = this.chat?.session_id): HTMLElement {
   const card = el("section", "chat-plan chat-message");
+  // ChatView.swift's ChatStyle.ok is distinct from the shared agent-state green.
+  card.style.setProperty("--chat-ok", "#7fc89a");
   card.dataset.session = session ?? "";
   const previous = container.querySelector<HTMLElement>(".chat-plan");
   let open = previous?.dataset.session === card.dataset.session && previous?.dataset.open === "true";
@@ -727,18 +732,33 @@ class Detail {
    toggle.className = "chat-plan-heading";
    toggle.setAttribute("aria-expanded", String(open));
    toggle.setAttribute("aria-label", `To-do, ${done} of ${items.length} done`);
-   toggle.append(el("span", "chat-plan-chevron", open ? "⌄" : "›"), el("span", "", `TODO · ${done} OF ${items.length}`));
-   if (!open && done === items.length) toggle.append(el("span", "chat-plan-complete", "All done"));
+   const chevron = el("span", "chat-plan-chevron");
+   chevron.setAttribute("aria-hidden", "true");
+   void symbol(open ? "chevron.down" : "chevron.right", 10, "bold").then(icon => chevron.append(icon));
+   toggle.append(chevron, el("span", "", `TODO · ${done} OF ${items.length}`));
+   if (!open && done === items.length) toggle.append(el("span", "chat-plan-complete", "✓ All done"));
    card.replaceChildren(toggle);
    const shown = open ? items.map((_, index) => index) : planWindow(items);
    shown.forEach((index, position) => {
     const item = items[index]!, completed = planDone(item);
-    if (item.phase && (position === 0 || items[shown[position - 1]!]!.phase !== item.phase)) card.append(el("div", "chat-plan-phase", item.phase));
+    if (item.phase && (position === 0 || items[shown[position - 1]!]!.phase !== item.phase)) {
+     const phase = el("div", "chat-plan-phase", item.phase);
+     if (position > 0) phase.classList.add("continued");
+     card.append(phase);
+    }
     const row = el("div", "chat-plan-row");
     row.dataset.state = completed ? "completed" : item.status ?? "unknown";
     row.setAttribute("aria-label", `${item.text}: ${completed ? "Done" : item.status === "in_progress" ? "In progress" : item.status === "blocked" ? "Blocked" : "Pending"}`);
-    const marker = el("span", "chat-plan-marker", completed ? "✓" : item.status === "in_progress" ? "➜" : item.status === "blocked" ? "Ⅱ" : "○");
+    const marker = el("span", "chat-plan-marker");
     marker.setAttribute("aria-hidden", "true");
+    const name = completed ? "checkmark" : item.status === "in_progress" ? "arrow.right.circle.fill" : item.status === "blocked" ? "pause.circle" : "circle";
+    if (completed || navigator.platform.startsWith("Mac")) {
+     void symbol(name, 12, "semibold").then(icon => marker.append(icon));
+    } else {
+     const icon = el("span", "chat-plan-fallback");
+     const image = item.status === "in_progress" ? arrowCircleIcon : item.status === "blocked" ? pauseCircleIcon : circleIcon;
+     icon.style.setProperty("--plan-icon", `url("${image}")`); marker.append(icon);
+    }
     row.append(marker, el("span", "chat-plan-text", item.text)); card.append(row);
    });
    if (items.length > shown.length && done !== items.length) {

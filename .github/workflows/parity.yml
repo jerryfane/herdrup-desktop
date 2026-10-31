@@ -167,11 +167,13 @@ jobs:
             fpid=$!
             for _ in $(seq 50); do [ -s "$key" ] && break; sleep 0.2; done
             echo "::group::$name: $device $state, page ${w}x$((h - bar)) pt, fakeherdr -mode $mode, scale ${scale:-native}"
+            # iPad scroll indicators overlay content. Scope the equivalent Cocoa
+            # preference to this capture process; never change the runner/user default.
             TZ=UTC HERDRUP_SMOKE_HOST=127.0.0.1 HERDRUP_SMOKE_PORT=$port HERDRUP_SMOKE_USER=ci HERDRUP_SMOKE_KEY="$key" \
               HERDRUP_SMOKE_LOG="$out/logs/$name.app.log" HERDRUP_REF_STATE="$state" \
               HERDRUP_REF_FIXTURE="$refs/fixture-$fixture.json" \
               HERDRUP_REF_SIZE="${w}x$((h - bar))" HERDRUP_REF_CAPTURE="$out/captures/$name.png" \
-              HERDRUP_REF_SCALE="$scale" "$app" &
+              HERDRUP_REF_SCALE="$scale" "$app" -AppleShowScrollBars WhenScrolling &
             apid=$!
             (sleep 120 && kill -9 "$apid" 2> /dev/null && echo "$name: app killed after 120 s") &
             wd=$!

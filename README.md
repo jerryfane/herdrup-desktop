@@ -475,6 +475,10 @@ state through `window.herdrupRef`. `cmd/refdiff` then compares each capture with
 the status bar. Board comparisons exclude the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and
 iPadOS's resize corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`),
 the detail column's glyph field, which herdrup's capture froze before its first picture.
+Capture processes use `-AppleShowScrollBars WhenScrolling` to match the iPad's
+overlay scroll indicators. The hosted runner's default reserves 17 pt inside
+scroll views; that is not part of the native reference viewport. This argument
+does not change the runner's global preference or normal desktop launches.
 
 The accepted manifest now drives all 24 board captures, including folders,
 avatars, sessions, federation and both needs-you states. `fakeherdr -responses`
@@ -532,6 +536,10 @@ space. Plan rows use the font's natural line height; the transcript ends with it
 Replies use Swift's 8 pt block and 6 pt list-item gaps, with added leading only
 between text lines. Historical plan rows retain their spacing while the current
 plan appears once at the end. Question options show at most two lines.
+Plan disclosures and status marks use SF Symbols on macOS, with licensed
+Phosphor 2.1.1 substitutes elsewhere. Completed marks use `ChatStyle.ok` from
+the pinned Swift source, not the different shared agent-state green. Plan headings,
+phases, rows and the remaining-item count all follow Chat's text-size setting.
 Host selection seeds only saved metadata before page startup and does not connect.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
