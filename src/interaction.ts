@@ -174,6 +174,8 @@ class Detail {
  chatScroll = el("div", "chat-scroll");
  chatFollowing = true;
  chatResize: ResizeObserver | null = null;
+ private promptLayoutWidth = 0;
+ private promptLayoutDirty = true;
  chatJump = button("", () => { this.chatFollowing = true; this.followChat(); });
  subagentSheet: HTMLDialogElement | null = null;
  questionSheet: HTMLDialogElement | null = null;
@@ -360,6 +362,7 @@ class Detail {
   this.prediction?.reset();
   if (this.terminal) this.terminal.options.fontSize = textSize("terminal");
   this.fitTerminal?.();
+  this.promptLayoutDirty = true;
   this.input.dispatchEvent(new Event("input"));
   this.followChat();
  }
@@ -417,6 +420,8 @@ class Detail {
      this.findMatches.push(...hits.map(hit => hit.marks));
     }
    }
+   this.promptLayoutDirty = true;
+   this.fitPromptBubbles();
   }
   const count = this.findMatches.length;
   if (count) this.findIndex = (this.findIndex + step + count) % count;
@@ -674,6 +679,7 @@ class Detail {
    this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
    const composerHeight = composer.offsetHeight + 12;
    this.body.style.setProperty("--composer-height", `${composerHeight}px`);
+   this.fitPromptBubbles();
   };
   this.editor = new ComposerEditor(composer, this.input, layout);
   this.input.oninput = layout;
@@ -758,9 +764,37 @@ class Detail {
    if (node === next) next = next.nextSibling;
    else this.transcript.insertBefore(node, next);
   }
+  this.fitPromptBubbles();
   if (follow) this.followChat();
   if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index); }
   this.refreshQuestion?.();
+ }
+ private fitPromptBubbles() {
+  const first = this.transcript.querySelector<HTMLElement>(".chat-message.user");
+  const width = first?.getBoundingClientRect().width ?? 0;
+  if (!width || (!this.promptLayoutDirty && width === this.promptLayoutWidth)) return;
+  this.promptLayoutWidth = width; this.promptLayoutDirty = false;
+  const bubbles = [...this.transcript.querySelectorAll<HTMLElement>(".chat-user-text")];
+  for (const bubble of bubbles) {
+   bubble.style.width = "";
+   (bubble.firstElementChild as HTMLElement).style.width = "";
+  }
+  // Swift lays Text out at the proposed width, then sizes its background to the
+  // resulting lines. Keep that proposal: narrowing Text again changes its wrap.
+  const range = document.createRange();
+  const measured = bubbles.map(bubble => {
+   const content = bubble.firstElementChild as HTMLElement;
+   const style = getComputedStyle(bubble), bounds = bubble.getBoundingClientRect();
+   const left = parseFloat(style.paddingLeft), padding = left + parseFloat(style.paddingRight);
+   range.selectNodeContents(content);
+   let ink = 0;
+   for (const line of range.getClientRects()) ink = Math.max(ink, line.right - bounds.left - left);
+   return { bubble, content, proposal: Math.max(0, bounds.width - padding),
+    fitted: Math.min(bounds.width, Math.ceil((ink + padding) * devicePixelRatio) / devicePixelRatio) };
+  });
+  for (const { bubble, content, proposal, fitted } of measured) {
+   content.style.width = `${proposal}px`; bubble.style.width = `${fitted}px`;
+  }
  }
  renderPlan(items: PlanItem[], container = this.transcript, session = this.chat?.session_id): HTMLElement {
   const card = el("section", "chat-plan chat-message");
@@ -1062,7 +1096,11 @@ class Detail {
   }
   if (entry.kind === "user" || entry.kind === "reply") {
    const article = el("article", `chat-message ${entry.kind}`);
-   if (entry.kind === "user") article.append(el("div", "chat-user-text", entry.text ?? ""));
+   if (entry.kind === "user") {
+    const bubble = el("div", "chat-user-text");
+    bubble.append(el("span", "chat-user-content", entry.text ?? "")); article.append(bubble);
+    this.promptLayoutDirty = true;
+   }
    else article.append(markdown(entry.text ?? ""));
    this.bindMessageMenu(article, entry.text ?? "", entry.kind === "reply", entry.kind === "reply");
    return article;

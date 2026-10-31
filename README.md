@@ -36,6 +36,10 @@ Native Linux typing reproduced clipping at 140% before the fix; afterward one an
 two lines fit, a sixth line scrolls behind the five-line limit, and expanded writers
 retain drafts across 140%→90%→100% changes. Typing and writer expansion leave the
 Chat viewport fixed. Windows/macOS composer-scale interaction is not yet verified.
+Prompt bubbles fit their rendered lines while retaining the original text layout
+width. Linux native checks covered pointer selection, window resizing, global and
+Chat font changes, search highlights and selection retained through refresh.
+The hosted macOS reference comparison and Windows prompt interactions remain pending.
 Earlier terminal output loads above the live screen, without a separate window or
 replaying the terminal stream. Paging preserves live input, cursor state and search;
 expired cursors stop paging, while transport failures remain retryable. History is
