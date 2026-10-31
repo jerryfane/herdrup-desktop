@@ -52,8 +52,10 @@ points of the tail. Native Linux polling checks preserved the reading position
 at nine points away and followed new content at eight; subagent checks also
 covered forty points away.
 Host-picker headings and row labels use the existing native system-font metrics
-and device-pixel-rounded intrinsic minima. Linux native measurements at 100% and
-140% text scale passed; hosted visual acceptance is still required.
+and device-pixel-rounded intrinsic minima. Semibold section and action labels
+reuse the sidebar's SF Pro weight mapping. Linux native measurements at 100% and
+140% text scale passed. Hosted host-picker captures improved at both reference
+sizes, but neither passes the visual gate yet.
 Toolbar renders replace controls atomically and discard superseded tab changes.
 Rapid Agents/Settings/Gram switching was checked in the Linux native window;
 controls and the selected tab stay consistent without duplicate actions.
