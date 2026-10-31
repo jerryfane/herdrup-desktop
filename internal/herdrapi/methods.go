@@ -169,6 +169,7 @@ var Methods = []Method{
 	// schema.rs:216; acknowledged at src/api/server/gram_upload_stream.rs:207,
 	// then GramUploadFrame out and GramUploadFrameReply back.
 	{Name: "gram.upload.stream", Params: typeOf[GramUploadStreamParams](), Results: []Result{result[ResponseResultOk]("ok")}, Capability: CapabilityGramUploadStream, Streaming: true},
+	{Name: "server.staged_update", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultStagedUpdate]("staged_update")}},
 	// schema.rs:227; acknowledged at src/api/server.rs:2793, then
 	// SubscriptionStreamEvent and SubscriptionControlLine lines. A herdr
 	// without events_v2 accepts the call but ignores events_v2: its lines

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
@@ -166,4 +169,64 @@ func TestSharedAccessKeepsSameIDsOnDifferentMachinesSeparate(t *testing.T) {
 	if err := d.SetGuestGramSharing(ctx, "guests", "", "guest-1", false); err == nil {
 		t.Fatal("a closed Settings page could change sharing permissions")
 	}
+}
+
+func TestSettingsMachineVersionDiscardsClosedScopeReply(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	var calls atomic.Int32
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		previous := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if method != "server.staged_update" {
+				return previous(method, raw)
+			}
+			if calls.Add(1) == 1 {
+				close(started)
+				<-release
+				return map[string]any{"type": "staged_update", "running_version": "old", "running_protocol": 22, "running_sha": "old-sha"}, nil
+			}
+			return map[string]any{"type": "staged_update", "running_version": "new", "running_protocol": 22, "running_sha": "new-sha"}, nil
+		}
+	})
+	t.Cleanup(unblock)
+	board := d.Board()
+	if err := d.OpenSettings(board.MachineID, board.Session, "old"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type reply struct {
+		line string
+		err  error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		line, err := d.SettingsMachineVersion(ctx, "old")
+		done <- reply{line, err}
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("version request did not reach the old scope")
+	}
+	d.CloseSettings("old")
+	if err := d.OpenSettings(board.MachineID, board.Session, "new"); err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	select {
+	case result := <-done:
+		if result.line != "" || result.err == nil {
+			t.Fatalf("closed scope published old daemon version: %+v", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("closed version request did not finish")
+	}
+	line, err := d.SettingsMachineVersion(ctx, "new")
+	if err != nil || line != "herdr new · new-sha" {
+		t.Fatalf("new scope inherited the closed scope's version: %q, %v", line, err)
+	}
+	d.CloseSettings("new")
 }

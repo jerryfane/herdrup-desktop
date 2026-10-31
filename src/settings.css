@@ -8,6 +8,8 @@
 .settings-machine-card-lines, .settings-row-lines { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
 .settings-machine-card-name { font:var(--text-machine-card-title-weight) var(--text-machine-card-title-size) var(--text-machine-card-title-font); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .settings-machine-card-status { display:flex; align-items:center; gap:4px; color:var(--color-text-dim); font:400 13px var(--font-app); flex-wrap:wrap; }
+.settings-machine-version { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--color-text-faint); font:var(--text-card-subtitle-weight) calc(var(--text-card-subtitle-size) * var(--ui-font-scale, 1)) var(--text-card-subtitle-font); }
+.settings-machine-hero > .settings-machine-version { margin-top:2px; }
 .settings-machine-disc { flex:none; width:var(--disc-size); height:var(--disc-size); display:grid; place-items:center; border-radius:50%; background:var(--color-surface-raised); border:1px solid var(--color-hairline); color:var(--color-text); font:700 calc(var(--disc-size) * .43) var(--font-app); }
 .settings-portable-glyph { display:block; background:currentColor; mask:var(--settings-icon) center/contain no-repeat; -webkit-mask:var(--settings-icon) center/contain no-repeat; }
 .settings-glyph { flex:none; width:22px; display:flex; align-items:center; justify-content:center; color:var(--color-text-dim); }

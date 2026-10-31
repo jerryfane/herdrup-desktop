@@ -29,6 +29,11 @@ func (c *Client) MachineStatus(ctx context.Context) (herdrapi.ResponseResultMach
 	return call[herdrapi.ResponseResultMachineStatus](ctx, c, "machine.status", herdrapi.EmptyParams{})
 }
 
+// StagedUpdate reports the running daemon build without applying an update.
+func (c *Client) StagedUpdate(ctx context.Context) (herdrapi.ResponseResultStagedUpdate, error) {
+	return call[herdrapi.ResponseResultStagedUpdate](ctx, c, "server.staged_update", herdrapi.EmptyParams{})
+}
+
 // AgentList is agent.list.
 func (c *Client) AgentList(ctx context.Context, p herdrapi.AgentListParams) (herdrapi.ResponseResultAgentList, error) {
 	return call[herdrapi.ResponseResultAgentList](ctx, c, "agent.list", p)

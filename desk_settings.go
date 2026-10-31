@@ -103,6 +103,33 @@ func (d *Desk) SettingsAccounts(ctx context.Context, token string) (string, erro
 	return accountJSON(view.client.AccountsList(ctx))
 }
 
+// SettingsMachineVersion identifies the daemon belonging to this Settings scope,
+// not the desktop app or the currently selected machine after a switch.
+func (d *Desk) SettingsMachineVersion(ctx context.Context, token string) (string, error) {
+	view, err := d.settingsView(token)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := viewRequest(ctx, view.ctx)
+	defer cancel()
+	result, err := view.client.StagedUpdate(ctx)
+	var unsupported *engine.ErrUnsupported
+	if errors.As(err, &unsupported) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := d.settingsView(token); err != nil {
+		return "", err
+	}
+	line := "herdr " + result.RunningVersion
+	if result.RunningSha != nil {
+		line += " · " + *result.RunningSha
+	}
+	return line, nil
+}
+
 func (d *Desk) CreateSettingsAccount(ctx context.Context, token, kind, label string) (string, error) {
 	view, err := d.settingsView(token)
 	if err != nil {

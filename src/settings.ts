@@ -54,6 +54,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let state: ConnState | null = null, board: BoardUpdate | null = null, machine: Machine | null = null;
   let statuses: SavedMachineStatus[] = [], peers: PeerSummary[] = [], federationError = "";
   let machineNameNodes: HTMLElement[] = [], connectionNodes: HTMLElement[] = [];
+  let machineVersion = "";
+  let versionNodes: HTMLElement[] = [];
   let reconnectButton: HTMLButtonElement | null = null, reach: HTMLElement | null = null;
   let openDialog: HTMLDialogElement | null = null;
   const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
@@ -67,6 +69,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     guests.setScope("");
     const token = settingsToken; settingsToken = "";
     if (token) void Desk.closeSettings(token).catch(report);
+    machineVersion = "";
+    updateVersion();
   }
   async function openScope(at: number) {
     if (state?.phase !== "connected" || !board) return;
@@ -76,6 +80,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       if (at !== generation || !visible) { void Desk.closeSettings(token); return; }
       accounts.setScope(token);
       guests.setMachines(name(), statuses, peers); guests.setScope(token);
+      const version = await Desk.settingsMachineVersion(token);
+      if (at !== generation || !visible || settingsToken !== token) return;
+      machineVersion = version;
+      updateVersion();
     } catch (error) { if (at === generation) report(error); }
   }
   function glyph(name: string, size = 20) {
@@ -90,6 +98,18 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     return slot;
   }
   function name() { return machine?.nickname || machine?.host || state?.machine || "Machine"; }
+  function updateVersion() {
+    for (const node of versionNodes) {
+      node.textContent = machineVersion;
+      node.hidden = !machineVersion;
+    }
+  }
+  function versionLine() {
+    const node = el("span", "settings-machine-version", machineVersion);
+    node.hidden = !machineVersion;
+    versionNodes.push(node);
+    return node;
+  }
   function disc(size: number, label: string) {
     const node = el("span", "settings-machine-disc", Array.from(label.trim())[0]?.toUpperCase() || "?");
     node.style.setProperty("--disc-size", `${size}px`); node.setAttribute("aria-hidden", "true"); return node;
@@ -117,12 +137,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   function renderIndex() {
     machineNameNodes = []; connectionNodes = [];
+    versionNodes = [];
     const card = button("", () => choose("machines")); card.className = "settings-machine-card";
     card.setAttribute("aria-current", selected === "machines" ? "page" : "false");
     const lines = el("span", "settings-machine-card-lines"), label = el("strong", "settings-machine-card-name", name());
     machineNameNodes.push(label);
     const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
-    lines.append(label, connection); card.append(disc(60, name()), lines, glyph("chevron.right", 12));
+    lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines, glyph("chevron.right", 12));
     const accountRow = row("Accounts", "person.crop.circle", () => choose("accounts"), "Subscriptions on your home box");
     accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
     const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "People, invites and activity");
@@ -189,6 +210,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     reconnectButton = null; reach = null;
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
+    versionNodes = versionNodes.filter(node => index.contains(node));
     title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : "Text size";
     body.replaceChildren();
     if (selected === "accounts") { body.append(accounts.root); return; }
@@ -237,7 +259,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     }
     const hero = el("div", "settings-machine-hero"), label = el("h2", "settings-machine-hero-name", name());
     machineNameNodes.push(label); const connection = el("p", "settings-machine-connection"); connectionNodes.push(connection);
-    hero.append(disc(88, name()), label, connection);
+    hero.append(disc(88, name()), label, connection, versionLine());
     reconnectButton = button("Reconnect now", () => { void reconnect().catch(report); }); reconnectButton.className = "settings-plain-row";
     const copy = button("Copy diagnostics", () => {
       void Desk.gramCopyText(`herdrup-desktop ${version}, host ${name()}`).then(() => {

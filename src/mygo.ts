@@ -1133,6 +1133,13 @@ export const Desk = {
   settingsGuestMachine(token: string, machine: string): Promise<string> {
     return call("Desk.SettingsGuestMachine", token, machine);
   },
+  /**
+   * SettingsMachineVersion identifies the daemon belonging to this Settings scope,
+   * not the desktop app or the currently selected machine after a switch.
+   */
+  settingsMachineVersion(token: string): Promise<string> {
+    return call("Desk.SettingsMachineVersion", token);
+  },
   startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
     return call("Desk.StartAccountLogin", token, loginID, id, setupToken);
   },

@@ -81,8 +81,12 @@ input is never replayed automatically. A definite prompt rejection preserves the
 draft; written or uncertain delivery clears the submitted draft and asks the reader
 to check Terminal rather than accidentally submit it twice.
 
-Settings opens a split index and Machines page, not the host chooser. It shows
-the connected host, saved federation states and unmatched peers. Federate requires
+Settings opens a split index and Machines page, not the host chooser. The machine
+card and detail show the connected daemon's version and commit from
+`server.staged_update`, distinct from the desktop app version. A daemon without
+that method omits the line; a build without a commit shows only its version.
+Closing Settings or changing host/session discards pending version replies.
+It also shows saved federation states and unmatched peers. Federate requires
 an explicit SSH-authority confirmation; Unfederate removes that policy immediately.
 Disabled profiles cannot be enabled here. Reconnect preserves host-key checks and
 asks again for an unsaved password. Copy diagnostics includes only the host label
