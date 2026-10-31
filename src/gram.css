@@ -273,15 +273,14 @@
 .gaccent { color: var(--color-brand); }
 .gstrip { display: flex; gap: 8px; padding: 0 7px; overflow-x: auto; scrollbar-width: none; }
 .gactions { display: flex; gap: 4px; align-self: flex-end; }
-.gaction { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); }
-.gaction-circle { position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; border-radius: 50%; background: var(--color-surface-raised); z-index: -1; }
-.gaction { isolation: isolate; }
-.gaction.primary { color: var(--color-ground); }
-.gaction.primary .gaction-circle { background: var(--color-text); }
-.gaction:disabled { opacity: 0.45; }
-.gaction.busy .gglyph { animation: gspin 1.2s linear infinite; }
-.gaction.primary .gring .track { stroke: currentColor; opacity: 0.3; }
-.gaction.primary .gring .share { stroke: currentColor; }
+.composer-action { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); isolation: isolate; }
+.composer-action::before { content: ""; position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; border-radius: 50%; background: var(--color-surface-raised); z-index: -1; }
+.composer-action.primary { color: var(--color-ground); }
+.composer-action.primary::before { background: var(--color-text); }
+.composer-action:disabled { opacity: 0.45; }
+.composer-action.busy .gglyph { animation: gspin 1.2s linear infinite; }
+.composer-action.primary .gring .track { stroke: currentColor; opacity: 0.3; }
+.composer-action.primary .gring .share { stroke: currentColor; }
 
 /* Chips: 228 wide, surfaceRaised, radius 15. */
 .gchip { flex: none; width: 228px; display: flex; align-items: center; gap: 9px; padding: 9px 3px 9px 9px; border-radius: 15px; background: var(--color-surface-raised); }

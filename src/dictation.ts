@@ -28,7 +28,7 @@ export class ComposerDictation {
   private hidden = () => { if (document.hidden) this.stop(); };
   constructor(private readonly input: HTMLTextAreaElement, private readonly changed: () => void, private readonly onStart: () => void) {
     this.button.type = "button";
-    this.button.className = "composer-microphone";
+    this.button.className = "composer-action composer-microphone";
     this.button.onclick = () => { if (this.busy) this.stop(); else this.start(); };
     this.strip.className = "composer-recording";
     this.strip.setAttribute("aria-label", "Recording");

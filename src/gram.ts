@@ -1488,9 +1488,7 @@ function chip(a: GramAttachment): HTMLElement {
 
 /** ComposerActionIcon: a 40 pt circle in a 44 pt target. */
 function actionIcon(cls: string, label: string, action: () => void): HTMLButtonElement {
-  const b = button("gaction " + cls, label, action);
-  b.append(el("span", "gaction-circle"));
-  return b;
+  return button("composer-action " + cls, label, action);
 }
 
 function renderComposer() {

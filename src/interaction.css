@@ -26,7 +26,7 @@
 .agent-detail .pane-back { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; padding: 0; border: 0; border-radius: 50%; }
 .pane-header-capsule { display: flex; padding: 0 2px; background: var(--color-surface-raised); border-radius: 22px; }
 .agent-detail .pane-header-capsule button { display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; padding: 0; border: 0; background: none; }
-.chat-terminal-switch { display: flex; align-self: center; flex: none; gap: 0; padding: 3px; margin: 2px 0 4px; border: 1px solid var(--color-hairline); border-radius: 99px; background: var(--color-surface); }
+.chat-terminal-switch { display: flex; align-self: center; flex: none; gap: 0; padding: 3px; margin: 2px 0 4px; border: 0; outline: 1px solid var(--color-hairline); outline-offset: -1px; border-radius: 99px; background: var(--color-surface); }
 .chat-terminal-switch[hidden] { display: none; }
 .agent-detail .chat-terminal-switch button { height: 26px; padding: 0 16px; border: 0; border-radius: 99px; font: 600 13px var(--font-app); color: var(--color-text-dim); background: none; }
 .agent-detail .chat-terminal-switch button[aria-pressed="true"] { background: var(--color-surface-raised); color: var(--color-text); text-decoration: none; }
@@ -38,7 +38,7 @@
 .terminal-surface.covered { opacity: 0; pointer-events: none; }
 .chat-surface[hidden] { display: none; }
 .interaction-body > .chat-composer { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; }
-.terminal-canvas { flex: 1; min-height: 0; min-width: 0; padding: 8px; background: var(--color-ground-machine); overflow: hidden; }
+.terminal-canvas { flex: 1; min-height: 0; min-width: 0; padding: 0 8px; background: var(--color-ground-machine); overflow: hidden; }
 .terminal-tools { font-size: 12px; }
 .terminal-tools input { width: 160px; }
 .terminal-key-row { position: absolute; left: 0; right: 0; bottom: var(--composer-height, 68px); display: flex; align-items: center; gap: 8px; height: 50px; }
@@ -131,8 +131,9 @@
 .subagent-sheet > header button { position: absolute; right: 10px; height: 44px; padding: 0 16px; border: 0; border-radius: 22px; background: var(--color-surface-raised); color: var(--color-brand); font: 600 16px var(--font-app); }
 .subagent-sheet::backdrop { background: color-mix(in srgb, var(--color-ground-machine) 75%, transparent); }
 .composer-actions { display: flex; gap: 4px; flex: none; align-self: flex-end; }
-.agent-detail .composer-actions > button { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-dim); }
-.agent-detail .composer-actions > button[aria-label="Send reply"] { background: var(--color-text); color: var(--color-ground-machine); }
+.agent-detail .composer-actions > button { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-dim); text-decoration: none; }
+.agent-detail .composer-actions > button.primary { color: var(--color-ground-machine); }
+.agent-detail .composer-actions > button:disabled { opacity: 0.45; }
 .composer-actions > button[hidden], .saved-prompts-menu[hidden] { display: none; }
 .saved-prompts-menu { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 6; display: flex; flex-direction: column; width: min(320px, 90vw); max-height: 50vh; overflow: auto; padding: 6px; border: 1px solid var(--color-hairline); border-radius: 14px; background: var(--color-surface); }
 .agent-detail .saved-prompts-menu button { padding: 12px; border: 0; background: none; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

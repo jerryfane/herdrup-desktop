@@ -146,6 +146,7 @@ export class SavedPromptsMenu {
   };
   constructor(private readonly onSelect: (text: string) => void, private readonly onError: (error: unknown) => void) {
     this.button.type = "button"; this.button.setAttribute("aria-label", "Saved prompts");
+    this.button.className = "composer-action";
     this.button.append(composerGlyph("bookmark", 22));
     this.menu.className = "saved-prompts-menu"; this.menu.hidden = true; this.menu.setAttribute("role", "menu");
     this.button.onclick = () => {

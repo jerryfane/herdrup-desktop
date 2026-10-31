@@ -605,6 +605,8 @@ class Detail {
   this.input.disabled = false; this.send.disabled = this.sending;
   const composer = el("div", "chat-composer");
   const actions = el("div", "composer-actions");
+  this.attach.className = "composer-action";
+  this.send.className = "composer-action primary";
   actions.append(this.attach, this.dictation.button);
   this.send.replaceChildren(composerGlyph("send", 22)); this.send.setAttribute("aria-label", "Send reply");
   this.prompts.mount(actions); actions.append(this.send);

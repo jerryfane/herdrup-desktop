@@ -511,6 +511,9 @@ It also checks the latest reply's Geist font and semibold emphasis; browser-defa
 serif/sans fallbacks are not the native Chat typography.
 Writer captures wait for the pasted draft's layout before activating the handle,
 then check the same textarea, retained draft and unclipped expanded card.
+Terminal uses the native horizontal-only 8 pt inset; the mode switch's stroke
+does not increase its 32 pt height. Chat and Gram share 40 pt action circles
+inside 44 pt targets, including the microphone while its icon changes.
 Host selection seeds only saved metadata before page startup and does not connect.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
