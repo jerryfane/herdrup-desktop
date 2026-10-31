@@ -39,7 +39,11 @@ Chat viewport fixed. Windows/macOS composer-scale interaction is not yet verifie
 Prompt bubbles fit their rendered lines while retaining the original text layout
 width. Linux native checks covered pointer selection, window resizing, global and
 Chat font changes, search highlights and selection retained through refresh.
-The hosted macOS reference comparison and Windows prompt interactions remain pending.
+The hosted macOS comparison still fails the full visual gate. Windows prompt
+interactions remain unverified.
+Toolbar renders replace controls atomically and discard superseded tab changes.
+Rapid Agents/Settings/Gram switching was checked in the Linux native window;
+controls and the selected tab stay consistent without duplicate actions.
 Earlier terminal output loads above the live screen, without a separate window or
 replaying the terminal stream. Paging preserves live input, cursor state and search;
 expired cursors stop paging, while transport failures remain retryable. History is

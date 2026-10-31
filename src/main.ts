@@ -92,9 +92,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 
 // ---- Top bar (SectionTopBar) ----
 
+let topBarGeneration = 0;
 async function buildTopBar() {
-  const leading = $("bar-leading");
-  const actions = $("bar-actions");
+  const generation = ++topBarGeneration, selectedTab = tab;
+  let titleNodes: Node[], actionNodes: HTMLElement[];
   const slot = async (name: string, label: string) => {
     const s = el("div", "slot");
     s.title = label;
@@ -106,21 +107,19 @@ async function buildTopBar() {
   const chooseHost = () => { closeWriter(); choosingHost = true; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
-  leading.replaceChildren(back);
-  const title = $("bar-title");
-  if (tab === "gram") {
+  if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
-    title.replaceChildren(document.createTextNode("Gram"), ...(count ? [count] : []));
-    actions.replaceChildren(...(await barActions(() => rail?.minimize())));
+    titleNodes = [document.createTextNode("Gram"), ...(count ? [count] : [])];
+    actionNodes = await barActions(() => rail?.minimize());
   } else {
-    title.replaceChildren(document.createTextNode(tab === "settings" ? "Settings" : "Agents"));
+    titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
     const minimize = await slot("sidebar.leading", "Minimise sidebar");
     minimize.tabIndex = 0; minimize.setAttribute("role", "button"); minimize.setAttribute("aria-label", "Minimise sidebar");
     minimize.onclick = () => rail?.minimize();
     minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
-    actions.replaceChildren(minimize);
-    if (tab === "agents") {
+    actionNodes = [minimize];
+    if (selectedTab === "agents") {
       const add = await slot("plus", "New agent");
       const enabled = !!board && state.phase === "connected";
       add.tabIndex = enabled ? 0 : -1; add.setAttribute("role", "button"); add.setAttribute("aria-label", "New agent");
@@ -134,9 +133,15 @@ async function buildTopBar() {
       const createTerminal = () => { if (board && state.phase === "connected") void showNewTerminal({ machineID: board.machineID, session: board.session }, renderRows); };
       terminal.onclick = createTerminal;
       terminal.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); createTerminal(); } };
-      actions.append(terminal, add);
+      actionNodes.push(terminal, add);
     }
   }
+  // Symbol loads can overlap another tab change. Commit one complete, current bar.
+  if (generation !== topBarGeneration) return;
+  const leading = $("bar-leading"), actions = $("bar-actions");
+  leading.replaceChildren(back);
+  $("bar-title").replaceChildren(...titleNodes);
+  actions.replaceChildren(...actionNodes);
   // The capsules' shapes go with their children.
   paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
   paintShape(actions, { radius: "capsule", fill: "var(--color-surface-raised)" });
@@ -160,7 +165,9 @@ function placeTitle() {
 
 // ---- Tab bar ----
 
+let tabBarGeneration = 0;
 async function buildTabBar() {
+  const generation = ++tabBarGeneration, selectedTab = tab;
   const items: Array<[typeof tab, string, string]> = [
     ["agents", "square.grid.2x2.fill", "Agents"],
     ["gram", "bubble.left.and.bubble.right.fill", "Gram"],
@@ -168,7 +175,7 @@ async function buildTabBar() {
   ];
   const nodes = await Promise.all(
     items.map(async ([key, icon, label]) => {
-      const t = el("div", "tab" + (key === tab ? " selected" : ""));
+      const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
       const i = el("div", "icon");
       await place(i, icon, 21, "medium");
       t.append(i, el("span", "t-tab-label", label));
@@ -182,6 +189,7 @@ async function buildTabBar() {
       return t;
     }),
   );
+  if (generation !== tabBarGeneration) return;
   $("tabbar").replaceChildren(...nodes);
 }
 
