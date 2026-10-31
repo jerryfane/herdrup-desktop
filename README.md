@@ -238,6 +238,10 @@ The machine card uses Swift's status typography, with no chevron or status dot
 in the split-view sidebar; the detail hero keeps its connection dot. Its
 accessible label names the Machines destination. Native Linux checks exercised
 Accounts navigation and keyboard return through the machine card.
+Grouped actions use Swift's 17 pt semibold labels and 52 pt minimum height.
+A host-key refusal keeps Reconnect disabled and shows its reason inline; normal
+connection errors remain retryable. Native Linux checks covered the existing
+connection-state event path, not a new SSH trust or handshake test.
 
 Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
 registers a Claude, Codex or Kimi account on the home box. Its context menu can move

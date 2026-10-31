@@ -49,8 +49,9 @@
 .settings-status-dot[data-state="reachable"] { background:var(--status-done); }
 .settings-status-dot[data-state="degraded"] { background:var(--status-waiting); }
 .settings-status-dot[data-state="offline"] { background:var(--color-text-dim); }
-.settings-plain-row { display:block; width:100%; padding:13px 18px; border:0; border-radius:0; color:var(--color-text); background:none; text-align:left; font:400 15px var(--font-app); }
+.settings-plain-row { position:relative; display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:2px; width:100%; min-height:52px; padding:12px 18px; border:0; border-radius:0; color:var(--color-text); background:none; text-align:left; font:600 17px/var(--leading-app) var(--font-app); }
 .settings-plain-row:disabled { color:var(--color-text-faint); }
+.settings-action-note { font:400 11px/var(--leading-app) var(--font-app); }
 .settings-latency-report { padding:13px 18px; display:flex; flex-direction:column; gap:6px; margin:0; font:400 15px/1.4 var(--font-app); }
 .settings-latency-report p { margin:0; }
 .settings-latency-hint { margin:14px 34px 0; color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
@@ -75,7 +76,8 @@
 .settings-sheet p { margin-top:4px; color:var(--color-text-dim); }
 .settings-sheet pre { overflow:auto; font:400 12px var(--font-machine); }
 .settings-sheet button { padding:9px 14px; border:1px solid var(--color-hairline); border-radius:99px; color:var(--color-text); background:var(--color-surface); }
-.settings-plain-row + .settings-plain-row { border-top:1px solid var(--color-hairline); }
+.settings-plain-row + .settings-plain-row { border-top:0; margin-top:1px; }
+.settings-plain-row + .settings-plain-row::before { content:""; position:absolute; top:-1px; left:18px; right:0; height:1px; background:var(--color-hairline-quiet); }
 .settings-sheet > button + button { margin-left:8px; }
 .settings-account-row { display:flex; align-items:center; gap:12px; padding:12px 18px; }
 .settings-account-identity { display:grid; place-items:center; width:40px; height:40px; flex:none; border:1px solid var(--color-hairline); border-radius:10px; font:700 18px var(--font-app); background:var(--color-surface-raised); }

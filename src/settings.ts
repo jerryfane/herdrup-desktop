@@ -71,6 +71,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let machineVersion = "";
   let versionNodes: HTMLElement[] = [];
   let reconnectButton: HTMLButtonElement | null = null, reach: HTMLElement | null = null;
+  let reconnectNote: HTMLElement | null = null;
   let openDialog: HTMLDialogElement | null = null;
   const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
   let settingsToken = "";
@@ -234,7 +235,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     if (reconnectButton) {
       const refused = state?.phase === "error" && state.message.includes("refusing to connect");
       reconnectButton.disabled = state?.phase === "connecting" || refused;
-      reconnectButton.title = refused ? "verify the host key first" : "";
+      if (reconnectNote) reconnectNote.hidden = !refused;
     }
     if (reach) {
       const offline = peers.filter(peer => peer.reachability === "offline").length;
@@ -244,7 +245,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   function renderPage() {
     clearInterval(latencyTimer);
-    reconnectButton = null; reach = null;
+    reconnectButton = null; reconnectNote = null; reach = null;
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
     versionNodes = versionNodes.filter(node => index.contains(node));
@@ -298,6 +299,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     machineNameNodes.push(label); const connection = el("p", "settings-machine-connection"); connectionNodes.push(connection);
     hero.append(disc(88, name()), label, connection, versionLine());
     reconnectButton = button("Reconnect now", () => { void reconnect().catch(report); }); reconnectButton.className = "settings-plain-row";
+    reconnectNote = el("span", "settings-action-note", "verify the host key first");
+    reconnectNote.hidden = true; reconnectButton.append(reconnectNote);
     const copy = button("Copy diagnostics", () => {
       void Desk.gramCopyText(`herdrup-desktop ${version}, host ${name()}`).then(() => {
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
