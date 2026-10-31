@@ -133,6 +133,7 @@ jobs:
           shasum -a 256 "$out/"*.swift > "$out/SHA256SUMS"
           swiftc "$out/Colors.swift" cmd/terminal-palette/main.swift -o "$RUNNER_TEMP/terminal-palette"
           "$RUNNER_TEMP/terminal-palette" "$out/LiveTerminalView.swift" "$out/TerminalOptions.swift" > "$out/theme.json"
+          cmp third_party/herdrup/terminal-theme.json "$out/theme.json"
       - name: Capture each state and compare it
         run: |
           set +e

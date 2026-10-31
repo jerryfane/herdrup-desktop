@@ -517,6 +517,11 @@ expansion and mode switching, retained drafts, and the floating key row's hit ta
 Terminal uses the native horizontal-only 8 pt inset; the mode switch's stroke
 does not increase its 32 pt height. Chat and Gram share 40 pt action circles
 inside 44 pt targets, including the microphone while its icon changes.
+The terminal's 16 ANSI colors, theme-derived 240 indexed colors and caret come
+from `third_party/herdrup/terminal-theme.json`, with source hashes in the adjacent
+provenance file. The parity workflow compiles `cmd/terminal-palette/main.swift`
+with the reference pin's SwiftTerm `Colors.swift`, executes the native algorithm,
+and compares its output byte-for-byte with the bundled palette.
 Chat's composer, plan and question outlines are inset strokes, not extra layout
 space. Plan rows use the font's natural line height; the transcript ends with its
 12 pt padding rather than an additional last-row margin.
