@@ -230,6 +230,10 @@ only the value nodes, preserving keyboard focus. Unavailable home-box data is no
 shown as an empty list. Linux native checks covered empty and mixed data, revoked
 guests, expired/used invites, missing APIs, long-value truncation and keyboard
 notification changes from three to four enabled categories and back.
+Index rows follow Swift's sizing and place preference pickers beside their text.
+The real select controls remain keyboard-accessible while their visible width
+follows the selected value, not the longest option. Native Linux checks covered
+90%, 100% and 140% app text sizes, keyboard selection and preview preference changes.
 
 Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
 registers a Claude, Codex or Kimi account on the home box. Its context menu can move

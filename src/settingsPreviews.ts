@@ -11,7 +11,7 @@ export class PreviewSettings {
   private revision = 0;
 
   constructor(icon: HTMLElement) {
-    this.root.className = "settings-row settings-preference-row";
+    this.root.className = "settings-row";
     const lines = document.createElement("span"), title = document.createElement("span");
     lines.className = "settings-row-lines";
     title.className = "settings-row-label"; title.textContent = "Run JavaScript in previews";
@@ -25,7 +25,8 @@ export class PreviewSettings {
       this.status.hidden = true; this.revision++; this.pending = this.input.checked; this.render();
       if (!this.running) void this.save();
     };
-    this.root.append(icon, lines, this.input, this.status); this.render();
+    lines.append(this.status);
+    this.root.append(icon, lines, this.input); this.render();
   }
   async refresh() {
     if (this.running) return;

@@ -29,6 +29,7 @@ import trashIcon from "../third_party/phosphor/web/trash.svg?url";
 import latestIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import latencyIcon from "../third_party/phosphor/web/gauge.svg?url";
 import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.svg?url";
+import pickerIcon from "../third_party/phosphor/web/caret-up-down.svg?url";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -42,6 +43,7 @@ const settingIcons: Record<string, string> = {
   "arrow.up.and.down": scrollIcon, "text.alignleft": selectionIcon,
   "trash": trashIcon, "arrow.down.to.line": latestIcon,
   "gauge.with.needle": latencyIcon, "arrow.up.right": externalLinkIcon,
+  "chevron.up.chevron.down": pickerIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -76,7 +78,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const accounts = new AccountSettings(report, value => { accountSummary.textContent = value; });
   const guests = new GuestSettings(report, value => { guestSummary.textContent = value; });
   const notifications = new NotificationsSettings(report, value => { notificationSummary.textContent = value; });
-  const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right"));
+  const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right", 18));
   const updates = new ServerUpdateSettings(report);
   function closeScope() {
     accounts.setScope("");
@@ -113,6 +115,14 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     }
     return slot;
   }
+  function menuPicker(select: HTMLSelectElement) {
+    const picker = el("span", "settings-menu-picker"), value = el("span");
+    value.setAttribute("aria-hidden", "true");
+    const sync = () => { value.textContent = select.selectedOptions[0]?.text ?? ""; };
+    select.addEventListener("change", sync); sync();
+    picker.append(value, glyph("chevron.up.chevron.down", 13, "medium"), select);
+    return picker;
+  }
   function name() { return machine?.nickname || machine?.host || state?.machine || "Machine"; }
   function updateVersion() {
     for (const node of versionNodes) {
@@ -139,7 +149,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const node = button("", action); node.className = "settings-row";
     const lines = el("span", "settings-row-lines"); lines.append(el("span", "settings-row-label", label));
     if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
-    node.append(glyph(icon), lines);
+    node.append(glyph(icon, 18), lines);
     if (value) node.append(typeof value === "string" ? el("span", "settings-row-value", value) : value);
     return node;
   }
@@ -169,7 +179,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     sizing.setAttribute("aria-current", selected === "textSize" ? "page" : "false");
     const notificationRow = row("Notifications", "bell", () => choose("notifications"), "", notificationSummary);
     notificationRow.setAttribute("aria-current", selected === "notifications" ? "page" : "false");
-    const chatChoice = el("select", "settings-preference-select");
+    const chatChoice = el("select", "settings-choice");
     chatChoice.setAttribute("aria-label", "omp agents open in");
     for (const [value, label] of [["chat", "Chat"], ["terminal", "Terminal"]] as const) {
       const option = el("option", "", label); option.value = value; chatChoice.append(option);
@@ -179,9 +189,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       try { changeDefaultChatMode(chatChoice.value === "terminal" ? "terminal" : "chat"); }
       catch (error) { chatChoice.value = defaultChatMode(); report(error); }
     };
-    const chatPreferenceRow = el("label", "settings-row settings-preference-row"), chatPreferenceLines = el("span", "settings-row-lines");
+    const chatPreferenceRow = el("label", "settings-row"), chatPreferenceLines = el("span", "settings-row-lines");
     chatPreferenceLines.append(el("span", "settings-row-label", "omp agents open in"), el("span", "settings-row-subtitle", "Claude Code and Codex agents always open in the terminal."));
-    chatPreferenceRow.append(glyph("bubble.left.and.bubble.right.fill", 20), chatPreferenceLines, chatChoice);
+    chatPreferenceRow.append(glyph("bubble.left.and.bubble.right.fill", 18), chatPreferenceLines, menuPicker(chatChoice));
     const typingRow = el("label", "settings-row settings-chat-preference"), typingLines = el("span", "settings-row-lines");
     typingLines.append(el("span", "settings-row-label", "Instant typing"), el("span", "settings-row-subtitle", "Shows what you type at once and checks it against the server."));
     const typingChoice = el("select", "settings-choice"); typingChoice.setAttribute("aria-label", "Instant typing"); typingChoice.id = "settings-instant-typing";
@@ -190,7 +200,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     }
     typingChoice.value = predictionMode();
     typingChoice.onchange = () => { try { changePredictionMode(typingChoice.value as PredictionMode); } catch (error) { typingChoice.value = predictionMode(); report(error); } };
-    typingRow.append(glyph("keyboard", 20), typingLines, typingChoice);
+    typingRow.append(glyph("keyboard", 18), typingLines, menuPicker(typingChoice));
     const latencyRow = row("Typing latency", "gauge.with.needle", () => choose("typingLatency"));
     latencyRow.setAttribute("aria-current", selected === "typingLatency" ? "page" : "false");
     const gesturesRow = row("Gestures", "hand.draw", showGestures, "How to move around the app");
