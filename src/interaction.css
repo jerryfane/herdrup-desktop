@@ -168,6 +168,11 @@
 .agent-detail .gchip-remove { width: 36px; height: 44px; padding: 0; border: 0; background: none; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
 .agent-detail .gchip-remove:disabled { opacity: .25; }
 .chat-plan-snapshot { height:10px; }
+/* Swift Text retains a pixel-rounded intrinsic minimum. WebKit can floor its
+   fractional line boxes; reserve that minimum without constraining wrapped text. */
+.chat-plan-heading, .chat-plan-row, .chat-plan-more, .chat-plan-phase,
+.chat-plan-complete, .chat-note-kicker, .chat-note-title,
+.chat-question-title, .chat-question-open { min-height:round(up, 1lh, var(--pixel)); }
 .chat-plan { box-sizing:border-box; display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:0; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:14px; background:var(--color-surface); }
 .agent-detail .chat-plan-heading, .agent-detail .chat-plan-more, .subagent-sheet .chat-plan-heading, .subagent-sheet .chat-plan-more { display:flex; align-items:center; text-align:left; padding:0; border:0; background:none; color:var(--color-text-faint); }
 .agent-detail .chat-plan-heading, .subagent-sheet .chat-plan-heading { gap:6px; width:100%; font:600 calc(10.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); letter-spacing:1.2px; }
