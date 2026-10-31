@@ -23,6 +23,11 @@ The pane's Text size menu independently remembers Chat (12–24 pt, default 16) 
 Terminal (9–24 pt, default 12.5). Ctrl/Cmd +, − and 0 change or reset terminal text
 without sending those shortcuts to the PTY. Font changes refit the live terminal;
 Chat text reflows without scaling the surrounding controls.
+Thought and Worked use the native disclosure glyphs and keep keyboard activation.
+Unchanged transcript rows stay attached during refresh, preserving their focus
+and expanded state. A Linux native-window check reproduced focus loss before the
+fix, then passed Refresh, Enter/Space toggles, mode switches and text-size changes.
+Windows disclosure keyboard interaction and full visual parity remain unverified.
 Earlier terminal output loads above the live screen, without a separate window or
 replaying the terminal stream. Paging preserves live input, cursor state and search;
 expired cursors stop paging, while transport failures remain retryable. History is

@@ -744,7 +744,18 @@ class Detail {
   if (plan.length) nodes.push(this.renderPlan(plan));
   const agents = this.chat?.subagents ?? [];
   if (agents.length) nodes.push(this.renderSubagents(agents));
-  this.transcript.replaceChildren(...nodes);
+  // Keep unchanged rows attached: detaching them on each poll loses keyboard focus.
+  const retained = new Set<Node>(nodes);
+  for (let child = this.transcript.firstChild; child;) {
+   const next = child.nextSibling;
+   if (!retained.has(child)) child.remove();
+   child = next;
+  }
+  let next = this.transcript.firstChild;
+  for (const node of nodes) {
+   if (node === next) next = next.nextSibling;
+   else this.transcript.insertBefore(node, next);
+  }
   if (follow) this.followChat();
   if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index); }
   this.refreshQuestion?.();
@@ -858,12 +869,24 @@ class Detail {
   dialog.addEventListener("close", () => { open = false; clearTimeout(timer); dialog.remove(); if (this.subagentSheet === dialog) this.subagentSheet = null; }, { once: true });
   dialog.showModal(); void load(false);
  }
+ private workSummary(details: HTMLDetailsElement): HTMLElement {
+  const summary = el("summary"), chevron = el("span", "chat-work-chevron");
+  chevron.setAttribute("aria-hidden", "true"); summary.append(chevron);
+  const draw = () => {
+   const open = details.open;
+   void symbol(open ? "chevron.down" : "chevron.right", 10, "bold").then(icon => {
+    if (details.open === open) chevron.replaceChildren(icon);
+   });
+  };
+  details.addEventListener("toggle", draw); draw();
+  return summary;
+ }
  renderWork(work: WorkRow): HTMLElement {
   const group = el("section", "chat-work");
   const thought = work.thoughts.at(-1);
   if (thought) {
    const details = el("details", "chat-thought"); details.dataset.id = `t:${work.id}`;
-   const summary = el("summary");
+   const summary = this.workSummary(details);
    const line = thought.split(/\r?\n/)[0] ?? thought, end = line.indexOf(". ");
    summary.append(el("strong", "", "Thought"), el("span", "thought-preview", end < 0 ? line : line.slice(0, end + 1)));
    const text = work.thoughts.join("\n\n"), content = markdown(text);
@@ -875,8 +898,9 @@ class Detail {
    const seconds = Math.max(0, Math.floor((work.endMs - work.startMs) / 1000));
    const minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60), rest = minutes % 60;
    const duration = seconds < 60 ? `${Math.max(seconds, 1)} s` : minutes < 60 ? `${minutes} min` : rest ? `${hours} h ${rest} min` : `${hours} h`;
-   const summary = el("summary");
-   summary.append(el("span", "", work.live ? "Working" : `Worked for ${duration}`), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
+   const summary = this.workSummary(details), label = el("span");
+   label.append(el("span", "", work.live ? "Working" : `Worked for ${duration}`), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
+   summary.append(label);
    const list = el("div", "chat-work-list");
    for (const step of work.steps) {
     const detail = el("details", "chat-tool"); detail.dataset.id = step.id;

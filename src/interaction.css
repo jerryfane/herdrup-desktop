@@ -68,8 +68,13 @@
 .chat-user-text { max-width: 480px; padding: 8.5px 14px 9.5px; border-radius: 18px 18px 6px 18px; background: var(--color-surface-raised); font: 400 calc(16px * var(--chat-text-scale, 1))/calc(1em * var(--leading-app) + 1px) var(--font-app); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .chat-work { display: flex; flex-direction: column; gap: 10px; color: var(--color-text-dim); font: 400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-work summary { cursor: pointer; }
-.chat-thought summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.thought-preview { margin-left: 6px; color: var(--color-text-faint); }
+.chat-work > details > summary { display:flex; align-items:center; gap:7px; list-style:none; }
+.chat-work > details > summary::-webkit-details-marker { display:none; }
+.chat-work-chevron { display:flex; align-items:center; justify-content:center; flex:none; width:12px; height:12px; }
+.chat-work > .chat-thought > summary { gap:6px; }
+.chat-thought > summary > .chat-work-chevron { color:var(--color-text-faint); }
+.chat-thought > summary > strong { flex:none; font-weight:600; }
+.thought-preview { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--color-text-faint); }
 .chat-thought[open] .thought-preview { display: none; }
 .work-count { color: var(--color-text-faint); }
 .chat-work-list { margin: 8px 0 0 6px; padding-left: 14px; }
