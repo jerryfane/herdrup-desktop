@@ -507,6 +507,8 @@ terminal reset onto the real SSH transport. Source checksums are verified from
 the detail manifest; these are synthetic inputs, not a live agent session.
 The Chat scenario also opens, closes and reopens the agent, checking that its
 rounded sidebar selection clears on Back and returns on reopening.
+It also checks the latest reply's Geist font and semibold emphasis; browser-default
+serif/sans fallbacks are not the native Chat typography.
 Writer captures wait for the pasted draft's layout before activating the handle,
 then check the same textarea, retained draft and unclipped expanded card.
 Host selection seeds only saved metadata before page startup and does not connect.

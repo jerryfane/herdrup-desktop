@@ -79,8 +79,9 @@
 .interaction-body { --gram-header: 0px; }
 .gcol-handle[hidden] { display: none; }
 .chat-message small { color: var(--color-text-dim); }
-.chat-markdown { line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+.chat-markdown { font-family: var(--font-app); line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
 .chat-markdown p { margin: 8px 0; }
+.chat-markdown strong { font-weight: 600; }
 .chat-markdown pre { overflow-x: auto; padding: 12px; background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 8px; }
 .chat-markdown code { font-family: var(--font-machine); font-size: max(calc(1em - 2.5px), 10px); }
 .chat-markdown pre code { font-size: calc(13px * var(--chat-text-scale, 1)); }

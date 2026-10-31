@@ -101,6 +101,11 @@ func driveDetailReference(win *mygo.Window, state string) (bool, string) {
       await until(() => !document.querySelector('.row.selected') && !document.querySelector('.row[aria-current="true"]'), "Back clears sidebar selection");
       document.querySelector('.row[data-id="w9:p1"]').click();
       await until(() => selectedRow() && document.querySelector('.chat-transcript')?.textContent.includes("500 lines at a time"), "reopening restores selection and conversation");
+      await document.fonts.ready;
+      const reply = [...document.querySelectorAll('.chat-message.reply .chat-markdown')].find(node => node.textContent.includes("500 lines at a time"));
+      if (!reply || !getComputedStyle(reply).fontFamily.includes("Geist")) throw new Error("Chat reply uses a browser fallback instead of native Geist");
+      const emphasis = reply.querySelector("strong");
+      if (!emphasis || getComputedStyle(emphasis).fontWeight !== "600") throw new Error("Chat emphasis does not use native semibold: " + (emphasis ? getComputedStyle(emphasis).fontWeight : "missing emphasis"));
     }
     if (reference.state === "detail-terminal") {
       mode("Terminal").click();
