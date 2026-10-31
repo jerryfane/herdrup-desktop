@@ -206,6 +206,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     latencyRow.setAttribute("aria-current", selected === "typingLatency" ? "page" : "false");
     const gesturesRow = row("Gestures", "hand.draw", showGestures, "How to move around the app");
     gesturesRow.id = "settings-gestures";
+    const footer = el("div", "settings-version");
+    footer.append(el("span", "", `herdrup ${version}`), el("span", "settings-version-stance", "dark only, on purpose"));
     index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
       gesturesRow,
       latencyRow,
@@ -215,7 +217,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       link("Privacy Policy", "lock.shield", "https://herdrup.themartian.app/legal/privacy"),
       link("Terms of Service", "doc.text", "https://herdrup.themartian.app/legal/terms"),
       link("Open source on GitHub", "chevron.left.forwardslash.chevron.right", "https://github.com/themartianapp/herdrup"),
-    ]), el("p", "settings-version", `herdrup ${version}`));
+    ]), footer);
     updateConnection();
   }
   function updateConnection() {
