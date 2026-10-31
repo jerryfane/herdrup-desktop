@@ -47,10 +47,10 @@
 .terminal-key-row { position: absolute; left: 0; right: 0; bottom: var(--composer-height, 68px); display: flex; align-items: center; gap: 8px; height: 50px; }
 .interaction-body[data-mode="chat"] .terminal-key-row { display: none; }
 .terminal-key-scroll { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 8px 12px 8px 24px; mask-image: linear-gradient(to right, currentColor calc(100% - 16px), transparent); }
-.terminal-key-group { display: flex; flex: none; align-items: center; overflow: hidden; border-radius: 8px; background: var(--color-surface); }
-.terminal-key-row button { display: flex; align-items: center; justify-content: center; flex: none; min-width: 44px; height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: var(--color-surface); color: var(--color-text-dim); font: 400 12px var(--font-machine); }
+.terminal-key-group { display: flex; flex: none; align-items: center; gap: 1px; overflow: hidden; border-radius: 8px; background: var(--color-surface); }
+.terminal-key-row button { display: flex; align-items: center; justify-content: center; flex: none; min-width: 44px; height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: var(--color-surface); color: var(--color-text-dim); font: 400 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .terminal-key-group button { position: relative; border-radius: 0; background: transparent; }
-.terminal-key-group button + button::before { content: ""; position: absolute; left: 0; top: 8px; height: 18px; width: 1px; background: var(--color-hairline); }
+.terminal-key-group button + button::before { content: ""; position: absolute; left: -1px; top: 8px; height: 18px; width: 1px; background: var(--color-hairline); }
 .terminal-key-row button:hover { background: var(--color-surface-raised); }
 .terminal-key-row button[aria-pressed="true"] { background: var(--status-working); color: var(--color-ground-machine); }
 .terminal-key-row .terminal-space-key { min-width: 84px; }

@@ -19,6 +19,10 @@ Invalid diagrams stay as source text; history from an old transcript session is 
 The current parity branch replaces the separate writing dialog with the Swift
 composer's in-card drag handle. Expanding keeps the same field, selection and draft.
 Terminal quick keys are grouped, with Return pinned outside the scrollable row.
+The groups reserve a 1 pt divider between caps and use native-style system
+monospace labels, scaled by the existing app text-size preference. Linux native
+checks covered 100%/140%/reset, scrolling at the 560 pt minimum window width,
+pinned Return and keyboard toggling of Ctrl; they did not execute terminal commands.
 The pane's Text size menu independently remembers Chat (12–24 pt, default 16) and
 Terminal (9–24 pt, default 12.5). Ctrl/Cmd +, − and 0 change or reset terminal text
 without sending those shortcuts to the PTY. Font changes refit the live terminal;
