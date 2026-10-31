@@ -20,29 +20,33 @@ import (
 // (design/reference/agent-list in herdrup), the closed sections the page
 // opens before the capture.
 var refExpand = map[string][]string{
-	"loading":                  nil,
-	"empty":                    nil,
-	"populated":                nil,
-	"idle-expanded":            {"idle"},
-	"archived-expanded":        {"archived"},
-	"all-expanded":             {"idle", "archived"},
-	"folders":                  {"folder:herdr"},
-	"avatars":                  nil,
-	"sessions":                 nil,
-	"federated":                nil,
-	"needs-you-pill":           nil,
-	"needs-you-rail":           nil,
-	"gram-mixed-latest":        nil,
-	"gram-mixed-image":         nil,
-	"gram-mixed-folded":        nil,
-	"gram-mixed-code":          nil,
-	"gram-saved":               nil,
-	"gram-search-results":      nil,
-	"gram-search-empty":        nil,
-	"gram-composer-attachment": nil,
-	"gram-composer-ambiguous":  nil,
-	"gram-empty":               nil,
-	"gram-loading":             nil,
+	"loading":                      nil,
+	"empty":                        nil,
+	"populated":                    nil,
+	"idle-expanded":                {"idle"},
+	"archived-expanded":            {"archived"},
+	"all-expanded":                 {"idle", "archived"},
+	"folders":                      {"folder:herdr"},
+	"avatars":                      nil,
+	"sessions":                     nil,
+	"federated":                    nil,
+	"needs-you-pill":               nil,
+	"needs-you-rail":               nil,
+	"gram-mixed-latest":            nil,
+	"gram-mixed-image":             nil,
+	"gram-mixed-folded":            nil,
+	"gram-mixed-code":              nil,
+	"gram-saved":                   nil,
+	"gram-search-results":          nil,
+	"gram-search-empty":            nil,
+	"gram-composer-attachment":     nil,
+	"gram-composer-ambiguous":      nil,
+	"gram-empty":                   nil,
+	"gram-loading":                 nil,
+	"settings-machines-index":      nil,
+	"settings-machines-federation": nil,
+	"settings-machines-empty":      nil,
+	"settings-about-index":         nil,
 }
 
 // refEnabled reports whether this run is a reference capture: a smoke
@@ -140,6 +144,10 @@ func runRef(desk *Desk, win *mygo.Window) {
 		User:    os.Getenv("HERDRUP_SMOKE_USER"),
 		KeyPath: os.Getenv("HERDRUP_SMOKE_KEY"),
 	}
+	if strings.HasPrefix(state, "settings-") {
+		// Native DesktopReferenceMock's configured home-box display name.
+		m.Nickname = "reference-hub"
+	}
 	if err := desk.Connect(m, ""); err != nil {
 		rep.Outcome = "connect: " + err.Error()
 		cleanup()
@@ -153,6 +161,9 @@ func runRef(desk *Desk, win *mygo.Window) {
 		}
 		if ok {
 			ok, why = driveGramReference(desk, win, state)
+		}
+		if ok {
+			ok, why = driveSettingsReference(win, state)
 		}
 		rep.Outcome = why
 		cleanup()

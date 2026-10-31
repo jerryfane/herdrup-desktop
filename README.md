@@ -466,8 +466,8 @@ The reference manifests retain each screenshot's producing head; that delivery
 commit is not a claim that the desktop matches all 64 native reference images.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
-the board and Gram against herdrup's iPad screenshots (`design/reference/agent-list` and
-`design/reference/gram` at the pinned `REFERENCES`, checked against their manifest hashes). On macOS it opens
+the board, Gram and Settings against herdrup's iPad screenshots (`design/reference/agent-list`,
+`design/reference/gram` and `design/reference/settings` at the pinned `REFERENCES`, checked against their manifest hashes). On macOS it opens
 the smoke build once per reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the
 page area in points: the reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes
 the web view render at 2 pixels per point although the runner's display is 1x. The page signals a drawn
@@ -494,6 +494,13 @@ Saved capture setup uses the production local-save action after opening the inbo
 it is not native context-menu acceptance. Visible image previews must finish
 decoding before capture. Gram comparisons use no masks.
 
+Eight Settings captures cover the Machines index, all six saved federation
+profiles plus the unsaved guest peer, empty federation, and inline About.
+The Linux capture driver exercises both independent scroll containers and checks
+the agent-derived totals (5 machines, 5 agents, 1 offline), not profile counts.
+Settings comparisons also use no masks. Reference host naming is connection
+metadata; the renderer still receives the real SSH fixture's machine statuses.
+
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
 tries moving the capture by up to 24 device pixels, and reports a tile (in the summary and the report's
 `shifted`) when a move fits it much better than leaving it in place. Anti-aliasing and glyph-shape
@@ -505,7 +512,7 @@ summary table. The thresholds remain `PARITY_TOL` (2) and
 anti-aliasing differences. The accepted 24-board comparison at desktop `0e17b12`
 captured every state but failed all 24 unchanged pixel/displacement gates
 (run `41158846126`). Capture coverage is not visual parity. The remaining
-18 Settings/detail captures and the full 64-image comparison remain in progress;
+10 detail captures and the full 64-image comparison remain in progress;
 no threshold or existing mask was relaxed.
 
 ## Releases
