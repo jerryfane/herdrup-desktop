@@ -120,6 +120,19 @@ jobs:
           cp "$refs/manifest.json" "$refs/board-manifest.json"
           jq -s '.[0] + {files: (map(.files) | add)}' "$refs/board-manifest.json" "$refs/gram-manifest.json" "$refs/settings-manifest.json" "$refs/detail-manifest.json" > "$refs/manifest.json"
           test "$(jq '.files | length' "$refs/manifest.json")" -eq 64
+      - name: Generate the canonical native terminal palette
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/parity/terminal-palette"
+          mkdir -p "$out"
+          sourcehead="$(jq -er '[.sourceFixtures[].herdrupCommit] | unique | select(length == 1) | .[0]' "$RUNNER_TEMP/refs/detail-manifest.json")"
+          printf '%s\n' "$sourcehead" > "$out/COMMIT"
+          for file in App/LiveTerminalView.swift Vendor/SwiftTerm/Sources/SwiftTerm/Colors.swift Vendor/SwiftTerm/Sources/SwiftTerm/TerminalOptions.swift; do
+            curl -fsSL --retry 3 "https://raw.githubusercontent.com/jerryfane/herdrup/$sourcehead/$file" -o "$out/$(basename "$file")"
+          done
+          shasum -a 256 "$out/"*.swift > "$out/SHA256SUMS"
+          swiftc "$out/Colors.swift" cmd/terminal-palette/main.swift -o "$RUNNER_TEMP/terminal-palette"
+          "$RUNNER_TEMP/terminal-palette" "$out/LiveTerminalView.swift" "$out/TerminalOptions.swift" > "$out/theme.json"
       - name: Capture each state and compare it
         run: |
           set +e
