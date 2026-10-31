@@ -40,8 +40,10 @@ let symbol: (name: string, size: number, weight: string) => Promise<HTMLElement>
 const modeChoices = new Map<string, "chat" | "terminal">();
 let current: Detail | null = null;
 let opening: Promise<void> = Promise.resolve();
-export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol) {
+let selectionChanged: ((target: AgentTarget | null) => void) | undefined;
+export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol, onSelectionChanged: (target: AgentTarget | null) => void) {
  symbol = renderSymbol;
+ selectionChanged = onSelectionChanged;
  root = el("section", "agent-detail"); root.hidden = true; detail.append(root);
  events.terminalChanged.on(e => { if (current?.view?.token === e.token) current.frame(e); });
  events.paneAttachments.on(event => {
@@ -67,6 +69,7 @@ export function showInteraction(show: boolean) { if (root) root.hidden = !show |
 export function closeInteraction() {
  current?.dispose(); current = null;
  if (root) { root.replaceChildren(); root.hidden = true; }
+ selectionChanged?.(null);
 }
 export function interactionBoard(board: BoardUpdate | null) {
  if (current && (!board || board.machineID !== current.target.machineID || (board.session === "default" ? "" : board.session) !== current.target.session)) closeInteraction();
@@ -81,6 +84,7 @@ export async function selectInteraction(target: AgentTarget) {
  if (current && JSON.stringify(current.target) === JSON.stringify(target)) { root.hidden = false; return; }
  closeInteraction();
  const next = new Detail(target); current = next; root.hidden = false;
+ selectionChanged?.(target);
  opening = opening.then(async () => { if (!next.disposed) await next.open(); });
  await opening;
 }

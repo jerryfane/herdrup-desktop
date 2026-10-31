@@ -505,6 +505,8 @@ Ten detail captures cover Chat, Terminal, the collapsed/expanded inline writer,
 and saved-host selection. `fakeherdr` ports the pinned native mock transcript and
 terminal reset onto the real SSH transport. Source checksums are verified from
 the detail manifest; these are synthetic inputs, not a live agent session.
+The Chat scenario also opens, closes and reopens the agent, checking that its
+rounded sidebar selection clears on Back and returns on reopening.
 Writer captures wait for the pasted draft's layout before activating the handle,
 then check the same textarea, retained draft and unclipped expanded card.
 Host selection seeds only saved metadata before page startup and does not connect.
@@ -518,11 +520,12 @@ exactly by moving it back. Any displaced tile fails the comparison. The workflow
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
 summary table. The thresholds remain `PARITY_TOL` (2) and
 `PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
-anti-aliasing differences. The 54-image board/Gram/Settings comparison at desktop
-`4619bd9` captured every state but failed all 54 unchanged pixel/displacement gates
-(run `41160865818`). Capture coverage is not visual parity. All five detail
-scenarios have also run in the Linux native webview; the complete 64-image hosted
-comparison is the next visual gate. No threshold or existing mask was relaxed.
+anti-aliasing differences. The full comparison at desktop `c908beb` captured all
+64 states but failed all 64 unchanged pixel/displacement gates (run `41162269756`).
+Capture coverage is not visual parity. The five detail scenarios also ran in the
+Linux native webview. The subsequent selected-row fix failed its native smoke
+against the old frontend and passed after rebuilding, including Back/reopen.
+No threshold or existing mask was relaxed.
 
 ## Releases
 

@@ -210,6 +210,8 @@ html, body {
   height: var(--size-agent-row);
   padding-left: var(--space-row-lead);
 }
+.row.selected { isolation: isolate; }
+.row-selection { position: absolute; inset: 0 var(--size-selection-inset); z-index: -1; pointer-events: none; }
 .row.indented { padding-left: var(--space-row-lead-indented); }
 .row .text {
   flex: 1;
@@ -253,7 +255,7 @@ html, body {
   height: var(--pixel);
   background: var(--color-hairline);
 }
-.row.no-sep .text::after { display: none; }
+.row.no-sep .text::after, .row.selected .text::after, .row:has(+ .row.selected) .text::after { display: none; }
 
 /* AgentAvatar: a 44 pt circle and its 22 pt badge, offset 4 pt out. */
 .avatar {

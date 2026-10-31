@@ -30,6 +30,7 @@ let choosingHost = false;
 let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let pendingAgent: AgentTarget | null = null;
+let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
 let activationWork = Promise.resolve();
 let pageReady = false;
@@ -264,6 +265,27 @@ async function avatar(r: Row): Promise<HTMLElement> {
   return a;
 }
 
+function refreshRowSelection() {
+  const inScope = selectedAgent && board && selectedAgent.machineID === board.machineID &&
+    selectedAgent.session === (board.session === "default" ? "" : board.session);
+  for (const row of rowsEl.querySelectorAll<HTMLElement>(".row")) {
+    const selected = !!inScope && row.dataset.id === selectedAgent!.paneID;
+    row.classList.toggle("selected", selected);
+    row.setAttribute("aria-current", String(selected));
+    let surface = row.querySelector<HTMLElement>(":scope > .row-selection");
+    if (selected && !surface) {
+      surface = el("div", "row-selection");
+      surface.setAttribute("aria-hidden", "true");
+      row.prepend(surface);
+      paintShape(surface, {
+        radius: parseFloat(getComputedStyle(row).getPropertyValue("--radius-selection")),
+        fill: "var(--color-surface-raised)",
+      });
+    }
+    if (surface) surface.hidden = !selected;
+  }
+}
+
 async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
   const row = el(
     "div",
@@ -383,6 +405,7 @@ async function renderRows() {
   // field included (App/HerdrApp.swift: `loading && agents.isEmpty`).
   searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
+  refreshRowSelection();
   renderSessionPills();
   const needsYou = tab === "agents" && !choosingHost && board && searchInput.value === "" ? (board.board.sections.find((s: Section) => s.key === "needsYou")?.rows ?? []) : [];
   const waitingRows = [...rowsEl.querySelectorAll<HTMLElement>('[data-section="needsYou"]')];
@@ -575,7 +598,7 @@ async function init() {
     tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
   }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
-  initInteraction($("detail"), symbol);
+  initInteraction($("detail"), symbol, target => { selectedAgent = target; refreshRowSelection(); });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
   settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);
   await initGram(

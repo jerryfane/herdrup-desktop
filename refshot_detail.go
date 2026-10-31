@@ -94,6 +94,14 @@ func driveDetailReference(win *mygo.Window, state string) (bool, string) {
     const mode = label => [...document.querySelectorAll('.chat-terminal-switch button')].find(button => button.textContent === label);
     if (mode("Chat").getAttribute("aria-pressed") !== "true") mode("Chat").click();
     await until(() => document.querySelector('.chat-transcript')?.textContent.includes("Merge #305 and update the servers?") && document.querySelector('.chat-transcript')?.textContent.includes("500 lines at a time"), "native transcript and pending question");
+    const selectedRow = () => document.querySelector('.row[data-id="w9:p1"][aria-current="true"]');
+    await until(() => selectedRow()?.querySelector('.row-selection:not([hidden]) svg path'), "selected agent has the native rounded highlight");
+    if (reference.state === "detail-chat") {
+      document.querySelector('.pane-back').click();
+      await until(() => !document.querySelector('.row.selected') && !document.querySelector('.row[aria-current="true"]'), "Back clears sidebar selection");
+      document.querySelector('.row[data-id="w9:p1"]').click();
+      await until(() => selectedRow() && document.querySelector('.chat-transcript')?.textContent.includes("500 lines at a time"), "reopening restores selection and conversation");
+    }
     if (reference.state === "detail-terminal") {
       mode("Terminal").click();
       await until(() => mode("Terminal").getAttribute("aria-pressed") === "true" && document.querySelector('.xterm-rows')?.textContent.includes("mock render"), "real xterm renders native reset bytes");
