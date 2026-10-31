@@ -13,8 +13,62 @@ index 5df78be..6712f49 100644
  type NavigateEvent struct {
  	Preventable
  	URL string
+diff --git a/internal/windows/content_rules.go b/internal/windows/content_rules.go
+index ac64908..21220d6 100644
+--- a/internal/windows/content_rules.go
++++ b/internal/windows/content_rules.go
+@@ -3,6 +3,7 @@
+ package windows
+ 
+ import (
++	"fmt"
+ 	"net/http"
+ 	"strings"
+ 	"unsafe"
+@@ -79,17 +80,34 @@ func setContentRules(w *window, lists []any) {
+ 	if w.webview == 0 {
+ 		return // setUp applies them
+ 	}
+-	w.filterAllRequests()
++	if err := w.filterAllRequests(); err != nil {
++		w.webViewFailed(err)
++		comCall(w.controller, ctlClose)
++		return
++	}
+ 	w.SetUserScripts(w.opts.UserScripts)
+ }
+ 
+-// filterAllRequests makes WebView2 ask about every request, once the
+-// window applies content rules.
+-func (w *window) filterAllRequests() {
+-	if w.contentFilter != nil && !w.filtersAll {
+-		w.filtersAll = true
+-		w.addFilter("*")
++// The legacy filter omits cross-origin iframe requests. Source-aware filters
++// must be installed before navigation, including the first received document.
++func (w *window) filterAllRequests() error {
++	if w.contentFilter == nil || w.filtersAll {
++		return nil
++	}
++	view := queryInterface(w.webview, &iidICoreWebView2_22)
++	if view == 0 {
++		return fmt.Errorf("mygo: iframe content rules require a newer WebView2 runtime: %w", platform.ErrUnsupported)
++	}
++	defer release(view)
++	// DOCUMENT includes this page's iframes and dedicated workers. Shared and
++	// service workers belong to the environment, not this window's policy.
++	hr := comCall(view, wv22AddSourceFilter,
++		uintptr(unsafe.Pointer(u16("*"))), 0, 1) // all contexts; DOCUMENT source kind
++	if failed(hr) {
++		return fmt.Errorf("mygo: install iframe content rules: HRESULT 0x%08x", hr)
+ 	}
++	w.filtersAll = true
++	return nil
+ }
+ 
+ // resourceTypes maps a COREWEBVIEW2_WEB_RESOURCE_CONTEXT to the
 diff --git a/internal/windows/webview.go b/internal/windows/webview.go
-index b95f37d..04ee4ae 100644
+index b95f37d..2396783 100644
 --- a/internal/windows/webview.go
 +++ b/internal/windows/webview.go
 @@ -224,6 +224,7 @@ func (w *window) setUp(controller uintptr) {
@@ -25,7 +79,20 @@ index b95f37d..04ee4ae 100644
  	add(wvAddContentLoading, func(_, _ uintptr) { w.h.NavigationCommitted(w.URL()) })
  	add(wvAddNavigationCompleted, w.navigationCompleted)
  	add(wvAddDocumentTitleChanged, func(_, _ uintptr) {
-@@ -345,6 +346,19 @@ func (w *window) focusWebView() {
+@@ -277,7 +278,11 @@ func (w *window) setUp(controller uintptr) {
+ 		w.addFilter("http://" + scheme + ".localhost/*")
+ 		w.addFilter("http://*." + scheme + ".localhost/*") // its other hosts
+ 	}
+-	w.filterAllRequests()
++	if err := w.filterAllRequests(); err != nil {
++		w.webViewFailed(err)
++		comCall(controller, ctlClose)
++		return
++	}
+ 	withHandler(w.acceleratorKeyPressed, func(h uintptr) uintptr {
+ 		return comCall(controller, ctlAddAcceleratorKeyPressed, h, uintptr(unsafe.Pointer(&tok)))
+ 	})
+@@ -345,6 +350,19 @@ func (w *window) focusWebView() {
  	}
  }
  
@@ -46,7 +113,7 @@ index b95f37d..04ee4ae 100644
  	var p uintptr
  	comCall(args, navStartingGetURI, uintptr(unsafe.Pointer(&p)))
 diff --git a/internal/windows/webview2.go b/internal/windows/webview2.go
-index 04be11b..040b9b3 100644
+index 04be11b..47d83c5 100644
 --- a/internal/windows/webview2.go
 +++ b/internal/windows/webview2.go
 @@ -42,6 +42,7 @@ const (
@@ -57,6 +124,22 @@ index 04be11b..040b9b3 100644
  	wvAddProcessFailed                       = 25
  	wvAddScriptToExecuteOnDocumentCreated    = 27
  	wvRemoveScriptToExecuteOnDocumentCreated = 28
+@@ -121,6 +122,7 @@ const (
+ 	procFailedGetKind             = 3
+ 	wv4AddDownloadStarting        = 75  // ICoreWebView2_4
+ 	wv13GetProfile                = 105 // ICoreWebView2_13
++	wv22AddSourceFilter           = 123 // ICoreWebView2_22.AddWebResourceRequestedFilterWithRequestSourceKinds
+ 	profile2ClearBrowsingDataAll  = 12  // ICoreWebView2Profile2
+ 	dlStartGetOperation           = 3
+ 	dlStartPutCancel              = 5
+@@ -162,6 +164,7 @@ var (
+ 	iidICoreWebView2_4                           = guid("20d02d59-6df2-42dc-bd06-f98a694b1302")
+ 	iidICoreWebView2_8                           = guid("e9632730-6e1e-43ab-b7b8-7b2c9e62e094")
+ 	iidICoreWebView2_13                          = guid("f75f09a8-667e-4983-88d6-c8773f315e84")
++	iidICoreWebView2_22                          = guid("db75dfc7-a857-4632-a398-6969dde26c0a")
+ 	iidICoreWebView2Profile2                     = guid("fa740d4b-5eae-4344-a8ad-74be31925397")
+ )
+ 
 diff --git a/window.go b/window.go
 index 5589988..9b3f695 100644
 --- a/window.go

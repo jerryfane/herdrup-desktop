@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"unsafe"
@@ -79,17 +80,34 @@ func setContentRules(w *window, lists []any) {
 	if w.webview == 0 {
 		return // setUp applies them
 	}
-	w.filterAllRequests()
+	if err := w.filterAllRequests(); err != nil {
+		w.webViewFailed(err)
+		comCall(w.controller, ctlClose)
+		return
+	}
 	w.SetUserScripts(w.opts.UserScripts)
 }
 
-// filterAllRequests makes WebView2 ask about every request, once the
-// window applies content rules.
-func (w *window) filterAllRequests() {
-	if w.contentFilter != nil && !w.filtersAll {
-		w.filtersAll = true
-		w.addFilter("*")
+// The legacy filter omits cross-origin iframe requests. Source-aware filters
+// must be installed before navigation, including the first received document.
+func (w *window) filterAllRequests() error {
+	if w.contentFilter == nil || w.filtersAll {
+		return nil
 	}
+	view := queryInterface(w.webview, &iidICoreWebView2_22)
+	if view == 0 {
+		return fmt.Errorf("mygo: iframe content rules require a newer WebView2 runtime: %w", platform.ErrUnsupported)
+	}
+	defer release(view)
+	// DOCUMENT includes this page's iframes and dedicated workers. Shared and
+	// service workers belong to the environment, not this window's policy.
+	hr := comCall(view, wv22AddSourceFilter,
+		uintptr(unsafe.Pointer(u16("*"))), 0, 1) // all contexts; DOCUMENT source kind
+	if failed(hr) {
+		return fmt.Errorf("mygo: install iframe content rules: HRESULT 0x%08x", hr)
+	}
+	w.filtersAll = true
+	return nil
 }
 
 // resourceTypes maps a COREWEBVIEW2_WEB_RESOURCE_CONTEXT to the

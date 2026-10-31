@@ -278,7 +278,11 @@ func (w *window) setUp(controller uintptr) {
 		w.addFilter("http://" + scheme + ".localhost/*")
 		w.addFilter("http://*." + scheme + ".localhost/*") // its other hosts
 	}
-	w.filterAllRequests()
+	if err := w.filterAllRequests(); err != nil {
+		w.webViewFailed(err)
+		comCall(controller, ctlClose)
+		return
+	}
 	withHandler(w.acceleratorKeyPressed, func(h uintptr) uintptr {
 		return comCall(controller, ctlAddAcceleratorKeyPressed, h, uintptr(unsafe.Pointer(&tok)))
 	})

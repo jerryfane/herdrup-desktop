@@ -124,6 +124,10 @@ non-URL transports such as WebRTC can still signal that the document was opened,
 so the setting warns about that limit. A failed protection setup never falls back
 to the system browser. Other documents keep their system opener; programs remain
 save-only.
+Windows requires the WebView2 source-aware request filter (`ICoreWebView2_22`):
+the older filter misses cross-origin iframe requests. Preview creation checks
+that the native filter is installed before loading received content and fails
+closed on unsupported runtimes.
 Linux native checks rendered the same document with scripts off and on, verified
 bridge/storage/parent isolation, and blocked fetch, WebSocket and navigation
 requests against a local server whose unprotected browser control did load.
@@ -312,6 +316,10 @@ MyGo v0.7.1, its upstream commit and module checksum. `native-drop.patch` fixes
 [#75](https://github.com/jerryfane/herdrup-desktop/issues/75). The preview applies
 the same policy to top-level and subframe navigations, allowing only its initial
 `about:srcdoc` document. The existing top-level navigation API keeps its semantics.
+On Windows it also installs the document-source request filter before navigation:
+the navigation veto alone can run after a remote iframe request has escaped.
+The filter covers this window's documents, frames and dedicated workers without
+installing environment-wide shared/service-worker filters.
 Original TypeScript build inputs are retained with the rebuilt embedded bridge,
 so application builds need no patch step.
 

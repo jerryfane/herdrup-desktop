@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"os"
+	"runtime"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -66,6 +67,15 @@ func Open(parent *mygo.Window, path, title string, scripts bool) (*mygo.Window, 
 	}
 	page.OnWillNavigate(blockNavigation)
 	page.OnWillFrameNavigate(blockNavigation)
+	// Windows installs its request filter while creating the webview. Wait for
+	// that native setup before loading received bytes; an older runtime or a
+	// failed filter returns an error rather than displaying unprotected content.
+	if runtime.GOOS == "windows" {
+		if _, err := page.Eval("true"); err != nil {
+			win.Close()
+			return nil, fmt.Errorf("prepare protected preview: %w", err)
+		}
+	}
 	page.LoadHTML(document(string(content), scripts), "")
 	return win, nil
 }
