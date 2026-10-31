@@ -525,6 +525,9 @@ and compares its output byte-for-byte with the bundled palette.
 Chat's composer, plan and question outlines are inset strokes, not extra layout
 space. Plan rows use the font's natural line height; the transcript ends with its
 12 pt padding rather than an additional last-row margin.
+Replies use Swift's 8 pt block and 6 pt list-item gaps, with added leading only
+between text lines. Historical plan rows retain their spacing while the current
+plan appears once at the end. Question options show at most two lines.
 Host selection seeds only saved metadata before page startup and does not connect.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
@@ -536,8 +539,8 @@ exactly by moving it back. Any displaced tile fails the comparison. The workflow
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
 summary table. The thresholds remain `PARITY_TOL` (2) and
 `PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
-anti-aliasing differences. The full comparison at desktop `15ee6d0` captured all
-64 states but failed all 64 unchanged pixel/displacement gates (run `41164292395`).
+anti-aliasing differences. The full comparison at desktop `aa8828b` captured all
+64 states but failed all 64 unchanged pixel/displacement gates (run `41168371428`).
 Capture coverage is not visual parity. The five detail scenarios also ran in the
 Linux native webview. The selected-row fix failed its native smoke
 against the old frontend and passed after rebuilding, including Back/reopen.

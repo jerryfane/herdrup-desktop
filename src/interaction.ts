@@ -690,7 +690,7 @@ class Detail {
  }
  drawChat(follow = true) {
   const opened = new Set([...this.transcript.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d => d.dataset.id));
-  const nodes = groupTranscript(this.entries, !!this.chat?.working).filter(row => row.kind !== "entry" || row.entry.kind !== "plan").map(row => {
+  const nodes = groupTranscript(this.entries, !!this.chat?.working).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(row.entry.id)] : row);
    if (old?.dataset.signature === signature) return old;
@@ -787,7 +787,7 @@ class Detail {
     entries = mergeTranscript(entries, next.entries, older);
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
-    const nodes = groupTranscript(entries, !!page?.working).filter(row => row.kind !== "entry" || row.entry.kind !== "plan").map(row => {
+    const nodes = groupTranscript(entries, !!page?.working).map(row => {
      const node = row.kind === "work" ? this.renderWork(row) : this.renderEntry(row.entry);
      node.dataset.id = row.id;
      if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
@@ -861,7 +861,8 @@ class Detail {
   const question = questions[0];
   const canAnswer = active.answerable && questions.length === 1 && !question?.multi;
   question?.options.forEach((option, index) => {
-   const choice = canAnswer ? button(option, () => { void this.answer(active.id, option); }) : el("div", "", option);
+   const choice = canAnswer ? button("", () => { void this.answer(active.id, option); }) : el("div");
+   choice.append(el("span", "", option));
    choice.className = `chat-question-option${canAnswer ? index === (question.recommended ?? 0) ? " primary" : "" : " readonly"}`;
    if (choice instanceof HTMLButtonElement) choice.disabled = this.answering;
    options.append(choice);
@@ -978,6 +979,10 @@ class Detail {
  renderEntry(entry: Entry): HTMLElement {
   if (entry.kind === "ask") return this.renderQuestion(entry, undefined, false, false);
   if (entry.kind === "note") return this.renderNote(entry);
+  if (entry.kind === "plan") {
+   // Swift retains this row's gap; only the footer draws the current plan.
+   const gap = el("div", "chat-plan-snapshot"); gap.setAttribute("aria-hidden", "true"); return gap;
+  }
   if (entry.kind === "user" || entry.kind === "reply") {
    const article = el("article", `chat-message ${entry.kind}`);
    if (entry.kind === "user") article.append(el("div", "chat-user-text", entry.text ?? ""));
