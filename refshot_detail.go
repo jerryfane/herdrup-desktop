@@ -107,12 +107,24 @@ func driveDetailReference(win *mygo.Window, state string) (bool, string) {
       const emphasis = reply.querySelector("strong");
       if (!emphasis || getComputedStyle(emphasis).fontWeight !== "600") throw new Error("Chat emphasis does not use native semibold: " + (emphasis ? getComputedStyle(emphasis).fontWeight : "missing emphasis"));
     }
+    await until(() => document.querySelector('.terminal-canvas .xterm-screen'), "warm terminal is mounted");
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const terminalHeight = () => document.querySelector('.terminal-canvas').getBoundingClientRect().height;
+    const warmTerminalHeight = terminalHeight();
     if (reference.state === "detail-terminal") {
       mode("Terminal").click();
       await until(() => mode("Terminal").getAttribute("aria-pressed") === "true" && document.querySelector('.xterm-rows')?.textContent.includes("mock render"), "real xterm renders native reset bytes");
       document.querySelector('.xterm-helper-textarea')?.blur();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (Math.abs(terminalHeight() - warmTerminalHeight) > 0.5) throw new Error("Switching Chat to Terminal resized the warm terminal");
     } else if (reference.state.startsWith("detail-writer-")) {
       const field = document.querySelector('.chat-input');
+      const chatHeight = document.querySelector('.chat-scroll').getBoundingClientRect().height;
+      const unchangedViewports = () => {
+        if (Math.abs(terminalHeight() - warmTerminalHeight) > 0.5 ||
+            Math.abs(document.querySelector('.chat-scroll').getBoundingClientRect().height - chatHeight) > 0.5)
+          throw new Error("Growing the inline writer resized the conversation or terminal instead of overlaying it");
+      };
       field.value = reference.draft; field.setSelectionRange(field.value.length,field.value.length);
       field.dispatchEvent(new Event("input", {bubbles:true})); field.blur();
       const handle = document.querySelector('.chat-composer .composer-expand-handle');
@@ -121,6 +133,7 @@ func driveDetailReference(win *mygo.Window, state string) (bool, string) {
       // painted handle. Do not click it in the same turn as the synthetic paste.
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const collapsed = field.getBoundingClientRect().height;
+      unchangedViewports();
       if (reference.state === "detail-writer-expanded") {
         handle.click();
         await until(() => handle.getAttribute("aria-label") === "Collapse editor" && field.getBoundingClientRect().height > collapsed + 40, "expanded writer keeps the same textarea");
@@ -130,7 +143,22 @@ func driveDetailReference(win *mygo.Window, state string) (bool, string) {
           const body = document.querySelector('.interaction-body').getBoundingClientRect();
           return card.top >= body.top && card.bottom <= body.bottom;
         }, "expanded writer and collapse handle remain inside the pane");
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        unchangedViewports();
       }
+      mode("Terminal").click();
+      await until(() => mode("Terminal").getAttribute("aria-pressed") === "true", "writer remains inline in Terminal");
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (Math.abs(terminalHeight() - warmTerminalHeight) > 0.5) throw new Error("Writer mode switch resized the terminal");
+      const enter = document.querySelector('.terminal-enter-key'), key = enter.getBoundingClientRect();
+      if (!enter.contains(document.elementFromPoint(key.x + key.width / 2, key.y + key.height / 2)))
+        throw new Error("The floating terminal key row is covered by terminal output or the writer");
+      mode("Chat").click();
+      await until(() => mode("Chat").getAttribute("aria-pressed") === "true", "returning to the same Chat writer");
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      unchangedViewports();
+      if (document.querySelector('.chat-input') !== field || field.value !== reference.draft)
+        throw new Error("Writer mode switch lost the editor or draft");
     }
   }
   await document.fonts.ready;

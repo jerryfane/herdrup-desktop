@@ -34,7 +34,10 @@
 .interaction-status { padding: 0 14px; font-size: 13px; white-space: pre-wrap; }
 .interaction-status:not(:empty) { padding-block: 8px; border-bottom: 1px solid var(--color-hairline); }
 .interaction-body { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.terminal-surface, .chat-surface { position: absolute; inset: 0 0 var(--input-inset, 68px); display: flex; flex-direction: column; background: var(--color-ground-machine); }
+/* Only the resting composer reserves height. Extra lines overlay both viewports;
+   the warm terminal keeps its quick-key allowance even while Chat covers it. */
+.terminal-surface, .chat-surface { position: absolute; inset: 0 0 68px; display: flex; flex-direction: column; background: var(--color-ground-machine); }
+.terminal-surface { bottom: 118px; }
 .terminal-surface.covered { opacity: 0; pointer-events: none; }
 .chat-surface[hidden] { display: none; }
 .interaction-body > .chat-composer { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; }

@@ -637,7 +637,6 @@ class Detail {
    this.input.style.height = `${this.editor!.update(lines, room)}px`;
    const composerHeight = composer.offsetHeight + 12;
    this.body.style.setProperty("--composer-height", `${composerHeight}px`);
-   this.body.style.setProperty("--input-inset", `${composerHeight + (this.mode === "terminal" ? 50 : 0)}px`);
   };
   this.editor = new ComposerEditor(composer, this.input, layout);
   this.input.oninput = layout;
