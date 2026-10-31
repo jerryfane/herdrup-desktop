@@ -30,7 +30,7 @@ export function scanQR(video: HTMLVideoElement, found: (text: string) => void, u
   document.addEventListener("visibilitychange", visibility);
   void (async () => {
     try {
-      if (!navigator.mediaDevices?.getUserMedia || !context) { fail("Camera capture is unavailable in this window. You can still add a host manually."); return; }
+      if (!navigator.mediaDevices?.getUserMedia || !context) { fail("Camera capture is unavailable in this window."); return; }
       const acquired = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" } } });
       if (disposed) { acquired.getTracks().forEach(track => track.stop()); return; }
       stream = acquired; video.srcObject = acquired;
@@ -38,7 +38,7 @@ export function scanQR(video: HTMLVideoElement, found: (text: string) => void, u
       await video.play(); if (!disposed) frame();
     } catch (error) {
       const name = error instanceof DOMException ? error.name : "";
-      fail(name === "NotAllowedError" || name === "SecurityError" ? "Camera access was denied. Allow Herdrup to use the camera in your privacy settings, then try again. You can also add a host manually." : name === "NotFoundError" ? "No camera was found. Connect a camera, or add a host manually." : "The camera could not start. Another app may be using it; close that app and try again.");
+      fail(name === "NotAllowedError" || name === "SecurityError" ? "Camera access was denied. Allow Herdrup to use the camera in your privacy settings, then try again." : name === "NotFoundError" ? "No camera was found. Connect a camera and try again." : "The camera could not start. Another app may be using it; close that app and try again.");
     }
   })();
   return stop;

@@ -2,8 +2,10 @@ import { Desk, events } from "./mygo";
 import type { Machine, SavedMachine } from "./mygo";
 import "./hosts.css";
 import { showPairing } from "./pairing";
-import { showGuestAccept } from "./guestAccept";
+import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
+import qrIcon from "../third_party/phosphor/web/qr-code.svg?url";
+import clipboardIcon from "../third_party/phosphor/web/clipboard.svg?url";
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text = ""): HTMLElementTagNameMap[K] {
@@ -42,8 +44,27 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const pair = action("Scan pairing code", () => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit())); pair.className = "host-pair";
  const shared = element("section", "host-home-saved");
  const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
- const invite = action("Open invitation", () => showGuestAccept(refresh, showAgents)); invite.className = "host-pair";
- home.append(header, section, shared, pair, add, invite, message); container.replaceChildren(home);
+ const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite";
+ let pasting = false;
+ const paste = action("Paste", () => {
+  pasting = true; paste.disabled = true;
+  void Desk.readGuestInvitationClipboard().then(text => showGuestAccept(refresh, showAgents, text)).catch(report).finally(() => { pasting = false; void refreshPaste(); });
+ }); paste.className = "host-invite-paste"; paste.setAttribute("aria-label", "Paste invite link"); paste.disabled = true;
+ async function refreshPaste() {
+  try { const hasText = await Desk.hasGuestInvitationClipboardText(); paste.disabled = pasting || !hasText; }
+  catch (error) { paste.disabled = true; report(error); }
+ }
+ window.addEventListener("focus", () => { void refreshPaste(); });
+ for (const [button, name, size, fallback] of [[pair, "qrcode.viewfinder", 16, qrIcon], [invite, "qrcode.viewfinder", 15, qrIcon], [paste, "doc.on.clipboard", 16, clipboardIcon]] as const) {
+  if (navigator.platform.startsWith("Mac")) {
+   void symbol(name, size, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); button.prepend(icon); });
+  } else {
+   const icon = element("span", "host-action-glyph"); icon.setAttribute("aria-hidden", "true");
+   icon.style.width = icon.style.height = `${size}px`; icon.style.setProperty("--host-icon", `url("${fallback}")`); button.prepend(icon);
+  }
+ }
+ const inviteActions = element("div", "host-invite-actions"); inviteActions.append(invite, paste);
+ home.append(header, section, shared, pair, add, inviteActions, message); container.replaceChildren(home);
  async function openPendingInvitation() {
   const text = await Desk.takeGuestInvitation();
   if (text) showGuestAccept(refresh, showAgents, text);
@@ -109,6 +130,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  let version = 0;
  async function refresh() {
   const generation = ++version;
+  void refreshPaste();
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
    shared.hidden = shares.length === 0;

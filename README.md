@@ -75,7 +75,13 @@ Right-click a saved host (or press Shift+F10) to edit its nickname and connectio
 details, or delete it. Save updates the profile without connecting. The host home
 uses the native readable column and app logo. Scan pairing code reads the one-time
 QR printed by `herdr pair`; Add host remains available for manual setup.
-Open invitation reviews a guest link before accepting it; accepted shares appear under Shared with you.
+Scan invite reads a shared-agent QR; Paste reads the OS clipboard only when clicked.
+Both open the invitation preview and require Accept before contacting the relay.
+The camera stops before preview, on cancellation, and if a pending permission
+request completes after dismissal. Clipboard format checks do not read its contents.
+Accepted shares appear under Shared with you. Native Linux checks covered these
+paths using a canvas camera stream and the real clipboard; physical-camera and
+Windows/macOS invitation scanning remain unverified.
 Password connections ask again when reconnecting; passwords are not saved.
 Connection and session changes invalidate open agent views. Unacknowledged terminal
 input is never replayed automatically. A definite prompt rejection preserves the

@@ -6,4 +6,3 @@
 .pairing-camera video { display:block; width:100%; height:100%; object-fit:cover; }
 .pairing-guide { position:absolute; width:min(230px, 75%); aspect-ratio:1; top:50%; left:50%; transform:translate(-50%, -50%); border:3px solid var(--color-text); border-radius:20px; pointer-events:none; }
 .pairing-command { display:block; padding:12px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); color:var(--color-text); font:400 calc(15px * var(--ui-font-scale, 1)) var(--font-machine); }
-.host-pair { min-height:50px; width:100%; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface-raised); color:var(--color-text); font:600 calc(16px * var(--ui-font-scale, 1)) var(--font-app); cursor:pointer; }

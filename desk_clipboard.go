@@ -11,6 +11,24 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 )
 
+// ReadGuestInvitationClipboard is invoked only by the explicit Paste invite
+// action. Reading text never redeems an invitation or opens clipboard file paths.
+func (d *Desk) ReadGuestInvitationClipboard() (string, error) {
+	data, err := mygo.Clipboard.ReadFormat(transfer.Text)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", errors.New("the clipboard has no invitation link")
+	}
+	return string(data), nil
+}
+
+// HasGuestInvitationClipboardText inspects formats, not clipboard contents.
+func (d *Desk) HasGuestInvitationClipboardText() bool {
+	return slices.Contains(mygo.Clipboard.Formats(), transfer.Text)
+}
+
 // pasteClipboard reads OS-owned representations, never paths supplied in DOM text.
 // File lists beat accompanying path text; otherwise plain text beats rich data,
 // matching the native composer. PNG is preferred over alternate image encodings.

@@ -1,5 +1,7 @@
 import { Desk } from "./mygo";
 import "./guest.css";
+import { scanQR } from "./qrScanner";
+import "./pairing.css";
 
 export function node<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") { const el = document.createElement(tag); el.className = cls; el.textContent = text; return el; }
 export function action(text: string, run: () => void) { const el = node("button", "", text); el.type = "button"; el.onclick = run; return el; }
@@ -9,6 +11,42 @@ export function details(entries: [string, string][]) {
  return card;
 }
 let active: HTMLDialogElement | null = null;
+
+export function showGuestScan(saved: () => Promise<void>, opened: () => void) {
+ active?.close();
+ const sheet = node("dialog", "settings-sheet pairing-sheet");
+ active = sheet;
+ let disposed = false, stopCamera: (() => void) | undefined;
+ const stop = () => { stopCamera?.(); stopCamera = undefined; };
+ const header = node("header", "settings-sheet-header");
+ const title = node("h2", "", "Scan invite"); title.id = "guest-scan-title";
+ sheet.setAttribute("aria-labelledby", title.id);
+ header.append(title, action("Cancel", () => { stop(); sheet.close(); }));
+ const content = node("div", "pairing-content"); content.setAttribute("aria-live", "polite");
+ function start() {
+  if (disposed || !sheet.open) return;
+  stop();
+  const camera = node("div", "pairing-camera"), video = node("video");
+  video.muted = true; video.playsInline = true; video.autoplay = true;
+  video.setAttribute("aria-label", "Invitation code camera");
+  const frame = node("div", "pairing-guide"); frame.setAttribute("aria-hidden", "true");
+  camera.append(video, frame);
+  content.replaceChildren(camera, node("p", "", "Point the camera at the invitation code shared by the owner."));
+  stopCamera = scanQR(video, text => {
+   if (disposed || !sheet.open) return;
+   stop(); sheet.close();
+   showGuestAccept(saved, opened, text);
+  }, message => {
+   if (disposed || !sheet.open) return;
+   stop();
+   content.replaceChildren(node("h3", "", "Can't use the camera"), node("p", "", message), action("Try again", start));
+  });
+ }
+ sheet.append(header, content);
+ sheet.addEventListener("cancel", stop);
+ sheet.addEventListener("close", () => { disposed = true; stop(); if (active === sheet) active = null; sheet.remove(); }, { once: true });
+ document.body.append(sheet); sheet.showModal(); start();
+}
 export function showGuestAccept(saved: () => Promise<void>, opened: () => void, initialText = "") {
  active?.close();
  const sheet = node("dialog", "settings-sheet guest-accept"); active = sheet;

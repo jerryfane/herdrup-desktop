@@ -1084,6 +1084,10 @@ export const Desk = {
   guestShareDetails(token: string): Promise<GuestShareDetails> {
     return call("Desk.GuestShareDetails", token);
   },
+  /** HasGuestInvitationClipboardText inspects formats, not clipboard contents. */
+  hasGuestInvitationClipboardText(): Promise<boolean> {
+    return call("Desk.HasGuestInvitationClipboardText");
+  },
   inspectGuestInvitation(text: string): Promise<GuestInvitation> {
     return call("Desk.InspectGuestInvitation", text);
   },
@@ -1172,6 +1176,13 @@ export const Desk = {
   /** ReadAgentText powers the native pane menu's Copy screen / Copy recent output. */
   readAgentText(token: string, recent: boolean): Promise<string> {
     return call("Desk.ReadAgentText", token, recent);
+  },
+  /**
+   * ReadGuestInvitationClipboard is invoked only by the explicit Paste invite
+   * action. Reading text never redeems an invitation or opens clipboard file paths.
+   */
+  readGuestInvitationClipboard(): Promise<string> {
+    return call("Desk.ReadGuestInvitationClipboard");
   },
   /**
    * Retrying a definite failure checks afresh before a new confirmation. Looking
