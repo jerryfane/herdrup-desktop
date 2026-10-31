@@ -51,6 +51,7 @@ export interface AgentView {
   group: string;
   status: string;
   statusSinceUnixMs?: number;
+  plainTerminal: boolean;
 }
 
 /**
@@ -622,6 +623,17 @@ export interface SavedMachineStatus {
   peer: PeerSummary | null;
 }
 
+/**
+ * SavedTerminal is device-local metadata. Plain shells do not appear in
+ * agent.list; their pane identities must survive closing and reopening the app.
+ */
+export interface SavedTerminal {
+  id: string;
+  paneID: string;
+  label: string;
+  createdUnixMs: number;
+}
+
 /** Section is one group of rows. */
 export interface Section {
   key: string;
@@ -700,6 +712,12 @@ export interface SymbolImage {
    * an inline element puts it there.
    */
   baseline: number;
+}
+
+export interface TerminalCreationResult {
+  phase: string;
+  terminal?: SavedTerminal;
+  message: string;
 }
 
 export interface TerminalEvent {
@@ -788,6 +806,9 @@ export const Desk = {
   closeSettings(token: string): Promise<void> {
     return call("Desk.CloseSettings", token);
   },
+  closeTerminal(target: AgentTarget): Promise<void> {
+    return call("Desk.CloseTerminal", target);
+  },
   /**
    * Connect saves the machine and connects to it, replacing any current
    * connection. password is used only when the machine has no key file.
@@ -808,6 +829,9 @@ export const Desk = {
   createSettingsAccount(token: string, kind: string, label: string): Promise<string> {
     return call("Desk.CreateSettingsAccount", token, kind, label);
   },
+  createTerminal(token: string): Promise<TerminalCreationResult> {
+    return call("Desk.CreateTerminal", token);
+  },
   creationDirectory(token: string, folder: string): Promise<string> {
     return call("Desk.CreationDirectory", token, folder);
   },
@@ -824,6 +848,9 @@ export const Desk = {
    */
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
+  },
+  forgetTerminal(target: AgentTarget): Promise<void> {
+    return call("Desk.ForgetTerminal", target);
   },
   getNotificationSettings(): Promise<NotificationSettings> {
     return call("Desk.GetNotificationSettings");
@@ -1021,6 +1048,9 @@ export const Desk = {
   openSettings(machineID: string, session: string, token: string): Promise<void> {
     return call("Desk.OpenSettings", machineID, session, token);
   },
+  openTerminalView(target: AgentTarget, token: string): Promise<AgentView> {
+    return call("Desk.OpenTerminalView", target, token);
+  },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
     return call("Desk.PaneAttachFiles", token, paths);
@@ -1066,6 +1096,9 @@ export const Desk = {
   removeSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.RemoveSettingsAccount", token, id);
   },
+  renameTerminal(target: AgentTarget, label: string): Promise<void> {
+    return call("Desk.RenameTerminal", target, label);
+  },
   revokeGuestAccess(token: string, machine: string, id: string, invite: boolean): Promise<void> {
     return call("Desk.RevokeGuestAccess", token, machine, id, invite);
   },
@@ -1075,6 +1108,9 @@ export const Desk = {
    */
   saveMachine(m: Machine, replacing: string): Promise<void> {
     return call("Desk.SaveMachine", m, replacing);
+  },
+  savedTerminals(machineID: string, session: string): Promise<SavedTerminal[]> {
+    return call("Desk.SavedTerminals", machineID, session);
   },
   /**
    * SearchBoard is the board for a sidebar search: the agents query matches,

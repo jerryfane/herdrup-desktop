@@ -84,13 +84,19 @@ export function interactionBoard(board: BoardUpdate | null) {
   }
  }
 }
-export async function selectInteraction(target: AgentTarget, initialDraft?: string) {
- if (current && JSON.stringify(current.target) === JSON.stringify(target)) { root.hidden = false; return; }
+export async function selectInteraction(target: AgentTarget, initialDraft?: string, plainTerminal = false) {
+ if (current && current.plainTerminal === plainTerminal && JSON.stringify(current.target) === JSON.stringify(target)) { root.hidden = false; return; }
  closeInteraction();
- const next = new Detail(target, initialDraft); current = next; root.hidden = false;
+ const next = new Detail(target, initialDraft, plainTerminal); current = next; root.hidden = false;
  selectionChanged?.(target);
  opening = opening.then(async () => { if (!next.disposed) await next.open(); });
  await opening;
+}
+export function savedTerminalChanged(target: AgentTarget, label: string | null) {
+ if (!current?.plainTerminal || JSON.stringify(current.target) !== JSON.stringify(target)) return;
+ if (label === null) { closeInteraction(); document.getElementById("select")!.hidden = false; return; }
+ current.title.textContent = label;
+ if (current.view) { current.view.name = label; current.view.heading = label; }
 }
 class Detail {
  readonly token = crypto.randomUUID();
@@ -186,9 +192,9 @@ class Detail {
   this.input.dispatchEvent(new Event("input"));
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
  draftKey: string;
- constructor(readonly target: AgentTarget, initialDraft?: string) {
+ constructor(readonly target: AgentTarget, initialDraft?: string, readonly plainTerminal = false) {
   this.draftKey = "herdrup.prompt." + JSON.stringify(target);
-  this.input.rows = 1; this.input.placeholder = "Type a reply…"; this.input.autocapitalize = "off"; this.input.spellcheck = false;
+  this.input.rows = 1; this.input.placeholder = plainTerminal ? "Write text without running it" : "Type a reply…"; this.input.autocapitalize = "off"; this.input.spellcheck = false;
   try { this.input.value = localStorage.getItem(this.draftKey) ?? ""; } catch { /* storage unavailable; keep in memory */ }
   this.input.addEventListener("beforeinput", event => {
    if (!this.ctrlArmed || !event.data || event.isComposing) return;
@@ -272,7 +278,7 @@ class Detail {
   find.setAttribute("aria-label", "Find");
   find.append(await symbol("magnifyingglass", 15, "medium"));
   const more = button("", () => { this.actions.hidden = !this.actions.hidden; });
-  more.setAttribute("aria-label", "Agent actions");
+  more.setAttribute("aria-label", this.plainTerminal ? "Terminal actions" : "Agent actions");
   more.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><g fill="currentColor"><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/></g></svg>';
   more.onpointerdown = event => event.stopPropagation();
   capsule.append(find, refresh, more);
@@ -285,7 +291,7 @@ class Detail {
    }));
   }
   this.actions.append(button("Copy selection", () => { this.actions.hidden = true; void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); }));
-  this.actions.append(button("Share with someone", () => {
+  if (!this.plainTerminal) this.actions.append(button("Share with someone", () => {
    this.actions.hidden = true;
    if (!this.view || this.disposed) return;
    this.guestShareSheet?.close();
@@ -316,7 +322,7 @@ class Detail {
   document.addEventListener("pointerdown", this.outsideActions);
   root.replaceChildren(bar, modes, this.status, this.body);
   try {
-   const view = await Desk.openAgentView(this.target, this.token);
+   const view = await (this.plainTerminal ? Desk.openTerminalView(this.target, this.token) : Desk.openAgentView(this.target, this.token));
    if (this.disposed) { await Desk.closeAgentView(this.token); return; }
    this.view = view; this.title.textContent = view.heading;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
@@ -612,15 +618,18 @@ class Detail {
   const actions = el("div", "composer-actions");
   this.attach.className = "composer-action";
   this.send.className = "composer-action primary";
-  actions.append(this.attach, this.dictation.button);
-  this.send.replaceChildren(composerGlyph("send", 22)); this.send.setAttribute("aria-label", "Send reply");
+  if (!this.plainTerminal) actions.append(this.attach);
+  actions.append(this.dictation.button);
+  this.send.replaceChildren(composerGlyph("send", 22)); this.send.setAttribute("aria-label", this.plainTerminal ? "Write to terminal" : "Send reply");
   this.prompts.mount(actions); actions.append(this.send);
   this.attachmentStrip.hidden = true;
   composer.append(this.attachmentStrip, this.dictation.strip, this.input, actions);
-  this.stopFileDrop = composerFileDrop(composer, paths => { void this.pickFiles(paths); });
-  this.stopClipboardPaste = composerClipboardPaste(this.input, () => Desk.panePasteClipboard(this.token), error => {
-   if (!this.disposed) this.status.textContent = String(error);
-  });
+  if (!this.plainTerminal) {
+   this.stopFileDrop = composerFileDrop(composer, paths => { void this.pickFiles(paths); });
+   this.stopClipboardPaste = composerClipboardPaste(this.input, () => Desk.panePasteClipboard(this.token), error => {
+    if (!this.disposed) this.status.textContent = String(error);
+   });
+  }
   this.mountKeys();
   const probe = el("div", "composer-text-probe");
   composer.append(probe);
@@ -1030,6 +1039,7 @@ class Detail {
    const result = JSON.parse(await Desk.chatPrompt(this.token, text));
    if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.saveDraft(); this.input.dispatchEvent(new Event("input")); }
    if (!this.disposed) this.status.textContent = result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again.");
+   if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
   } catch(e) {
    if (!this.disposed) {
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }

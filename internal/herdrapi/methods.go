@@ -106,6 +106,7 @@ var Methods = []Method{
 	{Name: "pane.process_info", Params: typeOf[PaneProcessInfoParams](), Results: []Result{result[ResponseResultPaneProcessInfo]("pane_process_info")}},
 	{Name: "fs.list_dir", Params: typeOf[FsListDirParams](), Results: []Result{result[ResponseResultDirList]("dir_list")}},
 	{Name: "pane.close", Params: typeOf[PaneTarget](), Results: []Result{result[ResponseResultOk]("ok")}},
+	{Name: "pane.rename", Params: typeOf[PaneRenameParams](), Results: []Result{result[ResponseResultPaneInfo]("pane_info")}},
 	{Name: "pane.read", Params: typeOf[PaneReadParams](), Results: []Result{result[ResponseResultPaneRead]("pane_read")}},
 	{Name: "pane.send_keys", Params: typeOf[PaneSendKeysParams](), Results: []Result{result[ResponseResultOk]("ok")}},
 	// schema.rs:82; src/app/api/gram.rs:389.

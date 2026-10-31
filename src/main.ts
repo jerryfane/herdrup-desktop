@@ -12,7 +12,8 @@ import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
 import { onTextSizeChanged } from "./textSize";
 import { initSidebarRail } from "./sidebar";
-import { showNewAgent } from "./create";
+import { showNewAgent, showNewTerminal } from "./create";
+import { terminalRows } from "./terminals";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -123,7 +124,13 @@ async function buildTopBar() {
       const create = () => { if (board && state.phase === "connected") void showNewAgent({ machineID: board.machineID, session: board.session }); };
       add.onclick = create;
       add.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); create(); } };
-      actions.append(add);
+      const terminal = await slot("terminal", "New terminal");
+      terminal.tabIndex = enabled ? 0 : -1; terminal.setAttribute("role", "button"); terminal.setAttribute("aria-label", "New terminal");
+      terminal.setAttribute("aria-disabled", String(!enabled));
+      const createTerminal = () => { if (board && state.phase === "connected") void showNewTerminal({ machineID: board.machineID, session: board.session }, renderRows); };
+      terminal.onclick = createTerminal;
+      terminal.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); createTerminal(); } };
+      actions.append(terminal, add);
     }
   }
   // The capsules' shapes go with their children.
@@ -382,6 +389,7 @@ async function renderRows() {
       nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? "not connected" : "no machine"));
     }
   } else {
+    const scope = { machineID: board.machineID, session: board.session };
     const query = searchInput.value;
     const b = board.board;
     // A search lays the list out again in Go (Desk.searchBoard): the
@@ -412,6 +420,12 @@ async function renderRows() {
             break;
         }
       }
+    }
+    try {
+      const terminals = await terminalRows(scope, query, symbol, renderRows);
+      if (terminals) nodes.push(terminals);
+    } catch (error) {
+      nodes.push(el("p", "empty-line t-empty", `Saved terminals: ${String(error)}`));
     }
   }
   if (generation !== rowsGeneration) return; // a newer render won

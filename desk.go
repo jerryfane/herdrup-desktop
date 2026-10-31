@@ -119,6 +119,7 @@ type Desk struct {
 	interaction *interaction
 	settings    *settingsSession
 	creation    *creationSession
+	terminals   *terminalStore
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
@@ -176,6 +177,7 @@ func newDesk(dir string) *Desk {
 	return &Desk{
 		dir: dir, state: ConnState{Phase: "idle"},
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
+		terminals:   &terminalStore{path: filepath.Join(dir, "terminals.json")},
 		alert:       alertGroups,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
 		presence: newPresence(),

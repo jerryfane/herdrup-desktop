@@ -168,6 +168,7 @@ func main() {
 		}
 	}
 	if *creation {
+		s.SessionList = `{"sessions":[{"name":"default","default":true,"running":true},{"name":"work","default":false,"running":true}]}`
 		fixture := fakeherdr.NewCreation(func(agent map[string]any) {
 			var roster struct {
 				Type   string           `json:"type"`

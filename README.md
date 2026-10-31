@@ -92,6 +92,15 @@ Native Linux checks exercised folder selection, rejected-start cleanup, creation
 and explicit sending: zero prompt writes before Send, one afterward. The
 `fakeherdr -creation -interactions` fixture starts no real model or shell process.
 
+New terminal opens a plain shell without starting an agent. Its saved row and name
+survive app restarts and belong only to that host/session. Rename updates the
+daemon's pane label before saving the local name. The composer writes text without
+adding Enter; use the terminal's Enter key to run it. Forget removes the local row
+without closing the shell; Close terminal requires confirmation and keeps the row
+if closure is unconfirmed. If saving fails, cleanup attempts to close only the new
+pane. Native Linux checks exercised writing, remote rename, disk reload, forgetting,
+confirmed closure and dismissal of both creation sheets on session changes.
+
 Settings opens a split index and Machines page, not the host chooser. The machine
 card and detail show the connected daemon's version and commit from
 `server.staged_update`, distinct from the desktop app version. A daemon without

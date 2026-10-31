@@ -18,6 +18,7 @@ import (
 
 type creationSession struct {
 	token  string
+	scope  string // immutable saved-state bucket, even if the link changes session
 	at     boardSession
 	client *engine.Client
 	ctx    context.Context
@@ -53,7 +54,7 @@ func (d *Desk) OpenCreation(machineID, session, token string) error {
 	if d.creation != nil {
 		d.creation.cancel()
 	}
-	d.creation = &creationSession{token: token, at: at, client: client, ctx: ctx, cancel: cancel}
+	d.creation = &creationSession{token: token, scope: terminalScope(machineID, session), at: at, client: client, ctx: ctx, cancel: cancel}
 	return nil
 }
 

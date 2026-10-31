@@ -173,6 +173,7 @@ html, body {
   overflow-y: auto;
   /* The tab bar floats over the list's end (safeAreaInset). */
   padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
+  scroll-padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
   scrollbar-width: none;
 }
 .roster::-webkit-scrollbar { display: none; }

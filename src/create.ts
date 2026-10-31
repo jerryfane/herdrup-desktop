@@ -83,7 +83,7 @@ export async function showNewAgent(scope: Scope) {
           attempted = result.phase === "uncertain"; error(result.message); return;
         }
         attempted = true;
-        await selectInteraction({ machineID: scope.machineID, session: scope.session, paneID: result.paneID }, draft);
+        await selectInteraction({ machineID: scope.machineID, session: session(scope.session), paneID: result.paneID }, draft);
         if (!disposed) { document.getElementById("select")!.hidden = true; modal.close(); }
       } catch (reason) { if (!disposed) error(reason); }
       finally { if (!disposed) { busy = false; update(); } }
@@ -108,4 +108,36 @@ export async function showNewAgent(scope: Scope) {
     kind.value = available.includes("claude") || !available.length ? "claude" : available[0]!;
     ready = true; update(); task.focus();
   } catch (reason) { if (!disposed) { error(reason); update(); } }
+}
+
+export async function showNewTerminal(scope: Scope, changed: () => Promise<void>) {
+  active?.close();
+  const token = crypto.randomUUID();
+  let disposed = false, busy = true;
+  const modal = el("dialog", "settings-sheet new-terminal-sheet");
+  const header = el("header", "settings-sheet-header"), heading = el("h2", "", "New terminal");
+  heading.id = "new-terminal-title"; modal.setAttribute("aria-labelledby", heading.id);
+  const close = button("Close", () => { if (!busy) modal.close(); }); close.disabled = true;
+  const status = el("p", "new-terminal-status", "Opening a shell on this machine…"); status.setAttribute("role", "status");
+  header.append(heading, close); modal.append(header, status);
+  const owner = { scope, close: () => modal.close() }; active = owner;
+  modal.addEventListener("cancel", event => { if (busy) event.preventDefault(); });
+  modal.addEventListener("close", () => {
+    disposed = true; if (active === owner) active = null;
+    modal.remove(); void Desk.closeCreation(token).catch(console.error);
+  }, { once: true });
+  document.body.append(modal); modal.showModal();
+  try {
+    await Desk.openCreation(scope.machineID, scope.session, token);
+    if (disposed) { await Desk.closeCreation(token); return; }
+    const result = await Desk.createTerminal(token);
+    if (disposed) return;
+    if (result.phase !== "started" || !result.terminal) { status.textContent = result.message; return; }
+    await changed();
+    if (disposed) return;
+    await selectInteraction({ machineID: scope.machineID, session: session(scope.session), paneID: result.terminal.paneID }, undefined, true);
+    if (!disposed) document.querySelector<HTMLElement>(`.saved-terminal-row[data-id="${CSS.escape(result.terminal.paneID)}"]`)?.scrollIntoView({ block: "nearest" });
+    if (!disposed) { document.getElementById("select")!.hidden = true; modal.close(); }
+  } catch (error) { if (!disposed) status.textContent = String(error); }
+  finally { if (!disposed) { busy = false; close.disabled = false; } }
 }

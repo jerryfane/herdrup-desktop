@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
@@ -114,8 +115,22 @@ func (d *Desk) PaneRetryAttachment(token, path string) error {
 // Delivery uncertainty consumes the draft, just as native PromptRejection does:
 // resending a timeout or a lost response can duplicate a PTY write.
 func submitPanePrompt(ctx context.Context, v *interaction, text string) (string, error) {
-	result, err := v.client.AgentPrompt(ctx, herdrapi.AgentPromptParams{Target: v.PaneID, Text: text})
 	delivery, note := "submitted", ""
+	var err error
+	if v.PlainTerminal {
+		err = v.client.PaneSendText(ctx, v.PaneID, text)
+		delivery, note = "written", "Written to terminal; press Enter to run it."
+		var unsupported *engine.ErrUnsupported
+		if errors.As(err, &unsupported) {
+			return "", err
+		}
+	} else {
+		result, promptErr := v.client.AgentPrompt(ctx, herdrapi.AgentPromptParams{Target: v.PaneID, Text: text})
+		err = promptErr
+		if result.Delivery != nil {
+			delivery = string(*result.Delivery)
+		}
+	}
 	if err != nil {
 		var api *bridge.APIError
 		if errors.As(err, &api) {
@@ -126,8 +141,6 @@ func submitPanePrompt(ctx context.Context, v *interaction, text string) (string,
 			}
 		}
 		delivery, note = "unconfirmed", "Couldn't confirm delivery — check the terminal before sending again."
-	} else if result.Delivery != nil {
-		delivery = string(*result.Delivery)
 	}
 	raw, err := json.Marshal(struct {
 		Delivery string `json:"delivery"`

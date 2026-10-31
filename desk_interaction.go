@@ -30,6 +30,7 @@ type AgentView struct {
 	Group             string  `json:"group"`
 	Status            string  `json:"status"`
 	StatusSinceUnixMs *uint64 `json:"statusSinceUnixMs,omitempty"`
+	PlainTerminal     bool    `json:"plainTerminal"`
 }
 
 type interaction struct {
@@ -115,6 +116,11 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 	if agent.Name != nil {
 		v.recipient = strings.TrimSpace(*agent.Name)
 	}
+	return d.mountInteractionLocked(v), nil
+}
+
+// mountInteractionLocked publishes the view and releases d.mu.
+func (d *Desk) mountInteractionLocked(v *interaction) AgentView {
 	v.composer = d.newPaneComposer(v)
 	old := d.interaction
 	d.interaction = v
@@ -122,7 +128,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 	if old != nil {
 		old.cancel()
 	}
-	return v.AgentView, nil
+	return v.AgentView
 }
 
 func (d *Desk) agentView(token string) (*interaction, error) {
@@ -417,7 +423,12 @@ func (d *Desk) ReadAgentText(ctx context.Context, token string, recent bool) (st
 		source = herdrapi.ReadSourceRecentUnwrapped
 	}
 	format := herdrapi.ReadFormatText
-	result, err := v.client.AgentRead(ctx, herdrapi.AgentReadParams{Target: v.PaneID, Source: source, Format: &format})
+	var result herdrapi.ResponseResultPaneRead
+	if v.PlainTerminal {
+		result, err = v.client.PaneRead(ctx, herdrapi.PaneReadParams{PaneID: v.PaneID, Source: source, Format: &format})
+	} else {
+		result, err = v.client.AgentRead(ctx, herdrapi.AgentReadParams{Target: v.PaneID, Source: source, Format: &format})
+	}
 	if err != nil {
 		return "", err
 	}

@@ -88,9 +88,18 @@ func (c *Client) PaneClose(ctx context.Context, pane string) error {
 	return err
 }
 
+func (c *Client) PaneRename(ctx context.Context, pane, label string) error {
+	_, err := c.do(ctx, "pane.rename", herdrapi.PaneRenameParams{PaneID: pane, Label: &label})
+	return err
+}
+
+func (c *Client) PaneRead(ctx context.Context, params herdrapi.PaneReadParams) (herdrapi.ResponseResultPaneRead, error) {
+	return call[herdrapi.ResponseResultPaneRead](ctx, c, "pane.read", params)
+}
+
 func (c *Client) PaneReadText(ctx context.Context, pane string) (string, error) {
 	format := herdrapi.ReadFormatText
-	result, err := call[herdrapi.ResponseResultPaneRead](ctx, c, "pane.read", herdrapi.PaneReadParams{PaneID: pane, Source: herdrapi.ReadSourceRecentUnwrapped, Format: &format})
+	result, err := c.PaneRead(ctx, herdrapi.PaneReadParams{PaneID: pane, Source: herdrapi.ReadSourceRecentUnwrapped, Format: &format})
 	return result.Read.Text, err
 }
 

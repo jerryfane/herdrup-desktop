@@ -32,6 +32,7 @@ func (c *Creation) Handle(method string, raw json.RawMessage) (any, *APIError, b
 		PaneID string  `json:"pane_id"`
 		Name   string  `json:"name"`
 		Kind   string  `json:"kind"`
+		Label  string  `json:"label"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &p); err != nil {
@@ -93,6 +94,13 @@ func (c *Creation) Handle(method string, raw json.RawMessage) (any, *APIError, b
 			c.onStarted(agent)
 		}
 		return map[string]any{"type": "agent_started", "agent": agent}, nil, true
+	case "pane.rename":
+		pane := c.panes[p.PaneID]
+		if pane == nil {
+			return nil, &APIError{Code: "not_found", Message: "pane is closed"}, true
+		}
+		pane["label"] = p.Label
+		return map[string]any{"type": "pane_info", "pane": pane}, nil, true
 	case "pane.close":
 		if pane := c.panes[p.PaneID]; pane != nil && pane["agent"] != nil {
 			return nil, &APIError{Code: "agent_running", Message: "refusing to close a started agent"}, true
@@ -101,8 +109,12 @@ func (c *Creation) Handle(method string, raw json.RawMessage) (any, *APIError, b
 		return map[string]any{"type": "ok"}, nil, true
 	case "fixture.creation.state":
 		panes := make([]string, 0, len(c.panes))
+		labels := make(map[string]string, len(c.panes))
 		for id := range c.panes {
 			panes = append(panes, id)
+			if label, ok := c.panes[id]["label"].(string); ok {
+				labels[id] = label
+			}
 		}
 		writes := 0
 		for _, call := range c.calls {
@@ -110,7 +122,7 @@ func (c *Creation) Handle(method string, raw json.RawMessage) (any, *APIError, b
 				writes++
 			}
 		}
-		return map[string]any{"panes": panes, "starts": c.starts, "writes": writes, "calls": strings.Join(c.calls, ",")}, nil, true
+		return map[string]any{"panes": panes, "labels": labels, "starts": c.starts, "writes": writes, "calls": strings.Join(c.calls, ",")}, nil, true
 	}
 	return nil, nil, false
 }
