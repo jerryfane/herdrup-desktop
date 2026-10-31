@@ -97,10 +97,10 @@ jobs:
           done
           expected=$(jq -r .fixture.sha256 "$refs/manifest.json")
           printf '%s  %s\n' "$expected" cmd/fakeherdr/agents.json | shasum -a 256 -c -
-          for group in gram settings; do
+          for group in gram settings detail; do
             base="https://raw.githubusercontent.com/jerryfane/herdrup/$sha/design/reference/$group"
             curl -fsSL --retry 3 "$base/manifest.json" -o "$refs/$group-manifest.json"
-            case "$group" in gram) count=22 ;; settings) count=8 ;; esac
+            case "$group" in gram) count=22 ;; settings) count=8 ;; detail) count=10 ;; esac
             test "$(jq '.files | length' "$refs/$group-manifest.json")" -eq "$count"
             jq -r '.files[] | "\(.file) \(.sha256) \(.state) \(.fixture) \(.fixtureSHA256)"' "$refs/$group-manifest.json" |
             while read -r file checksum state fixture fixturehash; do
@@ -110,8 +110,16 @@ jobs:
               printf '%s  %s\n' "$fixturehash" "$refs/fixture-$state.json" | shasum -a 256 -c -
             done
           done
+          mkdir -p "$refs/sources"
+          jq -r '.sourceFixtures[] | "\(.file) \(.sha256) \(.herdrupCommit)"' "$refs/detail-manifest.json" |
+          while read -r file checksum sourcehead; do
+            dest="$refs/sources/$(basename "$file")"
+            curl -fsSL --retry 3 "https://raw.githubusercontent.com/jerryfane/herdrup/$sourcehead/$file" -o "$dest"
+            printf '%s  %s\n' "$checksum" "$dest" | shasum -a 256 -c -
+          done
           cp "$refs/manifest.json" "$refs/board-manifest.json"
-          jq -s '.[0] + {files: (map(.files) | add)}' "$refs/board-manifest.json" "$refs/gram-manifest.json" "$refs/settings-manifest.json" > "$refs/manifest.json"
+          jq -s '.[0] + {files: (map(.files) | add)}' "$refs/board-manifest.json" "$refs/gram-manifest.json" "$refs/settings-manifest.json" "$refs/detail-manifest.json" > "$refs/manifest.json"
+          test "$(jq '.files | length' "$refs/manifest.json")" -eq 64
       - name: Capture each state and compare it
         run: |
           set +e
@@ -161,7 +169,7 @@ jobs:
             [ "$st" -eq 0 ] || echo "$name: app exited $st" >> "$out/failed"
             if [ -s "$out/captures/$name.png" ]; then
               masks=()
-              case "$state" in gram-*|settings-*) ;; *) masks=(-mask "cmd/refdiff/masks/$device.json") ;; esac
+              case "$state" in gram-*|settings-*|detail-*) ;; *) masks=(-mask "cmd/refdiff/masks/$device.json") ;; esac
               "$RUNNER_TEMP/refdiff" -ref "$refs/ref-$device-$state.png" -got "$out/captures/$name.png" \
                 -crop-top-pt "$bar" -scale "$refscale" "${masks[@]}" -state "$state" \
                 -tol "$PARITY_TOL" -max-over-pct "$PARITY_MAX_OVER_PCT" \
@@ -183,7 +191,7 @@ jobs:
           {
             echo "## Desktop parity"
             echo
-            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Board masks: \`cmd/refdiff/masks\`; Gram and Settings: no masks."
+            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Board masks: \`cmd/refdiff/masks\`; Gram, Settings and detail: no masks."
             echo
             echo "| capture | page pt | capture px | display scale | override | devicePixelRatio | app | over tol % | max Δ | mean Δ | refdiff |"
             echo "|---|---|---|---|---|---|---|---|---|---|---|"

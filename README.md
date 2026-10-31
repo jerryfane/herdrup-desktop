@@ -466,8 +466,8 @@ The reference manifests retain each screenshot's producing head; that delivery
 commit is not a claim that the desktop matches all 64 native reference images.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
-the board, Gram and Settings against herdrup's iPad screenshots (`design/reference/agent-list`,
-`design/reference/gram` and `design/reference/settings` at the pinned `REFERENCES`, checked against their manifest hashes). On macOS it opens
+the board, Gram, Settings and detail against all 64 accepted iPad screenshots under
+`design/reference/{agent-list,gram,settings,detail}` at the pinned `REFERENCES`, checked against their manifest hashes. On macOS it opens
 the smoke build once per reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the
 page area in points: the reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes
 the web view render at 2 pixels per point although the runner's display is 1x. The page signals a drawn
@@ -501,6 +501,15 @@ the agent-derived totals (5 machines, 5 agents, 1 offline), not profile counts.
 Settings comparisons also use no masks. Reference host naming is connection
 metadata; the renderer still receives the real SSH fixture's machine statuses.
 
+Ten detail captures cover Chat, Terminal, the collapsed/expanded inline writer,
+and saved-host selection. `fakeherdr` ports the pinned native mock transcript and
+terminal reset onto the real SSH transport. Source checksums are verified from
+the detail manifest; these are synthetic inputs, not a live agent session.
+Writer captures wait for the pasted draft's layout before activating the handle,
+then check the same textarea, retained draft and unclipped expanded card.
+Host selection seeds only saved metadata before page startup and does not connect.
+Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
+
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
 tries moving the capture by up to 24 device pixels, and reports a tile (in the summary and the report's
 `shifted`) when a move fits it much better than leaving it in place. Anti-aliasing and glyph-shape
@@ -509,11 +518,11 @@ exactly by moving it back. Any displaced tile fails the comparison. The workflow
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
 summary table. The thresholds remain `PARITY_TOL` (2) and
 `PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
-anti-aliasing differences. The accepted 24-board comparison at desktop `0e17b12`
-captured every state but failed all 24 unchanged pixel/displacement gates
-(run `41158846126`). Capture coverage is not visual parity. The remaining
-10 detail captures and the full 64-image comparison remain in progress;
-no threshold or existing mask was relaxed.
+anti-aliasing differences. The 54-image board/Gram/Settings comparison at desktop
+`4619bd9` captured every state but failed all 54 unchanged pixel/displacement gates
+(run `41160865818`). Capture coverage is not visual parity. All five detail
+scenarios have also run in the Linux native webview; the complete 64-image hosted
+comparison is the next visual gate. No threshold or existing mask was relaxed.
 
 ## Releases
 

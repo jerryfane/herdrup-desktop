@@ -47,6 +47,11 @@ var refExpand = map[string][]string{
 	"settings-machines-federation": nil,
 	"settings-machines-empty":      nil,
 	"settings-about-index":         nil,
+	"detail-chat":                  nil,
+	"detail-terminal":              nil,
+	"detail-writer-collapsed":      nil,
+	"detail-writer-expanded":       nil,
+	"detail-host-selection":        nil,
 }
 
 // refEnabled reports whether this run is a reference capture: a smoke
@@ -148,14 +153,22 @@ func runRef(desk *Desk, win *mygo.Window) {
 		// Native DesktopReferenceMock's configured home-box display name.
 		m.Nickname = "reference-hub"
 	}
-	if err := desk.Connect(m, ""); err != nil {
-		rep.Outcome = "connect: " + err.Error()
-		cleanup()
-		go finishRef(win, out, &rep, false)
-		return
+	if state != "detail-host-selection" {
+		if err := desk.Connect(m, ""); err != nil {
+			rep.Outcome = "connect: " + err.Error()
+			cleanup()
+			go finishRef(win, out, &rep, false)
+			return
+		}
 	}
 	go func() {
-		ok, why := driveRef(win, w, h, expand, t)
+		var ok bool
+		var why string
+		if state == "detail-host-selection" {
+			ok, why = waitReferenceHosts(win, w, h, t.total)
+		} else {
+			ok, why = driveRef(win, w, h, expand, t)
+		}
 		if ok {
 			ok, why = driveBoardReference(win, state)
 		}
@@ -164,6 +177,9 @@ func runRef(desk *Desk, win *mygo.Window) {
 		}
 		if ok {
 			ok, why = driveSettingsReference(win, state)
+		}
+		if ok {
+			ok, why = driveDetailReference(win, state)
 		}
 		rep.Outcome = why
 		cleanup()

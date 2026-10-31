@@ -30,6 +30,9 @@ func main() {
 		pageURL = "mygo://" + filepath.Base(dir) + "/"
 	}
 	desk := newDesk(dir)
+	if err := prepareReferenceHosts(desk); err != nil {
+		log.Fatal("reference host metadata: ", err)
+	}
 	if !smokeEnabled() {
 		// Downloaded Gram files go under the user cache directory, which the
 		// system may clear; smoke runs keep everything in their temp dir.

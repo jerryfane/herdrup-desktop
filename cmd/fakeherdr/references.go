@@ -21,6 +21,9 @@ func serveReferenceResponses(server *fakeherdr.Server, path string) error {
 	if err := json.Unmarshal(data, &replies); err != nil {
 		return fmt.Errorf("reference responses: %w", err)
 	}
+	if replies["writerDraft"] != nil && replies["savedHosts"] != nil {
+		return serveDetailReference(server)
+	}
 	if replies["agent.list"] == nil || replies["ping"] == nil {
 		return fmt.Errorf("reference responses need ping and agent.list")
 	}
