@@ -514,6 +514,9 @@ then check the same textarea, retained draft and unclipped expanded card.
 Terminal uses the native horizontal-only 8 pt inset; the mode switch's stroke
 does not increase its 32 pt height. Chat and Gram share 40 pt action circles
 inside 44 pt targets, including the microphone while its icon changes.
+Chat's composer, plan and question outlines are inset strokes, not extra layout
+space. Plan rows use the font's natural line height; the transcript ends with its
+12 pt padding rather than an additional last-row margin.
 Host selection seeds only saved metadata before page startup and does not connect.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
@@ -525,10 +528,10 @@ exactly by moving it back. Any displaced tile fails the comparison. The workflow
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
 summary table. The thresholds remain `PARITY_TOL` (2) and
 `PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
-anti-aliasing differences. The full comparison at desktop `c908beb` captured all
-64 states but failed all 64 unchanged pixel/displacement gates (run `41162269756`).
+anti-aliasing differences. The full comparison at desktop `15ee6d0` captured all
+64 states but failed all 64 unchanged pixel/displacement gates (run `41164292395`).
 Capture coverage is not visual parity. The five detail scenarios also ran in the
-Linux native webview. The subsequent selected-row fix failed its native smoke
+Linux native webview. The selected-row fix failed its native smoke
 against the old frontend and passed after rebuilding, including Back/reopen.
 No threshold or existing mask was relaxed.
 
