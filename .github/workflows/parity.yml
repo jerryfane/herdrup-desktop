@@ -85,11 +85,18 @@ jobs:
           base="https://raw.githubusercontent.com/jerryfane/herdrup/$sha/design/reference/agent-list"
           curl -fsSL --retry 3 "$base/manifest.json" -o "$refs/manifest.json"
           jq -r '.files[] | "\(.sha256)  \(.file)"' "$refs/manifest.json" > "$refs/SHA256SUMS"
-          test "$(wc -l < "$refs/SHA256SUMS")" -eq 12
+          test "$(wc -l < "$refs/SHA256SUMS")" -eq 24
           for f in $(jq -r '.files[].file' "$refs/manifest.json"); do
             curl -fsSL --retry 3 "$base/$f" -o "$refs/$f"
           done
           (cd "$refs" && shasum -a 256 -c SHA256SUMS)
+          jq -r '.servedFixtures | to_entries[] | "\(.key) \(.value.file) \(.value.sha256)"' "$refs/manifest.json" |
+          while read -r state file sha256; do
+            curl -fsSL --retry 3 "https://raw.githubusercontent.com/jerryfane/herdrup/$sha/$file" -o "$refs/fixture-$state.json"
+            printf '%s  %s\n' "$sha256" "$refs/fixture-$state.json" | shasum -a 256 -c -
+          done
+          expected=$(jq -r .fixture.sha256 "$refs/manifest.json")
+          printf '%s  %s\n' "$expected" cmd/fakeherdr/agents.json | shasum -a 256 -c -
       - name: Capture each state and compare it
         run: |
           set +e
@@ -115,11 +122,15 @@ jobs:
             # is new on every start.
             port=$((port + 1))
             key="$RUNNER_TEMP/keys/$name.key"
-            "$RUNNER_TEMP/fakeherdr" -mode "$mode" -listen "127.0.0.1:$port" -client-key "$key" > "$out/logs/$name.fakeherdr.log" 2>&1 &
+            fixture=$state
+            case "$state" in needs-you-*) fixture=needs-you ;; esac
+            responses=()
+            if [ -f "$refs/fixture-$fixture.json" ]; then responses=(-responses "$refs/fixture-$fixture.json"); fi
+            "$RUNNER_TEMP/fakeherdr" -mode "$mode" "${responses[@]}" -listen "127.0.0.1:$port" -client-key "$key" > "$out/logs/$name.fakeherdr.log" 2>&1 &
             fpid=$!
             for _ in $(seq 50); do [ -s "$key" ] && break; sleep 0.2; done
             echo "::group::$name: $device $state, page ${w}x$((h - bar)) pt, fakeherdr -mode $mode, scale ${scale:-native}"
-            HERDRUP_SMOKE_HOST=127.0.0.1 HERDRUP_SMOKE_PORT=$port HERDRUP_SMOKE_USER=ci HERDRUP_SMOKE_KEY="$key" \
+            TZ=UTC HERDRUP_SMOKE_HOST=127.0.0.1 HERDRUP_SMOKE_PORT=$port HERDRUP_SMOKE_USER=ci HERDRUP_SMOKE_KEY="$key" \
               HERDRUP_SMOKE_LOG="$out/logs/$name.app.log" HERDRUP_REF_STATE="$state" \
               HERDRUP_REF_SIZE="${w}x$((h - bar))" HERDRUP_REF_CAPTURE="$out/captures/$name.png" \
               HERDRUP_REF_SCALE="$scale" "$app" &
@@ -145,8 +156,8 @@ jobs:
             echo "::endgroup::"
           }
 
-          for device in ipad-11 ipad-pro-13; do
-            for state in loading empty populated idle-expanded archived-expanded all-expanded; do
+          for device in $(jq -r '[.files[].device] | unique[]' "$refs/manifest.json"); do
+            for state in $(jq -r --arg device "$device" '.files[] | select(.device == $device) | .state' "$refs/manifest.json"); do
               capture "$device-$state" "$device" "$state" "$PARITY_SCALE"
             done
           done

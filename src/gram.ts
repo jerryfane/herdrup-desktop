@@ -47,7 +47,7 @@ export type GramDeps = {
   /** The frozen UIActivityIndicatorView (main.ts). */
   spinner: string;
   /** The sidebar's top bar changed (title, count or actions): re-place and re-paint it. */
-  barChanged: () => void;
+  barChanged: (unread: number) => void;
 };
 
 let deps: GramDeps;
@@ -205,18 +205,20 @@ function symbolAvatar(name: string): HTMLElement {
 
 /** The Gram section bar's actions: hide-sidebar, then Read all while the inbox shows with
  * something unread, then Refresh. */
-export async function barActions(): Promise<HTMLElement[]> {
+export async function barActions(minimize: () => void): Promise<HTMLElement[]> {
   const slot = async (name: string, label: string, action?: () => void) => {
     const s = el("div", "slot");
     s.title = label;
     s.append(await deps.symbol(name, 15, "medium"));
     if (action) {
       s.classList.add("action");
+      s.tabIndex = 0; s.setAttribute("role", "button"); s.setAttribute("aria-label", label);
+      s.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); action(); } };
       s.addEventListener("click", action);
     }
     return s;
   };
-  const out = [await slot("sidebar.leading", "Minimise sidebar")];
+  const out = [await slot("sidebar.leading", "Minimise sidebar", minimize)];
   if (!showingSaved && (snap?.unreadCount ?? 0) > 0) {
     out.push(await slot("envelope.open", "Read all", () => void Desk.gramMarkAllRead().catch(() => undefined)));
   }
@@ -236,7 +238,7 @@ function updateBar() {
   const key = `${showingSaved}/${snap?.unreadCount ?? 0}`;
   if (key === barKey) return;
   barKey = key;
-  if (shown) deps.barChanged();
+  deps.barChanged(snap?.unreadCount ?? 0);
 }
 
 function buildSidebar(): HTMLElement {

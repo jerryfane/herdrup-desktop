@@ -26,11 +26,30 @@ var refExpand = map[string][]string{
 	"idle-expanded":     {"idle"},
 	"archived-expanded": {"archived"},
 	"all-expanded":      {"idle", "archived"},
+	"folders":           {"folder:herdr"},
+	"avatars":           nil,
+	"sessions":          nil,
+	"federated":         nil,
+	"needs-you-pill":    nil,
+	"needs-you-rail":    nil,
 }
 
 // refEnabled reports whether this run is a reference capture: a smoke
 // build (main.smoke=1) started with HERDRUP_REF_STATE.
 func refEnabled() bool { return smokeEnabled() && os.Getenv("HERDRUP_REF_STATE") != "" }
+
+// Reference timestamps are absolute. Freeze wall time only in a reference run;
+// timers and performance.now keep advancing so the real asynchronous UI settles.
+func refPreload() string {
+	if !refEnabled() {
+		return ""
+	}
+	return `;(() => { const NativeDate = Date; const now = 1793180460000;
+globalThis.Date = class extends NativeDate {
+  constructor(...args) { if (args.length) super(...args); else super(now); }
+  static now() { return now; }
+}; })();`
+}
 
 // refTiming bounds the waits of a reference capture. Total stays under
 // the bridge's 60 s call timeout, after which the loading state turns
@@ -112,6 +131,9 @@ func runRef(desk *Desk, win *mygo.Window) {
 	}
 	go func() {
 		ok, why := driveRef(win, w, h, expand, t)
+		if ok {
+			ok, why = driveBoardReference(win, state)
+		}
 		rep.Outcome = why
 		finishRef(win, out, &rep, ok)
 	}()

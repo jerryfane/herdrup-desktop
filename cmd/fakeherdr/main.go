@@ -43,6 +43,7 @@ func main() {
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
+	responsesFile := flag.String("responses", "", "immutable native-reference API response map, including avatar and session replies")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -163,6 +164,11 @@ func main() {
 				return value, err
 			}
 			return previous(method, params)
+		}
+	}
+	if *responsesFile != "" {
+		if err := serveReferenceResponses(s, *responsesFile); err != nil {
+			log.Fatal(err)
 		}
 	}
 	addr, err := s.Listen(*listen)

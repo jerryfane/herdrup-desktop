@@ -4,6 +4,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/design"
@@ -14,6 +15,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	pageURL := "/"
 	if smokeEnabled() {
 		// Test-hook runs start with no saved state: on a persistent CI
 		// machine the user data would carry the previous run's pinned host
@@ -23,6 +25,9 @@ func main() {
 		if dir, err = os.MkdirTemp("", "herdrup-smoke-"); err != nil {
 			log.Fatal(err)
 		}
+		// Web storage belongs to an origin, not Desk's data directory. A
+		// fresh asset host isolates native webview preferences on every OS.
+		pageURL = "mygo://" + filepath.Base(dir) + "/"
 	}
 	desk := newDesk(dir)
 	if !smokeEnabled() {
@@ -65,8 +70,8 @@ func main() {
 			MinHeight:       420,
 			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
-			URL:             "/",
-			Page:            mygo.PageOptions{PreloadScript: smokePreload()},
+			URL:             pageURL,
+			Page:            mygo.PageOptions{PreloadScript: smokePreload() + refPreload()},
 			// The menu bar of Linux and Windows windows stays out of the
 			// way of herdrup's layout until Alt or F10; its shortcuts work.
 			AutoHideMenuBar: true,

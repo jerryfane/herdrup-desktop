@@ -11,6 +11,7 @@ import { initHosts } from "./hosts";
 import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
 import { onTextSizeChanged } from "./textSize";
+import { initSidebarRail } from "./sidebar";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -27,6 +28,7 @@ let board: BoardUpdate | null = null;
 let tab: "agents" | "gram" | "settings" = "agents";
 let choosingHost = false;
 let settings: ReturnType<typeof initSettings> | null = null;
+let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let pendingAgent: AgentTarget | null = null;
 let activationVersion = 0;
 let activationWork = Promise.resolve();
@@ -101,10 +103,14 @@ async function buildTopBar() {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
     title.replaceChildren(document.createTextNode("Gram"), ...(count ? [count] : []));
-    actions.replaceChildren(...(await barActions()));
+    actions.replaceChildren(...(await barActions(() => rail?.minimize())));
   } else {
     title.replaceChildren(document.createTextNode(tab === "settings" ? "Settings" : "Agents"));
-    actions.replaceChildren();
+    const minimize = await slot("sidebar.leading", "Minimise sidebar");
+    minimize.tabIndex = 0; minimize.setAttribute("role", "button"); minimize.setAttribute("aria-label", "Minimise sidebar");
+    minimize.onclick = () => rail?.minimize();
+    minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
+    actions.replaceChildren(minimize);
   }
   // The capsules' shapes go with their children.
   paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
@@ -445,6 +451,7 @@ function render() {
   const showsSettings = tab === "settings" && !showConnect;
   connectView.hidden = !showConnect;
   document.body.classList.toggle("host-home-visible", showConnect);
+  rail?.update(tab, board?.board ?? null, !showConnect);
   const fieldWasHidden = field.hidden;
   field.hidden = showConnect || showsGram || showsSettings;
   if (fieldWasHidden && !field.hidden) drawField();
@@ -564,6 +571,9 @@ async function init() {
   paintShape($("sidebar"), { radius: px("--sidebar-radius"), fill: "var(--color-ground)", clip: true });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
+  rail = await initSidebarRail($("sidebar"), next => {
+    tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
+  }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
   initInteraction($("detail"), symbol);
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
@@ -574,7 +584,8 @@ async function init() {
       symbol,
       placeInitials,
       spinner: spinnerSVG,
-      barChanged: () => {
+      barChanged: unread => {
+        rail?.unread(unread);
         if (tab === "gram") void buildTopBar();
       },
     },

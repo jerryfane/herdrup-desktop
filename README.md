@@ -131,6 +131,9 @@ Linux native-window checks created an invite through the isolated SSH fixture,
 decoded the displayed QR and checked the clipboard link against its stored record.
 This does not establish live relay redemption. Swift's native Send share sheet
 still needs an approved Windows/Linux route; the app does not substitute email.
+CI `41156524463` at `8755c1e` passed the same native invite scenario on Windows
+and Linux. Both captured QR codes decoded independently to their fixture link;
+both receipts showed default-off and opted-in Gram grants and a successful copy.
 Notifications has four device-local switches: input requests, process exits,
 finished turns and arriving Gram messages. Choices are saved atomically and a
 failed save restores the prior switch state. A test button requests an actual
@@ -165,6 +168,13 @@ and saved their preview screenshots. Older unsupported WebView2 runtime rejectio
 has not been exercised.
 This is not complete Settings parity: additional preferences, daemon updates,
 native invite sending and full reference comparison remain.
+
+The sidebar can minimise to the native 64 pt rail and expand with its button or
+⌘K/Ctrl+K. Rail section buttons select and expand; the Gram unread badge stays
+live. Activity counts use the roster's strict needs-you count, not uncertain
+agents, and its complete working count, including closed folders. Zero counts
+and their separator are hidden. Linux native reference capture exercised the
+accepted three-needs-you/twenty-working state; final pixel comparison is pending.
 
 Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:
@@ -466,15 +476,26 @@ the status bar, outside the rectangles in `cmd/refdiff/masks`: the tab bar's Liq
 iPadOS's resize corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`),
 the detail column's glyph field, which herdrup's capture froze before its first picture.
 
+The accepted manifest now drives all 24 board captures, including folders,
+avatars, sessions, federation and both needs-you states. `fakeherdr -responses`
+serves the manifest-verified native response fixtures over SSH; its session and
+avatar replies use the same production client paths as a real host. Reference
+runs pin wall time to the manifest's `2026-10-28T09:41:00Z`, leaving timers live.
+Each smoke/reference run uses a fresh asset origin as well as a fresh Go data
+directory, so one capture cannot leave sidebar, composer or other web preferences
+in the next capture or the user's regular application.
+
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
 tries moving the capture by up to 24 device pixels, and reports a tile (in the summary and the report's
 `shifted`) when a move fits it much better than leaving it in place. Anti-aliasing and glyph-shape
 differences change pixels in place and no move removes them; something drawn off is fitted almost
 exactly by moving it back. Any displaced tile fails the comparison. The workflow uploads the captures,
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
-summary table. The thresholds are `PARITY_TOL` (2) and `PARITY_MAX_OVER_PCT` (0.15 %) in the workflow:
-the agent list matches the references in place, size and colour, and the at most 0.13 % left is
-anti-aliasing that iOS and macOS's web view draw differently (iOS snaps glyphs to whole pixels).
+summary table. The thresholds remain `PARITY_TOL` (2) and
+`PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
+anti-aliasing differences. That result does not establish parity with the accepted
+64-image delivery. The additional 40 Gram, Settings and detail captures and the
+new full-set comparison remain in progress; no threshold or mask was relaxed.
 
 ## Releases
 
