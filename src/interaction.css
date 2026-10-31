@@ -97,6 +97,14 @@
 .chat-markdown { --markdown-scale: calc(var(--chat-text-scale, 1) * var(--markdown-tone, 1)); display: flex; flex-direction: column; gap: 8px; font: 400 calc(16px * var(--markdown-scale))/var(--leading-app) var(--font-app); overflow-wrap: anywhere; user-select: text; }
 /* Swift adds leading only BETWEEN lines, not above the first or below the last. */
 .chat-markdown p { margin: calc(-1.5px * var(--markdown-scale)) 0; line-height: calc(1em * var(--leading-app) + 3px * var(--markdown-scale)); }
+/* Heading ink stays neutral; Swift's extra leading is not a font-scaled inset. */
+.chat-markdown :is(h1, h2, h3, h4, h5, h6) { --heading-leading: 2px; margin: -1px 0; padding-top: 4px; font-weight: 600; font-size: calc(17px * var(--markdown-scale)); line-height: calc(1em * var(--leading-app) + var(--heading-leading)); min-height: calc(round(up, calc(1em * var(--leading-app)), var(--pixel)) + var(--heading-leading) + 4px); color: inherit; }
+.chat-markdown h1 { font-size: calc(23px * var(--markdown-scale)); }
+.chat-markdown h2 { font-size: calc(20px * var(--markdown-scale)); }
+.chat-markdown blockquote { --quote-leading: 3px; position: relative; display: flex; flex-direction: column; margin: 0; padding-left: 12px; font-size: calc(15.5px * var(--markdown-scale)); color: var(--color-text-dim); }
+.chat-markdown blockquote p { margin: -1.5px 0; line-height: calc(1em * var(--leading-app) + var(--quote-leading)); white-space: pre-wrap; }
+.chat-markdown blockquote::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--color-hairline); }
+.chat-markdown hr { flex: none; width: 100%; height: 1px; margin: 4px 0; border: 0; background: var(--color-hairline-quiet); }
 .chat-markdown ul, .chat-markdown ol { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 0; padding-left: 40px; }
 .chat-markdown li { margin: -1.5px 0; line-height: calc(1em * var(--leading-app) + 3px); }
 .chat-markdown li > ul, .chat-markdown li > ol { margin-top: 6px; padding-left: 18px; }
@@ -105,6 +113,7 @@
 .chat-markdown strong { font-weight: 600; }
 .chat-markdown pre { overflow-x: auto; padding: 12px; background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 8px; }
 .chat-markdown code { font-family: var(--font-machine); font-size: max(calc(1em - 2.5px), 10px); }
+.chat-markdown :not(pre) > code { background: var(--color-surface); }
 .chat-markdown pre code { font-size: calc(13px * var(--chat-text-scale, 1)); }
 .chat-markdown pre button { display: block; margin-top: 8px; }
 .chat-markdown table { border-collapse: collapse; max-width: 100%; }

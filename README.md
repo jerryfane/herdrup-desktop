@@ -16,6 +16,10 @@ agents: paged history, Markdown and diagrams, folded thinking/tools, prompt send
 and supported single-choice questions. Other harnesses open Terminal.
 External images in transcript diagrams are blocked before the browser fetches them.
 Invalid diagrams stay as source text; history from an old transcript session is discarded.
+Chat headings, quotes, rules and inline-code backgrounds use the native source's
+typography and spacing, including preserved quote line breaks. Heading ink stays
+neutral under the desktop color rule. Native Linux checks covered replies and
+expanded thoughts at 100%/140%/reset using a separate SSH transcript fixture.
 The current parity branch replaces the separate writing dialog with the Swift
 composer's in-card drag handle. Expanding keeps the same field, selection and draft.
 Terminal quick keys are grouped, with Return pinned outside the scrollable row.
