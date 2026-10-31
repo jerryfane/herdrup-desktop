@@ -36,6 +36,9 @@ func driveSettingsReference(win *mygo.Window, state string) (bool, string) {
     await until(() => expected.every(([name,status]) => [...document.querySelectorAll('.settings-federation-row')].some(row => row.textContent.includes(name) && row.textContent.includes(status))), "six saved profiles and unsaved guest peer");
     await until(() => { const text = document.querySelector('.settings-reach')?.textContent || ""; return text.includes("5 machines") && text.includes("5 agents") && text.includes("1 offline"); }, "agent-derived federation totals");
   }
+  // The update card can arrive after machine statuses and change the scroll extent.
+  await until(() => document.querySelector('#server-update-card')?.getAttribute('aria-busy') === "false", "initial server update state settled");
+  await document.fonts.ready;
   const index = document.querySelector('.settings-index');
   if (state === "settings-machines-federation") {
     const detail = document.querySelector('.settings-page-body'); detail.scrollTop = detail.scrollHeight;
@@ -44,7 +47,6 @@ func driveSettingsReference(win *mygo.Window, state string) (bool, string) {
     index.scrollTop = index.scrollHeight;
     await until(() => { const footer=document.querySelector('.settings-version').getBoundingClientRect(); const frame=index.getBoundingClientRect(); return footer.top >= frame.top && footer.bottom <= frame.bottom; }, "inline About and version visible");
   }
-  await document.fonts.ready;
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return true;
 })()`)

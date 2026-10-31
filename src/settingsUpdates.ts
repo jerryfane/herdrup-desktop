@@ -41,11 +41,13 @@ export class ServerUpdateSettings {
   constructor(private report: (error: unknown) => void) {
     this.root.id = "server-update-card"; this.root.hidden = true;
     this.root.setAttribute("aria-live", "polite");
+    this.root.setAttribute("aria-busy", "true");
   }
   setScope(token: string, host = "Machine") {
     this.generation++; this.token = token; this.host = host;
     clearTimeout(this.timer); this.modal?.close(); this.pending = false;
     this.state = undefined; this.rendered = ""; this.root.hidden = true; this.root.replaceChildren();
+    this.root.setAttribute("aria-busy", "true");
     if (token) void this.read(true);
   }
   setHost(host: string) {
@@ -63,6 +65,7 @@ export class ServerUpdateSettings {
     } catch (error) { if (at === this.generation) this.report(error); }
     finally {
       if (at === this.generation) {
+        this.root.setAttribute("aria-busy", "false");
         clearTimeout(this.timer);
         this.timer = window.setTimeout(() => { void this.read(false); }, 1000);
       }

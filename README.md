@@ -676,6 +676,10 @@ Federation status uses the native 26 pt outlined Wi-Fi-off badge for offline
 peers and 8 pt dots for reachable/degraded peers, with accessible status labels.
 The offline symbol uses SF Symbols on macOS and the existing Phosphor fallback
 elsewhere; connection-summary dots remain separate.
+Before choosing a Settings scroll boundary, the driver waits for fonts and the
+update live region's initial load to finish. Machine-status rows can arrive
+before the update card changes the page height; the live region reports
+`aria-busy` until that scope's first read settles, even when unsupported or failed.
 Settings comparisons also use no masks. Reference host naming is connection
 metadata; the renderer still receives the real SSH fixture's machine statuses.
 
