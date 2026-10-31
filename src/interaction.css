@@ -74,7 +74,7 @@
 .chat-user-content { display: block; }
 .chat-work { display: flex; flex-direction: column; gap: 10px; color: var(--color-text-dim); font: 400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-work summary { cursor: pointer; }
-.chat-work > details > summary { display:flex; align-items:center; gap:7px; list-style:none; }
+.chat-work > details > summary { display:flex; align-items:center; gap:7px; min-height:round(up, calc(1em * var(--leading-app)), var(--pixel)); list-style:none; }
 .chat-work > details > summary::-webkit-details-marker { display:none; }
 .chat-work-chevron { display:flex; align-items:center; justify-content:center; flex:none; width:12px; height:12px; }
 .chat-work > .chat-thought > summary { gap:6px; }

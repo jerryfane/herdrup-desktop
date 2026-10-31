@@ -48,9 +48,10 @@ width. Linux native checks covered pointer selection, window resizing, global an
 Chat font changes, search highlights and selection retained through refresh.
 The hosted macOS comparison still fails the full visual gate. Windows prompt
 interactions remain unverified.
-Chat card labels reserve a font-derived, device-pixel-rounded minimum height.
-Native Linux checks covered Settings scaling and wrapped rows at the minimum
-window width. This does not correct WebKit's fractional multiline line spacing.
+Chat card labels and Thought/Worked disclosure rows reserve a font-derived,
+device-pixel-rounded minimum height. Native Linux checks covered Settings scaling,
+wrapped card rows at the minimum window width, and disclosure Enter/Space toggling.
+This does not correct WebKit's fractional multiline line spacing.
 Chat uses Swift's fixed 26-point top fade and 48-point bottom fade away from the
 tail. The native eight-point tail boundary controls the bottom fade and Jump to
 latest; Linux checks covered both boundary sides and a real pointer jump.
