@@ -34,6 +34,8 @@ let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
 let activationWork = Promise.resolve();
 let pageReady = false;
+// Connection events retain state immediately; drawing waits for every view's dependencies.
+let renderReady = false;
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
 
@@ -357,6 +359,7 @@ async function archivedCard(r: Row): Promise<HTMLElement> {
  * that order, Idle's included, archived agents are left out, and nothing
  * found says so. */
 async function renderRows() {
+  if (!renderReady) return;
   const generation = ++rowsGeneration;
   const nodes: HTMLElement[] = [];
   if (!board) {
@@ -469,6 +472,7 @@ onTextSizeChanged(() => {
 });
 
 function render() {
+  if (!renderReady) return;
   const showConnect = choosingHost || (!board && state.phase !== "connecting" && state.phase !== "connected");
   const showsGram = tab === "gram" && !showConnect;
   const showsSettings = tab === "settings" && !showConnect;
@@ -645,6 +649,7 @@ async function init() {
   await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
   drawField();
+  renderReady = true;
   render();
   const version = activationVersion;
   const retained = await Desk.pendingAgent();

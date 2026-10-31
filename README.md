@@ -455,8 +455,11 @@ requests labelled `macos-smoke` (GitHub's hosted Macs are shared with herdrup's 
 screenshot of each. The parity check below also runs on GitHub's hosted macOS, whose version the pixel
 match was made on.
 Smoke builds capture early script/resource errors and unhandled promise rejections
-before the frontend module starts. A failed row probe reports those errors, script
-URLs and document readiness alongside the page text; release builds omit the hook.
+before the frontend module starts. Startup errors fail the window smoke even when
+the expected rows eventually appear. Diagnostics include script URLs, document
+readiness and page text; release builds omit the hook. Connection events retain
+their data during startup, but rendering waits for the view dependencies to be
+initialized. This drawing barrier is separate from notification-activation readiness.
 The existing Linux and Windows smoke jobs also compile the pinned offline speech
 helper and package its model and licences. That checks the platform toolchain and
 bundle contents; the board screenshot is not microphone or dictation acceptance.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -109,6 +110,10 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 			last = v
 			if m, ok := v.(map[string]any); ok {
 				if n, _ := m["rows"].(float64); int(n) == want {
+					if captured, valid := m["errors"].([]any); valid && len(captured) > 0 {
+						finish(false, "uncaught startup errors: "+fmt.Sprint(captured))
+						return
+					}
 					// Let the browser paint the frame it just laid out.
 					time.Sleep(500 * time.Millisecond)
 					if err := smokePreviews(win, out); err != nil {
