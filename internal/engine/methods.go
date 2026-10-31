@@ -34,6 +34,18 @@ func (c *Client) StagedUpdate(ctx context.Context) (herdrapi.ResponseResultStage
 	return call[herdrapi.ResponseResultStagedUpdate](ctx, c, "server.staged_update", herdrapi.EmptyParams{})
 }
 
+func (c *Client) UpdateCheck(ctx context.Context) (herdrapi.ResponseResultUpdateCheck, error) {
+	return call[herdrapi.ResponseResultUpdateCheck](ctx, c, "server.update_check", herdrapi.EmptyParams{})
+}
+
+func (c *Client) UpdateApply(ctx context.Context, p herdrapi.ServerUpdateApplyParams) (herdrapi.ResponseResultUpdateApply, error) {
+	return call[herdrapi.ResponseResultUpdateApply](ctx, c, "server.update_apply", p)
+}
+
+func (c *Client) UpdateStatus(ctx context.Context) (herdrapi.ResponseResultUpdateStatus, error) {
+	return call[herdrapi.ResponseResultUpdateStatus](ctx, c, "server.update_status", herdrapi.EmptyParams{})
+}
+
 // AgentList is agent.list.
 func (c *Client) AgentList(ctx context.Context, p herdrapi.AgentListParams) (herdrapi.ResponseResultAgentList, error) {
 	return call[herdrapi.ResponseResultAgentList](ctx, c, "agent.list", p)

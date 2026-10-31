@@ -11,6 +11,7 @@ import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
 import { PreviewSettings } from "./settingsPreviews";
+import { ServerUpdateSettings } from "./settingsUpdates";
 import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
@@ -72,9 +73,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const guests = new GuestSettings(report);
   const notifications = new NotificationsSettings(report);
   const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right"));
+  const updates = new ServerUpdateSettings(report);
   function closeScope() {
     accounts.setScope("");
     guests.setScope("");
+    updates.setScope("");
     const token = settingsToken; settingsToken = "";
     if (token) void Desk.closeSettings(token).catch(report);
     machineVersion = "";
@@ -88,6 +91,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       if (at !== generation || !visible) { void Desk.closeSettings(token); return; }
       accounts.setScope(token);
       guests.setMachines(name(), statuses, peers); guests.setScope(token);
+      updates.setScope(token, name());
       const version = await Desk.settingsMachineVersion(token);
       if (at !== generation || !visible || settingsToken !== token) return;
       machineVersion = version;
@@ -198,6 +202,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     updateConnection();
   }
   function updateConnection() {
+    updates.setHost(name());
     for (const node of machineNameNodes) node.textContent = name();
     const connected = state?.phase === "connected";
     for (const node of connectionNodes) {
@@ -277,7 +282,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
       }).catch(report);
     }); copy.className = "settings-plain-row";
-    body.append(hero, group("CONNECTION", [reconnectButton, copy]), federation());
+    body.append(hero, group("CONNECTION", [reconnectButton, copy]), updates.root, federation());
     reach = el("p", "settings-reach"); body.append(reach); updateConnection();
   }
   function federation() {

@@ -825,6 +825,13 @@ export const Desk = {
     return call("Desk.AgentOpened", target);
   },
   /**
+   * The UI supplies the exact build/mode it confirmed, never an unqualified
+   * "install latest". Uncertain apply results are followed, never resubmitted.
+   */
+  applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
+    return call("Desk.ApplySettingsServerUpdate", token, buildID, restartLater);
+  },
+  /**
    * AvatarImage returns an agent's avatar photo as a data: URL: target is
    * the row's Avatar.Target and sha256 its Avatar.SHA256. Photos come from
    * the disk cache, else agent.avatar.get on the current session.
@@ -1167,6 +1174,13 @@ export const Desk = {
     return call("Desk.ReadAgentText", token, recent);
   },
   /**
+   * Retrying a definite failure checks afresh before a new confirmation. Looking
+   * again after silence only polls the existing target; it cannot install anything.
+   */
+  recheckSettingsServerUpdate(token: string, lookAgain: boolean): Promise<void> {
+    return call("Desk.RecheckSettingsServerUpdate", token, lookAgain);
+  },
+  /**
    * RemoveMachine forgets a saved machine. Removing the active machine
    * disconnects it and leaves no machine active.
    */
@@ -1277,6 +1291,9 @@ export const Desk = {
    */
   settingsMachineVersion(token: string): Promise<string> {
     return call("Desk.SettingsMachineVersion", token);
+  },
+  settingsServerUpdate(token: string, refresh: boolean): Promise<string> {
+    return call("Desk.SettingsServerUpdate", token, refresh);
   },
   sharedConnections(): Promise<Access[]> {
     return call("Desk.SharedConnections");

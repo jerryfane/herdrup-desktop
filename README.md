@@ -158,6 +158,20 @@ window. The instructions describe desktop controls, not unimplemented mobile
 swipes or press-and-hold actions.
 Linux native-window checks exercised cancellation, federation and revocation through
 the SSH fixture, and read the resulting machine status back from the server.
+
+Machines checks signed daemon updates through `server.update_check`. An explicit
+confirmation binds the requested build and live/download-for-restart mode.
+Cancellation sends nothing. Progress survives leaving Settings and reconnecting
+to the same SSH host/session; a lost apply reply is followed by attempt identity,
+never resubmitted. A previous attempt for the same build cannot count as success.
+Restart-required downloads warn that a later server restart closes terminals;
+the app does not restart it. Refusals offer a fresh check and confirmation.
+Lost-track recovery only polls the original attempt. Unsupported or older
+installations show manual instructions instead of an install button.
+Native Linux checks exercise cancellation, refusal, download progress, success,
+pending restart and manual-update cards against an isolated SSH fixture. They
+do not install a real daemon or establish Windows/macOS update UI acceptance.
+
 Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
 registers a Claude, Codex or Kimi account on the home box. Its context menu can move
 same-kind agents after confirmation, log a Claude account in or out, or remove the

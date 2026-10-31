@@ -49,6 +49,7 @@ const (
 	CapabilityAgentGroups      Capability = "agent_groups"
 	CapabilityGramUploadStream Capability = "gram_upload_stream"
 	CapabilityAPIBridgeMulti   Capability = "api_bridge_multi"
+	CapabilityServerUpdate     Capability = "server_update"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -78,6 +79,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.GramUploadStream
 	case CapabilityAPIBridgeMulti:
 		return caps.APIBridgeMulti
+	case CapabilityServerUpdate:
+		return caps.ServerUpdate
 	}
 	return false
 }
@@ -175,6 +178,9 @@ var Methods = []Method{
 	// then GramUploadFrame out and GramUploadFrameReply back.
 	{Name: "gram.upload.stream", Params: typeOf[GramUploadStreamParams](), Results: []Result{result[ResponseResultOk]("ok")}, Capability: CapabilityGramUploadStream, Streaming: true},
 	{Name: "server.staged_update", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultStagedUpdate]("staged_update")}},
+	{Name: "server.update_check", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultUpdateCheck]("update_check")}, Capability: CapabilityServerUpdate},
+	{Name: "server.update_apply", Params: typeOf[ServerUpdateApplyParams](), Results: []Result{result[ResponseResultUpdateApply]("update_apply")}, Capability: CapabilityServerUpdate},
+	{Name: "server.update_status", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultUpdateStatus]("update_status")}, Capability: CapabilityServerUpdate},
 	// schema.rs:227; acknowledged at src/api/server.rs:2793, then
 	// SubscriptionStreamEvent and SubscriptionControlLine lines. A herdr
 	// without events_v2 accepts the call but ignores events_v2: its lines

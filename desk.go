@@ -130,6 +130,7 @@ type Desk struct {
 	settings    *settingsSession
 	creation    *creationSession
 	terminals   *terminalStore
+	updates     map[string]*serverUpdate
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
