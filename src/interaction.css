@@ -58,8 +58,13 @@
 .chat-transcript { flex: 1; min-height: 0; overflow: auto; padding: 8px 16px 12px; scroll-behavior: auto; }
 .chat-scroll { flex:1; min-height:0; overflow:auto; }
 .chat-scroll > .chat-transcript { min-height:100%; overflow:visible; }
+/* ChatView's fixed viewport fades; neither layer owns pointer interaction. */
+.chat-surface::before, .chat-surface::after { content:""; position:absolute; left:0; right:0; z-index:1; pointer-events:none; }
+.chat-surface::before { top:0; height:26px; background:linear-gradient(to bottom,var(--color-ground-machine),transparent); }
+.chat-surface::after { bottom:0; height:48px; background:linear-gradient(to bottom,transparent,var(--color-ground-machine)); }
+.chat-surface:not(.away-from-tail)::after { display:none; }
 .chat-transcript > :last-child { margin-bottom: 0; }
-.agent-detail .chat-jump-latest { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); display:grid; place-items:center; width:44px; height:44px; padding:0; border-radius:50%; border:1px solid var(--color-hairline); background:color-mix(in srgb,var(--color-surface-raised) 85%,transparent); backdrop-filter:blur(12px); color:var(--color-text); }
+.agent-detail .chat-jump-latest { position:absolute; z-index:2; left:50%; bottom:16px; transform:translateX(-50%); display:grid; place-items:center; width:44px; height:44px; padding:0; border-radius:50%; border:1px solid var(--color-hairline); background:color-mix(in srgb,var(--color-surface-raised) 85%,transparent); backdrop-filter:blur(12px); color:var(--color-text); }
 .chat-jump-latest[hidden] { display:none; }
 .chat-jump-glyph { width:18px; height:18px; background:currentColor; mask:var(--jump-glyph) center/contain no-repeat; }
 .chat-message, .chat-work, .chat-step { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; }

@@ -44,6 +44,9 @@ interactions remain unverified.
 Chat card labels reserve a font-derived, device-pixel-rounded minimum height.
 Native Linux checks covered Settings scaling and wrapped rows at the minimum
 window width. This does not correct WebKit's fractional multiline line spacing.
+Chat uses Swift's fixed 26-point top fade and 48-point bottom fade away from the
+tail. The native eight-point tail boundary controls the bottom fade and Jump to
+latest; Linux checks covered both boundary sides and a real pointer jump.
 Toolbar renders replace controls atomically and discard superseded tab changes.
 Rapid Agents/Settings/Gram switching was checked in the Linux native window;
 controls and the selected tab stay consistent without duplicate actions.

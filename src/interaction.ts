@@ -433,8 +433,12 @@ class Detail {
    match.scrollIntoView({ block: "center" });
   }
  }
- chatAtBottom() { return this.chatScroll.scrollHeight - this.chatScroll.scrollTop - this.chatScroll.clientHeight < 80; }
- updateChatJump() { this.chatJump.hidden = !this.chat || this.findOpen || this.chatAtBottom(); }
+ chatAtBottom() { return this.chatScroll.scrollHeight - this.chatScroll.scrollTop - this.chatScroll.clientHeight <= 8; }
+ updateChatJump() {
+  const away = !!this.chat && !this.chatAtBottom();
+  this.chatSurface.classList.toggle("away-from-tail", away);
+  this.chatJump.hidden = !away || this.findOpen;
+ }
  followChat() {
   if (this.chatFollowing && !this.findOpen && this.mode === "chat") this.chatScroll.scrollTop = this.chatScroll.scrollHeight;
   this.updateChatJump();
