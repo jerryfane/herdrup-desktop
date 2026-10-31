@@ -57,28 +57,35 @@ type boardSession struct {
 // currentLocked reports whether at is still the board's connection and
 // session. d.mu must be held.
 func (d *Desk) currentLocked(at boardSession) bool {
-	return d.link == at.link && d.link.client == at.client && d.link.sessionGen == at.gen
+	return at.link != nil && d.link == at.link && d.link.client == at.client && d.link.sessionGen == at.gen
+}
+
+// engineLocked snapshots either supported transport. d.mu must be held.
+func (l *link) engineLocked() (*engine.Client, error) {
+	if l.guest != nil {
+		return l.guestClient, nil
+	}
+	if l.client == nil {
+		return nil, errors.New("not connected")
+	}
+	view, err := l.client.ForSession(l.session)
+	if err != nil {
+		return nil, err
+	}
+	return engine.New(engine.Bridge(view)), nil
 }
 
 // herdrClient is a typed client for the herdr session the board shows,
 // and that session.
 func (d *Desk) herdrClient() (*engine.Client, boardSession, error) {
 	d.mu.Lock()
-	var at boardSession
-	var session string
-	if d.link != nil {
-		at = boardSession{link: d.link, client: d.link.client, gen: d.link.sessionGen}
-		session = d.link.session
+	defer d.mu.Unlock()
+	if d.link == nil {
+		return nil, boardSession{}, errors.New("not connected")
 	}
-	d.mu.Unlock()
-	if at.client == nil {
-		return nil, at, errors.New("not connected")
-	}
-	view, err := at.client.ForSession(session)
-	if err != nil {
-		return nil, at, err
-	}
-	return engine.New(engine.Bridge(view)), at, nil
+	at := boardSession{link: d.link, client: d.link.client, gen: d.link.sessionGen}
+	client, err := d.link.engineLocked()
+	return client, at, err
 }
 
 // MachineStatuses lists the saved SSH machines of the connected herdr

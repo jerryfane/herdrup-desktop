@@ -40,7 +40,8 @@ type DuplexFunc func(ctx context.Context, id, method string, params json.RawMess
 
 // Server is one fake machine.
 type Server struct {
-	HostKey ssh.Signer
+	HostKey            ssh.Signer
+	AdditionalHostKeys []ssh.Signer
 	// Authorized is the only client key accepted. Password, when set, is
 	// accepted too.
 	Authorized ssh.PublicKey
@@ -56,6 +57,9 @@ type Server struct {
 	// Handle answers a request. Whether a herdr advertises api_bridge_multi
 	// is up to the pong it returns for "ping"; see Pong.
 	Handle func(method string, params json.RawMessage) (any, *APIError)
+	// HandleSession optionally routes immutable reference replies by the SSH
+	// session selected in the command. Handle remains the default for fixtures.
+	HandleSession func(session, method string, params json.RawMessage) (any, *APIError)
 	// Events is called for each events.subscribe stream and writes event
 	// lines until ctx ends or it returns.
 	Events func(ctx context.Context, emit func(line []byte) error)
@@ -201,6 +205,9 @@ func (s *Server) Listen(addr string) (string, error) {
 		},
 	}
 	cfg.AddHostKey(s.HostKey)
+	for _, key := range s.AdditionalHostKeys {
+		cfg.AddHostKey(key)
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -393,7 +400,7 @@ func (s *Server) exec(ctx context.Context, cmd string, ch ssh.Channel) int {
 		}
 		return 0
 	}
-	writeLine(ch, nil, s.reply(req))
+	writeLine(ch, nil, s.reply(session, req))
 	return 0
 }
 
@@ -455,13 +462,17 @@ type request struct {
 	Params json.RawMessage `json:"params"`
 }
 
-func (s *Server) reply(req request) map[string]any {
+func (s *Server) reply(session string, req request) map[string]any {
 	if req.Method == "machine.status" && s.MachineStatusDelay != nil {
 		s.MachineStatusDelay()
 	}
 	result, apiErr, ok := s.machineStatus()
 	if req.Method != "machine.status" || !ok {
-		result, apiErr = s.Handle(req.Method, req.Params)
+		if s.HandleSession != nil {
+			result, apiErr = s.HandleSession(session, req.Method, req.Params)
+		} else {
+			result, apiErr = s.Handle(req.Method, req.Params)
+		}
 	}
 	if apiErr != nil {
 		return map[string]any{"id": req.ID, "error": apiErr}
@@ -518,7 +529,7 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					rep := s.reply(req)
+					rep := s.reply(session, req)
 					s.mu.Lock()
 					s.inFlight--
 					s.mu.Unlock()

@@ -1,0 +1,45 @@
+.connect .host-home { max-width:560px; box-sizing:border-box; margin:0 auto; padding:22px; display:flex; flex-direction:column; gap:18px; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+.connect:has(.host-home) { padding:0; }
+.host-home-header { display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:10px 4px 6px; }
+.host-home-mark { width:44px; height:44px; border-radius:11px; }
+.connect .host-home h1 { font-size:calc(34px * var(--ui-font-scale, 1)); font-weight:700; margin:0; line-height:var(--leading-system); }
+.host-home-header p { font-size:calc(16px * var(--ui-font-scale, 1)); line-height:var(--leading-system); margin:2px 0 0; color:var(--color-text-dim); }
+.host-home-saved h2 { font-family:inherit; font-size:calc(12px * var(--ui-font-scale, 1)); line-height:var(--leading-system); font-weight:600; letter-spacing:1.4px; color:var(--color-text-dim); margin:0 18px 8px; }
+.host-home-rows { overflow:hidden; border-radius:18px; outline:1px solid var(--color-hairline-quiet); outline-offset:-.5px; background:var(--color-surface); }
+.host-home .host-home-row { position:relative; display:flex; align-items:center; gap:14px; width:100%; min-height:60px; box-sizing:border-box; padding:10px 18px; text-align:left; border:0; border-radius:0; background:none; color:var(--color-text); font-family:inherit; font-weight:400; }
+.host-home-row + .host-home-row { margin-top:1px; }
+.host-home-row + .host-home-row::before { content:""; position:absolute; top:-1px; left:54px; right:0; height:1px; background:var(--color-hairline-quiet); }
+.host-home-icon { width:22px; flex:none; display:flex; align-items:center; justify-content:center; color:var(--color-text-dim); }
+.host-computer-glyph { width:19px; height:19px; display:block; background:currentColor; mask:var(--host-computer) center/contain no-repeat; -webkit-mask:var(--host-computer) center/contain no-repeat; }
+.host-home-lines { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.host-home-name { font-size:calc(17px * var(--ui-font-scale, 1)); line-height:var(--leading-system); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.host-home-address { font-size:calc(14px * var(--ui-font-scale, 1)); line-height:var(--leading-system); color:var(--color-text-dim); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+/* Swift's intrinsic text boxes reserve full device pixels of the native font metrics. */
+.host-home h1, .host-home-header p, .host-home-saved h2, .host-home-name, .host-home-address { min-height:round(up,1lh,var(--pixel)); }
+.host-home-chevron { display:flex; align-items:center; justify-content:center; width:20px; color:var(--color-text-faint); flex:none; }
+.host-home .host-add { display:flex; align-items:center; justify-content:center; gap:8px; min-height:50px; border-radius:25px; border:0; background:var(--color-surface); color:var(--color-text); font-family:inherit; font-size:calc(15px * var(--ui-font-scale, 1)); font-weight:600; }
+.host-home .host-pair, .host-home .host-invite { min-height:50px; width:100%; display:flex; align-items:center; justify-content:center; gap:8px; border:0; border-radius:25px; background:var(--color-surface); color:var(--color-text); font:600 calc(15px * var(--ui-font-scale, 1)) -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; cursor:pointer; }
+.host-home .host-pair { background:var(--color-text); color:var(--color-ground); font-size:calc(16px * var(--ui-font-scale, 1)); }
+/* Use the same SF Pro Semibold instance as the sidebar's native system text. */
+.host-home-saved h2, .host-home .host-add, .host-home .host-pair, .host-home .host-invite { font-variation-settings:"wght" 590; }
+.host-invite-actions { display:flex; flex-direction:column; align-items:center; gap:10px; }
+.host-home .host-invite-paste { display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 12px; border:0; border-radius:24px; background:var(--color-surface-raised); color:var(--color-text); font:400 calc(16px * var(--ui-font-scale, 1)) -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; cursor:pointer; }
+.host-action-glyph { display:block; flex:none; background:currentColor; mask:var(--host-icon) center/contain no-repeat; -webkit-mask:var(--host-icon) center/contain no-repeat; }
+.host-home .host-invite-paste:disabled { opacity:.35; cursor:default; }
+.host-home-message { font-size:14px; color:var(--color-text-dim); }
+.host-editor { width:min(520px,calc(100vw - 40px)); max-height:calc(100vh - 40px); overflow:auto; padding:0; border:1px solid var(--color-hairline); border-radius:20px; color:var(--color-text); background:var(--color-ground); }
+.host-editor-header { display:flex; align-items:center; justify-content:center; position:relative; min-height:56px; font-size:17px; }
+.host-editor-header button { position:absolute; left:16px; border:0; padding:8px 0; background:none; color:var(--color-text-dim); font-size:17px; font-weight:400; }
+.host-editor .form { display:flex; flex-direction:column; gap:10px; padding:0 20px 20px; margin:0; background:none; box-shadow:none; border-radius:0; }
+.host-editor .form > label { display:flex; flex-direction:row; align-items:center; gap:12px; min-height:52px; font-size:16px; }
+.host-editor .form > label > input { margin:0; margin-left:auto; min-width:0; width:60%; flex:none; }
+.host-editor .form-actions { display:flex; flex-direction:column; }
+.host-editor .form-actions > button[type=submit] { min-height:50px; border-radius:25px; color:var(--color-ground); background:var(--color-text); }
+.host-editor .host-save-only { border:0; background:none; color:var(--color-text-dim); font-size:14px; font-weight:400; }
+.host-editor-error { font-size:14px; margin:0; }
+.host-editor::backdrop { background:color-mix(in srgb,var(--color-ground) 65%,transparent); }
+.host-context-menu { position:fixed; z-index:100; min-width:180px; padding:6px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
+.host-context-menu button { display:block; width:100%; text-align:left; border:0; background:none; color:var(--color-text); font-size:15px; font-weight:400; padding:10px 12px; }
+body.host-home-visible > .detail { left:0; }
+body.host-home-visible > .detail::after { content:""; position:absolute; top:100%; left:0; right:0; height:var(--home-inset); background:var(--color-ground); pointer-events:none; }
+body.host-home-visible > .sidebar { display:none; }

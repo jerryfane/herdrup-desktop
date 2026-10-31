@@ -7,7 +7,10 @@
 import { avatarFace } from "./avatars";
 import { paintShape } from "./continuous";
 import { rowTime, separator } from "./gramDates";
-import { expandWriter } from "./composer";
+import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
+import { ConversationColumn } from "./conversationColumn";
+import { ComposerDictation } from "./dictation";
+import { onTextSizeChanged } from "./textSize";
 import {
   activeQuery,
   addressing,
@@ -36,6 +39,14 @@ import {
   type SavedGram,
 } from "./mygo";
 
+let guestRecipient: string | null = null;
+export function setGuestGramRecipient(name: string | null) {
+  if (name === guestRecipient) return;
+  guestRecipient = name;
+  renderComposer();
+  if (header) renderHeader();
+}
+
 export type GramDeps = {
   el: <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => HTMLElementTagNameMap[K];
   symbol: (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -44,7 +55,7 @@ export type GramDeps = {
   /** The frozen UIActivityIndicatorView (main.ts). */
   spinner: string;
   /** The sidebar's top bar changed (title, count or actions): re-place and re-paint it. */
-  barChanged: () => void;
+  barChanged: (unread: number) => void;
 };
 
 let deps: GramDeps;
@@ -91,8 +102,8 @@ let posting = false;
 let picking = false;
 let wrapped = false;
 let composerFocused = false;
+let dictation: ComposerDictation | null = null;
 const SETUP_DISMISSED = "gram.setupCardDismissed";
-const COLUMN_KEY = "conversation.columnWidth";
 
 /** The setup card's one-liner (GramView.setupCommand). */
 const SETUP_COMMAND =
@@ -119,7 +130,7 @@ let strip: HTMLElement;
 let actions: HTMLElement;
 let mentionHost: HTMLElement;
 let newButton: HTMLElement;
-let readout: HTMLElement;
+let column: ConversationColumn;
 let scroller: HTMLElement | null = null;
 let headerHeight = 0;
 
@@ -133,13 +144,6 @@ function icon(name: string, size: number, weight: string, cls = ""): HTMLElement
   return host;
 }
 
-/** One of herdrup's composer glyphs (public/herdrup/composer), drawn as a template. */
-function glyph(name: string, size: number): HTMLElement {
-  const g = el("span", "gglyph");
-  g.style.width = g.style.height = `${size}px`;
-  g.style.setProperty("--glyph", `url("/herdrup/composer/${name}.svg")`);
-  return g;
-}
 
 function button(cls: string, label: string, action: () => void): HTMLButtonElement {
   const b = el("button", cls);
@@ -158,22 +162,6 @@ function centeredSpinner(): HTMLElement {
   return s;
 }
 
-/** TransferRing: a hairline track and the share in ink from 12 o'clock, or a spinning 23 %
- * arc while the share is unknown. */
-function ring(diameter: number, progress: number | null): HTMLElement {
-  const r = (diameter - 2) / 2;
-  const len = 2 * Math.PI * r;
-  const c = diameter / 2;
-  const box = el("span", "gring" + (progress === null ? " spin" : ""));
-  box.style.width = box.style.height = `${diameter}px`;
-  const share = progress === null ? 0.23 : Math.min(1, Math.max(0, progress));
-  box.innerHTML =
-    `<svg width="${diameter}" height="${diameter}" viewBox="0 0 ${diameter} ${diameter}">` +
-    `<circle class="track" cx="${c}" cy="${c}" r="${r}" fill="none" stroke-width="2"/>` +
-    `<circle class="share" cx="${c}" cy="${c}" r="${r}" fill="none" stroke-width="2" stroke-linecap="round" ` +
-    `stroke-dasharray="${len * share} ${len}" transform="rotate(-90 ${c} ${c})"/></svg>`;
-  return box;
-}
 
 // ---- Avatars (GramAvatar: the roster agent's face, else the initial tile) ----
 
@@ -225,18 +213,20 @@ function symbolAvatar(name: string): HTMLElement {
 
 /** The Gram section bar's actions: hide-sidebar, then Read all while the inbox shows with
  * something unread, then Refresh. */
-export async function barActions(): Promise<HTMLElement[]> {
+export async function barActions(minimize: () => void): Promise<HTMLElement[]> {
   const slot = async (name: string, label: string, action?: () => void) => {
     const s = el("div", "slot");
     s.title = label;
     s.append(await deps.symbol(name, 15, "medium"));
     if (action) {
       s.classList.add("action");
+      s.tabIndex = 0; s.setAttribute("role", "button"); s.setAttribute("aria-label", label);
+      s.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); action(); } };
       s.addEventListener("click", action);
     }
     return s;
   };
-  const out = [await slot("sidebar.leading", "Minimise sidebar")];
+  const out = [await slot("sidebar.leading", "Minimise sidebar", minimize)];
   if (!showingSaved && (snap?.unreadCount ?? 0) > 0) {
     out.push(await slot("envelope.open", "Read all", () => void Desk.gramMarkAllRead().catch(() => undefined)));
   }
@@ -256,7 +246,7 @@ function updateBar() {
   const key = `${showingSaved}/${snap?.unreadCount ?? 0}`;
   if (key === barKey) return;
   barKey = key;
-  if (shown) deps.barChanged();
+  deps.barChanged(snap?.unreadCount ?? 0);
 }
 
 function buildSidebar(): HTMLElement {
@@ -402,14 +392,13 @@ function buildPage(): HTMLElement {
   });
   newButton.append(icon("chevron.down", 13, "semibold"), el("span", "", "New messages"));
   newButton.hidden = true;
-  readout = el("div", "gcol-readout");
-  readout.hidden = true;
-  body.append(content, header, newButton, ...columnHandles(), readout);
+  column = new ConversationColumn(page, () => measureFolds(page));
+  body.append(content, header, newButton, ...column.handles, column.readout);
   banner = el("div", "gram-banner gcol");
   composer = buildComposer();
   page.append(body, banner, composer);
-  new ResizeObserver(() => {
-    applyColumn();
+  const relayout = () => {
+    column.update();
     const h = header.offsetHeight;
     if (Math.abs(h - headerHeight) > 0.5) {
       headerHeight = h;
@@ -417,8 +406,12 @@ function buildPage(): HTMLElement {
       observeFeed();
     }
     measureFolds(page);
+    void deps.placeInitials(page);
     layoutComposer();
-  }).observe(page);
+    requestAnimationFrame(() => { for (const name of page.querySelectorAll<HTMLElement>(".gram-middle-name")) fitMiddleName(name); });
+  };
+  new ResizeObserver(relayout).observe(page);
+  onTextSizeChanged(relayout);
   return page;
 }
 
@@ -426,6 +419,7 @@ function renderHeader() {
   // headerIdentity: the cluster over the "Gram ›" pill, which opens the agents sheet.
   const identity = el("button", "gidentity");
   identity.type = "button";
+  identity.disabled = guestRecipient !== null;
   identity.setAttribute("aria-label", "Gram");
   const cluster = el("div", "gcluster");
   for (const p of model.clusterPlaces((snap?.messages ?? []).filter((m) => m.fromAgent).map((m) => m.from))) {
@@ -435,7 +429,8 @@ function renderHeader() {
     cluster.append(a);
   }
   const pill = el("span", "gpill glass");
-  pill.append(el("span", "", "Gram"), icon("chevron.right", 9, "bold", "faint"));
+  pill.append(el("span", "", "Gram"));
+  if (!guestRecipient) pill.append(icon("chevron.right", 9, "bold", "faint"));
   identity.append(cluster, pill);
   identity.addEventListener("click", openAgentsSheet);
   // headerTrailing: Saved alone, since the sidebar owns search here.
@@ -502,7 +497,7 @@ function renderContent() {
   }
   const messages = snap.messages;
   const visible = visibleMessages();
-  const setup = model.showsSetupCard(localStorage.getItem(SETUP_DISMISSED) === "1", messages);
+  const setup = !guestRecipient && model.showsSetupCard(localStorage.getItem(SETUP_DISMISSED) === "1", messages);
   const view = model.inboxView({
     phase: snap.phase,
     unavailable: snap.unavailable,
@@ -957,7 +952,7 @@ function messageRow(m: GramMessage, startsGroup: boolean, endsGroup: boolean): H
   const imageFile = m.file?.isImage ? m.file : undefined;
   const hasCard = (!!m.file && !m.file.isImage) || !!m.expiredFile;
   const hasText = segs.length > 0 || hasCard;
-  const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false });
+  const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false }).filter(item => !guestRecipient || item !== "Delete");
   const menu = (part: HTMLElement) =>
     part.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1178,16 +1173,19 @@ const measureCtx = document.createElement("canvas").getContext("2d") as CanvasRe
 
 /** A name cut in the middle to fit its line once laid out (SwiftUI `.truncationMode(.middle)`). */
 function middleName(cls: string, name: string): HTMLElement {
-  const n = el("span", cls, name);
+  const n = el("span", `${cls} gram-middle-name`, name);
   n.title = name;
-  requestAnimationFrame(() => {
-    const max = n.clientWidth;
-    if (max <= 0 || n.scrollWidth <= max) return;
-    const s = getComputedStyle(n);
-    measureCtx.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
-    n.textContent = model.middleTruncate(name, max, (t) => measureCtx.measureText(t).width);
-  });
+  requestAnimationFrame(() => fitMiddleName(n));
   return n;
+}
+function fitMiddleName(n: HTMLElement) {
+  const name = n.title;
+  n.textContent = name;
+  const max = n.clientWidth;
+  if (max <= 0 || n.scrollWidth <= max) return;
+  const s = getComputedStyle(n);
+  measureCtx.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+  n.textContent = model.middleTruncate(name, max, (t) => measureCtx.measureText(t).width);
 }
 
 function openFile(id: string) {
@@ -1365,6 +1363,7 @@ function agents(): GramAgent[] {
 }
 
 function address(): DraftAddress {
+  if (guestRecipient) return { route: { kind: "queue" }, body: draft, leading: false, accent: null };
   return draftAddress(draft, agents(), pickedAgent);
 }
 
@@ -1386,8 +1385,18 @@ function buildComposer(): HTMLElement {
   strip = el("div", "gstrip");
   actions = el("div", "gactions");
   card.append(field, strip, actions);
+  editor = new ComposerEditor(card, input, layoutComposer);
+  stopFileDrop?.();
+  stopFileDrop = composerFileDrop(card, paths => { void pickFiles(paths); });
+  stopClipboardPaste?.();
+  stopClipboardPaste = composerClipboardPaste(input, () => {
+    if (picking || posting || snap?.sending || !shown) return Promise.reject(new Error("Wait for the current attachment operation to finish."));
+    return Desk.gramPasteClipboard();
+  }, error => { banner.hidden = false; banner.textContent = String(error); });
   mentionHost = el("div", "gmentions");
   mentionHost.hidden = true;
+  dictation = new ComposerDictation(input, renderComposer, () => editor.collapse());
+  field.prepend(dictation.strip);
   c.append(mentionHost, hintEl, card);
 
   const caretMoved = () => {
@@ -1447,9 +1456,12 @@ function renderMirror(a: DraftAddress) {
 }
 
 let lineProbe: HTMLElement | null = null;
+let editor: ComposerEditor;
+let stopFileDrop: (() => void) | undefined;
+let stopClipboardPaste: (() => void) | undefined;
 
 /** The text's lines at `width`, measured as the field draws it (ComposerTextMetrics.lines). */
-function linesAt(width: number): number {
+function linesAt(width: number, lineHeight: number): number {
   lineProbe ??= (() => {
     const p = el("div", "gfield-probe");
     document.body.append(p);
@@ -1457,7 +1469,7 @@ function linesAt(width: number): number {
   })();
   lineProbe.style.width = `${Math.max(1, width)}px`;
   lineProbe.textContent = draft === "" || draft.endsWith("\n") ? draft + " " : draft;
-  return Math.max(1, Math.round(lineProbe.getBoundingClientRect().height / 24));
+  return Math.max(1, Math.round(lineProbe.getBoundingClientRect().height / lineHeight));
 }
 
 /** One row at rest; the stacked layout once a file is attached or the text wraps. The field
@@ -1466,48 +1478,37 @@ function layoutComposer() {
   if (!card.isConnected) return;
   const contentWidth = card.clientWidth - 12;
   const actionsWidth = actions.offsetWidth;
+  const lineHeight = parseFloat(getComputedStyle(input).lineHeight);
   // The field's insets: 5 + 7 leading, 2 trailing.
   const inline = contentWidth - actionsWidth - 4 - 14;
   const hasAttachments = (snap?.attachments.length ?? 0) > 0;
-  const expand = contentWidth > 0 && model.composerExpanded(hasAttachments, linesAt, inline, wrapped);
-  wrapped = expand && !hasAttachments;
+  const expand = editor.open || (!!dictation && !dictation.strip.hidden && draft.length > 0) || (contentWidth > 0 && model.composerExpanded(hasAttachments, width => linesAt(width, lineHeight), inline, wrapped));
+  wrapped = expand && !hasAttachments && !editor.open;
   card.classList.toggle("expanded", expand);
-  const lines = linesAt(expand ? contentWidth - 14 : inline);
-  input.style.height = `${Math.min(lines, 5) * 24}px`;
+  const lines = linesAt(expand ? contentWidth - 14 : inline, lineHeight);
+  const host = card.closest<HTMLElement>(".gram")!;
+  const room = Math.max(0, host.clientHeight - headerHeight - banner.offsetHeight - hintEl.offsetHeight - 12 - 56 - 12);
+  input.style.height = `${editor.update(lines, room, lineHeight)}px`;
   mirror.style.height = input.style.height;
 }
 
 function chip(a: GramAttachment): HTMLElement {
-  const c = model.mergeChip(a, uploads.get(a.path));
-  const sending = snap?.sending ?? false;
-  const box = el("div", "gchip" + (c.failed ? " failed" : ""));
-  const pic = el("div", "gchip-icon" + (c.state === "sent" ? " sent" : ""));
-  const r = model.chipRing(c);
-  if (r !== null) pic.append(ring(34, r === "spin" ? null : r));
-  pic.append(glyph(model.chipGlyph(c), 19));
-  const lines = el("div", "gchip-lines");
-  lines.append(el("span", "gchip-name", c.name), el("span", "gchip-status", c.label));
-  const remove = button("gchip-remove", `Remove ${c.name}`, () => void Desk.gramCancelAttachment(c.path).catch(() => undefined));
-  remove.disabled = sending;
-  remove.append(glyph("close", 15));
-  box.append(pic, lines, remove);
-  if (c.state === "uploadFailed") box.addEventListener("click", () => void Desk.gramRetryAttachment(c.path).catch(() => undefined));
-  return box;
+  return composerAttachment(model.mergeChip(a, uploads.get(a.path)), snap?.sending ?? false,
+    () => void Desk.gramCancelAttachment(a.path).catch(() => undefined),
+    () => void Desk.gramRetryAttachment(a.path).catch(() => undefined));
 }
 
 /** ComposerActionIcon: a 40 pt circle in a 44 pt target. */
 function actionIcon(cls: string, label: string, action: () => void): HTMLButtonElement {
-  const b = button("gaction " + cls, label, action);
-  b.append(el("span", "gaction-circle"));
-  return b;
+  return button("composer-action " + cls, label, action);
 }
 
 function renderComposer() {
   if (!card) return;
   const a = address();
-  const list = activeQuery(draft, caret);
+  const list = guestRecipient ? null : activeQuery(draft, caret);
   const matches = list ? model.mentionMatches(agents(), list.query) : [];
-  const hint = model.shownHint(draftHint(a.route), matches.length > 0);
+  const hint = guestRecipient ? `To ${guestRecipient}` : model.shownHint(draftHint(a.route), matches.length > 0);
   hintEl.hidden = hint === null;
   hintEl.textContent = hint ?? "";
   renderMirror(a);
@@ -1521,9 +1522,8 @@ function renderComposer() {
   const attach = actionIcon("attach", "Attach file", () => void pickFiles());
   attach.append(icon("paperclip", 18, "regular", "dim"));
   attach.disabled = sending || picking;
-  const expand = actionIcon("expand", "Expand writing", () => expandWriter(input, "Write a Gram message"));
-  expand.textContent = "Expand"; expand.classList.add("gexpand");
-  const nodes: HTMLElement[] = [attach, expand];
+  if (dictation) dictation.button.disabled = sending || posting;
+  const nodes: HTMLElement[] = dictation ? [attach, dictation.button] : [attach];
   // Send takes the saved prompts' place once there is something to send.
   if (attachments.length > 0 || draft.trim() !== "") {
     const s = actionIcon("primary", "Send gram", () => void send());
@@ -1531,7 +1531,7 @@ function renderComposer() {
     else if (sending) s.append(glyph("sending", 18));
     else s.append(glyph("send", 18));
     s.classList.toggle("busy", sending);
-    s.disabled = !model.canSend(a, attachments.length, sending, picking);
+    s.disabled = !!dictation?.busy || !model.canSend(a, attachments.length, sending, picking);
     nodes.push(s);
   }
   actions.replaceChildren(...nodes);
@@ -1574,12 +1574,12 @@ function pick(agent: GramAgent) {
   input.focus();
 }
 
-async function pickFiles() {
-  if (picking) return;
+async function pickFiles(paths?: string[]) {
+  if (picking || posting || snap?.sending || !shown) return;
   picking = true;
   renderComposer();
   try {
-    await Desk.gramPickFiles();
+    if (paths) await Desk.gramAttachFiles(paths); else await Desk.gramPickFiles();
   } catch {
     // The banner names what was skipped.
   } finally {
@@ -1589,6 +1589,7 @@ async function pickFiles() {
 }
 
 async function send() {
+  if (dictation?.busy) return;
   const a = address();
   const attachments = snap?.attachments ?? [];
   if (!model.canSend(a, attachments.length, (snap?.sending ?? false) || posting, picking)) return;
@@ -1610,6 +1611,7 @@ async function send() {
 // ---- Agents sheet (the "Gram ›" pill) ----
 
 function openAgentsSheet() {
+  if (guestRecipient) return;
   const d = el("dialog", "gsheet");
   const draw = () => {
     const a = address();
@@ -1686,76 +1688,6 @@ function sheetRow(symbolName: string | null, title: string, subtitle: string | n
   return row;
 }
 
-// ---- The conversation column (ConversationColumn.swift) ----
-
-let columnWidth = 0;
-let readoutTimer: number | undefined;
-
-function storedColumn(): number {
-  const v = Number(localStorage.getItem(COLUMN_KEY));
-  return localStorage.getItem(COLUMN_KEY) === null ? model.COLUMN.wide : v;
-}
-
-function applyColumn() {
-  const available = page.clientWidth;
-  columnWidth = model.displayedWidth(storedColumn(), available);
-  page.style.setProperty("--gram-column", `${columnWidth}px`);
-  // At Full the bands sit just inside the page, never over the sidebar or the window's edge.
-  const reach = Math.max(0, Math.min(columnWidth, available - 20) / 2);
-  page.style.setProperty("--gram-reach", `${reach}px`);
-}
-
-function showReadout() {
-  clearTimeout(readoutTimer);
-  readout.textContent = model.widthReadout(columnWidth, page.clientWidth);
-  readout.hidden = false;
-}
-
-function hideReadoutSoon() {
-  clearTimeout(readoutTimer);
-  readoutTimer = window.setTimeout(() => (readout.hidden = true), 600);
-}
-
-function columnHandles(): HTMLElement[] {
-  return (["leading", "trailing"] as const).map((edge) => {
-    const h = el("div", `gcol-handle ${edge}`);
-    h.append(el("span", "gcol-line"), el("span", "gcol-grip"));
-    let start: { x: number; width: number } | null = null;
-    h.addEventListener("pointerdown", (e) => {
-      start = { x: e.clientX, width: columnWidth };
-      h.setPointerCapture(e.pointerId);
-      h.classList.add("dragging");
-      page.classList.add("resizing");
-    });
-    h.addEventListener("pointermove", (e) => {
-      if (!start) return;
-      const available = page.clientWidth;
-      const next = model.draggedWidth(start.width, e.clientX - start.x, edge, available);
-      localStorage.setItem(COLUMN_KEY, String(model.storedWidth(next, available)));
-      applyColumn();
-      showReadout();
-    });
-    const end = () => {
-      if (!start) return;
-      start = null;
-      h.classList.remove("dragging");
-      page.classList.remove("resizing");
-      hideReadoutSoon();
-      measureFolds(page);
-    };
-    h.addEventListener("pointerup", end);
-    h.addEventListener("pointercancel", end);
-    // A double click resets to Wide.
-    h.addEventListener("dblclick", () => {
-      localStorage.setItem(COLUMN_KEY, String(model.COLUMN.wide));
-      applyColumn();
-      showReadout();
-      hideReadoutSoon();
-      measureFolds(page);
-    });
-    return h;
-  });
-}
 
 // ---- Wiring ----
 
@@ -1831,6 +1763,7 @@ export async function initGram(d: GramDeps, detail: HTMLElement, sidebar: HTMLEl
 export function showGram(on: boolean) {
   if (on === shown || !page) return;
   shown = on;
+  if (!on) dictation?.stop();
   page.hidden = !on;
   side.hidden = !on;
   void Desk.gramSetVisible(on);
@@ -1838,7 +1771,7 @@ export function showGram(on: boolean) {
     landed = false;
     pageArmed = search === "";
     barKey = "";
-    applyColumn();
+    column.update();
     renderAll();
   } else {
     // The next visit captures its own "N unread" rule.

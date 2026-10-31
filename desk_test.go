@@ -125,6 +125,53 @@ func TestMachinesSelectReplaceAndRemove(t *testing.T) {
 	}
 }
 
+func TestSavedHostEditPreservesSelectionWithoutConnecting(t *testing.T) {
+	dir := t.TempDir()
+	d := newDesk(dir)
+	t.Cleanup(d.Disconnect)
+	original := unreachable("before.example")
+	if err := d.Connect(original, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	d.Disconnect()
+	replacement := original
+	replacement.Host = "after.example"
+	replacement.Nickname = "  Workstation  "
+	if err := d.SaveMachine(replacement, machineID(original)); err != nil {
+		t.Fatal(err)
+	}
+	reopened := newDesk(dir)
+	active, err := reopened.Machine()
+	if err != nil || active == nil || active.Host != "after.example" || active.Nickname != "Workstation" {
+		t.Fatalf("saved active host = %+v, %v", active, err)
+	}
+	ids, selected := machineIDs(t, reopened)
+	if !slices.Equal(ids, []string{machineID(replacement)}) || selected != machineID(replacement) {
+		t.Fatalf("edit duplicated or lost selection: %v, %q", ids, selected)
+	}
+	if state := d.State(); state.Phase != "idle" {
+		t.Fatalf("Save opened a connection: %+v", state)
+	}
+	other := unreachable("other.example")
+	if err := d.SaveMachine(other, ""); err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.Machines()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SaveMachine(other, machineID(replacement)); err == nil {
+		t.Fatal("editing one host over another must fail")
+	}
+	if err := d.SaveMachine(replacement, "missing-host"); err == nil {
+		t.Fatal("editing a removed host must fail")
+	}
+	after, err := newDesk(dir).Machines()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("rejected edit changed profiles: before=%+v after=%+v err=%v", before, after, err)
+	}
+}
+
 func TestSelectSessionKeepsTheConnection(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

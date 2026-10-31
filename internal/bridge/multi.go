@@ -143,7 +143,7 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 func (c *Client) probeCapability() {
 	ctx, cancel := context.WithTimeout(context.Background(), openPingTimeout)
 	defer cancel()
-	line, _ := encodeRequest(c.nextID("ping"), "ping", nil)
+	line, _ := EncodeRequest(c.nextID("ping"), "ping", nil)
 	reply, err := c.oneShot(ctx, line)
 	p := &c.pool
 	p.mu.Lock()
@@ -323,7 +323,7 @@ func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
 	pctx, cancel := context.WithTimeout(ctx, openPingTimeout)
 	defer cancel()
 	id := c.nextID("ping")
-	line, _ := encodeRequest(id, "ping", nil)
+	line, _ := EncodeRequest(id, "ping", nil)
 	if _, err := m.do(pctx, id, line); err != nil {
 		m.close()
 		return nil, fmt.Errorf("herdr api-bridge --multi did not answer: %w", err)

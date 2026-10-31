@@ -19,7 +19,9 @@ import (
 // is fitted to the box where macOS draws the symbol's ink, from
 // sfMetrics, in a box of the size macOS gives the symbol.
 //
-//go:embed third_party/phosphor
+// Frontend-only glyphs in web/ are bundled by Vite, not embedded a second time.
+//
+//go:embed third_party/phosphor/LICENSE third_party/phosphor/bold third_party/phosphor/fill third_party/phosphor/light third_party/phosphor/regular third_party/phosphor/thin
 var phosphor embed.FS
 
 // phosphorWeights is the Phosphor weight drawn for each SF weight, by

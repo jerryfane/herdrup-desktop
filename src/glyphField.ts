@@ -132,7 +132,7 @@ export async function loadGlyphFieldFonts(font: string): Promise<void> {
  *  label's width (the quiet zone) are measured here. */
 export function drawRestingGlyphField(
   canvas: HTMLCanvasElement,
-  opts: { widthPt: number; heightPt: number; scale: number; seed: bigint; colours: Record<string, string>; font: string },
+  opts: { widthPt: number; heightPt: number; scale: number; seed: bigint; colours: Record<string, string>; font: string; labelFont: string },
 ): void {
   const { widthPt, heightPt, scale, seed, colours, font } = opts;
   const ground = colours.groundMachine, ink = colours.hairline;
@@ -148,7 +148,7 @@ export function drawRestingGlyphField(
   ctx.fillStyle = ground;
   ctx.fillRect(0, 0, widthPt, heightPt);
 
-  ctx.font = LABEL_FONT;
+  ctx.font = opts.labelFont;
   const field = restingField(widthPt, heightPt, ctx.measureText(SELECT_AGENT_LABEL).width, seed);
   if (!field) return;
 

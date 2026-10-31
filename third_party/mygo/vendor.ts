@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import upstream from "./upstream.json";
 
 // Explicit maintenance command: recreates vendor/ from go.mod, then applies
-// this repository's one dependency correction. Normal builds use committed files.
+// this repository's dependency corrections. Normal builds use committed files.
 const root = resolve(import.meta.dir, "../..");
 const moduleRoot = join(root, "vendor", upstream.module);
 if (Bun.version !== upstream.bun) {
@@ -39,6 +39,8 @@ for (const file of [
   await copyFile(join(source.Dir, file), destination);
   await chmod(destination, 0o644);
 }
-run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", join(import.meta.dir, "native-drop.patch")], moduleRoot);
+for (const patch of ["native-drop.patch", "frame-navigation.patch"]) {
+  run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i", join(import.meta.dir, patch)], moduleRoot);
+}
 console.log(run([process.execPath, "run", join(moduleRoot, "packages/bridge/build.ts")]));
-console.log(`Vendored ${upstream.module}@${upstream.version} (${upstream.commit}) with ${upstream.issue}`);
+console.log(`Vendored ${upstream.module}@${upstream.version} (${upstream.commit}) with ${upstream.issue} and ${upstream.frameNavigationIssue}`);

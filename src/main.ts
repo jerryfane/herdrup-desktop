@@ -5,10 +5,16 @@ import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
-import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram } from "./gram";
+import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram, setGuestGramRecipient } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
+import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
+import { onTextSizeChanged } from "./textSize";
+import { initSidebarRail } from "./sidebar";
+import { showNewAgent, showNewTerminal } from "./create";
+import { terminalRows } from "./terminals";
+import { initGuestHome } from "./guestHome";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -17,18 +23,25 @@ const searchField = $("search-field");
 const searchInput = $<HTMLInputElement>("search");
 const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
-const connectError = $("connect-error");
-const disconnect = $<HTMLButtonElement>("disconnect");
 const select = $("select");
 const field = $<HTMLCanvasElement>("field");
 
 let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", live: false };
 let board: BoardUpdate | null = null;
 let tab: "agents" | "gram" | "settings" = "agents";
+let choosingHost = false;
+let settings: ReturnType<typeof initSettings> | null = null;
+let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let pendingAgent: AgentTarget | null = null;
+let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
 let activationWork = Promise.resolve();
 let pageReady = false;
+// Connection events retain state immediately; drawing waits for every view's dependencies.
+let renderReady = false;
+let guestHome: ReturnType<typeof initGuestHome> | null = null;
+let guestTab: "agents" | "settings" = "agents";
+let guestGram = false;
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
 
@@ -79,9 +92,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 
 // ---- Top bar (SectionTopBar) ----
 
+let topBarGeneration = 0;
 async function buildTopBar() {
-  const leading = $("bar-leading");
-  const actions = $("bar-actions");
+  const generation = ++topBarGeneration, selectedTab = tab;
+  let titleNodes: Node[], actionNodes: HTMLElement[];
   const slot = async (name: string, label: string) => {
     const s = el("div", "slot");
     s.title = label;
@@ -90,20 +104,44 @@ async function buildTopBar() {
   };
   const back = await slot("chevron.left", "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
-  const chooseHost = () => { closeWriter(); tab = "settings"; void buildTabBar(); void buildTopBar(); render(); };
+  const chooseHost = () => { closeWriter(); choosingHost = true; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
-  leading.replaceChildren(back);
-  const title = $("bar-title");
-  if (tab === "gram") {
+  if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
-    title.replaceChildren(document.createTextNode("Gram"), ...(count ? [count] : []));
-    actions.replaceChildren(...(await barActions()));
+    titleNodes = [document.createTextNode("Gram"), ...(count ? [count] : [])];
+    actionNodes = await barActions(() => rail?.minimize());
   } else {
-    title.replaceChildren(document.createTextNode(tab === "settings" ? "Hosts" : "Agents"));
-    actions.replaceChildren();
+    titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
+    const minimize = await slot("sidebar.leading", "Minimise sidebar");
+    minimize.tabIndex = 0; minimize.setAttribute("role", "button"); minimize.setAttribute("aria-label", "Minimise sidebar");
+    minimize.onclick = () => rail?.minimize();
+    minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
+    actionNodes = [minimize];
+    if (selectedTab === "agents") {
+      const add = await slot("plus", "New agent");
+      const enabled = !!board && state.phase === "connected";
+      add.tabIndex = enabled ? 0 : -1; add.setAttribute("role", "button"); add.setAttribute("aria-label", "New agent");
+      add.setAttribute("aria-disabled", String(!enabled));
+      const create = () => { if (board && state.phase === "connected") void showNewAgent({ machineID: board.machineID, session: board.session }); };
+      add.onclick = create;
+      add.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); create(); } };
+      const terminal = await slot("terminal", "New terminal");
+      terminal.tabIndex = enabled ? 0 : -1; terminal.setAttribute("role", "button"); terminal.setAttribute("aria-label", "New terminal");
+      terminal.setAttribute("aria-disabled", String(!enabled));
+      const createTerminal = () => { if (board && state.phase === "connected") void showNewTerminal({ machineID: board.machineID, session: board.session }, renderRows); };
+      terminal.onclick = createTerminal;
+      terminal.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); createTerminal(); } };
+      actionNodes.push(terminal, add);
+    }
   }
+  // Symbol loads can overlap another tab change. Commit one complete, current bar.
+  if (generation !== topBarGeneration) return;
+  const leading = $("bar-leading"), actions = $("bar-actions");
+  leading.replaceChildren(back);
+  $("bar-title").replaceChildren(...titleNodes);
+  actions.replaceChildren(...actionNodes);
   // The capsules' shapes go with their children.
   paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
   paintShape(actions, { radius: "capsule", fill: "var(--color-surface-raised)" });
@@ -127,7 +165,9 @@ function placeTitle() {
 
 // ---- Tab bar ----
 
+let tabBarGeneration = 0;
 async function buildTabBar() {
+  const generation = ++tabBarGeneration, selectedTab = tab;
   const items: Array<[typeof tab, string, string]> = [
     ["agents", "square.grid.2x2.fill", "Agents"],
     ["gram", "bubble.left.and.bubble.right.fill", "Gram"],
@@ -135,12 +175,13 @@ async function buildTabBar() {
   ];
   const nodes = await Promise.all(
     items.map(async ([key, icon, label]) => {
-      const t = el("div", "tab" + (key === tab ? " selected" : ""));
+      const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
       const i = el("div", "icon");
       await place(i, icon, 21, "medium");
       t.append(i, el("span", "t-tab-label", label));
       t.addEventListener("click", () => {
         tab = key;
+        choosingHost = false;
         void buildTabBar();
         void buildTopBar();
         render();
@@ -148,6 +189,7 @@ async function buildTabBar() {
       return t;
     }),
   );
+  if (generation !== tabBarGeneration) return;
   $("tabbar").replaceChildren(...nodes);
 }
 
@@ -242,6 +284,7 @@ async function placeInitials(root: ParentNode) {
     measure.font = font;
     const advance = measure.measureText(glyph.textContent ?? "").width;
     const box = tile.getBoundingClientRect().width;
+    if (box <= 0) continue; // A hidden page is positioned when its layout becomes visible.
     glyph.style.left = `${Math.round(((box - advance) / 2) * devicePixelRatio) / devicePixelRatio}px`;
   }
 }
@@ -252,6 +295,27 @@ async function avatar(r: Row): Promise<HTMLElement> {
   const b = await badge(r.badge);
   if (b) a.append(b);
   return a;
+}
+
+function refreshRowSelection() {
+  const inScope = selectedAgent && board && selectedAgent.machineID === board.machineID &&
+    selectedAgent.session === (board.session === "default" ? "" : board.session);
+  for (const row of rowsEl.querySelectorAll<HTMLElement>(".row")) {
+    const selected = !!inScope && row.dataset.id === selectedAgent!.paneID;
+    row.classList.toggle("selected", selected);
+    row.setAttribute("aria-current", String(selected));
+    let surface = row.querySelector<HTMLElement>(":scope > .row-selection");
+    if (selected && !surface) {
+      surface = el("div", "row-selection");
+      surface.setAttribute("aria-hidden", "true");
+      row.prepend(surface);
+      paintShape(surface, {
+        radius: parseFloat(getComputedStyle(row).getPropertyValue("--radius-selection")),
+        fill: "var(--color-surface-raised)",
+      });
+    }
+    if (surface) surface.hidden = !selected;
+  }
 }
 
 async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
@@ -325,6 +389,7 @@ async function archivedCard(r: Row): Promise<HTMLElement> {
  * that order, Idle's included, archived agents are left out, and nothing
  * found says so. */
 async function renderRows() {
+  if (!renderReady) return;
   const generation = ++rowsGeneration;
   const nodes: HTMLElement[] = [];
   if (!board) {
@@ -336,6 +401,7 @@ async function renderRows() {
       nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? "not connected" : "no machine"));
     }
   } else {
+    const scope = { machineID: board.machineID, session: board.session };
     const query = searchInput.value;
     const b = board.board;
     // A search lays the list out again in Go (Desk.searchBoard): the
@@ -367,14 +433,21 @@ async function renderRows() {
         }
       }
     }
+    try {
+      const terminals = await terminalRows(scope, query, symbol, renderRows);
+      if (terminals) nodes.push(terminals);
+    } catch (error) {
+      nodes.push(el("p", "empty-line t-empty", `Saved terminals: ${String(error)}`));
+    }
   }
   if (generation !== rowsGeneration) return; // a newer render won
   // herdrup shows the spinner or the error in place of the whole list, search
   // field included (App/HerdrApp.swift: `loading && agents.isEmpty`).
   searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
+  refreshRowSelection();
   renderSessionPills();
-  const needsYou = board && searchInput.value === "" ? (board.board.sections.find((s: Section) => s.key === "needsYou")?.rows ?? []) : [];
+  const needsYou = tab === "agents" && !choosingHost && board && searchInput.value === "" ? (board.board.sections.find((s: Section) => s.key === "needsYou")?.rows ?? []) : [];
   const waitingRows = [...rowsEl.querySelectorAll<HTMLElement>('[data-section="needsYou"]')];
   const last = waitingRows[waitingRows.length - 1];
   await Promise.all([placeInitials(rowsEl), updateNeedsYou(needsYou, last ? last.offsetTop + last.offsetHeight : null)]);
@@ -425,54 +498,65 @@ function drawField() {
       hairline: cssVar("--color-hairline"),
     },
     font: cssVar("--font-machine"),
+    labelFont: getComputedStyle(select).font,
   });
 }
 
+onTextSizeChanged(() => {
+  placeTitle();
+  void placeInitials(document);
+  if (!field.hidden) drawField();
+});
+
 function render() {
-  const showConnect = tab === "settings" || (!board && state.phase !== "connecting" && state.phase !== "connected");
+  if (!renderReady) return;
+  const showConnect = choosingHost || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
+  const guestVisible = !!state.guest && !showConnect;
+  if (state.guest && !state.guest.features.gram) guestGram = false;
+  setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
+  document.body.classList.toggle("guest-mode", guestVisible);
+  guestHome?.update(state, board, guestTab, guestGram, guestVisible);
+  if (guestVisible) {
+    connectView.hidden = true; document.body.classList.remove("host-home-visible");
+    rail?.update("agents", null, false);
+    field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
+    $("roster").hidden = true;
+    settings?.show(false, state, board);
+    showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
+    showInteraction(guestTab === "agents" && !guestGram);
+    return;
+  }
   const showsGram = tab === "gram" && !showConnect;
+  const showsSettings = tab === "settings" && !showConnect;
   connectView.hidden = !showConnect;
-  field.hidden = showConnect || showsGram;
-  select.hidden = showConnect || showsGram || interactionVisible();
-  showInteraction(!showConnect && !showsGram);
-  $("roster").hidden = showsGram;
+  document.body.classList.toggle("host-home-visible", showConnect);
+  rail?.update(tab, board?.board ?? null, !showConnect);
+  const fieldWasHidden = field.hidden;
+  field.hidden = showConnect || showsGram || showsSettings;
+  if (fieldWasHidden && !field.hidden) drawField();
+  select.hidden = showConnect || showsGram || showsSettings || interactionVisible();
+  showInteraction(!showConnect && !showsGram && !showsSettings);
+  $("roster").hidden = showConnect || showsGram || showsSettings;
   showGram(showsGram);
-  connectError.hidden = state.phase !== "error";
-  connectError.textContent = state.phase === "error" ? `${state.machine}: ${state.message}` : "";
-  disconnect.hidden = state.phase === "idle";
+  settings?.show(showsSettings, state, board);
   void renderRows();
 }
 
 // ---- Wiring ----
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const f = new FormData(form);
-  const get = (k: string) => String(f.get(k) ?? "").trim();
-  try {
-    board = null;
-    closeInteraction();
-    tab = "agents";
-    void buildTabBar();
-    void buildTopBar();
-    await Desk.connect(
-      { host: get("host"), port: Number(get("port")) || 22, user: get("user"), keyPath: get("keyPath"), session: get("session") },
-      String(f.get("password") ?? ""),
-    );
-  } catch (err) {
-    state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
-    render();
-  }
-});
 
 searchInput.addEventListener("input", () => void renderRows());
 
-disconnect.addEventListener("click", () => {
-  board = null;
-  void Desk.disconnect();
+
+window.addEventListener("guest-gram", () => {
+  if (!state.guest?.features.gram) return;
+  guestTab = "agents"; guestGram = true; render();
 });
 
 events.stateChanged.on((s) => {
+  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
+    guestTab = "agents"; guestGram = false;
+  }
   state = s;
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
@@ -497,6 +581,7 @@ function openAgent(target: AgentTarget) {
   const version = ++activationVersion;
   if (!pageReady) return;
   tab = "agents";
+  choosingHost = false;
   void buildTabBar();
   render();
   // Serialize connection/session changes; a superseded request must not
@@ -520,7 +605,7 @@ function openAgent(target: AgentTarget) {
       }
       // Password-only machines cannot reconnect unattended. Show the form;
       // the activation remains pending while the user supplies credentials.
-      tab = "settings";
+      choosingHost = true;
       state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
       render();
     }
@@ -570,19 +655,30 @@ window.addEventListener("keydown", (e) => {
 async function init() {
   document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
-  paintShape($("sidebar"), { radius: px("--sidebar-radius"), fill: "var(--color-ground)", clip: true });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
+  rail = await initSidebarRail($("sidebar"), next => {
+    tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
+  }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
-  initInteraction($("detail"));
-  initHosts(connectView, form, () => { tab = "agents"; void buildTabBar(); void buildTopBar(); render(); });
+  guestHome = initGuestHome($("sidebar"), $("detail"), {
+    agents: () => { guestTab = "agents"; guestGram = false; render(); },
+    settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; render(); },
+    hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
+    terminal: () => { guestGram = false; render(); },
+    open: target => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
+  });
+  initInteraction($("detail"), symbol, target => { selectedAgent = target; refreshRowSelection(); });
+  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);
   await initGram(
     {
       el,
       symbol,
       placeInitials,
       spinner: spinnerSVG,
-      barChanged: () => {
+      barChanged: unread => {
+        rail?.unread(unread);
         if (tab === "gram") void buildTopBar();
       },
     },
@@ -619,6 +715,7 @@ async function init() {
   await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
   drawField();
+  renderReady = true;
   render();
   const version = activationVersion;
   const retained = await Desk.pendingAgent();

@@ -29,9 +29,31 @@ func (c *Client) MachineStatus(ctx context.Context) (herdrapi.ResponseResultMach
 	return call[herdrapi.ResponseResultMachineStatus](ctx, c, "machine.status", herdrapi.EmptyParams{})
 }
 
+// StagedUpdate reports the running daemon build without applying an update.
+func (c *Client) StagedUpdate(ctx context.Context) (herdrapi.ResponseResultStagedUpdate, error) {
+	return call[herdrapi.ResponseResultStagedUpdate](ctx, c, "server.staged_update", herdrapi.EmptyParams{})
+}
+
+func (c *Client) UpdateCheck(ctx context.Context) (herdrapi.ResponseResultUpdateCheck, error) {
+	return call[herdrapi.ResponseResultUpdateCheck](ctx, c, "server.update_check", herdrapi.EmptyParams{})
+}
+
+func (c *Client) UpdateApply(ctx context.Context, p herdrapi.ServerUpdateApplyParams) (herdrapi.ResponseResultUpdateApply, error) {
+	return call[herdrapi.ResponseResultUpdateApply](ctx, c, "server.update_apply", p)
+}
+
+func (c *Client) UpdateStatus(ctx context.Context) (herdrapi.ResponseResultUpdateStatus, error) {
+	return call[herdrapi.ResponseResultUpdateStatus](ctx, c, "server.update_status", herdrapi.EmptyParams{})
+}
+
 // AgentList is agent.list.
 func (c *Client) AgentList(ctx context.Context, p herdrapi.AgentListParams) (herdrapi.ResponseResultAgentList, error) {
 	return call[herdrapi.ResponseResultAgentList](ctx, c, "agent.list", p)
+}
+
+// AgentRead returns the visible screen or retained output, as text or ANSI.
+func (c *Client) AgentRead(ctx context.Context, p herdrapi.AgentReadParams) (herdrapi.ResponseResultPaneRead, error) {
+	return call[herdrapi.ResponseResultPaneRead](ctx, c, "agent.read", p)
 }
 
 // AgentTranscript is agent.transcript (capability agent_transcript).
@@ -53,6 +75,49 @@ func (c *Client) AgentAnswer(ctx context.Context, p herdrapi.AgentAnswerParams) 
 // name the account an agent row shows.
 func (c *Client) AccountsList(ctx context.Context) (herdrapi.ResponseResultAccountsList, error) {
 	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.list", herdrapi.EmptyParams{})
+}
+
+func (c *Client) AccountsCreate(ctx context.Context, kind, label string) (herdrapi.ResponseResultAccountsList, error) {
+	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.create", herdrapi.AccountsCreateParams{Kind: kind, Label: label})
+}
+
+func (c *Client) AccountsRemove(ctx context.Context, id string) (herdrapi.ResponseResultAccountsList, error) {
+	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.remove", herdrapi.AccountsRemoveParams{ID: id})
+}
+
+func (c *Client) AgentRestart(ctx context.Context, pane, account string) error {
+	_, err := call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.restart", herdrapi.AgentRestartParams{Target: pane, Account: &account})
+	return err
+}
+
+func (c *Client) BackgroundPane(ctx context.Context) (string, error) {
+	result, err := call[herdrapi.ResponseResultPaneInfo](ctx, c, "pane.split", herdrapi.PaneSplitParams{Direction: herdrapi.SplitDirectionDown, Focus: false})
+	return result.Pane.PaneID, err
+}
+
+func (c *Client) PaneClose(ctx context.Context, pane string) error {
+	_, err := c.do(ctx, "pane.close", herdrapi.PaneTarget{PaneID: pane})
+	return err
+}
+
+func (c *Client) PaneRename(ctx context.Context, pane, label string) error {
+	_, err := c.do(ctx, "pane.rename", herdrapi.PaneRenameParams{PaneID: pane, Label: &label})
+	return err
+}
+
+func (c *Client) PaneRead(ctx context.Context, params herdrapi.PaneReadParams) (herdrapi.ResponseResultPaneRead, error) {
+	return call[herdrapi.ResponseResultPaneRead](ctx, c, "pane.read", params)
+}
+
+func (c *Client) PaneReadText(ctx context.Context, pane string) (string, error) {
+	format := herdrapi.ReadFormatText
+	result, err := c.PaneRead(ctx, herdrapi.PaneReadParams{PaneID: pane, Source: herdrapi.ReadSourceRecentUnwrapped, Format: &format})
+	return result.Read.Text, err
+}
+
+func (c *Client) PaneEnter(ctx context.Context, pane string) error {
+	_, err := c.do(ctx, "pane.send_keys", herdrapi.PaneSendKeysParams{PaneID: pane, Keys: []string{"Enter"}})
+	return err
 }
 
 // AgentAvatarGet is agent.avatar.get (capability agent_avatar).

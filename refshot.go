@@ -20,17 +20,56 @@ import (
 // (design/reference/agent-list in herdrup), the closed sections the page
 // opens before the capture.
 var refExpand = map[string][]string{
-	"loading":           nil,
-	"empty":             nil,
-	"populated":         nil,
-	"idle-expanded":     {"idle"},
-	"archived-expanded": {"archived"},
-	"all-expanded":      {"idle", "archived"},
+	"loading":                      nil,
+	"empty":                        nil,
+	"populated":                    nil,
+	"idle-expanded":                {"idle"},
+	"archived-expanded":            {"archived"},
+	"all-expanded":                 {"idle", "archived"},
+	"folders":                      {"folder:herdr"},
+	"avatars":                      nil,
+	"sessions":                     nil,
+	"federated":                    nil,
+	"needs-you-pill":               nil,
+	"needs-you-rail":               nil,
+	"gram-mixed-latest":            nil,
+	"gram-mixed-image":             nil,
+	"gram-mixed-folded":            nil,
+	"gram-mixed-code":              nil,
+	"gram-saved":                   nil,
+	"gram-search-results":          nil,
+	"gram-search-empty":            nil,
+	"gram-composer-attachment":     nil,
+	"gram-composer-ambiguous":      nil,
+	"gram-empty":                   nil,
+	"gram-loading":                 nil,
+	"settings-machines-index":      nil,
+	"settings-machines-federation": nil,
+	"settings-machines-empty":      nil,
+	"settings-about-index":         nil,
+	"detail-chat":                  nil,
+	"detail-terminal":              nil,
+	"detail-writer-collapsed":      nil,
+	"detail-writer-expanded":       nil,
+	"detail-host-selection":        nil,
 }
 
 // refEnabled reports whether this run is a reference capture: a smoke
 // build (main.smoke=1) started with HERDRUP_REF_STATE.
 func refEnabled() bool { return smokeEnabled() && os.Getenv("HERDRUP_REF_STATE") != "" }
+
+// Reference timestamps are absolute. Freeze wall time only in a reference run;
+// timers and performance.now keep advancing so the real asynchronous UI settles.
+func refPreload() string {
+	if !refEnabled() {
+		return ""
+	}
+	return `;(() => { const NativeDate = Date; const now = 1793180460000;
+globalThis.Date = class extends NativeDate {
+  constructor(...args) { if (args.length) super(...args); else super(now); }
+  static now() { return now; }
+}; })();`
+}
 
 // refTiming bounds the waits of a reference capture. Total stays under
 // the bridge's 60 s call timeout, after which the loading state turns
@@ -89,11 +128,16 @@ func runRef(desk *Desk, win *mygo.Window) {
 		}
 		t.total = d
 	}
+	cleanup, err := prepareGramReference(desk, state)
+	if err != nil {
+		log.Printf("ref: prepare Gram: %v", err)
+		os.Exit(1)
+	}
 	placeRefWindow(win, w, h)
 	rep := refReport{State: state, Want: [2]int{w, h}}
-	var err error
 	if rep.BackingScale, rep.ScaleOverride, err = refDeviceScale(win, scale); err != nil {
 		rep.Outcome = "device scale: " + err.Error()
+		cleanup()
 		go finishRef(win, out, &rep, false)
 		return
 	}
@@ -105,14 +149,40 @@ func runRef(desk *Desk, win *mygo.Window) {
 		User:    os.Getenv("HERDRUP_SMOKE_USER"),
 		KeyPath: os.Getenv("HERDRUP_SMOKE_KEY"),
 	}
-	if err := desk.Connect(m, ""); err != nil {
-		rep.Outcome = "connect: " + err.Error()
-		go finishRef(win, out, &rep, false)
-		return
+	if strings.HasPrefix(state, "settings-") {
+		// Native DesktopReferenceMock's configured home-box display name.
+		m.Nickname = "reference-hub"
+	}
+	if state != "detail-host-selection" {
+		if err := desk.Connect(m, ""); err != nil {
+			rep.Outcome = "connect: " + err.Error()
+			cleanup()
+			go finishRef(win, out, &rep, false)
+			return
+		}
 	}
 	go func() {
-		ok, why := driveRef(win, w, h, expand, t)
+		var ok bool
+		var why string
+		if state == "detail-host-selection" {
+			ok, why = waitReferenceHosts(win, w, h, t.total)
+		} else {
+			ok, why = driveRef(win, w, h, expand, t)
+		}
+		if ok {
+			ok, why = driveBoardReference(win, state)
+		}
+		if ok {
+			ok, why = driveGramReference(desk, win, state)
+		}
+		if ok {
+			ok, why = driveSettingsReference(win, state)
+		}
+		if ok {
+			ok, why = driveDetailReference(win, state)
+		}
 		rep.Outcome = why
+		cleanup()
 		finishRef(win, out, &rep, ok)
 	}()
 }

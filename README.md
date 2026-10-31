@@ -16,17 +16,363 @@ agents: paged history, Markdown and diagrams, folded thinking/tools, prompt send
 and supported single-choice questions. Other harnesses open Terminal.
 External images in transcript diagrams are blocked before the browser fetches them.
 Invalid diagrams stay as source text; history from an old transcript session is discarded.
-**Expand writing** opens a full-height editor without sending; **Done writing**
-or Escape returns the same draft. Cmd/Ctrl+Enter sends only from the compact composer.
+Chat headings, quotes, rules and inline-code backgrounds use the native source's
+typography and spacing, including preserved quote line breaks. Heading ink stays
+neutral under the desktop color rule. Native Linux checks covered replies and
+expanded thoughts at 100%/140%/reset using a separate SSH transcript fixture.
+The current parity branch replaces the separate writing dialog with the Swift
+composer's in-card drag handle. Expanding keeps the same field, selection and draft.
+Terminal quick keys are grouped, with Return pinned outside the scrollable row.
+The groups reserve a 1 pt divider between caps and use native-style system
+monospace labels, scaled by the existing app text-size preference. Linux native
+checks covered 100%/140%/reset, scrolling at the 560 pt minimum window width,
+pinned Return and keyboard toggling of Ctrl; they did not execute terminal commands.
+The detail status timer follows Swift's elapsed-time labels: seconds for the first
+ten minutes, whole minutes until an hour, then hours and minutes (without a day
+abbreviation). Native Linux checks exercised the minute/hour boundaries, a
+future timestamp, a duration over a day and the live one-second update.
+The pane's Text size menu independently remembers Chat (12–24 pt, default 16) and
+Terminal (9–24 pt, default 12.5). Ctrl/Cmd +, − and 0 change or reset terminal text
+without sending those shortcuts to the PTY. Font changes refit the live terminal;
+Chat text reflows without scaling the surrounding controls.
+Thought and Worked use the native disclosure glyphs and keep keyboard activation.
+Unchanged transcript rows stay attached during refresh, preserving their focus
+and expanded state. A Linux native-window check reproduced focus loss before the
+fix, then passed Refresh, Enter/Space toggles, mode switches and text-size changes.
+Windows disclosure keyboard interaction and full visual parity remain unverified.
+The detail header uses the native machine-font status label and rounded,
+minimum-bounded height when Settings text size changes. Linux native Settings
+checks covered 90% and 140%, combined Chat zoom, independent terminal zoom and reset.
+Chat and Gram composers measure their scaled line height instead of assuming 24 px.
+Native Linux typing reproduced clipping at 140% before the fix; afterward one and
+two lines fit, a sixth line scrolls behind the five-line limit, and expanded writers
+retain drafts across 140%→90%→100% changes. Typing and writer expansion leave the
+Chat viewport fixed. Windows/macOS composer-scale interaction is not yet verified.
+Chat shares Gram's native wrap threshold: account for the action-row gap and leave
+16 points of spare room before returning inline. A Linux native-window check
+reproduced a clipped second line at that boundary before the fix, then verified
+wrapping, stable deletion near the boundary, collapse and unchanged viewport size.
+Expanded writing uses the persistent terminal's available height, including its
+key-row allowance, as Swift does. Hosted macOS captures verify expansion and mode
+switches preserve both viewports and the draft; writer screenshots still differ.
+Prompt bubbles fit their rendered lines while retaining the original text layout
+width. Linux native checks covered pointer selection, window resizing, global and
+Chat font changes, search highlights and selection retained through refresh.
+The hosted macOS comparison still fails the full visual gate. Windows prompt
+interactions remain unverified.
+Chat card labels and Thought/Worked disclosure rows reserve a font-derived,
+device-pixel-rounded minimum height. Native Linux checks covered Settings scaling,
+wrapped card rows at the minimum window width, and disclosure Enter/Space toggling.
+This does not correct WebKit's fractional multiline line spacing.
+Chat uses Swift's fixed 26-point top fade and 48-point bottom fade away from the
+tail. The native eight-point tail boundary controls the bottom fade and Jump to
+latest; Linux checks covered both boundary sides and a real pointer jump.
+Main Chat and subagent transcripts follow incoming messages only within eight
+points of the tail. Native Linux polling checks preserved the reading position
+at nine points away and followed new content at eight; subagent checks also
+covered forty points away.
+Host-picker headings and row labels use the existing native system-font metrics
+and device-pixel-rounded intrinsic minima. Semibold section and action labels
+reuse the sidebar's SF Pro weight mapping. Linux native measurements at 100% and
+140% text scale passed. Hosted host-picker captures improved at both reference
+sizes, but neither passes the visual gate yet.
+Toolbar renders replace controls atomically and discard superseded tab changes.
+Rapid Agents/Settings/Gram switching was checked in the Linux native window;
+controls and the selected tab stay consistent without duplicate actions.
+Earlier terminal output loads above the live screen, without a separate window or
+replaying the terminal stream. Paging preserves live input, cursor state and search;
+expired cursors stop paging, while transport failures remain retryable. History is
+bounded to 20,000 rows. The prepend adapter uses private buffer and hyperlink
+registry APIs, so xterm is pinned to 6.0.0 and upgrades require terminal-history
+checks, including real hyperlink activation. Historical OSC8 targets are remapped
+into the live registry; both OSC8 and visible URL links use the guarded OS opener.
+Chat shows the current to-do plan once, at the end of the conversation. Its
+collapsed card follows the active task; expand it to see completed and later work.
+Single-choice questions appear inline, with the recommended option (or the first
+option) styled as primary. Multi-part and multi-select questions direct you to Terminal.
+Open question shows the full card and its prompt context; an answer updates both
+the sheet and the transcript without closing the sheet.
+Answer refusals stay inside that card. Changed options or an unavailable terminal
+question UI offer Answer in Terminal, which dismisses the sheet and focuses the
+live terminal. A successful answer stays visible while the transcript catches up;
+server-reported answers supersede the local choice.
+Transcript notes show their source, time and sender in a compact card. Open a note
+to view its sheet; Show context expands the selectable Markdown body.
+Right-click a prompt, reply or expanded thought (or press Shift+F10 while it is
+focused) for Copy and Select Text. Replies also offer Copy as Markdown. Copy
+uses readable text; Select Text opens one selectable surface with formatting,
+list markers and table cells preserved. An open native menu keeps its original
+message while the transcript updates.
+Scrolling back reveals Jump to latest message. New content follows only while
+you are at the tail; history prepends and switching through Terminal preserve
+your reading position. Find hides the jump button while a result is selected.
 Chat drafts stay local and are scoped to the host, herdr session and pane.
 
-Use the top-left back button or Settings to choose, add or remove a saved SSH host.
+Instant typing ports Swift's confidence-epoch predictor to a separate xterm
+overlay; guessed text never enters the terminal buffer. Settings offers Auto,
+Always and Off. Auto uses measured ACK/echo delay; Always still requires a
+confirmed echo before showing a new epoch, so silent/password-like input is not
+predicted. Enter, unsupported input, resize, scrollback, screen changes and
+disconnects clear or make predictions tentative. Wrong echoes retract guesses.
+Help → Typing latency reports queue, ACK, echo, rendered-frame and prediction-draw
+timings per SSH target, with Copy report and Reset. These are client render times,
+not physical display scanout; as in Swift, the first output after a send is
+attributed as its echo. No network type is inferred.
+Linux native typing through the SSH fixture measured 16 keys and 15 confirmed
+predictions, with no failed or unattributed keys. Separate real-xterm checks
+verified the predicted glyph appeared before server output while the buffer
+remained unchanged, and that echo, resize and Off removed the overlay.
+Eight confidence/latency cases pass. `test-check prove` is inconclusive against
+the previous head because these new modules do not exist there; import failure
+is not claimed as behavioral regression proof.
+
+Use the top-left back button to choose or add a saved SSH host.
+Right-click a saved host (or press Shift+F10) to edit its nickname and connection
+details, or delete it. Save updates the profile without connecting. The host home
+uses the native readable column and app logo. Scan pairing code reads the one-time
+QR printed by `herdr pair`; Add host remains available for manual setup.
+Scan invite reads a shared-agent QR; Paste reads the OS clipboard only when clicked.
+Both open the invitation preview and require Accept before contacting the relay.
+The camera stops before preview, on cancellation, and if a pending permission
+request completes after dismissal. Clipboard format checks do not read its contents.
+Accepted shares appear under Shared with you. Native Linux checks covered these
+paths using a canvas camera stream and the real clipboard; physical-camera and
+Windows/macOS invitation scanning remain unverified.
 Password connections ask again when reconnecting; passwords are not saved.
 Connection and session changes invalidate open agent views. Unacknowledged terminal
-input is never replayed automatically; unconfirmed prompts keep their draft.
+input is never replayed automatically. A definite prompt rejection preserves the
+draft; written or uncertain delivery clears the submitted draft and asks the reader
+to check Terminal rather than accidentally submit it twice.
+
+Pairing generates a private ed25519 identity on this device and sends only its
+public key. It validates and saves the QR's SSH fingerprint before redeeming the
+code, then saves the private key in the app's private `identities` directory and
+records the host. Open it connects separately; pairing does not start herdr.
+Paired hosts negotiate the ed25519/RSA keys advertised by `herdr pair`, without
+changing existing manual hosts' negotiation order. Unconfirmed exchanges are never
+retried automatically. A late camera permission result is stopped after dismissal,
+and decoding or leaving the window stops capture. Linux native checks used a real
+canvas MediaStream and an isolated TCP pairing endpoint; physical-camera capture
+and Windows/macOS camera acceptance are not verified.
+
+Guest invitations accept `herdrup://guest-invite#…` links, matching HTTPS relay
+links, or pasted invitation text. Review shows the owner, shared agent, guest name
+and this device's key fingerprint before any relay connection. Acceptance uses
+Noise IK over WebSocket, authenticates the host key from the invitation, and
+binds the grant to this installation's persistent X25519 identity. The private
+key stays in the app's private data directory; invitation bearer secrets are not
+saved with grants. Missing or corrupt identities are not silently replaced while
+saved shares exist.
+
+A saved share opens a separate Agents/Settings home with only its granted agent.
+Terminal, supported omp Chat and owner-enabled Gram use fresh authenticated relay
+sessions. Guest Gram uses its own read marks and reply schema; it never decodes
+owner claim/read metadata. Agent renames retain the grant and update Gram routing.
+Leave share forgets local access without deleting this device's identity.
+The Linux native smoke exercised invalid input, cancellation before redemption,
+authenticated refusal, acceptance, saved-access reload, shared pane/Gram,
+rename routing, reconnect, revocation and leaving. Packaged OS link activation,
+live external relay interoperability and Windows/macOS guest UI acceptance remain
+unverified; handling an injected launch link is not proof of OS registration.
+
+
+The Agents section's New agent action browses remote folders and installed
+harnesses, creates a pane, and starts the chosen agent. Its task is placed in the
+composer without sending it; press Send when ready. A blank folder retains the
+daemon's current folder. Creation stays on the host/session where the sheet opened.
+Only a definitive busy response while the shell still owns the foreground group
+is retried, for at most two seconds. A definite start refusal closes the new empty
+pane; an uncertain start is not repeated or closed automatically.
+Native Linux checks exercised folder selection, rejected-start cleanup, creation
+and explicit sending: zero prompt writes before Send, one afterward. The
+`fakeherdr -creation -interactions` fixture starts no real model or shell process.
+
+New terminal opens a plain shell without starting an agent. Its saved row and name
+survive app restarts and belong only to that host/session. Rename updates the
+daemon's pane label before saving the local name. The composer writes text without
+adding Enter; use the terminal's Enter key to run it. Forget removes the local row
+without closing the shell; Close terminal requires confirmation and keeps the row
+if closure is unconfirmed. If saving fails, cleanup attempts to close only the new
+pane. Native Linux checks exercised writing, remote rename, disk reload, forgetting,
+confirmed closure and dismissal of both creation sheets on session changes.
+
+Settings opens a split index and Machines page, not the host chooser. The machine
+card and detail show the connected daemon's version and commit from
+`server.staged_update`, distinct from the desktop app version. A daemon without
+that method omits the line; a build without a commit shows only its version.
+Closing Settings or changing host/session discards pending version replies.
+It also shows saved federation states and unmatched peers. Federate requires
+an explicit SSH-authority confirmation; Unfederate removes that policy immediately.
+Disabled profiles cannot be enabled here. Reconnect preserves host-key checks and
+asks again for an unsaved password. Copy diagnostics includes only the host label
+and app version. The setup guide explains saving a machine separately from granting
+federation authority. Text size saves app text scaling (90–140%) separately from
+terminal point size (9–24 pt). Chat combines app scaling with its own text-size
+control; terminal glyphs do not change when app text changes. Both settings survive
+restart. The OMP preference chooses Chat or Terminal on opening an agent; an explicit
+mode choice overrides it for that agent until the app quits. Opening the default
+does not pin an override. Claude Code and Codex always open in Terminal.
+Help and About open the upstream issue tracker, community, legal pages and source.
+Settings → Help → Gestures explains the working desktop mouse, trackpad and
+keyboard affordances in a scrollable guide. Escape, Close and Got it dismiss it
+and restore focus to its Settings row; the footer remains reachable in a small
+window. The instructions describe desktop controls, not unimplemented mobile
+swipes or press-and-hold actions.
+Linux native-window checks exercised cancellation, federation and revocation through
+the SSH fixture, and read the resulting machine status back from the server.
+
+Machines checks signed daemon updates through `server.update_check`. An explicit
+confirmation binds the requested build and live/download-for-restart mode.
+Cancellation sends nothing. Progress survives leaving Settings and reconnecting
+to the same SSH host/session; a lost apply reply is followed by attempt identity,
+never resubmitted. A previous attempt for the same build cannot count as success.
+Restart-required downloads warn that a later server restart closes terminals;
+the app does not restart it. Refusals offer a fresh check and confirmation.
+Lost-track recovery only polls the original attempt. Unsupported or older
+installations show manual instructions instead of an install button.
+The card sits below the machine identity and above Connection, matching the native
+Machines layout. Native reference fixtures omit this model; that screenshot-only
+contract is not yet mirrored or masked in the desktop capture.
+Native Linux checks exercise cancellation, refusal, download progress, success,
+pending restart and manual-update cards against an isolated SSH fixture. They
+do not install a real daemon or establish Windows/macOS update UI acceptance.
+
+The Settings index shows live account/exhaustion counts, shared people/agents/invites,
+enabled notification categories and text sizes. It reuses the page models and updates
+only the value nodes, preserving keyboard focus. Unavailable home-box data is not
+shown as an empty list. Linux native checks covered empty and mixed data, revoked
+guests, expired/used invites, missing APIs, long-value truncation and keyboard
+notification changes from three to four enabled categories and back.
+Index rows follow Swift's sizing and place preference pickers beside their text.
+The real select controls remain keyboard-accessible while their visible width
+follows the selected value, not the longest option. Native Linux checks covered
+90%, 100% and 140% app text sizes, keyboard selection and preview preference changes.
+The machine card uses Swift's status typography, with no chevron or status dot
+in the split-view sidebar; the detail hero keeps its connection dot. Its
+accessible label names the Machines destination. Native Linux checks exercised
+Accounts navigation and keyboard return through the machine card.
+Grouped actions use Swift's 17 pt semibold labels and 52 pt minimum height.
+A host-key refusal keeps Reconnect disabled and shows its reason inline; normal
+connection errors remain retryable. Native Linux checks covered the existing
+connection-state event path, not a new SSH trust or handshake test.
+The footer retains the real desktop version and adds the native dark-only stance,
+with source-defined spacing and font-derived line minima. Native Linux checks
+covered 100%, 140% and reset through Settings. The accepted image's mobile
+product/version string remains a separate reference-contract difference.
+
+Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
+registers a Claude, Codex or Kimi account on the home box. Its context menu can move
+same-kind agents after confirmation, log a Claude account in or out, or remove the
+registration without deleting its config directory. A known readiness blocker
+disables moving agents; the server still checks each restart.
+Claude sign-in uses a temporary unfocused pane, the account's `CLAUDE_CONFIG_DIR`,
+and an unset `CLAUDE_CODE_OAUTH_TOKEN`. A changed account email confirms success,
+never terminal success wording; re-authenticating an unchanged identity remains
+unconfirmed. Closing the sheet retires its own pane, even if a newer sheet has
+opened. Closing Settings or changing host/session invalidates its requests.
+Linux native-window checks exercised create, rejected code, identity-confirmed
+sign-in, pane cleanup, logout and remove against the isolated SSH fixture. They
+did not authenticate with a real provider or restart a live agent.
+Shared access combines people, pending invitations and activity from the home box
+and its federated peers. Gram-sharing switches serialize rapid changes and retain
+the latest choice. Revocation requires confirmation; cancelling an invitation
+expires it on its own machine. Unavailable stores and unreadable logs remain
+visible rather than appearing empty. The owner name is saved on this device.
+The `fakeherdr -guests` fixture provides independent local/peer guest stores with
+overlapping IDs, a retrying relay and an unavailable peer, without real relay
+credentials or grants. Native Linux checks exercised sharing on/off, rapid
+reversal, peer invite cancellation, confirmed peer revocation and owner-name
+persistence across an app restart; server reads verified the other machine stayed
+unchanged. The regression check also covers same-ID cross-machine isolation.
+Agent actions → Share with someone creates a one-use invite for the selected
+agent, including federated machine routing. The first share asks for the owner's
+name; guest names follow the daemon's 32-character ASCII rule. Share Gram starts
+off. The result shows the daemon's actual Gram grant, an app-link QR and a copyable
+web link; legacy fragment links are converted to the path form used by Messages.
+Closing or replacing the agent view invalidates its create requests. An uncertain
+create result is never retried automatically.
+Linux native-window checks created an invite through the isolated SSH fixture,
+decoded the displayed QR and checked the clipboard link against its stored record.
+This does not establish live relay redemption. Swift's native Send share sheet
+still needs an approved Windows/Linux route; the app does not substitute email.
+CI `41156524463` at `8755c1e` passed the same native invite scenario on Windows
+and Linux. Both captured QR codes decoded independently to their fixture link;
+both receipts showed default-off and opted-in Gram grants and a successful copy.
+Notifications has four device-local switches: input requests, process exits,
+finished turns and arriving Gram messages. Choices are saved atomically and a
+failed save restores the prior switch state. A test button requests an actual
+desktop alert; API support does not establish OS permission or visible delivery.
+The app must stay running and connected. Exit/finished-turn alerts require live
+daemon events; closing or filtering out a pane is not an exit. Existing rosters
+and replayed completed turns do not alert. Gram alerts use the hidden-page unread
+poll, without notifying for existing unread messages on connection.
+Native Linux checks used an isolated SSH fixture and a real desktop notification
+daemon: all four categories delivered, disabled categories stayed silent, keyboard
+switch changes and restart persistence worked, and a failed write left the prior
+choice intact. The lifecycle regression passes with the race detector and fails
+on the prior implementation. Windows notification interaction is not verified.
+Received HTML/SVG attachments open in an isolated in-app preview, not the system
+browser. Scripts are off unless the device's “Run JavaScript in previews” setting
+is enabled; changes apply to the next preview. The document has no app origin,
+native bridge or storage access. Inline images/styles remain visible; network
+loads, popups and navigation out of the document are blocked. With scripts enabled,
+non-URL transports such as WebRTC can still signal that the document was opened,
+so the setting warns about that limit. A failed protection setup never falls back
+to the system browser. Other documents keep their system opener; programs remain
+save-only.
+Windows requires the WebView2 source-aware request filter (`ICoreWebView2_22`):
+the older filter misses cross-origin iframe requests. Preview creation checks
+that the native filter is installed before loading received content and fails
+closed on unsupported runtimes.
+Windows and Linux native checks rendered the same document with scripts off and
+on, verified bridge/storage/parent isolation, and blocked fetch, WebSocket and
+remote/data navigation against a local server whose unprotected control did load.
+CI run `41150320378` at `9f0031f` passed these unchanged scenarios on both systems
+and saved their preview screenshots. Older unsupported WebView2 runtime rejection
+has not been exercised.
+This is not complete Settings parity: additional preferences, daemon updates,
+native invite sending and full reference comparison remain.
+
+The sidebar can minimise to the native 64 pt rail and expand with its button or
+⌘K/Ctrl+K. Rail section buttons select and expand; the Gram unread badge stays
+live. Activity counts use the roster's strict needs-you count, not uncertain
+agents, and its complete working count, including closed folders. Zero counts
+and their separator are hidden. Linux native reference capture exercised the
+accepted three-needs-you/twenty-working state; final pixel comparison is pending.
+Its square column paints the ground directly, as Swift does, rather than through
+a zero-radius SVG and clip path. Native Linux tab changes and keyboard rail
+collapse/expand retain the correct ground pixels and column geometry.
+
+Pane attachments upload when picked, then post to the named agent on Send. One
+prompt references the whole batch. A rejected prompt retains the posted file IDs:
+retrying does not upload or post those files again. Saved prompts are device-local;
+selecting one sends it immediately, as in Swift.
+Native file-drop events share the picker/upload path in Chat and Gram. The vendored
+MyGo correction accepts real Linux GTK URI-list drops even when WebKit exposes no
+DOM File, and prevents an outside drop from navigating away. Only native-selected
+paths authorize file access: plain URI text, synthetic events and in-page drags do
+not. Chat and Gram also accept native clipboard files and images. File lists take
+precedence over accompanying text; otherwise plain text keeps browser paste/undo.
+WebKit image pastes with empty DOM metadata are resolved through the OS clipboard,
+not by treating text as a local path. Pasted bytes use a private temporary source:
+failed sends retain it for retry, while removal, successful sending and composer
+closure retire it after upload/cache readers close. Picker/drop files stay borrowed
+and are never deleted. Linux native-window checks covered file/image paste, matching
+received hashes, plain-URI text, and staged-source cleanup; Windows clipboard
+interaction acceptance remains outstanding.
+The parity branch also has a shared offline microphone control for Chat and Gram.
+The local whisper.cpp helper captures audio and streams partial text; no audio
+provider, network upload or cloud fallback is used. Linux native-window smoke has
+exercised recognition through an isolated PulseAudio monitor and microphone release
+when leaving Chat. This is not physical-microphone or Windows acceptance. Linux
+resource packaging also passes a native-window capture-start smoke. Windows CI
+built the speech helper and installer and launched the app against the sample SSH
+backend; it did not exercise Windows speech capture. macOS packaging and the
+remaining visual comparison still need verification.
 
 This is not the completed first release: full Settings/preferences, visual parity,
-shared-agent invites/guest access and remaining federation UI are unfinished.
+and remaining federation UI are unfinished. Guest invitation acceptance and saved
+shared connections are implemented, but do not establish whole-app parity.
 The native Linux interaction checks use an isolated sample SSH backend; macOS and
 Windows desktop interaction acceptance remains separate from cross-platform builds.
 Mac and Windows builds are not developer-signed; macOS notarization and real Mac/Windows
@@ -138,8 +484,26 @@ bun install
 bun run dev        # app with hot reload
 go test ./...      # Go tests, against an in-process SSH server (internal/fakeherdr)
 bun run typecheck
-bun run build -- -platform darwin/arm64,windows/amd64,linux/amd64 -skip-dmg
+# For an installer with offline speech, build one target at a time:
+export WHISPER_SOURCE=/path/to/whisper.cpp
+export HERDRUP_SPEECH_RESOURCES=/path/to/owned/local-build-scratch/speech-linux
+bun speech/build.ts linux/amd64
+bun run build -- -platform linux/amd64
 ```
+
+The speech source must be at `927cfce34f31707e17f2bff35c349632fb9e2c3a`.
+The resource builder requires CMake and a C++17 compiler. It verifies the model's
+SHA-256 and bundles the helper, multilingual tiny model and license notices.
+Model downloads use a backpressured Node stream pipeline: Bun 1.3.14 on Linux
+can stall when writing the redirected HTTP response directly with `Bun.write`.
+Set `HERDRUP_SPEECH_MODEL` to reuse an existing verified model instead of downloading
+it during the build. There is no model download or audio upload at app runtime.
+Use a separate resource directory per target. Build Windows speech on Windows with
+Visual Studio's C++ tools and a current Windows SDK; Ubuntu's MinGW headers lack
+required thread power-throttling APIs. The macOS universal build needs Xcode.
+The Windows helper defines `NOMINMAX` so the native audio headers do not replace
+the standard C++ `min` and `max` functions with Windows macros.
+Release CI prepares these resources before building each installer.
 
 `go run ./cmd/herdrup-probe -host <host> -user <user>` connects the way the app does and prints the
 board as JSON, with no window; `-watch 1m` keeps printing updates.
@@ -151,19 +515,27 @@ one herdr API method through `internal/engine` and prints the result as JSON (`s
 fake saved machines (a JSON array with `machine.status`'s fields) and a `herdr machine federate|unfederate`
 that changes them (`-machine-fail <stderr>` makes it fail).
 
-### MyGo native-drop correction
+### MyGo dependency corrections
 
 Go builds use the committed `vendor/` tree. `third_party/mygo/upstream.json` pins
-MyGo v0.7.1, its upstream commit and module checksum; `native-drop.patch` beside it
-is the readable source correction for [#72](https://github.com/jerryfane/herdrup-desktop/issues/72).
-The upstream Go implementation is unchanged. Its original TypeScript build inputs
-are retained with the rebuilt embedded bridge, so application builds need no patch step.
+MyGo v0.7.1, its upstream commit and module checksum. `native-drop.patch` fixes
+[#72](https://github.com/jerryfane/herdrup-desktop/issues/72);
+`frame-navigation.patch` adds the subframe navigation veto required by
+[#75](https://github.com/jerryfane/herdrup-desktop/issues/75). The preview applies
+the same policy to top-level and subframe navigations, allowing only its initial
+`about:srcdoc` document. The existing top-level navigation API keeps its semantics.
+On Windows it also installs the document-source request filter before navigation:
+the navigation veto alone can run after a remote iframe request has escaped.
+The filter covers this window's documents, frames and dedicated workers without
+installing environment-wide shared/service-worker filters.
+Original TypeScript build inputs are retained with the rebuilt embedded bridge,
+so application builds need no patch step.
 
-To change Go dependencies or regenerate the correction, use Bun **1.3.14**, Go and
+To change Go dependencies or regenerate the corrections, use Bun **1.3.14**, Go and
 GNU patch, then run `bun run vendor:mygo`. This replaces `vendor/` from `go.mod`,
-checks the MyGo base, applies the patch without fuzz and rebuilds the bridge.
+checks the MyGo base, applies both patches without fuzz and rebuilds the bridge.
 Do not run plain `go mod vendor` or build with `-mod=mod`: those remove or bypass
-the correction. CI regenerates the tree and rejects any difference.
+the corrections. CI regenerates the tree and rejects any difference.
 
 Acceptance uses a real GTK drag into Chat and Gram, a posted-file byte/hash
 read-back, an outside-composer drop, and rejected synthetic, in-page, plain-text
@@ -214,6 +586,12 @@ with the box and baseline SwiftUI gives `Image(systemName:).font(.system(size:we
   (`third_party/phosphor/`, MIT, with its licence), fitted to the box where macOS draws the symbol's ink.
   Those boxes are measured on macOS into `symbols_sfmetrics.go`; only the symbols listed there have a
   stand-in.
+  Additional web-only glyphs in `third_party/phosphor/web` are pinned to
+  `@phosphor-icons/core@2.1.1` and use the same MIT licence.
+  Settings uses the gauge and outbound arrow from that package for Typing latency
+  and external links. Internal split-view page rows omit navigation chevrons, as
+  Swift does. A Linux native-window check covered keyboard opening of Typing
+  latency, selection state, reset and return to Machines; both pages were inspected.
 
 The `Symbols` workflow (on demand, macOS) checks the AppKit images against SwiftUI's at 1x, 2x and 3x,
 checks `symbols_sfmetrics.go` against AppKit, and uploads every image.
@@ -235,6 +613,11 @@ checks `symbols_sfmetrics.go` against AppKit, and uploads every image.
 | `internal/design`, `cmd/herdrup-sync` | design tokens: sync from herdrup, generate CSS and Go, drift checks |
 | `src/` | the page (TypeScript); `src/mygo.ts` is generated by `bun run generate` |
 
+`fakeherdr -accounts` enables an isolated Accounts fixture for native-window smoke.
+It never runs auth commands or contacts providers. The code `native-smoke-code`
+changes only its in-memory email; `phrase-only` prints success wording without
+changing identity, for checking that the app does not falsely confirm sign-in.
+
 ## CI
 
 Every push runs the Go and TypeScript checks and cross-builds macOS, Windows and Linux on Ubuntu. The
@@ -243,17 +626,114 @@ window against `cmd/fakeherdr` on Linux and Windows, and on macOS on `main`, on 
 requests labelled `macos-smoke` (GitHub's hosted Macs are shared with herdrup's iOS CI), and uploads a
 screenshot of each. The parity check below also runs on GitHub's hosted macOS, whose version the pixel
 match was made on.
+Smoke builds capture early script/resource errors and unhandled promise rejections
+before the frontend module starts. Startup errors fail the window smoke even when
+the expected rows eventually appear. Diagnostics include script URLs, document
+readiness and page text; release builds omit the hook. Connection events retain
+their data during startup, but rendering waits for the view dependencies to be
+initialized. This drawing barrier is separate from notification-activation readiness.
+The existing Linux and Windows smoke jobs also compile the pinned offline speech
+helper and package its model and licences. That checks the platform toolchain and
+bundle contents; the board screenshot is not microphone or dictation acceptance.
+
+The current pin is Swift merge `9845ecf0743c7dce8073dc4a00db23b1fec069a8`.
+The reference manifests retain each screenshot's producing head; that delivery
+commit is not a claim that the desktop matches all 64 native reference images.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
-the agent list against herdrup's iPad screenshots (`design/reference/agent-list` in jerryfane/herdrup at
-the pinned commit `REFERENCES`, fetched and checked against their manifest's sha256). On macOS it opens
+the board, Gram, Settings and detail against all 64 accepted iPad screenshots under
+`design/reference/{agent-list,gram,settings,detail}` at the pinned `REFERENCES`, checked against their manifest hashes. On macOS it opens
 the smoke build once per reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the
 page area in points: the reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes
 the web view render at 2 pixels per point although the runner's display is 1x. The page signals a drawn
 state through `window.herdrupRef`. `cmd/refdiff` then compares each capture with its reference below
-the status bar, outside the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and
+the status bar. Board comparisons exclude the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and
 iPadOS's resize corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`),
 the detail column's glyph field, which herdrup's capture froze before its first picture.
+Capture processes use `-AppleShowScrollBars WhenScrolling` to match the iPad's
+overlay scroll indicators. The hosted runner's default reserves 17 pt inside
+scroll views; that is not part of the native reference viewport. This argument
+does not change the runner's global preference or normal desktop launches.
+
+The accepted manifest now drives all 24 board captures, including folders,
+avatars, sessions, federation and both needs-you states. `fakeherdr -responses`
+serves the manifest-verified native response fixtures over SSH; its session and
+avatar replies use the same production client paths as a real host. Reference
+runs pin wall time to the manifest's `2026-10-28T09:41:00Z`, leaving timers live.
+Each smoke/reference run uses a fresh asset origin as well as a fresh Go data
+directory, so one capture cannot leave sidebar, composer or other web preferences
+in the next capture or the user's regular application.
+
+The Gram manifest adds 22 captures: latest, image, folded report, code, Saved,
+search results/no matches, addressed/ambiguous attachments, empty and loading.
+The fixture adapter seeds the real stateful Gram daemon store, including read
+transitions, decoded files and uploads. The reference file chooser supplies only
+the native fixture's verified bytes; paperclip staging and upload remain real.
+Before composing, the driver waits for fonts, initial rendering and a visible
+latest-message row, matching the native driver's hittable-message precondition.
+Native Linux addressed and ambiguous attachment scenarios pass; the addressed
+scenario retains its transcript scroll position while the composer grows.
+Saved capture setup uses the production local-save action after opening the inbox;
+it is not native context-menu acceptance. Visible image previews must finish
+decoding before capture. Older-content captures use the native driver's 160 pt
+scroll steps only while the complete target is obscured; already-visible images
+stay at the latest-message position. Gram's ground extends beneath the home
+inset without changing the feed or expanded writer's available height.
+Gram comparisons use no masks.
+
+Eight Settings captures cover the Machines index, all six saved federation
+profiles plus the unsaved guest peer, empty federation, and inline About.
+The Linux capture driver exercises both independent scroll containers and checks
+the agent-derived totals (5 machines, 5 agents, 1 offline), not profile counts.
+Federation status uses the native 26 pt outlined Wi-Fi-off badge for offline
+peers and 8 pt dots for reachable/degraded peers, with accessible status labels.
+The offline symbol uses SF Symbols on macOS and the existing Phosphor fallback
+elsewhere; connection-summary dots remain separate.
+Before choosing a Settings scroll boundary, the driver waits for fonts and the
+update live region's initial load to finish. Machine-status rows can arrive
+before the update card changes the page height; the live region reports
+`aria-busy` until that scope's first read settles, even when unsupported or failed.
+Settings comparisons also use no masks. Reference host naming is connection
+metadata; the renderer still receives the real SSH fixture's machine statuses.
+
+Ten detail captures cover Chat, Terminal, the collapsed/expanded inline writer,
+and saved-host selection. `fakeherdr` ports the pinned native mock transcript and
+terminal reset onto the real SSH transport. Source checksums are verified from
+the detail manifest; these are synthetic inputs, not a live agent session.
+The Chat scenario also opens, closes and reopens the agent, checking that its
+rounded sidebar selection clears on Back and returns on reopening.
+It also checks the latest reply's Geist font and semibold emphasis; browser-default
+serif/sans fallbacks are not the native Chat typography.
+Writer captures wait for the pasted draft's layout before activating the handle,
+then check the same textarea, retained draft and unclipped expanded card.
+Extra writer lines overlay the conversation and terminal, reserving only the
+resting composer height. Captures check unchanged viewport heights during typing,
+expansion and mode switching, retained drafts, and the floating key row's hit target.
+Terminal uses the native horizontal-only 8 pt inset; the mode switch's stroke
+does not increase its 32 pt height. Chat and Gram share 40 pt action circles
+inside 44 pt targets, including the microphone while its icon changes.
+The terminal's 16 ANSI colors, theme-derived 240 indexed colors and caret come
+from `third_party/herdrup/terminal-theme.json`, with source hashes in the adjacent
+provenance file. The parity workflow compiles `cmd/terminal-palette/main.swift`
+with the reference pin's SwiftTerm `Colors.swift`, executes the native algorithm,
+and compares its output byte-for-byte with the bundled palette.
+Chat's composer, plan and question outlines are inset strokes, not extra layout
+space. Plan rows use the font's natural line height; the transcript ends with its
+12 pt padding rather than an additional last-row margin.
+Replies use Swift's 8 pt block and 6 pt list-item gaps, with added leading only
+between text lines. Historical plan rows retain their spacing while the current
+plan appears once at the end. Question options show at most two lines.
+Plan disclosures and status marks use SF Symbols on macOS, with licensed
+Phosphor 2.1.1 substitutes elsewhere. Completed marks use `ChatStyle.ok` from
+the pinned Swift source, not the different shared agent-state green. Plan headings,
+phases, rows and the remaining-item count all follow Chat's text-size setting.
+Host selection seeds only saved metadata before page startup and does not connect.
+Its saved-host column uses Swift's system-font roles and application text scale,
+with the native 22 pt outer inset and 60 pt minimum machine rows. It no longer
+inherits the old connection form's additional 24 pt top margin. The ground
+continues below the home inset. Pairing-code scanning and guest invitation acceptance
+are implemented. Their device/platform limits above still prevent full onboarding acceptance.
+Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
 tries moving the capture by up to 24 device pixels, and reports a tile (in the summary and the report's
@@ -261,9 +741,14 @@ tries moving the capture by up to 24 device pixels, and reports a tile (in the s
 differences change pixels in place and no move removes them; something drawn off is fitted almost
 exactly by moving it back. Any displaced tile fails the comparison. The workflow uploads the captures,
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
-summary table. The thresholds are `PARITY_TOL` (2) and `PARITY_MAX_OVER_PCT` (0.15 %) in the workflow:
-the agent list matches the references in place, size and colour, and the at most 0.13 % left is
-anti-aliasing that iOS and macOS's web view draw differently (iOS snaps glyphs to whole pixels).
+summary table. The thresholds remain `PARITY_TOL` (2) and
+`PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
+anti-aliasing differences. The full comparison at desktop `aa8828b` captured all
+64 states but failed all 64 unchanged pixel/displacement gates (run `41168371428`).
+Capture coverage is not visual parity. The five detail scenarios also ran in the
+Linux native webview. The selected-row fix failed its native smoke
+against the old frontend and passed after rebuilding, including Back/reopen.
+No threshold or existing mask was relaxed.
 
 ## Releases
 

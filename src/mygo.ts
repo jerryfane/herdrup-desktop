@@ -4,6 +4,41 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+export interface Access {
+  guestID: string;
+  guestName: string;
+  machineLabel: string;
+  ownerName: string;
+  agentName: string;
+  agentTarget: string;
+  endpoint: Endpoint;
+  acceptedAt: string;
+}
+
+export interface AccountLoginState {
+  url: string;
+  phase: string;
+  message: string;
+  email: string;
+}
+
+export interface AccountMenuChoice {
+  token: string;
+  id: string;
+  action: string;
+  agentCount: number;
+}
+
+/** AgentAnswerStatus values a newer herdr adds decode as they are; see Known. */
+export type AgentAnswerStatus = "answered" | "sent_unconfirmed";
+
+export interface AgentCreationResult {
+  phase: string;
+  paneID: string;
+  name: string;
+  message: string;
+}
+
 /**
  * AgentTarget identifies a pane within its originating connection and session.
  * Pane IDs alone can name unrelated agents on other machines or sessions.
@@ -23,6 +58,13 @@ export interface AgentView {
   paneID: string;
   name: string;
   harness: string;
+  heading: string;
+  group: string;
+  status: string;
+  statusSinceUnixMs?: number;
+  guest: boolean;
+  guestGram: boolean;
+  plainTerminal: boolean;
 }
 
 /**
@@ -77,6 +119,18 @@ export interface BoardUpdate {
   machineID: string;
 }
 
+export interface ChatAnswerReply {
+  status?: AgentAnswerStatus;
+  code?: string;
+  message?: string;
+}
+
+/** ChatMenuChoice identifies a snapshot of a message, not a mutable transcript row. */
+export interface ChatMenuChoice {
+  id: string;
+  item: string;
+}
+
 /** ConnState is the connection as the window shows it. */
 export interface ConnState {
   /** Phase is "idle", "connecting", "connected" or "error". */
@@ -87,6 +141,26 @@ export interface ConnState {
   herdr: string;
   /** Live is true when events_v2 drives updates, false when polling. */
   live: boolean;
+  guest?: GuestConnection;
+}
+
+export interface DictationEvent {
+  token: string;
+  state: string;
+  text?: string;
+  level?: number;
+  error?: string;
+}
+
+export interface Endpoint {
+  relay: string;
+  hostID: string;
+  hostPublicKey: string;
+}
+
+export interface Features {
+  gram: boolean;
+  push: boolean;
 }
 
 /** Folder is what a folder row shows (herdrup AgentFolderSummary). */
@@ -300,6 +374,31 @@ export interface GramUploadProgress {
   label: string;
 }
 
+export interface GuestConnection {
+  access: Access;
+  features: Features;
+  fingerprint: string;
+}
+
+/** GuestInvitation contains display information, not the invitation bearer. */
+export interface GuestInvitation {
+  machineLabel: string;
+  ownerName: string;
+  agentName: string;
+  guestName: string;
+  expires: string;
+  fingerprint: string;
+}
+
+/**
+ * GuestShareDetails describes the agent selected when this view was opened.
+ * Routing stays in Go; the page cannot supply a different pane or machine.
+ */
+export interface GuestShareDetails {
+  agentName: string;
+  machineLabel: string;
+}
+
 /**
  * Item is one row of the list once folders and stars are applied: an
  * agent (Row, with Starred and FolderID set) or a folder.
@@ -316,11 +415,45 @@ export interface Item {
  * file and a password is never written down.
  */
 export interface Machine {
+  nickname: string;
   host: string;
   port: number;
   user: string;
   keyPath: string;
   session: string;
+  /**
+   * Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
+   * rather than an unrelated ECDSA key or certificate served by the same sshd.
+   */
+  paired?: boolean;
+}
+
+/**
+ * NotificationPreferences are device-local: changing hosts does not silently
+ * change which desktop alerts the owner has enabled.
+ */
+export interface NotificationPreferences {
+  needsInput: boolean;
+  dies: boolean;
+  finishes: boolean;
+  gram: boolean;
+}
+
+export interface NotificationSettings {
+  preferences: NotificationPreferences;
+  supported: boolean;
+  lastError: string;
+}
+
+export interface PairedMachine {
+  id: string;
+  nickname: string;
+}
+
+export interface PaneAttachments {
+  token: string;
+  files: GramAttachment[];
+  note: string;
 }
 
 /**
@@ -497,11 +630,17 @@ export interface SavedGram {
 export interface SavedMachine {
   /** ID is user@host:port, which identifies a machine in the set. */
   id: string;
+  nickname: string;
   host: string;
   port: number;
   user: string;
   keyPath: string;
   session: string;
+  /**
+   * Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
+   * rather than an unrelated ECDSA key or certificate served by the same sshd.
+   */
+  paired?: boolean;
   /** Active marks the machine the desk connects to. */
   active: boolean;
 }
@@ -538,6 +677,17 @@ export interface SavedMachineStatus {
    * reachability badge; nil when the board lists none of its agents.
    */
   peer: PeerSummary | null;
+}
+
+/**
+ * SavedTerminal is device-local metadata. Plain shells do not appear in
+ * agent.list; their pane identities must survive closing and reopening the app.
+ */
+export interface SavedTerminal {
+  id: string;
+  paneID: string;
+  label: string;
+  createdUnixMs: number;
 }
 
 /** Section is one group of rows. */
@@ -620,11 +770,26 @@ export interface SymbolImage {
   baseline: number;
 }
 
+export interface TerminalCreationResult {
+  phase: string;
+  terminal?: SavedTerminal;
+  message: string;
+}
+
 export interface TerminalEvent {
   token: string;
   streamID: string;
   frame?: PaneStreamFrame;
   error?: string;
+}
+
+/**
+ * TerminalHistoryPage distinguishes an expired/unsupported server cursor from a
+ * transport failure. Only the latter may be retried with the same cursor.
+ */
+export interface TerminalHistoryPage {
+  page?: ResponseResultPaneHistory;
+  unavailable?: string;
 }
 
 // ---- Services ----
@@ -634,6 +799,9 @@ export interface TerminalEvent {
  * its board current. One machine is connected at a time.
  */
 export const Desk = {
+  acceptGuestInvitation(text: string): Promise<Access> {
+    return call("Desk.AcceptGuestInvitation", text);
+  },
   /** Accounts returns the credential accounts' labels by id. */
   accounts(): Promise<Record<string, string>> {
     return call("Desk.Accounts");
@@ -657,6 +825,13 @@ export const Desk = {
     return call("Desk.AgentOpened", target);
   },
   /**
+   * The UI supplies the exact build/mode it confirmed, never an unqualified
+   * "install latest". Uncertain apply results are followed, never resubmitted.
+   */
+  applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
+    return call("Desk.ApplySettingsServerUpdate", token, buildID, restartLater);
+  },
+  /**
    * AvatarImage returns an agent's avatar photo as a data: URL: target is
    * the row's Avatar.Target and sha256 its Avatar.SHA256. Photos come from
    * the disk cache, else agent.avatar.get on the current session.
@@ -668,8 +843,12 @@ export const Desk = {
   board(): Promise<BoardUpdate | null> {
     return call("Desk.Board");
   },
-  chatAnswer(token: string, askID: string, option: string): Promise<string> {
+  chatAnswer(token: string, askID: string, option: string): Promise<ChatAnswerReply> {
     return call("Desk.ChatAnswer", token, askID, option);
+  },
+  /** ChatMenu uses an OS menu so transcript polling cannot replace an open menu. */
+  chatMenu(id: string, offersMarkdown: boolean): Promise<void> {
+    return call("Desk.ChatMenu", id, offersMarkdown);
   },
   chatPrompt(token: string, text: string): Promise<string> {
     return call("Desk.ChatPrompt", token, text);
@@ -681,8 +860,20 @@ export const Desk = {
   chatTranscript(token: string, after: string, before: string, subagent: string): Promise<string> {
     return call("Desk.ChatTranscript", token, after, before, subagent);
   },
+  closeAccountLogin(token: string, loginID: string): Promise<void> {
+    return call("Desk.CloseAccountLogin", token, loginID);
+  },
   closeAgentView(token: string): Promise<void> {
     return call("Desk.CloseAgentView", token);
+  },
+  closeCreation(token: string): Promise<void> {
+    return call("Desk.CloseCreation", token);
+  },
+  closeSettings(token: string): Promise<void> {
+    return call("Desk.CloseSettings", token);
+  },
+  closeTerminal(target: AgentTarget): Promise<void> {
+    return call("Desk.CloseTerminal", target);
   },
   /**
    * Connect saves the machine and connects to it, replacing any current
@@ -690,6 +881,31 @@ export const Desk = {
    */
   connect(m: Machine, password: string): Promise<void> {
     return call("Desk.Connect", m, password);
+  },
+  connectGuest(id: string): Promise<void> {
+    return call("Desk.ConnectGuest", id);
+  },
+  createAgent(token: string, folder: string, kind: string): Promise<AgentCreationResult> {
+    return call("Desk.CreateAgent", token, folder, kind);
+  },
+  /**
+   * CreateGuestInvite follows the same session lifetime as terminal/chat writes.
+   * A lost response is not retried: the daemon may already have created an invite.
+   */
+  createGuestInvite(token: string, name: string, ownerName: string, shareGram: boolean): Promise<string> {
+    return call("Desk.CreateGuestInvite", token, name, ownerName, shareGram);
+  },
+  createSettingsAccount(token: string, kind: string, label: string): Promise<string> {
+    return call("Desk.CreateSettingsAccount", token, kind, label);
+  },
+  createTerminal(token: string): Promise<TerminalCreationResult> {
+    return call("Desk.CreateTerminal", token);
+  },
+  creationDirectory(token: string, folder: string): Promise<string> {
+    return call("Desk.CreationDirectory", token, folder);
+  },
+  creationKinds(token: string): Promise<string> {
+    return call("Desk.CreationKinds", token);
   },
   /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
@@ -701,6 +917,26 @@ export const Desk = {
    */
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
+  },
+  forgetGuestConnection(id: string): Promise<void> {
+    return call("Desk.ForgetGuestConnection", id);
+  },
+  forgetTerminal(target: AgentTarget): Promise<void> {
+    return call("Desk.ForgetTerminal", target);
+  },
+  getNotificationSettings(): Promise<NotificationSettings> {
+    return call("Desk.GetNotificationSettings");
+  },
+  /**
+   * GetPreviewJavaScript defaults off. A malformed preference is an error rather
+   * than permission to run a received document's scripts.
+   */
+  getPreviewJavaScript(): Promise<boolean> {
+    return call("Desk.GetPreviewJavaScript");
+  },
+  /** GramAttachFiles stages native dropped files through the existing uploader. */
+  gramAttachFiles(paths: string[]): Promise<string[]> {
+    return call("Desk.GramAttachFiles", paths);
   },
   /**
    * GramCancelAttachment removes an attached file: its upload stops, and one
@@ -764,13 +1000,14 @@ export const Desk = {
     return call("Desk.GramMenu", id, items);
   },
   /**
-   * GramOpenFile opens a message's file with the system's default app,
-   * downloading it the first time. herdrup's QuickLook and in-app HTML/SVG
-   * viewer have no desktop counterpart; a program or script is not opened
-   * at all, since the system opener would run it.
+   * GramOpenFile previews received HTML/SVG in an isolated window. Other documents
+   * use the system opener; programs and scripts remain save-only.
    */
   gramOpenFile(id: string): Promise<void> {
     return call("Desk.GramOpenFile", id);
+  },
+  gramPasteClipboard(): Promise<boolean> {
+    return call("Desk.GramPasteClipboard");
   },
   /**
    * GramPickFiles shows the open dialog for files to attach, several at
@@ -840,6 +1077,23 @@ export const Desk = {
   gramState(): Promise<GramSnapshot> {
     return call("Desk.GramState");
   },
+  /** GuestChatAvailable follows the authenticated host's transcript capability. */
+  guestChatAvailable(token: string): Promise<boolean> {
+    return call("Desk.GuestChatAvailable", token);
+  },
+  guestShareDetails(token: string): Promise<GuestShareDetails> {
+    return call("Desk.GuestShareDetails", token);
+  },
+  /** HasGuestInvitationClipboardText inspects formats, not clipboard contents. */
+  hasGuestInvitationClipboardText(): Promise<boolean> {
+    return call("Desk.HasGuestInvitationClipboardText");
+  },
+  inspectGuestInvitation(text: string): Promise<GuestInvitation> {
+    return call("Desk.InspectGuestInvitation", text);
+  },
+  logoutSettingsAccount(token: string, id: string): Promise<string> {
+    return call("Desk.LogoutSettingsAccount", token, id);
+  },
   /** Machine returns the active saved machine, if any. */
   machine(): Promise<Machine | null> {
     return call("Desk.Machine");
@@ -867,9 +1121,42 @@ export const Desk = {
   openAgentView(target: AgentTarget, token: string): Promise<AgentView> {
     return call("Desk.OpenAgentView", target, token);
   },
+  openCreation(machineID: string, session: string, token: string): Promise<void> {
+    return call("Desk.OpenCreation", machineID, session, token);
+  },
   /** OpenExternalURL deliberately excludes executable/file URLs from model output. */
   openExternalURL(raw: string): Promise<void> {
     return call("Desk.OpenExternalURL", raw);
+  },
+  openSettings(machineID: string, session: string, token: string): Promise<void> {
+    return call("Desk.OpenSettings", machineID, session, token);
+  },
+  openTerminalView(target: AgentTarget, token: string): Promise<AgentView> {
+    return call("Desk.OpenTerminalView", target, token);
+  },
+  /**
+   * PairMachine pins before redemption, then persists the private key and host.
+   * It never connects or starts a process on the machine: Open it is a separate
+   * user action. Cancelling the scanner stops capture, not an accepted redemption.
+   */
+  pairMachine(qrText: string): Promise<PairedMachine> {
+    return call("Desk.PairMachine", qrText);
+  },
+  /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
+  paneAttachFiles(token: string, paths: string[]): Promise<void> {
+    return call("Desk.PaneAttachFiles", token, paths);
+  },
+  panePasteClipboard(token: string): Promise<boolean> {
+    return call("Desk.PanePasteClipboard", token);
+  },
+  panePickFiles(token: string): Promise<void> {
+    return call("Desk.PanePickFiles", token);
+  },
+  paneRemoveAttachment(token: string, path: string): Promise<void> {
+    return call("Desk.PaneRemoveAttachment", token, path);
+  },
+  paneRetryAttachment(token: string, path: string): Promise<void> {
+    return call("Desk.PaneRetryAttachment", token, path);
   },
   /**
    * Peers lists the federation peers among the current board's agents,
@@ -883,12 +1170,52 @@ export const Desk = {
   pendingAgent(): Promise<AgentTarget | null> {
     return call("Desk.PendingAgent");
   },
+  pollAccountLogin(token: string, loginID: string): Promise<AccountLoginState> {
+    return call("Desk.PollAccountLogin", token, loginID);
+  },
+  /** ReadAgentText powers the native pane menu's Copy screen / Copy recent output. */
+  readAgentText(token: string, recent: boolean): Promise<string> {
+    return call("Desk.ReadAgentText", token, recent);
+  },
+  /**
+   * ReadGuestInvitationClipboard is invoked only by the explicit Paste invite
+   * action. Reading text never redeems an invitation or opens clipboard file paths.
+   */
+  readGuestInvitationClipboard(): Promise<string> {
+    return call("Desk.ReadGuestInvitationClipboard");
+  },
+  /**
+   * Retrying a definite failure checks afresh before a new confirmation. Looking
+   * again after silence only polls the existing target; it cannot install anything.
+   */
+  recheckSettingsServerUpdate(token: string, lookAgain: boolean): Promise<void> {
+    return call("Desk.RecheckSettingsServerUpdate", token, lookAgain);
+  },
   /**
    * RemoveMachine forgets a saved machine. Removing the active machine
    * disconnects it and leaves no machine active.
    */
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
+  },
+  removeSettingsAccount(token: string, id: string): Promise<string> {
+    return call("Desk.RemoveSettingsAccount", token, id);
+  },
+  renameTerminal(target: AgentTarget, label: string): Promise<void> {
+    return call("Desk.RenameTerminal", target, label);
+  },
+  revokeGuestAccess(token: string, machine: string, id: string, invite: boolean): Promise<void> {
+    return call("Desk.RevokeGuestAccess", token, machine, id, invite);
+  },
+  /**
+   * SaveMachine updates the saved profile without opening a connection. A running
+   * connection keeps its existing credentials until the user reconnects.
+   */
+  saveMachine(m: Machine, replacing: string): Promise<void> {
+    return call("Desk.SaveMachine", m, replacing);
+  },
+  savedTerminals(machineID: string, session: string): Promise<SavedTerminal[]> {
+    return call("Desk.SavedTerminals", machineID, session);
   },
   /**
    * SearchBoard is the board for a sidebar search: the agents query matches,
@@ -931,6 +1258,9 @@ export const Desk = {
   setFolderOpen(id: string, open: boolean): Promise<void> {
     return call("Desk.SetFolderOpen", id, open);
   },
+  setGuestGramSharing(token: string, machine: string, guestID: string, share: boolean): Promise<void> {
+    return call("Desk.SetGuestGramSharing", token, machine, guestID, share);
+  },
   /**
    * SetMachineFederation opts the saved machine profileID into federation,
    * or out of it, with `herdr machine federate|unfederate`, then re-reads
@@ -943,6 +1273,45 @@ export const Desk = {
   setMachineFederation(profileID: string, enabled: boolean): Promise<void> {
     return call("Desk.SetMachineFederation", profileID, enabled);
   },
+  setNotificationPreference(kind: string, enabled: boolean): Promise<void> {
+    return call("Desk.SetNotificationPreference", kind, enabled);
+  },
+  setPreviewJavaScript(enabled: boolean): Promise<void> {
+    return call("Desk.SetPreviewJavaScript", enabled);
+  },
+  /**
+   * SettingsAccountMenu snapshots one account. A menu selection is only an intent;
+   * the actual mutation still requires a current Settings token and confirmation.
+   */
+  settingsAccountMenu(token: string, id: string, accountID: string): Promise<void> {
+    return call("Desk.SettingsAccountMenu", token, id, accountID);
+  },
+  settingsAccounts(token: string): Promise<string> {
+    return call("Desk.SettingsAccounts", token);
+  },
+  /**
+   * SettingsGuestMachine keeps listing and audit failures distinct: an unreadable
+   * activity log is not evidence that a guest has done nothing.
+   */
+  settingsGuestMachine(token: string, machine: string): Promise<string> {
+    return call("Desk.SettingsGuestMachine", token, machine);
+  },
+  /**
+   * SettingsMachineVersion identifies the daemon belonging to this Settings scope,
+   * not the desktop app or the currently selected machine after a switch.
+   */
+  settingsMachineVersion(token: string): Promise<string> {
+    return call("Desk.SettingsMachineVersion", token);
+  },
+  settingsServerUpdate(token: string, refresh: boolean): Promise<string> {
+    return call("Desk.SettingsServerUpdate", token, refresh);
+  },
+  sharedConnections(): Promise<Access[]> {
+    return call("Desk.SharedConnections");
+  },
+  startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
+    return call("Desk.StartAccountLogin", token, loginID, id, setupToken);
+  },
   startTerminal(token: string, streamID: string): Promise<void> {
     return call("Desk.StartTerminal", token, streamID);
   },
@@ -953,7 +1322,21 @@ export const Desk = {
   stopTerminal(token: string, streamID: string): Promise<void> {
     return call("Desk.StopTerminal", token, streamID);
   },
-  terminalHistory(token: string, cursor: string): Promise<ResponseResultPaneHistory> {
+  submitAccountLogin(token: string, loginID: string, code: string): Promise<void> {
+    return call("Desk.SubmitAccountLogin", token, loginID, code);
+  },
+  /**
+   * SwapSettingsAccount checks the roster again; a displayed account is not proof
+   * that it can resume an agent. The daemon also enforces readiness per restart.
+   */
+  swapSettingsAccount(token: string, id: string): Promise<string> {
+    return call("Desk.SwapSettingsAccount", token, id);
+  },
+  /** TakeGuestInvitation hands a launch URL to the page once, without persisting it. */
+  takeGuestInvitation(): Promise<string> {
+    return call("Desk.TakeGuestInvitation");
+  },
+  terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {
     return call("Desk.TerminalHistory", token, cursor);
   },
   terminalInput(token: string, streamID: string, text: string): Promise<void> {
@@ -961,6 +1344,9 @@ export const Desk = {
   },
   terminalSize(token: string, streamID: string, cols: number, rows: number): Promise<void> {
     return call("Desk.TerminalSize", token, streamID, cols, rows);
+  },
+  testNotification(): Promise<void> {
+    return call("Desk.TestNotification");
   },
 } as const;
 
@@ -978,6 +1364,23 @@ export const Symbols = {
    */
   image(name: string, pointSize: number, weight: string, scale: number): Promise<SymbolImage> {
     return call("Symbols.Image", name, pointSize, weight, scale);
+  },
+} as const;
+
+/**
+ * Dictation runs one bundled, offline-only microphone recognizer. It has no
+ * provider selection, URL, API key, network client or cloud fallback.
+ */
+export const Dictation = {
+  start(token: string, locale: string): Promise<void> {
+    return call("Dictation.Start", token, locale);
+  },
+  /**
+   * Stop preserves the last partial result, matching SpeechDictator.stop. Killing
+   * inference releases capture immediately; no late result can overwrite typed text.
+   */
+  stop(token: string): Promise<void> {
+    return call("Dictation.Stop", token);
   },
 } as const;
 
@@ -1014,7 +1417,10 @@ export const events = {
    * window answers with Desk.NameFolder.
    */
   folderNamingRequested: event<FolderNaming>("folder-naming:requested"),
+  guestInvitationOpened: event<boolean>("guest-invitation:opened"),
   terminalChanged: event<TerminalEvent>("terminal:changed"),
+  chatMenu: event<ChatMenuChoice>("chat:menu"),
+  paneAttachments: event<PaneAttachments>("pane:attachments"),
   /**
    * SessionsChanged is sent with the session pills: none while fewer than
    * two sessions run, as herdrup hides them then.
@@ -1025,6 +1431,8 @@ export const events = {
    * which name the account on an agent row.
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
+  settingsAccountMenu: event<AccountMenuChoice>("settings:account-menu"),
+  dictationChanged: event<DictationEvent>("dictation:changed"),
   /**
    * AgentOpen wakes the page for a scoped notification or tray activation.
    * Desk.PendingAgent retains it across window and board startup.

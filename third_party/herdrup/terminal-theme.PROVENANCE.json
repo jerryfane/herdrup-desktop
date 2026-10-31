@@ -1,0 +1,20 @@
+{
+  "repo": "jerryfane/herdrup",
+  "commit": "1c21ad11929d6111ae578166e9f39e64f6abc3fd",
+  "generator": "cmd/terminal-palette/main.swift",
+  "sources": [
+    {
+      "path": "App/LiveTerminalView.swift",
+      "sha256": "682a5ec51749a8f4567632f4be4a177f8af78aa021280c3847acd9b23e5e1017"
+    },
+    {
+      "path": "Vendor/SwiftTerm/Sources/SwiftTerm/Colors.swift",
+      "sha256": "7071f2ebbc74d8f5b8bec63c06d5698b08d1f9fa36473988dc8ea5677f3dd109"
+    },
+    {
+      "path": "Vendor/SwiftTerm/Sources/SwiftTerm/TerminalOptions.swift",
+      "sha256": "a0f06b03fe7611e7401bc35f2b4bc391e2148dc25165d6f6a69679608a65b456"
+    }
+  ],
+  "sha256": "0877672648515482c0ac0e38069984eaaa67481da4d7c936b43975ca7e7b4456"
+}

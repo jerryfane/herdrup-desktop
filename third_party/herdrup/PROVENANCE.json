@@ -1,11 +1,11 @@
 {
   "repo": "jerryfane/herdrup",
-  "commit": "d16720327b904ab056166e8df32b973e2d11328d",
+  "commit": "9845ecf0743c7dce8073dc4a00db23b1fec069a8",
   "files": [
     {
       "source": "design/tokens.json",
       "dest": "third_party/herdrup/design/tokens.json",
-      "sha256": "60390fc9b2d15f5bb5b876bd7ab96e6b3ffb39fc20c84b96ec2a0638a2ad6196"
+      "sha256": "d4f6b60f08e637cac24bf5bf895fb1f5e8ab383d4b420bc0eae2d7e095e22ef3"
     },
     {
       "source": "App/Fonts/Geist-Regular.ttf",
@@ -128,6 +128,11 @@
       "sha256": "60cbbec91fd6276e697d4f007353882ac3c9ad71758b6a680d19406d32756bb7"
     },
     {
+      "source": "Shared/Assets.xcassets/AppLogo.imageset/AppLogo@3x.png",
+      "dest": "public/herdrup/app-logo.png",
+      "sha256": "a9e5f45388b0afabb131b7075c2307efb826df55e78e338254219415de0b7d28"
+    },
+    {
       "source": "App/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
       "dest": "resources/icon.png",
       "sha256": "6278eb2bc7d618a367e9c6f1975c4a7e05a6bc3d0fb23ded023fb2a7b002d10a"
@@ -166,6 +171,56 @@
       "source": "App/Assets.xcassets/ComposerSending.imageset/glyph.svg",
       "dest": "public/herdrup/composer/sending.svg",
       "sha256": "0536fa089e4a605acdaa9c2e49faaafce825479d2502484080b65100c8e2553d"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerBookmark.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/bookmark.svg",
+      "sha256": "79353d1bd2bccde1326cc6a10dcbb05826e1cf5dcf0d0d0b1fa60bf2f0a390c2"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerMic.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/mic.svg",
+      "sha256": "76288a7c46d675051175f60b6202fe9940dc9515c84d715af54a24a6ad15b816"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyboard.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/keyboard.svg",
+      "sha256": "cf9618a90d45b89689867a502653be817736f833f3547697219397cce96f34ed"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyLeft.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-left.svg",
+      "sha256": "c081a2551e7b4db17438114e7718546bb8290aaaf3edc90dfab5ac674ad33e2a"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyUp.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-up.svg",
+      "sha256": "bfbdbbdefceff080c2f0cf1fc42c90e2ff969ffff3efc11aeef67e5981fd3d18"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyDown.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-down.svg",
+      "sha256": "5bdac4a464a66fd2386a06e4edd9e1285207d43f4327735c375093a9fbc7cff1"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyRight.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-right.svg",
+      "sha256": "1b0d0365eb871b0098b966c9b094acff56bc62b76bc60c876e50831ac3e1b7be"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyTop.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-top.svg",
+      "sha256": "d9abfb225402b1be0aa81ac83feab67b4d45aa10b4e92bd09a64a63baae9ba11"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyLatest.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-latest.svg",
+      "sha256": "dbb9a00b39391ba1a9fe8795775025cf2e5fb37a4a9d0b6f5258d9391ceed8ea"
+    },
+    {
+      "source": "App/Assets.xcassets/ComposerKeyEnter.imageset/glyph.svg",
+      "dest": "public/herdrup/composer/key-enter.svg",
+      "sha256": "7ec0971debe436189df5a94f6c4024d0adfd928a2394e2f822d4521292b126ba"
     },
     {
       "source": "App/Resources/Mermaid/mermaid.min.js",

@@ -18,6 +18,7 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
+	"github.com/jerryfane/herdrup-desktop/internal/guest"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/live"
@@ -26,11 +27,15 @@ import (
 // Machine is a saved connection. It holds no secret: the key stays in its
 // file and a password is never written down.
 type Machine struct {
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	User    string `json:"user"`
-	KeyPath string `json:"keyPath"`
-	Session string `json:"session"`
+	Nickname string `json:"nickname"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	KeyPath  string `json:"keyPath"`
+	Session  string `json:"session"`
+	// Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
+	// rather than an unrelated ECDSA key or certificate served by the same sshd.
+	Paired bool `json:"paired,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -76,7 +81,8 @@ type ConnState struct {
 	// Herdr is the version and protocol of the connected herdr.
 	Herdr string `json:"herdr"`
 	// Live is true when events_v2 drives updates, false when polling.
-	Live bool `json:"live"`
+	Live  bool             `json:"live"`
+	Guest *GuestConnection `json:"guest,omitempty"`
 }
 
 // BoardUpdate is a new status board.
@@ -105,16 +111,26 @@ var (
 type Desk struct {
 	dir string // per-user data directory
 
-	storeMu sync.Mutex // serialises reads and writes of machines.json
+	storeMu       sync.Mutex // serialises reads and writes of machines.json
+	notifications notificationSettings
+	pairingMu     sync.Mutex
+	guestAcceptMu sync.Mutex
+	guestStore    *guest.Store
+	pins          *bridge.FilePinStore
 
-	mu    sync.Mutex
-	state ConnState
-	board *BoardUpdate
+	mu                 sync.Mutex
+	pendingGuestInvite string
+	state              ConnState
+	board              *BoardUpdate
 	// peers are the federation peers of board's agents.
 	peers       []engine.PeerSummary
 	cancel      context.CancelFunc
 	link        *link // the current connection; nil when disconnected
 	interaction *interaction
+	settings    *settingsSession
+	creation    *creationSession
+	terminals   *terminalStore
+	updates     map[string]*serverUpdate
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
@@ -152,8 +168,11 @@ type link struct {
 	session string
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
-	sessionGen uint64
-	client     *bridge.Client // nil until connected
+	sessionGen  uint64
+	client      *bridge.Client // nil until connected
+	guest       *guest.Transport
+	guestClient *engine.Client
+	access      *guest.Access
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
 	// ctx is the current watch's; it ends when the session or connection
@@ -172,6 +191,9 @@ func newDesk(dir string) *Desk {
 	return &Desk{
 		dir: dir, state: ConnState{Phase: "idle"},
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
+		terminals:   &terminalStore{path: filepath.Join(dir, "terminals.json")},
+		guestStore:  guest.NewStore(filepath.Join(dir, "shared-connections.json")),
+		pins:        bridge.NewFilePinStore(filepath.Join(dir, "host-keys.json")),
 		alert:       alertGroups,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
 		presence: newPresence(),
@@ -261,6 +283,47 @@ func (d *Desk) Machines() ([]SavedMachine, error) {
 		out = append(out, SavedMachine{ID: id, Machine: m, Active: st.Active != "" && id == st.Active})
 	}
 	return out, nil
+}
+
+// SaveMachine updates the saved profile without opening a connection. A running
+// connection keeps its existing credentials until the user reconnects.
+func (d *Desk) SaveMachine(m Machine, replacing string) error {
+	m.Nickname = strings.TrimSpace(m.Nickname)
+	m.Host = strings.TrimSpace(m.Host)
+	m.User = strings.TrimSpace(m.User)
+	m.KeyPath = expandHome(strings.TrimSpace(m.KeyPath))
+	if m.Port == 0 {
+		m.Port = 22
+	}
+	if m.Host == "" || m.User == "" {
+		return errors.New("host and user are required")
+	}
+	if !bridge.ValidSession(m.Session) {
+		return fmt.Errorf("invalid herdr session name %q", m.Session)
+	}
+	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
+	st, err := d.load()
+	if err != nil {
+		return err
+	}
+	id := machineID(m)
+	index := st.find(replacing)
+	if replacing != "" && index < 0 {
+		return errors.New("the saved host no longer exists")
+	}
+	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
+		return errors.New("that host and user are already saved")
+	}
+	if index < 0 {
+		st.Machines = append(st.Machines, m)
+	} else {
+		st.Machines[index] = m
+		if st.Active == replacing {
+			st.Active = id
+		}
+	}
+	return d.store(st)
 }
 
 // SelectMachine makes a saved machine the active one and connects to it,
@@ -391,6 +454,9 @@ func (d *Desk) selectSession(name string, at *boardSession) error {
 	// its list arrives, as herdrup's SessionSwitchCache does.
 	seeded := d.sessionSwitched(from, name, d.board, time.Now())
 	l.sessionGen++
+	if d.settings != nil {
+		d.settings.cancel()
+	}
 	d.board, d.peers = nil, nil
 	if l.restart != nil {
 		l.restart()
@@ -429,6 +495,7 @@ func (d *Desk) Board() *BoardUpdate {
 // Connect saves the machine and connects to it, replacing any current
 // connection. password is used only when the machine has no key file.
 func (d *Desk) Connect(m Machine, password string) error {
+	m.Nickname = strings.TrimSpace(m.Nickname)
 	m.Host = strings.TrimSpace(m.Host)
 	m.User = strings.TrimSpace(m.User)
 	m.KeyPath = expandHome(strings.TrimSpace(m.KeyPath))
@@ -545,7 +612,10 @@ func (d *Desk) run(ctx context.Context, l *link, m Machine, password string) {
 func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label string) (listed bool, err error) {
 	cfg := bridge.Config{
 		Host: m.Host, Port: m.Port, User: m.User, Session: m.Session,
-		Pins: bridge.NewFilePinStore(filepath.Join(d.dir, "host-keys.json")),
+		Pins: d.pins,
+	}
+	if m.Paired {
+		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
 	}
 	if m.KeyPath != "" {
 		if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
@@ -592,6 +662,19 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 		d.mu.Unlock()
 		shown := false
 		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
+			if u.ExitedPaneID != "" {
+				d.mu.Lock()
+				if wctx.Err() == nil {
+					for _, a := range l.agents {
+						if a.PaneID == u.ExitedPaneID && a.Archived == nil {
+							d.presence.notifyEvent(a, l.id, l.session, "dies")
+							break
+						}
+					}
+				}
+				d.mu.Unlock()
+				return
+			}
 			if !shown {
 				shown, listed = true, true
 				groups.attach(ec, u.Pong)
@@ -613,6 +696,14 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
 			d.presence.notify(started, l.id, l.session)
+			if u.FinishedPaneID != "" {
+				for _, a := range u.Agents {
+					if a.PaneID == u.FinishedPaneID {
+						d.presence.notifyEvent(a, l.id, l.session, "finishes")
+						break
+					}
+				}
+			}
 			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session, MachineID: l.id})
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil

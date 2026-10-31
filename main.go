@@ -4,6 +4,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/design"
@@ -14,6 +15,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	pageURL := "/"
 	if smokeEnabled() {
 		// Test-hook runs start with no saved state: on a persistent CI
 		// machine the user data would carry the previous run's pinned host
@@ -23,8 +25,14 @@ func main() {
 		if dir, err = os.MkdirTemp("", "herdrup-smoke-"); err != nil {
 			log.Fatal(err)
 		}
+		// Web storage belongs to an origin, not Desk's data directory. A
+		// fresh asset host isolates native webview preferences on every OS.
+		pageURL = "mygo://" + filepath.Base(dir) + "/"
 	}
 	desk := newDesk(dir)
+	if err := prepareReferenceHosts(desk); err != nil {
+		log.Fatal("reference host metadata: ", err)
+	}
 	if !smokeEnabled() {
 		// Downloaded Gram files go under the user cache directory, which the
 		// system may clear; smoke runs keep everything in their temp dir.
@@ -34,9 +42,18 @@ func main() {
 	}
 	mygo.Bind(desk)
 	mygo.Bind(Symbols{})
+	dictation := &Dictation{}
+	mygo.Bind(dictation)
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { dictation.stopAll() })
+	mygo.App.OnDidResignActive(dictation.stopAll)
 
 	installMenuBar()
 	var win *mygo.Window
+	mygo.App.OnOpenURL(func(url string) {
+		if desk.queueGuestInvitation(url) && win != nil {
+			showWindow(win)
+		}
+	})
 	// One Herdrup at a time, so launching it again brings back the window
 	// that closing hid to the tray, also where no tray icon is drawn
 	// (GNOME without its AppIndicator extension). Test-hook runs may run
@@ -44,6 +61,9 @@ func main() {
 	if !smokeEnabled() && !refEnabled() {
 		if !mygo.App.RequestSingleInstanceLock() {
 			return
+		}
+		if err := mygo.App.RegisterURLScheme("herdrup"); err != nil {
+			log.Printf("Could not register invitation links: %v", err)
 		}
 		mygo.App.OnSecondInstance(func([]string, string) {
 			if win != nil {
@@ -61,12 +81,14 @@ func main() {
 			MinHeight:       420,
 			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
-			URL:             "/",
+			URL:             pageURL,
+			Page:            mygo.PageOptions{PreloadScript: smokePreload() + refPreload()},
 			// The menu bar of Linux and Windows windows stays out of the
 			// way of herdrup's layout until Alt or F10; its shortcuts work.
 			AutoHideMenuBar: true,
 		})
 		startPresence(desk, win)
+		win.OnClose(func(*mygo.CloseEvent) { dictation.stopAll() })
 		if refEnabled() {
 			runRef(desk, win)
 			return

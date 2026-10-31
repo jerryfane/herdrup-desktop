@@ -13,10 +13,9 @@
   --home-inset: 20px;
   /* A hairline is one device pixel (SwiftUI 1 / displayScale). */
   --pixel: 1px;
-  /* iPadOS 26 floating sidebar: inset and corner measured on the
-     references (ipad-11 and ipad-pro-13 agree). */
-  --sidebar-inset: 10px;
-  --sidebar-radius: 21.5px;
+  /* iOS 27's accepted regular-width references start the 320 pt sidebar
+     at the window edge, without the former floating card's inset. */
+  --sidebar-inset: 0px;
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
 }
@@ -117,10 +116,8 @@ html, body {
   top: 0;
   bottom: var(--sidebar-inset);
   width: var(--size-sidebar-min);
-  /* Background and corner clip: a continuous RoundedRectangle of
-     --sidebar-radius in ground (paintShape). Fitted to the references'
-     corners, the continuous curve matches at 21.25-21.5 pt; a circular
-     border-radius does not. */
+  /* HerdrApp.iPadLayout paints Palette.ground directly behind the column. */
+  background: var(--color-ground);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -175,6 +172,7 @@ html, body {
   overflow-y: auto;
   /* The tab bar floats over the list's end (safeAreaInset). */
   padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
+  scroll-padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
   scrollbar-width: none;
 }
 .roster::-webkit-scrollbar { display: none; }
@@ -212,6 +210,8 @@ html, body {
   height: var(--size-agent-row);
   padding-left: var(--space-row-lead);
 }
+.row.selected { isolation: isolate; }
+.row-selection { position: absolute; inset: 0 var(--size-selection-inset); z-index: -1; pointer-events: none; }
 .row.indented { padding-left: var(--space-row-lead-indented); }
 .row .text {
   flex: 1;
@@ -255,7 +255,7 @@ html, body {
   height: var(--pixel);
   background: var(--color-hairline);
 }
-.row.no-sep .text::after { display: none; }
+.row.no-sep .text::after, .row.selected .text::after, .row:has(+ .row.selected) .text::after { display: none; }
 
 /* AgentAvatar: a 44 pt circle and its 22 pt badge, offset 4 pt out. */
 .avatar {
@@ -424,15 +424,15 @@ html, body {
   background: color-mix(in srgb, var(--color-on-accent) 12%, transparent);
 }
 
-/* The connect form (until Settings has its own screen, #7). */
+/* Saved-host connection home; its readable column is defined in hosts.css. */
 .connect {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  max-width: 520px;
-  margin: 40px auto;
-  padding: 0 20px;
+  bottom: 0;
+  overflow: auto;
+  background: var(--color-ground);
   font-family: var(--font-app);
   -webkit-user-select: text;
   user-select: text;
