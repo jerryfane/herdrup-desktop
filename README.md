@@ -36,6 +36,9 @@ Native Linux typing reproduced clipping at 140% before the fix; afterward one an
 two lines fit, a sixth line scrolls behind the five-line limit, and expanded writers
 retain drafts across 140%→90%→100% changes. Typing and writer expansion leave the
 Chat viewport fixed. Windows/macOS composer-scale interaction is not yet verified.
+Expanded writing uses the persistent terminal's available height, including its
+key-row allowance, as Swift does. Hosted macOS captures verify expansion and mode
+switches preserve both viewports and the draft; writer screenshots still differ.
 Prompt bubbles fit their rendered lines while retaining the original text layout
 width. Linux native checks covered pointer selection, window resizing, global and
 Chat font changes, search highlights and selection retained through refresh.
