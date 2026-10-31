@@ -138,10 +138,28 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
     } else if (state !== "gram-mixed-latest") {
       const id = {"gram-mixed-image":"gr-image", "gram-mixed-folded":"gr-long", "gram-mixed-code":"gr-code"}[state];
       await until(() => row(id), "older message exists");
-      row(id).scrollIntoView({block:"center"});
       if (state === "gram-mixed-image") await until(() => row(id).querySelector('img.gimage-pic')?.naturalWidth > 0, "image bytes decoded");
       if (state === "gram-mixed-folded") await until(() => [...row(id).querySelectorAll('.gfold')].some(el => !el.hidden && el.textContent.includes("Read more")), "eleven-line report folded");
       if (state === "gram-mixed-code") await until(() => row(id).querySelector('[aria-label="Copy code"]'), "multiline code copy");
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const feed = document.querySelector('.gram-scroll');
+      const target = () => row(id)?.querySelector(state === "gram-mixed-image" ? ".gimage" : ".gparts");
+      const visible = () => {
+        const node = target();
+        if (!node || !feed) return false;
+        const rect = node.getBoundingClientRect(), viewport = feed.getBoundingClientRect();
+        const top = document.querySelector('.gpill')?.getBoundingClientRect().bottom ?? viewport.top;
+        return rect.width > 0 && rect.height > 0 && rect.top >= top && rect.bottom <= viewport.bottom &&
+          node.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+      };
+      // DesktopGramReferenceShots reveals only clipped targets, in 160 pt steps.
+      for (let attempt = 0; attempt < 18 && !visible(); attempt++) {
+        if (!feed) throw new Error("Gram feed missing while revealing an older message");
+        feed.scrollTop -= 160;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+      if (!visible()) throw new Error("The complete reference message is not visible below the floating header");
     }
   }
   await until(() => {

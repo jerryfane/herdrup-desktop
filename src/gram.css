@@ -82,6 +82,8 @@
   background: var(--color-ground); font-family: var(--font-app); color: var(--color-text);
   --gram-column: 1000px; --gram-header: 80px;
 }
+/* The ground ignores the native safe area; content keeps its resting inset. */
+.detail > .gram::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: var(--home-inset); background: var(--color-ground); pointer-events: none; }
 .gcol { width: min(var(--gram-column), 100%); margin-left: auto; margin-right: auto; }
 .gram-body { position: relative; flex: 1; min-height: 0; }
 .gram-content { position: absolute; inset: 0; display: flex; flex-direction: column; }

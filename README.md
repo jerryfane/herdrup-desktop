@@ -492,7 +492,11 @@ transitions, decoded files and uploads. The reference file chooser supplies only
 the native fixture's verified bytes; paperclip staging and upload remain real.
 Saved capture setup uses the production local-save action after opening the inbox;
 it is not native context-menu acceptance. Visible image previews must finish
-decoding before capture. Gram comparisons use no masks.
+decoding before capture. Older-content captures use the native driver's 160 pt
+scroll steps only while the complete target is obscured; already-visible images
+stay at the latest-message position. Gram's ground extends beneath the home
+inset without changing the feed or expanded writer's available height.
+Gram comparisons use no masks.
 
 Eight Settings captures cover the Machines index, all six saved federation
 profiles plus the unsaved guest peer, empty federation, and inline About.
