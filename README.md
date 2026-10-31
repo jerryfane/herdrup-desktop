@@ -549,6 +549,10 @@ with the box and baseline SwiftUI gives `Image(systemName:).font(.system(size:we
   stand-in.
   Additional web-only glyphs in `third_party/phosphor/web` are pinned to
   `@phosphor-icons/core@2.1.1` and use the same MIT licence.
+  Settings uses the gauge and outbound arrow from that package for Typing latency
+  and external links. Internal split-view page rows omit navigation chevrons, as
+  Swift does. A Linux native-window check covered keyboard opening of Typing
+  latency, selection state, reset and return to Machines; both pages were inspected.
 
 The `Symbols` workflow (on demand, macOS) checks the AppKit images against SwiftUI's at 1x, 2x and 3x,
 checks `symbols_sfmetrics.go` against AppKit, and uploads every image.

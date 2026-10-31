@@ -27,6 +27,8 @@ import scrollIcon from "../third_party/phosphor/web/arrows-down-up.svg?url";
 import selectionIcon from "../third_party/phosphor/web/text-align-left.svg?url";
 import trashIcon from "../third_party/phosphor/web/trash.svg?url";
 import latestIcon from "../third_party/phosphor/web/arrow-down.svg?url";
+import latencyIcon from "../third_party/phosphor/web/gauge.svg?url";
+import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.svg?url";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -39,6 +41,7 @@ const settingIcons: Record<string, string> = {
   "hand.draw": handIcon, "hand.tap": handIcon, "hand.point.up.left": handIcon,
   "arrow.up.and.down": scrollIcon, "text.alignleft": selectionIcon,
   "trash": trashIcon, "arrow.down.to.line": latestIcon,
+  "gauge.with.needle": latencyIcon, "arrow.up.right": externalLinkIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -137,10 +140,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
     node.append(glyph(icon), lines);
     if (value) node.append(el("span", "settings-row-value", value));
-    node.append(glyph("chevron.right", 12)); return node;
+    return node;
   }
   function link(label: string, icon: string, url: string) {
-    return row(label, icon, () => { void Desk.openExternalURL(url).catch(report); });
+    const node = row(label, icon, () => { void Desk.openExternalURL(url).catch(report); });
+    node.append(glyph("arrow.up.right", 12, "semibold")); return node;
   }
   function choose(next: Page) {
     if (next !== "accounts") accounts.closeDialogs();
@@ -186,7 +190,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     typingChoice.value = predictionMode();
     typingChoice.onchange = () => { try { changePredictionMode(typingChoice.value as PredictionMode); } catch (error) { typingChoice.value = predictionMode(); report(error); } };
     typingRow.append(glyph("keyboard", 20), typingLines, typingChoice);
-    const latencyRow = button("Typing latency", () => choose("typingLatency")); latencyRow.className = "settings-plain-row";
+    const latencyRow = row("Typing latency", "gauge.with.needle", () => choose("typingLatency"));
+    latencyRow.setAttribute("aria-current", selected === "typingLatency" ? "page" : "false");
     const gesturesRow = row("Gestures", "hand.draw", showGestures, "How to move around the app");
     gesturesRow.id = "settings-gestures";
     index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
