@@ -656,6 +656,10 @@ search results/no matches, addressed/ambiguous attachments, empty and loading.
 The fixture adapter seeds the real stateful Gram daemon store, including read
 transitions, decoded files and uploads. The reference file chooser supplies only
 the native fixture's verified bytes; paperclip staging and upload remain real.
+Before composing, the driver waits for fonts, initial rendering and a visible
+latest-message row, matching the native driver's hittable-message precondition.
+Native Linux addressed and ambiguous attachment scenarios pass; the addressed
+scenario retains its transcript scroll position while the composer grows.
 Saved capture setup uses the production local-save action after opening the inbox;
 it is not native context-menu acceptance. Visible image previews must finish
 decoding before capture. Older-content captures use the native driver's 160 pt

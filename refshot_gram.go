@@ -117,6 +117,15 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
       field.blur();
       await until(() => !row("gr-owner") && (state === "gram-search-results" ? row("gr-file") : text().includes("No matches")), "filtered inbox");
     } else if (state.startsWith("gram-composer-")) {
+      // Native launchGramReference waits for the latest bubble to be hittable.
+      // Row existence alone can precede renderFeed's first-frame tail landing.
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await until(() => {
+        const owner = row("gr-owner")?.getBoundingClientRect();
+        const viewport = document.querySelector('.gram-scroll')?.getBoundingClientRect();
+        return owner && viewport && owner.height > 0 && owner.top >= viewport.top && owner.bottom <= viewport.bottom;
+      }, "latest message visible before composing");
       document.querySelector('[aria-label="Attach file"]').click();
       await until(() => document.querySelector('.gchip-name')?.textContent === "picked-notes.txt" && document.querySelector('.gchip-status')?.textContent.endsWith(" · Ready"), "picked attachment uploaded");
       const field = document.querySelector('.gfield-input');
