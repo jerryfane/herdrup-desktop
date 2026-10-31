@@ -168,6 +168,9 @@ Restart-required downloads warn that a later server restart closes terminals;
 the app does not restart it. Refusals offer a fresh check and confirmation.
 Lost-track recovery only polls the original attempt. Unsupported or older
 installations show manual instructions instead of an install button.
+The card sits below the machine identity and above Connection, matching the native
+Machines layout. Native reference fixtures omit this model; that screenshot-only
+contract is not yet mirrored or masked in the desktop capture.
 Native Linux checks exercise cancellation, refusal, download progress, success,
 pending restart and manual-update cards against an isolated SSH fixture. They
 do not install a real daemon or establish Windows/macOS update UI acceptance.

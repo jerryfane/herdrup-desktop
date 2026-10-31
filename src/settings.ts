@@ -282,7 +282,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
       }).catch(report);
     }); copy.className = "settings-plain-row";
-    body.append(hero, group("CONNECTION", [reconnectButton, copy]), updates.root, federation());
+    body.append(hero, updates.root, group("CONNECTION", [reconnectButton, copy]), federation());
     reach = el("p", "settings-reach"); body.append(reach); updateConnection();
   }
   function federation() {
