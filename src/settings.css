@@ -103,3 +103,18 @@
 .settings-preference-select { grid-column:2; justify-self:start; max-width:100%; padding:4px 8px; border:1px solid var(--color-hairline); border-radius:6px; background:var(--color-surface); color:var(--color-text-dim); font:400 13px var(--font-app); }
 .settings-preference-row > .settings-switch { grid-column:2; }
 .settings-preference-status { grid-column:2; overflow-wrap:anywhere; }
+.settings-gestures-sheet { padding:0; overflow:hidden; }
+.settings-gestures-sheet[open] { display:flex; flex-direction:column; }
+.settings-gestures-sheet .settings-sheet-header { flex:none; padding:8px 16px 10px; border-bottom:1px solid var(--color-hairline); }
+.settings-gestures-titles { min-width:0; }
+.settings-gestures-titles h2 { margin:0; font:600 calc(20px * var(--ui-font-scale, 1)) var(--font-app); }
+.settings-gestures-titles p { margin:2px 0 0; color:var(--color-text-faint); font:400 calc(12px * var(--ui-font-scale, 1)) var(--font-app); }
+.settings-gestures-sheet .settings-sheet-header > button { flex:none; display:grid; place-items:center; width:36px; height:36px; padding:0; }
+.settings-gestures-content { min-height:0; overflow:auto; display:flex; flex-direction:column; gap:10px; padding:14px 16px 12px; }
+.settings-gesture { display:flex; align-items:center; gap:14px; padding:12px; border:1px solid var(--color-hairline); border-radius:14px; background:var(--color-surface); }
+.settings-gesture > .settings-glyph { width:44px; height:44px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface-raised); color:var(--color-text-dim); }
+.settings-gesture-lines { min-width:0; }
+.settings-gesture h3 { margin:0; font:600 calc(15px * var(--ui-font-scale, 1)) var(--font-app); }
+.settings-gesture p { margin:3px 0 0; font:400 calc(13px * var(--ui-font-scale, 1))/1.4 var(--font-app); }
+.settings-gestures-footer { flex:none; padding:8px 16px 12px; }
+.settings-gestures-footer button { width:100%; padding:14px; border-radius:14px; background:var(--color-surface-raised); font:600 calc(16px * var(--ui-font-scale, 1)) var(--font-app); }

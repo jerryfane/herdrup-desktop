@@ -98,6 +98,11 @@ restart. The OMP preference chooses Chat or Terminal on opening an agent; an exp
 mode choice overrides it for that agent until the app quits. Opening the default
 does not pin an override. Claude Code and Codex always open in Terminal.
 Help and About open the upstream issue tracker, community, legal pages and source.
+Settings → Help → Gestures explains the working desktop mouse, trackpad and
+keyboard affordances in a scrollable guide. Escape, Close and Got it dismiss it
+and restore focus to its Settings row; the footer remains reachable in a small
+window. The instructions describe desktop controls, not unimplemented mobile
+swipes or press-and-hold actions.
 Linux native-window checks exercised cancellation, federation and revocation through
 the SSH fixture, and read the resulting machine status back from the server.
 Accounts shows subscriptions, identity, readiness and stacked usage windows. Add
