@@ -2,6 +2,7 @@ package fakeherdr
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -51,15 +52,19 @@ func NewGuests() *Guests {
 
 func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, bool) {
 	switch method {
-	case "guest.list", "guest.audit", "guest.update", "guest.revoke":
+	case "guest.invite.create", "guest.list", "guest.audit", "guest.update", "guest.revoke":
 	default:
 		return nil, nil, false
 	}
 	var p struct {
-		Machine   string `json:"machine"`
-		GuestID   string `json:"guest_id"`
-		InviteID  string `json:"invite_id"`
-		ShareGram bool   `json:"share_gram"`
+		Machine      string `json:"machine"`
+		GuestID      string `json:"guest_id"`
+		InviteID     string `json:"invite_id"`
+		ShareGram    bool   `json:"share_gram"`
+		Target       string `json:"target"`
+		Name         string `json:"name"`
+		OwnerName    string `json:"owner_name"`
+		MachineLabel string `json:"machine_label"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, &APIError{Code: "invalid_request", Message: err.Error()}, true
@@ -86,6 +91,19 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		return nil, &APIError{Code: "not_found", Message: "guest or invite not found on this machine"}, true
 	}
 	switch method {
+	case "guest.invite.create":
+		if p.Target == "" || p.Name == "" || p.OwnerName == "" {
+			return nil, &APIError{Code: "invalid_params", Message: "target, guest name and owner name are required"}, true
+		}
+		now := time.Now().UnixMilli()
+		id := fmt.Sprintf("created-%d", len(store.invites)+1)
+		invite := map[string]any{"invite_id": id, "name": p.Name, "owner_name": p.OwnerName, "machine_label": p.MachineLabel,
+			"created_ms": now, "expires_ms": now + 86400000, "share_gram": p.ShareGram,
+			"grant": map[string]any{"terminal_id": p.Target, "agent_name": p.Target}}
+		store.invites = append(store.invites, invite)
+		// Deliberately non-credential payload; exercises local QR/copy only.
+		return snapshot(map[string]any{"type": "guest_invite_created", "invite": invite,
+			"url": "herdrup://guest-invite#fixture-" + id, "web_url": "https://example.invalid/i#fixture-" + id})
 	case "guest.list":
 		return snapshot(map[string]any{"type": "guest_list", "guests": store.guests, "invites": store.invites, "link": store.link})
 	case "guest.audit":

@@ -21,7 +21,8 @@
     "core-js": "^3.51.0",
     "dompurify": "^3.4.17",
     "marked": "^18.1.2",
-    "mygo-runtime": "0.7.1"
+    "mygo-runtime": "0.7.1",
+    "qrcode-generator": "2.0.4"
   },
   "devDependencies": {
     "mygo-cli": "0.7.1",

@@ -342,6 +342,15 @@ export interface GramUploadProgress {
 }
 
 /**
+ * GuestShareDetails describes the agent selected when this view was opened.
+ * Routing stays in Go; the page cannot supply a different pane or machine.
+ */
+export interface GuestShareDetails {
+  agentName: string;
+  machineLabel: string;
+}
+
+/**
  * Item is one row of the list once folders and stars are applied: an
  * agent (Row, with Starred and FolderID set) or a folder.
  */
@@ -776,6 +785,13 @@ export const Desk = {
   connect(m: Machine, password: string): Promise<void> {
     return call("Desk.Connect", m, password);
   },
+  /**
+   * CreateGuestInvite follows the same session lifetime as terminal/chat writes.
+   * A lost response is not retried: the daemon may already have created an invite.
+   */
+  createGuestInvite(token: string, name: string, ownerName: string, shareGram: boolean): Promise<string> {
+    return call("Desk.CreateGuestInvite", token, name, ownerName, shareGram);
+  },
   createSettingsAccount(token: string, kind: string, label: string): Promise<string> {
     return call("Desk.CreateSettingsAccount", token, kind, label);
   },
@@ -942,6 +958,9 @@ export const Desk = {
   /** GramState returns Gram as the page draws it. */
   gramState(): Promise<GramSnapshot> {
     return call("Desk.GramState");
+  },
+  guestShareDetails(token: string): Promise<GuestShareDetails> {
+    return call("Desk.GuestShareDetails", token);
   },
   logoutSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.LogoutSettingsAccount", token, id);

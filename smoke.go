@@ -119,7 +119,11 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 						finish(false, err.Error())
 						return
 					}
-					finish(true, "page shows "+strconv.Itoa(want)+" rows; preview isolation and predictive typing passed")
+					if err := smokeGuestInvite(win, out); err != nil {
+						finish(false, err.Error())
+						return
+					}
+					finish(true, "page shows "+strconv.Itoa(want)+" rows; preview isolation, predictive typing and guest invitations passed")
 					return
 				}
 			}

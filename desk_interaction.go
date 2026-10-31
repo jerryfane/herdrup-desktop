@@ -47,6 +47,7 @@ type interaction struct {
 	composer       *gramstore.Composer
 	recipient      string
 	sendMu         sync.Mutex
+	guestShare     guestShareRoute
 }
 
 type TerminalEvent struct {
@@ -104,6 +105,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 		},
 		at: at, ctx: ctx, cancel: cancel, client: engine.New(engine.Bridge(view)),
+		guestShare: shareRoute(agent, name, d.state.Machine),
 	}
 	if agent.Name != nil {
 		v.recipient = strings.TrimSpace(*agent.Name)

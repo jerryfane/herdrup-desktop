@@ -120,6 +120,17 @@ credentials or grants. Native Linux checks exercised sharing on/off, rapid
 reversal, peer invite cancellation, confirmed peer revocation and owner-name
 persistence across an app restart; server reads verified the other machine stayed
 unchanged. The regression check also covers same-ID cross-machine isolation.
+Agent actions → Share with someone creates a one-use invite for the selected
+agent, including federated machine routing. The first share asks for the owner's
+name; guest names follow the daemon's 32-character ASCII rule. Share Gram starts
+off. The result shows the daemon's actual Gram grant, an app-link QR and a copyable
+web link; legacy fragment links are converted to the path form used by Messages.
+Closing or replacing the agent view invalidates its create requests. An uncertain
+create result is never retried automatically.
+Linux native-window checks created an invite through the isolated SSH fixture,
+decoded the displayed QR and checked the clipboard link against its stored record.
+This does not establish live relay redemption. Swift's native Send share sheet
+still needs an approved Windows/Linux route; the app does not substitute email.
 Notifications has four device-local switches: input requests, process exits,
 finished turns and arriving Gram messages. Choices are saved atomically and a
 failed save restores the prior switch state. A test button requests an actual
@@ -153,7 +164,7 @@ CI run `41150320378` at `9f0031f` passed these unchanged scenarios on both syste
 and saved their preview screenshots. Older unsupported WebView2 runtime rejection
 has not been exercised.
 This is not complete Settings parity: additional preferences, daemon updates,
-invite creation and full reference comparison remain.
+native invite sending and full reference comparison remain.
 
 Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:

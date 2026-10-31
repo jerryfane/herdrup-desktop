@@ -132,7 +132,7 @@ jobs:
         run: |
           bin="$RUNNER_TEMP/fakeherdr$(go env GOEXE)"
           go build -o "$bin" ./cmd/fakeherdr
-          "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" -interactions > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
+          "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" -interactions -guests > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
           for _ in $(seq 50); do [ -s "$RUNNER_TEMP/client.key" ] && break; sleep 0.2; done
           test -s "$RUNNER_TEMP/client.key" || { cat "$RUNNER_TEMP/fakeherdr.log"; exit 1; }
           show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
@@ -155,3 +155,4 @@ jobs:
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png-preview-*.png
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png-typing.*
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png-guest.*

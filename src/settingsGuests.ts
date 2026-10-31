@@ -1,5 +1,6 @@
 import { Desk } from "./mygo";
 import type { PeerSummary, SavedMachineStatus } from "./mygo";
+import { guestOwnerName } from "./guestInviteModel";
 
 type Machine = { alias: string; label: string };
 type Grant = { terminal_id?: string; agent_name?: string };
@@ -40,8 +41,7 @@ export class GuestSettings {
     let saved = ""; try { saved = localStorage.getItem("guest.ownerName") ?? ""; } catch { /* empty until a name can be saved */ }
     input.value = saved;
     const describe = () => {
-      const name = input.value.trim(), count = [...new Intl.Segmenter().segment(name)].length;
-      explanation.textContent = `People you share with see “Shared by ${name && count <= 64 ? name : "you"}”. New invites use it.`;
+      explanation.textContent = `People you share with see “Shared by ${guestOwnerName(input.value) ?? "you"}”. New invites use it.`;
     };
     input.oninput = () => { try { localStorage.setItem("guest.ownerName", input.value); saved = input.value; } catch (error) { input.value = saved; this.report(error); } describe(); };
     describe(); const owner = el("div", "settings-guest-owner"); owner.append(input, explanation);

@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { TerminalPrediction } from "./terminalPrediction";
+import { openGuestShare } from "./guestShare";
 import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
@@ -116,6 +117,7 @@ class Detail {
  terminalButton = button("Terminal", () => { void this.chooseMode("terminal"); });
  terminal: Terminal | null = null;
  prediction: TerminalPrediction | null = null;
+ guestShareSheet: HTMLDialogElement | null = null;
  fit: FitAddon | null = null;
  search: SearchAddon | null = null;
  resize: ResizeObserver | null = null;
@@ -274,6 +276,12 @@ class Detail {
    }));
   }
   this.actions.append(button("Copy selection", () => { this.actions.hidden = true; void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); }));
+  this.actions.append(button("Share with someone", () => {
+   this.actions.hidden = true;
+   if (!this.view || this.disposed) return;
+   this.guestShareSheet?.close();
+   this.guestShareSheet = openGuestShare(this.token, this.view.name);
+  }));
   this.actions.append(el("div", "pane-action-heading", "Text size"));
   for (const [label, delta] of [["Increase", 1], ["Decrease", -1], ["Reset", "reset"]] as const) {
    this.actions.append(button(label, () => {
@@ -391,6 +399,7 @@ class Detail {
  }
  dismissChatSheets() {
   this.subagentSheet?.close(); this.questionSheet?.close(); this.noteSheet?.close(); this.selectionSheet?.close();
+  this.guestShareSheet?.close(); this.guestShareSheet = null;
   this.messageMenu = null;
  }
  stopSurface() {
