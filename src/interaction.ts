@@ -374,7 +374,9 @@ class Detail {
   const updateAge = () => {
    if (since === undefined) { this.stateAge.textContent = ""; return; }
    const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
-   this.stateAge.textContent = seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h` : `${Math.floor(seconds / 86400)}d`;
+   const minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60);
+   this.stateAge.textContent = hours > 0 ? `${hours}h ${minutes % 60}m`
+    : minutes >= 10 ? `${minutes}m` : minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
   };
   updateAge();
   if (since !== undefined) this.statusTimer = window.setInterval(updateAge, 1000);

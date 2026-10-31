@@ -23,6 +23,10 @@ The groups reserve a 1 pt divider between caps and use native-style system
 monospace labels, scaled by the existing app text-size preference. Linux native
 checks covered 100%/140%/reset, scrolling at the 560 pt minimum window width,
 pinned Return and keyboard toggling of Ctrl; they did not execute terminal commands.
+The detail status timer follows Swift's elapsed-time labels: seconds for the first
+ten minutes, whole minutes until an hour, then hours and minutes (without a day
+abbreviation). Native Linux checks exercised the minute/hour boundaries, a
+future timestamp, a duration over a day and the live one-second update.
 The pane's Text size menu independently remembers Chat (12–24 pt, default 16) and
 Terminal (9–24 pt, default 12.5). Ctrl/Cmd +, − and 0 change or reset terminal text
 without sending those shortcuts to the PTY. Font changes refit the live terminal;
