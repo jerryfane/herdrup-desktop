@@ -6,7 +6,7 @@ import type { PredictionMode } from "./predictiveEcho";
 import { typingLatency, latencyLines } from "./typingLatency";
 import { defaultChatMode, changeDefaultChatMode } from "./chatPreference";
 import { AccountSettings } from "./settingsAccounts";
-import accountIcon from "../third_party/phosphor/web/user-circle.svg?url";
+import accountIcon from "../third_party/phosphor/web/key.svg?url";
 import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
@@ -35,7 +35,7 @@ const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
   "lock.shield": privacyIcon, "doc.text": termsIcon,
   "chevron.left.forwardslash.chevron.right": codeIcon, "plus.circle": addIcon,
-  "person.crop.circle": accountIcon,
+  "key.horizontal": accountIcon,
   "person.2": guestsIcon,
   "bell": notificationIcon,
   "keyboard": keyboardIcon,
@@ -170,8 +170,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const lines = el("span", "settings-machine-card-lines"), label = el("strong", "settings-machine-card-name", name());
     machineNameNodes.push(label);
     const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
-    lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines, glyph("chevron.right", 12));
-    const accountRow = row("Accounts", "person.crop.circle", () => choose("accounts"), "", accountSummary);
+    lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines);
+    const accountRow = row("Accounts", "key.horizontal", () => choose("accounts"), "", accountSummary);
     accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
     const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "", guestSummary);
     sharedRow.setAttribute("aria-current", selected === "sharedAccess" ? "page" : "false");
@@ -222,9 +222,14 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     for (const node of machineNameNodes) node.textContent = name();
     const connected = state?.phase === "connected";
     for (const node of connectionNodes) {
-      const dot = el("span", "settings-status-dot"); dot.dataset.state = connected ? "reachable" : "offline";
-      node.replaceChildren(dot, document.createTextNode(connected ? "Connected" : "Disconnected"));
-      if (node.classList.contains("settings-machine-card-status")) node.append(document.createTextNode(` · ${plural(board?.board.total ?? 0, "agent")}`));
+      const status = connected ? "Connected" : "Disconnected";
+      if (node.classList.contains("settings-machine-card-status")) {
+        node.textContent = `${status} · ${plural(board?.board.total ?? 0, "agent")}`;
+        node.closest(".settings-machine-card")?.setAttribute("aria-label", `Machines, ${name()}, ${node.textContent}`);
+      } else {
+        const dot = el("span", "settings-status-dot"); dot.dataset.state = connected ? "reachable" : "offline";
+        node.replaceChildren(dot, document.createTextNode(status));
+      }
     }
     if (reconnectButton) {
       const refused = state?.phase === "error" && state.message.includes("refusing to connect");
