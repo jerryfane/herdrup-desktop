@@ -380,6 +380,11 @@ export interface Machine {
   user: string;
   keyPath: string;
   session: string;
+  /**
+   * Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
+   * rather than an unrelated ECDSA key or certificate served by the same sshd.
+   */
+  paired?: boolean;
 }
 
 /**
@@ -397,6 +402,11 @@ export interface NotificationSettings {
   preferences: NotificationPreferences;
   supported: boolean;
   lastError: string;
+}
+
+export interface PairedMachine {
+  id: string;
+  nickname: string;
 }
 
 export interface PaneAttachments {
@@ -585,6 +595,11 @@ export interface SavedMachine {
   user: string;
   keyPath: string;
   session: string;
+  /**
+   * Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
+   * rather than an unrelated ECDSA key or certificate served by the same sshd.
+   */
+  paired?: boolean;
   /** Active marks the machine the desk connects to. */
   active: boolean;
 }
@@ -1050,6 +1065,14 @@ export const Desk = {
   },
   openTerminalView(target: AgentTarget, token: string): Promise<AgentView> {
     return call("Desk.OpenTerminalView", target, token);
+  },
+  /**
+   * PairMachine pins before redemption, then persists the private key and host.
+   * It never connects or starts a process on the machine: Open it is a separate
+   * user action. Cancelling the scanner stops capture, not an accepted redemption.
+   */
+  pairMachine(qrText: string): Promise<PairedMachine> {
+    return call("Desk.PairMachine", qrText);
   },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {

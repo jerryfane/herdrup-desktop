@@ -73,13 +73,25 @@ is not claimed as behavioral regression proof.
 Use the top-left back button to choose or add a saved SSH host.
 Right-click a saved host (or press Shift+F10) to edit its nickname and connection
 details, or delete it. Save updates the profile without connecting. The host home
-uses the native readable column and app logo; pairing scans and guest invites are
-not implemented yet, so this is not complete host-selection parity.
+uses the native readable column and app logo. Scan pairing code reads the one-time
+QR printed by `herdr pair`; Add host remains available for manual setup.
+Guest invitation acceptance is still missing, so host-selection parity is incomplete.
 Password connections ask again when reconnecting; passwords are not saved.
 Connection and session changes invalidate open agent views. Unacknowledged terminal
 input is never replayed automatically. A definite prompt rejection preserves the
 draft; written or uncertain delivery clears the submitted draft and asks the reader
 to check Terminal rather than accidentally submit it twice.
+
+Pairing generates a private ed25519 identity on this device and sends only its
+public key. It validates and saves the QR's SSH fingerprint before redeeming the
+code, then saves the private key in the app's private `identities` directory and
+records the host. Open it connects separately; pairing does not start herdr.
+Paired hosts negotiate the ed25519/RSA keys advertised by `herdr pair`, without
+changing existing manual hosts' negotiation order. Unconfirmed exchanges are never
+retried automatically. A late camera permission result is stopped after dismissal,
+and decoding or leaving the window stops capture. Linux native checks used a real
+canvas MediaStream and an isolated TCP pairing endpoint; physical-camera capture
+and Windows/macOS camera acceptance are not verified.
 
 The Agents section's New agent action browses remote folders and installed
 harnesses, creates a pane, and starts the chosen agent. Its task is placed in the
@@ -576,8 +588,8 @@ Host selection seeds only saved metadata before page startup and does not connec
 Its saved-host column uses Swift's system-font roles and application text scale,
 with the native 22 pt outer inset and 60 pt minimum machine rows. It no longer
 inherits the old connection form's additional 24 pt top margin. The ground
-continues below the home inset. Pairing-code scanning and guest invite acceptance
-are still missing; matching saved-host geometry does not complete onboarding.
+continues below the home inset. Pairing-code scanning is implemented; guest invite
+acceptance remains missing. Matching saved-host geometry does not complete onboarding.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it

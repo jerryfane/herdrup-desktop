@@ -32,6 +32,9 @@ type Machine struct {
 	User     string `json:"user"`
 	KeyPath  string `json:"keyPath"`
 	Session  string `json:"session"`
+	// Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
+	// rather than an unrelated ECDSA key or certificate served by the same sshd.
+	Paired bool `json:"paired,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -108,6 +111,8 @@ type Desk struct {
 
 	storeMu       sync.Mutex // serialises reads and writes of machines.json
 	notifications notificationSettings
+	pairingMu     sync.Mutex
+	pins          *bridge.FilePinStore
 
 	mu    sync.Mutex
 	state ConnState
@@ -178,6 +183,7 @@ func newDesk(dir string) *Desk {
 		dir: dir, state: ConnState{Phase: "idle"},
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
 		terminals:   &terminalStore{path: filepath.Join(dir, "terminals.json")},
+		pins:        bridge.NewFilePinStore(filepath.Join(dir, "host-keys.json")),
 		alert:       alertGroups,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
 		presence: newPresence(),
@@ -596,7 +602,10 @@ func (d *Desk) run(ctx context.Context, l *link, m Machine, password string) {
 func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label string) (listed bool, err error) {
 	cfg := bridge.Config{
 		Host: m.Host, Port: m.Port, User: m.User, Session: m.Session,
-		Pins: bridge.NewFilePinStore(filepath.Join(d.dir, "host-keys.json")),
+		Pins: d.pins,
+	}
+	if m.Paired {
+		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
 	}
 	if m.KeyPath != "" {
 		if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {

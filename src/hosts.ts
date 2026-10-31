@@ -1,6 +1,7 @@
 import { Desk, events } from "./mygo";
 import type { Machine, SavedMachine } from "./mygo";
 import "./hosts.css";
+import { showPairing } from "./pairing";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -37,7 +38,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  sheet.append(sheetHeader, form); document.body.append(sheet);
  const add = action("Add host", () => edit()); add.className = "host-add";
  void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
- home.append(header, section, add, message); container.replaceChildren(home);
+ const pair = action("Scan pairing code", () => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit())); pair.className = "host-pair";
+ home.append(header, section, pair, add, message); container.replaceChildren(home);
  let editing: SavedMachine | null = null;
  let saving = false;
  let connecting = false;
@@ -62,6 +64,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   const data = new FormData(form), get = (key: string) => String(data.get(key) ?? "").trim();
   const machine: Machine = { nickname: get("nickname"), host: get("host"), port: Number(get("port")) || 22, user: get("user"), keyPath: get("keyPath"), session: get("session") };
   try {
+  if (editing?.paired && machine.host === editing.host && machine.port === editing.port) machine.paired = true;
    if (!editing && !machine.keyPath && !String(data.get("password") ?? "")) throw new Error("Add a private key file or password.");
    if (connect) await Desk.connect(machine, String(data.get("password") ?? ""));
    else await Desk.saveMachine(machine, editing?.id ?? "");

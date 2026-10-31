@@ -48,6 +48,8 @@ type Config struct {
 	Session string
 	// Pins stores host key fingerprints. Required.
 	Pins PinStore
+	// HostKeyAlgorithms overrides negotiation order; nil preserves SSH defaults.
+	HostKeyAlgorithms []string
 	// ConnectTimeout bounds the TCP connect and SSH handshake (15 s when
 	// zero).
 	ConnectTimeout time.Duration
@@ -130,9 +132,10 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	deadline, _ := dctx.Deadline()
 	_ = tcp.SetDeadline(deadline)
 	sc, chans, reqs, err := ssh.NewClientConn(tcp, addr, &ssh.ClientConfig{
-		User:            cfg.User,
-		Auth:            auth,
-		HostKeyCallback: pinningCallback(cfg.Pins),
+		User:              cfg.User,
+		Auth:              auth,
+		HostKeyCallback:   pinningCallback(cfg.Pins),
+		HostKeyAlgorithms: cfg.HostKeyAlgorithms,
 	})
 	if err != nil {
 		tcp.Close()

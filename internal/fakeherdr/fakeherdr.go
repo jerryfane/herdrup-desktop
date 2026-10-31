@@ -40,7 +40,8 @@ type DuplexFunc func(ctx context.Context, id, method string, params json.RawMess
 
 // Server is one fake machine.
 type Server struct {
-	HostKey ssh.Signer
+	HostKey            ssh.Signer
+	AdditionalHostKeys []ssh.Signer
 	// Authorized is the only client key accepted. Password, when set, is
 	// accepted too.
 	Authorized ssh.PublicKey
@@ -204,6 +205,9 @@ func (s *Server) Listen(addr string) (string, error) {
 		},
 	}
 	cfg.AddHostKey(s.HostKey)
+	for _, key := range s.AdditionalHostKeys {
+		cfg.AddHostKey(key)
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()

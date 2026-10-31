@@ -38,6 +38,8 @@ export default defineConfig({
   // these variables only when the repository variable
   // MACOS_SIGNING_IDENTITY exists. Without them the app is signed ad hoc.
   macos: {
+    infoPlist: { NSCameraUsageDescription: "Scan the one-time pairing code shown by herdr on your computer." },
+    entitlements: "camera.entitlements.plist",
     signingIdentity: process.env.HERDRUP_SIGNING_IDENTITY,
     notarize: process.env.HERDRUP_NOTARY_KEYCHAIN
       ? { keychainProfile: "notary", keychain: process.env.HERDRUP_NOTARY_KEYCHAIN }
