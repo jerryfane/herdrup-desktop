@@ -360,6 +360,7 @@ class Detail {
   this.prediction?.reset();
   if (this.terminal) this.terminal.options.fontSize = textSize("terminal");
   this.fitTerminal?.();
+  this.input.dispatchEvent(new Event("input"));
   this.followChat();
  }
  updateStatus(group: string, label: string, since?: number) {
@@ -660,16 +661,17 @@ class Detail {
    this.send.hidden = !hasContent; this.prompts.button.hidden = hasContent;
    this.column.update();
    const width = composer.clientWidth - 26;
+   const lineHeight = parseFloat(getComputedStyle(this.input).lineHeight);
    const measure = (w: number) => {
     probe.style.width = `${Math.max(1, w)}px`;
     probe.textContent = this.input.value + (this.input.value.endsWith("\n") || !this.input.value ? " " : "");
-    return Math.max(1, Math.round(probe.getBoundingClientRect().height / 24));
+    return Math.max(1, Math.round(probe.getBoundingClientRect().height / lineHeight));
    };
    const stacked = this.editor!.open || this.attachments.length > 0 || (!this.dictation.strip.hidden && !!this.input.value) || measure(width - actions.offsetWidth) > 1;
    composer.classList.toggle("expanded", stacked);
    const lines = measure(stacked ? width : width - actions.offsetWidth);
    const room = Math.max(0, this.body.clientHeight - 68);
-   this.input.style.height = `${this.editor!.update(lines, room)}px`;
+   this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
    const composerHeight = composer.offsetHeight + 12;
    this.body.style.setProperty("--composer-height", `${composerHeight}px`);
   };

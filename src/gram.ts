@@ -1461,7 +1461,7 @@ let stopFileDrop: (() => void) | undefined;
 let stopClipboardPaste: (() => void) | undefined;
 
 /** The text's lines at `width`, measured as the field draws it (ComposerTextMetrics.lines). */
-function linesAt(width: number): number {
+function linesAt(width: number, lineHeight: number): number {
   lineProbe ??= (() => {
     const p = el("div", "gfield-probe");
     document.body.append(p);
@@ -1469,7 +1469,7 @@ function linesAt(width: number): number {
   })();
   lineProbe.style.width = `${Math.max(1, width)}px`;
   lineProbe.textContent = draft === "" || draft.endsWith("\n") ? draft + " " : draft;
-  return Math.max(1, Math.round(lineProbe.getBoundingClientRect().height / 24));
+  return Math.max(1, Math.round(lineProbe.getBoundingClientRect().height / lineHeight));
 }
 
 /** One row at rest; the stacked layout once a file is attached or the text wraps. The field
@@ -1478,16 +1478,17 @@ function layoutComposer() {
   if (!card.isConnected) return;
   const contentWidth = card.clientWidth - 12;
   const actionsWidth = actions.offsetWidth;
+  const lineHeight = parseFloat(getComputedStyle(input).lineHeight);
   // The field's insets: 5 + 7 leading, 2 trailing.
   const inline = contentWidth - actionsWidth - 4 - 14;
   const hasAttachments = (snap?.attachments.length ?? 0) > 0;
-  const expand = editor.open || (!!dictation && !dictation.strip.hidden && draft.length > 0) || (contentWidth > 0 && model.composerExpanded(hasAttachments, linesAt, inline, wrapped));
+  const expand = editor.open || (!!dictation && !dictation.strip.hidden && draft.length > 0) || (contentWidth > 0 && model.composerExpanded(hasAttachments, width => linesAt(width, lineHeight), inline, wrapped));
   wrapped = expand && !hasAttachments && !editor.open;
   card.classList.toggle("expanded", expand);
-  const lines = linesAt(expand ? contentWidth - 14 : inline);
+  const lines = linesAt(expand ? contentWidth - 14 : inline, lineHeight);
   const host = card.closest<HTMLElement>(".gram")!;
   const room = Math.max(0, host.clientHeight - headerHeight - banner.offsetHeight - hintEl.offsetHeight - 12 - 56 - 12);
-  input.style.height = `${editor.update(lines, room)}px`;
+  input.style.height = `${editor.update(lines, room, lineHeight)}px`;
   mirror.style.height = input.style.height;
 }
 
