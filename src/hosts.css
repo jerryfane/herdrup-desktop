@@ -20,6 +20,8 @@
 .host-home .host-add { display:flex; align-items:center; justify-content:center; gap:8px; min-height:50px; border-radius:25px; border:0; background:var(--color-surface); color:var(--color-text); font-family:inherit; font-size:calc(15px * var(--ui-font-scale, 1)); font-weight:600; }
 .host-home .host-pair, .host-home .host-invite { min-height:50px; width:100%; display:flex; align-items:center; justify-content:center; gap:8px; border:0; border-radius:25px; background:var(--color-surface); color:var(--color-text); font:600 calc(15px * var(--ui-font-scale, 1)) -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; cursor:pointer; }
 .host-home .host-pair { background:var(--color-text); color:var(--color-ground); font-size:calc(16px * var(--ui-font-scale, 1)); }
+/* Use the same SF Pro Semibold instance as the sidebar's native system text. */
+.host-home-saved h2, .host-home .host-add, .host-home .host-pair, .host-home .host-invite { font-variation-settings:"wght" 590; }
 .host-invite-actions { display:flex; flex-direction:column; align-items:center; gap:10px; }
 .host-home .host-invite-paste { display:flex; align-items:center; justify-content:center; gap:6px; padding:8px 12px; border:0; border-radius:24px; background:var(--color-surface-raised); color:var(--color-text); font:400 calc(16px * var(--ui-font-scale, 1)) -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; cursor:pointer; }
 .host-action-glyph { display:block; flex:none; background:currentColor; mask:var(--host-icon) center/contain no-repeat; -webkit-mask:var(--host-icon) center/contain no-repeat; }
