@@ -466,13 +466,13 @@ The reference manifests retain each screenshot's producing head; that delivery
 commit is not a claim that the desktop matches all 64 native reference images.
 
 The parity workflow (`.github/workflows/parity.yml`, on demand and on `feat/parity-*` branches) checks
-the agent list against herdrup's iPad screenshots (`design/reference/agent-list` in jerryfane/herdrup at
-the pinned commit `REFERENCES`, fetched and checked against their manifest's sha256). On macOS it opens
+the board and Gram against herdrup's iPad screenshots (`design/reference/agent-list` and
+`design/reference/gram` at the pinned `REFERENCES`, checked against their manifest hashes). On macOS it opens
 the smoke build once per reference state and size, with `HERDRUP_REF_STATE`, `HERDRUP_REF_SIZE` (the
 page area in points: the reference minus its 32 pt status bar) and `HERDRUP_REF_SCALE=2`, which makes
 the web view render at 2 pixels per point although the runner's display is 1x. The page signals a drawn
 state through `window.herdrupRef`. `cmd/refdiff` then compares each capture with its reference below
-the status bar, outside the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and
+the status bar. Board comparisons exclude the rectangles in `cmd/refdiff/masks`: the tab bar's Liquid Glass capsule and
 iPadOS's resize corner in every state, and, for `loading` only (a rect's `states`, passed as `-state`),
 the detail column's glyph field, which herdrup's capture froze before its first picture.
 
@@ -485,6 +485,15 @@ Each smoke/reference run uses a fresh asset origin as well as a fresh Go data
 directory, so one capture cannot leave sidebar, composer or other web preferences
 in the next capture or the user's regular application.
 
+The Gram manifest adds 22 captures: latest, image, folded report, code, Saved,
+search results/no matches, addressed/ambiguous attachments, empty and loading.
+The fixture adapter seeds the real stateful Gram daemon store, including read
+transitions, decoded files and uploads. The reference file chooser supplies only
+the native fixture's verified bytes; paperclip staging and upload remain real.
+Saved capture setup uses the production local-save action after opening the inbox;
+it is not native context-menu acceptance. Visible image previews must finish
+decoding before capture. Gram comparisons use no masks.
+
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
 tries moving the capture by up to 24 device pixels, and reports a tile (in the summary and the report's
 `shifted`) when a move fits it much better than leaving it in place. Anti-aliasing and glyph-shape
@@ -493,9 +502,11 @@ exactly by moving it back. Any displaced tile fails the comparison. The workflow
 diff pictures (red: over the tolerance; blue: masked; magenta: size mismatch), the reports and a
 summary table. The thresholds remain `PARITY_TOL` (2) and
 `PARITY_MAX_OVER_PCT` (0.15 %): the earlier 12-image baseline left at most 0.13 %
-anti-aliasing differences. That result does not establish parity with the accepted
-64-image delivery. The additional 40 Gram, Settings and detail captures and the
-new full-set comparison remain in progress; no threshold or mask was relaxed.
+anti-aliasing differences. The accepted 24-board comparison at desktop `0e17b12`
+captured every state but failed all 24 unchanged pixel/displacement gates
+(run `41158846126`). Capture coverage is not visual parity. The remaining
+18 Settings/detail captures and the full 64-image comparison remain in progress;
+no threshold or existing mask was relaxed.
 
 ## Releases
 

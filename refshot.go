@@ -20,18 +20,29 @@ import (
 // (design/reference/agent-list in herdrup), the closed sections the page
 // opens before the capture.
 var refExpand = map[string][]string{
-	"loading":           nil,
-	"empty":             nil,
-	"populated":         nil,
-	"idle-expanded":     {"idle"},
-	"archived-expanded": {"archived"},
-	"all-expanded":      {"idle", "archived"},
-	"folders":           {"folder:herdr"},
-	"avatars":           nil,
-	"sessions":          nil,
-	"federated":         nil,
-	"needs-you-pill":    nil,
-	"needs-you-rail":    nil,
+	"loading":                  nil,
+	"empty":                    nil,
+	"populated":                nil,
+	"idle-expanded":            {"idle"},
+	"archived-expanded":        {"archived"},
+	"all-expanded":             {"idle", "archived"},
+	"folders":                  {"folder:herdr"},
+	"avatars":                  nil,
+	"sessions":                 nil,
+	"federated":                nil,
+	"needs-you-pill":           nil,
+	"needs-you-rail":           nil,
+	"gram-mixed-latest":        nil,
+	"gram-mixed-image":         nil,
+	"gram-mixed-folded":        nil,
+	"gram-mixed-code":          nil,
+	"gram-saved":               nil,
+	"gram-search-results":      nil,
+	"gram-search-empty":        nil,
+	"gram-composer-attachment": nil,
+	"gram-composer-ambiguous":  nil,
+	"gram-empty":               nil,
+	"gram-loading":             nil,
 }
 
 // refEnabled reports whether this run is a reference capture: a smoke
@@ -108,11 +119,16 @@ func runRef(desk *Desk, win *mygo.Window) {
 		}
 		t.total = d
 	}
+	cleanup, err := prepareGramReference(desk, state)
+	if err != nil {
+		log.Printf("ref: prepare Gram: %v", err)
+		os.Exit(1)
+	}
 	placeRefWindow(win, w, h)
 	rep := refReport{State: state, Want: [2]int{w, h}}
-	var err error
 	if rep.BackingScale, rep.ScaleOverride, err = refDeviceScale(win, scale); err != nil {
 		rep.Outcome = "device scale: " + err.Error()
+		cleanup()
 		go finishRef(win, out, &rep, false)
 		return
 	}
@@ -126,6 +142,7 @@ func runRef(desk *Desk, win *mygo.Window) {
 	}
 	if err := desk.Connect(m, ""); err != nil {
 		rep.Outcome = "connect: " + err.Error()
+		cleanup()
 		go finishRef(win, out, &rep, false)
 		return
 	}
@@ -134,7 +151,11 @@ func runRef(desk *Desk, win *mygo.Window) {
 		if ok {
 			ok, why = driveBoardReference(win, state)
 		}
+		if ok {
+			ok, why = driveGramReference(desk, win, state)
+		}
 		rep.Outcome = why
+		cleanup()
 		finishRef(win, out, &rep, ok)
 	}()
 }

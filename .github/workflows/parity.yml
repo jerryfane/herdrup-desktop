@@ -41,7 +41,7 @@ env:
 
 jobs:
   parity:
-    name: Agent list vs herdrup references (macOS)
+    name: Board and Gram vs herdrup references (macOS)
     # GitHub's hosted macOS, not the MacBook Air runner the smoke job uses:
     # the pixel match depends on the macOS version's SF fonts and symbols
     # (matched on 26.6.2; the Air's 26.2 draws icons and text a pixel off).
@@ -97,6 +97,18 @@ jobs:
           done
           expected=$(jq -r .fixture.sha256 "$refs/manifest.json")
           printf '%s  %s\n' "$expected" cmd/fakeherdr/agents.json | shasum -a 256 -c -
+          base="https://raw.githubusercontent.com/jerryfane/herdrup/$sha/design/reference/gram"
+          curl -fsSL --retry 3 "$base/manifest.json" -o "$refs/gram-manifest.json"
+          test "$(jq '.files | length' "$refs/gram-manifest.json")" -eq 22
+          jq -r '.files[] | "\(.file) \(.sha256) \(.state) \(.fixture) \(.fixtureSHA256)"' "$refs/gram-manifest.json" |
+          while read -r file checksum state fixture fixturehash; do
+            curl -fsSL --retry 3 "$base/$file" -o "$refs/$file"
+            printf '%s  %s\n' "$checksum" "$refs/$file" | shasum -a 256 -c -
+            curl -fsSL --retry 3 "https://raw.githubusercontent.com/jerryfane/herdrup/$sha/$fixture" -o "$refs/fixture-$state.json"
+            printf '%s  %s\n' "$fixturehash" "$refs/fixture-$state.json" | shasum -a 256 -c -
+          done
+          cp "$refs/manifest.json" "$refs/board-manifest.json"
+          jq -s '.[0] + {files: (.[0].files + .[1].files)}' "$refs/board-manifest.json" "$refs/gram-manifest.json" > "$refs/manifest.json"
       - name: Capture each state and compare it
         run: |
           set +e
@@ -132,6 +144,7 @@ jobs:
             echo "::group::$name: $device $state, page ${w}x$((h - bar)) pt, fakeherdr -mode $mode, scale ${scale:-native}"
             TZ=UTC HERDRUP_SMOKE_HOST=127.0.0.1 HERDRUP_SMOKE_PORT=$port HERDRUP_SMOKE_USER=ci HERDRUP_SMOKE_KEY="$key" \
               HERDRUP_SMOKE_LOG="$out/logs/$name.app.log" HERDRUP_REF_STATE="$state" \
+              HERDRUP_REF_FIXTURE="$refs/fixture-$fixture.json" \
               HERDRUP_REF_SIZE="${w}x$((h - bar))" HERDRUP_REF_CAPTURE="$out/captures/$name.png" \
               HERDRUP_REF_SCALE="$scale" "$app" &
             apid=$!
@@ -144,8 +157,10 @@ jobs:
             cat "$out/logs/$name.app.log"
             [ "$st" -eq 0 ] || echo "$name: app exited $st" >> "$out/failed"
             if [ -s "$out/captures/$name.png" ]; then
+              masks=()
+              case "$state" in gram-*) ;; *) masks=(-mask "cmd/refdiff/masks/$device.json") ;; esac
               "$RUNNER_TEMP/refdiff" -ref "$refs/ref-$device-$state.png" -got "$out/captures/$name.png" \
-                -crop-top-pt "$bar" -scale "$refscale" -mask "cmd/refdiff/masks/$device.json" -state "$state" \
+                -crop-top-pt "$bar" -scale "$refscale" "${masks[@]}" -state "$state" \
                 -tol "$PARITY_TOL" -max-over-pct "$PARITY_MAX_OVER_PCT" \
                 -out "$out/diffs/$name.png" -report "$out/reports/$name.json"
               st=$?
@@ -163,9 +178,9 @@ jobs:
           done
 
           {
-            echo "## Agent list parity"
+            echo "## Board and Gram parity"
             echo
-            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Masks: \`cmd/refdiff/masks\`."
+            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Board masks: \`cmd/refdiff/masks\`; Gram: no masks."
             echo
             echo "| capture | page pt | capture px | display scale | override | devicePixelRatio | app | over tol % | max Δ | mean Δ | refdiff |"
             echo "|---|---|---|---|---|---|---|---|---|---|---|"
