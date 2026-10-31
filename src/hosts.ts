@@ -36,6 +36,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  form.append(saveOnly, error);
  sheet.append(sheetHeader, form); document.body.append(sheet);
  const add = action("Add host", () => edit()); add.className = "host-add";
+ void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
  home.append(header, section, add, message); container.replaceChildren(home);
  let editing: SavedMachine | null = null;
  let saving = false;
@@ -109,7 +110,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     row.className = "host-home-row";
     row.disabled = connecting;
     const icon = element("span", "host-home-icon");
-    if (navigator.platform.startsWith("Mac")) icon.append(await symbol("desktopcomputer", 22, "regular"));
+    if (navigator.platform.startsWith("Mac")) icon.append(await symbol("desktopcomputer", 19, "regular"));
     else {
      // SF Symbols are licensed only for Apple platforms; use the same pinned
      // open icon family as the portable symbol renderer.
@@ -118,7 +119,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     }
     const lines = element("span", "host-home-lines");
     lines.append(element("span", "host-home-name", machine.nickname || machine.host), element("span", "host-home-address", `${machine.user}@${machine.host}${machine.port && machine.port !== 22 ? ":" + machine.port : ""}`));
-    const chevron = await symbol("chevron.right", 12, "semibold"); chevron.classList.add("host-home-chevron");
+    const chevron = element("span", "host-home-chevron"); chevron.setAttribute("aria-hidden", "true");
+    chevron.append(await symbol("chevron.right", 13, "semibold"));
     row.append(icon, lines, chevron);
     const openMenu = (x: number, y: number) => {
      closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");

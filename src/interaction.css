@@ -126,8 +126,6 @@
 .host-row button { margin-right: 6px; }
 .host-password label { display: flex; flex-direction: column; gap: 8px; }
 .host-password form { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-#connect { bottom: 0; overflow-y: auto; padding-bottom: 24px; }
-#connect > div { margin-block: 24px; }
 .agent-detail .chat-earlier, .subagent-sheet .chat-earlier { display: block; margin: 0 auto 12px; padding: 4px 8px; border: 0; background: none; color: var(--color-text-faint); font: 400 13px var(--font-app); }
 .chat-subagents { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 12px auto; padding: 10px 12px; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 14px; }
 .chat-subagents > summary { color: var(--color-text-faint); font: 600 10.5px var(--font-machine); letter-spacing: 1.2px; cursor: pointer; }

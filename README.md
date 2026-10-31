@@ -541,6 +541,11 @@ Phosphor 2.1.1 substitutes elsewhere. Completed marks use `ChatStyle.ok` from
 the pinned Swift source, not the different shared agent-state green. Plan headings,
 phases, rows and the remaining-item count all follow Chat's text-size setting.
 Host selection seeds only saved metadata before page startup and does not connect.
+Its saved-host column uses Swift's system-font roles and application text scale,
+with the native 22 pt outer inset and 60 pt minimum machine rows. It no longer
+inherits the old connection form's additional 24 pt top margin. The ground
+continues below the home inset. Pairing-code scanning and guest invite acceptance
+are still missing; matching saved-host geometry does not complete onboarding.
 Detail comparisons use no masks; captures do not claim native sidebar or layout parity.
 
 refdiff counts pixels over the tolerance, and it also looks for displaced content: in 24 pt tiles it
