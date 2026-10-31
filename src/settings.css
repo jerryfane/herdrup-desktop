@@ -31,6 +31,9 @@
 .settings-status-dot[data-state="offline"] { background:var(--color-text-dim); }
 .settings-plain-row { display:block; width:100%; padding:13px 18px; border:0; border-radius:0; color:var(--color-text); background:none; text-align:left; font:400 15px var(--font-app); }
 .settings-plain-row:disabled { color:var(--color-text-faint); }
+.settings-latency-report { padding:13px 18px; display:flex; flex-direction:column; gap:6px; margin:0; font:400 15px/1.4 var(--font-app); }
+.settings-latency-report p { margin:0; }
+.settings-latency-hint { margin:14px 34px 0; color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
 .settings-federation-row { display:flex; align-items:center; gap:12px; min-width:0; padding:12px 18px; }
 .settings-federation-row > .settings-machine-disc { border-radius:10px; }
 .settings-federation-row > button { flex:none; padding:6px 0; border:0; background:none; color:var(--color-text); font:600 13px var(--font-app); }

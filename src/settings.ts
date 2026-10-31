@@ -1,6 +1,9 @@
 import { Desk, events } from "./mygo";
 import type { BoardUpdate, ConnState, Machine, PeerSummary, SavedMachineStatus } from "./mygo";
 import { changeTextSize, changeUIFontScale, onTextSizeChanged, textSize, uiFontScale } from "./textSize";
+import { predictionMode, changePredictionMode } from "./typingPreference";
+import type { PredictionMode } from "./predictiveEcho";
+import { typingLatency, latencyLines } from "./typingLatency";
 import { defaultChatMode, changeDefaultChatMode } from "./chatPreference";
 import { AccountSettings } from "./settingsAccounts";
 import accountIcon from "../third_party/phosphor/web/user-circle.svg?url";
@@ -17,6 +20,7 @@ import privacyIcon from "../third_party/phosphor/web/shield-check.svg?url";
 import termsIcon from "../third_party/phosphor/web/file-text.svg?url";
 import codeIcon from "../third_party/phosphor/web/code.svg?url";
 import addIcon from "../third_party/phosphor/web/plus-circle.svg?url";
+import keyboardIcon from "../third_party/phosphor/web/keyboard.svg?url";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -25,10 +29,11 @@ const settingIcons: Record<string, string> = {
   "person.crop.circle": accountIcon,
   "person.2": guestsIcon,
   "bell": notificationIcon,
+  "keyboard": keyboardIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
-type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize";
+type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize" | "typingLatency";
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
@@ -45,6 +50,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const message = el("p", "settings-message"); message.hidden = true; message.setAttribute("role", "status");
   page.append(title, message, body);
   let visible = false, selected: Page = "machines", generation = 0, identity = "", busy = "";
+  let latencyTimer: number | undefined;
   let state: ConnState | null = null, board: BoardUpdate | null = null, machine: Machine | null = null;
   let statuses: SavedMachineStatus[] = [], peers: PeerSummary[] = [], federationError = "";
   let machineNameNodes: HTMLElement[] = [], connectionNodes: HTMLElement[] = [];
@@ -138,7 +144,18 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const chatPreferenceRow = el("label", "settings-row settings-preference-row"), chatPreferenceLines = el("span", "settings-row-lines");
     chatPreferenceLines.append(el("span", "settings-row-label", "omp agents open in"), el("span", "settings-row-subtitle", "Claude Code and Codex agents always open in the terminal."));
     chatPreferenceRow.append(glyph("bubble.left.and.bubble.right.fill", 20), chatPreferenceLines, chatChoice);
-    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, chatPreferenceRow, previews.root]), group("HELP", [
+    const typingRow = el("label", "settings-row settings-chat-preference"), typingLines = el("span", "settings-row-lines");
+    typingLines.append(el("span", "settings-row-label", "Instant typing"), el("span", "settings-row-subtitle", "Shows what you type at once and checks it against the server."));
+    const typingChoice = el("select", "settings-choice"); typingChoice.setAttribute("aria-label", "Instant typing"); typingChoice.id = "settings-instant-typing";
+    for (const [value, label] of [["auto", "Auto"], ["always", "Always"], ["off", "Off"]]) {
+      const option = el("option", "", label); option.value = value!; typingChoice.append(option);
+    }
+    typingChoice.value = predictionMode();
+    typingChoice.onchange = () => { try { changePredictionMode(typingChoice.value as PredictionMode); } catch (error) { typingChoice.value = predictionMode(); report(error); } };
+    typingRow.append(glyph("keyboard", 20), typingLines, typingChoice);
+    const latencyRow = button("Typing latency", () => choose("typingLatency")); latencyRow.className = "settings-plain-row";
+    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
+      latencyRow,
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", "bubble.left.and.bubble.right.fill", "https://discord.gg/pq7qj4dDqt"),
@@ -168,14 +185,37 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     }
   }
   function renderPage() {
+    clearInterval(latencyTimer);
     reconnectButton = null; reach = null;
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
-    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : "Text size";
+    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : "Text size";
     body.replaceChildren();
     if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "sharedAccess") { body.append(guests.root); return; }
     if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }
+    if (selected === "typingLatency") {
+      const results = el("div"), hint = el("p", "settings-latency-hint", "Key press to screen, on this computer");
+      const instruction = el("p", "settings-latency-hint", "Type normally in a terminal, then come back here.");
+      const explanation = el("p", "settings-latency-hint", "Screen time ends when xterm renders; prediction time ends when the overlay draws. Output after a send is attributed as its echo.");
+      const refreshLatency = () => {
+        const reports = typingLatency.snapshot();
+        results.replaceChildren(...reports.map(item => {
+          const block = el("div", "settings-latency-report");
+          block.append(...latencyLines(item).map(line => el("p", "", line)));
+          return group(item.host.toUpperCase(), [block]);
+        }));
+        if (!reports.length) results.append(group("", [el("p", "settings-latency-report", "No typing measured yet.")]));
+      };
+      const copy = button("Copy report", () => {
+        const reportText = typingLatency.snapshot().map(item => [item.host, ...latencyLines(item)].join("\n")).join("\n\n");
+        void Desk.gramCopyText(`Herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
+      }); copy.className = "settings-plain-row";
+      const reset = button("Reset", () => { typingLatency.reset(); copy.textContent = "Copy report"; refreshLatency(); }); reset.className = "settings-plain-row";
+      body.append(hint, instruction, results, group("REPORT", [copy, reset]), explanation);
+      refreshLatency(); if (visible) latencyTimer = window.setInterval(refreshLatency, 1000);
+      return;
+    }
     if (selected === "textSize") {
       for (const size of [
         { key:"app", title:"App text — lists, menus & settings", sample:"The quick brown fox", value:uiFontScale(), label:`${Math.round(uiFontScale() * 100)}%`, min:0.9, max:1.4, default:1, step:0.1, change:changeUIFontScale },
@@ -314,7 +354,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       const nextID = `${nextBoard?.machineID ?? ""}\0${nextBoard?.session ?? ""}`;
       const reload = show && (!visible || identity !== nextID || state?.phase !== nextState.phase);
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
-      if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); }
+      if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();
       if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); }
     },

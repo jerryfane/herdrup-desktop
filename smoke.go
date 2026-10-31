@@ -95,7 +95,11 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 						finish(false, err.Error())
 						return
 					}
-					finish(true, "page shows "+strconv.Itoa(want)+" rows; received-document preview isolation passed")
+					if err := smokeTyping(win, out); err != nil {
+						finish(false, err.Error())
+						return
+					}
+					finish(true, "page shows "+strconv.Itoa(want)+" rows; preview isolation and predictive typing passed")
 					return
 				}
 			}

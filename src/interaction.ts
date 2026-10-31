@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { TerminalPrediction } from "./terminalPrediction";
 import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
@@ -114,6 +115,7 @@ class Detail {
  chatButton = button("Chat", () => { void this.chooseMode("chat"); });
  terminalButton = button("Terminal", () => { void this.chooseMode("terminal"); });
  terminal: Terminal | null = null;
+ prediction: TerminalPrediction | null = null;
  fit: FitAddon | null = null;
  search: SearchAddon | null = null;
  resize: ResizeObserver | null = null;
@@ -201,11 +203,19 @@ class Detail {
  }
  queueTerminalInput(text: string) {
   if (!this.terminalReady || this.inputFailed || this.disposed) return;
-  const generation = this.generation, streamID = this.terminalID;
+  const generation = this.generation, streamID = this.terminalID, prediction = this.prediction;
+  const batch = text ? prediction?.userBytes(text) : undefined;
   this.inputQueue = this.inputQueue.then(async () => {
    if (this.disposed || generation !== this.generation || streamID !== this.terminalID || this.inputFailed) return;
-   try { await Desk.terminalInput(this.token, streamID, text); }
-   catch(e) { if (streamID === this.terminalID && !this.disposed) { this.inputFailed = true; this.status.textContent = String(e) + " Reconnect before typing again."; } }
+   if (batch !== undefined) prediction?.sent(batch);
+   try {
+    await Desk.terminalInput(this.token, streamID, text);
+    if (batch !== undefined) prediction?.acked(batch);
+   }
+   catch(e) {
+    if (batch !== undefined) prediction?.acked(batch, true);
+    if (streamID === this.terminalID && !this.disposed) { this.inputFailed = true; this.status.textContent = String(e) + " Reconnect before typing again."; }
+   }
   });
  }
  mountKeys() {
@@ -303,6 +313,7 @@ class Detail {
   catch (error) { this.status.textContent = String(error); }
  }
  resizeText() {
+  this.prediction?.reset();
   if (this.terminal) this.terminal.options.fontSize = textSize("terminal");
   this.fitTerminal?.();
   this.followChat();
@@ -401,6 +412,7 @@ class Detail {
   this.resize?.disconnect(); this.resize = null;
   this.fitTerminal = null;
   this.terminalReady = false;
+  this.prediction?.dispose(); this.prediction = null;
   this.terminal?.dispose(); this.terminal = null; this.fit = null;
  }
  dispose() { this.disposed = true; this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
@@ -410,6 +422,7 @@ class Detail {
  }
  async switchMode(mode: "chat" | "terminal") {
   const generation = this.generation;
+  this.prediction?.reset();
   this.mode = mode; this.status.textContent = "";
   if (mode === "terminal") this.dismissChatSheets();
   this.body.dataset.mode = mode;
@@ -443,6 +456,7 @@ class Detail {
   clearTimeout(this.historyTimer); this.historyRequest++;
   this.resize?.disconnect(); this.resize = null;
   this.fitTerminal = null;
+  this.prediction?.dispose(); this.prediction = null;
   this.terminal?.dispose(); this.terminal = null;
   await Desk.stopTerminal(this.token, this.terminalID);
   if (this.disposed) return;
@@ -467,6 +481,7 @@ class Detail {
   });
   term.loadAddon(new WebLinksAddon((_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = String(e); }); }));
   term.open(canvas);
+  this.prediction = new TerminalPrediction(term, this.target.machineID);
   const armHistory = () => { this.historyArmed = true; this.updateHistoryPaging(true); };
   canvas.addEventListener("wheel", event => { if (event.deltaY < 0) armHistory(); }, { passive: true });
   canvas.addEventListener("touchmove", armHistory, { passive: true });
@@ -500,21 +515,26 @@ class Detail {
  }
  frame(event: { streamID: string; frame?: ByteFrame; error?: string }) {
   if (!this.terminal || event.streamID !== this.terminalID) return;
-  if (event.error) { this.status.textContent = "Terminal disconnected: " + event.error; this.terminalReady = false; this.updateHistoryPaging(true); return; }
+  if (event.error) { this.prediction?.reset(); this.status.textContent = "Terminal disconnected: " + event.error; this.terminalReady = false; this.updateHistoryPaging(true); return; }
   const f = event.frame; if (!f) return;
-  if (!this.sequence.accept(f)) { this.status.textContent = "Terminal stream changed. Reconnect to obtain a fresh screen."; this.terminalReady = false; this.updateHistoryPaging(true); return; }
+  if (!this.sequence.accept(f)) { this.prediction?.reset(); this.status.textContent = "Terminal stream changed. Reconnect to obtain a fresh screen."; this.terminalReady = false; this.updateHistoryPaging(true); return; }
   try {
    if (f.frame === "reset") {
     this.historyRequest++; this.historyLoading = false; this.historyArmed = false; this.historyRetryAt = 0;
     clearTimeout(this.historyTimer);
+    this.prediction?.reset();
     this.terminal.reset();
     if (f.cols && f.rows) this.terminal.resize(f.cols, f.rows);
     if (f.history_b64) this.terminal.write(bytes(f.history_b64));
     this.terminal.write(bytes(f.data_b64)); this.historyCursor = f.history_cursor ?? null;
-   } else if (f.frame === "data") this.terminal.write(bytes(f.data_b64));
+   } else if (f.frame === "data") {
+    const prediction = this.prediction, data = bytes(f.data_b64);
+    if (data.length) prediction?.outputReceived();
+    this.terminal.write(data, () => { if (data.length) prediction?.outputParsed(); });
+   }
    else if (f.frame === "resize" && f.cols && f.rows) this.terminal.resize(f.cols, f.rows);
-   else if (f.frame === "exited") { this.status.textContent = "Pane exited."; this.terminalReady = false; }
-  } catch(e) { this.status.textContent = "Invalid terminal frame: " + String(e); this.terminalReady = false; }
+   else if (f.frame === "exited") { this.prediction?.reset(); this.status.textContent = "Pane exited."; this.terminalReady = false; }
+  } catch(e) { this.prediction?.reset(); this.status.textContent = "Invalid terminal frame: " + String(e); this.terminalReady = false; }
   this.updateHistoryPaging();
  }
  updateHistoryPaging(schedule = false) {
@@ -541,6 +561,7 @@ class Detail {
    if (result.unavailable) { this.historyCursor = null; this.status.textContent = `Earlier output: ${result.unavailable}`; return; }
    const page = result.page;
    if (!page) throw new Error("The history response contained no page.");
+   this.prediction?.reset();
    const inserted = await prependTerminalHistory(term, bytes(page.history_b64), current);
    if (inserted === null) return;
    this.historyCursor = inserted === 0 && page.history_b64 ? null : page.cursor ?? null;

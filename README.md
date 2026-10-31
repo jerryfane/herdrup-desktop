@@ -52,6 +52,24 @@ you are at the tail; history prepends and switching through Terminal preserve
 your reading position. Find hides the jump button while a result is selected.
 Chat drafts stay local and are scoped to the host, herdr session and pane.
 
+Instant typing ports Swift's confidence-epoch predictor to a separate xterm
+overlay; guessed text never enters the terminal buffer. Settings offers Auto,
+Always and Off. Auto uses measured ACK/echo delay; Always still requires a
+confirmed echo before showing a new epoch, so silent/password-like input is not
+predicted. Enter, unsupported input, resize, scrollback, screen changes and
+disconnects clear or make predictions tentative. Wrong echoes retract guesses.
+Help → Typing latency reports queue, ACK, echo, rendered-frame and prediction-draw
+timings per SSH target, with Copy report and Reset. These are client render times,
+not physical display scanout; as in Swift, the first output after a send is
+attributed as its echo. No network type is inferred.
+Linux native typing through the SSH fixture measured 16 keys and 15 confirmed
+predictions, with no failed or unattributed keys. Separate real-xterm checks
+verified the predicted glyph appeared before server output while the buffer
+remained unchanged, and that echo, resize and Off removed the overlay.
+Eight confidence/latency cases pass. `test-check prove` is inconclusive against
+the previous head because these new modules do not exist there; import failure
+is not claimed as behavioral regression proof.
+
 Use the top-left back button to choose or add a saved SSH host.
 Right-click a saved host (or press Shift+F10) to edit its nickname and connection
 details, or delete it. Save updates the profile without connecting. The host home
@@ -128,11 +146,12 @@ Windows requires the WebView2 source-aware request filter (`ICoreWebView2_22`):
 the older filter misses cross-origin iframe requests. Preview creation checks
 that the native filter is installed before loading received content and fails
 closed on unsupported runtimes.
-Linux native checks rendered the same document with scripts off and on, verified
-bridge/storage/parent isolation, and blocked fetch, WebSocket and navigation
-requests against a local server whose unprotected browser control did load.
-The existing Windows/Linux CI window smoke also exercises these boundaries and
-saves each preview screenshot.
+Windows and Linux native checks rendered the same document with scripts off and
+on, verified bridge/storage/parent isolation, and blocked fetch, WebSocket and
+remote/data navigation against a local server whose unprotected control did load.
+CI run `41150320378` at `9f0031f` passed these unchanged scenarios on both systems
+and saved their preview screenshots. Older unsupported WebView2 runtime rejection
+has not been exercised.
 This is not complete Settings parity: additional preferences, daemon updates,
 invite creation and full reference comparison remain.
 
