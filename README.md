@@ -672,6 +672,10 @@ Eight Settings captures cover the Machines index, all six saved federation
 profiles plus the unsaved guest peer, empty federation, and inline About.
 The Linux capture driver exercises both independent scroll containers and checks
 the agent-derived totals (5 machines, 5 agents, 1 offline), not profile counts.
+Federation status uses the native 26 pt outlined Wi-Fi-off badge for offline
+peers and 8 pt dots for reachable/degraded peers, with accessible status labels.
+The offline symbol uses SF Symbols on macOS and the existing Phosphor fallback
+elsewhere; connection-summary dots remain separate.
 Settings comparisons also use no masks. Reference host naming is connection
 metadata; the renderer still receives the real SSH fixture's machine statuses.
 

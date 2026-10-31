@@ -325,13 +325,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       });
       change.disabled = state?.phase !== "connected" || !!busy || (saved.savedState === "disabled" && !saved.hasFederationPolicy);
       item.append(disc(40, saved.displayLabel), lines);
-      if (saved.peer) item.append(peerDot(saved.peer));
+      if (saved.peer) item.append(peerBadge(saved.peer));
       item.append(change); rows.push(item);
     }
     for (const peer of peers.filter(peer => !statuses.some(saved => saved.profileID === peer.alias))) {
       const item = el("div", "settings-federation-row"), lines = el("div", "settings-row-lines");
       lines.append(el("strong", "", peer.label || peer.alias), el("span", "settings-row-subtitle", plural(peer.agentCount, "agent")));
-      item.append(disc(40, peer.label || peer.alias), lines, peerDot(peer)); rows.push(item);
+      item.append(disc(40, peer.label || peer.alias), lines, peerBadge(peer)); rows.push(item);
     }
     if (!rows.length) {
       const empty = el("div", "settings-federation-empty");
@@ -341,8 +341,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     rows.push(row("How to add a machine", "plus.circle", showFederationGuide, "Connect another computer to your home box"));
     return group("FEDERATION", rows);
   }
-  function peerDot(peer: PeerSummary) {
-    const dot = el("span", "settings-status-dot"); dot.dataset.state = peer.reachability; dot.setAttribute("aria-label", peer.reachability); return dot;
+  function peerBadge(peer: PeerSummary) {
+    const badge = el("span", peer.reachability === "offline" ? "settings-peer-offline" : "settings-status-dot");
+    badge.dataset.state = peer.reachability;
+    badge.setAttribute("role", "img"); badge.setAttribute("aria-label", peer.reachability);
+    if (peer.reachability === "offline") badge.append(glyph("wifi.slash", 11, "bold"));
+    return badge;
   }
   function dialog(title: string) {
     openDialog?.close(); const modal = el("dialog", "settings-sheet");

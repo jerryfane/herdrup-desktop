@@ -51,6 +51,8 @@
 .settings-status-dot[data-state="reachable"] { background:var(--status-done); }
 .settings-status-dot[data-state="degraded"] { background:var(--status-waiting); }
 .settings-status-dot[data-state="offline"] { background:var(--color-text-dim); }
+.settings-peer-offline { flex:none; display:grid; place-items:center; width:26px; height:26px; border-radius:7px; color:var(--color-text-dim); outline:1.5px solid color-mix(in srgb, var(--color-text-dim) 55%, transparent); outline-offset:-.75px; }
+.settings-peer-offline > .settings-glyph { width:auto; }
 .settings-plain-row { position:relative; display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:2px; width:100%; min-height:52px; padding:12px 18px; border:0; border-radius:0; color:var(--color-text); background:none; text-align:left; font:600 17px/var(--leading-app) var(--font-app); }
 .settings-plain-row:disabled { color:var(--color-text-faint); }
 .settings-action-note { font:400 11px/var(--leading-app) var(--font-app); }
