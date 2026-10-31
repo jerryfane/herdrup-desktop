@@ -303,19 +303,23 @@ one herdr API method through `internal/engine` and prints the result as JSON (`s
 fake saved machines (a JSON array with `machine.status`'s fields) and a `herdr machine federate|unfederate`
 that changes them (`-machine-fail <stderr>` makes it fail).
 
-### MyGo native-drop correction
+### MyGo dependency corrections
 
 Go builds use the committed `vendor/` tree. `third_party/mygo/upstream.json` pins
-MyGo v0.7.1, its upstream commit and module checksum; `native-drop.patch` beside it
-is the readable source correction for [#72](https://github.com/jerryfane/herdrup-desktop/issues/72).
-The upstream Go implementation is unchanged. Its original TypeScript build inputs
-are retained with the rebuilt embedded bridge, so application builds need no patch step.
+MyGo v0.7.1, its upstream commit and module checksum. `native-drop.patch` fixes
+[#72](https://github.com/jerryfane/herdrup-desktop/issues/72);
+`frame-navigation.patch` adds the subframe navigation veto required by
+[#75](https://github.com/jerryfane/herdrup-desktop/issues/75). The preview applies
+the same policy to top-level and subframe navigations, allowing only its initial
+`about:srcdoc` document. The existing top-level navigation API keeps its semantics.
+Original TypeScript build inputs are retained with the rebuilt embedded bridge,
+so application builds need no patch step.
 
-To change Go dependencies or regenerate the correction, use Bun **1.3.14**, Go and
+To change Go dependencies or regenerate the corrections, use Bun **1.3.14**, Go and
 GNU patch, then run `bun run vendor:mygo`. This replaces `vendor/` from `go.mod`,
-checks the MyGo base, applies the patch without fuzz and rebuilds the bridge.
+checks the MyGo base, applies both patches without fuzz and rebuilds the bridge.
 Do not run plain `go mod vendor` or build with `-mod=mod`: those remove or bypass
-the correction. CI regenerates the tree and rejects any difference.
+the corrections. CI regenerates the tree and rejects any difference.
 
 Acceptance uses a real GTK drag into Chat and Gram, a posted-file byte/hash
 read-back, an outside-composer drop, and rejected synthetic, in-page, plain-text

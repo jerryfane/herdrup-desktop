@@ -1,0 +1,156 @@
+diff --git a/events.go b/events.go
+index 5df78be..6712f49 100644
+--- a/events.go
++++ b/events.go
+@@ -29,8 +29,8 @@ type QuitEvent struct {
+ 	Preventable
+ }
+ 
+-// NavigateEvent is passed to Page.OnWillNavigate listeners. Preventing it
+-// cancels the navigation.
++// NavigateEvent is passed to Page.OnWillNavigate and Page.OnWillFrameNavigate
++// listeners. Preventing it cancels the navigation.
+ type NavigateEvent struct {
+ 	Preventable
+ 	URL string
+diff --git a/internal/windows/webview.go b/internal/windows/webview.go
+index b95f37d..04ee4ae 100644
+--- a/internal/windows/webview.go
++++ b/internal/windows/webview.go
+@@ -224,6 +224,7 @@ func (w *window) setUp(controller uintptr) {
+ 		withHandler(fn, func(h uintptr) uintptr { return comCall(w.webview, index, h, uintptr(unsafe.Pointer(&tok))) })
+ 	}
+ 	add(wvAddNavigationStarting, w.navigationStarting)
++	add(wvAddFrameNavigationStarting, w.frameNavigationStarting)
+ 	add(wvAddContentLoading, func(_, _ uintptr) { w.h.NavigationCommitted(w.URL()) })
+ 	add(wvAddNavigationCompleted, w.navigationCompleted)
+ 	add(wvAddDocumentTitleChanged, func(_, _ uintptr) {
+@@ -345,6 +346,19 @@ func (w *window) focusWebView() {
+ 	}
+ }
+ 
++// A child navigation must not alter the top-level page's trust, context or
++// LoadHTML bookkeeping. It only asks the app's frame policy for permission.
++func (w *window) frameNavigationStarting(_, args uintptr) {
++	var p uintptr
++	comCall(args, navStartingGetURI, uintptr(unsafe.Pointer(&p)))
++	uri := w.appURL(takeWstr(p))
++	var user int32
++	comCall(args, navStartingGetIsUserInitiated, uintptr(unsafe.Pointer(&user)))
++	if !w.h.WillNavigate(platform.Navigation{URL: uri, UserInitiated: user != 0}) {
++		comCall(args, navStartingPutCancel, 1)
++	}
++}
++
+ func (w *window) navigationStarting(_, args uintptr) {
+ 	var p uintptr
+ 	comCall(args, navStartingGetURI, uintptr(unsafe.Pointer(&p)))
+diff --git a/internal/windows/webview2.go b/internal/windows/webview2.go
+index 04be11b..040b9b3 100644
+--- a/internal/windows/webview2.go
++++ b/internal/windows/webview2.go
+@@ -42,6 +42,7 @@ const (
+ 	wvAddContentLoading                      = 9
+ 	wvAddPermissionRequested                 = 23
+ 	wvAddNavigationCompleted                 = 15
++	wvAddFrameNavigationStarting             = 17
+ 	wvAddProcessFailed                       = 25
+ 	wvAddScriptToExecuteOnDocumentCreated    = 27
+ 	wvRemoveScriptToExecuteOnDocumentCreated = 28
+diff --git a/window.go b/window.go
+index 5589988..9b3f695 100644
+--- a/window.go
++++ b/window.go
+@@ -333,31 +333,32 @@ type Window struct {
+ 	held     []message
+ 	domReady bool
+ 
+-	onClose            listeners[func(*CloseEvent)]
+-	onClosed           listeners[func()]
+-	onFocus            listeners[func()]
+-	onBlur             listeners[func()]
+-	onShow             listeners[func()]
+-	onHide             listeners[func()]
+-	onReadyToShow      listeners[func()]
+-	onResize           listeners[func()]
+-	onFileDrop         listeners[func(*FileDropEvent)]
+-	onWillDownload     listeners[func(*DownloadEvent)]
+-	onDownloadDone     listeners[func(*Download)]
+-	onMove             listeners[func()]
+-	onMaximize         listeners[func()]
+-	onUnmaximize       listeners[func()]
+-	onMinimize         listeners[func()]
+-	onRestore          listeners[func()]
+-	onEnterFullScreen  listeners[func()]
+-	onLeaveFullScreen  listeners[func()]
+-	onPageTitleUpdated listeners[func(*TitleEvent)]
+-	onWillNavigate     listeners[func(*NavigateEvent)]
+-	onDidNavigate      listeners[func(string)]
+-	onDOMReady         listeners[func()]
+-	onDidFinishLoad    listeners[func()]
+-	onDidFailLoad      listeners[func(*LoadError)]
+-	onRenderGone       listeners[func(string)]
++	onClose             listeners[func(*CloseEvent)]
++	onClosed            listeners[func()]
++	onFocus             listeners[func()]
++	onBlur              listeners[func()]
++	onShow              listeners[func()]
++	onHide              listeners[func()]
++	onReadyToShow       listeners[func()]
++	onResize            listeners[func()]
++	onFileDrop          listeners[func(*FileDropEvent)]
++	onWillDownload      listeners[func(*DownloadEvent)]
++	onDownloadDone      listeners[func(*Download)]
++	onMove              listeners[func()]
++	onMaximize          listeners[func()]
++	onUnmaximize        listeners[func()]
++	onMinimize          listeners[func()]
++	onRestore           listeners[func()]
++	onEnterFullScreen   listeners[func()]
++	onLeaveFullScreen   listeners[func()]
++	onPageTitleUpdated  listeners[func(*TitleEvent)]
++	onWillNavigate      listeners[func(*NavigateEvent)]
++	onWillFrameNavigate listeners[func(*NavigateEvent)]
++	onDidNavigate       listeners[func(string)]
++	onDOMReady          listeners[func()]
++	onDidFinishLoad     listeners[func()]
++	onDidFailLoad       listeners[func(*LoadError)]
++	onRenderGone        listeners[func(string)]
+ 
+ 	// themeColor is the page's theme color, as its bridge told it, and
+ 	// hasThemeColor whether it has one. themeColorPending is set from a
+@@ -1674,6 +1675,13 @@ func (p *Page) OnWillNavigate(fn func(e *NavigateEvent)) (off func()) {
+ 	return p.w.onWillNavigate.add(fn, false)
+ }
+ 
++// OnWillFrameNavigate is called before a child frame navigates, including its
++// initial load. Preventing the event leaves its current document in place.
++// This is separate from OnWillNavigate, which observes the top-level page.
++func (p *Page) OnWillFrameNavigate(fn func(e *NavigateEvent)) (off func()) {
++	return p.w.onWillFrameNavigate.add(fn, false)
++}
++
+ // OnDidNavigate is called when a navigation committed and a new page
+ // started.
+ func (p *Page) OnDidNavigate(fn func(url string)) (off func()) {
+@@ -1817,11 +1825,18 @@ func (h *windowHandler) WillNavigate(nav platform.Navigation) bool {
+ 		})
+ 		return false
+ 	}
+-	if !nav.IsMainFrame || nav.Unasked {
++	if nav.IsMainFrame && nav.Unasked {
++		return true
++	}
++	if !nav.IsMainFrame && h.w.onWillFrameNavigate.len() == 0 {
+ 		return true
+ 	}
+ 	e := &NavigateEvent{URL: nav.URL, UserInitiated: nav.UserInitiated}
+-	fire1(&h.w.onWillNavigate, e)
++	if nav.IsMainFrame {
++		fire1(&h.w.onWillNavigate, e)
++	} else {
++		fire1(&h.w.onWillFrameNavigate, e)
++	}
+ 	return !e.prevented
+ }
+ 

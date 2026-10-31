@@ -58,12 +58,14 @@ func Open(parent *mygo.Window, path, title string, scripts bool) (*mygo.Window, 
 	page := win.Page()
 	page.SetWindowOpenHandler(func(mygo.WindowOpenRequest) *mygo.WindowOptions { return nil })
 	page.SetPermissionHandler(func(mygo.PermissionRequest) bool { return false })
-	page.OnWillNavigate(func(event *mygo.NavigateEvent) {
-		// WebKitGTK reports the frame's initial inline load here too.
+	blockNavigation := func(event *mygo.NavigateEvent) {
+		// WebKitGTK can report the frame's initial inline load as top-level.
 		if event.URL != "about:srcdoc" {
 			event.PreventDefault()
 		}
-	})
+	}
+	page.OnWillNavigate(blockNavigation)
+	page.OnWillFrameNavigate(blockNavigation)
 	page.LoadHTML(document(string(content), scripts), "")
 	return win, nil
 }
