@@ -28,6 +28,9 @@ Unchanged transcript rows stay attached during refresh, preserving their focus
 and expanded state. A Linux native-window check reproduced focus loss before the
 fix, then passed Refresh, Enter/Space toggles, mode switches and text-size changes.
 Windows disclosure keyboard interaction and full visual parity remain unverified.
+The detail header uses the native machine-font status label and rounded,
+minimum-bounded height when Settings text size changes. Linux native Settings
+checks covered 90% and 140%, combined Chat zoom, independent terminal zoom and reset.
 Earlier terminal output loads above the live screen, without a separate window or
 replaying the terminal stream. Paging preserves live input, cursor state and search;
 expired cursors stop paging, while transport failures remain retryable. History is

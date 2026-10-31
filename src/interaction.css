@@ -1,11 +1,11 @@
 .agent-detail { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--color-ground-machine); color: var(--color-text); min-width: 0; }
 .agent-detail[hidden] { display: none; }
 .terminal-tools, .chat-tools { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--color-hairline); }
-.interaction-toolbar { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px; min-height: 58px; background: var(--color-ground-machine); }
+.interaction-toolbar { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px; min-height: calc(var(--pane-header-content-height, 44px) + 14px); background: var(--color-ground-machine); }
 .interaction-toolbar strong { flex: 1; min-width: 0; font: 600 16px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane-title-block { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .pane-state { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.pane-state-label { font: 600 11px var(--font-app); letter-spacing: 1px; text-transform: uppercase; color: var(--color-text-dim); }
+.pane-state-label { font: 600 11px var(--font-machine); letter-spacing: 1px; text-transform: uppercase; color: var(--color-text-dim); }
 .pane-state-age { font: 400 11px var(--font-machine); font-variant-numeric: tabular-nums; color: var(--color-text-faint); }
 .pane-state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-faint); }
 .pane-state[data-group="needsYou"] .pane-state-dot { background: var(--status-waiting); }

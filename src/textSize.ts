@@ -24,6 +24,7 @@ function readAppScale(): number {
 function applyTextScales() {
   document.documentElement.style.setProperty("--chat-text-scale", String(sizes.chat / defaults.chat));
   document.documentElement.style.setProperty("--ui-font-scale", String(appScale));
+  document.documentElement.style.setProperty("--pane-header-content-height", `${Math.max(44, Math.round(44 * appScale))}px`);
 }
 applyTextScales();
 export function uiFontScale() { return appScale; }
