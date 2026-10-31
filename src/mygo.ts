@@ -21,6 +21,13 @@ export interface AccountMenuChoice {
 /** AgentAnswerStatus values a newer herdr adds decode as they are; see Known. */
 export type AgentAnswerStatus = "answered" | "sent_unconfirmed";
 
+export interface AgentCreationResult {
+  phase: string;
+  paneID: string;
+  name: string;
+  message: string;
+}
+
 /**
  * AgentTarget identifies a pane within its originating connection and session.
  * Pane IDs alone can name unrelated agents on other machines or sessions.
@@ -775,6 +782,9 @@ export const Desk = {
   closeAgentView(token: string): Promise<void> {
     return call("Desk.CloseAgentView", token);
   },
+  closeCreation(token: string): Promise<void> {
+    return call("Desk.CloseCreation", token);
+  },
   closeSettings(token: string): Promise<void> {
     return call("Desk.CloseSettings", token);
   },
@@ -785,6 +795,9 @@ export const Desk = {
   connect(m: Machine, password: string): Promise<void> {
     return call("Desk.Connect", m, password);
   },
+  createAgent(token: string, folder: string, kind: string): Promise<AgentCreationResult> {
+    return call("Desk.CreateAgent", token, folder, kind);
+  },
   /**
    * CreateGuestInvite follows the same session lifetime as terminal/chat writes.
    * A lost response is not retried: the daemon may already have created an invite.
@@ -794,6 +807,12 @@ export const Desk = {
   },
   createSettingsAccount(token: string, kind: string, label: string): Promise<string> {
     return call("Desk.CreateSettingsAccount", token, kind, label);
+  },
+  creationDirectory(token: string, folder: string): Promise<string> {
+    return call("Desk.CreationDirectory", token, folder);
+  },
+  creationKinds(token: string): Promise<string> {
+    return call("Desk.CreationKinds", token);
   },
   /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
@@ -991,6 +1010,9 @@ export const Desk = {
   },
   openAgentView(target: AgentTarget, token: string): Promise<AgentView> {
     return call("Desk.OpenAgentView", target, token);
+  },
+  openCreation(machineID: string, session: string, token: string): Promise<void> {
+    return call("Desk.OpenCreation", machineID, session, token);
   },
   /** OpenExternalURL deliberately excludes executable/file URLs from model output. */
   openExternalURL(raw: string): Promise<void> {

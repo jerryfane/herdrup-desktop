@@ -12,6 +12,7 @@ import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
 import { onTextSizeChanged } from "./textSize";
 import { initSidebarRail } from "./sidebar";
+import { showNewAgent } from "./create";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -114,6 +115,16 @@ async function buildTopBar() {
     minimize.onclick = () => rail?.minimize();
     minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
     actions.replaceChildren(minimize);
+    if (tab === "agents") {
+      const add = await slot("plus", "New agent");
+      const enabled = !!board && state.phase === "connected";
+      add.tabIndex = enabled ? 0 : -1; add.setAttribute("role", "button"); add.setAttribute("aria-label", "New agent");
+      add.setAttribute("aria-disabled", String(!enabled));
+      const create = () => { if (board && state.phase === "connected") void showNewAgent({ machineID: board.machineID, session: board.session }); };
+      add.onclick = create;
+      add.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); create(); } };
+      actions.append(add);
+    }
   }
   // The capsules' shapes go with their children.
   paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });

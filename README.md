@@ -81,6 +81,17 @@ input is never replayed automatically. A definite prompt rejection preserves the
 draft; written or uncertain delivery clears the submitted draft and asks the reader
 to check Terminal rather than accidentally submit it twice.
 
+The Agents section's New agent action browses remote folders and installed
+harnesses, creates a pane, and starts the chosen agent. Its task is placed in the
+composer without sending it; press Send when ready. A blank folder retains the
+daemon's current folder. Creation stays on the host/session where the sheet opened.
+Only a definitive busy response while the shell still owns the foreground group
+is retried, for at most two seconds. A definite start refusal closes the new empty
+pane; an uncertain start is not repeated or closed automatically.
+Native Linux checks exercised folder selection, rejected-start cleanup, creation
+and explicit sending: zero prompt writes before Send, one afterward. The
+`fakeherdr -creation -interactions` fixture starts no real model or shell process.
+
 Settings opens a split index and Machines page, not the host chooser. The machine
 card and detail show the connected daemon's version and commit from
 `server.staged_update`, distinct from the desktop app version. A daemon without

@@ -70,11 +70,16 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 		return AgentView{}, errors.New("agent belongs to another connection or session")
 	}
 	i := slices.IndexFunc(l.agents, func(a herdrapi.AgentInfo) bool { return a.PaneID == target.PaneID })
-	if i < 0 {
+	var agent herdrapi.AgentInfo
+	if i >= 0 {
+		agent = l.agents[i]
+	} else if created := d.creation; created != nil && d.currentLocked(created.at) && created.ctx.Err() == nil &&
+		created.created != nil && created.created.PaneID == target.PaneID {
+		agent = *created.created
+	} else {
 		d.mu.Unlock()
 		return AgentView{}, errors.New("agent is no longer on this board")
 	}
-	agent := l.agents[i]
 	at := boardSession{l, l.client, l.sessionGen}
 	view, err := l.client.ForSession(l.session)
 	if err != nil {

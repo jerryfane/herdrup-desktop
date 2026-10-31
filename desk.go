@@ -118,6 +118,7 @@ type Desk struct {
 	link        *link // the current connection; nil when disconnected
 	interaction *interaction
 	settings    *settingsSession
+	creation    *creationSession
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications

@@ -84,10 +84,10 @@ export function interactionBoard(board: BoardUpdate | null) {
   }
  }
 }
-export async function selectInteraction(target: AgentTarget) {
+export async function selectInteraction(target: AgentTarget, initialDraft?: string) {
  if (current && JSON.stringify(current.target) === JSON.stringify(target)) { root.hidden = false; return; }
  closeInteraction();
- const next = new Detail(target); current = next; root.hidden = false;
+ const next = new Detail(target, initialDraft); current = next; root.hidden = false;
  selectionChanged?.(target);
  opening = opening.then(async () => { if (!next.disposed) await next.open(); });
  await opening;
@@ -186,7 +186,7 @@ class Detail {
   this.input.dispatchEvent(new Event("input"));
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
  draftKey: string;
- constructor(readonly target: AgentTarget) {
+ constructor(readonly target: AgentTarget, initialDraft?: string) {
   this.draftKey = "herdrup.prompt." + JSON.stringify(target);
   this.input.rows = 1; this.input.placeholder = "Type a reply…"; this.input.autocapitalize = "off"; this.input.spellcheck = false;
   try { this.input.value = localStorage.getItem(this.draftKey) ?? ""; } catch { /* storage unavailable; keep in memory */ }
@@ -197,6 +197,7 @@ class Detail {
    event.preventDefault(); this.setCtrl(false); this.queueTerminalInput(code);
   });
   this.input.addEventListener("input", () => this.saveDraft());
+  if (initialDraft !== undefined) { this.input.value = initialDraft; this.saveDraft(); }
   this.input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void this.sendPrompt(); } });
  }
  saveDraft() {

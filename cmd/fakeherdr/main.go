@@ -43,6 +43,7 @@ func main() {
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
+	creation := flag.Bool("creation", false, "serve isolated pane and agent creation; never starts a real process or model")
 	responsesFile := flag.String("responses", "", "immutable native-reference API response map, including avatar and session replies")
 	flag.Parse()
 
@@ -158,6 +159,30 @@ func main() {
 	}
 	if *guests {
 		fixture := fakeherdr.NewGuests()
+		previous := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if value, err, handled := fixture.Handle(method, params); handled {
+				return value, err
+			}
+			return previous(method, params)
+		}
+	}
+	if *creation {
+		fixture := fakeherdr.NewCreation(func(agent map[string]any) {
+			var roster struct {
+				Type   string           `json:"type"`
+				Agents []map[string]any `json:"agents"`
+			}
+			if err := json.Unmarshal(set.get(), &roster); err != nil {
+				log.Fatalf("creation fixture roster: %v", err)
+			}
+			roster.Agents = append(roster.Agents, agent)
+			data, err := json.Marshal(roster)
+			if err != nil {
+				log.Fatalf("creation fixture roster: %v", err)
+			}
+			set.set(data)
+		})
 		previous := s.Handle
 		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 			if value, err, handled := fixture.Handle(method, params); handled {
