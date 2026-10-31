@@ -36,6 +36,10 @@ Native Linux typing reproduced clipping at 140% before the fix; afterward one an
 two lines fit, a sixth line scrolls behind the five-line limit, and expanded writers
 retain drafts across 140%→90%→100% changes. Typing and writer expansion leave the
 Chat viewport fixed. Windows/macOS composer-scale interaction is not yet verified.
+Chat shares Gram's native wrap threshold: account for the action-row gap and leave
+16 points of spare room before returning inline. A Linux native-window check
+reproduced a clipped second line at that boundary before the fix, then verified
+wrapping, stable deletion near the boundary, collapse and unchanged viewport size.
 Expanded writing uses the persistent terminal's available height, including its
 key-row allowance, as Swift does. Hosted macOS captures verify expansion and mode
 switches preserve both viewports and the draft; writer screenshots still differ.

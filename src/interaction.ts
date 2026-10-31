@@ -10,6 +10,7 @@ import "./interaction.css";
 import { Desk, events } from "./mygo";
 import type { AgentTarget, AgentView, BoardUpdate, GramAttachment } from "./mygo";
 import { closeWriter, ComposerEditor, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
+import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
@@ -664,6 +665,7 @@ class Detail {
   this.mountKeys();
   const probe = el("div", "composer-text-probe");
   composer.append(probe);
+  let wrapped = false;
   const layout = () => {
    if (!this.editor || !composer.isConnected) return;
    const hasContent = this.input.value.trim().length > 0 || this.attachments.length > 0;
@@ -676,9 +678,11 @@ class Detail {
     probe.textContent = this.input.value + (this.input.value.endsWith("\n") || !this.input.value ? " " : "");
     return Math.max(1, Math.round(probe.getBoundingClientRect().height / lineHeight));
    };
-   const stacked = this.editor!.open || this.attachments.length > 0 || (!this.dictation.strip.hidden && !!this.input.value) || measure(width - actions.offsetWidth) > 1;
+   const inline = width - actions.offsetWidth - 4;
+   wrapped = composerExpanded(false, measure, inline, wrapped);
+   const stacked = this.editor!.open || this.attachments.length > 0 || (!this.dictation.strip.hidden && !!this.input.value) || wrapped;
    composer.classList.toggle("expanded", stacked);
-   const lines = measure(stacked ? width : width - actions.offsetWidth);
+   const lines = measure(stacked ? width : inline);
    // Swift gives the writer the warm terminal's room, including its key-row allowance.
    const room = this.terminalSurface.clientHeight;
    this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
