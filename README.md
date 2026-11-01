@@ -253,7 +253,12 @@ Native Linux checks exercise cancellation, refusal, download progress, success,
 pending restart and manual-update cards against an isolated SSH fixture. They
 do not install a real daemon or establish Windows/macOS update UI acceptance.
 
-The Settings index shows live account/exhaustion counts, shared people/agents/invites,
+Under the machine card, Settings suggests what waits, as Swift does: a herdr update
+(amber count; same states as the Machines card) and exhausted accounts (red count),
+each opening its page. Accounts, Shared access, Notifications and Typing latency pages
+show the native summary line under the title, amber when accounts are exhausted or
+alerts are on but this session cannot deliver them.
+The Settings index shows live account counts, shared people or invites,
 enabled notification categories and text sizes. It reuses the page models and updates
 only the value nodes, preserving keyboard focus. Unavailable home-box data is not
 shown as an empty list. Linux native checks covered empty and mixed data, revoked

@@ -13,7 +13,7 @@ export class NotificationsSettings {
   private running = new Set<keyof NotificationPreferences>();
   private status = el("p", "settings-row-subtitle");
 
-  constructor(private report: (error: unknown) => void, private summarize: (value: string) => void) { this.render(); }
+  constructor(private report: (error: unknown) => void, private summarize: (value: string, header: string, warn: boolean) => void) { this.render(); }
   async refresh() {
     if (this.loading || this.running.size) return;
     this.loading = true;
@@ -25,7 +25,11 @@ export class NotificationsSettings {
     const focused = this.root.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.preference : undefined;
     const card = el("div", "settings-group");
     const rows: [keyof NotificationPreferences, string][] = [["needsInput", "An agent needs input"], ["dies", "An agent dies"], ["finishes", "An agent finishes"], ["gram", "A gram message arrives"]];
-    this.summarize(this.state ? `${rows.filter(([key]) => this.pending.get(key) ?? this.state!.preferences[key]).length} of ${rows.length}` : "");
+    // HerdrApp.swift 8442-8454: "N of 4" on the index row, "N of 4 alerts on" in the page
+    // header; amber "N on · blocked" while alerts are on but this session cannot deliver them.
+    const on = this.state ? rows.filter(([key]) => this.pending.get(key) ?? this.state!.preferences[key]).length : 0;
+    const blocked = !!this.state && on > 0 && !this.state.supported;
+    this.summarize(!this.state ? "" : blocked ? `${on} on · blocked` : `${on} of ${rows.length}`, this.state ? `${on} of ${rows.length} alerts on` : "", blocked);
     for (const [key, title] of rows) {
       const row = el("label", "settings-row settings-notification-toggle"), input = el("input", "settings-switch");
       input.type = "checkbox"; input.setAttribute("role", "switch"); input.setAttribute("aria-label", title);

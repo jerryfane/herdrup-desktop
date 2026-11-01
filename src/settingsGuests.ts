@@ -35,7 +35,7 @@ export class GuestSettings {
   private pending = new Map<string, { value: boolean }>();
   private running = new Set<string>();
   private revoking = new Set<string>();
-  constructor(private report: (message: unknown) => void, private summarize: (value: string) => void) {
+  constructor(private report: (message: unknown) => void, private summarize: (value: string, header: string) => void) {
     const input = el("input"); input.placeholder = "Your name"; input.setAttribute("aria-label", "Your name"); input.autocomplete = "name";
     const explanation = el("p", "settings-row-subtitle");
     let saved = ""; try { saved = localStorage.getItem("guest.ownerName") ?? ""; } catch { /* empty until a name can be saved */ }
@@ -81,8 +81,12 @@ export class GuestSettings {
       summary.push(`${people.length} ${people.length === 1 ? "person" : "people"}`, `${agents.size} agent${agents.size === 1 ? "" : "s"}`);
     }
     if (invites.length) summary.push(`${invites.length} invite${invites.length === 1 ? "" : "s"}`);
-    this.summarize(!this.loaded ? "" : summary.length ? summary.join(" · ")
-      : failures.some(result => !result.machine.alias) ? "Unavailable" : "Nobody yet");
+    // The page header keeps the full summary; the index row names people first, then
+    // invites (HerdrApp.swift 8171-8177, GuestAccessSettings.swift 59-74).
+    const header = !this.loaded ? "" : summary.length ? summary.join(" · ")
+      : failures.some(result => !result.machine.alias) ? "Unavailable" : "Nobody yet";
+    this.summarize(people.length ? `${people.length} ${people.length === 1 ? "person" : "people"}`
+      : invites.length ? `${invites.length} invite${invites.length === 1 ? "" : "s"}` : header, header);
     const peopleRows = people.map(({ machine, guest }) => this.personRow(machine, guest));
     if (!peopleRows.length) peopleRows.push(note(!this.token ? "Connect to a home box to manage shared access." : !this.loaded ? "Loading…" : failures.length ? "Shared access could not be loaded from every machine." : "Nobody has access. Share an agent from its ••• menu."));
     this.content.replaceChildren(group("PEOPLE", peopleRows));

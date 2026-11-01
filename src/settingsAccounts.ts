@@ -14,6 +14,10 @@ function button(label: string, action: () => void) {
 }
 function accountsFrom(json: string): Account[] { return (JSON.parse(json) as { accounts: Account[] }).accounts ?? []; }
 
+/** The index row value, the page header line (amber when anything is exhausted) and the
+ * exhausted accounts' labels for the Settings suggestion (HerdrApp.swift 8087-8110, 8161, 8428-8440). */
+export interface AccountSummary { value: string; header: string; warn: boolean; exhausted: string[] }
+
 export class AccountSettings {
   readonly root = el("section", "settings-section");
   private token = "";
@@ -23,7 +27,7 @@ export class AccountSettings {
   private loading = false;
   private error = "";
   private menu: { id: string; token: string; account: Account } | null = null;
-  constructor(private report: (message: unknown) => void, private summarize: (value: string) => void) {
+  constructor(private report: (message: unknown) => void, private summarize: (summary: AccountSummary) => void) {
     events.settingsAccountMenu.on(choice => {
       const menu = this.menu;
       if (!menu || menu.id !== choice.id || menu.token !== choice.token || this.token !== choice.token) return;
@@ -52,10 +56,14 @@ export class AccountSettings {
     finally { if (this.token === token) { this.loading = false; this.render(); } }
   }
   private render() {
-    const exhausted = this.accounts.filter(account => !account.active).length;
-    this.summarize(!this.token || this.loading ? "" : this.accounts.length
-      ? `${this.accounts.length}${exhausted ? ` · ${exhausted} exhausted` : ""}`
-      : this.error ? "Unavailable" : "None");
+    const exhausted = this.accounts.filter(account => !account.active).map(account => account.label);
+    const n = this.accounts.length, settled = !!this.token && !this.loading;
+    this.summarize({
+      value: !settled ? "" : n ? String(n) : this.error ? "Unavailable" : "None",
+      header: !settled ? "" : n ? `${n} subscription${n === 1 ? "" : "s"}${exhausted.length ? ` · ${exhausted.length} exhausted` : ""}` : this.error ? "Unavailable" : "None configured yet",
+      warn: settled && exhausted.length > 0,
+      exhausted: settled ? exhausted : [],
+    });
     const card = el("div", "settings-group");
     for (const account of this.accounts) card.append(this.accountRow(account));
     if (!this.accounts.length) {

@@ -27,6 +27,36 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, text = "", classNam
   const n = document.createElement(tag); n.textContent = text; n.className = className; return n;
 }
 
+export interface UpdateSuggestion { title: string; subtitle: string }
+
+/** ServerUpdate.swift badgeKey and HerdrApp.swift 8131-8153: the Settings suggestion for a
+ * card that asks for something (available, restart pending, failed, too old), else null. */
+export function updateSuggestion(s: UpdateState | undefined, host: string): UpdateSuggestion | null {
+  if (!s || s.forbidden || !s.known || s.flow === "running") return null;
+  const a = s.attempt, c = s.check;
+  const failed = { title: "herdr update needs attention", subtitle: "Open Machines for the update status and next steps." };
+  if (s.flow === "lostTrack" || s.flow === "refused") return failed;
+  if (s.flow === "finished" && a?.outcome && a.outcome !== "downloaded_restart_required") {
+    return a.outcome === "updated" || a.outcome === "updated_disk_stale" ? null : failed;
+  }
+  if (!s.capabilities?.server_update) return { title: "herdr needs a one-time update", subtitle: "This version can't update itself from the app." };
+  if (!c) return null;
+  const pending = s.flow === "finished" && a?.outcome === "downloaded_restart_required" ? a : s.pending;
+  if (pending && c.running.build_id !== pending.build_id) {
+    return { title: `herdr ${labels(pending.from, pending.to)[1]} finishes on next restart`, subtitle: "Restarting herdr closes terminals. Your layout comes back." };
+  }
+  const caps = s.capabilities;
+  const missing = [!caps.agent_groups && "folders", !caps.agent_avatar && "avatars", !caps.agent_answer && "answers from notifications"].filter(Boolean) as string[];
+  const meets = !missing.length && (c.running.commit_time === undefined || c.running.commit_time >= minCommitTime);
+  if (!c.update_available || !c.latest || (!meets && c.latest.commit_time < minCommitTime)) return null;
+  if (c.mode !== "live" && c.mode !== "restart_required") return null;
+  const joined = missing.length < 2 ? missing.join("") : `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}`;
+  return {
+    title: `Update herdr to ${labels(c.running.version, c.latest.version)[1]}`,
+    subtitle: missing.length ? `${joined.charAt(0).toUpperCase()}${joined.slice(1)} need${missing.length === 1 ? "s" : ""} it` : `A newer herdr is ready for ${host}`,
+  };
+}
+
 export class ServerUpdateSettings {
   readonly root = node("section", "", "settings-update-card");
   private token = "";
@@ -38,7 +68,7 @@ export class ServerUpdateSettings {
   private modal?: HTMLDialogElement;
   private state?: UpdateState;
 
-  constructor(private report: (error: unknown) => void) {
+  constructor(private report: (error: unknown) => void, private suggest: (suggestion: UpdateSuggestion | null) => void = () => {}) {
     this.root.id = "server-update-card"; this.root.hidden = true;
     this.root.setAttribute("aria-live", "polite");
     this.root.setAttribute("aria-busy", "true");
@@ -46,7 +76,7 @@ export class ServerUpdateSettings {
   setScope(token: string, host = "Machine") {
     this.generation++; this.token = token; this.host = host;
     clearTimeout(this.timer); this.modal?.close(); this.pending = false;
-    this.state = undefined; this.rendered = ""; this.root.hidden = true; this.root.replaceChildren();
+    this.state = undefined; this.rendered = ""; this.root.hidden = true; this.root.replaceChildren(); this.suggest(null);
     this.root.setAttribute("aria-busy", "true");
     if (token) void this.read(true);
   }
@@ -140,6 +170,7 @@ export class ServerUpdateSettings {
   }
   private render() {
     const s = this.state; this.root.replaceChildren(); this.root.hidden = true;
+    this.suggest(updateSuggestion(s, this.host));
     if (!s || s.forbidden || !s.known) return;
     this.root.hidden = false; this.root.dataset.flow = s.flow;
     const a = s.attempt, c = s.check;

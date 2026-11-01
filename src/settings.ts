@@ -11,7 +11,7 @@ import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
 import { PreviewSettings } from "./settingsPreviews";
-import { ServerUpdateSettings } from "./settingsUpdates";
+import { ServerUpdateSettings, type UpdateSuggestion } from "./settingsUpdates";
 import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
@@ -28,6 +28,7 @@ import selectionIcon from "../third_party/phosphor/web/text-align-left.svg?url";
 import trashIcon from "../third_party/phosphor/web/trash.svg?url";
 import latestIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import latencyIcon from "../third_party/phosphor/web/gauge.svg?url";
+import updateIcon from "../third_party/phosphor/web/arrow-circle-down.svg?url";
 import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.svg?url";
 import pickerIcon from "../third_party/phosphor/web/caret-up-down.svg?url";
 
@@ -36,6 +37,7 @@ const settingIcons: Record<string, string> = {
   "lock.shield": privacyIcon, "doc.text": termsIcon,
   "chevron.left.forwardslash.chevron.right": codeIcon, "plus.circle": addIcon,
   "key.horizontal": accountIcon,
+  "arrow.down.circle": updateIcon,
   "person.2": guestsIcon,
   "bell": notificationIcon,
   "keyboard": keyboardIcon,
@@ -61,8 +63,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   sidebar.insertBefore(index, document.getElementById("tabbar"));
   const page = el("section", "settings-detail"); page.hidden = true; detail.append(page);
   const title = el("h1", "settings-page-title", "Machines"), body = el("div", "settings-page-body");
+  // detailHeader: the page's summary line under the title, amber when it warns.
+  const subtitle = el("p", "settings-page-subtitle"); subtitle.hidden = true;
   const message = el("p", "settings-message"); message.hidden = true; message.setAttribute("role", "status");
-  page.append(title, message, body);
+  page.append(title, subtitle, message, body);
   let visible = false, selected: Page = "machines", generation = 0, identity = "", busy = "";
   let latencyTimer: number | undefined;
   let state: ConnState | null = null, board: BoardUpdate | null = null, machine: Machine | null = null;
@@ -76,11 +80,21 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
   let settingsToken = "";
   const accountSummary = el("span", "settings-row-value"), guestSummary = el("span", "settings-row-value"), notificationSummary = el("span", "settings-row-value");
-  const accounts = new AccountSettings(report, value => { accountSummary.textContent = value; });
-  const guests = new GuestSettings(report, value => { guestSummary.textContent = value; });
-  const notifications = new NotificationsSettings(report, value => { notificationSummary.textContent = value; });
+  const headers: Partial<Record<Page, { text: string; warn: boolean }>> = {};
+  // Declared before the page models: their constructors report a first summary at once.
+  let exhausted: string[] = [], update: UpdateSuggestion | null = null, suggestionsKey = "";
+  const suggestions = el("div", "settings-suggestions");
+  const setHeader = (at: Page, text: string, warn = false) => { headers[at] = { text, warn }; if (selected === at) showSubtitle(); };
+  const accounts = new AccountSettings(report, summary => {
+    accountSummary.textContent = summary.value; setHeader("accounts", summary.header, summary.warn);
+    exhausted = summary.exhausted; renderSuggestions();
+  });
+  const guests = new GuestSettings(report, (value, header) => { guestSummary.textContent = value; setHeader("sharedAccess", header); });
+  const notifications = new NotificationsSettings(report, (value, header, warn) => {
+    notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
+  });
   const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right", 18));
-  const updates = new ServerUpdateSettings(report);
+  const updates = new ServerUpdateSettings(report, next => { update = next; renderSuggestions(); });
   function closeScope() {
     accounts.setScope("");
     guests.setScope("");
@@ -158,6 +172,29 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const node = row(label, icon, () => { void Desk.openExternalURL(url).catch(report); });
     node.append(glyph("arrow.up.right", 12, "semibold")); return node;
   }
+  function showSubtitle() {
+    const line = selected === "typingLatency" ? { text: "Key press to screen, on this computer", warn: false } : headers[selected];
+    subtitle.textContent = line?.text ?? ""; subtitle.hidden = !line?.text; subtitle.classList.toggle("warn", !!line?.warn);
+  }
+  // suggestionsGroup (HerdrApp.swift 8087-8127): only while something waits, under the card.
+  function renderSuggestions() {
+    const key = JSON.stringify([update, exhausted]);
+    if (key === suggestionsKey) return;
+    suggestionsKey = key;
+    const rows: HTMLElement[] = [];
+    const pill = (count: number, tone: string) => { const node = el("span", `count-pill t-count-pill ${tone}`, String(count)); node.setAttribute("aria-hidden", "true"); return node; };
+    if (update) {
+      const node = row(update.title, "arrow.down.circle", () => choose("machines"), update.subtitle, pill(1, "waiting"));
+      node.id = "settings-suggestion-update"; rows.push(node);
+    }
+    if (exhausted.length) {
+      const node = row(exhausted.length === 1 ? exhausted[0]! : `${exhausted.length} accounts are exhausted`, "key.horizontal", () => choose("accounts"),
+        exhausted.length === 1 ? "Exhausted. Its agents can move to another account." : "Their agents can move to another account.", pill(exhausted.length, "stopped"));
+      node.id = "settings-suggestion-exhausted"; rows.push(node);
+    }
+    const card = el("div", "settings-group"); card.append(...rows);
+    suggestions.replaceChildren(...(rows.length ? [card] : [])); suggestions.hidden = !rows.length;
+  }
   function choose(next: Page) {
     if (next !== "accounts") accounts.closeDialogs();
     if (next !== "sharedAccess") guests.closeDialogs();
@@ -208,7 +245,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     gesturesRow.id = "settings-gestures";
     const footer = el("div", "settings-version");
     footer.append(el("span", "", `herdrup ${version}`), el("span", "settings-version-stance", "dark only, on purpose"));
-    index.replaceChildren(card, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
+    suggestionsKey = ""; renderSuggestions();
+    index.replaceChildren(card, suggestions, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
       gesturesRow,
       latencyRow,
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
@@ -251,13 +289,14 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
     versionNodes = versionNodes.filter(node => index.contains(node));
+    showSubtitle();
     title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : "Text size";
     body.replaceChildren();
     if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "sharedAccess") { body.append(guests.root); return; }
     if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }
     if (selected === "typingLatency") {
-      const results = el("div"), hint = el("p", "settings-latency-hint", "Key press to screen, on this computer");
+      const results = el("div");
       const instruction = el("p", "settings-latency-hint", "Type normally in a terminal, then come back here.");
       const explanation = el("p", "settings-latency-hint", "Screen time ends when xterm renders; prediction time ends when the overlay draws. Output after a send is attributed as its echo.");
       const refreshLatency = () => {
@@ -274,7 +313,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         void Desk.gramCopyText(`Herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
       }); copy.className = "settings-plain-row";
       const reset = button("Reset", () => { typingLatency.reset(); copy.textContent = "Copy report"; refreshLatency(); }); reset.className = "settings-plain-row";
-      body.append(hint, instruction, results, group("REPORT", [copy, reset]), explanation);
+      body.append(instruction, results, group("REPORT", [copy, reset]), explanation);
       refreshLatency(); if (visible) latencyTimer = window.setInterval(refreshLatency, 1000);
       return;
     }
