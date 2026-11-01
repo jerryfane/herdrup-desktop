@@ -70,6 +70,10 @@
 .chat-jump-latest[hidden] { display:none; }
 .chat-jump-glyph { width:18px; height:18px; background:currentColor; mask:var(--jump-glyph) center/contain no-repeat; }
 .chat-message, .chat-work, .chat-step { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; }
+/* ChatView.dayLabel: "Today" 13 pt semibold + " 4:12 PM" regular, textFaint, full width centred,
+   4 pt above and below, then the transcript's 10 pt row gap. */
+.chat-day { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 4px 0; text-align: center; color: var(--color-text-faint); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.chat-day strong { font-weight: 600; }
 .chat-message { font-size: calc(16px * var(--chat-text-scale, 1)); }
 .chat-message.user { display: flex; justify-content: flex-end; padding-left: 40px; }
 .chat-user-text { max-width: 480px; padding: 8.5px 14px 9.5px; border-radius: 18px 18px 6px 18px; background: var(--color-surface-raised); font: 400 calc(16px * var(--chat-text-scale, 1))/calc(1em * var(--leading-app) + 1px) var(--font-app); white-space: pre-wrap; text-wrap: pretty; overflow-wrap: anywhere; overflow: clip; user-select: text; }

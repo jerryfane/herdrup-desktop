@@ -28,7 +28,31 @@ export interface WorkRow {
  kind: "work"; id: string; thoughts: string[]; steps: Entry[];
  startMs: number; endMs: number; live: boolean;
 }
-export type ChatRow = WorkRow | { kind: "entry"; id: string; entry: Entry };
+export type ChatRow = WorkRow | { kind: "entry"; id: string; entry: Entry } | { kind: "day"; id: string; ms: number };
+
+/** ChatDay.needsSeparator (herdrup 9845ecf ChatView.swift 1948-1955): before the first prompt,
+ *  a prompt on a new local day, or one an hour or more after the previous prompt. */
+export function needsDaySeparator(previousMs: number | null, ms: number): boolean {
+ if (previousMs === null) return true;
+ const a = new Date(previousMs), b = new Date(ms);
+ if (a.getFullYear() !== b.getFullYear() || a.getMonth() !== b.getMonth() || a.getDate() !== b.getDate()) return true;
+ return ms > previousMs && ms - previousMs >= 60 * 60 * 1000;
+}
+
+/** ChatDay.label (ChatView.swift 1957-1972): ("Today", "4:12 PM"), ("Yesterday", …), the
+ *  weekday within seven days, "Oct 28" this year, else "Oct 28, 2025". */
+export function chatDayLabel(ms: number, now: Date, locale?: string): { day: string; time: string } {
+ const date = new Date(ms);
+ const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+ const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+ if (sameDay(date, now)) return { day: "Today", time };
+ const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+ if (sameDay(date, yesterday)) return { day: "Yesterday", time };
+ // Calendar.dateComponents([.day], from: date, to: now): whole days elapsed.
+ if (Math.trunc((now.getTime() - ms) / 86_400_000) < 7) return { day: date.toLocaleDateString(locale, { weekday: "long" }), time };
+ if (date.getFullYear() === now.getFullYear()) return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric" }), time };
+ return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric", year: "numeric" }), time };
+}
 
 // TranscriptGrouping.turns: consecutive thoughts/steps form one run. A prompt or
 // compaction starts a new turn; only that turn's newest plan remains visible.
@@ -36,6 +60,7 @@ export function groupTranscript(entries: Entry[], working: boolean): ChatRow[] {
  const rows: (ChatRow | null)[] = [];
  let work: WorkRow | null = null;
  let plan: number | null = null;
+ let previousPrompt: number | null = null;
  const close = (at?: number) => {
   if (!work) return;
   if (at !== undefined) work.endMs = Math.max(work.endMs, at);
@@ -53,6 +78,10 @@ export function groupTranscript(entries: Entry[], working: boolean): ChatRow[] {
   if (!["user", "reply", "note", "plan", "ask", "turn_end", "summary"].includes(entry.kind)) continue;
   close(entry.ts_ms);
   if (entry.kind === "user" || entry.kind === "summary") plan = null;
+  if (entry.kind === "user" && entry.ts_ms > 0) {
+   if (needsDaySeparator(previousPrompt, entry.ts_ms)) rows.push({ kind: "day", id: `day:${entry.id}`, ms: entry.ts_ms });
+   previousPrompt = entry.ts_ms;
+  }
   if (entry.kind === "turn_end" && entry.status === "done") continue;
   if (entry.kind === "plan") { if (plan !== null) rows[plan] = null; plan = rows.length; }
   rows.push({ kind: "entry", id: entry.id, entry });

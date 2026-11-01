@@ -15,8 +15,8 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
-import type { ByteFrame, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
+import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
+import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode } from "./chatPreference";
@@ -755,7 +755,7 @@ class Detail {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(row.entry.id)] : row);
    if (old?.dataset.signature === signature) return old;
-   const node = row.kind === "work" ? this.renderWork(row) : row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderEntry(row.entry);
+   const node = row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
    node.dataset.id = row.id; node.dataset.signature = signature;
    for (const disclosure of node.querySelectorAll<HTMLDetailsElement>("details")) disclosure.open = opened.has(disclosure.dataset.id);
    if (node instanceof HTMLDetailsElement) node.open = opened.has(row.id);
@@ -905,7 +905,7 @@ class Detail {
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
     const nodes = groupTranscript(entries, !!page?.working).map(row => {
-     const node = row.kind === "work" ? this.renderWork(row) : this.renderEntry(row.entry);
+     const node = this.renderRow(row);
      node.dataset.id = row.id;
      if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
      node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
@@ -1105,6 +1105,17 @@ class Detail {
    dialog.remove(); if (this.selectionSheet === dialog) this.selectionSheet = null;
   }, { once: true });
   dialog.showModal();
+ }
+ /** ChatView.dayLabel: "Today" 13 pt semibold and " 4:12 PM" regular, textFaint, centred, 4 pt above and below. */
+ renderDay(ms: number): HTMLElement {
+  const { day, time } = chatDayLabel(ms, new Date());
+  const row = el("div", "chat-day"); row.append(el("strong", "", day), document.createTextNode(` ${time}`));
+  return row;
+ }
+ renderRow(row: ChatRow): HTMLElement {
+  if (row.kind === "day") return this.renderDay(row.ms);
+  if (row.kind === "work") return this.renderWork(row);
+  return this.renderEntry(row.entry);
  }
  renderEntry(entry: Entry): HTMLElement {
   if (entry.kind === "ask") return this.renderQuestion(entry, undefined, false, false);
