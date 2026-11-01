@@ -73,6 +73,12 @@ func main() {
 	}
 	onNotificationClick(desk, &win)
 	mygo.App.WhenReady(func() {
+		// Early WebKit features apply only to a page started after they are on,
+		// so the page loads once they are set; with none, the window loads it.
+		features, url := webkitFeaturesToEnable(), pageURL
+		if len(features) > 0 {
+			url = ""
+		}
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "Herdrup",
 			Width:           960,
@@ -81,12 +87,20 @@ func main() {
 			MinHeight:       420,
 			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
-			URL:             pageURL,
+			URL:             url,
 			Page:            mygo.PageOptions{PreloadScript: smokePreload() + refPreload()},
 			// The menu bar of Linux and Windows windows stays out of the
 			// way of herdrup's layout until Alt or F10; its shortcuts work.
 			AutoHideMenuBar: true,
 		})
+		if len(features) > 0 {
+			if err := enableWebKitFeatures(win, features); err != nil {
+				log.Printf("WebKit features: keeping the engine's layout (%v)", err)
+			}
+			if err := win.Page().LoadURL(pageURL); err != nil {
+				log.Fatal(err)
+			}
+		}
 		startPresence(desk, win)
 		win.OnClose(func(*mygo.CloseEvent) { dictation.stopAll() })
 		if refEnabled() {
