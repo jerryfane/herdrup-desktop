@@ -1,4 +1,4 @@
-.settings-index { flex:1; min-height:0; overflow:auto; padding:14px 0 calc(var(--size-tab-bar) + var(--tabbar-bottom) + 16px); background:var(--color-ground); }
+.settings-index { flex:1; min-height:0; overflow:auto; padding:14px 0 calc(var(--tabbar-inset) + 16px); background:var(--color-ground); }
 .settings-index[hidden], .settings-detail[hidden] { display:none; }
 /* detailScaffold (HerdrApp.swift 7955-7975): the ground ignores the safe area and the
    ScrollView's content runs under the home indicator, inset by it at the end. */

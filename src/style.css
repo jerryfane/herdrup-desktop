@@ -18,6 +18,9 @@
   --sidebar-inset: 0px;
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
+  /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
+     6 pt above and 12 below (HerdrApp.swift 2401, 2843), over the home inset. */
+  --tabbar-inset: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
 }
 
 * { box-sizing: border-box; }
@@ -171,8 +174,8 @@ html, body {
   min-height: 0;
   overflow-y: auto;
   /* The tab bar floats over the list's end (safeAreaInset). */
-  padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
-  scroll-padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
+  padding-bottom: var(--tabbar-inset);
+  scroll-padding-bottom: var(--tabbar-inset);
   scrollbar-width: none;
 }
 .roster::-webkit-scrollbar { display: none; }
@@ -386,7 +389,7 @@ html, body {
   left: 0;
   right: 0;
   top: calc(var(--size-top-bar) + var(--space-stack-medium));
-  bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
+  bottom: var(--tabbar-inset);
   display: flex;
   align-items: center;
   justify-content: center;

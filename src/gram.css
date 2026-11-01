@@ -33,7 +33,7 @@
 /* The needs-you pill belongs to the agent list (sessions.ts); Gram's bar has its own count. */
 .sidebar:has(.gram-side:not([hidden])) .needs-you-pill { display: none; }
 .slot.action { cursor: default; }
-.gram-side { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom)); scrollbar-width: none; }
+.gram-side { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--tabbar-inset); scrollbar-width: none; }
 .gsearch { height: 40px; margin-top: var(--space-stack-tight); }
 .gsearch input {
   flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: none;
