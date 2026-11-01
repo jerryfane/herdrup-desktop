@@ -72,6 +72,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  // "Connect your own machine" disclosure; without, it stays on the page.
  const ownerSetup = element("details", "host-owner-setup");
  const ownerSummary = element("summary", "", "Connect your own machine");
+ const ownerChevron = element("span", "host-owner-setup-chevron"); ownerChevron.setAttribute("aria-hidden", "true");
+ ownerSummary.append(ownerChevron);
+ void symbol("chevron.right", 13, "semibold").then(glyph => ownerChevron.append(glyph));
  const ownerBody = element("div", "host-owner-setup-body");
  ownerSetup.append(ownerSummary, ownerBody);
  const placeOwnerSetup = (hasShared: boolean) => {
