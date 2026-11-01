@@ -488,6 +488,9 @@ function cssVar(name: string): string {
 const glyphFieldSeed = 0x4845524452555031n;
 
 function drawField() {
+  // drawRestingGlyphField pins the canvas's inline size; clear it so .field's
+  // inset:0 box (the detail column now, e.g. after the rail opens) is measured.
+  field.style.width = field.style.height = "";
   const r = field.getBoundingClientRect();
   drawRestingGlyphField(field, {
     widthPt: r.width,
