@@ -93,6 +93,16 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
   };
   const text = () => document.getElementById("detail").textContent;
   const row = id => document.querySelector('.gslot[data-id="' + id + '"]');
+  // An on-screen image card is 16 pt taller until its preview decodes (GramThumbnails
+  // box). XCUITest acts only once the app is idle, so native captures see it decoded.
+  const previewsDecoded = () => {
+    const viewport = document.querySelector('.gram-scroll')?.getBoundingClientRect();
+    if (!viewport) return true;
+    return [...document.querySelectorAll('.gimage')].every(card => {
+      const rect = card.getBoundingClientRect();
+      return rect.bottom <= viewport.top || rect.top >= viewport.bottom || card.querySelector('img.gimage-pic')?.naturalWidth > 0;
+    });
+  };
   const tab = [...document.querySelectorAll('.t-tab-label')].find(el => el.textContent === "Gram");
   if (!tab) throw new Error("Gram tab missing");
   localStorage.setItem("gram.setupCardDismissed", "1");
@@ -126,6 +136,15 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
         const viewport = document.querySelector('.gram-scroll')?.getBoundingClientRect();
         return owner && viewport && owner.height > 0 && owner.top >= viewport.top && owner.bottom <= viewport.bottom;
       }, "latest message visible before composing");
+      // Compose only after the feed settles: a preview decoding after the composer grows
+      // shifts the rows below it, and whether it beat the composer was a race.
+      await until(previewsDecoded, "visible image previews decoded before composing");
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await until(() => {
+        const owner = row("gr-owner")?.getBoundingClientRect();
+        const viewport = document.querySelector('.gram-scroll')?.getBoundingClientRect();
+        return owner && viewport && owner.bottom <= viewport.bottom && owner.top >= viewport.top;
+      }, "latest message still visible after previews decoded");
       document.querySelector('[aria-label="Attach file"]').click();
       await until(() => document.querySelector('.gchip-name')?.textContent === "picked-notes.txt" && document.querySelector('.gchip-status')?.textContent.endsWith(" · Ready"), "picked attachment uploaded");
       const field = document.querySelector('.gfield-input');
@@ -171,14 +190,7 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
       if (!visible()) throw new Error("The complete reference message is not visible below the floating header");
     }
   }
-  await until(() => {
-    const viewport = document.querySelector('.gram-scroll')?.getBoundingClientRect();
-    if (!viewport) return true;
-    return [...document.querySelectorAll('.gimage')].every(card => {
-      const rect = card.getBoundingClientRect();
-      return rect.bottom <= viewport.top || rect.top >= viewport.bottom || card.querySelector('img.gimage-pic')?.naturalWidth > 0;
-    });
-  }, "visible image previews decoded");
+  await until(previewsDecoded, "visible image previews decoded");
   await document.fonts.ready;
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return true;

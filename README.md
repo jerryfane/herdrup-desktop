@@ -674,6 +674,9 @@ does not change the runner's global preference or normal desktop launches.
 After each scenario, capture follows the native stability contract: three
 byte-identical PNGs half a second apart, within 30 seconds. An unsettled surface
 fails and keeps its last frame for inspection; no motion is masked to pass.
+Gram composer captures also wait for on-screen image previews to decode before
+attaching: a preview decoding after the composer grows shifts the feed by the card's
+16 pt placeholder difference, which made that capture alternate between two results.
 Native Linux checks covered a delayed Gram read acknowledgement and a deliberately
 changing window, plus board, Terminal, Settings and attachment-composer captures.
 
