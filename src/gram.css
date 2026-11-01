@@ -276,6 +276,9 @@
 .gstrip { display: flex; gap: 8px; padding: 0 7px; overflow-x: auto; scrollbar-width: none; }
 .gactions { display: flex; gap: 4px; align-self: flex-end; }
 .composer-action { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); isolation: isolate; }
+/* `.gram button { color: inherit }` outranks the class alone; ComposerActionIcon tints
+   every glyph textDim (ComposerView.swift 492). Primary stays below. */
+.gram .composer-action { color: var(--color-text-dim); }
 .composer-action::before { content: ""; position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; border-radius: 50%; background: var(--color-surface-raised); z-index: -1; }
 .composer-action.primary { color: var(--color-ground); }
 .composer-action.primary::before { background: var(--color-text); }

@@ -180,8 +180,8 @@
 .agent-detail .composer-actions > button:disabled { opacity: 0.45; }
 .composer-actions > button[hidden], .saved-prompts-menu[hidden] { display: none; }
 .saved-prompts-menu { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 6; display: flex; flex-direction: column; width: min(320px, 90vw); max-height: 50vh; overflow: auto; padding: 6px; border: 1px solid var(--color-hairline); border-radius: 14px; background: var(--color-surface); }
-.agent-detail .saved-prompts-menu button { padding: 12px; border: 0; background: none; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-detail .saved-prompts-menu button:hover { background: var(--color-surface-raised); }
+:is(.agent-detail, .gcard) .saved-prompts-menu button { padding: 12px; border: 0; background: none; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(.agent-detail, .gcard) .saved-prompts-menu button:hover { background: var(--color-surface-raised); }
 .saved-prompts-menu hr { width: 100%; border: 0; border-top: 1px solid var(--color-hairline); }
 .save-prompt-sheet { width: min(540px, calc(100vw - 32px)); padding: 0; color: var(--color-text); background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 20px; }
 .save-prompt-sheet::backdrop { background: color-mix(in srgb, var(--color-ground-machine) 75%, transparent); }

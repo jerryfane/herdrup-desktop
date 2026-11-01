@@ -147,7 +147,9 @@ export class SavedPromptsMenu {
   constructor(private readonly onSelect: (text: string) => void, private readonly onError: (error: unknown) => void) {
     this.button.type = "button"; this.button.setAttribute("aria-label", "Saved prompts");
     this.button.className = "composer-action";
-    this.button.append(composerGlyph("bookmark", 22));
+    // SavedPromptsMenu's ComposerActionIcon draws its glyph 18 pt (SavedPromptsStore.swift 93,
+    // ComposerView.swift 488-489).
+    this.button.append(composerGlyph("bookmark", 18));
     this.menu.className = "saved-prompts-menu"; this.menu.hidden = true; this.menu.setAttribute("role", "menu");
     this.button.onclick = () => {
       if (!this.menu.hidden) { this.menu.hidden = true; return; }

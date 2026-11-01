@@ -7,7 +7,7 @@
 import { avatarFace } from "./avatars";
 import { paintShape } from "./continuous";
 import { rowTime, separator } from "./gramDates";
-import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
+import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste, SavedPromptsMenu } from "./composer";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { onTextSizeChanged } from "./textSize";
@@ -103,6 +103,7 @@ let picking = false;
 let wrapped = false;
 let composerFocused = false;
 let dictation: ComposerDictation | null = null;
+let prompts: SavedPromptsMenu | null = null;
 const SETUP_DISMISSED = "gram.setupCardDismissed";
 
 /** The setup card's one-liner (GramView.setupCommand). */
@@ -1397,6 +1398,14 @@ function buildComposer(): HTMLElement {
   mentionHost.hidden = true;
   dictation = new ComposerDictation(input, renderComposer, () => editor.collapse());
   field.prepend(dictation.strip);
+  // GramView's composer (9845ecf GramView.swift 1415-1421): with nothing to send, the
+  // saved prompts menu; a picked prompt becomes the draft and is sent.
+  prompts = new SavedPromptsMenu(text => {
+    if (posting || picking || snap?.sending || dictation?.busy) return;
+    setDraft(text, text.length);
+    void send();
+  }, error => { banner.hidden = false; banner.textContent = String(error); });
+  prompts.mount(card);
   c.append(mentionHost, hintEl, card);
 
   const caretMoved = () => {
@@ -1533,6 +1542,9 @@ function renderComposer() {
     s.classList.toggle("busy", sending);
     s.disabled = !!dictation?.busy || !model.canSend(a, attachments.length, sending, picking);
     nodes.push(s);
+  } else if (prompts) {
+    prompts.button.disabled = sending || picking || !!dictation?.busy;
+    nodes.push(prompts.button);
   }
   actions.replaceChildren(...nodes);
   layoutComposer();
