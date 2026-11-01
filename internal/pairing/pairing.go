@@ -74,7 +74,9 @@ func Parse(raw string) (Payload, error) {
 	if !strings.HasPrefix(fingerprint, "SHA256:") {
 		return Payload{}, errors.New("That pairing code has an invalid SSH host-key fingerprint.")
 	}
-	digest, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(fingerprint, "SHA256:"))
+	// Strict decoding rejects set padding bits, so a digest has exactly one
+	// spelling, as native pairing requires (it re-encodes and compares).
+	digest, err := base64.RawStdEncoding.Strict().DecodeString(strings.TrimPrefix(fingerprint, "SHA256:"))
 	if err != nil || len(digest) != 32 {
 		return Payload{}, errors.New("That pairing code has an invalid SSH host-key fingerprint.")
 	}
