@@ -20,6 +20,8 @@ Chat headings, quotes, rules and inline-code backgrounds use the native source's
 typography and spacing, including preserved quote line breaks. Heading ink stays
 neutral under the desktop color rule. Native Linux checks covered replies and
 expanded thoughts at 100%/140%/reset using a separate SSH transcript fixture.
+Inline code keeps Swift's explicit ink: full text colour in replies, including
+inside a dimmed quote, and the dim colour in expanded thoughts.
 The current parity branch replaces the separate writing dialog with the Swift
 composer's in-card drag handle. Expanding keeps the same field, selection and draft.
 Terminal quick keys are grouped, with Return pinned outside the scrollable row.
