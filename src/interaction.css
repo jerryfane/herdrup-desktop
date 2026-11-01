@@ -109,6 +109,12 @@
 .chat-markdown li { margin: -1.5px 0; line-height: calc(1em * var(--leading-app) + 3px); }
 .chat-markdown li > ul, .chat-markdown li > ol { margin-top: 6px; padding-left: 18px; }
 .chat-markdown li::marker { color: var(--color-text-dim); }
+/* ChatMarkdownView.listRow: an unordered row's marker is the text "•" in the row's app
+   font, 20 pt in (depth × 18 more), 10 pt wide and 10 pt before the text at 40 pt;
+   tone.marker is textDim in a reply, textFaint in a thought. */
+.chat-markdown ul > li { position: relative; list-style: none; }
+.chat-markdown ul > li::before { content: "•"; position: absolute; left: -20px; color: var(--color-text-dim); }
+.chat-thought ul > li::before { color: var(--color-text-faint); }
 .chat-thought > .chat-markdown { --markdown-tone: .9375; }
 .chat-markdown strong { font-weight: 600; }
 .chat-markdown pre { overflow-x: auto; padding: 12px; background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 8px; }
