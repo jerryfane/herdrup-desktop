@@ -655,6 +655,12 @@ overlay scroll indicators. The hosted runner's default reserves 17 pt inside
 scroll views; that is not part of the native reference viewport. This argument
 does not change the runner's global preference or normal desktop launches.
 
+After each scenario, capture follows the native stability contract: three
+byte-identical PNGs half a second apart, within 30 seconds. An unsettled surface
+fails and keeps its last frame for inspection; no motion is masked to pass.
+Native Linux checks covered a delayed Gram read acknowledgement and a deliberately
+changing window, plus board, Terminal, Settings and attachment-composer captures.
+
 The accepted manifest now drives all 24 board captures, including folders,
 avatars, sessions, federation and both needs-you states. `fakeherdr -responses`
 serves the manifest-verified native response fixtures over SSH; its session and

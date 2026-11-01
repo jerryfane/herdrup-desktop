@@ -306,6 +306,35 @@ type refReport struct {
 
 var refOnce sync.Once
 
+// stableRefCapture matches DesktopReferenceCaptureCase.capture: three identical
+// PNGs half a second apart, with a thirty-second deadline. Keep the last frame
+// on failure so an unsettled surface remains inspectable.
+func stableRefCapture(win *mygo.Window) ([]byte, error) {
+	previous, err := win.CapturePage()
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	identical := 0
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		png, err := win.CapturePage()
+		if err != nil {
+			return previous, err
+		}
+		if bytes.Equal(previous, png) {
+			identical++
+		} else {
+			identical = 0
+		}
+		previous = png
+		if identical >= 2 {
+			return png, nil
+		}
+	}
+	return previous, fmt.Errorf("screen never held still for a second")
+}
+
 // finishRef saves the page and the sidecar, then quits, with status 1
 // when ok is false or anything could not be saved.
 func finishRef(win *mygo.Window, out string, rep *refReport, ok bool) {
@@ -323,14 +352,27 @@ func finishRef(win *mygo.Window, out string, rep *refReport, ok bool) {
 				rep.DevicePixelRatio, _ = a[2].(float64)
 			}
 		}
-		png, err := win.CapturePage()
-		if err == nil {
-			err = os.WriteFile(out, png, 0o644)
+		var png []byte
+		var err error
+		if ok {
+			png, err = stableRefCapture(win)
+		} else {
+			png, err = win.CapturePage()
+		}
+		if len(png) > 0 {
+			if writeErr := os.WriteFile(out, png, 0o644); writeErr != nil {
+				if err == nil {
+					err = writeErr
+				} else {
+					err = fmt.Errorf("%w; save: %v", err, writeErr)
+				}
+			}
 		}
 		if err != nil {
 			ok = false
 			rep.Outcome += "; capture: " + err.Error()
-		} else if cfg, _, err := image.DecodeConfig(bytes.NewReader(png)); err == nil {
+		}
+		if cfg, _, err := image.DecodeConfig(bytes.NewReader(png)); err == nil {
 			rep.CapturePx = [2]int{cfg.Width, cfg.Height}
 			rep.CaptureScale = float64(cfg.Width) / float64(rep.Want[0])
 		}
