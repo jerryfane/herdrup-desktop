@@ -18,7 +18,7 @@ import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
-import { animateHeight } from "./motion";
+import { animateHeight, motionSeconds } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode } from "./chatPreference";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -81,10 +81,24 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
  }, true);
 }
 export function interactionVisible() { return current !== null; }
-export function showInteraction(show: boolean) { if (root) root.hidden = !show || !current; if (!show) { current?.dictation.stop(); current?.dismissChatSheets(); } }
-export function closeInteraction() {
+// A page still leaving (closing) stays drawn until its animation ends.
+export function showInteraction(show: boolean) { if (root) root.hidden = !show || (!current && !closing); if (!show) { current?.dictation.stop(); current?.dismissChatSheets(); } }
+let closing: Animation | null = null;
+/** Closes the agent page. `animated` (the back button) fades it out sliding 40 pt right, as
+ *  herdrup does when frontID goes nil (HerdrApp.swift 3160-3179, .easeOut(duration: 0.26));
+ *  the agent is disposed at once, only its last frame stays while it leaves. */
+export function closeInteraction(animated = false) {
+ const wasShown = !!current && !!root && !root.hidden;
  current?.dispose(); current = null;
- if (root) { root.replaceChildren(); root.hidden = true; }
+ closing?.cancel(); closing = null;
+ const seconds = animated && wasShown ? motionSeconds("page") : 0;
+ if (root && seconds) {
+  root.classList.remove("opening"); root.inert = true;
+  const leaving = root.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(40px)" }],
+   { duration: seconds * 1000, easing: getComputedStyle(document.documentElement).getPropertyValue("--motion-page-ease").trim() || "ease-out", fill: "forwards" });
+  closing = leaving;
+  leaving.onfinish = () => { if (closing !== leaving) return; closing = null; leaving.cancel(); root.inert = false; root.replaceChildren(); root.hidden = true; };
+ } else if (root) { root.inert = false; root.replaceChildren(); root.hidden = true; }
  selectionChanged?.(null);
 }
 export function interactionBoard(board: BoardUpdate | null) {
@@ -284,7 +298,7 @@ class Detail {
   this.attach.setAttribute("aria-label", "Attach file");
   this.attach.append(await symbol("paperclip", 18, "regular"));
   const bar = el("header", "interaction-toolbar");
-  const back = button("", () => { closeInteraction(); document.getElementById("select")!.hidden = false; });
+  const back = button("", () => { closeInteraction(true); document.getElementById("select")!.hidden = false; });
   back.className = "pane-back"; back.setAttribute("aria-label", "Back");
   back.append(await symbol("chevron.left", 16, "semibold"));
   const capsule = el("div", "pane-header-capsule");
