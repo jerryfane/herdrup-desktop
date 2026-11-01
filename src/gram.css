@@ -96,16 +96,19 @@
   content: ""; position: absolute; inset: 0 calc((100% - 100vw) / 2); z-index: -1; pointer-events: none;
   background: linear-gradient(var(--color-ground) 0%, color-mix(in srgb, var(--color-ground) 85%, transparent) 55%, transparent 100%);
 }
+/* gramGlass (GramView.swift 3282-3292): Apple's Liquid Glass on iPadOS 26, which the
+   references draw as the measured glass colour (--glass-fill). */
 .glass {
-  background: color-mix(in srgb, var(--color-surface-raised) 72%, transparent);
-  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  background: var(--glass-fill);
   border: 1px solid var(--color-hairline); border-radius: 999px;
 }
 .gidentity { display: flex; flex-direction: column; align-items: center; }
 .gcluster { position: relative; width: 78px; height: 48px; }
 .gcluster .gavatar { position: absolute; }
 .gpill { position: relative; margin-top: -6px; height: 24px; padding: 0 10px; display: flex; align-items: center; gap: 2px; font-size: 13px; font-weight: 600; }
-.gtrailing { position: absolute; right: 16px; top: 8px; display: flex; padding: 0 2px; }
+/* iPadHeader's ZStack (GramView.swift 618-633) centres the 44 pt capsule on the 66 pt identity
+   (cluster 48 + pill 24 - spacing 6): 8 + (66 - 44) / 2 from the top. */
+.gtrailing { position: absolute; right: 16px; top: 19px; display: flex; padding: 0 2px; }
 .gsaved-toggle { width: 40px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text); }
 .gsaved-toggle.on { color: var(--color-brand); }
 .gnew {

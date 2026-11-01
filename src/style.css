@@ -21,6 +21,9 @@
   /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
      6 pt above and 12 below (HerdrApp.swift 2401, 2843), over the home inset. */
   --tabbar-inset: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
+  /* Liquid Glass over the bare ground, as every 9845ecf reference draws it: a flat #31354e
+     (sidebar tab bar, Gram header capsules); CSS has no refraction, so it is drawn flat. */
+  --glass-fill: color-mix(in srgb, var(--color-on-accent) 5%, var(--color-surface-raised));
 }
 
 * { box-sizing: border-box; }
@@ -411,7 +414,7 @@ html, body {
   padding: 4px;
   display: flex;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-on-accent) 5%, var(--color-surface-raised));
+  background: var(--glass-fill);
 }
 .tab {
   flex: 1;
