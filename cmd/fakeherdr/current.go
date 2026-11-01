@@ -33,8 +33,14 @@ func serveCurrent(s *fakeherdr.Server) {
 }
 
 func currentHandler(next sessionHandler) sessionHandler {
-	pong := func(session string) (map[string]any, *fakeherdr.APIError) {
-		value, apiErr := next(session, "ping", nil)
+	// pong asks the wrapped fixture for its ping reply. Fixtures such as
+	// -interactions and -accounts decode params for every method, so an
+	// internal ping sends the empty object a client sends, never nil.
+	pong := func(session string, params json.RawMessage) (map[string]any, *fakeherdr.APIError) {
+		if len(params) == 0 {
+			params = json.RawMessage(`{}`)
+		}
+		value, apiErr := next(session, "ping", params)
 		if apiErr != nil {
 			return nil, apiErr
 		}
@@ -59,9 +65,9 @@ func currentHandler(next sessionHandler) sessionHandler {
 	return func(session, method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 		switch method {
 		case "ping":
-			return pong(session)
+			return pong(session, params)
 		case "server.update_check":
-			reply, apiErr := pong(session)
+			reply, apiErr := pong(session, nil)
 			if apiErr != nil {
 				return nil, apiErr
 			}
