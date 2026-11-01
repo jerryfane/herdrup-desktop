@@ -121,6 +121,13 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
       document.querySelector('.gsaved-toggle').click();
       await until(() => document.querySelector('.gram-scroll[data-kind="saved"]') && row("gr-owner") && row("gr-file"), "saved messages");
     } else if (state.startsWith("gram-search-")) {
+      // The latest rows are on screen at launch, so production marks gr-unread read
+      // (gram.ts rowSeen -> Desk.gramMarkRead); native's slow XCUITest typing always
+      // lets that finish, and every search reference shows no unread count. Typing
+      // first could filter the row away while still unread (c0c7775 capture: "1").
+      // renderSidebar draws the conversation's unread dot from the same snapshot,
+      // before the feed rows waited for above.
+      await until(() => !document.querySelector('.gconv-dot') && !document.querySelector('#bar-title .gcount'), "on-screen unread marked read");
       const field = document.querySelector('.gsearch input');
       field.value = state === "gram-search-results" ? "handoff" : "no-such-reference";
       field.dispatchEvent(new Event("input", {bubbles:true}));
