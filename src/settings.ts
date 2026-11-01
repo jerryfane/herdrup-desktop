@@ -169,17 +169,24 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     section.append(el("h2", "settings-section-label", label));
     const card = el("div", "settings-group"); card.append(...rows); section.append(card); return section;
   }
-  function row(label: string, icon: string, action: () => void, subtitle = "", value: string | HTMLElement = "") {
+  function row(label: string, icon: string | HTMLElement, action: () => void, subtitle = "", value: string | HTMLElement = "") {
     const node = button("", action); node.className = "settings-row";
     const lines = el("span", "settings-row-lines"); lines.append(el("span", "settings-row-label", label));
     if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
-    node.append(glyph(icon, 18), lines);
+    node.append(typeof icon === "string" ? glyph(icon, 18) : icon, lines);
     if (value) node.append(typeof value === "string" ? el("span", "settings-row-value", value) : value);
     return node;
   }
-  function link(label: string, icon: string, url: string) {
+  function link(label: string, icon: string | HTMLElement, url: string) {
     const node = row(label, icon, () => { void Desk.openExternalURL(url).catch(report); });
     node.append(glyph("arrow.up.right", 12, "semibold")); return node;
+  }
+  /** discordRow (HerdrApp.swift 9518-9561): Discord's own mark in its own blurple, 18 pt
+   *  wide and scaled to fit, never tinted (synced with NOTICE-Discord-Brand.txt). */
+  function discordGlyph() {
+    const slot = el("span", "settings-glyph"), mark = el("img", "settings-discord-mark") as HTMLImageElement;
+    slot.setAttribute("aria-hidden", "true"); mark.src = "/herdrup/discord-mark.png"; mark.alt = "";
+    slot.append(mark); return slot;
   }
   function showSubtitle() {
     const line = selected === "typingLatency" ? { text: "Key press to screen, on this computer", warn: false } : headers[selected];
@@ -260,7 +267,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       latencyRow,
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
-      link("Join the Discord", "bubble.left.and.bubble.right.fill", "https://discord.gg/pq7qj4dDqt"),
+      link("Join the Discord", discordGlyph(), "https://discord.gg/pq7qj4dDqt"),
       link("Privacy Policy", "lock.shield", "https://herdrup.themartian.app/legal/privacy"),
       link("Terms of Service", "doc.text", "https://herdrup.themartian.app/legal/terms"),
       link("Open source on GitHub", "chevron.left.forwardslash.chevron.right", "https://github.com/themartianapp/herdrup"),

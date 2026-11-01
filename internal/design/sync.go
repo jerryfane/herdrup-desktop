@@ -142,6 +142,11 @@ var Assets = []Asset{
 	{"App/Assets.xcassets/ComposerKeyTop.imageset/glyph.svg", "public/herdrup/composer/key-top.svg"},
 	{"App/Assets.xcassets/ComposerKeyLatest.imageset/glyph.svg", "public/herdrup/composer/key-latest.svg"},
 	{"App/Assets.xcassets/ComposerKeyEnter.imageset/glyph.svg", "public/herdrup/composer/key-enter.svg"},
+	// Discord's official symbol for Settings' Join the Discord row, in its own
+	// blurple (HerdrApp.swift 9518-9561), with its provenance and trademark
+	// notice beside it.
+	{"Shared/Assets.xcassets/DiscordMark.imageset/DiscordMark@3x.png", "public/herdrup/discord-mark.png"},
+	{"NOTICE-Discord-Brand.txt", "public/herdrup/NOTICE-Discord-Brand.txt"},
 	// Bundled mermaid 11.17.2 (version and sha256 in its README), MIT.
 	{"App/Resources/Mermaid/mermaid.min.js", "public/mermaid/mermaid.min.js"},
 	{"App/Resources/Mermaid/Mermaid-LICENSE.txt", "public/mermaid/Mermaid-LICENSE.txt"},

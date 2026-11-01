@@ -223,6 +223,16 @@
       "sha256": "7ec0971debe436189df5a94f6c4024d0adfd928a2394e2f822d4521292b126ba"
     },
     {
+      "source": "Shared/Assets.xcassets/DiscordMark.imageset/DiscordMark@3x.png",
+      "dest": "public/herdrup/discord-mark.png",
+      "sha256": "3962e7352a8b9f9e9c79401fdcabe9c3591e1d0b20942d5f350e5e98b97216e6"
+    },
+    {
+      "source": "NOTICE-Discord-Brand.txt",
+      "dest": "public/herdrup/NOTICE-Discord-Brand.txt",
+      "sha256": "c42c64026678744a3af09f633967544313611e2c6173a9e9c8d0629970b1dde1"
+    },
+    {
       "source": "App/Resources/Mermaid/mermaid.min.js",
       "dest": "public/mermaid/mermaid.min.js",
       "sha256": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
