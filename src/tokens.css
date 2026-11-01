@@ -97,8 +97,6 @@
   --chat-inserted: #9ece6a;
   --chat-keyword: #bb9af7;
   --chat-number: #ff9e64;
-  /* ChatView.swift ChatStyle.ok: plan completion and table gains; theme-independent. */
-  --chat-ok: #7fc89a;
   --chat-op: #a9b1d6;
   --chat-string: #9ece6a;
   --chat-tool-title: #bb9af7;
@@ -310,7 +308,6 @@
   --chat-inserted: #587539;
   --chat-keyword: #7847bd;
   --chat-number: #b15c00;
-  --chat-ok: #7fc89a;
   --chat-op: #9854f1;
   --chat-string: #587539;
   --chat-tool-title: #3760bf;

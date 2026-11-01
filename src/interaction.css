@@ -129,7 +129,6 @@
 .chat-markdown tbody td { border-top: 1px solid var(--color-hairline-quiet); }
 .chat-markdown td.chat-table-number { font-size: calc(13.5px * var(--markdown-scale)); font-variant-numeric: tabular-nums; text-align: right; }
 .chat-markdown td.chat-table-gain { color: var(--chat-ok); }
-.chat-markdown a { color: var(--status-working); }
 .chat-diagram svg { max-width: 100%; height: auto; }
 .chat-step { max-width: 860px; margin: 8px auto; padding: 8px 12px; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 8px; }
 .chat-step summary { cursor: pointer; color: var(--color-text-dim); }

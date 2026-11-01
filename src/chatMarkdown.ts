@@ -48,6 +48,8 @@ export function markdown(text: string): HTMLElement {
   const frame = document.createElement("div"); frame.className = "chat-table-frame";
   const columns = Math.max(1, ...[...table.rows].map(row => row.cells.length));
   frame.style.setProperty("--table-columns", String(columns));
+  // ChatView.swift ChatStyle.ok for gains; not a generated design token (as the plan card).
+  frame.style.setProperty("--chat-ok", "#7fc89a");
   table.replaceWith(scroller); frame.append(table); scroller.append(frame);
   for (const cell of table.querySelectorAll("td")) {
    const value = cell.textContent?.trim() ?? "";
