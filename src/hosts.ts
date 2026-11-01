@@ -15,7 +15,9 @@ function action(text: string, run: () => void) {
  const button = element("button", "", text); button.type = "button"; button.onclick = run; return button;
 }
 
-export function initHosts(container: HTMLElement, form: HTMLFormElement, showAgents: () => void, symbol: SymbolRenderer) {
+// `holdChanged` re-renders the window when the connecting hold starts or ends;
+// `spinner` is the shared small progress view.
+export function initHosts(container: HTMLElement, form: HTMLFormElement, showAgents: () => void, symbol: SymbolRenderer, spinner: string, holdChanged: () => void) {
  const home = element("div", "host-home");
  const header = element("header", "host-home-header");
  const mark = element("img", "host-home-mark"); mark.src = "/herdrup/app-logo.png"; mark.alt = "";
@@ -74,6 +76,28 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  let editing: SavedMachine | null = null;
  let saving = false;
  let connecting = false;
+ // ConnectView #377: after a connect starts, the machine list stays up with that row
+ // held and "Connecting…" until the first agent list arrives or fails, or 10 s pass.
+ let holding = false, revealed = false, target = "";
+ let holdTimer: ReturnType<typeof setTimeout> | undefined;
+ const beginAttempt = () => { revealed = false; };
+ const release = (show: boolean) => {
+  holding = false; revealed = true; clearTimeout(holdTimer);
+  if (show) showAgents();
+  holdChanged(); void refresh();
+ };
+ // The ConnState label: user@host, or user@JoinHostPort(host, port) off port 22.
+ const labelOf = (m: SavedMachine) => `${m.user}@${!m.port || m.port === 22 ? m.host : (m.host.includes(":") ? `[${m.host}]` : m.host) + ":" + m.port}`;
+ // The list redraw is asynchronous; show the held row on the existing node at once.
+ const markBusy = () => {
+  for (const row of rows.querySelectorAll<HTMLButtonElement>(".host-home-row")) {
+   row.disabled = true;
+   if (row.dataset.label !== target) continue;
+   row.classList.add("connecting"); row.setAttribute("aria-busy", "true");
+   const address = row.querySelector(".host-home-address"); if (address) address.textContent = "Connecting…";
+   const chevron = row.querySelector(".host-home-chevron"); if (chevron) { chevron.classList.add("host-home-spinner"); chevron.innerHTML = spinner; }
+  }
+ };
  let menu: HTMLElement | null = null;
  const closeMenu = () => { menu?.remove(); menu = null; };
  document.addEventListener("click", closeMenu);
@@ -97,9 +121,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   try {
   if (editing?.paired && machine.host === editing.host && machine.port === editing.port) machine.paired = true;
    if (!editing && !machine.keyPath && !String(data.get("password") ?? "")) throw new Error("Add a private key file or password.");
-   if (connect) await Desk.connect(machine, String(data.get("password") ?? ""));
+   if (connect) { beginAttempt(); await Desk.connect(machine, String(data.get("password") ?? "")); }
    else await Desk.saveMachine(machine, editing?.id ?? "");
-   sheet.close(); await refresh(); if (connect) showAgents();
+   sheet.close(); await refresh();
   } catch (failure) { error.textContent = String(failure); error.hidden = false; }
   finally { saving = false; submit.disabled = false; saveOnly.disabled = false; }
  }
@@ -145,12 +169,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    for (const machine of machines) {
     const row = action("", () => { void (async () => {
      row.disabled = true; message.hidden = true;
-     try { const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return; await Desk.selectMachine(machine.id, secret); showAgents(); }
+     try { const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return; beginAttempt(); await Desk.selectMachine(machine.id, secret); }
      catch (failure) { report(failure); }
      finally { row.disabled = connecting; }
     })(); });
-    row.className = "host-home-row";
+    const busy = holding && labelOf(machine) === target;
+    row.className = "host-home-row" + (busy ? " connecting" : ""); row.dataset.label = labelOf(machine);
     row.disabled = connecting;
+    if (busy) row.setAttribute("aria-busy", "true");
     const icon = element("span", "host-home-icon");
     if (navigator.platform.startsWith("Mac")) icon.append(await symbol("desktopcomputer", 19, "regular"));
     else {
@@ -160,9 +186,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
      glyph.style.setProperty("--host-computer", `url("${desktopIcon}")`); icon.append(glyph);
     }
     const lines = element("span", "host-home-lines");
-    lines.append(element("span", "host-home-name", machine.nickname || machine.host), element("span", "host-home-address", `${machine.user}@${machine.host}${machine.port && machine.port !== 22 ? ":" + machine.port : ""}`));
+    lines.append(element("span", "host-home-name", machine.nickname || machine.host), element("span", "host-home-address", busy ? "Connecting…" : `${machine.user}@${machine.host}${machine.port && machine.port !== 22 ? ":" + machine.port : ""}`));
     const chevron = element("span", "host-home-chevron"); chevron.setAttribute("aria-hidden", "true");
-    chevron.append(await symbol("chevron.right", 13, "semibold"));
+    if (busy) { chevron.classList.add("host-home-spinner"); chevron.innerHTML = spinner; }
+    else chevron.append(await symbol("chevron.right", 13, "semibold"));
     row.append(icon, lines, chevron);
     const openMenu = (x: number, y: number) => {
      closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
@@ -181,6 +208,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  }
  events.stateChanged.on(state => {
   connecting = state.phase === "connecting";
+  if (connecting && !revealed && !state.guest) {
+   target = state.machine;
+   if (!holding) { holding = true; holdTimer = setTimeout(() => release(true), 10_000); markBusy(); holdChanged(); }
+  } else if (holding) { release(state.phase === "connected"); }
   if (state.phase === "error") report(`${state.machine}: ${state.message}`);
   else message.hidden = true;
   void refresh();
@@ -188,6 +219,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  void refresh();
  return {
   refresh,
+  holdsHome: () => holding,
   async reconnect() {
    const machine = (await Desk.machines()).find(machine => machine.active);
    if (!machine) throw new Error("Choose a saved host before reconnecting.");

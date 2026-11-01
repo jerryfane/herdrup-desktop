@@ -17,6 +17,13 @@
 /* Swift's intrinsic text boxes reserve full device pixels of the native font metrics. */
 .host-home h1, .host-home-header p, .host-home-saved h2, .host-home-name, .host-home-address { min-height:round(up,1lh,var(--pixel)); }
 .host-home-chevron { display:flex; align-items:center; justify-content:center; width:20px; color:var(--color-text-faint); flex:none; }
+/* ConnectRowButtonStyle(held:) and connectRow(connecting:): raised fill, text-ink
+   "Connecting…", small progress view in the chevron's 20 pt slot. */
+.host-home .host-home-row.connecting { background:var(--color-surface-raised); transition:background-color .2s ease-out; }
+.host-home-row.connecting .host-home-address { color:var(--color-text); }
+.host-home-spinner { color:var(--color-text-dim); }
+.host-home-spinner svg { display:block; width:20px; height:20px; animation:gspin 1.3s steps(8) infinite; }
+@media (prefers-reduced-motion:reduce) { .host-home-spinner svg { animation:none; } }
 .host-home .host-add { display:flex; align-items:center; justify-content:center; gap:8px; min-height:50px; border-radius:25px; border:0; background:var(--color-surface); color:var(--color-text); font-family:inherit; font-size:calc(15px * var(--ui-font-scale, 1)); font-weight:600; }
 .host-home .host-pair, .host-home .host-invite { min-height:50px; width:100%; display:flex; align-items:center; justify-content:center; gap:8px; border:0; border-radius:25px; background:var(--color-surface); color:var(--color-text); font:600 calc(15px * var(--ui-font-scale, 1)) -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; cursor:pointer; }
 .host-home .host-pair { background:var(--color-text); color:var(--color-ground); font-size:calc(16px * var(--ui-font-scale, 1)); }

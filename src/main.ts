@@ -30,6 +30,8 @@ let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", liv
 let board: BoardUpdate | null = null;
 let tab: "agents" | "gram" | "settings" = "agents";
 let choosingHost = false;
+// The host home holds a connecting row until the first list (ConnectView #377).
+let hostsHold = () => false;
 let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let pendingAgent: AgentTarget | null = null;
@@ -510,7 +512,7 @@ onTextSizeChanged(() => {
 
 function render() {
   if (!renderReady) return;
-  const showConnect = choosingHost || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
+  const showConnect = choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
   const guestVisible = !!state.guest && !showConnect;
   if (state.guest && !state.guest.features.gram) guestGram = false;
   setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
@@ -669,7 +671,8 @@ async function init() {
     open: target => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
   });
   initInteraction($("detail"), symbol, target => { selectedAgent = target; refreshRowSelection(); });
-  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol);
+  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render());
+  hostsHold = hosts.holdsHome;
   settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);
   await initGram(
     {

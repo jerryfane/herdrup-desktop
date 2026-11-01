@@ -137,6 +137,11 @@ Right-click a saved host (or press Shift+F10) to edit its nickname and connectio
 details, or delete it. Save updates the profile without connecting. The host home
 uses the native readable column and app logo. Scan pairing code reads the one-time
 QR printed by `herdr pair`; Add host remains available for manual setup.
+While a saved host connects, the host home stays up as in Swift: that row is held
+with a raised fill, "Connecting…" and a spinner, and every row is disabled. The
+Agents screen appears at the first agent list or after 10 seconds; a failed
+connection keeps the list and shows the error. Native Linux checks covered a fast
+connection, a server whose agent list never answers, and a refused connection.
 Scan invite reads a shared-agent QR; Paste reads the OS clipboard only when clicked.
 Both open the invitation preview and require Accept before contacting the relay.
 The camera stops before preview, on cancellation, and if a pending permission
