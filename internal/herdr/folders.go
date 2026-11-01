@@ -3,6 +3,7 @@ package herdr
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -206,6 +207,9 @@ type Folder struct {
 type member struct {
 	row   Row
 	group Group
+	// completed is the last completed turn's time (the list's recency), or
+	// math.MinInt64 for an agent with none.
+	completed int64
 }
 
 func summarise(f herdrapi.AgentGroupFolder, members []member, open bool) Folder {
@@ -262,12 +266,14 @@ func phrase(names []string, one, many string) string {
 }
 
 // layout applies folders and stars to the board's sections, exactly as
-// herdrup's AgentFolderLayout:
+// herdrup's AgentFolderLayout (9845ecf plus #597, 057f506):
 //   - A starred agent goes first within its state.
 //   - A folder's agents leave their sections. The folder row sits in the
 //     section of its most urgent agent, after that section's starred
-//     agents and before its other agents (folders by their order), and
-//     when open its agents follow it, most urgent first.
+//     agents, and among the other agents by recency: a folder counts as
+//     recent as its most recently active agent. On a tie the folder goes
+//     first, then folders by their order. When open its agents follow it,
+//     most urgent first.
 //   - A folder with none of its agents listed goes to the empty folders.
 //
 // Each section's AgentCount counts the agents in its folders too. With no
@@ -348,22 +354,43 @@ func layout(sections []Section, groups []member, g *Groups, open func(id string)
 		return Item{Kind: "agent", Row: &r}
 	}
 	out := []Section{}
+	recency := func(ms []member) int64 {
+		best := int64(math.MinInt64)
+		for _, m := range ms {
+			best = max(best, m.completed)
+		}
+		return best
+	}
 	for i, s := range sections {
-		var loose []Row
+		var loose []member
 		for _, m := range bySection[i] {
 			if folderID(m.row) == "" {
-				loose = append(loose, m.row)
+				loose = append(loose, m)
 			}
 		}
 		items := []Item{}
-		for _, r := range loose {
-			if starred(r) {
-				items = append(items, agent(r, true, ""))
+		for _, m := range loose {
+			if starred(m.row) {
+				items = append(items, agent(m.row, true, ""))
+			}
+		}
+		var others []member
+		for _, m := range loose {
+			if !starred(m.row) {
+				others = append(others, m)
 			}
 		}
 		count := len(loose)
 		if len(bySection[i]) > 0 {
-			for _, fs := range summaries[bySection[i][0].group] {
+			// Both lists are newest first (the board sorts agents by recency;
+			// folders stably here), so one merge interleaves them.
+			folders := slices.Clone(summaries[bySection[i][0].group])
+			sort.SliceStable(folders, func(a, b int) bool { return recency(folders[a].members) > recency(folders[b].members) })
+			for _, fs := range folders {
+				for len(others) > 0 && others[0].completed > recency(fs.members) {
+					items = append(items, agent(others[0].row, false, ""))
+					others = others[1:]
+				}
 				f := fs.folder
 				items = append(items, Item{Kind: "folder", Folder: &f})
 				count += len(fs.members)
@@ -374,10 +401,8 @@ func layout(sections []Section, groups []member, g *Groups, open func(id string)
 				}
 			}
 		}
-		for _, r := range loose {
-			if !starred(r) {
-				items = append(items, agent(r, false, ""))
-			}
+		for _, m := range others {
+			items = append(items, agent(m.row, false, ""))
 		}
 		if len(items) == 0 {
 			continue
