@@ -146,6 +146,10 @@ Scan invite reads a shared-agent QR; Paste reads the OS clipboard only when clic
 Both open the invitation preview and require Accept before contacting the relay.
 The camera stops before preview, on cancellation, and if a pending permission
 request completes after dismissal. Clipboard format checks do not read its contents.
+With nothing saved, the host home shows Swift's first-run instructions: what herdrup
+is, the Tailscale and SSH prerequisites, and copyable install, pair and start commands
+(a checkmark shows for 1.6 s after copying). Only "this iPhone" reads "this computer".
+With shares, the same instructions sit inside "Connect your own machine".
 Accepted shares appear under Shared with you. With shares, the subtitle reads "your
 shared agents" and Scan pairing code / Add host fold into a collapsed "Connect your
 own machine" disclosure, as in Swift. Each shared row shows the machine label over

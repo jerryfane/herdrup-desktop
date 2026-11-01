@@ -58,3 +58,20 @@ body.host-home-visible > .sidebar { display:none; }
 .host-owner-setup-chevron { display:flex; color:var(--color-text-dim); transition:transform .2s ease; }
 .host-home .host-owner-setup[open] .host-owner-setup-chevron { transform:rotate(90deg); }
 @media (prefers-reduced-motion:reduce) { .host-owner-setup-chevron { transition:none; } }
+/* ConnectView.emptyState: 12 pt stack; prerequisites in an outlined group (18/14 pt
+   insets); CopyableCommand surfaces: machine 13 pt, 14/10 pt insets, 14 pt radius. */
+.host-home .host-empty { display:flex; flex-direction:column; gap:12px; padding:8px 0; }
+.host-home .host-empty[hidden] { display:none; }
+.host-empty-lead { margin:0; font-size:calc(17px * var(--ui-font-scale, 1)); font-weight:600; line-height:var(--leading-system); color:var(--color-text); }
+.host-empty-before { display:flex; flex-direction:column; gap:7px; padding:14px 18px; border-radius:18px; outline:1px solid var(--color-hairline-quiet); outline-offset:-.5px; background:var(--color-surface); }
+.host-empty-before h3 { margin:0; font-size:calc(12px * var(--ui-font-scale, 1)); font-weight:600; letter-spacing:1.1px; line-height:var(--leading-system); color:var(--color-text-dim); }
+.host-empty-prerequisite { display:flex; align-items:baseline; gap:9px; font-size:calc(12.5px * var(--ui-font-scale, 1)); line-height:var(--leading-system); color:var(--color-text-dim); }
+.host-empty-glyph { flex:none; width:15px; display:flex; justify-content:center; align-self:center; color:var(--color-text-faint); }
+.host-empty-glyph .host-computer-glyph { width:12px; height:12px; }
+.host-empty-note { margin:0; font-size:calc(13px * var(--ui-font-scale, 1)); line-height:var(--leading-system); color:var(--color-text-dim); }
+.host-empty-steps { display:flex; flex-direction:column; align-items:center; gap:8px; }
+.host-empty-step { font-size:calc(12px * var(--ui-font-scale, 1)); line-height:var(--leading-system); color:var(--color-text-dim); }
+.host-home .host-empty-command { display:flex; align-items:flex-start; gap:10px; width:100%; box-sizing:border-box; padding:10px 14px; border:0; border-radius:14px; outline:1px solid var(--color-hairline-quiet); outline-offset:-.5px; background:var(--color-surface); color:var(--color-text); text-align:left; cursor:pointer; }
+.host-empty-command code { flex:1; min-width:0; overflow-wrap:anywhere; font:400 calc(13px * var(--ui-font-scale, 1)) var(--font-machine); }
+.host-empty-copy { flex:none; display:flex; padding-top:2px; color:var(--color-text-faint); }
+.host-empty-copy.copied { color:var(--status-done); }

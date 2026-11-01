@@ -5,6 +5,18 @@ import { showPairing } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
+import networkIcon from "../third_party/phosphor/web/network.svg?url";
+import lockOpenIcon from "../third_party/phosphor/web/lock-open.svg?url";
+
+// HerdrSetup (HerdrApp.swift 746-760). Only "this iPhone" becomes "this computer"
+// (coordinator 379911); the rest of the copy is the native text.
+const setup = {
+ install: "curl -fsSL https://herdrup.themartian.app/install.sh | sh",
+ pair: "herdr pair",
+ start: "herdr",
+ tailscale: "Tailscale is connected on this computer and your computer.",
+ ssh: "SSH is enabled on the computer. On Mac, turn on Remote Login.",
+};
 import qrIcon from "../third_party/phosphor/web/qr-code.svg?url";
 import clipboardIcon from "../third_party/phosphor/web/clipboard.svg?url";
 
@@ -68,6 +80,48 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   }
  }
  const inviteActions = element("div", "host-invite-actions"); inviteActions.append(invite, paste);
+ // ConnectView.emptyState (HerdrApp.swift 1018-1069): what the app is, the two
+ // prerequisites and the commands that start everything, each copyable.
+ const empty = element("div", "host-empty"); empty.hidden = true; // refresh decides
+ {
+  const glyphFor = (sf: string, url: string) => {
+   const slot = element("span", "host-empty-glyph"); slot.setAttribute("aria-hidden", "true");
+   if (navigator.platform.startsWith("Mac")) void symbol(sf, 12, "medium").then(node => slot.append(node));
+   else { const glyph = element("span", "host-computer-glyph"); glyph.style.setProperty("--host-computer", `url("${url}")`); slot.append(glyph); }
+   return slot;
+  };
+  const prerequisite = (text: string, sf: string, url: string, id: string) => {
+   const row = element("div", "host-empty-prerequisite"); row.id = id;
+   row.append(glyphFor(sf, url), element("span", "", text)); return row;
+  };
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  const commands: HTMLButtonElement[] = [];
+  const command = (text: string) => {
+   const node = element("button", "host-empty-command"); node.type = "button";
+   node.setAttribute("aria-label", `Copy command: ${text}`);
+   const mark = element("span", "host-empty-copy"); mark.setAttribute("aria-hidden", "true");
+   const paint = async (copied: boolean) => { mark.replaceChildren(await symbol(copied ? "checkmark" : "doc.on.doc", 12, "semibold")); mark.classList.toggle("copied", copied); node.setAttribute("aria-label", copied ? "Copied" : `Copy command: ${text}`); };
+   void paint(false);
+   // CopiedCommandReceipt: one receipt at a time, reverting after 1.6 s.
+   node.onclick = () => void Desk.gramCopyText(text).then(() => {
+    clearTimeout(copiedTimer);
+    for (const other of commands) if (other !== node) other.dispatchEvent(new Event("uncopy"));
+    void paint(true); copiedTimer = setTimeout(() => void paint(false), 1600);
+   }).catch(report);
+   node.addEventListener("uncopy", () => void paint(false));
+   node.append(element("code", "", text), mark); commands.push(node); return node;
+  };
+  const before = element("div", "host-empty-before");
+  before.append(element("h3", "", "BEFORE PAIRING"),
+   prerequisite(setup.tailscale, "network", networkIcon, "pairing-prerequisite-tailscale"),
+   prerequisite(setup.ssh, "lock.open", lockOpenIcon, "pairing-prerequisite-ssh"));
+  const steps = element("div", "host-empty-steps");
+  steps.append(command(setup.install), element("span", "host-empty-step", "then"), command(setup.pair),
+   element("span", "host-empty-step", "scan the code it prints, then start herdr"), command(setup.start));
+  empty.append(element("p", "host-empty-lead", "herdrup controls coding agents running on your computer."), before,
+   element("p", "host-empty-note", "Then, on your computer, run:"), steps,
+   element("p", "host-empty-note", "herdr keeps running after you close the terminal. No keys to copy."));
+ }
  // ConnectView: with shared machines, your own setup folds into a collapsed
  // "Connect your own machine" disclosure; without, it stays on the page.
  const ownerSetup = element("details", "host-owner-setup");
@@ -79,10 +133,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  ownerSetup.append(ownerSummary, ownerBody);
  const placeOwnerSetup = (hasShared: boolean) => {
   subtitle.textContent = hasShared ? "your shared agents" : "connect to your machine";
-  if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(pair, add); shared.after(ownerSetup); }
-  else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(pair, add); ownerSetup.open = false; }
+  if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
+  else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
- home.append(header, section, shared, pair, add, inviteActions, message); container.replaceChildren(home);
+ home.append(header, section, shared, empty, pair, add, inviteActions, message); container.replaceChildren(home);
  async function openPendingInvitation() {
   const text = await Desk.takeGuestInvitation();
   if (text) showGuestAccept(refresh, showAgents, text);
@@ -175,6 +229,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
    shared.hidden = shares.length === 0;
    placeOwnerSetup(shares.length > 0);
+   // Without shares the instructions show only while nothing is saved; inside the
+   // owner-setup disclosure they always do.
+   empty.hidden = shares.length === 0 && machines.length > 0;
    // Native sharedSection row: person.2, machine label over "agents · shared by owner",
    // chevron. Several grants on one machine would open Swift's combined machine home,
    // which needs simultaneous guest connections; until then each grant keeps its own row.
