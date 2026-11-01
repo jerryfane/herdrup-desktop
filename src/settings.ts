@@ -155,6 +155,15 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const node = el("span", "settings-machine-disc", Array.from(label.trim())[0]?.toUpperCase() || "?");
     node.style.setProperty("--disc-size", `${size}px`); node.setAttribute("aria-hidden", "true"); return node;
   }
+  /** savedMachineRow's tile: AgentIdentity.gradient(for:) and glyph(for:) of the label
+   *  (DesignSystem.swift 141-172), a 40 pt square with 10 pt corners. */
+  function identityTile(label: string) {
+    const kind = label.toLowerCase();
+    const [tint, glyph] = kind.includes("claude") ? [1, "\u2731"] : kind.includes("codex") ? [2, "C"]
+      : kind.includes("gemini") ? [3, "\u2726"] : [0, Array.from(label.trim())[0]?.toUpperCase() || "?"];
+    const node = el("span", `settings-identity-tile tint-${tint}`, glyph);
+    node.setAttribute("aria-hidden", "true"); return node;
+  }
   function group(label: string, rows: HTMLElement[]) {
     const section = el("section", "settings-section");
     section.append(el("h2", "settings-section-label", label));
@@ -363,14 +372,14 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         else confirmFederation(saved);
       });
       change.disabled = state?.phase !== "connected" || !!busy || (saved.savedState === "disabled" && !saved.hasFederationPolicy);
-      item.append(disc(40, saved.displayLabel), lines);
+      item.append(identityTile(saved.displayLabel), lines);
       if (saved.peer) item.append(peerBadge(saved.peer));
       item.append(change); rows.push(item);
     }
     for (const peer of peers.filter(peer => !statuses.some(saved => saved.profileID === peer.alias))) {
       const item = el("div", "settings-federation-row"), lines = el("div", "settings-row-lines");
       lines.append(el("strong", "", peer.label || peer.alias), el("span", "settings-row-subtitle", plural(peer.agentCount, "agent")));
-      item.append(disc(40, peer.label || peer.alias), lines, peerBadge(peer)); rows.push(item);
+      item.append(identityTile(peer.alias), lines, peerBadge(peer)); rows.push(item);
     }
     if (!rows.length) {
       const empty = el("div", "settings-federation-empty");

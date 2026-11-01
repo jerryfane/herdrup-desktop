@@ -141,6 +141,9 @@ async function buildTopBar() {
   // Symbol loads can overlap another tab change. Commit one complete, current bar.
   if (generation !== topBarGeneration) return;
   const leading = $("bar-leading"), actions = $("bar-actions");
+  // SectionTopBar(title: "Settings") passes no leading slot (HerdrApp.swift 2388);
+  // Agents and Gram carry the back to the host list.
+  leading.hidden = selectedTab === "settings";
   leading.replaceChildren(back);
   $("bar-title").replaceChildren(...titleNodes);
   actions.replaceChildren(...actionNodes);
