@@ -176,6 +176,10 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
       if (state === "gram-mixed-image") await until(() => row(id).querySelector('img.gimage-pic')?.naturalWidth > 0, "image bytes decoded");
       if (state === "gram-mixed-folded") await until(() => [...row(id).querySelectorAll('.gfold')].some(el => !el.hidden && el.textContent.includes("Read more")), "eleven-line report folded");
       if (state === "gram-mixed-code") await until(() => row(id).querySelector('[aria-label="Copy code"]'), "multiline code copy");
+      // A preview that decodes after the visibility check grows its card, and the
+      // bottom-anchored feed then pushes the target up: ipad-pro-13-gram-mixed-folded
+      // skipped the reveal and landed 25 pt high in run 41308405697 (23.0%).
+      await until(previewsDecoded, "visible image previews decoded before revealing");
       await document.fonts.ready;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const feed = document.querySelector('.gram-scroll');
