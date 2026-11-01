@@ -22,6 +22,10 @@ neutral under the desktop color rule. Native Linux checks covered replies and
 expanded thoughts at 100%/140%/reset using a separate SSH transcript fixture.
 Inline code keeps Swift's explicit ink: full text colour in replies, including
 inside a dimmed quote, and the dim colour in expanded thoughts.
+Chat tables follow Swift's ChatMarkdownTable: a 12 pt rounded hairline frame,
+a surface header row in 13 pt semibold dim text, quiet rules between rows only,
+7×12 pt cell padding, right-aligned tabular numbers (gains in the chat's green)
+and equal columns that never shrink below 96 pt, scrolling sideways instead.
 The current parity branch replaces the separate writing dialog with the Swift
 composer's in-card drag handle. Expanding keeps the same field, selection and draft.
 Terminal quick keys are grouped, with Return pinned outside the scrollable row.

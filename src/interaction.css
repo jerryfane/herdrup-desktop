@@ -118,8 +118,17 @@
 .chat-thought > .chat-markdown :not(pre) > code { color: var(--color-text-dim); }
 .chat-markdown pre code { font-size: calc(13px * var(--chat-text-scale, 1)); }
 .chat-markdown pre button { display: block; margin-top: 8px; }
-.chat-markdown table { border-collapse: collapse; max-width: 100%; }
-.chat-markdown th, .chat-markdown td { border: 1px solid var(--color-hairline); padding: 6px 10px; }
+/* ChatMarkdownTable: surface header, quiet row rules only, a 12 pt hairline frame. */
+.chat-markdown .chat-table { overflow-x: auto; max-width: 100%; }
+.chat-markdown .chat-table-frame { box-sizing: border-box; min-width: calc(var(--table-columns, 1) * 96px * var(--markdown-scale)); border: 1px solid var(--color-hairline); border-radius: 12px; overflow: hidden; }
+.chat-markdown table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.chat-markdown th, .chat-markdown td { padding: 7px 12px; border: 0; text-align: left; vertical-align: top; }
+.chat-markdown thead tr { background: var(--color-surface); }
+.chat-markdown th { font-size: calc(13px * var(--markdown-scale)); font-weight: 600; color: var(--color-text-dim); }
+.chat-markdown td { font-size: calc(14.5px * var(--markdown-scale)); color: inherit; }
+.chat-markdown tbody td { border-top: 1px solid var(--color-hairline-quiet); }
+.chat-markdown td.chat-table-number { font-size: calc(13.5px * var(--markdown-scale)); font-variant-numeric: tabular-nums; text-align: right; }
+.chat-markdown td.chat-table-gain { color: var(--chat-ok); }
 .chat-markdown a { color: var(--status-working); }
 .chat-diagram svg { max-width: 100%; height: auto; }
 .chat-step { max-width: 860px; margin: 8px auto; padding: 8px 12px; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 8px; }

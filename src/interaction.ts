@@ -809,8 +809,6 @@ class Detail {
  }
  renderPlan(items: PlanItem[], container = this.transcript, session = this.chat?.session_id): HTMLElement {
   const card = el("section", "chat-plan chat-message");
-  // ChatView.swift's ChatStyle.ok is distinct from the shared agent-state green.
-  card.style.setProperty("--chat-ok", "#7fc89a");
   card.dataset.session = session ?? "";
   const previous = container.querySelector<HTMLElement>(".chat-plan");
   let open = previous?.dataset.session === card.dataset.session && previous?.dataset.open === "true";

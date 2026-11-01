@@ -41,6 +41,19 @@ export function markdown(text: string): HTMLElement {
    code.parentElement?.replaceWith(diagram);
   }).catch(() => { code.title = "Diagram could not be rendered; source is shown."; });
  }
+ // ChatMarkdownTable: a horizontal scroller around a rounded, clipped frame whose
+ // columns share the width but never shrink below 96 pt (scaled) each.
+ for (const table of body.querySelectorAll("table")) {
+  const scroller = document.createElement("div"); scroller.className = "chat-table";
+  const frame = document.createElement("div"); frame.className = "chat-table-frame";
+  const columns = Math.max(1, ...[...table.rows].map(row => row.cells.length));
+  frame.style.setProperty("--table-columns", String(columns));
+  table.replaceWith(scroller); frame.append(table); scroller.append(frame);
+  for (const cell of table.querySelectorAll("td")) {
+   const value = cell.textContent?.trim() ?? "";
+   if (/^[0-9+\-−$]/.test(value) && /[0-9]/.test(value)) cell.classList.add("chat-table-number", ...(value.startsWith("+") ? ["chat-table-gain"] : []));
+  }
+ }
  for (const pre of body.querySelectorAll("pre")) {
   const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy";
   const code = pre.querySelector("code")?.textContent ?? "";
