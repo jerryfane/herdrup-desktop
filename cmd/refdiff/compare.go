@@ -12,7 +12,9 @@ import (
 
 // Rect is a masked area in reference points: origin at the top-left of
 // the whole reference picture, status bar included. States, when set,
-// limits it to the references of those states (see Mask.RectsFor).
+// limits it to the references of those states (see Mask.RectsFor). Kind
+// "platform-difference" marks true content the desktop shows on purpose
+// (herdr-app 380190); such a rect must name its states.
 type Rect struct {
 	Name   string   `json:"name"`
 	X      float64  `json:"x"`
@@ -20,14 +22,33 @@ type Rect struct {
 	W      float64  `json:"w"`
 	H      float64  `json:"h"`
 	States []string `json:"states,omitempty"`
+	Kind   string   `json:"kind,omitempty"`
 	Why    string   `json:"why,omitempty"`
 }
+
+// KindPlatformDifference is the only Rect.Kind.
+const KindPlatformDifference = "platform-difference"
 
 // Mask is a mask file: the areas that are not compared.
 type Mask struct {
 	Device string `json:"device"`
 	Note   string `json:"note,omitempty"`
 	Rects  []Rect `json:"rects"`
+}
+
+// Validate rejects an unknown kind, and a platform-difference rect that is
+// not limited to named states: it may cover the differing text, never every
+// capture.
+func (m Mask) Validate() error {
+	for _, r := range m.Rects {
+		switch {
+		case r.Kind != "" && r.Kind != KindPlatformDifference:
+			return fmt.Errorf("rect %q: unknown kind %q", r.Name, r.Kind)
+		case r.Kind == KindPlatformDifference && len(r.States) == 0:
+			return fmt.Errorf("rect %q: a platform-difference rect must list its states", r.Name)
+		}
+	}
+	return nil
 }
 
 // RectsFor returns the rects that apply to a reference of `state`: every

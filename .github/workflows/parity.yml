@@ -187,8 +187,9 @@ jobs:
             cat "$out/logs/$name.app.log"
             [ "$st" -eq 0 ] || echo "$name: app exited $st" >> "$out/failed"
             if [ -s "$out/captures/$name.png" ]; then
-              masks=()
-              case "$state" in gram-*|settings-*|detail-*) ;; *) masks=(-mask "cmd/refdiff/masks/$device.json") ;; esac
+              # Board states: the board masks. Gram, Settings and detail: only
+              # their platform differences (kind platform-difference, herdr-app 380190).
+              case "$state" in gram-*|settings-*|detail-*) masks=(-mask "cmd/refdiff/masks/$device-platform.json") ;; *) masks=(-mask "cmd/refdiff/masks/$device.json") ;; esac
               "$RUNNER_TEMP/refdiff" -ref "$refs/ref-$device-$state.png" -got "$out/captures/$name.png" \
                 -crop-top-pt "$bar" -scale "$refscale" "${masks[@]}" -state "$state" \
                 -tol "$PARITY_TOL" -max-over-pct "$PARITY_MAX_OVER_PCT" \
@@ -210,7 +211,20 @@ jobs:
           {
             echo "## Desktop parity"
             echo
-            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Board masks: \`cmd/refdiff/masks\`; Gram, Settings and detail: no masks."
+            echo "References: jerryfane/herdrup \`$REFERENCES\` at \`$(cat "$refs/COMMIT")\`. Thresholds: tol $PARITY_TOL, max over $PARITY_MAX_OVER_PCT %. Board masks: \`cmd/refdiff/masks/<device>.json\`; Gram, Settings and detail: only the platform differences in \`cmd/refdiff/masks/<device>-platform.json\`."
+            echo
+            # Platform-divergent: Swift draws content the desktop deliberately does not
+            # (herdr-app 380190), so these never pass and are not in the pass count.
+            divergent="settings-about-index"
+            passes=0; counted=0
+            for report in "$out"/reports/*.json; do
+              name=$(basename "$report" .json)
+              state=${name#ipad-pro-13-}; state=${state#ipad-11-}
+              case " $divergent " in *" $state "*) continue ;; esac
+              counted=$((counted + 1))
+              [ "$(jq -r .pass "$report")" = true ] && passes=$((passes + 1))
+            done
+            echo "**$passes of $counted counted captures pass.** Platform-divergent, not counted: settings-about-index on each device (herdrup's StoreKit 'Support the project' row has no desktop equivalent, so every row below it moves; not masked)."
             echo
             echo "| capture | page pt | capture px | display scale | override | devicePixelRatio | app | over tol % | max Δ | mean Δ | refdiff |"
             echo "|---|---|---|---|---|---|---|---|---|---|---|"
