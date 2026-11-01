@@ -31,6 +31,7 @@ import latencyIcon from "../third_party/phosphor/web/gauge.svg?url";
 import updateIcon from "../third_party/phosphor/web/arrow-circle-down.svg?url";
 import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.svg?url";
 import pickerIcon from "../third_party/phosphor/web/caret-up-down.svg?url";
+import chatsIcon from "../third_party/phosphor/web/chats.svg?url";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -46,6 +47,7 @@ const settingIcons: Record<string, string> = {
   "trash": trashIcon, "arrow.down.to.line": latestIcon,
   "gauge.with.needle": latencyIcon, "arrow.up.right": externalLinkIcon,
   "chevron.up.chevron.down": pickerIcon,
+  "bubble.left.and.bubble.right": chatsIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -245,7 +247,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     };
     const chatPreferenceRow = el("label", "settings-row"), chatPreferenceLines = el("span", "settings-row-lines");
     chatPreferenceLines.append(el("span", "settings-row-label", "omp agents open in"), el("span", "settings-row-subtitle", "Claude Code and Codex agents always open in the terminal."));
-    chatPreferenceRow.append(glyph("bubble.left.and.bubble.right.fill", 18), chatPreferenceLines, menuPicker(chatChoice));
+    // glyphRow("omp agents open in", systemImage: "bubble.left.and.bubble.right") (HerdrApp.swift 8198): outlined.
+    chatPreferenceRow.append(glyph("bubble.left.and.bubble.right", 18), chatPreferenceLines, menuPicker(chatChoice));
     const typingRow = el("label", "settings-row settings-chat-preference"), typingLines = el("span", "settings-row-lines");
     typingLines.append(el("span", "settings-row-label", "Instant typing"), el("span", "settings-row-subtitle", "Shows what you type at once and checks it against the server."));
     const typingChoice = el("select", "settings-choice"); typingChoice.setAttribute("aria-label", "Instant typing"); typingChoice.id = "settings-instant-typing";
