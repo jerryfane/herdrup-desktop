@@ -330,8 +330,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       const copy = button("Copy report", () => {
         const reportText = typingLatency.snapshot().map(item => [item.host, ...latencyLines(item)].join("\n")).join("\n\n");
         void Desk.gramCopyText(`Herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
-      }); copy.className = "settings-plain-row";
-      const reset = button("Reset", () => { typingLatency.reset(); copy.textContent = "Copy report"; refreshLatency(); }); reset.className = "settings-plain-row";
+      }); copy.className = "settings-plain-row action";
+      const reset = button("Reset", () => { typingLatency.reset(); copy.textContent = "Copy report"; refreshLatency(); }); reset.className = "settings-plain-row action";
       body.append(instruction, results, group("REPORT", [copy, reset]), explanation);
       refreshLatency(); if (visible) latencyTimer = window.setInterval(refreshLatency, 1000);
       return;
@@ -358,14 +358,14 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const hero = el("div", "settings-machine-hero"), label = el("h2", "settings-machine-hero-name", name());
     machineNameNodes.push(label); const connection = el("p", "settings-machine-connection"); connectionNodes.push(connection);
     hero.append(disc(88, name()), label, connection, versionLine());
-    reconnectButton = button("Reconnect now", () => { void reconnect().catch(report); }); reconnectButton.className = "settings-plain-row";
+    reconnectButton = button("Reconnect now", () => { void reconnect().catch(report); }); reconnectButton.className = "settings-plain-row action";
     reconnectNote = el("span", "settings-action-note", "verify the host key first");
     reconnectNote.hidden = true; reconnectButton.append(reconnectNote);
     const copy = button("Copy diagnostics", () => {
       void Desk.gramCopyText(`herdrup-desktop ${version}, host ${name()}`).then(() => {
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
       }).catch(report);
-    }); copy.className = "settings-plain-row";
+    }); copy.className = "settings-plain-row action";
     body.append(hero, updates.root, group("CONNECTION", [reconnectButton, copy]), federation());
     reach = el("p", "settings-reach"); body.append(reach); updateConnection();
   }

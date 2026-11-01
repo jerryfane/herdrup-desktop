@@ -599,6 +599,16 @@ go run ./cmd/herdrup-sync -commit <full herdrup commit>
 hash or from herdrup at the pin, when a generated file is stale or hand-edited, and when a stylesheet in
 `src/` uses a colour literal instead of a token variable or gives a card a coloured side stripe.
 
+Owner colour decisions under the machine UI rule (2026-11-01), so the rule is not reinterpreted:
+
+- The Gram unread count on the sidebar tab and rail stays grey. herdrup draws it system red
+  (`HerdrApp.swift` 2896-2905); parity counts those pixels and does not mask them.
+- Tappable text actions are violet (`--color-brand`): Settings' Reconnect now, Copy diagnostics, the
+  typing-latency Copy report and Reset, and Federate/Unfederate, as herdrup's
+  `groupedActionRow`/`actionRow` (`HerdrApp.swift` 9441-9466) and its app-wide `.tint(Palette.brand)`
+  (2548) draw them. Icon-led rows (Add account and the like) keep the text colour, as herdrup's
+  `richActionRow` does. Nothing else takes status or accent colour.
+
 ## Symbols
 
 herdrup draws its icons with Apple's SF Symbols, which Apple licenses for its own platforms only. The
