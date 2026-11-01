@@ -215,7 +215,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
      glyph.style.setProperty("--host-computer", `url("${desktopIcon}")`); icon.append(glyph);
     }
     const lines = element("span", "host-home-lines");
-    lines.append(element("span", "host-home-name", machine.nickname || machine.host), element("span", "host-home-address", busy ? "Connecting…" : `${machine.user}@${machine.host}${machine.port && machine.port !== 22 ? ":" + machine.port : ""}`));
+    // SavedHost.label and ConnectView.secondaryLine: the nickname over user@host, or the
+    // host over the user name alone.
+    const nickname = machine.nickname?.trim() ?? "";
+    lines.append(element("span", "host-home-name", nickname || machine.host), element("span", "host-home-address", busy ? "Connecting…" : nickname ? `${machine.user}@${machine.host}` : machine.user));
     const chevron = element("span", "host-home-chevron"); chevron.setAttribute("aria-hidden", "true");
     if (busy) { chevron.classList.add("host-home-spinner"); chevron.innerHTML = spinner; }
     else chevron.append(await symbol("chevron.right", 13, "semibold"));
