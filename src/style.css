@@ -394,7 +394,9 @@ html, body {
 }
 
 /* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
-   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour. */
+   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour over the bare
+   sidebar in every 9845ecf reference (#31354e: board, Gram and detail captures alike), and
+   the selected pill, white 12% on top, gives their #4a4d63. */
 .tabbar {
   position: absolute;
   left: 14px;
@@ -406,7 +408,7 @@ html, body {
   padding: 4px;
   display: flex;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-surface) 45%, var(--color-ground-machine));
+  background: color-mix(in srgb, var(--color-on-accent) 5%, var(--color-surface-raised));
 }
 .tab {
   flex: 1;
