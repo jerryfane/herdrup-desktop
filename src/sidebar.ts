@@ -1,4 +1,5 @@
 import type { Board } from "./mygo";
+import { motionSeconds } from "./motion";
 import "./sidebar.css";
 
 type Tab = "agents" | "gram" | "settings";
@@ -36,9 +37,15 @@ export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) =
     document.body.classList.toggle("sidebar-minimized", collapsed);
     sidebar.inert = collapsed; rail.hidden = !collapsed;
   }
+  let moving = 0;
   function setMinimized(value: boolean) {
     minimized = value;
     try { localStorage.setItem("sidebarMinimized", String(value)); } catch (error) { console.warn("Sidebar preference is session-only", error); }
+    // The split view animates its columns (~0.3 s, HerdrApp.swift toggleSidebar); only a
+    // toggle moves them, not the column hiding for the host home or a guest.
+    document.body.classList.add("sidebar-moving");
+    clearTimeout(moving);
+    moving = window.setTimeout(() => document.body.classList.remove("sidebar-moving"), motionSeconds("sidebar") * 1000 + 50);
     apply(); changed();
   }
   expand.onclick = () => setMinimized(false);

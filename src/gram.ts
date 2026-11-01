@@ -11,6 +11,7 @@ import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerA
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
+import { animateHeight, motionSeconds } from "./motion";
 import { onTextSizeChanged } from "./textSize";
 import {
   activeQuery,
@@ -378,6 +379,9 @@ function setSaved(saved: boolean) {
   showingSaved = saved;
   landed = false;
   renderAll();
+  // GramView.swift 751: withAnimation(.easeInOut(duration: 0.15)) { showingSaved.toggle() }.
+  const quick = motionSeconds("quick");
+  if (quick) content.animate([{ opacity: 0 }, { opacity: 1 }], { duration: quick * 1000, easing: "ease-in-out" });
 }
 
 // ---- Page (iPadBody) ----
@@ -1093,6 +1097,7 @@ function textPart(
  * "Show less" sits under it. The open segments are the page's, by message and segment. */
 function prose(id: string, text: string, index: number, mine: boolean): HTMLElement {
   const box = el("div", "gprose");
+  box.dataset.fold = `${id}:${index}`;
   const open = expanded.get(id)?.has(index) ?? false;
   const body = el("div", "gprose-text" + (open ? "" : " clamp"));
   for (const run of model.linkRuns(text)) {
@@ -1111,7 +1116,11 @@ function prose(id: string, text: string, index: number, mine: boolean): HTMLElem
     else set.add(index);
     if (set.size === 0) expanded.delete(id);
     else expanded.set(id, set);
+    // GramCards.swift 282: withAnimation(.easeOut(duration: 0.2)) { isExpanded.toggle() }.
+    const from = box.getBoundingClientRect().height;
     renderContent();
+    const now = page.querySelector<HTMLElement>(`.gprose[data-fold="${CSS.escape(box.dataset.fold!)}"]`);
+    if (now) animateHeight(now, from, "settle");
   });
   toggle.textContent = foldToggleLabel(open);
   toggle.hidden = true;

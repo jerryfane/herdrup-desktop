@@ -16,6 +16,7 @@ import { showNewAgent, showNewTerminal } from "./create";
 import { terminalRows } from "./terminals";
 import { initGuestHome } from "./guestHome";
 import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
+import { animateDisclosures, applyMotions, motionSeconds } from "./motion";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -214,6 +215,8 @@ async function buildTabBar() {
   );
   if (generation !== tabBarGeneration) return;
   $("tabbar").replaceChildren(...nodes);
+  // The selected pill slides between tabs (HerdrApp.swift 2837).
+  $("tabbar").style.setProperty("--tab-index", String(items.findIndex(([key]) => key === selectedTab)));
   setTabBadge();
 }
 
@@ -535,6 +538,8 @@ onTextSizeChanged(() => {
   if (!field.hidden) drawField();
 });
 
+// The first render places the window without motion; later swaps push (render below).
+let renderedOnce = false, pushTimer = 0;
 function render() {
   if (!renderReady) return;
   const showConnect = choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
@@ -556,6 +561,14 @@ function render() {
   const showsGram = tab === "gram" && !showConnect;
   const showsSettings = tab === "settings" && !showConnect;
   connectView.hidden = !showConnect;
+  // HerdrApp.swift 229-233, 637: the machine's home and the host list push in from the
+  // trailing edge when one replaces the other.
+  if (document.body.classList.contains("host-home-visible") !== showConnect && renderedOnce) {
+    document.body.classList.add("pushing");
+    clearTimeout(pushTimer);
+    pushTimer = window.setTimeout(() => document.body.classList.remove("pushing"), motionSeconds("home") * 1000 + 50);
+  }
+  renderedOnce = true;
   document.body.classList.toggle("host-home-visible", showConnect);
   rail?.update(tab, board?.board ?? null, !showConnect);
   const fieldWasHidden = field.hidden;
@@ -684,6 +697,17 @@ async function init() {
   // The composer draft's line pitch and first-line offset (composerMetrics.ts).
   document.documentElement.style.setProperty("--composer-text-pitch", `${COMPOSER_TEXT_PITCH}px`);
   document.documentElement.style.setProperty("--composer-text-offset", `${COMPOSER_TEXT_OFFSET}px`);
+  // herdrup's animations as CSS variables (motion.ts); Reduce Motion turns them off.
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  applyMotions(document.documentElement, reduceMotion.matches);
+  reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
+  animateDisclosures(document.body);
+  // The detail column changes size while the sidebar slides; the field follows it.
+  let fieldFrame = 0;
+  new ResizeObserver(() => {
+    cancelAnimationFrame(fieldFrame);
+    fieldFrame = requestAnimationFrame(() => { if (!field.hidden) drawField(); });
+  }).observe($("detail"));
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);

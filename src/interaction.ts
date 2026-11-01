@@ -18,6 +18,7 @@ import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
+import { animateHeight } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode } from "./chatPreference";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -51,6 +52,7 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
  symbol = renderSymbol;
  selectionChanged = onSelectionChanged;
  root = el("section", "agent-detail"); root.hidden = true; detail.append(root);
+ root.addEventListener("animationend", event => { if (event.target === root) root.classList.remove("opening"); });
  events.terminalChanged.on(e => { if (current?.view?.token === e.token) current.frame(e); });
  events.paneAttachments.on(event => {
   if (current?.token !== event.token || current.disposed) return;
@@ -98,6 +100,8 @@ export async function selectInteraction(target: AgentTarget, initialDraft?: stri
  if (current && current.plainTerminal === plainTerminal && JSON.stringify(current.target) === JSON.stringify(target)) { root.hidden = false; return; }
  closeInteraction();
  const next = new Detail(target, initialDraft, plainTerminal); current = next; root.hidden = false;
+ // HerdrApp.swift 3160-3179: opening an agent fades its page in from 40 pt to the right.
+ root.classList.remove("opening"); void root.offsetWidth; root.classList.add("opening");
  selectionChanged?.(target);
  opening = opening.then(async () => { if (!next.disposed) await next.open(); });
  await opening;
@@ -825,7 +829,7 @@ class Detail {
   const done = items.filter(planDone).length;
   const draw = () => {
    card.dataset.open = String(open);
-   const toggle = button("", () => { open = !open; draw(); });
+   const toggle = button("", () => { const from = card.getBoundingClientRect().height; open = !open; draw(); animateHeight(card, from, "quick"); });
    toggle.className = "chat-plan-heading";
    toggle.setAttribute("aria-expanded", String(open));
    toggle.setAttribute("aria-label", `To-do, ${done} of ${items.length} done`);

@@ -1,5 +1,9 @@
 .agent-detail { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--color-ground-machine); color: var(--color-text); min-width: 0; }
 .agent-detail[hidden] { display: none; }
+/* Opening an agent: its page fades in from 40 pt to the right (HerdrApp.swift 3160-3179,
+   .easeOut(duration: 0.26)); interaction.ts adds .opening for a newly opened agent only. */
+.agent-detail.opening:not([hidden]) { animation: motion-page var(--motion-page-duration) var(--motion-page-ease) both; }
+@keyframes motion-page { from { opacity: 0; transform: translateX(40px); } }
 .terminal-tools, .chat-tools { display: flex; align-items: center; gap: 8px; padding: 10px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--color-hairline); }
 .interaction-toolbar { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px; min-height: calc(var(--pane-header-content-height, 44px) + 14px); background: var(--color-ground-machine); }
 .interaction-toolbar strong { flex: 1; min-width: 0; font: 600 16px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -68,6 +72,7 @@
 .chat-transcript > :last-child { margin-bottom: 0; }
 .agent-detail .chat-jump-latest { position:absolute; z-index:2; left:50%; bottom:16px; transform:translateX(-50%); display:grid; place-items:center; width:44px; height:44px; padding:0; border-radius:50%; border:1px solid var(--color-hairline); background:color-mix(in srgb,var(--color-surface-raised) 85%,transparent); backdrop-filter:blur(12px); color:var(--color-text); }
 .chat-jump-latest[hidden] { display:none; }
+.chat-jump-latest:not([hidden]) { animation: motion-fade var(--motion-quick-duration) var(--motion-quick-ease) both; }
 .chat-jump-glyph { width:18px; height:18px; background:currentColor; mask:var(--jump-glyph) center/contain no-repeat; }
 .chat-message, .chat-work, .chat-step { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; }
 /* ChatView.dayLabel: "Today" 13 pt semibold + " 4:12 PM" regular, textFaint, full width centred,
@@ -158,6 +163,11 @@
 .composer-expand-handle, .agent-detail .composer-expand-handle { position: absolute; z-index: 1; top: 0; left: calc(50% - 36px); width: 72px; height: 22px; padding: 0; border: 0; border-radius: 0; background: none; touch-action: none; cursor: ns-resize; }
 .composer-expand-handle::after { content: ""; position: absolute; top: 9px; left: 18px; width: 36px; height: 4px; border-radius: 2px; background: var(--color-text-faint); }
 .composer-expand-handle[hidden] { display: none; }
+/* ComposerView.swift 369-375: the expand handle appears on the rearrange spring, fading and
+   scaling from 0.6 at its top. (The field's height is not transitioned: the writer sizes
+   itself from live measurements of the room around it.) */
+.composer-expand-handle:not([hidden]) { animation: motion-handle var(--motion-rearrange-duration) var(--motion-rearrange-ease) both; transform-origin: 50% 0; }
+@keyframes motion-handle { from { opacity: 0; transform: scale(0.6); } }
 .gcard.has-editor-handle, .chat-composer.has-editor-handle { padding-top: 20px; }
 .host-password { color: var(--color-text); background: var(--color-ground); border: 1px solid var(--color-hairline); border-radius: 14px; padding: 22px; }
 .host-password::backdrop { background: color-mix(in srgb, var(--color-ground-machine) 75%, transparent); }

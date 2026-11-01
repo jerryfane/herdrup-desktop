@@ -9,6 +9,10 @@
 .host-home .host-home-row { position:relative; display:flex; align-items:center; gap:14px; width:100%; min-height:60px; box-sizing:border-box; padding:10px 18px; text-align:left; border:0; border-radius:0; background:none; color:var(--color-text); font-family:inherit; font-weight:400; }
 .host-home-row + .host-home-row { margin-top:1px; }
 .host-home-row + .host-home-row::before { content:""; position:absolute; top:-1px; left:54px; right:0; height:1px; background:var(--color-hairline-quiet); }
+/* ConnectRowButtonStyle (HerdrApp.swift 763-771): surfaceRaised while pressed, in 0.05 s
+   and back out over 0.2 s. */
+.host-home .host-home-row { transition:background-color var(--motion-settle-duration) var(--motion-settle-ease); }
+.host-home .host-home-row:active { background:var(--color-surface-raised); transition-duration:calc(var(--motion-settle-duration) / 4); }
 .host-home-icon { width:22px; flex:none; display:flex; align-items:center; justify-content:center; color:var(--color-text-dim); }
 .host-computer-glyph { width:19px; height:19px; display:block; background:currentColor; mask:var(--host-computer) center/contain no-repeat; -webkit-mask:var(--host-computer) center/contain no-repeat; }
 .host-home-lines { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
