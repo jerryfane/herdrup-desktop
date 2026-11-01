@@ -15,6 +15,7 @@ import { initSidebarRail } from "./sidebar";
 import { showNewAgent, showNewTerminal } from "./create";
 import { terminalRows } from "./terminals";
 import { initGuestHome } from "./guestHome";
+import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -680,6 +681,9 @@ window.addEventListener("keydown", (e) => {
 
 async function init() {
   document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
+  // The composer draft's line pitch and first-line offset (composerMetrics.ts).
+  document.documentElement.style.setProperty("--composer-text-pitch", `${COMPOSER_TEXT_PITCH}px`);
+  document.documentElement.style.setProperty("--composer-text-offset", `${COMPOSER_TEXT_OFFSET}px`);
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);

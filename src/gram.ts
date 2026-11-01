@@ -10,6 +10,7 @@ import { rowTime, separator } from "./gramDates";
 import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste, SavedPromptsMenu } from "./composer";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
+import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { onTextSizeChanged } from "./textSize";
 import {
   activeQuery,
@@ -1487,14 +1488,15 @@ function layoutComposer() {
   if (!card.isConnected) return;
   const contentWidth = card.clientWidth - 12;
   const actionsWidth = actions.offsetWidth;
-  const lineHeight = parseFloat(getComputedStyle(input).lineHeight);
+  // Lines are counted at the drawn pitch; the field is ComposerStyle.lineHeight per line.
+  const lineHeight = COMPOSER_LINE, pitch = COMPOSER_TEXT_PITCH;
   // The field's insets: 5 + 7 leading, 2 trailing.
   const inline = contentWidth - actionsWidth - 4 - 14;
   const hasAttachments = (snap?.attachments.length ?? 0) > 0;
-  const expand = editor.open || (!!dictation && !dictation.strip.hidden && draft.length > 0) || (contentWidth > 0 && model.composerExpanded(hasAttachments, width => linesAt(width, lineHeight), inline, wrapped));
+  const expand = editor.open || (!!dictation && !dictation.strip.hidden && draft.length > 0) || (contentWidth > 0 && model.composerExpanded(hasAttachments, width => linesAt(width, pitch), inline, wrapped));
   wrapped = expand && !hasAttachments && !editor.open;
   card.classList.toggle("expanded", expand);
-  const lines = linesAt(expand ? contentWidth - 14 : inline, lineHeight);
+  const lines = linesAt(expand ? contentWidth - 14 : inline, pitch);
   const host = card.closest<HTMLElement>(".gram")!;
   const room = Math.max(0, host.clientHeight - headerHeight - banner.offsetHeight - hintEl.offsetHeight - 12 - 56 - 12);
   input.style.height = `${editor.update(lines, room, lineHeight)}px`;

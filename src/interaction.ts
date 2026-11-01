@@ -10,6 +10,7 @@ import "./interaction.css";
 import { Desk, events } from "./mygo";
 import type { AgentTarget, AgentView, BoardUpdate, GramAttachment } from "./mygo";
 import { closeWriter, ComposerEditor, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
+import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
@@ -680,11 +681,12 @@ class Detail {
    this.send.hidden = !hasContent; this.prompts.button.hidden = hasContent;
    this.column.update();
    const width = composer.clientWidth - 26;
-   const lineHeight = parseFloat(getComputedStyle(this.input).lineHeight);
+   // Lines are counted at the drawn pitch; the field is ComposerStyle.lineHeight per line.
+   const lineHeight = COMPOSER_LINE, pitch = COMPOSER_TEXT_PITCH;
    const measure = (w: number) => {
     probe.style.width = `${Math.max(1, w)}px`;
     probe.textContent = this.input.value + (this.input.value.endsWith("\n") || !this.input.value ? " " : "");
-    return Math.max(1, Math.round(probe.getBoundingClientRect().height / lineHeight));
+    return Math.max(1, Math.round(probe.getBoundingClientRect().height / pitch));
    };
    const inline = width - actions.offsetWidth - 4;
    wrapped = composerExpanded(false, measure, inline, wrapped);

@@ -143,8 +143,10 @@
 .chat-composer { position: relative; display: flex; gap: 4px; margin: 4px 12px 8px; padding: 6px; align-items: center; background: var(--color-surface); border: 0; outline: 1px solid var(--color-hairline); outline-offset: -1px; border-radius: 28px; }
 .chat-composer:focus-within { outline-color: var(--color-text-faint); }
 .chat-composer.expanded { flex-direction: column; align-items: stretch; gap: 8px; padding-top: 11px; }
-.chat-input, .composer-text-probe { font: 400 16px/24px var(--font-app); white-space: pre-wrap; overflow-wrap: break-word; }
-.chat-input { flex: 1; min-width: 0; width: 100%; resize: none; height: 24px; padding: 0 2px 0 12px; color: var(--color-text); background: none; border: 0; outline: none; scrollbar-width: none; }
+/* Composer draft text: ComposerTextMetrics' pitch and first-line offset (composerMetrics.ts,
+   set on :root at start); the field stays 24 pt per line (ComposerStyle.lineHeight). */
+.chat-input, .composer-text-probe { font: 400 16px/var(--composer-text-pitch) var(--font-app); white-space: pre-wrap; overflow-wrap: break-word; }
+.chat-input { flex: 1; min-width: 0; width: 100%; resize: none; height: 24px; padding: var(--composer-text-offset) 2px 0 12px; color: var(--color-text); background: none; border: 0; outline: none; scrollbar-width: none; }
 .chat-input::placeholder { color: var(--color-text-dim); }
 .chat-composer.expanded .chat-input { flex: none; }
 .chat-composer > button:not(.composer-expand-handle) { flex: none; align-self: flex-end; min-width: 44px; height: 44px; border: 0; border-radius: 50%; }

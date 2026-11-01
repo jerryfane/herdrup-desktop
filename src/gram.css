@@ -261,9 +261,12 @@
 .gcard.expanded { flex-direction: column; align-items: stretch; gap: 8px; padding-top: 11px; }
 .gfield { position: relative; flex: 1; min-width: 0; align-self: center; padding: 0 2px 0 12px; }
 .gcard.expanded .gfield { align-self: stretch; }
+/* Composer draft text: ComposerTextMetrics' pitch and first-line offset (composerMetrics.ts);
+   the field stays 24 pt per line (ComposerStyle.lineHeight). */
 .gfield-input, .gfield-mirror, .gfield-probe {
-  font: 400 16px/24px var(--font-app); white-space: pre-wrap; overflow-wrap: break-word; margin: 0; padding: 0; border: 0;
+  font: 400 16px/var(--composer-text-pitch) var(--font-app); white-space: pre-wrap; overflow-wrap: break-word; margin: 0; padding: 0; border: 0;
 }
+.gfield-input, .gfield-mirror { padding-top: var(--composer-text-offset); }
 .gfield-input {
   position: relative; display: block; width: 100%; height: 24px; resize: none; outline: none; background: none;
   color: transparent; caret-color: var(--color-text); overflow-y: auto; scrollbar-width: none;
