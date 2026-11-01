@@ -177,6 +177,21 @@
         "settings-about-index"
       ],
       "why": "Settings' version footer: herdrup prints its own bundle version, 'herdrup mobile <version> (<build>)' (9845ecf HerdrApp.swift 9419-9429); the desktop prints the real desktop version. herdr-app 380190. Only that line: the union of the reference's line and the desktop's (hosted run 41304331391), above the 'dark only, on purpose' stance, which stays compared."
+    },
+    {
+      "name": "settings-tab-bar-glass",
+      "kind": "platform-difference",
+      "x": 13.5,
+      "y": 938,
+      "w": 293,
+      "h": 62,
+      "states": [
+        "settings-about-index",
+        "settings-machines-empty",
+        "settings-machines-federation",
+        "settings-machines-index"
+      ],
+      "why": "The sidebar tab bar's Liquid Glass capsule (herdrup 9845ecf HerdrApp.swift 2818-2843), the same rect as the board masks' tab-bar-glass. In Settings the list scrolls under it and the glass refracts it (bent, blurred rows inside the capsule: settings-sidebar-bottom.png in the herdrup-desk evidence directory); CSS cannot draw refraction. herdr-app 380610. The tab icons and labels inside stay compared in the Gram and detail captures, where the glass is over the bare sidebar."
     }
   ]
 }
