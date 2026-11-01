@@ -14,9 +14,9 @@
     },
     {
       "name": "loading-detail-field",
-      "x": 330, "y": 32, "w": 850, "h": 768,
+      "x": 320, "y": 32, "w": 860, "h": 768,
       "states": ["loading"],
-      "why": "The detail column's glyph field (x 330 pt to the right edge, from the status bar to 20 pt above the bottom). In the loading reference it is plain ground only because the capture froze the window's layers before the field's first resting picture arrived (reference README, `loading`). herdrup draws the field while loading, and so does the desktop. Compared in every other state."
+      "why": "The detail column's glyph field (x 320 pt to the right edge, from the status bar to 20 pt above the bottom). The detail column starts at the 320 pt sidebar's edge (herdrup 9845ecf HerdrApp.swift 2487, sidebarMin); in ref-ipad-11-loading.png the sidebar fill #13162A ends at px 639 and ground starts at px 640 on every row. In the loading reference it is plain ground only because the capture froze the window's layers before the field's first resting picture arrived (reference README, `loading`). herdrup draws the field while loading, and so does the desktop. Compared in every other state."
     },
     {
       "name": "window-resize-corner",
