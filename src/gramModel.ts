@@ -269,7 +269,8 @@ const FILE_KINDS: Record<string, string> = {
   svg: "SVG image",
   tiff: "TIFF image",
   pdf: "PDF document",
-  txt: "Plain Text",
+  // iOS's UTType wording, as the accepted gram references draw reference-handoff.txt.
+  txt: "text",
   md: "Markdown document",
   csv: "comma-separated values",
   json: "JSON",
