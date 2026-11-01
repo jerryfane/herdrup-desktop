@@ -234,6 +234,8 @@ jobs:
             echo "- Platform-divergent: settings-about-index on each device (herdrup's StoreKit 'Support the project' row has no desktop equivalent, so every row below it moves)."
             echo "- Reveal-step divergent: ipad-11-gram-mixed-code and ipad-pro-13-gram-mixed-folded. Native's reveal took one more 160 pt drag although the target's top (85 / 87 pt) was already below the header (button frame 8–74 pt); on ipad-pro-13-gram-mixed-code both accept 96 pt. Likely XCUITest checking before the image preview decodes, not proven; herdrup#591 adds a decode wait to the native driver."
             echo
+            echo "Counted, not masked, by owner decision (2026-11-01): the Gram unread count on the sidebar tab and rail stays grey; Swift draws it system red (HerdrApp.swift 2896-2905)."
+            echo
             echo "| capture | page pt | capture px | display scale | override | devicePixelRatio | app | over tol % | max Δ | mean Δ | refdiff |"
             echo "|---|---|---|---|---|---|---|---|---|---|---|"
             for side in "$out"/captures/*.png.json; do

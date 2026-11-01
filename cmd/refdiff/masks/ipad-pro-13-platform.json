@@ -1,6 +1,6 @@
 {
   "device": "ipad-pro-13",
-  "note": "Platform differences in herdrup's ipad-pro-13 Gram, Settings and detail references (herdr-app 380190): true content the desktop shows on purpose. Reference points with the status bar included. Every rect names its states; refdiff rejects a platform-difference rect without them. Board states use ipad-pro-13.json instead.",
+  "note": "Platform differences in herdrup's ipad-pro-13 Gram, Settings and detail references (herdr-app 380190): true content the desktop shows on purpose. Reference points with the status bar included. Every rect names its states; refdiff rejects a platform-difference rect without them. Board states use ipad-pro-13.json instead. Not masked by owner decision (2026-11-01, herdr-app 380597): the Gram unread count on the sidebar tab and rail stays grey on the desktop while Swift draws it system red (HerdrApp.swift 2896-2905); those pixels stay counted.",
   "rects": [
     {
       "name": "gram-machine-suffix \u00b7 hetzner-1 @461.5,165",
