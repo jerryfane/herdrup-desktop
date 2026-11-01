@@ -45,6 +45,7 @@ func main() {
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
 	creation := flag.Bool("creation", false, "serve isolated pane and agent creation; never starts a real process or model")
 	responsesFile := flag.String("responses", "", "immutable native-reference API response map, including avatar and session replies")
+	current := flag.Bool("current", false, "answer as a herdr that needs no update (herdrup ServerRequirement.current): ping also advertises server_update and the features it requires, server.update_check offers nothing newer")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -196,6 +197,9 @@ func main() {
 		if err := serveReferenceResponses(s, *responsesFile); err != nil {
 			log.Fatal(err)
 		}
+	}
+	if *current {
+		serveCurrent(s)
 	}
 	addr, err := s.Listen(*listen)
 	if err != nil {

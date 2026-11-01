@@ -163,6 +163,9 @@ jobs:
             case "$state" in needs-you-*) fixture=needs-you ;; esac
             responses=()
             if [ -f "$refs/fixture-$fixture.json" ]; then responses=(-responses "$refs/fixture-$fixture.json"); fi
+            # The Settings references show a machine with no pending update
+            # (herdr-app 379987); their fixtures' ping predates server_update.
+            case "$state" in settings-*) responses+=(-current) ;; esac
             "$RUNNER_TEMP/fakeherdr" -mode "$mode" "${responses[@]}" -listen "127.0.0.1:$port" -client-key "$key" > "$out/logs/$name.fakeherdr.log" 2>&1 &
             fpid=$!
             for _ in $(seq 50); do [ -s "$key" ] && break; sleep 0.2; done
