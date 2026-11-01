@@ -146,7 +146,12 @@ Scan invite reads a shared-agent QR; Paste reads the OS clipboard only when clic
 Both open the invitation preview and require Accept before contacting the relay.
 The camera stops before preview, on cancellation, and if a pending permission
 request completes after dismissal. Clipboard format checks do not read its contents.
-Accepted shares appear under Shared with you. Native Linux checks covered these
+Accepted shares appear under Shared with you. With shares, the subtitle reads "your
+shared agents" and Scan pairing code / Add host fold into a collapsed "Connect your
+own machine" disclosure, as in Swift. Each shared row shows the machine label over
+"agent · shared by owner" with the shared icon and a chevron. Swift opens one
+combined home for a machine with several shared agents; the desktop holds one
+connection at a time, so each agent keeps its own row for now. Native Linux checks covered these
 paths using a canvas camera stream and the real clipboard; physical-camera and
 Windows/macOS invitation scanning remain unverified.
 Password connections ask again when reconnecting; passwords are not saved.

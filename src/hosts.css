@@ -50,3 +50,11 @@
 body.host-home-visible > .detail { left:0; }
 body.host-home-visible > .detail::after { content:""; position:absolute; top:100%; left:0; right:0; height:var(--home-inset); background:var(--color-ground); pointer-events:none; }
 body.host-home-visible > .sidebar { display:none; }
+/* DisclosureGroup("Connect your own machine"): body-size label in text ink, a
+   trailing chevron that turns down when open, 12 pt above its 18 pt-spaced contents. */
+.host-home .host-owner-setup > summary { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:44px; padding:0 4px; list-style:none; cursor:pointer; color:var(--color-text); font-size:17px; }
+.host-home .host-owner-setup > summary::-webkit-details-marker { display:none; }
+.host-home .host-owner-setup > summary::after { content:""; width:8px; height:8px; margin-right:4px; border-right:2px solid var(--color-text-dim); border-bottom:2px solid var(--color-text-dim); transform:rotate(-45deg); transition:transform .2s ease; }
+.host-home .host-owner-setup[open] > summary::after { transform:rotate(45deg); }
+.host-home .host-owner-setup-body { display:flex; flex-direction:column; gap:18px; padding-top:12px; }
+@media (prefers-reduced-motion:reduce) { .host-home .host-owner-setup > summary::after { transition:none; } }

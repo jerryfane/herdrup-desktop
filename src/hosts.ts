@@ -4,6 +4,7 @@ import "./hosts.css";
 import { showPairing } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
+import usersIcon from "../third_party/phosphor/web/users.svg?url";
 import qrIcon from "../third_party/phosphor/web/qr-code.svg?url";
 import clipboardIcon from "../third_party/phosphor/web/clipboard.svg?url";
 
@@ -22,7 +23,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const header = element("header", "host-home-header");
  const mark = element("img", "host-home-mark"); mark.src = "/herdrup/app-logo.png"; mark.alt = "";
  const identity = element("div", "host-home-identity");
- identity.append(element("h1", "", "herdrup"), element("p", "", "connect to your machine")); header.append(mark, identity);
+ const subtitle = element("p", "", "connect to your machine");
+ identity.append(element("h1", "", "herdrup"), subtitle); header.append(mark, identity);
  const section = element("section", "host-home-saved");
  const rows = element("div", "host-home-rows");
  section.append(element("h2", "", "SAVED"), rows);
@@ -66,6 +68,17 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   }
  }
  const inviteActions = element("div", "host-invite-actions"); inviteActions.append(invite, paste);
+ // ConnectView: with shared machines, your own setup folds into a collapsed
+ // "Connect your own machine" disclosure; without, it stays on the page.
+ const ownerSetup = element("details", "host-owner-setup");
+ const ownerSummary = element("summary", "", "Connect your own machine");
+ const ownerBody = element("div", "host-owner-setup-body");
+ ownerSetup.append(ownerSummary, ownerBody);
+ const placeOwnerSetup = (hasShared: boolean) => {
+  subtitle.textContent = hasShared ? "your shared agents" : "connect to your machine";
+  if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(pair, add); shared.after(ownerSetup); }
+  else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(pair, add); ownerSetup.open = false; }
+ };
  home.append(header, section, shared, pair, add, inviteActions, message); container.replaceChildren(home);
  async function openPendingInvitation() {
   const text = await Desk.takeGuestInvitation();
@@ -158,12 +171,25 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
    shared.hidden = shares.length === 0;
-   sharedRows.replaceChildren(...shares.map(access => {
-    const row = action("", () => { row.disabled = true; void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(showAgents).catch(report).finally(() => { row.disabled = false; }); });
-    row.className = "host-home-row";
-    const labels = element("span", "host-home-label"); labels.append(element("strong", "", access.agentName), element("span", "", `${access.machineLabel} · Shared by ${access.ownerName}`));
-    row.append(labels); return row;
-   }));
+   placeOwnerSetup(shares.length > 0);
+   // Native sharedSection row: person.2, machine label over "agents · shared by owner",
+   // chevron. Several grants on one machine would open Swift's combined machine home,
+   // which needs simultaneous guest connections; until then each grant keeps its own row.
+   const sharedNodes: HTMLElement[] = [];
+   for (const access of shares) {
+    const row = action("", () => { row.disabled = true; void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(showAgents).catch(report).finally(() => { row.disabled = connecting; }); });
+    row.className = "host-home-row"; row.disabled = connecting;
+    const icon = element("span", "host-home-icon");
+    if (navigator.platform.startsWith("Mac")) icon.append(await symbol("person.2", 19, "regular"));
+    else { const glyph = element("span", "host-computer-glyph"); glyph.style.setProperty("--host-computer", `url("${usersIcon}")`); icon.append(glyph); }
+    const lines = element("span", "host-home-lines");
+    lines.append(element("span", "host-home-name", access.machineLabel), element("span", "host-home-address", `${access.agentName} · shared by ${access.ownerName}`));
+    const chevron = element("span", "host-home-chevron"); chevron.setAttribute("aria-hidden", "true");
+    chevron.append(await symbol("chevron.right", 13, "semibold"));
+    row.append(icon, lines, chevron); sharedNodes.push(row);
+   }
+   if (generation !== version) return;
+   sharedRows.replaceChildren(...sharedNodes);
    section.hidden = machines.length === 0;
    const next: HTMLElement[] = [];
    for (const machine of machines) {
