@@ -25,7 +25,9 @@ func serveCurrent(s *fakeherdr.Server) {
 	next := s.HandleSession
 	if next == nil {
 		handle := s.Handle
-		next = func(_, method string, params json.RawMessage) (any, *fakeherdr.APIError) { return handle(method, params) }
+		next = func(_, method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			return handle(method, params)
+		}
 	}
 	s.HandleSession = currentHandler(next)
 }

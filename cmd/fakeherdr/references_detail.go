@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 //go:embed detail_grams.json
@@ -22,6 +23,19 @@ var detailGrams json.RawMessage
 func serveDetailReference(server *fakeherdr.Server) error {
 	turns := detailReferenceTurns()
 	questions := []any{map[string]any{"question": "Merge #305 and update the servers?", "options": []string{"Yes, merge and deploy", "Not yet"}, "multi": false, "recommended": 0}}
+	var list struct {
+		Messages []herdrapi.GramMessageInfo `json:"messages"`
+	}
+	if err := json.Unmarshal(detailGrams, &list); err != nil {
+		return fmt.Errorf("detail gram.list: %w", err)
+	}
+	// The native MockWireFixtures gram_list has no unread_count, store_id,
+	// digest or has_more, which the pinned schema requires. Native shows the
+	// badge it derives from the absent count, the returned message count
+	// (herdrup 9845ecf Sources/HerdrKit/Gram.swift 253 unreadBadgeCount,
+	// GramUnreadBadgeTests.testUnpagedAnswerCountsItsMessages): 12 here.
+	// herdr-app 380187: reply schema-valid with that displayed count.
+	grams := fakeherdr.GramListAnswer("native-reference-detail", list.Messages, uint64(len(list.Messages)))
 	fallback := server.Handle
 	server.HandleSession = func(session, method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
 		var p struct {
@@ -41,7 +55,7 @@ func serveDetailReference(server *fakeherdr.Server) error {
 			return json.RawMessage(`{"type":"agent_list","agents":[{"pane_id":"w9:p1","name":"herdr-app","agent":"omp","agent_status":"blocked","cwd":"/root/herdr","terminal_title_stripped":"Merge #305 and update the servers?"},{"pane_id":"w9:p2","terminal_id":"t-keephair","name":"keephair","avatar":{"style":"mascot","mascot":"cub","sha256":null,"updated_unix_ms":1723041000000},"agent":"claude","agent_status":"idle","cwd":"/root/keephair-repo","terminal_title_stripped":"Running the iPad tests"},{"pane_id":"w9:p3","name":"llm-opt","agent":"omp","agent_status":"done","cwd":"/root/llm-opt","terminal_title_stripped":"Bench results posted"}]}`), nil
 		case "gram.list":
 			// The native MockWireFixtures response is deliberately unfiltered.
-			return detailGrams, nil
+			return grams, nil
 		case "agent.transcript":
 			limit := 20
 			if p.Limit != nil {

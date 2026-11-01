@@ -171,6 +171,18 @@ function placeTitle() {
 // ---- Tab bar ----
 
 let tabBarGeneration = 0;
+// Gram's unread count, as the last snapshot reported it (gram.ts barChanged).
+let gramUnread = 0;
+/** sidebarTabItem's tabBadge (HerdrApp.swift 2864-2905): the count on the Gram icon's
+ *  top-trailing corner, "99+" past 99, hidden at zero. Neutral, like the rail badge,
+ *  under the desktop colour rule. */
+function setTabBadge() {
+  const badge = document.querySelector<HTMLElement>("#tabbar .tab-badge");
+  if (!badge) return;
+  badge.hidden = gramUnread === 0;
+  badge.textContent = gramUnread > 99 ? "99+" : String(gramUnread);
+  badge.closest(".tab")?.setAttribute("aria-label", gramUnread ? `Gram, ${gramUnread} unread` : "Gram");
+}
 async function buildTabBar() {
   const generation = ++tabBarGeneration, selectedTab = tab;
   const items: Array<[typeof tab, string, string]> = [
@@ -183,6 +195,11 @@ async function buildTabBar() {
       const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
       const i = el("div", "icon");
       await place(i, icon, 21, "medium");
+      if (key === "gram") {
+        const badge = el("span", "tab-badge");
+        badge.setAttribute("aria-hidden", "true");
+        i.append(badge);
+      }
       t.append(i, el("span", "t-tab-label", label));
       t.addEventListener("click", () => {
         tab = key;
@@ -196,6 +213,7 @@ async function buildTabBar() {
   );
   if (generation !== tabBarGeneration) return;
   $("tabbar").replaceChildren(...nodes);
+  setTabBadge();
 }
 
 // ---- Rows ----
@@ -688,6 +706,8 @@ async function init() {
       spinner: spinnerSVG,
       barChanged: unread => {
         rail?.unread(unread);
+        gramUnread = unread;
+        setTabBadge();
         if (tab === "gram") void buildTopBar();
       },
     },

@@ -334,6 +334,14 @@ func gramDigest(storeID string, msgs []herdrapi.GramMessageInfo) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// GramListAnswer is a whole, unpaged gram_list for msgs (newest first) in
+// store storeID with herdr's digest and the given unread_count: for replaying
+// a fixture whose displayed count is fixed rather than derived from read flags.
+func GramListAnswer(storeID string, msgs []herdrapi.GramMessageInfo, unread uint64) any {
+	return gramResult(herdrapi.ResponseResultGramList{Messages: msgs, StoreID: storeID,
+		Digest: gramDigest(storeID, msgs), UnreadCount: unread})
+}
+
 // appendChunk stages one piece of an upload. g.mu must be held.
 func (g *Gram) appendChunk(id string, off uint64, b64 string) *APIError {
 	data, err := base64.StdEncoding.DecodeString(b64)
