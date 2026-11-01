@@ -157,8 +157,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const node = el("span", "settings-machine-disc", Array.from(label.trim())[0]?.toUpperCase() || "?");
     node.style.setProperty("--disc-size", `${size}px`); node.setAttribute("aria-hidden", "true"); return node;
   }
-  /** savedMachineRow's tile: AgentIdentity.gradient(for:) and glyph(for:) of the label
-   *  (DesignSystem.swift 141-172), a 40 pt square with 10 pt corners. */
+  /** savedMachineRow's and peerRow's disc: AgentIdentity.gradient(for:) and glyph(for:) of the
+   *  label (DesignSystem.swift 141-172), a 40 pt circle (owner, herdrup #594 e189af0). */
   function identityTile(label: string) {
     const kind = label.toLowerCase();
     const [tint, glyph] = kind.includes("claude") ? [1, "\u2731"] : kind.includes("codex") ? [2, "C"]
