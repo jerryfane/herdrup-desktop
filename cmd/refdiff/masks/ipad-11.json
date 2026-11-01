@@ -9,8 +9,8 @@
     },
     {
       "name": "tab-bar-glass",
-      "x": 24, "y": 726, "w": 292, "h": 62,
-      "why": "The sidebar tab bar's Liquid Glass capsule with its Agents/Gram/Settings items: every pixel differing from the sidebar fill #13162A spans x 24-316, y 726-788 pt in all six states; the fill around it is exact (no shadow)."
+      "x": 13.5, "y": 726, "w": 293, "h": 62,
+      "why": "The sidebar tab bar's Liquid Glass capsule with its Agents/Gram/Settings items. herdrup 9845ecf App/HerdrApp.swift 2818-2843 (sidebarTabBar): 62 pt tall (DesignTokens.Size.tabBar), 14 pt from the column's sides, at most 320 pt wide (tabBarMaxWidth); the sidebar is 320 pt (sidebarMin, HerdrApp.swift 2487), so the capsule spans x 14-306. In the 11 non-rail 9845ecf references every pixel differing from the sidebar fill #13162A in that band spans x 13.5-306.5, y 726-788 pt: the source span plus its half-point anti-aliased edge. The fill around it is exact (no shadow)."
     },
     {
       "name": "loading-detail-field",
