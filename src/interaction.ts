@@ -122,6 +122,7 @@ class Detail {
  findInput = el("input");
  findCount = el("span", "pane-find-count");
  findOpen = false;
+ findToggle: HTMLButtonElement | null = null;
  findIndex = 0;
  findMatches: HTMLElement[][] = [];
  actions = el("div", "pane-actions");
@@ -288,9 +289,12 @@ class Detail {
   });
   refresh.setAttribute("aria-label", "Refresh");
   refresh.append(await symbol("arrow.clockwise", 15, "medium"));
+  // InlineSearchToggle (InlineSearchField.swift): 15 pt semibold, textDim while closed and text
+  // while open (toggleFind sets aria-pressed).
   const find = button("", () => this.toggleFind());
-  find.setAttribute("aria-label", "Find");
-  find.append(await symbol("magnifyingglass", 15, "medium"));
+  find.className = "pane-find-toggle"; find.setAttribute("aria-label", "Search"); find.setAttribute("aria-pressed", "false");
+  find.append(await symbol("magnifyingglass", 15, "semibold"));
+  this.findToggle = find;
   const more = button("", () => { this.actions.hidden = !this.actions.hidden; });
   more.setAttribute("aria-label", this.plainTerminal ? "Terminal actions" : "Agent actions");
   more.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><g fill="currentColor"><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/></g></svg>';
@@ -384,6 +388,8 @@ class Detail {
  toggleFind(open = !this.findOpen) {
   this.findOpen = open;
   this.findBar.hidden = !open; this.titleBlock.hidden = open;
+  this.findToggle?.setAttribute("aria-pressed", String(open));
+  this.findToggle?.setAttribute("aria-label", open ? "Close search" : "Search");
   if (open) { this.findInput.focus(); this.updateFind(true); }
   else { this.findInput.value = ""; this.updateFind(true); if (this.mode === "terminal") this.terminal?.focus(); }
   this.updateChatJump();
