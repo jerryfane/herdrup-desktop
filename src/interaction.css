@@ -79,6 +79,11 @@
 .terminal-key-row button[aria-pressed="true"] { background: var(--status-working); color: var(--color-ground-machine); }
 .terminal-key-row .terminal-space-key { min-width: 84px; }
 .terminal-key-row .terminal-enter-key { margin-right: 16px; background: var(--color-text); color: var(--color-ground-machine); }
+/* A guest's question line (GuestPaneView.noteRow, GuestPaneView.swift:557-584): app 12 medium in
+   waiting, one line, 26 tall, 16 sides, just above the menu keys or the composer. */
+.guest-question-banner { position: absolute; left: 0; right: 0; bottom: calc(var(--composer-height, 68px) + 50px); height: 26px; padding: 0 16px; display: flex; align-items: center; font: 500 12px var(--font-app); color: var(--status-waiting); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guest-question-banner[data-keys="false"] { bottom: var(--composer-height, 68px); }
+.guest-question-banner[hidden] { display: none; }
 .chat-transcript { flex: 1; min-height: 0; overflow: auto; padding: 8px 16px 12px; scroll-behavior: auto; }
 .chat-scroll { flex:1; min-height:0; overflow:auto; }
 .chat-scroll > .chat-transcript { min-height:100%; overflow:visible; }
@@ -266,6 +271,10 @@
 .chat-question-option.readonly { outline:1px solid var(--color-hairline-quiet); outline-offset:-1px; background:none; color:var(--color-text-dim); }
 .chat-question-note { margin:4px 0 0; color:var(--color-text-faint); font:400 13px/1.4 var(--font-app); }
 .chat-question-problem { margin:10px 0 0; color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
+/* ChatAskCard.footer for a guest waiting on the owner (ChatView.swift:1798-1806): a 7 pt waiting dot
+   and machine 10.5 semibold, tracking 1.2, in waiting, 10 pt above. */
+.chat-question-waiting { display:flex; align-items:center; gap:8px; margin:10px 0 0; font:600 calc(10.5px * var(--chat-text-scale, 1)) var(--font-machine); letter-spacing:1.2px; color:var(--status-waiting); }
+.chat-question-waiting-dot { width:7px; height:7px; border-radius:50%; background:var(--status-waiting); flex:none; }
 .agent-detail .chat-question-terminal, .chat-question-sheet .chat-question-terminal { margin-top:10px; border:0; border-radius:18px; padding:8px 14px; font:600 14px var(--font-app); color:var(--color-text); background:var(--color-surface-raised); }
 .agent-detail .chat-question-open { display:block; margin-top:6px; padding:0; border:0; background:none; color:var(--color-brand); font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-question-context { margin-top:12px; font:400 14px var(--font-app); }

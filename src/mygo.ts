@@ -98,6 +98,12 @@ export interface AgentView {
   statusSinceUnixMs?: number;
   guest: boolean;
   guestGram: boolean;
+  /**
+   * GuestOwner names who shared a guest's agent: the question banner and
+   * the answer card wait for them when the host keeps answers for the owner
+   * (herdrup GuestPaneView.swift:557-575, ChatView.swift:1755-1758).
+   */
+  guestOwner?: string;
   plainTerminal: boolean;
 }
 
@@ -168,6 +174,12 @@ export interface ChatAnswerReply {
   status?: AgentAnswerStatus;
   code?: string;
   message?: string;
+  /**
+   * OwnerAnswers: a guest's host keeps answers for the owner (an older
+   * herdr's guest_forbidden); the page waits for the owner from then on
+   * (herdrup ChatView.swift:153-155).
+   */
+  ownerAnswers?: boolean;
 }
 
 /** ChatMenuChoice identifies a snapshot of a message, not a mutable transcript row. */
@@ -440,6 +452,16 @@ export interface GuestInvitation {
   guestName: string;
   expires: string;
   fingerprint: string;
+}
+
+/** GuestMenuKeyReply is a menu key's outcome the page acts on. */
+export interface GuestMenuKeyReply {
+  /**
+   * OwnerAnswers: the host refused the key while the agent still waits on
+   * its menu, so it keeps answers for the owner (a host older than guest
+   * answers); the page waits for the owner from then on.
+   */
+  ownerAnswers?: boolean;
 }
 
 /**
@@ -1179,6 +1201,18 @@ export const Desk = {
   /** GuestChatAvailable follows the authenticated host's transcript capability. */
   guestChatAvailable(token: string): Promise<boolean> {
     return call("Desk.GuestChatAvailable", token);
+  },
+  /**
+   * GuestMenuKey presses one of the bar's menu keys in a guest's shared pane,
+   * as GuestPaneView.sendMenuKey (GuestPaneView.swift:788-813). herdr refuses
+   * a guest's key with guest_forbidden while the agent is not on a menu, after
+   * a choosing key until it sees the menu change (guest_gate.rs:992-1038), and
+   * always on a host older than guest answers. A refusal while the agent still
+   * waits means the last; one after the menu closed is the race it looks like,
+   * and the next agent poll settles the page.
+   */
+  guestMenuKey(token: string, key: string): Promise<GuestMenuKeyReply> {
+    return call("Desk.GuestMenuKey", token, key);
   },
   guestShareDetails(token: string): Promise<GuestShareDetails> {
     return call("Desk.GuestShareDetails", token);

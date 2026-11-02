@@ -17,6 +17,8 @@ import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
+import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
+import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
@@ -155,6 +157,16 @@ class Detail {
  column = new ConversationColumn(this.body, () => this.input.dispatchEvent(new Event("input")));
  terminalSurface = el("div", "terminal-surface");
  keyRow = el("div", "terminal-key-row");
+ // A guest's question line above the composer (GuestPaneView.noteRow, GuestPaneView.swift:557-581).
+ guestBanner = el("div", "guest-question-banner");
+ // Menu keys go out one after another, in the order they were tapped (GuestPaneView.swift:57-58).
+ menuKeyQueue: Promise<void> = Promise.resolve();
+ // The guest's host keeps answers for the owner (a host older than guest answers): it withheld
+ // `answerable` from a question the buttons could answer, or refused a guest's answer or menu
+ // key. Questions wait for the owner for the rest of this page (ChatModel.answersRefused,
+ // ChatView.swift:63-66).
+ answersRefused = false;
+ shownStatus: [group: string, label: string, since?: number] = ["", ""];
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
  chatSurface = el("div", "chat-surface");
@@ -281,6 +293,7 @@ class Detail {
   });
  }
  mountKeys() {
+  if (this.view?.guest) { this.mountMenuKeys(); return; }
   const scroll = el("div", "terminal-key-scroll");
   const cap = (label: string, sequence: string, glyph?: string) => {
    const key = button(glyph ? "" : label, () => { this.setCtrl(false); if (!this.sending) this.queueTerminalInput(sequence); });
@@ -304,6 +317,59 @@ class Detail {
    group(this.ctrlButton, cap("^P", "\x10"), cap("^C", "\x03")));
   const enter = cap("Enter", "\r", "key-enter"); enter.className = "terminal-enter-key";
   this.keyRow.append(scroll, enter); this.body.append(this.keyRow);
+ }
+ /** GuestMenuKeyBar (GuestPaneView.swift:1043-1097) in the quick-key row's place: the owner's
+  *  esc, space, arrows, tab and pinned Return, only keys a guest's host accepts and nothing that
+  *  types text. A guest pane has no other quick keys; the bar shows while the agent waits. */
+ mountMenuKeys() {
+  const cap = (label: string, key: string, glyph?: string) => {
+   const cap = button(glyph ? "" : label, () => this.sendMenuKey(key));
+   cap.setAttribute("aria-label", key);
+   if (glyph) cap.append(composerGlyph(glyph, 14));
+   cap.onpointerdown = event => event.preventDefault();
+   return cap;
+  };
+  const scroll = el("div", "terminal-key-scroll");
+  const space = cap("space", "Space"); space.className = "terminal-space-key";
+  const arrows = el("div", "terminal-key-group");
+  arrows.append(cap("Left", "Left", "key-left"), cap("Up", "Up", "key-up"), cap("Down", "Down", "key-down"), cap("Right", "Right", "key-right"));
+  scroll.append(cap("esc", "Escape"), space, arrows, cap("tab", "Tab"));
+  const enter = cap("Enter", "Enter", "key-enter"); enter.className = "terminal-enter-key";
+  this.keyRow.classList.add("guest-menu-keys");
+  this.keyRow.append(scroll, enter); this.body.append(this.guestBanner, this.keyRow);
+  this.updateGuestQuestion();
+ }
+ /** Presses one of the owner's menu keys in the shared pane (GuestPaneView.sendMenuKey,
+  *  GuestPaneView.swift:788-813). Go asks herdr again after a refusal: one while the agent
+  *  still waits means a host that keeps answers for the owner. */
+ sendMenuKey(key: string) {
+  const generation = this.generation;
+  this.menuKeyQueue = this.menuKeyQueue.then(async () => {
+   if (this.disposed || generation !== this.generation || this.answersRefused) return;
+   try {
+    const reply = await Desk.guestMenuKey(this.token, key);
+    if (this.disposed) return;
+    this.status.textContent = "";
+    if (reply.ownerAnswers) this.refuseAnswers();
+   } catch (error) { if (!this.disposed) this.status.textContent = String(error); }
+  });
+ }
+ refuseAnswers() {
+  if (this.answersRefused) return;
+  this.answersRefused = true;
+  this.updateStatus(...this.shownStatus);
+  if (this.chat) this.drawChat(false);
+ }
+ /** The guest's question banner and menu keys for the agent's board group; null for the owner. */
+ updateGuestQuestion(): GuestQuestion | null {
+  const view = this.view;
+  if (!view?.guest) return null;
+  const question = guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal");
+  this.guestBanner.textContent = question.banner ?? "";
+  this.guestBanner.hidden = !question.banner;
+  this.guestBanner.dataset.keys = String(question.menuKeys);
+  this.keyRow.hidden = !question.menuKeys;
+  return question;
  }
  async open() {
   this.attach.setAttribute("aria-label", "Attach file");
@@ -437,8 +503,11 @@ class Detail {
  }
  updateStatus(group: string, label: string, since?: number) {
   clearInterval(this.statusTimer);
+  this.shownStatus = [group, label, since];
+  // NEEDS <OWNER> while the question waits for the owner (GuestPaneView.statusPill, GuestPaneView.swift:411-413).
+  const shown = this.updateGuestQuestion()?.label ?? label;
   this.stateLine.dataset.group = group;
-  this.stateLine.replaceChildren(el("span", "pane-state-dot"), el("span", "pane-state-label", label), this.stateAge);
+  this.stateLine.replaceChildren(el("span", "pane-state-dot"), el("span", "pane-state-label", shown), this.stateAge);
   const updateAge = () => {
    if (since === undefined) { this.stateAge.textContent = ""; return; }
    const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
@@ -553,6 +622,7 @@ class Detail {
   this.mode = mode; this.status.textContent = "";
   if (mode === "terminal") this.dismissChatSheets();
   this.body.dataset.mode = mode;
+  this.updateGuestQuestion();
   this.setCtrl(false);
   this.column.setVisible(mode === "chat");
   this.chatButton.setAttribute("aria-pressed", String(mode === "chat"));
@@ -803,6 +873,9 @@ class Detail {
     this.answerProblem = null; this.localAnswers.clear();
    }
    this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page;
+   // Only a guest of a host older than guest answers is ever withheld an answerable question
+   // (ChatView.swift:262-263).
+   if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
    for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
    this.drawChat();
   } catch(e) { if (!this.disposed && generation === this.generation && poll === this.chatPoll) this.status.textContent = "Chat: " + errorText(e) + " You can switch to Terminal."; }
@@ -825,7 +898,7 @@ class Detail {
   const opened = new Set([...this.transcript.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d => d.dataset.id));
   const nodes = groupTranscript(this.entries, !!this.chat?.working).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
-   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(row.entry.id)] : row);
+   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(row.entry.id), this.answersRefused] : row);
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
    node.dataset.id = row.id; node.dataset.signature = signature;
@@ -1054,25 +1127,34 @@ class Detail {
    open.className = "chat-question-open"; row.append(open);
   }
   card.append(el("p", "chat-question-title", questions.map(question => question.question).join("\n")));
+  // A guest answers as the owner does unless the host keeps answers for the owner (ChatAskCard,
+  // ChatView.swift:1738-1870).
+  const viewer: Viewer = this.view?.guest ? { guest: true, owner: this.view.guestOwner ?? "" } : { guest: false };
+  const waiting = waitingForOwner(viewer, this.answersRefused);
   if (answer) {
-   const chosen = el("p", "chat-question-answer", "✓ You chose ");
+   const chosen = el("p", "chat-question-answer", "✓ " + chooser(viewer, waiting));
    chosen.append(el("strong", "", answer.join(", "))); card.append(chosen); return row;
   }
   if (!active) { card.append(el("p", "chat-question-note", "Not answered")); return row; }
   const options = el("div", "chat-question-options");
   const question = questions[0];
-  const canAnswer = active.answerable && questions.length === 1 && !question?.multi;
+  const answerable = canAnswer(active, waiting);
   question?.options.forEach((option, index) => {
-   const choice = canAnswer ? button("", () => { void this.answer(active.id, option); }) : el("div");
+   const choice = answerable ? button("", () => { void this.answer(active.id, option); }) : el("div");
    choice.append(el("span", "", option));
-   choice.className = `chat-question-option${canAnswer ? index === (question.recommended ?? 0) ? " primary" : "" : " readonly"}`;
+   choice.className = `chat-question-option${answerable ? index === (question.recommended ?? 0) ? " primary" : "" : " readonly"}`;
    if (choice instanceof HTMLButtonElement) choice.disabled = this.answering;
    options.append(choice);
   });
   card.append(options);
+  if (waiting !== null) {
+   const line = el("p", "chat-question-waiting");
+   line.append(el("span", "chat-question-waiting-dot"), el("span", "", `WAITING FOR ${waiting.toUpperCase()} TO ANSWER`));
+   card.append(line); return row;
+  }
   const problem = this.answerProblem?.askID === entry.id ? this.answerProblem : null;
   if (problem) card.append(el("p", "chat-question-problem", problem.message));
-  if (problem ? problem.offersTerminal : !canAnswer) {
+  if (problem ? problem.offersTerminal : !answerable) {
    const terminal = button("Answer in Terminal", () => { void this.chooseMode("terminal"); });
    terminal.className = "chat-question-terminal"; card.append(terminal);
   }
@@ -1096,7 +1178,7 @@ class Detail {
     if (this.entries[i]!.kind === "summary") break;
     if (this.entries[i]!.kind === "user") { prompt = this.entries[i]; break; }
    }
-   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id)]);
+   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused]);
    if (next === signature) return; signature = next;
    const expanded = content.querySelector("details")?.open ?? false;
    content.replaceChildren();
@@ -1254,6 +1336,9 @@ class Detail {
    if (!current()) return;
    if (result.code === "ask_not_pending") {
     if (this.chat?.pending_ask?.id === askID) this.chat.pending_ask = undefined;
+   } else if (result.ownerAnswers) {
+    // An older host that keeps answers for the owner: wait for them, as before (ChatView.swift:153-155).
+    this.refuseAnswers();
    } else if (result.code) {
     const terminal = result.code === "ask_unsupported" || result.code === "ask_ui_not_found";
     this.answerProblem = {

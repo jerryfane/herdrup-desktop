@@ -47,6 +47,8 @@ func main() {
 	responsesFile := flag.String("responses", "", "immutable native-reference API response map, including avatar and session replies")
 	current := flag.Bool("current", false, "answer as a herdr that needs no update (herdrup ServerRequirement.current): ping also advertises server_update and the features it requires, server.update_check offers nothing newer")
 	sessionTransfer := flag.Bool("session-transfer", false, "advertise agent_session_transfer and serve agent.transfer_session: a prepare is ready at once, its confirm completes")
+	guestRelay := flag.String("guest-relay", "", "also serve a guest relay and herdr's guest gate on this loopback address (127.0.0.1:0 for any port) and log a one-use invitation for the docs agent, which waits on a menu until a guest's committing key; never a real relay or grant")
+	guestOwnerAnswers := flag.Bool("guest-owner-answers", false, "with -guest-relay, answer as a herdr older than guest answers: agent.answer and pane.send_keys are guest_forbidden and pending_ask.answerable is withheld")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -202,6 +204,11 @@ func main() {
 	}
 	if *current {
 		serveCurrent(s)
+	}
+	if *guestRelay != "" {
+		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers); err != nil {
+			log.Fatal(err)
+		}
 	}
 	addr, err := s.Listen(*listen)
 	if err != nil {
