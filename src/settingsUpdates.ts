@@ -208,7 +208,7 @@ export class ServerUpdateSettings {
       this.command("herdr update --handoff");
       this.text("It asks before closing any terminal. After this, updates take one tap here.", true);
       this.text("If that doesn't work, reinstall and restart herdr. Restarting closes terminals:", true);
-      this.command("curl -fsSL https://herdrup.themartian.app/install.sh | sh"); this.command("herdr server stop"); this.command("herdr"); return;
+      this.command("curl -fsSL https://herdrup.app/install.sh | sh"); this.command("herdr server stop"); this.command("herdr"); return;
     }
     if (!c) { this.root.hidden = true; return; }
     const pending = s.flow === "finished" && a?.outcome === "downloaded_restart_required" ? a : s.pending;

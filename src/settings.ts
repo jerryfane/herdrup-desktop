@@ -288,8 +288,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", discordGlyph(), "https://discord.gg/pq7qj4dDqt"),
-      link("Privacy Policy", "lock.shield", "https://herdrup.themartian.app/legal/privacy"),
-      link("Terms of Service", "doc.text", "https://herdrup.themartian.app/legal/terms"),
+      link("Privacy Policy", "lock.shield", "https://herdrup.app/legal/privacy"),
+      link("Terms of Service", "doc.text", "https://herdrup.app/legal/terms"),
       link("Open source on GitHub", "chevron.left.forwardslash.chevron.right", "https://github.com/themartianapp/herdrup"),
       ...(appUpdatesShown ? [appUpdatesRow] : []),
     ]), footer);

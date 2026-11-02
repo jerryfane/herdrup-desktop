@@ -11,7 +11,7 @@ import lockOpenIcon from "../third_party/phosphor/web/lock-open.svg?url";
 // HerdrSetup (HerdrApp.swift 746-760). Only "this iPhone" becomes "this computer"
 // (coordinator 379911); the rest of the copy is the native text.
 const setup = {
- install: "curl -fsSL https://herdrup.themartian.app/install.sh | sh",
+ install: "curl -fsSL https://herdrup.app/install.sh | sh",
  pair: "herdr pair",
  start: "herdr",
  tailscale: "Tailscale is connected on this computer and your computer.",
