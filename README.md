@@ -241,6 +241,13 @@ swipes or press-and-hold actions.
 Linux native-window checks exercised cancellation, federation and revocation through
 the SSH fixture, and read the resulting machine status back from the server.
 
+After the owner's fifth prompt, a capsule above the tab bar asks for a GitHub star
+(owner design D, 2026-11-01). A prompt counts when herdr confirms a chat send or a Gram
+post succeeds; guest sends, plain-terminal writes, unconfirmed and failed sends never
+count. Star opens the repository; Star and × end the ask for good. Guests never see
+it. Smoke and reference captures hide it unless `HERDRUP_STAR_PROMPT=1` is set on the
+smoke build.
+
 Machines checks signed daemon updates through `server.update_check`. An explicit
 confirmation binds the requested build and live/download-for-restart mode.
 Cancellation sends nothing. Progress survives leaving Settings and reconnecting
