@@ -24,7 +24,13 @@ func smokePreload() string {
 	if !smokeEnabled() {
 		return ""
 	}
-	return `window.__herdrupSmokeErrors = [];
+	// HERDRUP_STAR_PROMPT=1 is the explicit test flag that lets a smoke or reference
+	// run show the GitHub star ask, which captures otherwise hide (src/starPrompt.ts).
+	star := ""
+	if os.Getenv("HERDRUP_STAR_PROMPT") == "1" {
+		star = "globalThis.herdrupStarPrompt = true;\n"
+	}
+	return star + `window.__herdrupSmokeErrors = [];
 const record = value => window.__herdrupSmokeErrors.push(String(value));
 window.addEventListener("error", event => record(event.error?.stack || event.message || event.target?.src || event.target?.href || "resource error"), true);
 window.addEventListener("unhandledrejection", event => record(event.reason?.stack || event.reason));
