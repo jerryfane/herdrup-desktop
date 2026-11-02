@@ -104,7 +104,8 @@ func updateOffer(s serverUpdateState) bool {
 	return true
 }
 
-// refresh must be called under op. It never erases a running/finished attempt.
+// refresh must be called under op. It never erases a running attempt; a
+// finished one stays until a newer build than it installed is offered.
 func (d *Desk) refreshUpdate(ctx context.Context, u *serverUpdate, client *engine.Client) error {
 	pong, err := client.Ping(ctx)
 	if err != nil {
@@ -134,17 +135,21 @@ func (d *Desk) refreshUpdate(ctx context.Context, u *serverUpdate, client *engin
 	u.mu.Lock()
 	u.state.Check, u.state.Forbidden = &check, false
 	u.state.Pending = nil
-	if a := status.Attempt; a != nil {
-		if a.Outcome != nil && *a.Outcome == herdrapi.UpdateOutcomeDownloadedRestartRequired {
-			u.state.Pending = a
-		}
-		if a.Outcome == nil && u.state.Flow == "idle" && !u.following {
-			u.state.Flow, u.state.Attempt, u.state.RestartLater = "running", a, a.RestartLater
-			u.state.Missing = updateMissing(pong.Capabilities)
-			u.targetID, u.targetBuild, u.previousID = a.AttemptID, "", ""
-			u.following = true
-			go d.followUpdate(u)
-		}
+	a := status.Attempt
+	if a != nil && a.Outcome != nil && *a.Outcome == herdrapi.UpdateOutcomeDownloadedRestartRequired {
+		u.state.Pending = a
+	}
+	// The finished card would otherwise hold the flow, and Apply refuses
+	// anything but idle, so the newer offer could never be confirmed.
+	if done := u.state.Attempt; u.state.Flow == "finished" && done != nil && updateOffer(u.state) && check.Latest.BuildID != done.BuildID {
+		u.state.Flow, u.state.Attempt, u.state.Code, u.state.Message = "idle", nil, "", ""
+	}
+	if a != nil && a.Outcome == nil && u.state.Flow == "idle" && !u.following {
+		u.state.Flow, u.state.Attempt, u.state.RestartLater = "running", a, a.RestartLater
+		u.state.Missing = updateMissing(pong.Capabilities)
+		u.targetID, u.targetBuild, u.previousID = a.AttemptID, "", ""
+		u.following = true
+		go d.followUpdate(u)
 	}
 	u.mu.Unlock()
 	return nil

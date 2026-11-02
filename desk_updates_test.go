@@ -251,3 +251,61 @@ func TestServerUpdateRecheckFollowsExistingAttempt(t *testing.T) {
 		t.Fatalf("duplicate applies: %d", applies.Load())
 	}
 }
+
+// A finished update keeps its card until a newer build is offered; that
+// build is then offered and can be confirmed without restarting the app.
+func TestServerUpdateOffersANewerBuildAfterOneFinished(t *testing.T) {
+	var mu sync.Mutex
+	running, latest := "old", "new"
+	var applies atomic.Int32
+	d := updateSettingsDesk(t, func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch method {
+		case "server.update_check":
+			check := updateCheckFixture("live", updateMinCommitTime)
+			check["running"].(map[string]any)["build_id"] = running
+			check["latest"].(map[string]any)["build_id"] = latest
+			check["update_available"] = running != latest
+			return check, nil
+		case "server.update_status":
+			if applies.Load() == 0 {
+				return map[string]any{"type": "update_status", "attempt": nil}, nil
+			}
+			return map[string]any{"type": "update_status", "attempt": map[string]any{"attempt_id": "first", "build_id": "new", "from": "0.9.5", "to": "0.9.6", "phase": "switching", "outcome": "updated"}}, nil
+		case "server.update_apply":
+			var params struct {
+				BuildID string `json:"build_id"`
+			}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				t.Error(err)
+			}
+			if applies.Add(1) == 1 {
+				running = params.BuildID
+			}
+			return map[string]any{"type": "update_apply", "attempt_id": "first"}, nil
+		}
+		return nil, &fakeherdr.APIError{Code: "unknown_method"}
+	})
+	updateState(t, d, true)
+	ctx := context.Background()
+	if err := d.ApplySettingsServerUpdate(ctx, "updates", "new", false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "first update outcome", func() bool { return updateState(t, d, false).Flow == "finished" })
+	if state := updateState(t, d, true); state.Flow != "finished" || state.Attempt == nil || state.Attempt.AttemptID != "first" {
+		t.Fatalf("the done card went away with nothing newer offered: %+v", state)
+	}
+	mu.Lock()
+	latest = "newer"
+	mu.Unlock()
+	if state := updateState(t, d, true); state.Flow != "idle" || state.Attempt != nil || state.Check == nil || state.Check.Latest.BuildID != "newer" {
+		t.Fatalf("a newer build stayed behind the finished update: %+v", state)
+	}
+	if err := d.ApplySettingsServerUpdate(ctx, "updates", "newer", false); err != nil {
+		t.Fatalf("the newer build could not be confirmed: %v", err)
+	}
+	if applies.Load() != 2 {
+		t.Fatalf("applies = %d", applies.Load())
+	}
+}
