@@ -62,7 +62,16 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 		}
 	}
 	win.Page().OnDOMReady(func() { log.Print("smoke: native DOM ready") })
-	win.Page().OnDidFinishLoad(func() { log.Print("smoke: native load finished") })
+	// The page's own deadline runs from its load: the webview can start
+	// long after the board reaches Go (WebView2 on hosted Windows took 2 s,
+	// 24 s and 56 s in three runs on 2026-11-02), which the overall 90 s
+	// limit already bounds.
+	loaded := make(chan struct{})
+	var loadedOnce sync.Once
+	win.Page().OnDidFinishLoad(func() {
+		log.Print("smoke: native load finished")
+		loadedOnce.Do(func() { close(loaded) })
+	})
 	win.Page().OnDidFailLoad(func(err *mygo.LoadError) { log.Printf("smoke: native load failed: %+v", err) })
 	go func() {
 		var last ConnState
@@ -106,6 +115,7 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	// The board reaching Go is not the page showing it: wait until the
 	// page has drawn a row for every agent in the open sections.
 	pageShows := func(want int) {
+		<-loaded
 		var last any
 		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 			v, err := win.Page().Eval(smokePageProbe)
