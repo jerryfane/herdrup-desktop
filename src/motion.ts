@@ -64,6 +64,8 @@ export const MOTIONS: Record<string, Motion> = {
   // ChatView.swift 1051/1116 disclosures, Gram's Saved toggle (GramView.swift 751), the
   // terminal's jump and history capsules (HerdrApp.swift 5944-5952).
   quick: eased(0.15, "ease-in-out"),
+  // CopyForAgentButton.swift 40: the setup guides' copy card swapping to "Copied".
+  copied: eased(0.15, "ease-out"),
   // GramCards.swift 282 (Read more); CopyForAgentButton.swift 43; the host row's release
   // (HerdrApp.swift 770).
   settle: eased(0.2, "ease-out"),
