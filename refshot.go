@@ -64,7 +64,9 @@ func refPreload() string {
 	if !refEnabled() {
 		return ""
 	}
-	return `;(() => { const NativeDate = Date; const now = 1793180460000;
+	// herdrupHoldsStill is herdrup's DesktopReferenceMock.holdsStill: status motion and the
+	// glyph field keep their first picture so captures settle (main.ts reads it).
+	return `;(() => { globalThis.herdrupHoldsStill = true; const NativeDate = Date; const now = 1793180460000;
 globalThis.Date = class extends NativeDate {
   constructor(...args) { if (args.length) super(...args); else super(now); }
   static now() { return now; }

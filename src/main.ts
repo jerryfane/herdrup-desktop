@@ -1,7 +1,8 @@
 import "core-js/actual/promise/with-resolvers";
 import { Desk, Symbols, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
-import { drawRestingGlyphField, loadGlyphFieldFonts } from "./glyphField";
+import { loadGlyphFieldFonts } from "./glyphField";
+import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
@@ -27,6 +28,22 @@ const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
 const select = $("select");
 const field = $<HTMLCanvasElement>("field");
+// herdrup's DesktopReferenceMock.holdsStill: set by the reference captures (refshot.go).
+const holdsStill = (globalThis as { herdrupHoldsStill?: boolean }).herdrupHoldsStill === true;
+const liveField = new LiveGlyphField(field, select, holdsStill);
+/** The line an agent types into the field: "name › folder · activity" in its status colour
+ *  (herdrup HerdrApp.swift glyphFieldLine, 2143-2152). */
+const fieldLines = new Map<string, FieldLine>();
+function updateFieldLines(b: Board | null) {
+  fieldLines.clear();
+  for (const section of b?.sections ?? []) for (const row of section.rows) {
+    const tone = section.key === "needsYou" || section.key === "unrecognised" ? Tone.waiting
+      : section.key === "stopped" ? Tone.died : section.key === "working" ? Tone.working
+      : row.status === "done" ? Tone.done : Tone.dim;
+    fieldLines.set(row.id, { id: row.id, text: `${row.title} › ${row.preview}`, tone });
+  }
+  liveField.lines = [...fieldLines.values()];
+}
 
 let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", live: false };
 let board: BoardUpdate | null = null;
@@ -428,6 +445,7 @@ async function renderRows() {
       nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? "not connected" : "no machine"));
     }
   } else {
+    updateFieldLines(board.board);
     const scope = { machineID: board.machineID, session: board.session };
     const query = searchInput.value;
     const b = board.board;
@@ -509,24 +527,15 @@ function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-// herdrup DesktopReferenceMock.glyphFieldSeed, the resting picture's seed.
-const glyphFieldSeed = 0x4845524452555031n;
-
 function drawField() {
-  // drawRestingGlyphField pins the canvas's inline size; clear it so .field's
-  // inset:0 box (the detail column now, e.g. after the rail opens) is measured.
+  // The field pins the canvas's inline size; clear it so .field's inset:0 box (the detail
+  // column now, e.g. after the rail opens) is measured.
   field.style.width = field.style.height = "";
   const r = field.getBoundingClientRect();
-  drawRestingGlyphField(field, {
+  liveField.resize({
     widthPt: r.width,
     heightPt: r.height,
     scale: devicePixelRatio,
-    seed: glyphFieldSeed,
-    // The resting picture draws every glyph in hairline on groundMachine.
-    colours: {
-      groundMachine: cssVar("--color-ground-machine"),
-      hairline: cssVar("--color-hairline"),
-    },
     font: cssVar("--font-machine"),
     labelFont: getComputedStyle(select).font,
   });
@@ -574,6 +583,7 @@ function render() {
   const fieldWasHidden = field.hidden;
   field.hidden = showConnect || showsGram || showsSettings;
   if (fieldWasHidden && !field.hidden) drawField();
+  liveField.wake();
   select.hidden = showConnect || showsGram || showsSettings || interactionVisible();
   showInteraction(!showConnect && !showsGram && !showsSettings);
   $("roster").hidden = showConnect || showsGram || showsSettings;
@@ -708,6 +718,19 @@ async function init() {
     cancelAnimationFrame(fieldFrame);
     fieldFrame = requestAnimationFrame(() => { if (!field.hidden) drawField(); });
   }).observe($("detail"));
+  if (holdsStill) document.documentElement.classList.add("holds-still");
+  // Hovering an agent row makes it type its line in the field at the row's height
+  // (HerdrApp.swift 4274-4283, onContinuousHover).
+  let hoveredRow: string | null = null;
+  const roster = $("roster");
+  roster.addEventListener("pointermove", event => {
+    const id = (event.target as Element | null)?.closest<HTMLElement>(".row[data-id]")?.dataset.id ?? null;
+    if (id !== hoveredRow && hoveredRow) liveField.hoverEnded(hoveredRow);
+    hoveredRow = id;
+    const line = id ? fieldLines.get(id) : undefined;
+    if (line) liveField.hover(line, event.clientY);
+  });
+  roster.addEventListener("pointerleave", () => { if (hoveredRow) liveField.hoverEnded(hoveredRow); hoveredRow = null; });
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);

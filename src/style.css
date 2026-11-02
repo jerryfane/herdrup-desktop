@@ -113,6 +113,8 @@ html, body {
   justify-content: center;
   color: var(--color-text-dim);
   font: var(--text-placeholder-weight) var(--text-placeholder-size) var(--text-placeholder-font);
+  /* The label lets the pointer through to the glyph field (allowsHitTesting(false)). */
+  pointer-events: none;
 }
 
 /* ---- Sidebar card ---- */
@@ -311,7 +313,12 @@ html, body {
 .badge.stopped { --badge-fill: var(--status-died); }
 .badge.offline { --badge-fill: var(--color-surface-raised); color: var(--color-text-dim); }
 .badge.working { color: var(--status-working); }
-.badge.working > svg { display: block; overflow: visible; }
+/* TurningRing (herdrup 9845ecf DesignSystem.swift 223-262): the working badge's broken ring
+   turns once every 0.9 s, linear, forever; still while status motion is off (screenshots,
+   html.holds-still). */
+.badge.working > svg { display: block; overflow: visible; transform-origin: 50% 50%; animation: status-turn 0.9s linear infinite; }
+.holds-still .badge.working > svg { animation: none; }
+@keyframes status-turn { to { transform: rotate(360deg); } }
 
 /* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
 .disclosure {

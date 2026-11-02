@@ -14,6 +14,11 @@
 .pane-state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-faint); }
 .pane-state[data-group="needsYou"] .pane-state-dot { background: var(--status-waiting); }
 .pane-state[data-group="working"] .pane-state-dot { background: var(--status-working); }
+/* PulsingDot (DesignSystem.swift 349-383): the working dot fades to 0.4 and grows to 1.35,
+   easeInOut 0.8 s, back and forth; still while status motion is off. */
+.pane-state[data-group="working"] .pane-state-dot { animation: status-pulse 0.8s ease-in-out infinite alternate; }
+.holds-still .pane-state-dot { animation: none !important; }
+@keyframes status-pulse { to { opacity: 0.4; transform: scale(1.35); } }
 .pane-state[data-group="stopped"] .pane-state-dot { background: var(--status-died); }
 .pane-find { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .agent-detail .pane-find input { flex: 1; min-width: 40px; border: 0; background: none; padding: 0; outline: none; font: 400 16px var(--font-app); }
