@@ -135,6 +135,19 @@ export interface TransferInfo {
 }
 export interface TransferAgent { agent_status?: string | null; terminal_id?: string | null; session_transfer?: TransferInfo | null }
 
+/** A daemon reply's agent, or null for "" and anything unreadable. The reply is
+ * either the agent itself (agent.list's entry, whose `agent` is the harness name,
+ * "claude") or a transfer reply wrapping it ({agent: {…}}): unwrap only an object
+ * (issue #81). */
+export function agentFrom(json: string): TransferAgent | null {
+  if (!json) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(json); } catch { return null; }
+  if (!parsed || typeof parsed !== "object") return null;
+  const inner = (parsed as { agent?: unknown }).agent;
+  return (inner && typeof inner === "object" ? inner : parsed) as TransferAgent;
+}
+
 /** The transfer the sheet opens on: the agent's own, unless it is conclusive
  * or runs another direction (AgentSessionTransferSheet.swift 38-44). */
 export function existingTransfer(agent: TransferAgent | null, source: string, target: string): TransferInfo | null {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  clampZoom, cropRect, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName, integralCropRect,
+  agentFrom, clampZoom, cropRect, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName, integralCropRect,
   normalizeAgentName, renameField, transferPhaseIsConclusive, transferPhaseIsTerminal, workingSize,
 } from "../src/agentActionsModel";
 import { MASCOTS, mascotName } from "../src/avatars";
@@ -90,4 +90,14 @@ test("transfer phases and harness names follow herdrup's wire types", () => {
   expect(existingTransfer({ session_transfer: info }, "claude", "codex")).toBe(info);
   expect(existingTransfer({ session_transfer: info }, "codex", "claude")).toBeNull();
   expect(existingTransfer({ session_transfer: { ...info, phase: "completed" } }, "claude", "codex")).toBeNull();
+});
+
+test("a transfer sheet keeps an agent whose harness is named in `agent` (issue #81)", () => {
+  const listed = agentFrom(JSON.stringify({ agent: "claude", agent_status: "idle", session_transfer: { id: "t1", source: "claude", target: "codex", phase: "ready" } }));
+  expect(listed?.agent_status).toBe("idle");
+  expect(listed?.session_transfer?.phase).toBe("ready");
+  const wrapped = agentFrom(JSON.stringify({ agent: { agent_status: "working", terminal_id: "t-1" } }));
+  expect(wrapped?.agent_status).toBe("working");
+  expect(agentFrom("")).toBeNull();
+  expect(agentFrom("not json")).toBeNull();
 });

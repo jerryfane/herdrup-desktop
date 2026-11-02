@@ -8,7 +8,7 @@
 import { Desk, events, type AgentAction, type AvatarChoice, type Row } from "./mygo";
 import { avatarFace, MASCOTS, mascotName, mascotURL } from "./avatars";
 import {
-  AVATAR_PIXEL_SIZE, clampZoom, CROP_VIEWPORT, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName,
+  agentFrom, AVATAR_PIXEL_SIZE, clampZoom, CROP_VIEWPORT, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName,
   integralCropRect, renameField, transferPhaseIsConclusive, transferPhaseIsTerminal, workingSize,
   type TransferAgent, type TransferInfo,
 } from "./agentActionsModel";
@@ -325,14 +325,6 @@ export function openAvatarSheet(paneID: string, name: string) {
   };
 
   void main().then(() => dialog.showModal());
-}
-
-/** A daemon reply's agent, or null for "" and anything unreadable. */
-function agentFrom(json: string): TransferAgent | null {
-  if (!json) return null;
-  // Go's own JSON: the agent.list entry, or a transfer reply {agent: …}.
-  const parsed: TransferAgent & { agent?: TransferAgent } = JSON.parse(json);
-  return parsed.agent ?? parsed;
 }
 
 function sleep(ms: number) {
