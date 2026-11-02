@@ -269,8 +269,8 @@ func paneMenu(o PaneMenuOptions, owner, canEditAvatar, muted bool) []menuEntry {
 	out := []menuEntry{
 		{Label: "Copy screen", Icon: "doc.on.doc", Pane: pane("copy-screen")},
 		{Label: "Copy recent output", Icon: "doc.on.clipboard", Pane: pane("copy-recent")},
-		// The desktop's own, without a herdrup icon to copy.
-		{Label: "Copy selection", Icon: "selection.pin.in.out", Pane: pane("copy-selection"), Disabled: !o.HasSelection},
+		// The desktop's own: herdrup has no such item, so no icon to copy.
+		{Label: "Copy selection", Pane: pane("copy-selection"), Disabled: !o.HasSelection},
 		{Separator: true},
 		{Label: "Text size", Disabled: true},
 		{Label: "Increase", Icon: "textformat.size.larger", Pane: pane("text-increase")},
