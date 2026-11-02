@@ -152,6 +152,8 @@ var Methods = []Method{
 	{Name: "pane.set_pty_size", Params: typeOf[PaneSetPtySizeParams](), Results: []Result{result[ResponseResultPanePTYSize]("pane_pty_size")}},
 	// schema.rs:131; src/app/api/agents.rs:59.
 	{Name: "agent.list", Params: typeOf[AgentListParams](), Results: []Result{result[ResponseResultAgentList]("agent_list")}},
+	// schema.rs:133; agents.rs:818.
+	{Name: "agent.read", Params: typeOf[AgentReadParams](), Results: []Result{result[ResponseResultPaneRead]("pane_read")}},
 	// schema.rs:134; src/app/api/transcript.rs:122.
 	{Name: "agent.transcript", Params: typeOf[AgentTranscriptParams](), Results: []Result{result[ResponseResultAgentTranscript]("agent_transcript")}, Capability: CapabilityAgentTranscript},
 	// schema.rs:138; agents.rs:253.
