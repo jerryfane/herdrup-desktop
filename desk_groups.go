@@ -432,26 +432,36 @@ func (d *Desk) SearchBoard(query string) *herdr.Board {
 }
 
 // menuEntry is one context-menu item: an edit to apply, a folder name to
-// ask for, or a submenu.
+// ask for, an agent or agent page action (desk_agent_actions.go), a
+// submenu, or a separator.
 type menuEntry struct {
-	Label  string
-	Edit   *herdr.Edit
-	Naming *FolderNaming
-	Sub    []menuEntry
+	Label string
+	// Icon is the SF Symbol herdrup shows beside the label, drawn on macOS
+	// only (menuIcon).
+	Icon     string
+	Edit     *herdr.Edit
+	Naming   *FolderNaming
+	Action   *AgentAction
+	Pane     *PaneAction
+	Sub      []menuEntry
+	Disabled bool
+	// Separator is a section break; it has no label.
+	Separator bool
 }
 
 // agentMenu is an agent row's folder items (herdrup HerdrApp.swift agent
 // context menu and folderMenuItems): Star or Unstar, then "Move to folder"
 // with every other folder, "New folder…", and "Remove from <folder>" when
-// it is in one. None without folders or for an agent with no name.
+// it is in one. None without folders or for an agent with no name. Icons
+// are herdrup's (HerdrApp.swift:4315-4320, 4482-4495).
 func agentMenu(g *herdr.Groups, name string) []menuEntry {
 	if g == nil || name == "" {
 		return nil
 	}
 	starred := herdr.IsStarred(*g, name)
-	star := menuEntry{Label: "Star", Edit: &herdr.Edit{Kind: herdr.EditSetStar, Name: name, Star: true}}
+	star := menuEntry{Label: "Star", Icon: "star", Edit: &herdr.Edit{Kind: herdr.EditSetStar, Name: name, Star: true}}
 	if starred {
-		star = menuEntry{Label: "Unstar", Edit: &herdr.Edit{Kind: herdr.EditSetStar, Name: name}}
+		star = menuEntry{Label: "Unstar", Icon: "star.slash", Edit: &herdr.Edit{Kind: herdr.EditSetStar, Name: name}}
 	}
 	current := herdr.FolderOf(*g, name)
 	var sub []menuEntry
@@ -459,13 +469,13 @@ func agentMenu(g *herdr.Groups, name string) []menuEntry {
 		if current != nil && f.ID == current.ID {
 			continue
 		}
-		sub = append(sub, menuEntry{Label: f.Name, Edit: &herdr.Edit{Kind: herdr.EditMove, Name: name, Folder: f.ID}})
+		sub = append(sub, menuEntry{Label: f.Name, Icon: "folder", Edit: &herdr.Edit{Kind: herdr.EditMove, Name: name, Folder: f.ID}})
 	}
-	sub = append(sub, menuEntry{Label: "New folder…", Naming: &FolderNaming{Kind: "new", Member: name}})
+	sub = append(sub, menuEntry{Label: "New folder…", Icon: "folder.badge.plus", Naming: &FolderNaming{Kind: "new", Member: name}})
 	if current != nil {
-		sub = append(sub, menuEntry{Label: "Remove from " + current.Name, Edit: &herdr.Edit{Kind: herdr.EditRemoveFromFolder, Name: name}})
+		sub = append(sub, menuEntry{Label: "Remove from " + current.Name, Icon: "folder.badge.minus", Edit: &herdr.Edit{Kind: herdr.EditRemoveFromFolder, Name: name}})
 	}
-	return []menuEntry{star, {Label: "Move to folder", Sub: sub}}
+	return []menuEntry{star, {Label: "Move to folder", Icon: "folder", Sub: sub}}
 }
 
 // folderMenu is a folder row's menu (herdrup folderRow): Rename, Move up
@@ -496,16 +506,24 @@ func (d *Desk) choose(l *link, g *groupsStore, e menuEntry) {
 		g.apply(l.ctx, *e.Edit)
 	case e.Naming != nil:
 		_ = FolderNamingRequested.Broadcast(*e.Naming)
+	case e.Action != nil:
+		d.chooseAgentAction(l, *e.Action)
+	case e.Pane != nil:
+		d.choosePaneAction(l, *e.Pane)
 	}
 }
 
 func (d *Desk) menuItems(l *link, g *groupsStore, entries []menuEntry) []*mygo.MenuItem {
 	items := make([]*mygo.MenuItem, 0, len(entries))
 	for _, e := range entries {
-		item := &mygo.MenuItem{Label: e.Label}
+		if e.Separator {
+			items = append(items, mygo.Separator())
+			continue
+		}
+		item := &mygo.MenuItem{Label: e.Label, Disabled: e.Disabled, Icon: menuIcon(e.Icon)}
 		if e.Sub != nil {
 			item.Submenu = d.menuItems(l, g, e.Sub)
-		} else {
+		} else if !e.Disabled {
 			item.Click = func(*mygo.MenuItem, *mygo.Window) { d.choose(l, g, e) }
 		}
 		items = append(items, item)
@@ -521,24 +539,6 @@ func (d *Desk) popup(ctx context.Context, l *link, g *groupsStore, entries []men
 	}
 	mygo.NewMenu(d.menuItems(l, g, entries)).Popup(mygo.CallerWindow(ctx))
 	return true
-}
-
-// AgentMenu shows an agent row's context menu (right-click); it reports
-// whether there was one.
-func (d *Desk) AgentMenu(ctx context.Context, paneID string) bool {
-	l, g := d.groupsLink()
-	if g == nil {
-		return false
-	}
-	d.mu.Lock()
-	name := ""
-	for _, a := range l.agents {
-		if a.PaneID == paneID && a.Name != nil {
-			name = *a.Name
-		}
-	}
-	d.mu.Unlock()
-	return d.popup(ctx, l, g, agentMenu(g.document(), name))
 }
 
 // FolderMenu shows a folder row's context menu (right-click); it reports
