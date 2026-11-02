@@ -208,7 +208,8 @@ function setTabBadge() {
   // The same badge on Settings while a newer Herdrup waits (Settings' suggestion of it).
   const settings = document.querySelector<HTMLElement>('#tabbar .tab-badge[data-tab="settings"]');
   if (settings) {
-    settings.hidden = !appUpdateWaiting; settings.textContent = "1";
+    // Text only while shown: a hidden "1" still joined the tab's text ("Settings1").
+    settings.hidden = !appUpdateWaiting; settings.textContent = appUpdateWaiting ? "1" : "";
     settings.closest(".tab")?.setAttribute("aria-label", appUpdateWaiting ? "Settings, update available" : "Settings");
   }
 }
