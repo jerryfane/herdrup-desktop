@@ -2,6 +2,7 @@ import qrcode from "qrcode-generator";
 import { Desk } from "./mygo";
 import { guestName, guestOwnerName, inviteValidity, shareableInviteURL, type CreatedGuestInvite } from "./guestInviteModel";
 import "./guestShare.css";
+import { errorText } from "./errors";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
@@ -24,7 +25,7 @@ export function openGuestShare(token: string, agentName: string): HTMLDialogElem
   const header = el("header"), title = el("h2", "", "Share with someone");
   header.append(title, button("Done", () => dialog.close()));
   const content = el("div", "guest-share-content"), failure = el("p", "guest-failure"); failure.setAttribute("role", "alert"); failure.hidden = true;
-  const report = (error: unknown) => { if (dialog.isConnected) { failure.textContent = String(error); failure.hidden = false; } };
+  const report = (error: unknown) => { if (dialog.isConnected) { failure.textContent = errorText(error); failure.hidden = false; } };
   const heading = el("h2", "guest-share-heading", `Share ${agentName}`);
   const subtitle = el("p", "guest-share-subtitle", "They see only this agent. No SSH, no other agents.");
   const form = el("form"), name = el("input"); name.placeholder = "Their name"; name.autocomplete = "off"; name.setAttribute("aria-label", "Their name"); name.id = "guest-invite-name";

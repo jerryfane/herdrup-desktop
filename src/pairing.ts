@@ -1,6 +1,7 @@
 import { Desk, type PairedMachine } from "./mygo";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
+import { errorText } from "./errors";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") { const node = document.createElement(tag); node.className = cls; node.textContent = text; return node; }
 function button(text: string, run: () => void) { const node = el("button", "", text); node.type = "button"; node.onclick = run; return node; }
@@ -38,13 +39,13 @@ export function showPairing(saved: () => Promise<void>, open: (machine: PairedMa
         void open(machine).then(() => { if (!disposed) sheet.close(); }).catch(error => {
           if (disposed) return;
           openButton.disabled = false;
-          status.textContent = `The host is saved, but couldn't connect: ${String(error)}`; status.hidden = false;
+          status.textContent = `The host is saved, but couldn't connect: ${errorText(error)}`; status.hidden = false;
         });
       });
       const status = el("p", "pairing-error"); status.hidden = true; status.setAttribute("role", "status");
       const command = el("code", "pairing-command", "herdr");
-      content.replaceChildren(el("h3", "", "Connected"), el("p", "", `${machine.nickname} is saved on this device. If herdr isn't running on that computer yet, start it there:`), command, button("Copy command", () => { void Desk.gramCopyText("herdr").catch(error => { if (!disposed) { status.textContent = String(error); status.hidden = false; } }); }), openButton, status);
-    } catch (error) { failure("Pairing didn't work", String(error)); }
+      content.replaceChildren(el("h3", "", "Connected"), el("p", "", `${machine.nickname} is saved on this device. If herdr isn't running on that computer yet, start it there:`), command, button("Copy command", () => { void Desk.gramCopyText("herdr").catch(error => { if (!disposed) { status.textContent = errorText(error); status.hidden = false; } }); }), openButton, status);
+    } catch (error) { failure("Pairing didn't work", errorText(error)); }
   }
   function start() {
     if (disposed || phase === "pair") return;

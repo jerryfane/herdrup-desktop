@@ -21,6 +21,7 @@ import { initGuestHome } from "./guestHome";
 import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { animateDisclosures, applyMotions, motionSeconds } from "./motion";
 import { initStarAsk } from "./starAsk";
+import { errorText } from "./errors";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -455,7 +456,7 @@ async function renderRows() {
       const terminals = await terminalRows(scope, query, symbol, renderRows);
       if (terminals) nodes.push(terminals);
     } catch (error) {
-      nodes.push(el("p", "empty-line t-empty", `Saved terminals: ${String(error)}`));
+      nodes.push(el("p", "empty-line t-empty", `Saved terminals: ${errorText(error)}`));
     }
   }
   if (generation !== rowsGeneration) return; // a newer render won
@@ -632,7 +633,7 @@ function openAgent(target: AgentTarget) {
       // the activation stays pending, and connecting its machine with the
       // password (Desk.selectMachine) opens the activation's session.
       choosingHost = true;
-      state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
+      state = { ...state, phase: "error", message: errorText(err) };
       render();
     }
   });

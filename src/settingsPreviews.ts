@@ -1,4 +1,5 @@
 import { Desk } from "./mygo";
+import { errorText } from "./errors";
 
 export class PreviewSettings {
   readonly root = document.createElement("label");
@@ -37,7 +38,7 @@ export class PreviewSettings {
     } catch (error) { if (revision === this.revision) this.report(error); }
   }
   private report(error: unknown) {
-    this.status.textContent = String(error); this.status.hidden = false;
+    this.status.textContent = errorText(error); this.status.hidden = false;
   }
   private render() {
     const enabled = this.pending ?? this.saved ?? false;

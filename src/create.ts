@@ -1,6 +1,7 @@
 import { Desk, events, type BoardUpdate } from "./mygo";
 import { selectInteraction } from "./interaction";
 import "./create.css";
+import { errorText } from "./errors";
 
 type Scope = Pick<BoardUpdate, "machineID" | "session">;
 let active: { scope: Scope; close(): void } | null = null;
@@ -138,6 +139,6 @@ export async function showNewTerminal(scope: Scope, changed: () => Promise<void>
     await selectInteraction({ machineID: scope.machineID, session: session(scope.session), paneID: result.terminal.paneID }, undefined, true);
     if (!disposed) document.querySelector<HTMLElement>(`.saved-terminal-row[data-id="${CSS.escape(result.terminal.paneID)}"]`)?.scrollIntoView({ block: "nearest" });
     if (!disposed) { document.getElementById("select")!.hidden = true; modal.close(); }
-  } catch (error) { if (!disposed) status.textContent = String(error); }
+  } catch (error) { if (!disposed) status.textContent = errorText(error); }
   finally { if (!disposed) { busy = false; close.disabled = false; } }
 }

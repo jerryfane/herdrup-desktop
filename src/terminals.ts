@@ -1,6 +1,7 @@
 import { Desk, events, type AgentTarget, type BoardUpdate, type SavedTerminal } from "./mygo";
 import { savedTerminalChanged, selectInteraction } from "./interaction";
 import "./terminals.css";
+import { errorText } from "./errors";
 
 type Scope = Pick<BoardUpdate, "machineID" | "session">;
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -25,7 +26,7 @@ export async function terminalRows(scope: Scope, query: string, symbol: SymbolRe
     const icon = el("span", "saved-terminal-icon"); icon.setAttribute("aria-hidden", "true"); icon.append(await symbol("terminal", 17, "semibold"));
     const label = el("span", "saved-terminal-label t-card-title", entry.label);
     const text = el("span", "saved-terminal-text"); text.append(label, el("span", "saved-terminal-kind t-card-subtitle", "shell"));
-    const open = () => { void selectInteraction(target, undefined, true).then(() => { document.getElementById("select")!.hidden = true; }).catch(error => { label.textContent = `${entry.label}: ${String(error)}`; }); };
+    const open = () => { void selectInteraction(target, undefined, true).then(() => { document.getElementById("select")!.hidden = true; }).catch(error => { label.textContent = `${entry.label}: ${errorText(error)}`; }); };
     const manage = () => manageTerminal(target, entry, changed);
     const options = button("…", manage); options.setAttribute("aria-label", `${entry.label} options`);
     options.onclick = event => { event.stopPropagation(); manage(); };
@@ -51,7 +52,7 @@ function manageTerminal(target: AgentTarget, terminal: SavedTerminal, changed: (
   const label = el("input", "terminal-label-input"); label.value = terminal.label; label.setAttribute("aria-label", "Terminal name");
   const status = el("p", "terminal-manage-status"); status.hidden = true; status.setAttribute("role", "status");
   const actions = el("div", "terminal-manage-actions"), confirmation = el("div", "terminal-confirmation"); confirmation.hidden = true;
-  const report = (error: unknown) => { status.textContent = String(error); status.hidden = false; };
+  const report = (error: unknown) => { status.textContent = errorText(error); status.hidden = false; };
   async function perform(work: () => Promise<void>, nextLabel: string | null) {
     if (busy || disposed) return;
     busy = true; status.hidden = true; label.disabled = true;
