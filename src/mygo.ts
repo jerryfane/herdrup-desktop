@@ -980,6 +980,9 @@ export const Desk = {
    * list too: the ids come from an unread_only list, each marked by its own
    * gram.mark_read, in two passes so an id another mark had in flight is
    * tried again. Failures are reported as "N of M could not be marked read."
+   * A list that failed part-way still marks what it and the held list show,
+   * and says some may still be unread; the badge then never drops below what
+   * is known to remain.
    */
   gramMarkAllRead(): Promise<void> {
     return call("Desk.GramMarkAllRead");

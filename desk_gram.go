@@ -871,6 +871,9 @@ func (d *Desk) GramMarkRead(ctx context.Context, id string) error {
 // list too: the ids come from an unread_only list, each marked by its own
 // gram.mark_read, in two passes so an id another mark had in flight is
 // tried again. Failures are reported as "N of M could not be marked read."
+// A list that failed part-way still marks what it and the held list show,
+// and says some may still be unread; the badge then never drops below what
+// is known to remain.
 func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 	l, err := d.gramLink()
 	if err != nil {
@@ -893,17 +896,17 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 		}
 		g.mu.Unlock()
 	}()
+	answer, listErr := d.gramAnswer(ctx, l, herdrapi.GramListParams{UnreadOnly: true})
 	var pending []string
-	if answer, err := d.gramAnswer(ctx, l, herdrapi.GramListParams{UnreadOnly: true}); err == nil {
-		for _, m := range answer.Messages {
-			if gramstore.IsUnread(m) {
-				pending = append(pending, m.ID)
-			}
+	for _, m := range answer.Messages {
+		if gramstore.IsUnread(m) {
+			pending = append(pending, m.ID)
 		}
-	} else {
+	}
+	if listErr != nil {
 		g.mu.Lock()
 		for _, m := range g.inbox.Messages() {
-			if gramstore.IsUnread(m) {
+			if gramstore.IsUnread(m) && !slices.Contains(pending, m.ID) {
 				pending = append(pending, m.ID)
 			}
 		}
@@ -955,9 +958,15 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 	for id := range marked {
 		g.inbox.MarkRead(id)
 	}
-	g.badge = g.inbox.UnreadCount()
+	if listErr == nil {
+		g.badge = g.inbox.UnreadCount()
+	} else {
+		// Unread beyond what was listed are not known gone.
+		g.badge = max(g.badge-len(marked), g.inbox.UnreadCount())
+		g.markAllNote = "Couldn't list every unread message. Some may still be unread."
+	}
 	if failed > 0 {
-		g.markAllNote = fmt.Sprintf("%d of %d could not be marked read.", failed, attempted)
+		g.markAllNote = strings.TrimSpace(g.markAllNote + " " + fmt.Sprintf("%d of %d could not be marked read.", failed, attempted))
 	}
 	return nil
 }

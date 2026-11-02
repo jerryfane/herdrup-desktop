@@ -16,15 +16,21 @@ type guestGramLister interface {
 // guestGramPage reads the guest history asked for. The host has no
 // unread_only filter for guests, so an unread-only ask (the badge, Mark all
 // read) walks every older page: the newest page alone misses older unread.
+// When an older page fails, the pages already read come back with the error,
+// marked HasMore: the listing is incomplete, not empty.
 func guestGramPage(ctx context.Context, lister guestGramLister, limit uint64, params herdrapi.GramListParams) (guest.GramPage, error) {
 	page, err := lister.GramList(ctx, limit, params.BeforeID)
-	if err != nil || !params.UnreadOnly {
-		return page, err
+	if err != nil {
+		return guest.GramPage{}, err
+	}
+	if !params.UnreadOnly {
+		return page, nil
 	}
 	for next := page; next.HasMore && len(next.Messages) > 0; {
 		before := next.Messages[len(next.Messages)-1].ID
 		if next, err = lister.GramList(ctx, limit, &before); err != nil {
-			return guest.GramPage{}, err
+			page.HasMore = true
+			return page, err
 		}
 		if len(next.Messages) > 0 && next.Messages[len(next.Messages)-1].ID == before {
 			break // a cursor that does not advance would never end
@@ -38,6 +44,8 @@ func guestGramPage(ctx context.Context, lister guestGramLister, limit uint64, pa
 // gramAnswer keeps the guest wire contract separate from owner API results.
 // Like Swift GuestGramMessage.gramMessage(agent:), it projects the guest's
 // read mark into the common feed model; it never receives owner read/claim data.
+// With an error, the answer still holds what an unread-only guest walk listed
+// before an older page failed.
 func (d *Desk) gramAnswer(ctx context.Context, l *link, params herdrapi.GramListParams) (gramstore.Answer, error) {
 	ec, err := d.gramEngine(l)
 	if err != nil {
@@ -51,9 +59,9 @@ func (d *Desk) gramAnswer(ctx context.Context, l *link, params herdrapi.GramList
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	page, err := guestGramPage(ctx, l.guest, limit, params)
-	if err != nil {
-		return gramstore.Answer{}, err
+	page, listErr := guestGramPage(ctx, l.guest, limit, params)
+	if listErr != nil && len(page.Messages) == 0 {
+		return gramstore.Answer{}, listErr
 	}
 	d.mu.Lock()
 	agent := l.access.AgentName
@@ -77,7 +85,7 @@ func (d *Desk) gramAnswer(ctx context.Context, l *link, params herdrapi.GramList
 			answer.Messages = append(answer.Messages, item)
 		}
 	}
-	return answer, nil
+	return answer, listErr
 }
 func (d *Desk) gramRead(ctx context.Context, l *link, id string) error {
 	ec, err := d.gramEngine(l)

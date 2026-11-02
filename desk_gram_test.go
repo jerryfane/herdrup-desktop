@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,5 +272,37 @@ func TestGramOpenShowsThePostedBytesNotTheFilesLaterContents(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(opened); string(got) != "original" {
 		t.Fatalf("opened %q, but herdr holds %q", got, "original")
+	}
+}
+
+// Mark all read whose unread list fails is not a success: with nothing held
+// it cannot mark the unread the badge counts, so the badge stays and the
+// banner says some may still be unread.
+func TestGramMarkAllReadReportsAnIncompleteList(t *testing.T) {
+	g := fakeherdr.NewGram("store-1")
+	g.Add(agentMsg("a1", "older", true), nil)
+	var listFails atomic.Bool
+	g.Fail = func(method string, params json.RawMessage) *fakeherdr.APIError {
+		if method == "gram.list" && listFails.Load() {
+			return &fakeherdr.APIError{Code: "internal", Message: "list failed"}
+		}
+		return nil
+	}
+	d := gramDeskFor(t, g)
+	ctx := context.Background()
+	l, err := d.gramLink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.gramBadge(ctx, l)
+	if s := d.GramState(); s.UnreadCount != 1 {
+		t.Fatalf("badge before: %d", s.UnreadCount)
+	}
+	listFails.Store(true)
+	if err := d.GramMarkAllRead(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.GramState(); s.UnreadCount != 1 || !strings.Contains(s.Status, "Some may still be unread") {
+		t.Fatalf("an unlisted unread message was reported read: badge %d, status %q", s.UnreadCount, s.Status)
 	}
 }

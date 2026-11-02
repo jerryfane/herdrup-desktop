@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -14,12 +15,17 @@ import (
 type guestHistory struct {
 	messages []guest.GramMessage
 	asked    []string
+	// failBefore, when set, fails the older page asked for before this id.
+	failBefore string
 }
 
 func (h *guestHistory) GramList(_ context.Context, limit uint64, before *string) (guest.GramPage, error) {
 	from := 0
 	if before != nil {
 		h.asked = append(h.asked, *before)
+		if *before == h.failBefore {
+			return guest.GramPage{}, errors.New("older page lost")
+		}
 		from = slices.IndexFunc(h.messages, func(m guest.GramMessage) bool { return m.ID == *before }) + 1
 	} else {
 		h.asked = append(h.asked, "")
@@ -49,5 +55,19 @@ func TestGuestUnreadOnlyFollowsOlderPages(t *testing.T) {
 	page, err = guestGramPage(context.Background(), history, gramPageSize, herdrapi.GramListParams{})
 	if err != nil || len(history.asked) != 1 || len(page.Messages) != gramPageSize || !page.HasMore {
 		t.Fatalf("a head load must stay one page: %d messages, asked %q, %v", len(page.Messages), history.asked, err)
+	}
+}
+
+// An older page that fails leaves the walk incomplete, not empty: the pages
+// already read come back with the error, so Mark all read still marks them.
+func TestGuestUnreadOnlyKeepsReadPagesWhenAnOlderOneFails(t *testing.T) {
+	history := &guestHistory{}
+	for i := range gramPageSize + 1 {
+		history.messages = append(history.messages, guest.GramMessage{ID: fmt.Sprintf("m-%d", i), Direction: herdrapi.GramDirectionAgentToOwner})
+	}
+	history.failBefore = history.messages[gramPageSize-1].ID
+	page, err := guestGramPage(context.Background(), history, gramPageSize, herdrapi.GramListParams{UnreadOnly: true})
+	if err == nil || len(page.Messages) != gramPageSize || page.Messages[0].ID != "m-0" || !page.HasMore {
+		t.Fatalf("a failed older page discarded the first: %d messages, hasMore=%v, err=%v", len(page.Messages), page.HasMore, err)
 	}
 }
