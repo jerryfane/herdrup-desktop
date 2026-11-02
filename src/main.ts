@@ -212,11 +212,18 @@ async function buildTabBar() {
   ];
   const nodes = await Promise.all(
     items.map(async ([key, icon, label]) => {
-      // A button, so keyboard users reach and switch tabs (issue #94): Tab focuses it, Enter or
-      // Space activates it, and the selected tab reads as the current page.
-      const t = el("button", "tab" + (key === selectedTab ? " selected" : ""));
-      t.type = "button";
+      // Keyboard users reach and switch tabs (issue #94): Tab focuses it, Enter or Space
+      // activates it, and the selected tab reads as the current page. A div with a button's role,
+      // not a <button>, which WebKit letters differently (parity 41516232593).
+      const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
+      t.tabIndex = 0;
+      t.setAttribute("role", "button");
       if (key === selectedTab) t.setAttribute("aria-current", "page");
+      t.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        t.click();
+      });
       const i = el("div", "icon");
       await place(i, icon, 21, "medium");
       if (key === "gram") {
