@@ -1,7 +1,8 @@
-// Owner request 2026-11-01 (herdr-app 383362): after the owner has sent five prompts,
-// ask once for a GitHub star. Only successful owner sends from a composer count: never
-// guest sends, failed sends, or raw terminal keystrokes. Either answer hides the ask for
-// good. Reference and smoke captures never show it unless herdrupStarPrompt is set.
+// Owner request 2026-11-01 (herdr-app 383362, 383484): after the owner has sent five
+// prompts to agents, ask once for a GitHub star. Only a confirmed owner agent prompt
+// counts (as native): never Gram posts, guest sends, failed or unconfirmed sends, or raw
+// terminal keystrokes. Either answer hides the ask for good. Reference and smoke
+// captures never show it unless herdrupStarPrompt is set.
 
 export const STAR_URL = "https://github.com/themartianapp/herdrup";
 export const STAR_AFTER_SENDS = 5;
