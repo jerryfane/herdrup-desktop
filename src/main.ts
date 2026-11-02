@@ -1,5 +1,6 @@
 import "core-js/actual/promise/with-resolvers";
-import { Desk, Symbols, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
+import { symbol } from "./symbol";
+import { Desk, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { continuousPath, paintShape } from "./continuous";
 import { loadGlyphFieldFonts } from "./glyphField";
 import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
@@ -69,38 +70,7 @@ let guestGram = false;
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
 
-// ---- SF Symbols (macOS) or their open substitutes, as tinted masks ----
-
-const symbolCache = new Map<string, Promise<HTMLElement>>();
-
-/** An SF Symbol at a point size and weight, tinted by CSS `color`. Symbols
- * draws at 1, 2 or 3 pixels per point, so the page's ratio is clamped to
- * that. A symbol that fails is logged and left empty, not cached, so one
- * missing icon never stops the page from drawing. */
-function symbol(name: string, size: number, weight: string): Promise<HTMLElement> {
-  const key = `${name}/${size}/${weight}`;
-  let made = symbolCache.get(key);
-  if (!made) {
-    const scale = Math.min(3, Math.max(1, Math.round(devicePixelRatio)));
-    made = Symbols.image(name, size, weight, scale).then((img) => {
-      const el = document.createElement("span");
-      el.className = "sym";
-      el.style.width = `${img.width}px`;
-      el.style.height = `${img.height}px`;
-      el.style.setProperty("--sym", `url("${img.dataURL}")`);
-      return el;
-    });
-    symbolCache.set(key, made);
-    made.catch(() => symbolCache.delete(key));
-  }
-  return made.then(
-    (el) => el.cloneNode(true) as HTMLElement,
-    (err) => {
-      console.error(`symbol ${key}:`, err);
-      return el("span", "sym");
-    },
-  );
-}
+// ---- SF Symbols (macOS) or their open substitutes, as tinted masks (symbol.ts) ----
 
 /** Puts a symbol into `host`, replacing what was there. */
 async function place(host: HTMLElement, name: string, size: number, weight: string) {

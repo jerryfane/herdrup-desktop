@@ -6,6 +6,7 @@
 // (desk_gram*.go); the decisions are in gramModel.ts, gramMention.ts and gramText.ts.
 import { avatarFace } from "./avatars";
 import { paintShape } from "./continuous";
+import { codeBlock as sharedCodeBlock } from "./codeBlock";
 import { rowTime, separator } from "./gramDates";
 import { ComposerEditor, composerGlyph as glyph, composerRing as ring, composerAttachment, composerFileDrop, composerClipboardPaste, SavedPromptsMenu } from "./composer";
 import { ConversationColumn } from "./conversationColumn";
@@ -1146,12 +1147,9 @@ function measureFolds(root: ParentNode) {
   }
 }
 
+/** GramCodeBlock (codeBlock.ts) with the shared CopiedCommandReceipt: "Copied" for 1.6 s. */
 function codeBlock(code: string, language: string | null): HTMLElement {
-  const b = el("div", "gcode");
-  paintShape(b, { radius: 11, fill: "var(--color-ground-machine)", stroke: "var(--color-hairline)", strokeWidth: 1 });
-  const isCopied = copied === code;
-  const copy = () => {
-    void Desk.gramCopyText(code);
+  return sharedCodeBlock(code, language, copied === code, () => {
     copied = code;
     clearTimeout(copiedTimer);
     copiedTimer = window.setTimeout(() => {
@@ -1159,25 +1157,7 @@ function codeBlock(code: string, language: string | null): HTMLElement {
       renderContent();
     }, 1600);
     renderContent();
-  };
-  const pre = el("pre", "gcode-text", code);
-  const scroll = el("div", "gcode-scroll");
-  scroll.append(pre);
-  if (!code.includes("\n")) {
-    b.classList.add("one-line");
-    const c = button("gcode-copy-glyph" + (isCopied ? " copied" : ""), isCopied ? "Copied" : "Copy code", copy);
-    c.append(icon(isCopied ? "checkmark" : "doc.on.doc", 14, "semibold"));
-    b.append(scroll, c);
-  } else {
-    const head = el("div", "gcode-head");
-    if (language) head.append(el("span", "gcode-lang", language));
-    head.append(el("span", "gcode-spacer"));
-    const c = button("gcode-copy" + (isCopied ? " copied" : ""), isCopied ? "Copied" : "Copy code", copy);
-    c.append(icon(isCopied ? "checkmark" : "doc.on.doc", 11, "semibold"), el("span", "", isCopied ? "Copied" : "Copy"));
-    head.append(c);
-    b.append(head, scroll);
-  }
-  return b;
+  });
 }
 
 const measureCtx = document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
