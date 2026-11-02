@@ -67,6 +67,12 @@ export function loadPhoto(a: Avatar): Promise<string | null> {
 /** The mascot's art, synced from herdrup (public/herdrup/mascots). */
 export const mascotURL = (id: string) => `/herdrup/mascots/${id}.svg`;
 
+/** The bundled mascots in picker order (herdrup AgentMascot,
+ * Sources/HerdrKit/AgentAvatarDescriptor.swift 11-12); the picker names
+ * each by its id capitalised (displayName, 16-17). */
+export const MASCOTS = ["herdy", "bot", "blip", "tri", "squib", "zag", "cub", "dome", "pip", "prism", "nib", "drop"] as const;
+export const mascotName = (id: string) => id.charAt(0).toUpperCase() + id.slice(1);
+
 /** The avatar's face at the avatar's size: `initial` builds the initial
  * tile, which is also what a failed photo shows. A photo still loading is a
  * plain surfaceRaised circle and is swapped in when it arrives. */

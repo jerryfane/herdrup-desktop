@@ -1,0 +1,106 @@
+/* The agent menus' sheets (agentActions.ts): Rename agent, Avatar…, Move and
+   scale and Switch harness, as herdrup presents them. Neutral surfaces with a
+   1 px hairline; every control in the app face. */
+.agent-sheet { width:min(520px,calc(100vw - 32px)); max-height:calc(100vh - 48px); padding:0; border:1px solid var(--color-hairline); border-radius:24px; background:var(--color-ground); color:var(--color-text); font:400 15px var(--font-app); }
+.agent-sheet::backdrop { background:color-mix(in srgb, var(--color-ground) 60%, transparent); }
+.agent-sheet button, .agent-sheet input, .agent-sheet select { font-family:var(--font-app); }
+.agent-sheet > header { position:sticky; top:0; z-index:1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:12px; padding:12px 16px; background:var(--color-ground); border-bottom:1px solid var(--color-hairline); }
+.agent-sheet > header h2 { margin:0; font:600 17px var(--font-app); text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-sheet > header > .leading { justify-self:start; display:flex; }
+.agent-sheet > header > .trailing { justify-self:end; display:flex; }
+/* Toolbar buttons: plain text, Cancel and Close in textDim (HerdrApp.swift
+   9647-9651; AgentSessionTransferSheet.swift 90-95), the confirmation action
+   in text. */
+.agent-sheet > header button { padding:6px 4px; border-radius:6px; background:none; color:var(--color-text); font:600 15px var(--font-app); }
+.agent-sheet > header button.dim { color:var(--color-text-dim); font-weight:400; }
+.agent-sheet > header button.back { display:flex; align-items:center; gap:2px; font-weight:400; }
+.agent-sheet > header button:disabled { opacity:.4; cursor:default; }
+.agent-sheet-body { padding:20px; }
+
+/* RenameSheet (HerdrApp.swift 9618-9644). */
+.agent-rename { display:flex; flex-direction:column; gap:8px; }
+.agent-micro-label { padding-left:4px; color:var(--color-text-faint); font:var(--text-micro-label-weight) var(--text-micro-label-size) var(--text-micro-label-font); }
+.agent-rename input { box-sizing:border-box; width:100%; padding:14px 16px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); color:var(--color-text); font:400 15px var(--font-app); }
+.agent-rename input:focus { outline:none; border-color:var(--color-text-faint); }
+.agent-rename-preview { margin:0; padding-left:4px; color:var(--color-text-dim); font:400 12px var(--font-machine); }
+.agent-rename-footnote { margin:2px 0 0; padding-left:4px; color:var(--color-text-faint); font:400 12px/1.4 var(--font-app); }
+.agent-rename-save, .agent-primary { width:100%; margin-top:6px; padding:14px; border-radius:14px; background:var(--color-text); color:var(--color-ground); font:600 16px var(--font-app); }
+.agent-rename-save:disabled { opacity:.5; cursor:default; }
+
+/* Restart agent? / Swap subscription? (HerdrApp.swift 3434-3473): the
+   folder prompt's dialog with the message under the title. */
+dialog.folder-naming.agent-confirm p { margin:0 0 var(--space-stack-medium); max-width:340px; color:var(--color-text-dim); font:400 13px/1.45 var(--font-app); }
+dialog.folder-naming.agent-confirm .destructive { background:none; color:var(--status-died); box-shadow:inset 0 0 0 1px var(--color-hairline); }
+
+/* AgentAvatarSheet (AgentAvatarViews.swift 302-421). */
+.agent-avatar-body { display:flex; flex-direction:column; align-items:center; gap:20px; padding:12px 20px 24px; }
+.agent-avatar-body > .avatar:first-child { margin-top:12px; }
+.agent-avatar-grid { align-self:stretch; display:grid; grid-template-columns:repeat(auto-fill, minmax(68px, 1fr)); column-gap:12px; row-gap:14px; }
+.agent-avatar-choice { display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; padding:0; border-radius:0; background:none; color:var(--color-text-dim); font:400 11.5px var(--font-app); }
+.agent-avatar-choice > .ring { padding:3px; border-radius:50%; outline:2.5px solid transparent; outline-offset:-1.25px; }
+.agent-avatar-choice[aria-pressed="true"] > .ring { outline-color:var(--color-text); }
+.agent-avatar-choice .face, .agent-avatar-choice .tile { display:block; width:56px; height:56px; border-radius:50%; overflow:hidden; }
+.agent-avatar-choice .tile { position:relative; display:flex; align-items:center; color:var(--color-on-accent); font:700 24px/1 var(--font-app); }
+.agent-avatar-choice > span:last-child { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-avatar-actions { align-self:stretch; display:flex; flex-direction:column; gap:10px; }
+.agent-avatar-actions button { display:flex; align-items:center; justify-content:center; gap:8px; min-height:44px; border-radius:12px; font:600 15px var(--font-app); }
+.agent-avatar-actions .choose { background:var(--color-surface-raised); color:var(--color-text); }
+.agent-avatar-actions .choose:disabled { opacity:.5; cursor:default; }
+.agent-avatar-actions .remove { background:none; color:var(--color-text-dim); }
+.agent-avatar-error { margin:0; color:var(--status-died); text-align:center; font:400 13.5px var(--font-app); }
+.agent-avatar-note { margin:0; padding:0 24px; color:var(--color-text-faint); text-align:center; font:400 13px/1.4 var(--font-app); }
+.agent-sheet .face.preview { display:block; width:100%; height:100%; border-radius:50%; overflow:hidden; object-fit:cover; }
+
+/* AgentAvatarCropView (AgentAvatarViews.swift 488-523): the 280 pt square,
+   dimmed outside the circle the avatar shows, then the 72 and 44 previews.
+   herdrup's black at 0.5 and white at 0.8 are ground and onAccent here (no
+   colour literals outside tokens.css). */
+.agent-crop { position:relative; width:280px; height:280px; border-radius:14px; overflow:hidden; cursor:grab; touch-action:none; }
+.agent-crop.dragging { cursor:grabbing; }
+.agent-crop canvas { display:block; width:280px; height:280px; }
+.agent-crop-circle { position:absolute; inset:0; border-radius:50%; box-shadow:0 0 0 280px color-mix(in srgb, var(--color-ground) 50%, transparent); border:1px solid color-mix(in srgb, var(--color-on-accent) 80%, transparent); pointer-events:none; }
+.agent-crop-previews { display:flex; align-items:center; gap:16px; }
+.agent-crop-previews canvas { display:block; width:100%; height:100%; }
+.agent-crop-hint { margin:0; color:var(--color-text-faint); font:400 13px var(--font-app); }
+
+/* AgentSessionTransferSheet (App/AgentSessionTransferSheet.swift). */
+.agent-transfer-body { display:flex; flex-direction:column; gap:18px; padding:20px; }
+.agent-transfer-direction { display:flex; flex-direction:column; gap:14px; }
+.agent-transfer-harnesses { display:flex; align-items:center; gap:12px; color:var(--color-text-faint); }
+.agent-harness { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--color-hairline); border-radius:10px; background:var(--color-surface); color:var(--color-text); font:600 13px var(--font-app); }
+.agent-harness .glyph { display:grid; place-items:center; width:30px; height:30px; border-radius:8px; color:var(--color-on-accent); font:700 14px var(--font-app); }
+.agent-transfer-title { margin:0; font:700 22px var(--font-app); }
+.agent-transfer-text { margin:0; color:var(--color-text-dim); font:400 14px/1.4 var(--font-app); }
+.agent-transfer-section { display:flex; flex-direction:column; gap:16px; }
+.agent-transfer-label { margin:0; color:var(--color-text-faint); font:var(--text-micro-label-weight) var(--text-micro-label-size) var(--text-micro-label-font); letter-spacing:1.1px; }
+.agent-transfer-section select { min-height:48px; padding:0 12px; border:1px solid var(--color-hairline); border-radius:10px; background:var(--color-surface); color:var(--color-text); font:400 15px var(--font-app); }
+.agent-panel { display:flex; align-items:flex-start; gap:12px; padding:14px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
+.agent-panel.large { gap:13px; padding:16px; }
+.agent-panel .icon { flex:none; display:flex; justify-content:center; width:22px; }
+.agent-panel.large .icon { width:24px; }
+.agent-panel .lines { display:flex; flex-direction:column; gap:5px; min-width:0; }
+.agent-panel.large .lines { gap:6px; }
+.agent-panel strong { font:600 14px var(--font-app); }
+.agent-panel.large strong { font-size:16px; }
+.agent-panel .lines > span { color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
+.agent-panel .working { color:var(--status-working); }
+.agent-panel .done { color:var(--status-done); }
+.agent-panel .waiting { color:var(--status-waiting); }
+.agent-panel .died { color:var(--status-died); }
+.agent-panel .ring { flex:none; box-sizing:border-box; width:22px; height:22px; margin-top:1px; border:2px solid color-mix(in srgb, var(--status-working) 25%, transparent); border-top-color:var(--status-working); border-radius:50%; animation:agent-turn 1s linear infinite; }
+@keyframes agent-turn { to { transform:rotate(360deg); } }
+.agent-review { border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
+.agent-review-row { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:12px 14px; }
+.agent-review-row + .agent-review-row { position:relative; }
+.agent-review-row + .agent-review-row::before { content:""; position:absolute; top:0; left:14px; right:0; height:1px; background:var(--color-hairline-quiet); }
+.agent-review-row > span:first-child { color:var(--color-text-dim); font:400 13px var(--font-app); }
+.agent-review-row > span:last-child { color:var(--color-text-dim); text-align:right; font:400 12px var(--font-machine); }
+.agent-review-row > span.strong { color:var(--color-text); font-weight:600; }
+.agent-transfer-foot { margin:0; color:var(--color-text-faint); font:400 12px/1.4 var(--font-app); }
+.agent-transfer-bar { position:sticky; bottom:0; padding:12px 20px; border-top:1px solid var(--color-hairline-quiet); background:var(--color-ground); }
+.agent-transfer-bar button { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; padding:12px; border-radius:10px; background:var(--color-text); color:var(--color-ground); font:600 15px var(--font-app); }
+.agent-transfer-bar button:disabled { opacity:.45; cursor:default; }
+/* ProgressView in the action bar and the Choose photo button, tinted as the
+   label it sits beside. */
+.agent-transfer-bar .ring, .agent-avatar-actions .ring { box-sizing:border-box; width:15px; height:15px; border:2px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color:currentColor; border-radius:50%; animation:agent-turn 1s linear infinite; }
+.agent-crop-previews .face.preview { outline:1px solid var(--color-hairline); outline-offset:-1px; }

@@ -4,6 +4,7 @@ import { continuousPath, paintShape } from "./continuous";
 import { loadGlyphFieldFonts } from "./glyphField";
 import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
+import { initAgentActions } from "./agentActions";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram, setGuestGramRecipient } from "./gram";
@@ -739,6 +740,13 @@ async function init() {
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
+  initAgentActions({
+    row: paneID => board?.board.sections.flatMap(s => s.rows).find(r => r.id === paneID),
+    tile: initialTile,
+    badge: r => badge(r.badge),
+    placeInitials,
+    symbol,
+  });
   rail = await initSidebarRail($("sidebar"), next => {
     tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
   }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
