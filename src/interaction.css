@@ -85,10 +85,12 @@
 .guest-question-banner[data-keys="false"] { bottom: var(--composer-height, 68px); }
 .guest-question-banner[hidden] { display: none; }
 .guest-question-banner[data-tone="faint"] { color: var(--color-text-faint); }
-/* The line takes layout height, as noteRow does in herdrup: Chat's history and the Terminal above the
-   menu keys end above it; without the keys it sits in the quick-key allowance. */
-.interaction-body:has(> .guest-question-banner:not([hidden])) > .chat-surface { bottom: calc(68px + 26px); }
-.interaction-body:has(> .guest-question-banner:not([hidden]):not([data-keys="false"])) > .terminal-surface { bottom: calc(118px + 26px); }
+/* herdrup draws one line here: the note (an error) when there is one, else the guest's question or
+   view-only line (GuestPaneView.noteRow `note ?? connectionNote`, then the asking states, :559-575).
+   The banner yields to a shown note, and the line in view takes layout height as noteRow does. */
+.interaction-body:has(> .interaction-status:not(:empty)) > .guest-question-banner { display: none; }
+.interaction-body:has(> .interaction-status:empty):has(> .guest-question-banner:not([hidden])) > .chat-surface { bottom: calc(68px + 26px); }
+.interaction-body:has(> .interaction-status:empty):has(> .guest-question-banner:not([hidden]):not([data-keys="false"])) > .terminal-surface { bottom: calc(118px + 26px); }
 .chat-transcript { flex: 1; min-height: 0; overflow: auto; padding: 8px 16px 12px; scroll-behavior: auto; }
 .chat-scroll { flex:1; min-height:0; overflow:auto; }
 .chat-scroll > .chat-transcript { min-height:100%; overflow:visible; }
