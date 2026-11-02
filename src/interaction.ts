@@ -18,6 +18,7 @@ import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
+import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING } from "./chatPoll";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
@@ -87,6 +88,10 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
   current.attach.hidden = !view.guestGram;
   if (current.guestGramButton) current.guestGramButton.hidden = !view.guestGram;
   if (current.guestModes) current.guestModes.hidden = !current.guestChat && !view.guestGram;
+  // The relay refuses this network's connects for now (429): the page stays and says so until
+  // a list goes through (desk_guest.go runGuest).
+  if (state.guest?.availability === "reconnecting") current.status.textContent = RELAY_RECONNECTING;
+  else if (current.status.textContent === RELAY_RECONNECTING) current.status.textContent = "";
  });
  onTextSizeChanged(() => current?.resizeText());
  window.addEventListener("keydown", event => {
@@ -221,6 +226,9 @@ class Detail {
  oldestCursor: string | undefined;
  chatEpoch = 0;
  chatPoll = 0;
+ // A guest's last send that has not shown up in the transcript: the user entries before it, and
+ // until when it keeps the poll fast (ChatModel.hasPendingSend and fastPollUntil, chatPoll.ts).
+ sendFollow: { users: number; until: number } | null = null;
  answering = false;
  answerProblem: { askID: string; message: string; offersTerminal: boolean } | null = null;
  localAnswers = new Map<string, string[]>();
@@ -774,7 +782,8 @@ class Detail {
    void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => {
     if (generation !== this.generation || streamID !== this.terminalID) return;
     if (this.view?.guest && String(e).includes("guest_forbidden")) { this.resizeRefused = true; this.updateGuestQuestion(); return; }
-    this.status.textContent = "Resize: " + errorText(e);
+    const message = errorText(e);
+    this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Resize: " + message;
    });
   };
   this.fitTerminal = fit;
@@ -857,7 +866,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending; }
  }
  openChat(generation: number) {
-  this.entries = []; this.chat = null; this.oldestCursor = undefined; this.chatEpoch++;
+  this.entries = []; this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null;
   this.answerProblem = null; this.localAnswers.clear();
   this.input.disabled = false; this.send.disabled = this.sending;
   const composer = el("div", "chat-composer");
@@ -945,9 +954,21 @@ class Detail {
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
    for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
+   if (this.sendFollow && this.entries.filter(entry => entry.kind === "user").length > this.sendFollow.users) this.sendFollow = null;
+   if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
-  } catch(e) { if (!this.disposed && generation === this.generation && poll === this.chatPoll) this.status.textContent = "Chat: " + errorText(e) + " You can switch to Terminal."; }
-  finally { if (!this.disposed && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, 1500); }
+  } catch(e) {
+   if (!this.disposed && generation === this.generation && poll === this.chatPoll) {
+    const message = errorText(e);
+    this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Chat: " + message + " You can switch to Terminal.";
+   }
+  }
+  finally {
+   if (!this.disposed && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) {
+    const delay = chatPollDelay({ guest: !!this.view?.guest, working: !!this.chat?.working, sendPending: !!this.sendFollow, followUntil: this.sendFollow?.until ?? 0, now: Date.now() });
+    this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, delay);
+   }
+  }
  }
  async loadEarlier(generation: number) {
   if (!this.chat || !this.oldestCursor) { this.status.textContent = "You are at the start of the retained conversation."; return; }
@@ -1375,13 +1396,18 @@ class Detail {
    if (this.inputFailed) throw new Error("An earlier key send failed. Reconnect before sending again.");
    this.unsentPrompt = ""; this.saveDraft();
    const ownerSend = this.view?.guest === false;
+   // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
+   this.sendFollow = { users: this.entries.filter(entry => entry.kind === "user").length, until: Date.now() + CHAT_SEND_FOLLOW_MS };
    const result = JSON.parse(await Desk.chatPrompt(this.token, text));
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
    if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.saveDraft(); this.input.dispatchEvent(new Event("input")); }
    if (!this.disposed) this.status.textContent = result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again.");
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
+   // A guest has no events: look for the prompt now rather than at the next poll (GuestPaneView.swift:882-886).
+   if (!this.disposed && this.view?.guest && this.mode === "chat") void this.refreshChat(this.generation);
   } catch(e) {
+   this.sendFollow = null;
    if (!this.disposed) {
     this.unsentPrompt = ""; this.saveDraft();
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }
@@ -1424,7 +1450,8 @@ class Detail {
   } finally {
    this.answering = false;
    if (current()) this.drawChat(false);
-   // Keep the existing poll; refreshing here would start a second polling loop.
+   // The answer shows in the transcript now, not at the next poll (ChatModel.answer, ChatView.swift:174).
+   if (current() && this.mode === "chat") void this.refreshChat(this.generation);
   }
  }
 }

@@ -21,6 +21,11 @@ var cipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, no
 var ErrRevoked = errors.New("This shared access is no longer available. Ask the owner for a new invitation.")
 var ErrHostOffline = errors.New("The shared machine is offline. Try again when the owner reconnects it.")
 
+// ErrRateLimited is the relay's 429 rate_limited: too many guest connects from
+// this network (herdrup GuestError.rateLimited). A Transport that hears it waits
+// before connecting again (relayBackoff).
+var ErrRateLimited = errors.New("The relay is receiving too many connections. Try again shortly.")
+
 type Features struct {
 	Gram bool `json:"gram"`
 	Push bool `json:"push"`
@@ -85,13 +90,13 @@ func upgradeError(response *http.Response, err error) error {
 	case "host_busy":
 		return errors.New("The shared machine is busy. Try again shortly.")
 	case "rate_limited":
-		return errors.New("The relay is receiving too many connections. Try again shortly.")
+		return ErrRateLimited
 	}
 	switch response.StatusCode {
 	case 503:
 		return ErrHostOffline
 	case 429:
-		return errors.New("The relay is receiving too many connections. Try again shortly.")
+		return ErrRateLimited
 	default:
 		return fmt.Errorf("The guest relay refused the connection (HTTP %d).", response.StatusCode)
 	}

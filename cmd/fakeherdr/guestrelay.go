@@ -17,8 +17,10 @@ const guestRelayAgent = "t2"
 // logs the one invitation it redeems. The shared agent waits on a select
 // menu until a guest's committing key (Enter, Escape, 1-9, y, n) moves it on,
 // so the guest's menu keys and answer buttons can be exercised; ownerOnly is
-// a herdr older than guest answers, which refuses both.
-func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool) error {
+// a herdr older than guest answers, which refuses both. connectLimit is the
+// relay's guest connects a minute (0: none); every connect is logged, so a
+// guest's connect rate can be counted.
+func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool, connectLimit int) error {
 	relay, err := fakeherdr.NewGuestRelay()
 	if err != nil {
 		return err
@@ -26,6 +28,16 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool) error {
 	relay.TerminalID, relay.AgentName = guestRelayAgent, "docs"
 	relay.OwnerName, relay.MachineLabel, relay.GuestName = "Fixture Owner", "fakeherdr", "visitor"
 	relay.OwnerOnlyAnswers, relay.Streams = ownerOnly, s.Streams
+	relay.LimitConnects(connectLimit)
+	connects := 0
+	relay.OnConnect = func(c fakeherdr.GuestConnect) {
+		connects++
+		outcome := "admitted"
+		if c.Refused {
+			outcome = "refused 429 rate_limited"
+		}
+		log.Printf("fakeherdr guest relay: connect %d %s", connects, outcome)
+	}
 	var mu sync.Mutex
 	menuOpen, seq := true, 1.0
 	relay.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
@@ -65,6 +77,16 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool) error {
 			}
 			mu.Unlock()
 			return map[string]any{"type": "ok"}, nil
+		case "agent.transcript":
+			// Working once a key moved the menu on, as agent.list says: the
+			// guest's chat polls at its working pace.
+			value, apiErr := s.Handle(method, params)
+			mu.Lock()
+			defer mu.Unlock()
+			if page, ok := value.(map[string]any); ok && !menuOpen {
+				page["working"] = map[string]any{"intent": "Running the chosen verification"}
+			}
+			return value, apiErr
 		}
 		return s.Handle(method, params)
 	}

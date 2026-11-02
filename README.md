@@ -199,7 +199,15 @@ row with its status badge, and a card for connecting, offline, access removed (w
 Remove share) and unreachable states. Settings is GuestSettingsView in the detail
 column.
 Terminal, supported omp Chat and owner-enabled Gram use fresh authenticated relay
-sessions. Guest Gram uses its own read marks and reply schema; it never decodes
+sessions, one relay connect per request, and the relay allows a network 30 guest
+connects a minute. A guest therefore paces itself: the agent list every 15 s and at
+once after a send, an answer or a menu key; the Chat as herdrup's ChatModel does,
+every 3 s while omp works or a send has yet to show and every 30 s otherwise. After
+the relay's 429 rate_limited no request connects for 15 s, then
+30 s, then 60 s while it keeps refusing, and a connect that goes through starts
+over; meanwhile the page stays open and reads "Reconnecting…", not "Can't reach".
+`fakeherdr -guest-relay … -guest-connect-limit N` logs every connect and refuses
+past N a minute. Guest Gram uses its own read marks and reply schema; it never decodes
 owner claim/read metadata. Agent renames retain the grant and update Gram routing.
 Leave share forgets local access without deleting this device's identity.
 The Linux native smoke exercised invalid input, cancellation before redemption,

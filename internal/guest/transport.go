@@ -9,30 +9,94 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 )
 
+// Clock is a Transport's time, and its owner's status poll's.
+type Clock interface {
+	Now() time.Time
+	After(time.Duration) <-chan time.Time
+}
+
+type systemClock struct{}
+
+func (systemClock) Now() time.Time                         { return time.Now() }
+func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// SystemClock is the wall clock.
+var SystemClock Clock = systemClock{}
+
+// The relay allows a network 30 guest connects a minute and answers more with
+// 429 rate_limited. After one, a Transport connects again only after
+// relayBackoffFirst, doubling to relayBackoffMax while the relay keeps
+// refusing; a connect that goes through starts over.
+const (
+	relayBackoffFirst = 15 * time.Second
+	relayBackoffMax   = 60 * time.Second
+)
+
+// relayBackoff is the wait after the relay's next 429, given the last.
+func relayBackoff(last time.Duration) time.Duration {
+	if last == 0 {
+		return relayBackoffFirst
+	}
+	return min(2*last, relayBackoffMax)
+}
+
 // Transport opens a fresh authenticated Noise session for each API request.
 // Closing it cancels both established streams and pending relay handshakes.
+// After the relay's 429 every request fails with ErrRateLimited, without
+// connecting, until the backoff ends.
 type Transport struct {
 	access   Access
 	identity Identity
+	clock    Clock
 	ctx      context.Context
 	cancel   context.CancelFunc
 	seq      atomic.Uint64
 	mu       sync.RWMutex
 	features Features
+	// backoff is the wait after the last 429 and retryAt its end; both zero
+	// once a connect goes through.
+	backoff time.Duration
+	retryAt time.Time
 }
 
-func NewTransport(access Access, identity Identity) *Transport {
+func NewTransport(access Access, identity Identity, clock Clock) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Transport{access: access, identity: identity, ctx: ctx, cancel: cancel}
+	return &Transport{access: access, identity: identity, clock: clock, ctx: ctx, cancel: cancel}
 }
 func (t *Transport) Done() <-chan struct{} { return t.ctx.Done() }
 func (t *Transport) Close() error          { t.cancel(); return nil }
 func (t *Transport) Features() Features    { t.mu.RLock(); defer t.mu.RUnlock(); return t.features }
+
+// RateLimitedUntil is when the transport connects again after the relay's
+// 429; zero when it is not waiting.
+func (t *Transport) RateLimitedUntil() time.Time {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if !t.clock.Now().Before(t.retryAt) {
+		return time.Time{}
+	}
+	return t.retryAt
+}
+
+// limited starts the next backoff after a 429, unless one started while this
+// connect was in flight: the requests the page and the status poll had out at
+// once all hear the same refusal.
+func (t *Transport) limited() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.clock.Now()
+	if now.Before(t.retryAt) {
+		return
+	}
+	t.backoff = relayBackoff(t.backoff)
+	t.retryAt = now.Add(t.backoff)
+}
 
 func (t *Transport) Call(ctx context.Context, method string, params, result any) error {
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
@@ -62,6 +126,9 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 	if err := t.ctx.Err(); err != nil {
 		return nil, err
 	}
+	if !t.RateLimitedUntil().IsZero() {
+		return nil, ErrRateLimited
+	}
 	hello, err := json.Marshal(struct {
 		Version int    `json:"v"`
 		GuestID string `json:"guest_id"`
@@ -70,6 +137,9 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 		return nil, err
 	}
 	connected, err := openSession(ctx, t.access.Endpoint, t.identity, hello)
+	if errors.Is(err, ErrRateLimited) {
+		t.limited()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +153,7 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 	}
 	t.mu.Lock()
 	t.features = connected.reply.Features
+	t.backoff, t.retryAt = 0, time.Time{}
 	t.mu.Unlock()
 	request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(t.seq.Add(1), 10), method, params)
 	if err != nil {

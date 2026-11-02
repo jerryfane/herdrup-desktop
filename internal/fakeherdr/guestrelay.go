@@ -41,6 +41,12 @@ type GuestRelay struct {
 	OwnerName, MachineLabel, GuestName string
 	// OwnerOnlyAnswers is a herdr older than guest answers.
 	OwnerOnlyAnswers bool
+	// Now is the relay's clock for LimitConnects and Connects; nil is the
+	// wall clock.
+	Now func() time.Time
+	// OnConnect hears each guest connect as it is admitted or refused. It
+	// runs with the relay locked.
+	OnConnect func(GuestConnect)
 
 	hostID   string
 	host     noise.DHKey
@@ -52,10 +58,22 @@ type GuestRelay struct {
 	guestID  string
 	guestKey []byte
 	calls    []GuestCall
+	// connects are the guest's relay connects; past connectLimit in a minute
+	// the relay refuses one with 429 rate_limited (LimitConnects).
+	connects     []GuestConnect
+	connectLimit int
 	// commit is the granted agent's state_change_seq when a guest batch last
 	// committed a menu choice; committed says one has.
 	commit    uint64
 	committed bool
+}
+
+// GuestConnect is one guest connect to the relay: one WebSocket and Noise
+// handshake, which a guest opens for every request.
+type GuestConnect struct {
+	At time.Time
+	// Refused is the relay's 429 rate_limited.
+	Refused bool
 }
 
 // GuestCall is one request a guest made: its method, its params as the gate
@@ -121,9 +139,53 @@ func (r *GuestRelay) Calls() []GuestCall {
 	return slices.Clone(r.calls)
 }
 
+// Connects returns every guest connect to the relay, refused ones included,
+// in order.
+func (r *GuestRelay) Connects() []GuestConnect {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.connects)
+}
+
+// LimitConnects makes the relay refuse a guest connect with 429 rate_limited
+// once n connects (refused ones included) arrived in the minute before it,
+// as the relay's GUEST_CONNECT_LIMIT does a network's; 0 lifts the limit.
+func (r *GuestRelay) LimitConnects(n int) {
+	r.mu.Lock()
+	r.connectLimit = n
+	r.mu.Unlock()
+}
+
+// admit records a guest connect and says whether the limit lets it through.
+func (r *GuestRelay) admit() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	recent := 0
+	for _, earlier := range r.connects {
+		if now.Sub(earlier.At) < time.Minute {
+			recent++
+		}
+	}
+	connect := GuestConnect{At: now, Refused: r.connectLimit > 0 && recent >= r.connectLimit}
+	r.connects = append(r.connects, connect)
+	if r.OnConnect != nil {
+		r.OnConnect(connect)
+	}
+	return !connect.Refused
+}
+
 func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path != "/v1/guest/"+r.hostID {
 		http.NotFound(w, req)
+		return
+	}
+	if !r.admit() {
+		w.Header().Set("X-Herdr-Guest-Error", "rate_limited")
+		http.Error(w, `{"error":"rate_limited"}`, http.StatusTooManyRequests)
 		return
 	}
 	socket, err := websocket.Accept(w, req, nil)

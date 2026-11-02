@@ -58,6 +58,7 @@ func (d *Desk) GuestMenuKey(ctx context.Context, token, key string) error {
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
+	defer v.at.link.pollGuestStatus()
 	err = guestLink.SendMenuKeys(ctx, v.PaneID, []string{key})
 	var api *bridge.APIError
 	if errors.As(err, &api) && api.Code == guestForbidden {

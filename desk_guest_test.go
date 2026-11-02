@@ -30,6 +30,7 @@ func TestGuestAvailabilityClassifiesListingFailures(t *testing.T) {
 		{fmt.Errorf("agent.list: %w", guest.ErrHostOffline), "offline"},
 		{guest.ErrRevoked, "lost"},
 		{fmt.Errorf("agent.list: %w", guest.ErrRevoked), "lost"},
+		{guest.ErrRateLimited, "reconnecting"},
 		{errors.New("The shared machine is busy. Try again shortly."), ""},
 	} {
 		if got := guestAvailability(c.err); got != c.want {
