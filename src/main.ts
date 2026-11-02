@@ -653,8 +653,9 @@ function openAgent(target: AgentTarget) {
           if (input instanceof HTMLInputElement) input.value = String(value ?? "");
         }
       }
-      // Password-only machines cannot reconnect unattended. Show the form;
-      // the activation remains pending while the user supplies credentials.
+      // Password-only machines cannot reconnect unattended. Show the hosts;
+      // the activation stays pending, and connecting its machine with the
+      // password (Desk.selectMachine) opens the activation's session.
       choosingHost = true;
       state = { ...state, phase: "error", message: err instanceof Error ? err.message : String(err) };
       render();

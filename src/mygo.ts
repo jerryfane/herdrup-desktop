@@ -1228,7 +1228,9 @@ export const Desk = {
   /**
    * SelectMachine makes a saved machine the active one and connects to it,
    * replacing any current connection. password is used only when the
-   * machine has no key file.
+   * machine has no key file. An activation still pending for this machine
+   * (ActivateAgent needed this password) connects to its session, saved as
+   * ActivateAgent would have.
    */
   selectMachine(id: string, password: string): Promise<void> {
     return call("Desk.SelectMachine", id, password);

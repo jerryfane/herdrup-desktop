@@ -328,7 +328,9 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 
 // SelectMachine makes a saved machine the active one and connects to it,
 // replacing any current connection. password is used only when the
-// machine has no key file.
+// machine has no key file. An activation still pending for this machine
+// (ActivateAgent needed this password) connects to its session, saved as
+// ActivateAgent would have.
 func (d *Desk) SelectMachine(id, password string) error {
 	d.storeMu.Lock()
 	st, err := d.load()
@@ -346,6 +348,12 @@ func (d *Desk) SelectMachine(id, password string) error {
 		d.storeMu.Unlock()
 		return errors.New("a password is required")
 	}
+	d.mu.Lock()
+	if p := d.pendingAgent; p != nil && p.MachineID == id {
+		m.Session = p.Session
+		st.Machines[i].Session = p.Session
+	}
+	d.mu.Unlock()
 	st.Active = id
 	err = d.store(st)
 	d.storeMu.Unlock()

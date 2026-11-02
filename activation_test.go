@@ -76,6 +76,54 @@ func TestAgentActivationSurvivesStartupAndStaleAcknowledgement(t *testing.T) {
 	}
 }
 
+// A password-only machine cannot be reconnected by the activation itself; the
+// user supplies the password on the host row. That connection must still go
+// to the session the notification came from, not the one saved for the host.
+func TestAgentActivationPasswordRecoveryOpensItsSession(t *testing.T) {
+	d := newDesk(t.TempDir())
+	saved := unreachable("a.example")
+	saved.Session = "work"
+	if err := d.Connect(saved, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	other := unreachable("b.example")
+	if err := d.Connect(other, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	target := AgentTarget{machineID(saved), "", "w1:p1"}
+	d.requestAgent(target)
+	if err := d.ActivateAgent(target); err == nil {
+		t.Fatal("a password-only machine reconnected without its password")
+	}
+	if err := d.SelectMachine(target.MachineID, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	session := sessionKey(d.link.session)
+	d.mu.Unlock()
+	if m, _ := d.Machine(); m == nil || machineID(*m) != target.MachineID || sessionKey(m.Session) != target.Session || session != target.Session {
+		t.Fatalf("password recovery connected %+v in session %q, want the activation's %+v", m, session, target)
+	}
+	if got := d.PendingAgent(); got == nil || *got != target {
+		t.Fatalf("activation lost before page acknowledgement: %+v", got)
+	}
+
+	// With no activation pending, picking a host keeps its saved session.
+	d.AgentOpened(target)
+	if err := d.SelectSession("work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SelectMachine(machineID(other), "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SelectMachine(target.MachineID, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := d.Machine(); m == nil || m.Session != "work" {
+		t.Fatalf("an acknowledged activation still steered the host row: %+v", m)
+	}
+}
+
 func TestNotificationIdentitySeparatesScopes(t *testing.T) {
 	seen := map[string]bool{}
 	for _, target := range []AgentTarget{
