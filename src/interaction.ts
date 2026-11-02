@@ -166,6 +166,9 @@ class Detail {
  // key. Questions wait for the owner for the rest of this page (ChatModel.answersRefused,
  // ChatView.swift:63-66).
  answersRefused = false;
+ // The guest's host refused its terminal size: herdrup's note line says so instead of an error
+ // (GuestPaneView.resizeRefused, GuestPaneView.swift:81, 449, 573).
+ resizeRefused = false;
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
@@ -364,10 +367,11 @@ class Detail {
  updateGuestQuestion(): GuestQuestion | null {
   const view = this.view;
   if (!view?.guest) return null;
-  const question = guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal");
+  const question = guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal", this.resizeRefused);
   this.guestBanner.textContent = question.banner ?? "";
   this.guestBanner.hidden = !question.banner;
   this.guestBanner.dataset.keys = String(question.menuKeys);
+  this.guestBanner.dataset.tone = question.tone;
   this.keyRow.hidden = !question.menuKeys;
   return question;
  }
@@ -707,7 +711,11 @@ class Detail {
    if (this.disposed || generation !== this.generation || streamID !== this.terminalID || !this.terminalReady || !canvas.clientWidth) return;
    this.fit?.fit();
    this.updateHistoryPaging();
-   void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => { if (generation === this.generation && streamID === this.terminalID) this.status.textContent = "Resize: " + errorText(e); });
+   void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => {
+    if (generation !== this.generation || streamID !== this.terminalID) return;
+    if (this.view?.guest && String(e).includes("guest_forbidden")) { this.resizeRefused = true; this.updateGuestQuestion(); return; }
+    this.status.textContent = "Resize: " + errorText(e);
+   });
   };
   this.fitTerminal = fit;
   this.resize = new ResizeObserver(() => { clearTimeout(this.resizeTimer); this.resizeTimer = window.setTimeout(fit, 120); });

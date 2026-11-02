@@ -84,6 +84,11 @@
 .guest-question-banner { position: absolute; left: 0; right: 0; bottom: calc(var(--composer-height, 68px) + 50px); height: 26px; padding: 0 16px; display: flex; align-items: center; font: 500 12px var(--font-app); color: var(--status-waiting); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .guest-question-banner[data-keys="false"] { bottom: var(--composer-height, 68px); }
 .guest-question-banner[hidden] { display: none; }
+.guest-question-banner[data-tone="faint"] { color: var(--color-text-faint); }
+/* The line takes layout height, as noteRow does in herdrup: Chat's history and the Terminal above the
+   menu keys end above it; without the keys it sits in the quick-key allowance. */
+.interaction-body:has(> .guest-question-banner:not([hidden])) > .chat-surface { bottom: calc(68px + 26px); }
+.interaction-body:has(> .guest-question-banner:not([hidden]):not([data-keys="false"])) > .terminal-surface { bottom: calc(118px + 26px); }
 .chat-transcript { flex: 1; min-height: 0; overflow: auto; padding: 8px 16px 12px; scroll-behavior: auto; }
 .chat-scroll { flex:1; min-height:0; overflow:auto; }
 .chat-scroll > .chat-transcript { min-height:100%; overflow:visible; }

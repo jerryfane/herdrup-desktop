@@ -29,9 +29,14 @@ describe("guest answers", () => {
   });
 
   test("menu keys show only on the terminal while the agent waits and the host lets the guest answer", () => {
-    expect(guestQuestion("docs", "Jerry", "needsYou", false, true)).toEqual({ banner: "docs is asking a question · answer with the keys below", menuKeys: true, label: null });
-    expect(guestQuestion("docs", "Jerry", "needsYou", false, false)).toEqual({ banner: "docs is asking a question", menuKeys: false, label: null });
-    expect(guestQuestion("docs", "Jerry", "needsYou", true, true)).toEqual({ banner: "docs is asking a question only Jerry can answer", menuKeys: false, label: "needs Jerry" });
-    expect(guestQuestion("docs", "Jerry", "working", false, true)).toEqual({ banner: null, menuKeys: false, label: null });
+    expect(guestQuestion("docs", "Jerry", "needsYou", false, true)).toEqual({ banner: "docs is asking a question · answer with the keys below", tone: "waiting", menuKeys: true, label: null });
+    expect(guestQuestion("docs", "Jerry", "needsYou", false, false)).toEqual({ banner: "docs is asking a question", tone: "waiting", menuKeys: false, label: null });
+    expect(guestQuestion("docs", "Jerry", "needsYou", true, true)).toEqual({ banner: "docs is asking a question only Jerry can answer", tone: "waiting", menuKeys: false, label: "needs Jerry" });
+  });
+
+  test("otherwise the line is the view-only reminder, never a resize error", () => {
+    expect(guestQuestion("docs", "Jerry", "working", false, true).banner).toBe("Terminal is view-only · send messages below");
+    expect(guestQuestion("docs", "Jerry", "idle", false, false, true)).toEqual({ banner: "View-only · this host doesn't support guest resizing", tone: "faint", menuKeys: false, label: null });
+    expect(guestQuestion("docs", "Jerry", "stopped", false, true).banner).toBeNull();
   });
 });
