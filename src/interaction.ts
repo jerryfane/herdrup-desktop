@@ -156,6 +156,7 @@ class Detail {
  chatSurface = el("div", "chat-surface");
  mounted = false;
  terminalStartup: Promise<void> | null = null;
+ terminalReconnect: Promise<void> | null = null;
  chatButton = button("Chat", () => { void this.chooseMode("chat"); });
  terminalButton = button("Terminal", () => { void this.chooseMode("terminal"); });
  terminal: Terminal | null = null;
@@ -534,7 +535,12 @@ class Detail {
   }
   this.input.dispatchEvent(new Event("input"));
  }
- async reconnectTerminal() {
+ // One reconnect at a time: a refresh while one runs joins it rather than opening a second stream.
+ reconnectTerminal() {
+  this.terminalReconnect ??= this.replaceTerminal().finally(() => { this.terminalReconnect = null; });
+  return this.terminalReconnect;
+ }
+ async replaceTerminal() {
   if (this.terminalStartup) await this.terminalStartup;
   if (this.disposed) return;
   this.terminalReady = false;
