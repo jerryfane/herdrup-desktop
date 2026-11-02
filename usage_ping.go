@@ -90,6 +90,10 @@ type usagePing struct {
 	mu sync.Mutex
 	// cancel ends the ping in flight; nil when none is.
 	cancel context.CancelFunc
+	// acceptedInstall and acceptedDay are the last ping the relay accepted in
+	// this process, so a failed save of its LastPing cannot let the same
+	// install ping again that UTC day.
+	acceptedInstall, acceptedDay string
 }
 
 func newUsagePing(path, app, version string) *usagePing {
@@ -180,7 +184,7 @@ func (p *usagePing) ping() bool {
 	}
 	state, err := p.loadLocked()
 	today := p.now().UTC().Format(time.DateOnly)
-	if err != nil || state.Off || state.LastPing == today {
+	if err != nil || state.Off || state.LastPing == today || (state.Install == p.acceptedInstall && today == p.acceptedDay) {
 		p.mu.Unlock()
 		return false
 	}
@@ -207,12 +211,16 @@ func (p *usagePing) ping() bool {
 	if !accepted {
 		return false
 	}
+	// The day is the one the relay accepted it on, which is not the day it
+	// was sent if UTC midnight passed while it was out.
+	day := p.now().UTC().Format(time.DateOnly)
+	p.acceptedInstall, p.acceptedDay = install, day
 	// Switching off (or off and on) while the ping was out keeps its outcome
 	// from writing over the new setting.
 	if state, err = p.loadLocked(); err != nil || state.Off || state.Install != install {
 		return false
 	}
-	state.LastPing = today
+	state.LastPing = day
 	return p.saveLocked(state) == nil
 }
 

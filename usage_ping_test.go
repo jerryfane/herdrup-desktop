@@ -149,6 +149,70 @@ func TestUsagePingAtMostOncePerUTCDay(t *testing.T) {
 	}
 }
 
+// pingAcceptedDuring sends a ping the stub holds until during has run.
+func pingAcceptedDuring(t *testing.T, stub *pingStub, p *usagePing, during func()) {
+	t.Helper()
+	stub.mu.Lock()
+	stub.block = make(chan struct{})
+	stub.mu.Unlock()
+	done := make(chan struct{})
+	go func() { p.ping(); close(done) }()
+	<-stub.arrived
+	during()
+	close(stub.block)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the held ping did not finish")
+	}
+	stub.mu.Lock()
+	stub.block = nil
+	stub.mu.Unlock()
+}
+
+func TestUsagePingAcceptedButUnsavedStillOncePerUTCDay(t *testing.T) {
+	stub, srv := newPingStub(t)
+	p, clock := testPinger(t, srv.URL)
+	// A directory where the save writes its temporary file fails the save of
+	// LastPing after the relay has accepted the ping.
+	pingAcceptedDuring(t, stub, p, func() {
+		if err := os.Mkdir(p.path+".tmp", 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if state, _ := readPingState(t, p); state.LastPing != "" {
+		t.Fatalf("lastPing = %q, want the save to have failed", state.LastPing)
+	}
+	clock.set(time.Date(2026, 11, 2, 18, 0, 0, 0, time.UTC))
+	p.ping()
+	if n := stub.count(); n != 1 {
+		t.Fatalf("%d pings on one UTC day after an unsaved accepted one, want 1", n)
+	}
+	clock.set(time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC))
+	if p.ping(); stub.count() != 2 {
+		t.Fatalf("no ping on the next UTC day (%d sent)", stub.count())
+	}
+}
+
+func TestUsagePingAcceptedAfterUTCMidnightCountsForThatDay(t *testing.T) {
+	stub, srv := newPingStub(t)
+	p, clock := testPinger(t, srv.URL)
+	clock.set(time.Date(2026, 11, 2, 23, 59, 59, 0, time.UTC))
+	pingAcceptedDuring(t, stub, p, func() { clock.set(time.Date(2026, 11, 3, 0, 0, 1, 0, time.UTC)) })
+	if state, _ := readPingState(t, p); state.LastPing != "2026-11-03" {
+		t.Errorf("lastPing = %q, want 2026-11-03, the UTC day the relay accepted it", state.LastPing)
+	}
+	// A fresh process has only the stored date to go on.
+	fresh := newUsagePing(p.path, p.app, p.version)
+	fresh.url, fresh.now = p.url, clock.now
+	clock.set(time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC))
+	p.ping()
+	fresh.ping()
+	if n := stub.count(); n != 1 {
+		t.Fatalf("%d pings for 3 November, want 1", n)
+	}
+}
+
 func TestUsagePingFailureWaitsForTheNextTrigger(t *testing.T) {
 	stub, srv := newPingStub(t)
 	stub.status = http.StatusNotFound // the endpoint is not live yet
