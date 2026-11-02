@@ -17,6 +17,7 @@ import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
+import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, motionSeconds } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
@@ -1169,7 +1170,10 @@ class Detail {
    await this.inputQueue;
    if (this.disposed) return;
    if (this.inputFailed) throw new Error("An earlier key send failed. Reconnect before sending again.");
+   const ownerSend = this.view?.guest === false;
    const result = JSON.parse(await Desk.chatPrompt(this.token, text));
+   // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
+   if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
    if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.saveDraft(); this.input.dispatchEvent(new Event("input")); }
    if (!this.disposed) this.status.textContent = result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again.");
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();

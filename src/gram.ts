@@ -28,6 +28,7 @@ import {
   type GramAgent,
 } from "./gramMention";
 import * as model from "./gramModel";
+import { recordOwnerSend } from "./starPrompt";
 import { agentName, foldToggleLabel, gramTextFolds, rowPreview, savedPreview, segments, type GramTextSegment } from "./gramText";
 import {
   Desk,
@@ -1623,7 +1624,9 @@ async function send() {
   submittedDraftRevision = revision;
   posting = true;
   try {
+    const ownerSend = !guestRecipient;
     await Desk.gramPost(a.body, to ? [to] : [], attachments.map((x) => x.path));
+    if (ownerSend) recordOwnerSend();
   } catch {
     // The backend's banner reports failure; leave unsent text intact.
   } finally {
