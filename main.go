@@ -30,6 +30,7 @@ func main() {
 		pageURL = "mygo://" + filepath.Base(dir) + "/"
 	}
 	desk := newDesk(dir)
+	desk.usage.url = usagePingURL()
 	if err := prepareReferenceHosts(desk); err != nil {
 		log.Fatal("reference host metadata: ", err)
 	}
@@ -104,6 +105,10 @@ func main() {
 			}
 		}
 		startPresence(desk, win)
+		// The anonymous usage count: on start and when the window comes back,
+		// at most once a UTC day (usage_ping.go).
+		desk.usage.trigger()
+		win.OnFocus(desk.usage.trigger)
 		win.OnClose(func(*mygo.CloseEvent) { dictation.stopAll() })
 		if refEnabled() {
 			runRef(desk, win)

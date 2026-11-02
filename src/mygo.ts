@@ -1080,6 +1080,13 @@ export const Desk = {
   getPreviewJavaScript(): Promise<boolean> {
     return call("Desk.GetPreviewJavaScript");
   },
+  /**
+   * GetShareUsageCount reports the "Share anonymous usage count" switch; it
+   * defaults on.
+   */
+  getShareUsageCount(): Promise<boolean> {
+    return call("Desk.GetShareUsageCount");
+  },
   /** GramAttachFiles stages native dropped files through the existing uploader. */
   gramAttachFiles(paths: string[]): Promise<string[]> {
     return call("Desk.GramAttachFiles", paths);
@@ -1510,6 +1517,13 @@ export const Desk = {
   },
   setPreviewJavaScript(enabled: boolean): Promise<void> {
     return call("Desk.SetPreviewJavaScript", enabled);
+  },
+  /**
+   * SetShareUsageCount turns the anonymous usage count on or off. Off deletes the
+   * install ID and stops pings at once; on makes a new ID.
+   */
+  setShareUsageCount(on: boolean): Promise<void> {
+    return call("Desk.SetShareUsageCount", on);
   },
   /**
    * SettingsAccountMenu snapshots one account. A menu selection is only an intent;

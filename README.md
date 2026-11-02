@@ -394,6 +394,17 @@ remote/data navigation against a local server whose unprotected control did load
 CI run `41150320378` at `9f0031f` passed these unchanged scenarios on both systems
 and saved their preview screenshots. Older unsupported WebView2 runtime rejection
 has not been exercised.
+Settings › About ends with “Share anonymous usage count”, on by default: once a UTC
+day, when the app starts or its window regains focus, it POSTs
+`{"v":1,"install":…,"app":"desktop-macos|desktop-linux|desktop-windows","version":…,"build":…}`
+to the guest relay's `/v1/ping` (`usage_ping.go`). The install ID is 16 random bytes
+(base64url) kept in `usage-ping.json` in the app's data directory with the date of
+the last accepted ping; `version` and `build` are both the app version, as the
+desktop has no separate build number. A failed ping (including a 404 while the
+endpoint is not live) waits for the next start or focus; there is no retry loop.
+Turning the switch off ends a ping in flight and deletes the ID; turning it on
+makes a new one. Smoke builds, reference captures and tests send nothing unless
+`HERDRUP_USAGE_PING_URL` names a stub endpoint, which then replaces the relay.
 This is not complete Settings parity: additional preferences, daemon updates,
 native invite sending and full reference comparison remain.
 
@@ -672,8 +683,8 @@ with the box and baseline SwiftUI gives `Image(systemName:).font(.system(size:we
   stand-in.
   Additional web-only glyphs in `third_party/phosphor/web` are pinned to
   `@phosphor-icons/core@2.1.1` and use the same MIT licence.
-  Settings uses the gauge and outbound arrow from that package for Typing latency
-  and external links. Internal split-view page rows omit navigation chevrons, as
+  Settings uses the gauge, outbound arrow and bar chart from that package for Typing
+  latency, external links and the usage count. Internal split-view page rows omit navigation chevrons, as
   Swift does. A Linux native-window check covered keyboard opening of Typing
   latency, selection state, reset and return to Machines; both pages were inspected.
 
