@@ -354,7 +354,7 @@ class Detail {
     if (this.disposed) return;
     this.status.textContent = "";
     if (reply.ownerAnswers) this.refuseAnswers();
-   } catch (error) { if (!this.disposed) this.status.textContent = String(error); }
+   } catch (error) { if (!this.disposed) this.status.textContent = errorText(error); }
   });
  }
  refuseAnswers() {
