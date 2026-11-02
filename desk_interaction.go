@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -56,11 +55,6 @@ type interaction struct {
 	recipient      string
 	sendMu         sync.Mutex
 	guestShare     guestShareRoute
-	// guestAnswers: a guest answer or menu key went through on this view, so the
-	// host answers guests; a later guest_forbidden is its brief refusal after a
-	// committing key (herdr #352 guest_gate), never a host that keeps answers
-	// for the owner (PR #90 review).
-	guestAnswers atomic.Bool
 }
 
 type TerminalEvent struct {
@@ -421,16 +415,14 @@ func (d *Desk) ChatAnswer(ctx context.Context, token, askID, option string) (Cha
 	params := herdrapi.AgentAnswerParams{Target: v.PaneID, AskID: askID, Option: option}
 	var result herdrapi.ResponseResultAgentAnswer
 	if guestLink := v.at.link.guest; guestLink != nil {
-		if result, err = guestLink.AgentAnswer(ctx, params); err == nil {
-			v.guestAnswers.Store(true)
-		}
+		result, err = guestLink.AgentAnswer(ctx, params)
 	} else {
 		result, err = v.client.AgentAnswer(ctx, params)
 	}
 	if err != nil {
 		var api *bridge.APIError
 		if errors.As(err, &api) {
-			return ChatAnswerReply{Code: api.Code, Message: api.Message, OwnerAnswers: v.Guest && api.Code == guestForbidden && !v.guestAnswers.Load()}, nil
+			return ChatAnswerReply{Code: api.Code, Message: api.Message, OwnerAnswers: v.Guest && api.Code == guestForbidden}, nil
 		}
 		return ChatAnswerReply{}, err
 	}

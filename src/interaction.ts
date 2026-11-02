@@ -350,10 +350,11 @@ class Detail {
   this.menuKeyQueue = this.menuKeyQueue.then(async () => {
    if (this.disposed || generation !== this.generation || this.answersRefused) return;
    try {
-    const reply = await Desk.guestMenuKey(this.token, key);
+    // A refused key is herdr's "not now" (no menu, a free-text prompt, its pause after a
+    // committing key), never proof the host keeps answers for the owner (desk_guest_answers.go).
+    await Desk.guestMenuKey(this.token, key);
     if (this.disposed) return;
     this.status.textContent = "";
-    if (reply.ownerAnswers) this.refuseAnswers();
    } catch (error) { if (!this.disposed) this.status.textContent = errorText(error); }
   });
  }

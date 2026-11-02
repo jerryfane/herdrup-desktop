@@ -454,16 +454,6 @@ export interface GuestInvitation {
   fingerprint: string;
 }
 
-/** GuestMenuKeyReply is a menu key's outcome the page acts on. */
-export interface GuestMenuKeyReply {
-  /**
-   * OwnerAnswers: the host refused the key while the agent still waits on
-   * its menu, so it keeps answers for the owner (a host older than guest
-   * answers); the page waits for the owner from then on.
-   */
-  ownerAnswers?: boolean;
-}
-
 /**
  * GuestShareDetails describes the agent selected when this view was opened.
  * Routing stays in Go; the page cannot supply a different pane or machine.
@@ -1204,14 +1194,17 @@ export const Desk = {
   },
   /**
    * GuestMenuKey presses one of the bar's menu keys in a guest's shared pane,
-   * as GuestPaneView.sendMenuKey (GuestPaneView.swift:788-813). herdr refuses
-   * a guest's key with guest_forbidden while the agent is not on a menu, after
-   * a choosing key until it sees the menu change (guest_gate.rs:992-1038), and
-   * always on a host older than guest answers. A refusal while the agent still
-   * waits means the last; one after the menu closed is the race it looks like,
-   * and the next agent poll settles the page.
+   * as GuestPaneView.sendMenuKey (GuestPaneView.swift:788-813). herdr refuses a
+   * guest's key with guest_forbidden whenever it would not take one: not on a
+   * menu, on a free-text prompt, during its pause after a committing key
+   * (guest_gate.rs awaits_menu_input and MENU_COMMITS, d78b91c 505-529), and on a
+   * host older than guest answers. Its guest view hides the prompt kind and the
+   * state sequence, so a guest cannot tell these apart, and a refused key says
+   * nothing about the host (PR #90 review): it is ignored. Whether the host
+   * keeps answers for the owner is read from agent.answer and the transcript's
+   * answerable instead (ChatAnswer, the page's withheldFromCaller).
    */
-  guestMenuKey(token: string, key: string): Promise<GuestMenuKeyReply> {
+  guestMenuKey(token: string, key: string): Promise<void> {
     return call("Desk.GuestMenuKey", token, key);
   },
   guestShareDetails(token: string): Promise<GuestShareDetails> {
