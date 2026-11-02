@@ -423,6 +423,13 @@ export interface GuestConnection {
   access: Access;
   features: Features;
   fingerprint: string;
+  /**
+   * Availability classifies an "error" phase as herdrup's guest home does
+   * (App/GuestHomeView.swift 346-356): "offline" when the relay reports the
+   * machine offline, "lost" when the owner no longer shares the agent, ""
+   * otherwise.
+   */
+  availability?: string;
 }
 
 /** GuestInvitation contains display information, not the invitation bearer. */

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,25 @@ import (
 
 	"github.com/jerryfane/herdrup-desktop/internal/guest"
 )
+
+// The guest home tells an offline machine and a lost share from other failures, wrapped
+// or not (App/GuestHomeView.swift 346-356).
+func TestGuestAvailabilityClassifiesListingFailures(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{guest.ErrHostOffline, "offline"},
+		{fmt.Errorf("agent.list: %w", guest.ErrHostOffline), "offline"},
+		{guest.ErrRevoked, "lost"},
+		{fmt.Errorf("agent.list: %w", guest.ErrRevoked), "lost"},
+		{errors.New("The shared machine is busy. Try again shortly."), ""},
+	} {
+		if got := guestAvailability(c.err); got != c.want {
+			t.Errorf("guestAvailability(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+}
 
 func TestGuestInvitationCannotReplaceLostIdentityOfSavedShares(t *testing.T) {
 	dir := t.TempDir()

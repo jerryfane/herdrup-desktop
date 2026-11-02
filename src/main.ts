@@ -68,6 +68,16 @@ let renderReady = false;
 let guestHome: ReturnType<typeof initGuestHome> | null = null;
 let guestTab: "agents" | "settings" = "agents";
 let guestGram = false;
+// The guest home's top and tab bars as last built (render): its tab, and whether Gram
+// replaces the terminal; null while the owner's bars show.
+let guestBar: { tab: "agents" | "settings"; gram: boolean } | null = null;
+const guestActions = {
+  agents: () => { guestTab = "agents"; guestGram = false; render(); },
+  settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; render(); },
+  hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
+  terminal: () => { guestGram = false; render(); },
+  open: (target: AgentTarget) => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
+};
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
 
@@ -89,7 +99,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 
 let topBarGeneration = 0;
 async function buildTopBar() {
-  const generation = ++topBarGeneration, selectedTab = tab;
+  const generation = ++topBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
   let titleNodes: Node[], actionNodes: HTMLElement[];
   const slot = async (name: string, label: string) => {
     const s = el("div", "slot");
@@ -97,12 +107,25 @@ async function buildTopBar() {
     await place(s, name, 15, "medium");
     return s;
   };
-  const back = await slot("chevron.left", "Choose host");
+  const back = await slot("chevron.left", guestView ? "Machines" : "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
-  const chooseHost = () => { closeWriter(); choosingHost = true; render(); };
+  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
-  if (selectedTab === "gram") {
+  if (guestView) {
+    // GuestHomeView.header (App/GuestHomeView.swift 164-178): SectionTopBar(title: "Agents")
+    // with Back to the machines and no actions. While Gram replaces the terminal, the right
+    // capsule carries the way back to it (the pane's Terminal tab, GuestPaneView.swift 233).
+    titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
+    actionNodes = [];
+    if (guestView.gram) {
+      const terminal = await slot("terminal", "Back to Terminal");
+      terminal.tabIndex = 0; terminal.setAttribute("role", "button"); terminal.setAttribute("aria-label", "Back to Terminal");
+      terminal.onclick = guestActions.terminal;
+      terminal.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); guestActions.terminal(); } };
+      actionNodes.push(terminal);
+    }
+  } else if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
     titleNodes = [document.createTextNode("Gram"), ...(count ? [count] : [])];
@@ -140,6 +163,8 @@ async function buildTopBar() {
   leading.replaceChildren(back);
   $("bar-title").replaceChildren(...titleNodes);
   actions.replaceChildren(...actionNodes);
+  // The guest home's bar has no actions (GuestHomeView.swift 166-171): no empty capsule.
+  actions.hidden = actionNodes.length === 0;
   // The capsules' shapes go with their children.
   paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
   paintShape(actions, { radius: "capsule", fill: "var(--color-surface-raised)" });
@@ -177,10 +202,12 @@ function setTabBadge() {
   badge.closest(".tab")?.setAttribute("aria-label", gramUnread ? `Gram, ${gramUnread} unread` : "Gram");
 }
 async function buildTabBar() {
-  const generation = ++tabBarGeneration, selectedTab = tab;
+  const generation = ++tabBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
+  // A guest's TabView holds Agents and Settings only; the shared agent's Gram is a tab of
+  // its own screen (App/GuestHomeView.swift 29-31, 96-105).
   const items: Array<[typeof tab, string, string]> = [
     ["agents", "square.grid.2x2.fill", "Agents"],
-    ["gram", "bubble.left.and.bubble.right.fill", "Gram"],
+    ...(guestView ? [] : [["gram", "bubble.left.and.bubble.right.fill", "Gram"] as [typeof tab, string, string]]),
     ["settings", "gearshape.fill", "Settings"],
   ];
   const nodes = await Promise.all(
@@ -195,6 +222,10 @@ async function buildTabBar() {
       }
       t.append(i, el("span", "t-tab-label", label));
       t.addEventListener("click", () => {
+        if (guestView) {
+          if (key === "settings") guestActions.settings(); else guestActions.agents();
+          return;
+        }
         tab = key;
         choosingHost = false;
         void buildTabBar();
@@ -207,6 +238,7 @@ async function buildTabBar() {
   if (generation !== tabBarGeneration) return;
   $("tabbar").replaceChildren(...nodes);
   // The selected pill slides between tabs (HerdrApp.swift 2837).
+  $("tabbar").style.setProperty("--tab-count", String(items.length));
   $("tabbar").style.setProperty("--tab-index", String(items.findIndex(([key]) => key === selectedTab)));
   setTabBadge();
 }
@@ -530,7 +562,14 @@ function render() {
   if (state.guest && !state.guest.features.gram) guestGram = false;
   setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
   document.body.classList.toggle("guest-mode", guestVisible);
-  guestHome?.update(state, board, guestTab, guestGram, guestVisible);
+  // The owner's top and tab bars frame the guest home too; rebuild them as it changes.
+  const nextBar = guestVisible ? { tab: guestTab, gram: guestTab === "agents" && guestGram } : null;
+  if (nextBar?.tab !== guestBar?.tab || nextBar?.gram !== guestBar?.gram) {
+    guestBar = nextBar;
+    void buildTopBar();
+    void buildTabBar();
+  }
+  guestHome?.update(state, board, guestTab, guestVisible, interactionVisible() ? selectedAgent?.paneID ?? null : null);
   if (guestVisible) {
     connectView.hidden = true; document.body.classList.remove("host-home-visible");
     rail?.update("agents", null, false);
@@ -723,14 +762,12 @@ async function init() {
   }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
-  guestHome = initGuestHome($("sidebar"), $("detail"), {
-    agents: () => { guestTab = "agents"; guestGram = false; render(); },
-    settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; render(); },
-    hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
-    terminal: () => { guestGram = false; render(); },
-    open: target => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
+  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
+  initInteraction($("detail"), symbol, target => {
+    selectedAgent = target; refreshRowSelection();
+    // The guest home's row shows the open agent selected, as the roster's does.
+    if (state.guest) render();
   });
-  initInteraction($("detail"), symbol, target => { selectedAgent = target; refreshRowSelection(); });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render());
   hostsHold = hosts.holdsHome;
   settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);

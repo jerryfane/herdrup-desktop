@@ -192,7 +192,12 @@ key stays in the app's private data directory; invitation bearer secrets are not
 saved with grants. Missing or corrupt identities are not silently replaced while
 saved shares exist.
 
-A saved share opens a separate Agents/Settings home with only its granted agent.
+A saved share opens a separate Agents/Settings home with only its granted agent,
+drawn as herdrup's GuestHomeView: the owner's top bar (Back to the machines) and
+glass tab bar, the machine and "Shared by <owner> · 1 agent", the agent as a roster
+row with its status badge, and a card for connecting, offline, access removed (with
+Remove share) and unreachable states. Settings is GuestSettingsView in the detail
+column.
 Terminal, supported omp Chat and owner-enabled Gram use fresh authenticated relay
 sessions. Guest Gram uses its own read marks and reply schema; it never decodes
 owner claim/read metadata. Agent renames retain the grant and update Gram routing.

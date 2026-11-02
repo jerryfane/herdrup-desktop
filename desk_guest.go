@@ -29,6 +29,11 @@ type GuestConnection struct {
 	Access      guest.Access   `json:"access"`
 	Features    guest.Features `json:"features"`
 	Fingerprint string         `json:"fingerprint"`
+	// Availability classifies an "error" phase as herdrup's guest home does
+	// (App/GuestHomeView.swift 346-356): "offline" when the relay reports the
+	// machine offline, "lost" when the owner no longer shares the agent, ""
+	// otherwise.
+	Availability string `json:"availability,omitempty"`
 }
 
 var GuestInvitationOpened = mygo.NewEvent[bool]("guest-invitation:opened")
@@ -169,19 +174,32 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 	}
 	return nil
 }
+
+// guestAvailability is GuestConnection.Availability for a failed listing
+// (App/GuestHomeView.swift 346-356).
+func guestAvailability(err error) string {
+	switch {
+	case errors.Is(err, guest.ErrRevoked):
+		return "lost"
+	case errors.Is(err, guest.ErrHostOffline):
+		return "offline"
+	}
+	return ""
+}
+
 func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 	defer l.guest.Close()
 	stop := context.AfterFunc(ctx, func() { _ = l.guest.Close() })
 	defer stop()
 	client := l.guestClient
 	label := l.access.MachineLabel
-	publishState := func(phase, message string) {
+	publishState := func(phase, message, availability string) {
 		d.mu.Lock()
 		access := *l.access
 		d.mu.Unlock()
-		d.setState(ctx, ConnState{Phase: phase, Machine: label, Message: message, Guest: &GuestConnection{Access: access, Features: l.guest.Features(), Fingerprint: fingerprint}})
+		d.setState(ctx, ConnState{Phase: phase, Machine: label, Message: message, Guest: &GuestConnection{Access: access, Features: l.guest.Features(), Fingerprint: fingerprint, Availability: availability}})
 	}
-	publishState("connecting", "")
+	publishState("connecting", "", "")
 	gramStarted := false
 	for ctx.Err() == nil {
 		result, err := client.AgentList(ctx, herdrapi.AgentListParams{})
@@ -189,7 +207,7 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 			return
 		}
 		if err != nil {
-			publishState("error", err.Error())
+			publishState("error", err.Error(), guestAvailability(err))
 			if errors.Is(err, guest.ErrRevoked) {
 				return
 			}
@@ -205,7 +223,7 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 				gramStarted = true
 				go d.watchGram(ctx, l)
 			}
-			publishState("connected", "")
+			publishState("connected", "", "")
 			d.mu.Lock()
 			if ctx.Err() != nil || d.link != l {
 				d.mu.Unlock()
