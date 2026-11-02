@@ -135,6 +135,7 @@ type Desk struct {
 	creation    *creationSession
 	terminals   *terminalStore
 	updates     map[string]*serverUpdate
+	appUpdates  *appUpdates // the app's own updates (desk_updates_app.go)
 	// onBoard observes boards for the CI smoke capture.
 	onBoard func(BoardUpdate)
 	// presence takes the agents needing you to the tray and notifications
@@ -207,7 +208,8 @@ func newDesk(dir string) *Desk {
 		alert:       alertGroups,
 		failure:     alertAgentFailure,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
-		presence: newPresence(),
+		presence:   newPresence(),
+		appUpdates: newAppUpdates(),
 	}
 }
 

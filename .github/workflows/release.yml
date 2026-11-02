@@ -3,9 +3,13 @@ name: Release
 # A v* tag builds the installers with mygo build (docs/distribution.md of
 # mygo), checks each one on its OS, and publishes them with SHA256SUMS on
 # the tag's GitHub release: the macOS disk image, the Windows installer, and
-# the Linux Debian package, archive and install.sh. Run on demand, it builds
-# and checks the same files and keeps them as artifacts of the run, without
-# a release.
+# the Linux Debian package, archive and install.sh. Once mygo.config.ts has
+# the public key of app updates and the secret MYGO_UPDATER_PRIVATE_KEY
+# exists (README.md, "Signing app updates"), it also signs each platform's
+# update and publishes its archive, deltas and update-<platform>.json, which
+# installed apps check; without either, the release is as before. Run on
+# demand, it builds and checks the same files and keeps them as artifacts of
+# the run, without a release.
 on:
   push:
     tags: ["v*"]
@@ -98,7 +102,11 @@ jobs:
           WHISPER_SOURCE: ${{ github.workspace }}/speech-source
           HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
         run: bun speech/build.ts "${{ matrix.platform }}"
+      # The secret signs app updates; it is empty, and mygo build makes no
+      # update files but the Linux archive, until the owner sets it.
       - name: Build
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: bun run build -- -platform "${{ matrix.platform }}"
       # The disk image is checked here rather than in a job of its own, to
       # hold one shared Mac instead of two.
@@ -124,12 +132,16 @@ jobs:
           kill -0 "$pid" || { cat "$RUNNER_TEMP/app.log"; exit 1; }
           kill "$pid"; wait "$pid" || true
       # Into one folder, so that the artifact holds the files themselves and
-      # not the build/<os>-<arch>/ folders around them.
+      # not the build/<os>-<arch>/ folders around them. With signed updates,
+      # every platform also has its archive (*.tar.gz), deltas (*.delta) and
+      # manifest (update-<platform>.json); the manifests name the archives
+      # and deltas by these file names in the tag's release.
       - name: Collect the installers
         run: |
           mkdir "$RUNNER_TEMP/installers"
           find build -mindepth 2 -maxdepth 2 -type f \( -name '*.dmg' -o -name '*-setup-*.exe' \
-            -o -name '*.deb' -o -name '*.tar.gz' -o -name install.sh \) -exec cp {} "$RUNNER_TEMP/installers/" \;
+            -o -name '*.deb' -o -name '*.tar.gz' -o -name install.sh \
+            -o -name '*.delta' -o -name 'update-*.json' \) -exec cp {} "$RUNNER_TEMP/installers/" \;
           # GitHub normalizes '~' to '.' in asset names. Do it before the
           # artifacts and checksum manifest diverge; package metadata stays intact.
           for file in "$RUNNER_TEMP/installers/"*'~'*.deb; do
@@ -255,7 +267,8 @@ jobs:
     permissions:
       contents: write # the release
     steps:
-      # Every artifact of the run: the installers (herdrup-*) and SHA256SUMS.
+      # Every artifact of the run: the installers (herdrup-*), with signed
+      # updates their archives, deltas and update-*.json, and SHA256SUMS.
       - uses: actions/download-artifact@v4
         with:
           path: dist

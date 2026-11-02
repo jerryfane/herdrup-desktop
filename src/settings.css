@@ -176,6 +176,8 @@
 .settings-update-card h2 { margin:0; color:var(--color-text); font:600 calc(15px * var(--ui-font-scale, 1)) var(--font-app); }
 .settings-update-card p { margin:10px 0 0; color:var(--color-text-dim); font:400 calc(13px * var(--ui-font-scale, 1)) var(--font-app); line-height:1.4; }
 .settings-update-card p.settings-update-faint { margin-top:6px; color:var(--color-text-faint); font-size:calc(12px * var(--ui-font-scale, 1)); }
+/* The app update's release notes: Markdown as written, line breaks kept. */
+.settings-update-card p.settings-update-notes { white-space:pre-wrap; overflow-wrap:anywhere; }
 .settings-update-card button { min-height:32px; margin-top:14px; padding:6px 10px; border:1px solid var(--color-hairline); border-radius:8px; color:var(--color-text); background:var(--color-surface-raised); font:600 calc(14px * var(--ui-font-scale, 1)) var(--font-app); cursor:pointer; }
 .settings-update-card button:disabled { opacity:.5; cursor:default; }
 .settings-update-actions { display:flex; gap:8px; }

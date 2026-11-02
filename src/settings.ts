@@ -1,5 +1,5 @@
 import { Desk, events } from "./mygo";
-import type { BoardUpdate, ConnState, Machine, PeerSummary, SavedMachineStatus } from "./mygo";
+import type { AppUpdateState, BoardUpdate, ConnState, Machine, PeerSummary, SavedMachineStatus } from "./mygo";
 import { changeTextSize, changeUIFontScale, onTextSizeChanged, textSize, uiFontScale } from "./textSize";
 import { predictionMode, changePredictionMode } from "./typingPreference";
 import type { PredictionMode } from "./predictiveEcho";
@@ -12,6 +12,7 @@ import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
 import { PreviewSettings } from "./settingsPreviews";
 import { ServerUpdateSettings, type UpdateSuggestion } from "./settingsUpdates";
+import { AppUpdateSettings, appUpdateSummary, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
@@ -56,7 +57,7 @@ const settingIcons: Record<string, string> = {
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
-type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize" | "typingLatency";
+type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize" | "typingLatency" | "appUpdates";
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
@@ -89,7 +90,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const accountSummary = el("span", "settings-row-value"), guestSummary = el("span", "settings-row-value"), notificationSummary = el("span", "settings-row-value");
   const headers: Partial<Record<Page, { text: string; warn: boolean }>> = {};
   // Declared before the page models: their constructors report a first summary at once.
-  let exhausted: string[] = [], update: UpdateSuggestion | null = null, suggestionsKey = "";
+  let exhausted: string[] = [], update: UpdateSuggestion | null = null, appUpdate: AppUpdateState | null = null, suggestionsKey = "";
   const suggestions = el("div", "settings-suggestions");
   const setHeader = (at: Page, text: string, warn = false) => { headers[at] = { text, warn }; if (selected === at) showSubtitle(); };
   const accounts = new AccountSettings(report, glyph, summary => {
@@ -101,6 +102,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
   });
   const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right", 18));
+  // The app's own update (appUpdates.ts): the About row's status, its page, and a suggestion while one waits.
+  const appUpdateValue = el("span", "settings-row-value"), appUpdates = new AppUpdateSettings(report);
+  watchAppUpdate(next => { appUpdate = next; appUpdateValue.textContent = appUpdateSummary(next); renderSuggestions(); });
   const updates = new ServerUpdateSettings(report, next => { update = next; renderSuggestions(); });
   function closeScope() {
     accounts.setScope("");
@@ -201,7 +205,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   // suggestionsGroup (HerdrApp.swift 8087-8127): only while something waits, under the card.
   function renderSuggestions() {
-    const key = JSON.stringify([update, exhausted]);
+    const appVersion = appUpdatesShown && appUpdate?.phase === "available" ? appUpdate.version : "";
+    const key = JSON.stringify([update, exhausted, appVersion]);
     if (key === suggestionsKey) return;
     suggestionsKey = key;
     const rows: HTMLElement[] = [];
@@ -209,6 +214,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     if (update) {
       const node = row(update.title, "arrow.down.circle", () => choose("machines"), update.subtitle, pill(1, "waiting"));
       node.id = "settings-suggestion-update"; rows.push(node);
+    }
+    if (appVersion) {
+      const node = row(`Update Herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), "A newer version of this app is ready", pill(1, "waiting"));
+      node.id = "settings-suggestion-app-update"; rows.push(node);
     }
     if (exhausted.length) {
       const node = row(exhausted.length === 1 ? exhausted[0]! : `${exhausted.length} accounts are exhausted`, "key.horizontal", () => choose("accounts"),
@@ -267,6 +276,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     latencyRow.setAttribute("aria-current", selected === "typingLatency" ? "page" : "false");
     const gesturesRow = row("Gestures", "hand.draw", showGestures, "How to move around the app");
     gesturesRow.id = "settings-gestures";
+    const appUpdatesRow = row("App updates", "arrow.down.circle", () => choose("appUpdates"), "", appUpdateValue);
+    appUpdatesRow.id = "settings-app-updates";
+    appUpdatesRow.setAttribute("aria-current", selected === "appUpdates" ? "page" : "false");
     const footer = el("div", "settings-version");
     footer.append(el("span", "", `herdrup ${version}`), el("span", "settings-version-stance", "dark only, on purpose"));
     suggestionsKey = ""; renderSuggestions();
@@ -279,6 +291,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       link("Privacy Policy", "lock.shield", "https://herdrup.themartian.app/legal/privacy"),
       link("Terms of Service", "doc.text", "https://herdrup.themartian.app/legal/terms"),
       link("Open source on GitHub", "chevron.left.forwardslash.chevron.right", "https://github.com/themartianapp/herdrup"),
+      ...(appUpdatesShown ? [appUpdatesRow] : []),
     ]), footer);
     updateConnection();
   }
@@ -314,11 +327,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     connectionNodes = connectionNodes.filter(node => index.contains(node));
     versionNodes = versionNodes.filter(node => index.contains(node));
     showSubtitle();
-    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : "Text size";
+    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : selected === "appUpdates" ? "App updates" : "Text size";
     body.replaceChildren();
     if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "sharedAccess") { body.append(guests.root); return; }
     if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }
+    if (selected === "appUpdates") { body.append(appUpdates.root); return; }
     if (selected === "typingLatency") {
       const results = el("div");
       const instruction = el("p", "settings-latency-hint", "Type normally in a terminal, then come back here.");
