@@ -100,10 +100,14 @@
 .chat-surface::after { bottom:0; height:48px; background:linear-gradient(to bottom,transparent,var(--color-ground-machine)); }
 .chat-surface:not(.away-from-tail)::after { display:none; }
 .chat-transcript > :last-child { margin-bottom: 0; }
-.agent-detail .chat-jump-latest { position:absolute; z-index:2; left:50%; bottom:16px; transform:translateX(-50%); display:grid; place-items:center; width:44px; height:44px; padding:0; border-radius:50%; border:1px solid var(--color-hairline); background:color-mix(in srgb,var(--color-surface-raised) 85%,transparent); backdrop-filter:blur(12px); color:var(--color-text); }
-.chat-jump-latest[hidden] { display:none; }
-.chat-jump-latest:not([hidden]) { animation: motion-fade var(--motion-quick-duration) var(--motion-quick-ease) both; }
-.chat-jump-glyph { width:18px; height:18px; background:currentColor; mask:var(--jump-glyph) center/contain no-repeat; }
+/* JumpToLatestButton (JumpToLatestButton.swift:6-27), 16 pt above the bottom of the chat or the
+   terminal (ChatView.swift:636-640; HerdrApp.swift:5856-5862). The terminal surface ends above
+   the quick-key row, the guest's menu keys and the note line, so the button clears them. */
+.agent-detail .chat-jump-latest, .agent-detail .terminal-jump-latest { position:absolute; z-index:2; left:50%; bottom:16px; transform:translateX(-50%); display:grid; place-items:center; width:44px; height:44px; padding:0; border-radius:50%; border:1px solid var(--color-hairline); background:color-mix(in srgb,var(--color-surface-raised) 85%,transparent); backdrop-filter:blur(12px); color:var(--color-text); }
+.chat-jump-latest[hidden], .terminal-jump-latest[hidden] { display:none; }
+/* Appearing: the terminal's .easeInOut(duration: 0.15) (HerdrApp.swift:5862). */
+.chat-jump-latest:not([hidden]), .terminal-jump-latest:not([hidden]) { animation: motion-fade var(--motion-quick-duration) var(--motion-quick-ease) both; }
+.jump-latest-glyph { width:18px; height:18px; background:currentColor; mask:var(--jump-glyph) center/contain no-repeat; }
 .chat-message, .chat-work, .chat-step { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; }
 /* ChatView.dayLabel: "Today" 13 pt semibold + " 4:12 PM" regular, textFaint, full width centred,
    4 pt above and below, then the transcript's 10 pt row gap. */

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { MOTIONS, smooth, spring, springAt, springSettle } from "../src/motion";
+import { easeOut, MOTIONS, smooth, spring, springAt, springSettle } from "../src/motion";
 
 const peak = (response: number, damping: number) => {
   let best = 0;
@@ -32,4 +32,14 @@ test("every named motion is short enough to feel immediate", () => {
     expect(m.duration, name).toBeGreaterThan(0.1);
     expect(m.duration, name).toBeLessThan(0.7);
   }
+});
+
+// CSS ease-out, cubic-bezier(0, 0, 0.58, 1), is 0.6847 halfway through; reading the curve at the
+// Bézier parameter instead of solving for time would give 0.5 there.
+test("easeOut draws CSS ease-out from 0 to exactly 1 without going back", () => {
+  expect(easeOut(0)).toBe(0);
+  expect(easeOut(1)).toBe(1);
+  expect(easeOut(0.5)).toBeCloseTo(0.6847, 3);
+  let last = 0;
+  for (let x = 0.01; x <= 1; x += 0.01) { expect(easeOut(x)).toBeGreaterThanOrEqual(last); last = easeOut(x); }
 });

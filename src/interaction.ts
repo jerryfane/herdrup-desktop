@@ -22,7 +22,7 @@ import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
-import { animateHeight, motionSeconds } from "./motion";
+import { animateHeight, easeOut, motionSeconds } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode } from "./chatPreference";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -47,6 +47,19 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: stri
 }
 function button(text: string, action: () => void) {
  const b = el("button", "", text); b.type = "button"; b.onclick = action; return b;
+}
+/** JumpToLatestButton (JumpToLatestButton.swift:6-27): the 44 pt circle with an 18 pt medium
+ *  arrow.down, bottom-centre over the chat or the terminal, shown only away from the tail. */
+function jumpToLatestButton(className: string, label: string, action: () => void) {
+ const jump = button("", action);
+ jump.className = className; jump.hidden = true;
+ jump.setAttribute("aria-label", label); jump.title = label;
+ if (navigator.platform.startsWith("Mac")) void symbol("arrow.down", 18, "medium").then(icon => jump.replaceChildren(icon));
+ else {
+  const icon = el("span", "jump-latest-glyph"); icon.style.setProperty("--jump-glyph", `url("${arrowDownIcon}")`);
+  jump.replaceChildren(icon);
+ }
+ return jump;
 }
 let root: HTMLElement;
 let symbol: (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -218,7 +231,11 @@ class Detail {
  chatResize: ResizeObserver | null = null;
  private promptLayoutWidth = 0;
  private promptLayoutDirty = true;
- chatJump = button("", () => { this.chatFollowing = true; this.followChat(); });
+ chatJump = jumpToLatestButton("chat-jump-latest", "Jump to latest message", () => this.glideChatToLatest());
+ // requestAnimationFrame id while the jump button's glide runs (glideChatToLatest); 0 otherwise.
+ chatGlide = 0;
+ // The terminal's jump button (HerdrApp.swift:5856-5858 owner, GuestPaneView.swift:470-472 guest).
+ terminalJump = jumpToLatestButton("terminal-jump-latest", "Jump to latest output", () => this.jumpTerminalToTail());
  subagentSheet: HTMLDialogElement | null = null;
  questionSheet: HTMLDialogElement | null = null;
  noteSheet: HTMLDialogElement | null = null;
@@ -307,10 +324,8 @@ class Detail {
   };
   const group = (...keys: HTMLElement[]) => { const row = el("div", "terminal-key-group"); row.append(...keys); return row; };
   const space = cap("space", " "); space.className = "terminal-space-key";
-  const latest = button("", () => {
-   if (this.terminal?.modes.mouseTrackingMode === "none") this.terminal.scrollToBottom();
-   else this.queueTerminalInput("\x1b[1;5F");
-  });
+  // The same jump as the overlay button: both bump jumpToTailToken (HerdrApp.swift:6417).
+  const latest = button("", () => this.jumpTerminalToTail());
   latest.setAttribute("aria-label", "Jump to latest output"); latest.append(composerGlyph("key-latest", 14));
   this.ctrlButton.onpointerdown = event => event.preventDefault(); this.setCtrl(false);
   scroll.append(cap("esc", "\x1b"), space,
@@ -582,13 +597,55 @@ class Detail {
  }
  chatAtBottom() { return this.chatScroll.scrollHeight - this.chatScroll.scrollTop - this.chatScroll.clientHeight <= 8; }
  updateChatJump() {
-  const away = !!this.chat && !this.chatAtBottom();
+  const away = !!this.chat && !this.chatGlide && !this.chatAtBottom();
   this.chatSurface.classList.toggle("away-from-tail", away);
   this.chatJump.hidden = !away || this.findOpen;
  }
  followChat() {
-  if (this.chatFollowing && !this.findOpen && this.mode === "chat") this.chatScroll.scrollTop = this.chatScroll.scrollHeight;
+  if (this.chatFollowing && !this.chatGlide && !this.findOpen && this.mode === "chat") this.chatScroll.scrollTop = this.chatScroll.scrollHeight;
   this.updateChatJump();
+ }
+ /** The chat jump button's tap (ChatView.swift:636-639), ChatScrollPosition.animateToLatest
+  *  (ChatScrollPosition.swift:42-57): from more than two screens away it first snaps to one
+  *  screen above the tail, then glides the last screen in 0.3 s ease-out. The tail counts as
+  *  reached at once, so the button and the composer fade go now and following resumes.
+  *  Reduce Motion (a 0 s glide) jumps. */
+ glideChatToLatest() {
+  const scroll = this.chatScroll, seconds = motionSeconds("glide");
+  const bottom = () => scroll.scrollHeight - scroll.clientHeight;
+  this.stopChatGlide(); this.chatFollowing = true;
+  if (!seconds || Math.abs(bottom() - scroll.scrollTop) <= 0.5) { this.followChat(); return; }
+  if (bottom() - scroll.scrollTop > 2 * scroll.clientHeight) scroll.scrollTop = bottom() - scroll.clientHeight;
+  const from = scroll.scrollTop, start = performance.now();
+  const step = (now: number) => {
+   if (this.findOpen || this.mode !== "chat") { this.stopChatGlide(); return; }
+   const progress = Math.min(1, (now - start) / (seconds * 1000));
+   // The tail is read every frame, so output arriving mid-glide extends the glide.
+   scroll.scrollTop = from + (bottom() - from) * easeOut(progress);
+   if (progress < 1) this.chatGlide = requestAnimationFrame(step);
+   else { this.chatGlide = 0; this.followChat(); }
+  };
+  this.chatGlide = requestAnimationFrame(step);
+  this.updateChatJump();
+ }
+ stopChatGlide() { cancelAnimationFrame(this.chatGlide); this.chatGlide = 0; }
+ /** Shown while the reader is scrolled back from the live tail and hidden at it
+  *  (`!terminalAtTail`, HerdrApp.swift:5856, GuestPaneView.swift:470). xterm's viewport is
+  *  at the tail when its top row is the buffer's base. */
+ updateTerminalJump() {
+  const buffer = this.terminal?.buffer.active;
+  this.terminalJump.hidden = !buffer || buffer.viewportY >= buffer.baseY;
+ }
+ /** LiveTerminalView.jumpToTail (LiveTerminalView.swift:1870-1916), not animated: a mouse-mode
+  *  or alternate-screen agent keeps its own viewport, so the owner sends it Ctrl+End; a guest
+  *  is view-only and sends nothing. The local scrollback returns to the tail either way, which
+  *  is where native's (wheel-forwarding) view already is in the Ctrl+End case. */
+ jumpTerminalToTail() {
+  const term = this.terminal;
+  if (!term) return;
+  if (!this.view?.guest && (term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none")) this.queueTerminalInput("\x1b[1;5F");
+  term.scrollToBottom();
+  this.updateTerminalJump();
  }
  dismissChatSheets() {
   this.subagentSheet?.close(); this.questionSheet?.close(); this.noteSheet?.close(); this.selectionSheet?.close();
@@ -602,7 +659,7 @@ class Detail {
   this.editor?.dispose(); this.editor = null;
   this.stopFileDrop?.(); this.stopFileDrop = null;
   this.stopClipboardPaste?.(); this.stopClipboardPaste = null;
-  this.chatResize?.disconnect(); this.chatResize = null;
+  this.chatResize?.disconnect(); this.chatResize = null; this.stopChatGlide();
   this.prompts.dispose();
   this.dictation.dispose();
   this.composerResize?.disconnect(); this.composerResize = null;
@@ -676,7 +733,8 @@ class Detail {
   const canvas = el("div", "terminal-canvas");
   this.historyCursor = null; this.historyRequest++; this.historyLoading = false; this.historyArmed = false;
   this.historyButton.className = "terminal-history-load"; this.historyButton.hidden = true;
-  this.terminalSurface.append(canvas, this.historyButton);
+  this.terminalJump.hidden = true;
+  this.terminalSurface.append(canvas, this.historyButton, this.terminalJump);
   const styles = getComputedStyle(document.documentElement);
   // SearchAddon decorations require xterm's proposed decoration API.
   const term = new Terminal({ fontFamily: styles.getPropertyValue("--font-machine"), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme });
@@ -695,8 +753,9 @@ class Detail {
   canvas.addEventListener("pointerdown", event => {
    if (event.target instanceof Element && event.target.closest(".scrollbar")) armHistory();
   });
-  term.onScroll(() => this.updateHistoryPaging(true));
-  term.onWriteParsed(() => this.updateHistoryPaging());
+  // New output and the reader's own scrolling both move the viewport against the tail.
+  term.onScroll(() => { this.updateHistoryPaging(true); this.updateTerminalJump(); });
+  term.onWriteParsed(() => { this.updateHistoryPaging(); this.updateTerminalJump(); });
   term.attachCustomKeyEventHandler(e => {
    if (e.defaultPrevented) return false;
    if (e.type === "keydown" && (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") { void Desk.gramCopyText(term.getSelection()); return false; }
@@ -711,7 +770,7 @@ class Detail {
   const fit = () => {
    if (this.disposed || generation !== this.generation || streamID !== this.terminalID || !this.terminalReady || !canvas.clientWidth) return;
    this.fit?.fit();
-   this.updateHistoryPaging();
+   this.updateHistoryPaging(); this.updateTerminalJump();
    void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => {
     if (generation !== this.generation || streamID !== this.terminalID) return;
     if (this.view?.guest && String(e).includes("guest_forbidden")) { this.resizeRefused = true; this.updateGuestQuestion(); return; }
@@ -746,7 +805,7 @@ class Detail {
    else if (f.frame === "resize" && f.cols && f.rows) this.terminal.resize(f.cols, f.rows);
    else if (f.frame === "exited") { this.prediction?.reset(); this.status.textContent = "Pane exited."; this.terminalReady = false; }
   } catch(e) { this.prediction?.reset(); this.status.textContent = "Invalid terminal frame: " + errorText(e); this.terminalReady = false; }
-  this.updateHistoryPaging();
+  this.updateHistoryPaging(); this.updateTerminalJump();
  }
  updateHistoryPaging(schedule = false) {
   const term = this.terminal;
@@ -856,15 +915,15 @@ class Detail {
   this.composerResize.observe(this.chatSurface);
   this.composerResize.observe(this.status);
   this.chatFollowing = true;
-  this.chatJump.className = "chat-jump-latest"; this.chatJump.hidden = true;
-  this.chatJump.setAttribute("aria-label", "Jump to latest message"); this.chatJump.title = "Jump to latest message";
-  if (navigator.platform.startsWith("Mac")) void symbol("arrow.down", 18, "medium").then(icon => this.chatJump.replaceChildren(icon));
-  else {
-   const icon = el("span", "chat-jump-glyph"); icon.style.setProperty("--jump-glyph", `url("${arrowDownIcon}")`);
-   this.chatJump.replaceChildren(icon);
-  }
+  this.chatJump.hidden = true;
   this.chatScroll.append(this.transcript); this.chatSurface.append(this.chatScroll, this.chatJump);
-  this.chatScroll.onscroll = () => { this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); };
+  // The glide owns the offset until it lands; it counts as at the tail from the tap.
+  this.chatScroll.onscroll = () => { if (!this.chatGlide) this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); };
+  // The reader's own wheel or drag ends a glide still running, rather than fighting it.
+  this.chatScroll.onwheel = this.chatScroll.onpointerdown = () => {
+   if (!this.chatGlide) return;
+   this.stopChatGlide(); this.chatFollowing = this.chatAtBottom(); this.updateChatJump();
+  };
   this.chatResize = new ResizeObserver(() => this.followChat());
   this.chatResize.observe(this.transcript); this.chatResize.observe(this.chatScroll);
   this.body.append(composer);
