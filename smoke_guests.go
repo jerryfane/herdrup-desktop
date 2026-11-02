@@ -4,12 +4,41 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/egoist/mygo"
 )
 
 // Uses the stateful fakeherdr guest store, never a live relay or grant.
-func smokeGuestInvite(win *mygo.Window, capture string) error {
+// Share with someone is an item of the agent page's native ••• menu, which a
+// page script cannot click: the script asks for it (__herdrupSmokeShare) and
+// this carries out the item the way the menu's click does (choosePaneAction).
+func smokeGuestInvite(desk *Desk, win *mygo.Window, capture string) error {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		last := ""
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+			v, _ := win.Page().Eval(`return window.__herdrupSmokeShare ?? ""`)
+			req, _ := v.(string)
+			if req == "" || req == last {
+				continue
+			}
+			last = req
+			desk.mu.Lock()
+			l := desk.link
+			desk.mu.Unlock()
+			if l != nil {
+				desk.choosePaneAction(l, PaneAction{PaneID: strings.SplitN(req, "#", 2)[0], Action: "share"})
+			}
+		}
+	}()
 	value, err := win.Page().Eval(`return await (async () => {
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (read, label) => {
@@ -22,9 +51,11 @@ func smokeGuestInvite(win *mygo.Window, capture string) error {
     if (!button) throw new Error("guest smoke: missing " + text);
     button.click();
   };
+  let shares = 0;
   const open = async () => {
-    document.querySelector('[aria-label="Agent actions"]').click();
-    clickText(document, "Share with someone");
+    const pane = document.querySelector(".row.selected")?.dataset.id;
+    if (!pane) throw new Error("guest smoke: no agent open");
+    window.__herdrupSmokeShare = pane + "#" + (++shares);
     return await until(() => document.querySelector(".guest-share-sheet[open]"), "share sheet");
   };
   const fill = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", {bubbles:true})); };

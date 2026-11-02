@@ -130,7 +130,7 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 						finish(false, err.Error())
 						return
 					}
-					if err := smokeGuestInvite(win, out); err != nil {
+					if err := smokeGuestInvite(desk, win, out); err != nil {
 						finish(false, err.Error())
 						return
 					}
