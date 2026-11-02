@@ -226,6 +226,8 @@ class Detail {
   this.input.dispatchEvent(new Event("input"));
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
  draftKey: string;
+ // A text-only prompt cleared from the composer but not yet given to herdr: it stays the stored draft until dispatch.
+ unsentPrompt = "";
  constructor(readonly target: AgentTarget, initialDraft?: string, readonly plainTerminal = false) {
   this.draftKey = "herdrup.prompt." + JSON.stringify(target);
   this.input.rows = 1; this.input.placeholder = plainTerminal ? "Write text without running it" : "Type a reply…"; this.input.autocapitalize = "off"; this.input.spellcheck = false;
@@ -241,7 +243,8 @@ class Detail {
   this.input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void this.sendPrompt(); } });
  }
  saveDraft() {
-  try { if (this.input.value) localStorage.setItem(this.draftKey, this.input.value); else localStorage.removeItem(this.draftKey); }
+  const draft = this.input.value || this.unsentPrompt;
+  try { if (draft) localStorage.setItem(this.draftKey, draft); else localStorage.removeItem(this.draftKey); }
   catch { this.status.textContent = "Draft is kept in this window only: local storage is unavailable."; }
  }
  setCtrl(armed: boolean) {
@@ -1163,18 +1166,20 @@ class Detail {
   const text = this.input.value;
   if (this.sending || this.dictation.busy || this.inputFailed || (!text.trim() && !this.attachments.length)) return;
   const hasAttachments = this.attachments.length > 0;
-  if (!hasAttachments) { this.input.value = ""; this.input.dispatchEvent(new Event("input")); }
+  if (!hasAttachments) { this.unsentPrompt = text; this.input.value = ""; this.input.dispatchEvent(new Event("input")); }
   this.sending = true; this.dictation.button.disabled = true; this.send.disabled = true; this.attach.disabled = true; this.prompts.button.disabled = true; this.renderAttachments();
   try {
    await this.inputQueue;
-   if (this.disposed) return;
+   if (this.disposed) return; // never dispatched: the stored draft still holds it
    if (this.inputFailed) throw new Error("An earlier key send failed. Reconnect before sending again.");
+   this.unsentPrompt = ""; this.saveDraft();
    const result = JSON.parse(await Desk.chatPrompt(this.token, text));
    if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.saveDraft(); this.input.dispatchEvent(new Event("input")); }
    if (!this.disposed) this.status.textContent = result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again.");
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
   } catch(e) {
    if (!this.disposed) {
+    this.unsentPrompt = "";
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }
     this.status.textContent = String(e);
    }
