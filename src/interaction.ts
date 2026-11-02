@@ -188,6 +188,7 @@ class Detail {
  chat: TranscriptPage | null = null;
  oldestCursor: string | undefined;
  chatEpoch = 0;
+ chatPoll = 0;
  answering = false;
  answerProblem: { askID: string; message: string; offersTerminal: boolean } | null = null;
  localAnswers = new Map<string, string[]>();
@@ -308,7 +309,7 @@ class Detail {
   const capsule = el("div", "pane-header-capsule");
   const refresh = button("", () => {
    if (this.mode === "terminal") void this.reconnectTerminal();
-   else { clearTimeout(this.refreshTimer); void this.refreshChat(this.generation); }
+   else void this.refreshChat(this.generation);
   });
   refresh.setAttribute("aria-label", "Refresh");
   refresh.append(await symbol("arrow.clockwise", 15, "medium"));
@@ -748,11 +749,13 @@ class Detail {
   this.body.append(composer);
   if (this.mode === "chat") void this.refreshChat(generation);
  }
+ // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
  async refreshChat(generation: number) {
-  const epoch = this.chatEpoch;
+  const epoch = this.chatEpoch, poll = ++this.chatPoll;
+  clearTimeout(this.refreshTimer);
   try {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", ""));
-   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch) return;
+   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
    if (!this.chat || this.chat.session_id !== page.session_id) {
     this.entries = []; this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear();
@@ -760,8 +763,8 @@ class Detail {
    this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page;
    for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
    this.drawChat();
-  } catch(e) { if (!this.disposed && generation === this.generation) this.status.textContent = "Chat: " + String(e) + " You can switch to Terminal."; }
-  finally { if (!this.disposed && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch) this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, 1500); }
+  } catch(e) { if (!this.disposed && generation === this.generation && poll === this.chatPoll) this.status.textContent = "Chat: " + String(e) + " You can switch to Terminal."; }
+  finally { if (!this.disposed && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, 1500); }
  }
  async loadEarlier(generation: number) {
   if (!this.chat || !this.oldestCursor) { this.status.textContent = "You are at the start of the retained conversation."; return; }
