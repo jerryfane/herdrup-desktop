@@ -650,3 +650,70 @@ func TestUploadFromSendsAnEmptyFileAsOneChunk(t *testing.T) {
 		t.Fatalf("%d chunks for an empty file, want 1", u.chunks)
 	}
 }
+
+// The agent menus' methods against the fakeherdr fixture that answers them
+// (internal/fakeherdr/agentactions.go).
+func TestAgentMenuMethods(t *testing.T) {
+	roster := []byte(`{"type":"agent_list","agents":[{"pane_id":"p1","terminal_id":"t1","tab_id":"t","name":"planner","agent":"claude","agent_status":"idle","focused":false,"revision":1}]}`)
+	var mu sync.Mutex
+	actions := fakeherdr.NewAgentActions(
+		func() []byte { mu.Lock(); defer mu.Unlock(); return roster },
+		func(b []byte) { mu.Lock(); defer mu.Unlock(); roster = b }, true)
+	var sent []string
+	_, c := start(t, map[string]bool{"agent_session_transfer": true}, func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+		mu.Lock()
+		sent = append(sent, method+" "+string(raw))
+		mu.Unlock()
+		if res, err, ok := actions.Handle(method, raw); ok {
+			return res, err
+		}
+		return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
+	}, nil)
+	if err := c.AgentRestart(ctx(t), "p1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent[len(sent)-1]; got != `agent.restart {"target":"p1"}` {
+		t.Errorf("plain restart sent %s, want no account", got)
+	}
+	_ = c.AgentRestart(ctx(t), "p1", "acct")
+	if got := sent[len(sent)-1]; got != `agent.restart {"account":"acct","target":"p1"}` {
+		t.Errorf("swap sent %s", got)
+	}
+	renamed, err := c.AgentRename(ctx(t), "p1", "reviewer")
+	if err != nil || renamed.Agent.Name == nil || *renamed.Agent.Name != "reviewer" {
+		t.Fatalf("rename: %+v, %v", renamed, err)
+	}
+	prepared, err := c.AgentTransferSession(ctx(t), herdrapi.AgentTransferSessionParams{Target: "p1", To: herdrapi.AgentSessionTransferHarnessCodex})
+	if err != nil || prepared.Agent.SessionTransfer == nil || prepared.Agent.SessionTransfer.Phase != herdrapi.AgentSessionTransferPhaseReady {
+		t.Fatalf("prepare: %+v, %v", prepared, err)
+	}
+	confirmed, err := c.AgentTransferSession(ctx(t), herdrapi.AgentTransferSessionParams{Target: "p1", To: herdrapi.AgentSessionTransferHarnessCodex,
+		TransferID: new(prepared.Agent.SessionTransfer.ID), Confirm: new(true)})
+	if err != nil || confirmed.Agent.SessionTransfer.Phase != herdrapi.AgentSessionTransferPhaseCompleted || *confirmed.Agent.Agent != "codex" {
+		t.Fatalf("confirm: %+v, %v", confirmed, err)
+	}
+	archived, err := c.AgentArchive(ctx(t), herdrapi.AgentArchiveParams{Target: "p1", Reason: new("user action"), By: new("herdrup")})
+	if err != nil || archived.Agent.Archived == nil || archived.Agent.Archived.By != "herdrup" {
+		t.Fatalf("archive: %+v, %v", archived, err)
+	}
+	if err := c.PaneClose(ctx(t), "p1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(actions.Calls()); n != 6 {
+		t.Errorf("fixture recorded %d calls, want 6", n)
+	}
+}
+
+func TestSessionTransferNeedsItsCapability(t *testing.T) {
+	h, c := start(t, map[string]bool{}, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
+		return nil, &fakeherdr.APIError{Code: "unknown_method"}
+	}, nil)
+	_, err := c.AgentTransferSession(ctx(t), herdrapi.AgentTransferSessionParams{Target: "p1", To: herdrapi.AgentSessionTransferHarnessCodex})
+	var unsupported *engine.ErrUnsupported
+	if !errors.As(err, &unsupported) || unsupported.Capability != herdrapi.CapabilityAgentSessionTransfer {
+		t.Fatalf("got %v, want ErrUnsupported for agent_session_transfer", err)
+	}
+	if slices.Contains(h.methods(), "agent.transfer_session") {
+		t.Error("agent.transfer_session was sent to a herdr without agent_session_transfer")
+	}
+}

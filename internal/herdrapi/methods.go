@@ -50,6 +50,8 @@ const (
 	CapabilityGramUploadStream Capability = "gram_upload_stream"
 	CapabilityAPIBridgeMulti   Capability = "api_bridge_multi"
 	CapabilityServerUpdate     Capability = "server_update"
+	// The schema's agent_session_transfer flag (src/api/schema/server.rs:68).
+	CapabilityAgentSessionTransfer Capability = "agent_session_transfer"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -81,6 +83,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.APIBridgeMulti
 	case CapabilityServerUpdate:
 		return caps.ServerUpdate
+	case CapabilityAgentSessionTransfer:
+		return caps.AgentSessionTransfer
 	}
 	return false
 }
@@ -103,6 +107,9 @@ var Methods = []Method{
 	{Name: "accounts.create", Params: typeOf[AccountsCreateParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
 	{Name: "accounts.remove", Params: typeOf[AccountsRemoveParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
 	{Name: "agent.restart", Params: typeOf[AgentRestartParams](), Results: []Result{result[ResponseResultAgentInfo]("agent_info")}},
+	// schema.rs:153; src/app/api/session_transfer.rs:364 (prepare) and
+	// session_transfer.rs:533 (confirm).
+	{Name: "agent.transfer_session", Params: typeOf[AgentTransferSessionParams](), Results: []Result{result[ResponseResultAgentInfo]("agent_info")}, Capability: CapabilityAgentSessionTransfer},
 	{Name: "pane.split", Params: typeOf[PaneSplitParams](), Results: []Result{result[ResponseResultPaneInfo]("pane_info")}},
 	{Name: "agent.kinds", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultAgentKinds]("agent_kinds")}},
 	{Name: "agent.start", Params: typeOf[AgentStartParams](), Results: []Result{result[ResponseResultAgentStarted]("agent_started")}},
@@ -156,6 +163,8 @@ var Methods = []Method{
 	{Name: "agent.read", Params: typeOf[AgentReadParams](), Results: []Result{result[ResponseResultPaneRead]("pane_read")}},
 	// schema.rs:134; src/app/api/transcript.rs:122.
 	{Name: "agent.transcript", Params: typeOf[AgentTranscriptParams](), Results: []Result{result[ResponseResultAgentTranscript]("agent_transcript")}, Capability: CapabilityAgentTranscript},
+	// schema.rs:137; agents.rs:159.
+	{Name: "agent.rename", Params: typeOf[AgentRenameParams](), Results: []Result{result[ResponseResultAgentInfo]("agent_info")}},
 	// schema.rs:138; agents.rs:253.
 	{Name: "agent.avatar.set", Params: typeOf[AgentAvatarSetParams](), Results: []Result{result[ResponseResultAgentAvatarSet]("agent_avatar_set")}, Capability: CapabilityAgentAvatar},
 	// schema.rs:139; agents.rs:291.
@@ -166,6 +175,8 @@ var Methods = []Method{
 	// groups_conflict, whose error also carries "current" (not in the
 	// schema; src/api/schema/agents.rs:217-223).
 	{Name: "agent.groups.set", Params: typeOf[AgentGroupsSetParams](), Results: []Result{result[ResponseResultAgentGroups]("agent_groups")}, Capability: CapabilityAgentGroups},
+	// schema.rs:142; agents.rs:359.
+	{Name: "agent.archive", Params: typeOf[AgentArchiveParams](), Results: []Result{result[ResponseResultAgentInfo]("agent_info")}},
 	// schema.rs:149; agents.rs:423.
 	{Name: "agent.prompt", Params: typeOf[AgentPromptParams](), Results: []Result{result[ResponseResultAgentPrompted]("agent_prompted")}},
 	// schema.rs:151; src/api/answer.rs:63.

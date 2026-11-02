@@ -141,6 +141,8 @@ type Desk struct {
 	// folder save that failed.
 	openFolders *openFolders
 	alert       func(string)
+	// failure shows an agent action that failed (AlertAgentFailure).
+	failure func(title, detail string)
 
 	avatars  avatarStore  // desk_avatars.go
 	sessions sessionWatch // desk_sessions.go
@@ -185,6 +187,10 @@ type link struct {
 	// needing are the panes that needed you in the watch's last list, nil
 	// before its first: startedNeedingYou's baseline.
 	needing map[string]bool
+	// caps are the watched herdr's capabilities from its ping, nil before
+	// the first list: the agent menus' agent_avatar and
+	// agent_session_transfer (desk_agent_actions.go).
+	caps *herdrapi.ServerCapabilities
 }
 
 func newDesk(dir string) *Desk {
@@ -195,6 +201,7 @@ func newDesk(dir string) *Desk {
 		guestStore:  guest.NewStore(filepath.Join(dir, "shared-connections.json")),
 		pins:        bridge.NewFilePinStore(filepath.Join(dir, "host-keys.json")),
 		alert:       alertGroups,
+		failure:     alertAgentFailure,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
 		presence: newPresence(),
 	}
@@ -666,7 +673,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 		d.mu.Lock()
 		// A new watch, on a new connection or session, starts from a new
 		// baseline: what needs you as it connects is not news.
-		l.ctx, l.groups, l.agents, l.needing = wctx, groups, nil, nil
+		l.ctx, l.groups, l.agents, l.needing, l.caps = wctx, groups, nil, nil, nil
 		d.mu.Unlock()
 		shown := false
 		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
@@ -700,7 +707,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				d.mu.Unlock()
 				return
 			}
-			l.agents, d.peers = u.Agents, peers
+			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
 			d.presence.notify(started, l.id, l.session)

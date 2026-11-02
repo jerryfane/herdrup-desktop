@@ -29,6 +29,40 @@ export interface AccountMenuChoice {
   agentCount: number;
 }
 
+/**
+ * AgentAction is an agent row menu item. The page shows its dialog for
+ * Kind rename, avatar, restart, swap or transfer, then calls the Desk
+ * method; stop and archive are carried out here and never sent.
+ */
+export interface AgentAction {
+  kind: string;
+  paneID: string;
+  /** Title is the row's title as shown. */
+  title: string;
+  /** Name is the daemon name, "" without one. */
+  name: string;
+  /** Agent is the harness kind. */
+  agent: string;
+  /** TerminalID finds the agent again after a transfer moves it. */
+  terminalID: string;
+  /** Account is swap's account. */
+  account?: AgentActionAccount;
+  /** Source and Target are transfer's harnesses. */
+  source?: string;
+  target?: AgentActionTarget;
+}
+
+export interface AgentActionAccount {
+  id: string;
+  label: string;
+}
+
+export interface AgentActionTarget {
+  /** ID is the harness: claude, codex or omp. */
+  id: string;
+  displayName: string;
+}
+
 /** AgentAnswerStatus values a newer herdr adds decode as they are; see Known. */
 export type AgentAnswerStatus = "answered" | "sent_unconfirmed";
 
@@ -80,6 +114,17 @@ export interface Avatar {
   sha256?: string;
   /** Target is what agent.avatar.get addresses the agent by. */
   target?: string;
+}
+
+/**
+ * AvatarChoice is a picture from the avatar sheet: Kind default, mascot
+ * (Mascot) or image (ImageBase64 of Mime).
+ */
+export interface AvatarChoice {
+  kind: string;
+  mascot?: string;
+  imageBase64?: string;
+  mime?: string;
 }
 
 /**
@@ -450,10 +495,32 @@ export interface PairedMachine {
   nickname: string;
 }
 
+/**
+ * PaneAction is an agent page ••• item the page carries out. Action is
+ * copy-screen, copy-recent, copy-selection, text-increase, text-decrease,
+ * text-reset, share, avatar, mute, unmute or close. mute and unmute are
+ * stored before it is sent, close is sent once the pane closed.
+ */
+export interface PaneAction {
+  paneID: string;
+  action: string;
+}
+
 export interface PaneAttachments {
   token: string;
   files: GramAttachment[];
   note: string;
+}
+
+/** PaneMenuOptions describe the agent page the ••• menu is for. */
+export interface PaneMenuOptions {
+  paneID: string;
+  /** Plain is a plain terminal: Copy… and Text size only. */
+  plain: boolean;
+  /** HasSelection enables Copy selection. */
+  hasSelection: boolean;
+  /** CanShare is the owner's agent, not a guest's. */
+  canShare: boolean;
 }
 
 /**
@@ -815,7 +882,7 @@ export const Desk = {
   },
   /**
    * AgentMenu shows an agent row's context menu (right-click); it reports
-   * whether there was one.
+   * whether there was one. The owner's live agents have one.
    */
   agentMenu(paneID: string): Promise<boolean> {
     return call("Desk.AgentMenu", paneID);
@@ -825,11 +892,26 @@ export const Desk = {
     return call("Desk.AgentOpened", target);
   },
   /**
+   * AlertAgentFailure shows an agent action that failed as a native warning:
+   * herdrup's "couldn't <verb> <title>: <error>" (perform,
+   * HerdrApp.swift:2245-2253), title and detail apart.
+   */
+  alertAgentFailure(title: string, detail: string): Promise<void> {
+    return call("Desk.AlertAgentFailure", title, detail);
+  },
+  /**
    * The UI supplies the exact build/mode it confirmed, never an unqualified
    * "install latest". Uncertain apply results are followed, never resubmitted.
    */
   applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
     return call("Desk.ApplySettingsServerUpdate", token, buildID, restartLater);
+  },
+  /**
+   * ArchiveAgent archives the agent, attributed to herdrup
+   * (HerdrApp.swift:2223-2232).
+   */
+  archiveAgent(paneID: string): Promise<void> {
+    return call("Desk.ArchiveAgent", paneID);
   },
   /**
    * AvatarImage returns an agent's avatar photo as a data: URL: target is
@@ -874,6 +956,13 @@ export const Desk = {
   },
   closeTerminal(target: AgentTarget): Promise<void> {
     return call("Desk.CloseTerminal", target);
+  },
+  /**
+   * ConfirmSessionTransfer switches the agent to the prepared transfer
+   * transferID (confirmAgentSessionTransfer, HerdrClient.swift:1364-1383).
+   */
+  confirmSessionTransfer(paneID: string, to: string, accountID: string, transferID: string): Promise<string> {
+    return call("Desk.ConfirmSessionTransfer", paneID, to, accountID, transferID);
   },
   /**
    * Connect saves the machine and connects to it, replacing any current
@@ -1149,6 +1238,18 @@ export const Desk = {
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
     return call("Desk.PaneAttachFiles", token, paths);
   },
+  /** PaneMenu shows the agent page's ••• menu; it reports whether it could. */
+  paneMenu(o: PaneMenuOptions): Promise<boolean> {
+    return call("Desk.PaneMenu", o);
+  },
+  /**
+   * PaneMuted reports whether a pane's notifications are off (herdrup
+   * MuteStore.isMuted, App/PushCenter.swift:116). An unreadable
+   * notifications.json mutes nothing.
+   */
+  paneMuted(paneID: string): Promise<boolean> {
+    return call("Desk.PaneMuted", paneID);
+  },
   panePasteClipboard(token: string): Promise<boolean> {
     return call("Desk.PanePasteClipboard", token);
   },
@@ -1175,6 +1276,15 @@ export const Desk = {
   },
   pollAccountLogin(token: string, loginID: string): Promise<AccountLoginState> {
     return call("Desk.PollAccountLogin", token, loginID);
+  },
+  /**
+   * PrepareSessionTransfer stages the agent's session for harness to
+   * (prepareAgentSessionTransfer, HerdrClient.swift:1347-1362), on accountID
+   * or, for "", the harness's default account. It returns the reply,
+   * {"agent": AgentInfo}, as JSON.
+   */
+  prepareSessionTransfer(paneID: string, to: string, accountID: string): Promise<string> {
+    return call("Desk.PrepareSessionTransfer", paneID, to, accountID);
   },
   /** ReadAgentText powers the native pane menu's Copy screen / Copy recent output. */
   readAgentText(token: string, recent: boolean): Promise<string> {
@@ -1204,8 +1314,25 @@ export const Desk = {
   removeSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.RemoveSettingsAccount", token, id);
   },
+  /**
+   * RenameAgent sets the agent's name, coerced to herdr's grammar
+   * (AgentName.normalize), then reloads the folders, which the server moved
+   * to the new name (RenameSheet, HerdrApp.swift:3568-3586). It returns the
+   * name saved.
+   */
+  renameAgent(paneID: string, name: string): Promise<string> {
+    return call("Desk.RenameAgent", paneID, name);
+  },
   renameTerminal(target: AgentTarget, label: string): Promise<void> {
     return call("Desk.RenameTerminal", target, label);
+  },
+  /**
+   * RestartAgent reopens the agent's session with --resume: in place for
+   * accountID "", else on that account, herdrup's Swap subscription
+   * (HerdrApp.swift:3434-3473).
+   */
+  restartAgent(paneID: string, accountID: string): Promise<void> {
+    return call("Desk.RestartAgent", paneID, accountID);
   },
   revokeGuestAccess(token: string, machine: string, id: string, invite: boolean): Promise<void> {
     return call("Desk.RevokeGuestAccess", token, machine, id, invite);
@@ -1259,6 +1386,14 @@ export const Desk = {
   sessions(): Promise<Session[]> {
     return call("Desk.Sessions");
   },
+  /**
+   * SetAgentAvatar sets or clears the agent's picture (agent.avatar.set,
+   * HerdrClient.swift:1402-1461) on its avatarTarget. Errors read as
+   * AgentAvatarSheet.describe's (AgentAvatarViews.swift:446-458).
+   */
+  setAgentAvatar(paneID: string, c: AvatarChoice): Promise<void> {
+    return call("Desk.SetAgentAvatar", paneID, c);
+  },
   /** SetFolderOpen opens or closes a folder on this device. */
   setFolderOpen(id: string, open: boolean): Promise<void> {
     return call("Desk.SetFolderOpen", id, open);
@@ -1280,6 +1415,14 @@ export const Desk = {
   },
   setNotificationPreference(kind: string, enabled: boolean): Promise<void> {
     return call("Desk.SetNotificationPreference", kind, enabled);
+  },
+  /**
+   * SetPaneMuted turns a pane's notifications off or on, on this device
+   * (herdrup MuteStore.setMuted, App/PushCenter.swift:118-122). It is kept
+   * in notifications.json with the preferences.
+   */
+  setPaneMuted(paneID: string, muted: boolean): Promise<void> {
+    return call("Desk.SetPaneMuted", paneID, muted);
   },
   setPreviewJavaScript(enabled: boolean): Promise<void> {
     return call("Desk.SetPreviewJavaScript", enabled);
@@ -1324,6 +1467,13 @@ export const Desk = {
   state(): Promise<ConnState> {
     return call("Desk.State");
   },
+  /**
+   * StopAgent closes the agent's pane: herdrup's Stop agent and Close agent
+   * (pane.close, HerdrApp.swift:2219-2222 and 6262-6269).
+   */
+  stopAgent(paneID: string): Promise<void> {
+    return call("Desk.StopAgent", paneID);
+  },
   stopTerminal(token: string, streamID: string): Promise<void> {
     return call("Desk.StopTerminal", token, streamID);
   },
@@ -1352,6 +1502,22 @@ export const Desk = {
   },
   testNotification(): Promise<void> {
     return call("Desk.TestNotification");
+  },
+  /**
+   * TransferAccounts returns accounts.list as JSON, {"accounts": […]}, for
+   * the review sheet's account picker.
+   */
+  transferAccounts(): Promise<string> {
+    return call("Desk.TransferAccounts");
+  },
+  /**
+   * TransferAgentInfo lists the agents again and returns, as JSON, the one on
+   * paneID or, as a transfer may move it, with terminalID (the review sheet's
+   * polls, App/AgentSessionTransferSheet.swift:547-640); "" when neither is
+   * listed.
+   */
+  transferAgentInfo(paneID: string, terminalID: string): Promise<string> {
+    return call("Desk.TransferAgentInfo", paneID, terminalID);
   },
 } as const;
 
@@ -1402,6 +1568,10 @@ export const events = {
    * SetMachineFederation has re-read them.
    */
   machineStatusChanged: event<SavedMachineStatus[]>("machine-status:changed"),
+  /** AgentActionRequested asks the page for a row menu item's dialog. */
+  agentActionRequested: event<AgentAction>("agentActionRequested"),
+  /** PaneActionChosen is a ••• item the page carries out. */
+  paneActionChosen: event<PaneAction>("paneActionChosen"),
   /** GramChanged is sent with the snapshot whenever Gram changes. */
   gramChanged: event<GramSnapshot>("gram:changed"),
   /**

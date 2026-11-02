@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -33,7 +35,17 @@ type notificationSettings struct {
 	mu          sync.Mutex
 	loaded      bool
 	preferences NotificationPreferences
-	lastError   string
+	// muted are the panes whose notifications are off: herdrup's MuteStore
+	// (App/PushCenter.swift:98-125), per pane id and on this device.
+	muted     map[string]bool
+	lastError string
+}
+
+// notificationsFile is notifications.json: the preferences, flat as they
+// always were, and the muted panes.
+type notificationsFile struct {
+	NotificationPreferences
+	MutedPanes []string `json:"mutedPanes,omitempty"`
 }
 
 func (d *Desk) loadNotificationsLocked() error {
@@ -41,17 +53,44 @@ func (d *Desk) loadNotificationsLocked() error {
 	if n.loaded {
 		return nil
 	}
-	preferences := NotificationPreferences{NeedsInput: true, Dies: true, Gram: true}
+	file := notificationsFile{NotificationPreferences: NotificationPreferences{NeedsInput: true, Dies: true, Gram: true}}
 	data, err := os.ReadFile(filepath.Join(d.dir, "notifications.json"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if err == nil {
-		if err = json.Unmarshal(data, &preferences); err != nil {
+		if err = json.Unmarshal(data, &file); err != nil {
 			return fmt.Errorf("read notification preferences: %w", err)
 		}
 	}
-	n.preferences, n.loaded = preferences, true
+	n.muted = make(map[string]bool, len(file.MutedPanes))
+	for _, pane := range file.MutedPanes {
+		n.muted[pane] = true
+	}
+	n.preferences, n.loaded = file.NotificationPreferences, true
+	return nil
+}
+
+// saveNotificationsLocked writes notifications.json. d.notifications.mu
+// must be held.
+func (d *Desk) saveNotificationsLocked(preferences NotificationPreferences, muted map[string]bool) error {
+	file := notificationsFile{NotificationPreferences: preferences, MutedPanes: slices.Sorted(maps.Keys(muted))}
+	data, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(d.dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(d.dir, "notifications.json")
+	tmp := path + ".tmp"
+	if err = os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	return nil
 }
 func (d *Desk) GetNotificationSettings() (NotificationSettings, error) {
@@ -83,20 +122,7 @@ func (d *Desk) SetNotificationPreference(kind string, enabled bool) error {
 	default:
 		return errors.New("unknown notification category")
 	}
-	data, err := json.MarshalIndent(next, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err = os.MkdirAll(d.dir, 0o700); err != nil {
-		return err
-	}
-	path := filepath.Join(d.dir, "notifications.json")
-	tmp := path + ".tmp"
-	if err = os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err = os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := d.saveNotificationsLocked(next, n.muted); err != nil {
 		return err
 	}
 	n.preferences = next
@@ -148,6 +174,21 @@ func (d *Desk) TestNotification() error {
 	return d.deliverNotification("test", mygo.NotificationOptions{ID: "herdrup-notification-test", Title: "Herdrup notifications", Body: "Desktop alerts can reach this session."})
 }
 func (d *Desk) showAgentNotification(a attention) {
+	options, ok := d.agentNotification(a)
+	if !ok {
+		return
+	}
+	if err := d.deliverNotification(a.kind, options); err != nil {
+		log.Printf("notification: %v", err)
+	}
+}
+
+// agentNotification is the alert for a, none for a muted pane: herdrup's
+// daemon skips a muted pane's pushes (MuteStore, App/PushCenter.swift:98-104).
+func (d *Desk) agentNotification(a attention) (mygo.NotificationOptions, bool) {
+	if d.PaneMuted(a.target.PaneID) {
+		return mygo.NotificationOptions{}, false
+	}
 	title := attentionTitle(a.agent)
 	switch a.kind {
 	case "dies":
@@ -155,9 +196,49 @@ func (d *Desk) showAgentNotification(a attention) {
 	case "finishes":
 		title = strings.TrimSuffix(title, " needs attention") + " finished"
 	}
-	if err := d.deliverNotification(a.kind, mygo.NotificationOptions{ID: a.target.notificationID(), Title: title, Body: herdr.Preview(a.agent)}); err != nil {
-		log.Printf("notification: %v", err)
+	return mygo.NotificationOptions{ID: a.target.notificationID(), Title: title, Body: herdr.Preview(a.agent)}, true
+}
+
+// SetPaneMuted turns a pane's notifications off or on, on this device
+// (herdrup MuteStore.setMuted, App/PushCenter.swift:118-122). It is kept
+// in notifications.json with the preferences.
+func (d *Desk) SetPaneMuted(paneID string, muted bool) error {
+	if paneID == "" {
+		return nil
 	}
+	n := &d.notifications
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := d.loadNotificationsLocked(); err != nil {
+		return err
+	}
+	if n.muted[paneID] == muted {
+		return nil
+	}
+	next := maps.Clone(n.muted)
+	if muted {
+		next[paneID] = true
+	} else {
+		delete(next, paneID)
+	}
+	if err := d.saveNotificationsLocked(n.preferences, next); err != nil {
+		return err
+	}
+	n.muted = next
+	return nil
+}
+
+// PaneMuted reports whether a pane's notifications are off (herdrup
+// MuteStore.isMuted, App/PushCenter.swift:116). An unreadable
+// notifications.json mutes nothing.
+func (d *Desk) PaneMuted(paneID string) bool {
+	n := &d.notifications
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := d.loadNotificationsLocked(); err != nil {
+		return false
+	}
+	return n.muted[paneID]
 }
 
 // The unread poll can expose old messages again after newer ones are read.

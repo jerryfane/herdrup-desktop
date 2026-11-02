@@ -70,7 +70,9 @@ export async function star(d: FolderDeps): Promise<HTMLElement> {
   return s;
 }
 
-/** Right-click on an agent row: Star/Unstar and Move to folder. */
+/** Right-click on an agent row: Go's native menu (HerdrApp.swift
+ * 4294-4393), from Stop agent to Archive; the items that need a sheet come
+ * back as events.agentActionRequested (agentActions.ts). */
 export function agentMenu(row: HTMLElement, r: Row) {
   row.addEventListener("contextmenu", (e) => {
     e.preventDefault();

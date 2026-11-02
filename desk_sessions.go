@@ -56,8 +56,11 @@ type sessionWatch struct {
 	mu       sync.Mutex
 	pills    []SessionPill
 	accounts map[string]string
-	boards   map[string]cachedBoard // by sessionKey
-	wake     chan struct{}
+	// accountList is the last accounts.list, for the agent menu's Swap
+	// subscription (desk_agent_actions.go).
+	accountList []herdrapi.AccountInfo
+	boards      map[string]cachedBoard // by sessionKey
+	wake        chan struct{}
 }
 
 // sessionKey names the default session "" however it is spelled.
@@ -128,7 +131,7 @@ func (d *Desk) watchSessions(ctx context.Context, l *link, c *bridge.Client) {
 		d.sessions.mu.Lock()
 		if d.sessions.wake == wake {
 			d.sessions.wake = nil
-			d.sessions.pills, d.sessions.boards = nil, nil
+			d.sessions.pills, d.sessions.boards, d.sessions.accountList = nil, nil, nil
 			SessionsChanged.Broadcast([]SessionPill{})
 		}
 		d.sessions.mu.Unlock()
@@ -154,7 +157,7 @@ func (d *Desk) pollSessions(ctx context.Context, l *link, c *bridge.Client) {
 		return
 	}
 	if res, err := engine.New(engine.Bridge(view)).AccountsList(ctx); err == nil {
-		d.setAccounts(accountLabels(res.Accounts))
+		d.setAccounts(res.Accounts)
 	}
 	sessions, err := c.ListSessions(ctx)
 	if err != nil {
@@ -225,9 +228,11 @@ func (d *Desk) setPills(p []SessionPill) {
 	SessionsChanged.Broadcast(slices.Clone(p))
 }
 
-func (d *Desk) setAccounts(a map[string]string) {
+func (d *Desk) setAccounts(list []herdrapi.AccountInfo) {
+	a := accountLabels(list)
 	d.sessions.mu.Lock()
 	defer d.sessions.mu.Unlock()
+	d.sessions.accountList = list
 	if maps.Equal(a, d.sessions.accounts) {
 		return
 	}

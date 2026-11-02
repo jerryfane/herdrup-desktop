@@ -611,9 +611,15 @@ button.ghost { color: var(--color-text-dim); background: transparent; box-shadow
   pointer-events: none;
 }
 .folder-pic .line { display: flex; gap: 3px; }
-.folder-pic .tile {
+/* Each member is AgentAvatarView at the cell size (AgentFolderViews.swift 91-111): a
+   letter tile, a mascot or a photo, all one cell, clipped to its circle. */
+.folder-pic .tile, .folder-pic .face {
+  flex: none;
   width: calc((var(--size-avatar-sidebar) - 17px) / 2);
   height: calc((var(--size-avatar-sidebar) - 17px) / 2);
+}
+.folder-pic .face { display: block; border-radius: 50%; overflow: hidden; }
+.folder-pic .tile {
   border-radius: 50%;
   position: relative;
   display: flex;

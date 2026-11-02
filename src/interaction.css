@@ -24,9 +24,6 @@
 .agent-detail .pane-find input { flex: 1; min-width: 40px; border: 0; background: none; padding: 0; outline: none; font: 400 16px var(--font-app); }
 .pane-find-count { color: var(--color-text-faint); font: 400 11px var(--font-machine); white-space: nowrap; }
 .agent-detail .pane-find button { display: flex; align-items: center; justify-content: center; width: 24px; height: 32px; border: 0; padding: 0; background: none; }
-.pane-actions { position: absolute; top: 54px; right: 16px; z-index: 5; display: flex; flex-direction: column; min-width: 220px; padding: 6px; border-radius: 14px; border: 1px solid var(--color-hairline); background: var(--color-surface); }
-.agent-detail .pane-actions button { border: 0; background: none; text-align: left; }
-.agent-detail .pane-actions button:hover { background: var(--color-surface-raised); }
 .pane-find-hit { color: inherit; background: color-mix(in srgb, var(--status-waiting) 18%, transparent); text-decoration: underline; text-decoration-color: var(--status-waiting); }
 .pane-find-hit.current { background: color-mix(in srgb, var(--status-waiting) 36%, transparent); }
 .agent-detail button, .host-list button, .host-password button { font: inherit; color: var(--color-text); background: var(--color-surface-raised); border: 1px solid var(--color-hairline); border-radius: 8px; padding: 7px 11px; cursor: pointer; }
@@ -37,6 +34,9 @@
 .agent-detail .pane-header-capsule button { display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; padding: 0; border: 0; background: none; }
 .agent-detail .pane-header-capsule .pane-find-toggle { color: var(--color-text-dim); }
 .agent-detail .pane-header-capsule .pane-find-toggle[aria-pressed="true"] { color: var(--color-text); }
+/* PaneActionsMenuLabel (PaneHeaderControls.swift 66-77): the struck bell in waiting while muted. */
+.agent-detail .pane-header-capsule button.muted { color: var(--status-waiting); }
+.pane-muted-glyph { width: 15px; height: 15px; background: currentColor; mask: var(--muted-icon) center/contain no-repeat; -webkit-mask: var(--muted-icon) center/contain no-repeat; }
 .chat-terminal-switch { display: flex; align-self: center; flex: none; gap: 0; padding: 3px; margin: 2px 0 4px; border: 0; outline: 1px solid var(--color-hairline); outline-offset: -1px; border-radius: 99px; background: var(--color-surface); }
 .chat-terminal-switch[hidden] { display: none; }
 .agent-detail .chat-terminal-switch button { height: 26px; padding: 0 16px; border: 0; border-radius: 99px; font: 600 13px var(--font-app); color: var(--color-text-dim); background: none; }
@@ -281,4 +281,3 @@
 .chat-readable-text a { color:var(--status-working); }
 .chat-readable-text strong { font-weight:600; }
 .chat-selection-sheet > .chat-readable-text { padding:16px 17px 24px; overflow:auto; flex:1; min-height:0; }
-.pane-action-heading { padding:10px 12px 4px; color:var(--color-text-faint); font:600 11px var(--font-app); }
