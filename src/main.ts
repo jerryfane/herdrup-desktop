@@ -212,7 +212,11 @@ async function buildTabBar() {
   ];
   const nodes = await Promise.all(
     items.map(async ([key, icon, label]) => {
-      const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
+      // A button, so keyboard users reach and switch tabs (issue #94): Tab focuses it, Enter or
+      // Space activates it, and the selected tab reads as the current page.
+      const t = el("button", "tab" + (key === selectedTab ? " selected" : ""));
+      t.type = "button";
+      if (key === selectedTab) t.setAttribute("aria-current", "page");
       const i = el("div", "icon");
       await place(i, icon, 21, "medium");
       if (key === "gram") {

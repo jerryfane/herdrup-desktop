@@ -432,7 +432,14 @@ html, body {
   gap: 1px;
   border-radius: 999px;
   color: var(--color-text-dim);
+  /* A <button> (keyboard access, issue #94) drawn as the tab, not the global button. */
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: default;
 }
+.tab:focus-visible { outline: 2px solid var(--color-text-dim); outline-offset: -2px; }
 .tab .icon { position: relative; height: 28px; display: flex; align-items: center; }
 /* tabBadge (HerdrApp.swift 2864-2905): top-trailing of the icon, moved 12 pt right and
    3 pt up; at least 18 pt, 5 pt sides, badgeCount text. Neutral like the rail badge. */
