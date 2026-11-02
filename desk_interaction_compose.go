@@ -115,6 +115,16 @@ func (d *Desk) PaneRetryAttachment(token, path string) error {
 	return nil
 }
 
+// promptWait is native submitPrompt's wait (HerdrApp.swift: waitUntil
+// anyAgentStatus, timeoutMs 6000). Without it herdr answers every prompt
+// written_to_pty, unverified, and the composer warned on every send.
+var promptWait = func() herdrapi.AgentPromptWaitOptions {
+	timeout := uint64(6000)
+	return herdrapi.AgentPromptWaitOptions{TimeoutMs: &timeout, Until: []herdrapi.AgentStatus{
+		herdrapi.AgentStatusWorking, herdrapi.AgentStatusIdle, herdrapi.AgentStatusBlocked,
+		herdrapi.AgentStatusDone, herdrapi.AgentStatusUnknown}}
+}()
+
 // Delivery uncertainty consumes the draft, just as native PromptRejection does:
 // resending a timeout or a lost response can duplicate a PTY write.
 func submitPanePrompt(ctx context.Context, v *interaction, text string) (string, error) {
@@ -128,10 +138,13 @@ func submitPanePrompt(ctx context.Context, v *interaction, text string) (string,
 			return "", err
 		}
 	} else {
-		result, promptErr := v.client.AgentPrompt(ctx, herdrapi.AgentPromptParams{Target: v.PaneID, Text: text})
+		result, promptErr := v.client.AgentPrompt(ctx, herdrapi.AgentPromptParams{Target: v.PaneID, Text: text, Wait: &promptWait})
 		err = promptErr
 		if result.Delivery != nil {
 			delivery = string(*result.Delivery)
+		}
+		if delivery == string(herdrapi.AgentPromptDeliveryWrittenToPTY) {
+			note = "Sent to terminal; agent submission not verified" // HerdrApp.swift submitPrompt
 		}
 	}
 	if err != nil {

@@ -188,6 +188,9 @@ class Detail {
  // (GuestPaneView.resizeRefused, GuestPaneView.swift:81, 449, 573).
  resizeRefused = false;
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
+ private workingRow?: HTMLElement;
+ /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
+ private chatFailed = false;
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
  chatSurface = el("div", "chat-surface");
@@ -545,6 +548,8 @@ class Detail {
   };
   updateAge();
   if (since !== undefined) this.statusTimer = window.setInterval(updateAge, 1000);
+  // The working row follows the board status (ChatView's agentStatus) between polls.
+  if (this.chat && this.mode === "chat" && !!this.renderWorking() !== !!this.workingRow?.isConnected) this.drawChat(false);
  }
  toggleFind(open = !this.findOpen) {
   this.findOpen = open;
@@ -949,7 +954,7 @@ class Detail {
     this.entries = []; this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear();
    }
-   this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page;
+   this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
@@ -961,6 +966,7 @@ class Detail {
    if (!this.disposed && generation === this.generation && poll === this.chatPoll) {
     const message = errorText(e);
     this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Chat: " + message + " You can switch to Terminal.";
+    if (!this.chatFailed) { this.chatFailed = true; if (this.chat) this.drawChat(false); }
    }
   }
   finally {
@@ -1005,6 +1011,8 @@ class Detail {
   if (plan.length) nodes.push(this.renderPlan(plan));
   const agents = this.chat?.subagents ?? [];
   if (agents.length) nodes.push(this.renderSubagents(agents));
+  const working = this.renderWorking();
+  if (working) nodes.push(working);
   // Keep unchanged rows attached: detaching them on each poll loses keyboard focus.
   const retained = new Set<Node>(nodes);
   for (let child = this.transcript.firstChild; child;) {
@@ -1021,6 +1029,23 @@ class Detail {
   if (follow) this.followChat();
   if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index); }
   this.refreshQuestion?.();
+ }
+ /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
+  * its board status, or with none yet the transcript's working turn — and the chat loads. One
+  * element, kept attached across polls, so the dots' animation never restarts. */
+ private renderWorking(): HTMLElement | null {
+  const group = this.shownStatus[0];
+  if (this.chatFailed || !(group === "working" || (!group && this.chat?.working))) return null;
+  const intent = this.chat?.working?.intent || "";
+  const row = this.workingRow ??= el("div", "chat-working");
+  if (row.dataset.intent !== intent || !row.firstChild) {
+   row.dataset.intent = intent;
+   const dots = el("span", "chat-working-dots"); dots.setAttribute("aria-hidden", "true");
+   for (let i = 0; i < 3; i++) dots.append(el("span", "chat-working-dot"));
+   row.replaceChildren(dots, el("span", "chat-working-text", intent || "Working"));
+   row.setAttribute("role", "status"); row.setAttribute("aria-label", intent ? `Working: ${intent}` : "Working");
+  }
+  return row;
  }
  private fitPromptBubbles() {
   const first = this.transcript.querySelector<HTMLElement>(".chat-message.user");
