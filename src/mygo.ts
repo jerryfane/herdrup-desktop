@@ -98,6 +98,12 @@ export interface AgentView {
   statusSinceUnixMs?: number;
   guest: boolean;
   guestGram: boolean;
+  /**
+   * GuestOwner names who shared a guest's agent: the question banner and
+   * the answer card wait for them when the host keeps answers for the owner
+   * (herdrup GuestPaneView.swift:557-575, ChatView.swift:1755-1758).
+   */
+  guestOwner?: string;
   plainTerminal: boolean;
 }
 
@@ -168,6 +174,12 @@ export interface ChatAnswerReply {
   status?: AgentAnswerStatus;
   code?: string;
   message?: string;
+  /**
+   * OwnerAnswers: a guest's host keeps answers for the owner (an older
+   * herdr's guest_forbidden); the page waits for the owner from then on
+   * (herdrup ChatView.swift:153-155).
+   */
+  ownerAnswers?: boolean;
 }
 
 /** ChatMenuChoice identifies a snapshot of a message, not a mutable transcript row. */
@@ -1179,6 +1191,21 @@ export const Desk = {
   /** GuestChatAvailable follows the authenticated host's transcript capability. */
   guestChatAvailable(token: string): Promise<boolean> {
     return call("Desk.GuestChatAvailable", token);
+  },
+  /**
+   * GuestMenuKey presses one of the bar's menu keys in a guest's shared pane,
+   * as GuestPaneView.sendMenuKey (GuestPaneView.swift:788-813). herdr refuses a
+   * guest's key with guest_forbidden whenever it would not take one: not on a
+   * menu, on a free-text prompt, during its pause after a committing key
+   * (guest_gate.rs awaits_menu_input and MENU_COMMITS, d78b91c 505-529), and on a
+   * host older than guest answers. Its guest view hides the prompt kind and the
+   * state sequence, so a guest cannot tell these apart, and a refused key says
+   * nothing about the host (PR #90 review): it is ignored. Whether the host
+   * keeps answers for the owner is read from agent.answer and the transcript's
+   * answerable instead (ChatAnswer, the page's withheldFromCaller).
+   */
+  guestMenuKey(token: string, key: string): Promise<void> {
+    return call("Desk.GuestMenuKey", token, key);
   },
   guestShareDetails(token: string): Promise<GuestShareDetails> {
     return call("Desk.GuestShareDetails", token);

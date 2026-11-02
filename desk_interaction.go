@@ -32,7 +32,11 @@ type AgentView struct {
 	StatusSinceUnixMs *uint64 `json:"statusSinceUnixMs,omitempty"`
 	Guest             bool    `json:"guest"`
 	GuestGram         bool    `json:"guestGram"`
-	PlainTerminal     bool    `json:"plainTerminal"`
+	// GuestOwner names who shared a guest's agent: the question banner and
+	// the answer card wait for them when the host keeps answers for the owner
+	// (herdrup GuestPaneView.swift:557-575, ChatView.swift:1755-1758).
+	GuestOwner    string `json:"guestOwner,omitempty"`
+	PlainTerminal bool   `json:"plainTerminal"`
 }
 
 type interaction struct {
@@ -112,6 +116,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			Heading: strings.Join(parts, " · "), Group: group.Key(), Status: group.Label(),
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
+			GuestOwner: guestOwner(l),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),
@@ -394,6 +399,10 @@ type ChatAnswerReply struct {
 	Status  herdrapi.AgentAnswerStatus `json:"status,omitempty"`
 	Code    string                     `json:"code,omitempty"`
 	Message string                     `json:"message,omitempty"`
+	// OwnerAnswers: a guest's host keeps answers for the owner (an older
+	// herdr's guest_forbidden); the page waits for the owner from then on
+	// (herdrup ChatView.swift:153-155).
+	OwnerAnswers bool `json:"ownerAnswers,omitempty"`
 }
 
 func (d *Desk) ChatAnswer(ctx context.Context, token, askID, option string) (ChatAnswerReply, error) {
@@ -403,11 +412,17 @@ func (d *Desk) ChatAnswer(ctx context.Context, token, askID, option string) (Cha
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	result, err := v.client.AgentAnswer(ctx, herdrapi.AgentAnswerParams{Target: v.PaneID, AskID: askID, Option: option})
+	params := herdrapi.AgentAnswerParams{Target: v.PaneID, AskID: askID, Option: option}
+	var result herdrapi.ResponseResultAgentAnswer
+	if guestLink := v.at.link.guest; guestLink != nil {
+		result, err = guestLink.AgentAnswer(ctx, params)
+	} else {
+		result, err = v.client.AgentAnswer(ctx, params)
+	}
 	if err != nil {
 		var api *bridge.APIError
 		if errors.As(err, &api) {
-			return ChatAnswerReply{Code: api.Code, Message: api.Message}, nil
+			return ChatAnswerReply{Code: api.Code, Message: api.Message, OwnerAnswers: v.Guest && api.Code == guestForbidden}, nil
 		}
 		return ChatAnswerReply{}, err
 	}
