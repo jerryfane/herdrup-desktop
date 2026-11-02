@@ -468,6 +468,38 @@ html, body {
   transition: left var(--motion-tab-duration) var(--motion-tab-ease);
 }
 
+/* GitHub star ask, design D (github-star-prompt-proposals.html section D, owner choice
+   2026-11-01): a 56 pt capsule, 16 pt sides, 12 pt above the tab bar (the mock's bar
+   starts at 791 pt, the capsule ends at 779), raised fill with the hairline, shadow
+   black 45 % blur 30 y 10. It floats over the list, which gains room to scroll clear. */
+.star-ask {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--tabbar-bottom) + var(--size-tab-bar) + 12px);
+  z-index: 2;
+  box-sizing: border-box;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--color-hairline);
+  border-radius: 28px;
+  background: var(--color-surface-raised);
+  box-shadow: 0 10px 30px var(--star-ask-shadow); /* starAsk.ts */
+}
+.star-ask[hidden] { display: none; }
+.sidebar.star-asking .roster {
+  padding-bottom: calc(var(--tabbar-inset) + 12px + 56px);
+  scroll-padding-bottom: calc(var(--tabbar-inset) + 12px + 56px);
+}
+.star-ask-badge { flex: none; width: 40px; height: 40px; margin-left: 8px; border-radius: 50%; background: var(--color-ground); color: var(--color-text); display: grid; place-items: center; }
+.star-ask-lines { flex: 1; min-width: 0; margin-left: 11px; white-space: nowrap; }
+.star-ask-title, .star-ask-body { overflow: hidden; text-overflow: ellipsis; }
+.star-ask-title { font: 600 15px/19px var(--font-app); color: var(--color-text); }
+.star-ask-body { font: 400 13px/17px var(--font-app); color: var(--color-text-dim); }
+.star-ask-star { flex: none; height: 32px; padding: 0 14px; border-radius: 16px; background: var(--color-text); color: var(--color-ground); font: 600 15px var(--font-app); }
+.star-ask-close { flex: none; width: 36px; height: 36px; margin-right: 6px; padding: 0; display: grid; place-items: center; border-radius: 50%; background: transparent; color: var(--color-text-dim); }
+
 /* Saved-host connection home; its readable column is defined in hosts.css. */
 .connect {
   position: absolute;
