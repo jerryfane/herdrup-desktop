@@ -160,6 +160,16 @@
 .settings-gesture p { margin:3px 0 0; font:400 calc(13px * var(--ui-font-scale, 1))/1.4 var(--font-app); }
 .settings-gestures-footer { flex:none; padding:8px 16px 12px; }
 .settings-gestures-footer button { width:100%; padding:14px; border-radius:14px; background:var(--color-surface-raised); font:600 calc(16px * var(--ui-font-scale, 1)) var(--font-app); }
+/* The setup guides' footer (AccountsSetupView.swift 158-172, FederationSetupView.swift 156-173) and
+   its copy-for-agent card (CopyForAgentButton.swift 16-35): a brand fill, ink label, faint caption. */
+.settings-agent-footer { display:flex; flex-direction:column; gap:8px; padding-top:8px; }
+.settings-agent-card { display:flex; flex-direction:column; gap:6px; }
+.settings-sheet .settings-agent-copy { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; padding:14px 0; border:0; border-radius:14px; color:var(--color-text); background:var(--color-brand); font:600 calc(16px * var(--ui-font-scale, 1)) var(--font-app); cursor:pointer; }
+.settings-agent-copy > .settings-glyph { width:auto; color:inherit; }
+.settings-agent-copy[data-copied="true"] > * { animation:motion-fade var(--motion-copied-duration) var(--motion-copied-ease) both; }
+.settings-agent-copy[data-copied="false"] > * { animation:motion-fade var(--motion-settle-duration) var(--motion-settle-ease) both; }
+.settings-sheet .settings-agent-caption { margin:0; color:var(--color-text-faint); text-align:center; font:400 calc(12px * var(--ui-font-scale, 1))/1.4 var(--font-app); }
+.settings-sheet .settings-agent-done { width:100%; padding:10px 0; border:0; background:none; color:var(--color-text-dim); font:600 calc(15px * var(--ui-font-scale, 1)) var(--font-app); }
 
 .settings-update-card { margin:10px 16px 0; padding:16px 18px 18px; border:1px solid var(--color-hairline); border-radius:18px; background:var(--color-surface); }
 .settings-update-card[hidden] { display:none; }

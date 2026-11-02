@@ -1,5 +1,7 @@
 import { Desk, events } from "./mygo";
 import type { AccountLoginState } from "./mygo";
+import { agentGuideFooter, type Glyph } from "./copyForAgent";
+import { accountsAgentPrompt } from "./agentPrompts";
 
 type Account = {
   id: string; kind: string; label: string; config_dir: string; email?: string; active: boolean;
@@ -27,7 +29,7 @@ export class AccountSettings {
   private loading = false;
   private error = "";
   private menu: { id: string; token: string; account: Account } | null = null;
-  constructor(private report: (message: unknown) => void, private summarize: (summary: AccountSummary) => void) {
+  constructor(private report: (message: unknown) => void, private glyph: Glyph, private summarize: (summary: AccountSummary) => void) {
     events.settingsAccountMenu.on(choice => {
       const menu = this.menu;
       if (!menu || menu.id !== choice.id || menu.token !== choice.token || this.token !== choice.token) return;
@@ -216,6 +218,6 @@ export class AccountSettings {
   private guide() {
     const modal = this.dialog("How accounts work");
     modal.append(el("p", "", "Accounts are subscriptions registered on your home box. Their credentials stay in separate config directories on that box, never in this app."), el("p", "", "Add an account, then sign in. Claude supports in-app sign-in; for Codex or Kimi, sign in on the box using that account's config directory."), el("p", "", "Use an account's menu to move all agents of the same kind, log out, or remove its registration. Moving agents restarts their current turns. Readiness and usage are checked by the home box."));
-    modal.showModal();
+    modal.append(agentGuideFooter(accountsAgentPrompt, this.glyph, this.report, () => modal.close())); modal.showModal();
   }
 }

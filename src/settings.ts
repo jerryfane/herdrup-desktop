@@ -32,6 +32,9 @@ import updateIcon from "../third_party/phosphor/web/arrow-circle-down.svg?url";
 import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.svg?url";
 import pickerIcon from "../third_party/phosphor/web/caret-up-down.svg?url";
 import chatsIcon from "../third_party/phosphor/web/chats.svg?url";
+import sparkleIcon from "../third_party/phosphor/web/sparkle-bold.svg?url";
+import { agentGuideFooter } from "./copyForAgent";
+import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -48,6 +51,7 @@ const settingIcons: Record<string, string> = {
   "gauge.with.needle": latencyIcon, "arrow.up.right": externalLinkIcon,
   "chevron.up.chevron.down": pickerIcon,
   "bubble.left.and.bubble.right": chatsIcon,
+  "sparkles": sparkleIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -87,7 +91,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let exhausted: string[] = [], update: UpdateSuggestion | null = null, suggestionsKey = "";
   const suggestions = el("div", "settings-suggestions");
   const setHeader = (at: Page, text: string, warn = false) => { headers[at] = { text, warn }; if (selected === at) showSubtitle(); };
-  const accounts = new AccountSettings(report, summary => {
+  const accounts = new AccountSettings(report, glyph, summary => {
     accountSummary.textContent = summary.value; setHeader("accounts", summary.header, summary.warn);
     exhausted = summary.exhausted; renderSuggestions();
   });
@@ -477,8 +481,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       ["Save the machine", "On your home box run the command below. It saves an SSH profile without granting continuous federation access."],
       ["Opt in explicitly", "Tap Federate beside the saved machine here, or run herdr machine federate <label> on the home box. A remote identity change fails closed."],
     ]) { modal.append(el("h3", "", title), el("p", "", text)); }
-    const command = "herdr machine add --label mac-studio user@mac-studio";
-    modal.append(el("pre", "", command), button("Copy command", () => { void Desk.gramCopyText(command).catch(report); })); modal.showModal();
+    modal.append(el("pre", "", federationAddCommand), button("Copy command", () => { void Desk.gramCopyText(federationAddCommand).catch(report); }));
+    modal.append(agentGuideFooter(federationAgentPrompt, glyph, report, () => modal.close())); modal.showModal();
   }
   async function refresh() {
     const at = ++generation; busy = ""; federationError = "";

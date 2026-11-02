@@ -227,7 +227,10 @@ an explicit SSH-authority confirmation; Unfederate removes that policy immediate
 Disabled profiles cannot be enabled here. Reconnect preserves host-key checks and
 asks again for an unsaved password. Copy diagnostics includes only the host label
 and app version. The setup guide explains saving a machine separately from granting
-federation authority. Text size saves app text scaling (90–140%) separately from
+federation authority. Both setup guides (How to add a machine, How accounts work)
+end with herdrup's "Copy these steps for an agent" card above Got it: it writes the
+guide's agent prompt, byte for byte herdrup's (`src/agentPrompts.ts`), to the
+clipboard and reads "Copied" for 1.9 s. Text size saves app text scaling (90–140%) separately from
 terminal point size (9–24 pt). Chat combines app scaling with its own text-size
 control; terminal glyphs do not change when app text changes. Both settings survive
 restart. The OMP preference chooses Chat or Terminal on opening an agent; an explicit
