@@ -118,6 +118,10 @@ func driveGramReference(desk *Desk, win *mygo.Window, state string) (bool, strin
   } else {
     await until(() => row("gr-owner") && row("gr-file"), "loaded reference inbox");
     if (state === "gram-saved") {
+      // As for search below: the inbox's on-screen unread row must be read before the
+      // Saved switch takes it off screen, or the capture keeps its dot and the title
+      // count "1" (parity 41441241962), which the reference never shows.
+      await until(() => !document.querySelector('.gconv-dot') && !document.querySelector('#bar-title .gcount'), "on-screen unread marked read");
       document.querySelector('.gsaved-toggle').click();
       await until(() => document.querySelector('.gram-scroll[data-kind="saved"]') && row("gr-owner") && row("gr-file"), "saved messages");
     } else if (state.startsWith("gram-search-")) {
