@@ -311,3 +311,29 @@ func TestDialRejectsUnsafeSessionName(t *testing.T) {
 		t.Fatal("accepted a session name with shell syntax")
 	}
 }
+
+// A request whose context already ended is never sent, on --multi or per
+// request: Go's select picks at random between a free channel slot and
+// Done, so without the check a cancelled call was sometimes answered
+// (desk TestTerminalHistorySeparatesExpiredCursorFromTransportFailure on CI).
+// 500 calls make the old race show every run.
+func TestCancelledCallIsNeverSent(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := range 500 {
+		if err := c.Call(ctx, fmt.Sprintf("cancelled%d", i), nil, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("call %d with an ended context: %v, want context.Canceled", i, err)
+		}
+	}
+	onMulti, perRequest := routes(m)
+	for _, method := range append(onMulti, perRequest...) {
+		if strings.HasPrefix(method, "cancelled") {
+			t.Fatalf("a cancelled call reached herdr: %s", method)
+		}
+	}
+}
