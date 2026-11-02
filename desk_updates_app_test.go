@@ -299,8 +299,8 @@ func TestAppUpdateDisabledReason(t *testing.T) {
 		{"darwin", "/nonexistent/bin/herdrup", "This build can't update itself."},
 		// The Debian package's /opt/herdrup: its parent is not the user's.
 		{"linux", "/nonexistent/opt/herdrup/herdrup", "Installed by your package manager; update it there."},
-		{"darwin", "/nonexistent/Applications/Herdrup.app/Contents/MacOS/Herdrup", "Herdrup can't write to the folder it's installed in, so it can't update itself."},
-		{"windows", `/nonexistent/Program Files/Herdrup/Herdrup.exe`, "Herdrup can't write to the folder it's installed in, so it can't update itself."},
+		{"darwin", "/nonexistent/Applications/Herdrup.app/Contents/MacOS/Herdrup", "herdrup can't write to the folder it's installed in, so it can't update itself."},
+		{"windows", `/nonexistent/Program Files/Herdrup/Herdrup.exe`, "herdrup can't write to the folder it's installed in, so it can't update itself."},
 	}
 	for _, c := range cases {
 		if got := appUpdateDisabledReason(c.goos, c.exe); got != c.want {

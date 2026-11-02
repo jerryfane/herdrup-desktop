@@ -231,7 +231,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       node.id = "settings-suggestion-update"; rows.push(node);
     }
     if (appVersion) {
-      const node = row(`Update Herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), "A newer version of this app is ready", pill(1, "waiting"));
+      const node = row(`Update herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), "A newer version of this app is ready", pill(1, "waiting"));
       node.id = "settings-suggestion-app-update"; rows.push(node);
     }
     if (exhausted.length) {
