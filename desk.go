@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,6 +165,9 @@ type Desk struct {
 	saveDialog     func(ctx context.Context, name string) (string, error)
 	openPath       func(path string) error
 	writeClipboard func(text string)
+	// usage is the anonymous daily usage count (usage_ping.go). It sends
+	// nothing until main gives it a URL.
+	usage *usagePing
 }
 
 // link is the connection to the active machine. Its fields are guarded by
@@ -210,6 +214,7 @@ func newDesk(dir string) *Desk {
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
 		presence:   newPresence(),
 		appUpdates: newAppUpdates(),
+		usage:      newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
 	}
 }
 

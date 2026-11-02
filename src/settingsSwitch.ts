@@ -1,7 +1,17 @@
-import { Desk } from "./mygo";
 import { errorText } from "./errors";
 
-export class PreviewSettings {
+export interface SavedSwitchOptions {
+  title: string;
+  subtitle: (on: boolean) => string;
+  /** Shown, disabled, until the saved value arrives. */
+  fallback: boolean;
+  load: () => Promise<boolean>;
+  save: (on: boolean) => Promise<void>;
+}
+
+/** A Settings row whose switch is a preference Go keeps (desk_previews.go, usage_ping.go).
+ *  Flips made while one is saving are saved after it, the last one winning. */
+export class SavedSwitch {
   readonly root = document.createElement("label");
   private input = document.createElement("input");
   private subtitle = document.createElement("span");
@@ -11,15 +21,15 @@ export class PreviewSettings {
   private running = false;
   private revision = 0;
 
-  constructor(icon: HTMLElement) {
+  constructor(icon: HTMLElement, private options: SavedSwitchOptions) {
     this.root.className = "settings-row";
     const lines = document.createElement("span"), title = document.createElement("span");
     lines.className = "settings-row-lines";
-    title.className = "settings-row-label"; title.textContent = "Run JavaScript in previews";
+    title.className = "settings-row-label"; title.textContent = options.title;
     this.subtitle.className = "settings-row-subtitle";
     lines.append(title, this.subtitle);
     this.input.type = "checkbox"; this.input.className = "settings-switch";
-    this.input.setAttribute("role", "switch"); this.input.setAttribute("aria-label", title.textContent);
+    this.input.setAttribute("role", "switch"); this.input.setAttribute("aria-label", options.title);
     this.status.className = "settings-row-subtitle settings-preference-status";
     this.status.setAttribute("role", "status"); this.status.hidden = true;
     this.input.onchange = () => {
@@ -33,7 +43,7 @@ export class PreviewSettings {
     if (this.running) return;
     const revision = ++this.revision;
     try {
-      const saved = await Desk.getPreviewJavaScript();
+      const saved = await this.options.load();
       if (revision === this.revision) { this.status.hidden = true; this.saved = saved; this.render(); }
     } catch (error) { if (revision === this.revision) this.report(error); }
   }
@@ -41,18 +51,16 @@ export class PreviewSettings {
     this.status.textContent = errorText(error); this.status.hidden = false;
   }
   private render() {
-    const enabled = this.pending ?? this.saved ?? false;
+    const enabled = this.pending ?? this.saved ?? this.options.fallback;
     this.input.checked = enabled; this.input.disabled = this.saved === undefined;
-    this.subtitle.textContent = enabled
-      ? "Scripts run in new previews. Remote loads and navigation stay blocked, but a crafted file could still signal that you opened it."
-      : "HTML and SVG previews ignore scripts. Inline images and styles still display. Changes apply to the next preview.";
+    this.subtitle.textContent = this.options.subtitle(enabled);
   }
   private async save() {
     this.running = true;
     try {
       while (this.pending !== undefined) {
         const value = this.pending;
-        await Desk.setPreviewJavaScript(value);
+        await this.options.save(value);
         this.saved = value;
         if (this.pending === value) this.pending = undefined;
       }

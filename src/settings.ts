@@ -10,7 +10,7 @@ import accountIcon from "../third_party/phosphor/web/key.svg?url";
 import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
-import { PreviewSettings } from "./settingsPreviews";
+import { SavedSwitch } from "./settingsSwitch";
 import { ServerUpdateSettings, type UpdateSuggestion } from "./settingsUpdates";
 import { AppUpdateSettings, appUpdateSummary, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -34,6 +34,7 @@ import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.sv
 import pickerIcon from "../third_party/phosphor/web/caret-up-down.svg?url";
 import chatsIcon from "../third_party/phosphor/web/chats.svg?url";
 import sparkleIcon from "../third_party/phosphor/web/sparkle-bold.svg?url";
+import usageIcon from "../third_party/phosphor/web/chart-bar.svg?url";
 import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
@@ -54,6 +55,7 @@ const settingIcons: Record<string, string> = {
   "chevron.up.chevron.down": pickerIcon,
   "bubble.left.and.bubble.right": chatsIcon,
   "sparkles": sparkleIcon,
+  "chart.bar": usageIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -101,7 +103,20 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const notifications = new NotificationsSettings(report, (value, header, warn) => {
     notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
   });
-  const previews = new PreviewSettings(glyph("chevron.left.forwardslash.chevron.right", 18));
+  const previews = new SavedSwitch(glyph("chevron.left.forwardslash.chevron.right", 18), {
+    title: "Run JavaScript in previews", fallback: false,
+    subtitle: on => on
+      ? "Scripts run in new previews. Remote loads and navigation stay blocked, but a crafted file could still signal that you opened it."
+      : "HTML and SVG previews ignore scripts. Inline images and styles still display. Changes apply to the next preview.",
+    load: () => Desk.getPreviewJavaScript(), save: on => Desk.setPreviewJavaScript(on),
+  });
+  // usageCountRow (HerdrApp.swift): on by default; Go keeps the install ID and deletes it when off.
+  const usageCount = new SavedSwitch(glyph("chart.bar", 18), {
+    title: "Share anonymous usage count", fallback: true,
+    subtitle: () => "Once a day: a random ID, the app version and the platform. Nothing about your agents or machines.",
+    load: () => Desk.getShareUsageCount(), save: on => Desk.setShareUsageCount(on),
+  });
+  usageCount.root.id = "settings-usage-count";
   // The app's own update (appUpdates.ts): the About row's status, its page, and a suggestion while one waits.
   const appUpdateValue = el("span", "settings-row-value"), appUpdates = new AppUpdateSettings(report);
   watchAppUpdate(next => { appUpdate = next; appUpdateValue.textContent = appUpdateSummary(next); renderSuggestions(); });
@@ -292,6 +307,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       link("Terms of Service", "doc.text", "https://herdrup.app/legal/terms"),
       link("Open source on GitHub", "chevron.left.forwardslash.chevron.right", "https://github.com/themartianapp/herdrup"),
       ...(appUpdatesShown ? [appUpdatesRow] : []),
+      usageCount.root,
     ]), footer);
     updateConnection();
   }
@@ -543,7 +559,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();
-      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); void notifications.refresh(); }
+      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); void usageCount.refresh(); void notifications.refresh(); }
     },
   };
 }
