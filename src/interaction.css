@@ -32,12 +32,14 @@
 .agent-detail .pane-back { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; padding: 0; border: 0; border-radius: 50%; }
 .pane-header-capsule { display: flex; padding: 0 2px; background: var(--color-surface-raised); border-radius: 22px; }
 .agent-detail .pane-header-capsule button { display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; padding: 0; border: 0; background: none; }
-/* GramCodeBlock's copy controls and the attachment chip's remove (gram.css) are bare, as in Gram. */
+/* GramCodeBlock's copy controls and the attachment chip's remove, as gram.css draws them in Gram. */
 .agent-detail .gcode-copy, .agent-detail .gcode-copy-glyph, .agent-detail .gchip-remove { border: 0; border-radius: 0; background: none; cursor: default; }
-.agent-detail .gcode-copy { padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
-.agent-detail .gcode-copy-glyph, .agent-detail .gchip-remove { padding: 0; color: var(--color-text-dim); }
+.agent-detail .gcode-copy { display: flex; align-items: center; gap: 4px; padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
+.agent-detail .gcode-copy-glyph { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; flex: none; color: var(--color-text-dim); }
 .agent-detail .gcode-copy.copied, .agent-detail .gcode-copy-glyph.copied { color: var(--status-done); }
+.agent-detail .gchip-remove { width: 36px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; flex: none; color: var(--color-text-dim); }
 .agent-detail .gchip-remove:hover:not(:disabled) { color: var(--color-text); }
+.agent-detail .gchip-remove:disabled { opacity: 0.25; }
 .agent-detail .pane-header-capsule .pane-find-toggle { color: var(--color-text-dim); }
 .agent-detail .pane-header-capsule .pane-find-toggle[aria-pressed="true"] { color: var(--color-text); }
 /* PaneActionsMenuLabel (PaneHeaderControls.swift 66-77): the struck bell in waiting while muted. */
