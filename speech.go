@@ -74,7 +74,7 @@ func (d *Dictation) Start(token, locale string) error {
 	if err := cmd.Start(); err != nil {
 		cancel()
 		control.Close()
-		return fmt.Errorf("on-device dictation could not start; reinstall Herdrup to restore its speech engine: %w", err)
+		return fmt.Errorf("on-device dictation could not start; reinstall herdrup to restore its speech engine: %w", err)
 	}
 	session := &dictationSession{token: token, cancel: cancel, control: control, done: make(chan struct{})}
 	d.active = session

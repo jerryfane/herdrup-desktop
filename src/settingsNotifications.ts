@@ -52,7 +52,7 @@ export class NotificationsSettings {
     };
     card.append(test);
     this.root.replaceChildren(el("h2", "settings-section-label", "NOTIFY ME WHEN"), card,
-      el("p", "settings-row-subtitle", "Alerts work while Herdrup is running and connected. Exit and finished-turn alerts require live events from the home box. Gram arrivals are checked while its page is closed; existing unread messages do not alert when you connect."));
+      el("p", "settings-row-subtitle", "Alerts work while herdrup is running and connected. Exit and finished-turn alerts require live events from the home box. Gram arrivals are checked while its page is closed; existing unread messages do not alert when you connect."));
     if (focused) this.root.querySelector<HTMLInputElement>(`input[data-preference="${focused}"]`)?.focus();
   }
   private async save(key: keyof NotificationPreferences) {

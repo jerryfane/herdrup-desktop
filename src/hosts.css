@@ -39,11 +39,15 @@
 .host-home .host-invite-paste:disabled { opacity:.35; cursor:default; }
 .host-home-message { font-size:14px; color:var(--color-text-dim); }
 .host-editor { width:min(520px,calc(100vw - 40px)); max-height:calc(100vh - 40px); overflow:auto; padding:0; border:1px solid var(--color-hairline); border-radius:20px; color:var(--color-text); background:var(--color-ground); }
-.host-editor-header { display:flex; align-items:center; justify-content:center; position:relative; min-height:56px; font-size:17px; }
+.host-editor-header { display:flex; align-items:center; justify-content:center; position:relative; min-height:56px; }
 .host-editor-header button { position:absolute; left:16px; border:0; padding:8px 0; background:none; color:var(--color-text-dim); font-size:17px; font-weight:400; }
 .host-editor .form { display:flex; flex-direction:column; gap:10px; padding:0 20px 20px; margin:0; background:none; box-shadow:none; border-radius:0; }
-.host-editor .form > label { display:flex; flex-direction:row; align-items:center; gap:12px; min-height:52px; font-size:16px; }
-.host-editor .form > label > input { margin:0; margin-left:auto; min-width:0; width:60%; flex:none; }
+/* HostEditor.fieldRow (herdrup App/HostEditor.swift 185-196): the label in app 15 textDim, the value
+   in machine 15 text; captions app 12 (440-443); the title is the inline navigation title. */
+.host-editor-header { font: 600 17px var(--font-app); }
+.host-editor .form > label { display:flex; flex-direction:row; align-items:center; gap:12px; min-height:52px; font: 400 15px var(--font-app); color: var(--color-text-dim); }
+.host-editor .form > label .faint { font: 400 12px var(--font-app); }
+.host-editor .form > label > input { margin:0; margin-left:auto; min-width:0; width:60%; flex:none; font: 400 15px var(--font-machine); color: var(--color-text); }
 .host-editor .form-actions { display:flex; flex-direction:column; }
 .host-editor .form-actions > button[type=submit] { min-height:50px; border-radius:25px; color:var(--color-ground); background:var(--color-text); }
 .host-editor .host-save-only { border:0; background:none; color:var(--color-text-dim); font-size:14px; font-weight:400; }

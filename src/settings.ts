@@ -364,7 +364,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       };
       const copy = button("Copy report", () => {
         const reportText = typingLatency.snapshot().map(item => [item.host, ...latencyLines(item)].join("\n")).join("\n\n");
-        void Desk.gramCopyText(`Herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
+        void Desk.gramCopyText(`herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
       }); copy.className = "settings-plain-row action";
       const reset = button("Reset", () => { typingLatency.reset(); copy.textContent = "Copy report"; refreshLatency(); }); reset.className = "settings-plain-row action";
       body.append(instruction, results, group("REPORT", [copy, reset]), explanation);

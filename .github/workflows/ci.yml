@@ -139,10 +139,10 @@ jobs:
           trap show_logs EXIT
           case "$RUNNER_OS" in
             Linux) xvfb-run -a -s "-screen 0 1280x900x24" build/linux-amd64/herdrup ;;
-            macOS) "$(ls -d build/darwin-*/Herdrup.app)/Contents/MacOS/Herdrup" ;;
+            macOS) "$(ls -d build/darwin-*/herdrup.app)/Contents/MacOS/herdrup" ;;
             Windows)
               # A GUI executable: wait for it and take its exit code.
-              pwsh -NoProfile -Command '$p = Start-Process -FilePath "build/windows-amd64/Herdrup.exe" -Wait -PassThru; exit $p.ExitCode' ;;
+              pwsh -NoProfile -Command '$p = Start-Process -FilePath "build/windows-amd64/herdrup.exe" -Wait -PassThru; exit $p.ExitCode' ;;
           esac
           test -s "$HERDRUP_SMOKE_CAPTURE"
       - uses: actions/upload-artifact@v4

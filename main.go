@@ -11,6 +11,12 @@ import (
 )
 
 func main() {
+	// Linux keeps the data of the app's former name apart (userdata_rename.go).
+	if config, err := os.UserConfigDir(); err == nil && !smokeEnabled() {
+		if err := moveFormerUserData(config, mygo.App.Name()); err != nil {
+			log.Printf("user data of %q stays where it was: %v", formerAppName, err)
+		}
+	}
 	dir, err := mygo.App.Path(mygo.PathUserData)
 	if err != nil {
 		log.Fatal(err)
@@ -83,7 +89,7 @@ func main() {
 			url = ""
 		}
 		win = mygo.NewWindow(mygo.WindowOptions{
-			Title:           "Herdrup",
+			Title:           "herdrup",
 			Width:           960,
 			Height:          680,
 			MinWidth:        560,

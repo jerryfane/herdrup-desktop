@@ -53,7 +53,7 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 	if err := d.pins.SetPin(net.JoinHostPort(payload.Host, "22"), payload.Fingerprint); err != nil {
 		return PairedMachine{}, errors.New("Couldn't save that computer's identity on this device. Nothing was sent to the computer.")
 	}
-	device := "Herdrup Desktop"
+	device := "herdrup desktop"
 	if hostname, err := os.Hostname(); err == nil && hostname != "" {
 		device += " on " + hostname
 	}

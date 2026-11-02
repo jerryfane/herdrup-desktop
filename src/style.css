@@ -34,6 +34,9 @@ html, body {
   overflow: hidden;
   background: var(--color-ground-machine);
   color: var(--color-text);
+  /* The app font everywhere nothing sets one: WebKit's default is serif, which leaked into
+     dialogs, labels and notes no rule named a font for (owner reports 2026-11-02). */
+  font-family: var(--font-app);
   -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;

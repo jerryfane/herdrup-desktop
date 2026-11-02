@@ -171,7 +171,7 @@ func (d *Desk) deliverNotification(kind string, options mygo.NotificationOptions
 	return err
 }
 func (d *Desk) TestNotification() error {
-	return d.deliverNotification("test", mygo.NotificationOptions{ID: "herdrup-notification-test", Title: "Herdrup notifications", Body: "Desktop alerts can reach this session."})
+	return d.deliverNotification("test", mygo.NotificationOptions{ID: "herdrup-notification-test", Title: "herdrup notifications", Body: "Desktop alerts can reach this session."})
 }
 func (d *Desk) showAgentNotification(a attention) {
 	options, ok := d.agentNotification(a)
