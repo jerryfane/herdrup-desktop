@@ -322,3 +322,52 @@ func TestTerminalHistoryStopsPagingOnUnsupportedDaemon(t *testing.T) {
 		t.Fatalf("unsupported history should stop paging with a reason, not retry: %+v, %v", page, err)
 	}
 }
+
+// herdr verifies a prompt's submission only when asked to wait for the
+// agent's status; without the wait it answers written_to_pty and Chat said
+// "submission not confirmed" after every send (owner report 2026-11-02).
+// The request carries native submitPrompt's wait, and a written_to_pty
+// answer still gets the native note.
+func TestChatPromptWaitsForTheAgentsStatus(t *testing.T) {
+	var mu sync.Mutex
+	writtenOnly := false
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		original := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if method != "agent.prompt" {
+				return original(method, raw)
+			}
+			var p struct {
+				Target string `json:"target"`
+				Wait   *struct {
+					Until     []string `json:"until"`
+					TimeoutMs int      `json:"timeout_ms"`
+				} `json:"wait"`
+			}
+			_ = json.Unmarshal(raw, &p)
+			mu.Lock()
+			defer mu.Unlock()
+			delivery := "written_to_pty"
+			if p.Wait != nil && p.Wait.TimeoutMs == 6000 && strings.Join(p.Wait.Until, ",") == "working,idle,blocked,done,unknown" && !writtenOnly {
+				delivery = "submitted"
+			}
+			return map[string]any{"type": "agent_prompted", "agent": map[string]any{"pane_id": p.Target}, "delivery": delivery}, nil
+		}
+	})
+	board := d.Board()
+	if _, err := d.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Disconnect()
+	receipt, err := d.ChatPrompt(context.Background(), "view", "hello")
+	if err != nil || receipt != `{"delivery":"submitted"}` {
+		t.Fatalf("prompt receipt %s, %v; want a confirmed submission", receipt, err)
+	}
+	mu.Lock()
+	writtenOnly = true
+	mu.Unlock()
+	receipt, err = d.ChatPrompt(context.Background(), "view", "again")
+	if err != nil || receipt != `{"delivery":"written_to_pty","note":"Sent to terminal; agent submission not verified"}` {
+		t.Fatalf("unverified receipt %s, %v", receipt, err)
+	}
+}

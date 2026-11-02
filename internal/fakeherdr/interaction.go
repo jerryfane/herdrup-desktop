@@ -43,6 +43,9 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		After  string `json:"after"`
 		Before string `json:"before"`
 		Cursor string `json:"cursor"`
+		Wait   *struct {
+			Until []string `json:"until"`
+		} `json:"wait"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, &APIError{Code: "invalid_request", Message: err.Error()}, true
@@ -86,7 +89,13 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 	case "agent.prompt":
 		n := len(x.entries)
 		x.entries = append(x.entries, map[string]any{"kind": "user", "id": fmt.Sprintf("u%d", n), "ts_ms": n + 10, "author": "owner", "text": p.Text}, map[string]any{"kind": "reply", "id": fmt.Sprintf("r%d", n), "ts_ms": n + 11, "text": "Sample backend received your prompt. No live model was called.", "final": true})
-		return map[string]any{"type": "agent_prompted", "agent": map[string]any{"pane_id": p.Target, "agent": "omp", "agent_status": "idle"}, "delivery": "submitted"}, nil, true
+		// herdr reports a verified submission only to a prompt that waits for
+		// the agent's status; without one it answers written_to_pty (api/wait.rs).
+		delivery := "written_to_pty"
+		if p.Wait != nil && len(p.Wait.Until) > 0 {
+			delivery = "submitted"
+		}
+		return map[string]any{"type": "agent_prompted", "agent": map[string]any{"pane_id": p.Target, "agent": "omp", "agent_status": "idle"}, "delivery": delivery}, nil, true
 	case "agent.answer":
 		if x.answered {
 			return nil, &APIError{Code: "ask_not_pending", Message: "The question is no longer pending"}, true

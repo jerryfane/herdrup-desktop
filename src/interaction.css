@@ -313,3 +313,19 @@
 .chat-readable-text a { color:var(--status-working); }
 .chat-readable-text strong { font-weight:600; }
 .chat-selection-sheet > .chat-readable-text { padding:16px 17px 24px; overflow:auto; flex:1; min-height:0; }
+/* ChatWorkingDots.swift: three 5 pt Palette.working dots 4 pt apart, 9 pt before
+   the intent (or "Working") in app 13 pt textDim; 4 pt leading, 6 pt vertical
+   padding. Each dot's opacity is 0.3 + 0.7·max(0, sin(4.5·t − 0.9·i)): a
+   2π/4.5 s cycle, the next dot 0.9/4.5 s behind, and 0.7 still under reduced
+   motion. */
+.chat-working { box-sizing: border-box; display: flex; align-items: center; gap: 9px; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 6px 0 6px 4px; color: var(--color-text-dim); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.chat-working-dots { display: flex; flex: none; gap: 4px; }
+.chat-working-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--status-working); opacity: 0.3; animation: chat-working-dot 1.396s linear infinite both; }
+.chat-working-dot:nth-child(2) { animation-delay: 0.2s; }
+.chat-working-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chat-working-dot {
+  0% { opacity: 0.3; } 6.25% { opacity: 0.568; } 12.5% { opacity: 0.795; } 18.75% { opacity: 0.947; }
+  25% { opacity: 1; } 31.25% { opacity: 0.947; } 37.5% { opacity: 0.795; } 43.75% { opacity: 0.568; }
+  50%, 100% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion:reduce) { .chat-working-dot { animation: none; opacity: 0.7; } }
