@@ -32,6 +32,12 @@
 .agent-detail .pane-back { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; padding: 0; border: 0; border-radius: 50%; }
 .pane-header-capsule { display: flex; padding: 0 2px; background: var(--color-surface-raised); border-radius: 22px; }
 .agent-detail .pane-header-capsule button { display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; padding: 0; border: 0; background: none; }
+/* GramCodeBlock's copy controls and the attachment chip's remove (gram.css) are bare, as in Gram. */
+.agent-detail .gcode-copy, .agent-detail .gcode-copy-glyph, .agent-detail .gchip-remove { border: 0; border-radius: 0; background: none; cursor: default; }
+.agent-detail .gcode-copy { padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
+.agent-detail .gcode-copy-glyph, .agent-detail .gchip-remove { padding: 0; color: var(--color-text-dim); }
+.agent-detail .gcode-copy.copied, .agent-detail .gcode-copy-glyph.copied { color: var(--status-done); }
+.agent-detail .gchip-remove:hover:not(:disabled) { color: var(--color-text); }
 .agent-detail .pane-header-capsule .pane-find-toggle { color: var(--color-text-dim); }
 .agent-detail .pane-header-capsule .pane-find-toggle[aria-pressed="true"] { color: var(--color-text); }
 /* PaneActionsMenuLabel (PaneHeaderControls.swift 66-77): the struck bell in waiting while muted. */
@@ -133,13 +139,12 @@
 .chat-thought ul > li::before { color: var(--color-text-faint); }
 .chat-thought > .chat-markdown { --markdown-tone: .9375; }
 .chat-markdown strong { font-weight: 600; }
-.chat-markdown pre { overflow-x: auto; padding: 12px; background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 8px; }
 .chat-markdown code { font-family: var(--font-machine); font-size: max(calc(1em - 2.5px), 10px); }
 /* Swift sets code ink explicitly: text in replies (even inside a dim quote), dim in thoughts. */
 .chat-markdown :not(pre) > code { background: var(--color-surface); color: var(--color-text); }
 .chat-thought > .chat-markdown :not(pre) > code { color: var(--color-text-dim); }
-.chat-markdown pre code { font-size: calc(13px * var(--chat-text-scale, 1)); }
-.chat-markdown pre button { display: block; margin-top: 8px; }
+/* GramCodeBlock in Chat (ChatMarkdownView.swift 51): its code at the chat's text scale (GramCards.swift 557). */
+.chat-markdown .gcode-text { font-size: calc(13px * var(--chat-text-scale, 1)); line-height: calc(18px * var(--chat-text-scale, 1)); }
 /* ChatMarkdownTable: surface header, quiet row rules only, a 12 pt hairline frame. */
 .chat-markdown .chat-table { overflow-x: auto; max-width: 100%; }
 .chat-markdown .chat-table-frame { box-sizing: border-box; min-width: calc(var(--table-columns, 1) * 96px * var(--markdown-scale)); border: 1px solid var(--color-hairline); border-radius: 12px; overflow: hidden; }

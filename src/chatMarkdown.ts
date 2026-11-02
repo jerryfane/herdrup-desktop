@@ -1,6 +1,7 @@
 import { marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
+import { selfCopyingCodeBlock } from "./codeBlock";
 
 type Mermaid = { initialize(options: object): void; render(id: string, text: string): Promise<{ svg: string }> };
 declare global { interface Window { mermaid?: Mermaid } }
@@ -33,13 +34,21 @@ export function markdown(text: string): HTMLElement {
   e.preventDefault();
   void Desk.openExternalURL(link.getAttribute("href") ?? "").catch(() => {});
  });
- for (const code of body.querySelectorAll<HTMLElement>("pre code.language-mermaid")) {
-  const source = code.textContent ?? "";
+ // A fenced block is GramCodeBlock (ChatMarkdownView.swift 51); a diagram replaces
+ // its block once drawn, else its source stays as one (ChatMermaidView.swift 190).
+ for (const pre of body.querySelectorAll("pre")) {
+  const code = pre.querySelector("code");
+  const source = code?.textContent ?? pre.textContent ?? "";
+  const language = /(?:^|\s)language-(\S+)/.exec(code?.className ?? "")?.[1] ?? null;
+  const host = document.createElement("div"); host.className = "chat-code";
+  host.append(selfCopyingCodeBlock(source.replace(/\n$/, ""), language));
+  pre.replaceWith(host);
+  if (language !== "mermaid") continue;
   void mermaid().then(m => m.render(`chat-diagram-${++diagramID}`, source)).then(({ svg }) => {
    const diagram = document.createElement("div"); diagram.className = "chat-diagram";
    diagram.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
-   code.parentElement?.replaceWith(diagram);
-  }).catch(() => { code.title = "Diagram could not be rendered; source is shown."; });
+   host.replaceWith(diagram);
+  }).catch(() => { host.title = "Diagram could not be rendered; source is shown."; });
  }
  // ChatMarkdownTable: a horizontal scroller around a rounded, clipped frame whose
  // columns share the width but never shrink below 96 pt (scaled) each.
@@ -55,12 +64,6 @@ export function markdown(text: string): HTMLElement {
    const value = cell.textContent?.trim() ?? "";
    if (/^[0-9+\-−$]/.test(value) && /[0-9]/.test(value)) cell.classList.add("chat-table-number", ...(value.startsWith("+") ? ["chat-table-gain"] : []));
   }
- }
- for (const pre of body.querySelectorAll("pre")) {
-  const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy";
-  const code = pre.querySelector("code")?.textContent ?? "";
-  copy.onclick = () => { void Desk.gramCopyText(code); };
-  pre.append(copy);
  }
  return body;
 }

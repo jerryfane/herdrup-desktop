@@ -210,9 +210,9 @@
 .gcode-head { display: flex; align-items: center; gap: 8px; }
 .gcode-lang { font-size: 11.5px; color: var(--color-text-dim); }
 .gcode-spacer { flex: 1; }
-.gram .gcode-copy { display: flex; align-items: center; gap: 4px; padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
-.gram .gcode-copy-glyph { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
-.gram .gcode-copy.copied, .gram .gcode-copy-glyph.copied { color: var(--status-done); }
+.gcode-copy { display: flex; align-items: center; gap: 4px; padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
+.gcode-copy-glyph { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
+.gcode-copy.copied, .gcode-copy-glyph.copied { color: var(--status-done); }
 
 /* File cards. */
 .gfile { position: relative; }
@@ -296,7 +296,7 @@
 .composer-action.primary .gring .share { stroke: currentColor; }
 
 /* Chips: 228 wide, surfaceRaised, radius 15. */
-.gchip { flex: none; width: 228px; display: flex; align-items: center; gap: 9px; padding: 9px 3px 9px 9px; border-radius: 15px; background: var(--color-surface-raised); }
+.gchip { font-family: var(--font-app); flex: none; width: 228px; display: flex; align-items: center; gap: 9px; padding: 9px 3px 9px 9px; border-radius: 15px; background: var(--color-surface-raised); }
 .gchip-icon { position: relative; width: 38px; height: 38px; padding: 2px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); }
 .gchip-icon .gring { position: absolute; left: 2px; top: 2px; }
 .gchip.failed .gchip-icon { color: var(--status-died); }
@@ -305,9 +305,9 @@
 .gchip-name { font-size: 12px; line-height: 18px; color: var(--color-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gchip-status { font-size: 10px; line-height: 15px; color: var(--color-text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gchip.failed .gchip-status { color: var(--status-died); }
-.gram .gchip-remove { width: 36px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
-.gram .gchip-remove:hover:not(:disabled) { color: var(--color-text); }
-.gram .gchip-remove:disabled { opacity: 0.25; }
+.gchip-remove { width: 36px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
+.gchip-remove:hover:not(:disabled) { color: var(--color-text); }
+.gchip-remove:disabled { opacity: 0.25; }
 
 /* The @ list: 300 wide, 8 pt above the composer. */
 .gmentions { position: absolute; left: 12px; bottom: calc(100% + 8px); z-index: 3; }
