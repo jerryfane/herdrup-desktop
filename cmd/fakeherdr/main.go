@@ -46,6 +46,7 @@ func main() {
 	creation := flag.Bool("creation", false, "serve isolated pane and agent creation; never starts a real process or model")
 	responsesFile := flag.String("responses", "", "immutable native-reference API response map, including avatar and session replies")
 	current := flag.Bool("current", false, "answer as a herdr that needs no update (herdrup ServerRequirement.current): ping also advertises server_update and the features it requires, server.update_check offers nothing newer")
+	sessionTransfer := flag.Bool("session-transfer", false, "advertise agent_session_transfer and serve agent.transfer_session: a prepare is ready at once, its confirm completes")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -111,6 +112,7 @@ func main() {
 		}
 	}
 	set := newAgentSet(agents)
+	w.actions = fakeherdr.NewAgentActions(set.get, set.set, *sessionTransfer)
 	handle, err := handler(*mode, set.get, w)
 	if err != nil {
 		log.Fatal(err)
@@ -236,7 +238,8 @@ func handler(mode string, agents func() []byte, w *writes) (func(string, json.Ra
 			return map[string]any{
 				"type": "pong", "version": "fake", "protocol": 22,
 				"capabilities": map[string]bool{"api_bridge_multi": true, "events_v2": true,
-					"agent_groups": true, "agent_avatar": true, "gram_upload_stream": w.uploadStream},
+					"agent_groups": true, "agent_avatar": true, "gram_upload_stream": w.uploadStream,
+					"agent_session_transfer": w.actions != nil && w.actions.Transfer()},
 			}, nil
 		case "agent.list":
 			return list(), nil

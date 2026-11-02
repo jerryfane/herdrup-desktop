@@ -11,7 +11,8 @@ import (
 
 // writes is the state behind the methods that change something, kept in
 // memory so herdrup-cli can exercise them without a real herdr: agent
-// folders and stars, gram messages, avatars and upload staging.
+// folders and stars, gram messages, avatars, upload staging and the agent
+// menus' actions.
 type writes struct {
 	mu     sync.Mutex
 	groups herdrapi.ResponseResultAgentGroups
@@ -19,6 +20,9 @@ type writes struct {
 	gram *fakeherdr.Gram
 	// uploadStream is whether ping advertises gram_upload_stream.
 	uploadStream bool
+	// actions answers the agent menus' methods on the served roster; nil
+	// answers none.
+	actions *fakeherdr.AgentActions
 }
 
 func newWrites() *writes {
@@ -41,6 +45,11 @@ func result(v herdrapi.ResponseResultVariant) any {
 func (w *writes) handle(method string, params json.RawMessage) (res any, err *fakeherdr.APIError, ok bool) {
 	if res, err, ok := w.gram.Handle(method, params); ok {
 		return res, err, true
+	}
+	if w.actions != nil {
+		if res, err, ok := w.actions.Handle(method, params); ok {
+			return res, err, true
+		}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -46,6 +46,9 @@ func (x *Accounts) Handle(method string, raw json.RawMessage) (any, *APIError, b
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, &APIError{Code: "invalid_request", Message: err.Error()}, true
 	}
+	if method == "agent.restart" && p.Account == "" {
+		return nil, nil, false // a plain restart, not a swap: AgentActions answers it
+	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	accountList := func() any {
