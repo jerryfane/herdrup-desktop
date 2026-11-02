@@ -288,6 +288,12 @@ func DecodeReply(line []byte, result any) error {
 // carry, each request gets its own exec channel. A request never fails only
 // because the --multi channel is unavailable.
 func (c *Client) Call(ctx context.Context, method string, params, result any) error {
+	// A request whose context has already ended is never sent. The channel's
+	// select would otherwise pick at random between a free slot and Done, and
+	// sometimes send it (a cancelled history page came back as a page).
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", method, err)
+	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
