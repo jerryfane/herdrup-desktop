@@ -285,6 +285,22 @@ Under the machine card, Settings suggests what waits, as Swift does: a herdr upd
 each opening its page. Accounts, Shared access, Notifications and Typing latency pages
 show the native summary line under the title, amber when accounts are exhausted or
 alerts are on but this session cannot deliver them.
+
+Settings → About → App updates is Herdrup Desktop's own update (`desk_updates_app.go`,
+`src/appUpdates.ts`, on mygo's `mygo.Updater`); the Machines card's update is herdr's.
+The app follows preview releases (every release is a GitHub prerelease so far): it checks
+one minute after launch and then every 6 hours while it runs, and Check now checks at once.
+The row shows the last result (Up to date, Update available, Couldn't check, Off); its page
+shows the running version, the newer version with its release notes (the manifest's, and a
+link to the GitHub release), check errors as plain text, and one Update and restart button
+that downloads the signed update with a progress bar, replaces the app and relaunches it.
+While an update waits, Settings suggests it under the machine card and the Settings tab
+carries the same neutral badge as Gram's unread count. A build without update signing
+says "This build can't update itself."; on Linux the Debian package (any install in a folder
+the user cannot write) says "Installed by your package manager; update it there.", and an
+unwritable install elsewhere says Herdrup can't write to its folder. Smoke and
+reference builds never check, and the reference captures leave the row out.
+
 The Settings index shows live account counts, shared people or invites,
 enabled notification categories and text sizes. It reuses the page models and updates
 only the value nodes, preserving keyboard focus. Unavailable home-box data is not
@@ -841,7 +857,38 @@ To release, set `version` in `package.json`, commit, and push the tag `v<version
 on a tag that does not match). The files and `SHA256SUMS` go on the tag's GitHub release, published
 as soon as every check passes (a prerelease for a tag like `v0.2.0-beta.1`). Run on demand
 (`gh workflow run release.yml --ref <branch>`), the workflow builds and checks the same files and
-keeps them as artifacts of the run, with no release.
+keeps them as artifacts of the run, with no release. With [signed app updates](#signing-app-updates),
+each platform's update archive, deltas and `update-<platform>.json` go on the release too.
+
+### Signing app updates
+
+Installed apps update themselves only from releases signed with the update key (mygo's
+[auto-updates](https://github.com/egoist/mygo/blob/main/docs/updates.md)). Until the key exists,
+builds have no updates and Settings says "This build can't update itself."; releases are as before.
+To turn updates on, on the owner's Mac:
+
+```sh
+bun x mygo keygen -o ~/herdrup-update-keys   # writes mygo-update.key (secret) and mygo-update.pub
+gh secret set MYGO_UPDATER_PRIVATE_KEY --repo jerryfane/herdrup-desktop < ~/herdrup-update-keys/mygo-update.key
+```
+
+Keep `mygo-update.key` out of the repository, in a password manager: installed apps accept only
+updates signed with it, so losing it strands them. Then commit the public key, this one line of
+`mygo.config.ts`, with the contents of `mygo-update.pub` in place of `""`:
+
+```ts
+const updatePublicKey = process.env.HERDRUP_UPDATE_PUBLIC_KEY ?? "";
+```
+
+The release workflow passes the secret to `mygo build`, which signs each platform's archive
+(`herdrup-<version>-<platform>.tar.gz`, now also for macOS and Windows), writes delta updates from
+the published release when there is one, and the manifest `update-<platform>.json`, which the
+workflow attaches to the release with the installers. Apps read the manifests of the release of the
+highest version, previews included, through the GitHub API. Without the secret a build with the key
+still succeeds (mygo warns that it signs nothing), but its release has no manifests for apps to
+update to. Release notes in the app come from a `## <version>` section of `CHANGELOG.md` when that
+file exists (it must then have one for every released version); without it the app links to the
+GitHub release. `HERDRUP_UPDATE_PUBLIC_KEY` overrides the key for local test builds.
 
 ### Signing macOS builds
 

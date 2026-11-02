@@ -11,6 +11,13 @@ const speechFiles = speech ? [
   join(speech, "speech-LICENSES"),
 ] : [];
 
+// The public key that app updates are signed with: mygo-update.pub of
+// `mygo keygen` (README.md, "Signing app updates"). Until it is committed
+// here builds have no updates, and Settings says the app can't update
+// itself; the release workflow's MYGO_UPDATER_PRIVATE_KEY signs them once
+// it is.
+const updatePublicKey = process.env.HERDRUP_UPDATE_PUBLIC_KEY ?? "";
+
 export default defineConfig({
   name: "Herdrup",
   slug: "herdrup",
@@ -29,6 +36,12 @@ export default defineConfig({
   bindings: "src/mygo.ts",
   out: "build",
   resources: speechFiles,
+  // Signed updates from this repository's releases, which the app checks,
+  // previews included (desk_updates_app.go). mygo build rejects updates
+  // without a public key, so there are none until it is known.
+  updates: updatePublicKey
+    ? { publicKey: updatePublicKey, github: "jerryfane/herdrup-desktop" }
+    : undefined,
   linux: {
     maintainer: "Jerry Fane <jerryfane@users.noreply.github.com>",
     comment: "Answer your herdr coding agents from the desktop",
