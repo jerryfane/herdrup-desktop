@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,4 +89,47 @@ func sameDir(config string) (bool, error) {
 	defer os.Remove(probe)
 	_, err := os.Stat(filepath.Join(config, "caseprobe"))
 	return err == nil, nil
+}
+
+// A paired host keeps its private key in the app's own folder and its
+// absolute path in machines.json; after the move the saved host must still
+// find that key (PR #100 review), while a key of the user's own keeps its
+// path and every other field is kept.
+func TestMovedUserDataKeepsPairedHostKeys(t *testing.T) {
+	config := t.TempDir()
+	if same, err := sameDir(config); err != nil || same {
+		t.Skipf("file system ignores case (%v)", err)
+	}
+	former := filepath.Join(config, "Herdrup")
+	paired := filepath.Join(former, "identities", "herdr-pair-abc.key")
+	write(t, paired, "PAIRED KEY")
+	own := filepath.Join(config, "elsewhere", "id_ed25519")
+	store := map[string]any{
+		"active": "root@100.106.218.88:22",
+		"machines": []map[string]any{
+			{"host": "100.106.218.88", "user": "root", "keyPath": paired, "paired": true, "nickname": "hetzner"},
+			{"host": "10.0.0.2", "user": "me", "keyPath": own},
+		},
+	}
+	data, _ := json.Marshal(store)
+	write(t, filepath.Join(former, "machines.json"), string(data))
+	if err := os.MkdirAll(filepath.Join(config, "herdrup"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveFormerUserData(config, "herdrup"); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := newDesk(filepath.Join(config, "herdrup")).Machines()
+	if err != nil || len(ms) != 2 {
+		t.Fatalf("saved hosts after the move: %+v, %v", ms, err)
+	}
+	if got := read(t, ms[0].KeyPath); got != "PAIRED KEY" {
+		t.Fatalf("paired host's key after the move: %q at %s", got, ms[0].KeyPath)
+	}
+	if ms[0].KeyPath != filepath.Join(config, "herdrup", "identities", "herdr-pair-abc.key") || !ms[0].Paired || ms[0].Nickname != "hetzner" {
+		t.Errorf("paired host after the move: %+v", ms[0].Machine)
+	}
+	if ms[1].KeyPath != own {
+		t.Errorf("the user's own key path changed: %s", ms[1].KeyPath)
+	}
 }

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // formerAppName is the name the app had until it took herdrup's lower case
@@ -41,5 +43,58 @@ func moveFormerUserData(config, current string) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return os.Rename(from, to)
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	return movedKeyPaths(filepath.Join(to, "machines.json"), from, to)
+}
+
+// movedKeyPaths points the saved machines whose private key the app keeps
+// in its own folder (a paired host's identities/herdr-pair-….key,
+// savePairedIdentity) at the moved folder (PR #100 review). A key kept
+// anywhere else is the user's and keeps its path. Unknown fields are kept:
+// the file is rewritten from its own JSON, changing only keyPath values.
+func movedKeyPaths(machines, from, to string) error {
+	data, err := os.ReadFile(machines)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var store map[string]json.RawMessage
+	if err := json.Unmarshal(data, &store); err != nil {
+		return err
+	}
+	var list []map[string]json.RawMessage
+	if raw, ok := store["machines"]; !ok || json.Unmarshal(raw, &list) != nil {
+		return nil
+	}
+	prefix := from + string(filepath.Separator)
+	changed := false
+	for _, m := range list {
+		var path string
+		if json.Unmarshal(m["keyPath"], &path) != nil || !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		moved, _ := json.Marshal(filepath.Join(to, strings.TrimPrefix(path, prefix)))
+		m["keyPath"], changed = moved, true
+	}
+	if !changed {
+		return nil
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	store["machines"] = raw
+	out, err := json.MarshalIndent(store, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := machines + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, machines)
 }
