@@ -20,6 +20,10 @@ type guestOwnerHost struct {
 	seq     int
 	answers []map[string]any
 	keys    [][]string
+	// lagging: after a committing key detection has not caught up, so the
+	// agent still lists as blocked at the same sequence, and the relay's gate
+	// refuses further keys until state_change_seq moves (herdr #352 guest_gate).
+	lagging bool
 }
 
 func (h *guestOwnerHost) handle(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
@@ -47,7 +51,7 @@ func (h *guestOwnerHost) handle(method string, raw json.RawMessage) (any, *fakeh
 			return nil, &fakeherdr.APIError{Code: "pane_not_found", Message: p.PaneID}
 		}
 		h.keys = append(h.keys, p.Keys)
-		if p.Keys[len(p.Keys)-1] == "enter" {
+		if p.Keys[len(p.Keys)-1] == "enter" && !h.lagging {
 			h.status, h.seq = "working", h.seq+1
 		}
 		return map[string]any{"type": "ok"}, nil
@@ -159,5 +163,33 @@ func TestGuestOnAnOlderHostWaitsForTheOwner(t *testing.T) {
 	}
 	if answers, keys := owner.sent(); len(answers) != 0 || len(keys) != 0 {
 		t.Errorf("an older host passed a guest's answer on: %v %v", answers, keys)
+	}
+}
+
+// A current host pauses a guest's keys after a committing one until the
+// agent's state moves on, while agent.list can still show the old menu
+// (herdr #352 guest_gate). Once this page has seen a guest key go through,
+// that refusal is the pause, not a host that keeps answers for the owner
+// (PR #90 review): Enter then a quick Down must not stop the guest answering.
+func TestGuestKeyAfterACommitIsNotAnOlderHost(t *testing.T) {
+	owner := &guestOwnerHost{status: "blocked", seq: 4, lagging: true}
+	relay, err := fakeherdr.NewGuestRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.Handle = owner.handle
+	d, view := openGuestAgent(t, relay)
+	ctx := context.Background()
+	if reply, err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil || reply.OwnerAnswers {
+		t.Fatalf("committing key: %+v, %v", reply, err)
+	}
+	if reply, err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil || reply.OwnerAnswers {
+		t.Fatalf("key during herdr's pause read as an older host: %+v, %v", reply, err)
+	}
+	if reply, err := d.ChatAnswer(ctx, view.Token, "q1", "Yes"); err != nil || reply.OwnerAnswers {
+		t.Fatalf("answer after the pause read as an older host: %+v, %v", reply, err)
+	}
+	if _, keys := owner.sent(); !reflect.DeepEqual(keys, [][]string{{"enter"}}) {
+		t.Errorf("the refused key reached the pane: %v", keys)
 	}
 }

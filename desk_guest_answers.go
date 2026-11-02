@@ -72,9 +72,18 @@ func (d *Desk) GuestMenuKey(ctx context.Context, token, key string) (GuestMenuKe
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
 	err = guestLink.SendMenuKeys(ctx, v.PaneID, []string{key})
+	if err == nil {
+		v.guestAnswers.Store(true)
+		return GuestMenuKeyReply{}, nil
+	}
 	var api *bridge.APIError
-	if err == nil || !errors.As(err, &api) || api.Code != guestForbidden {
+	if !errors.As(err, &api) || api.Code != guestForbidden {
 		return GuestMenuKeyReply{}, err
+	}
+	// This host has taken a guest's key or answer: the refusal is herdr's pause
+	// after a committing key, until the agent's state moves on. Nothing to show.
+	if v.guestAnswers.Load() {
+		return GuestMenuKeyReply{}, nil
 	}
 	list, err := v.client.AgentList(ctx, herdrapi.AgentListParams{})
 	if err != nil {
