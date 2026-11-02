@@ -18,6 +18,7 @@ import { terminalRows } from "./terminals";
 import { initGuestHome } from "./guestHome";
 import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { animateDisclosures, applyMotions, motionSeconds } from "./motion";
+import { initStarAsk } from "./starAsk";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -53,6 +54,7 @@ let choosingHost = false;
 let hostsHold = () => false;
 let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
+let starAsk: ReturnType<typeof initStarAsk> | null = null;
 let pendingAgent: AgentTarget | null = null;
 let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
@@ -562,6 +564,7 @@ function render() {
     rail?.update("agents", null, false);
     field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
     $("roster").hidden = true;
+    starAsk?.update(false);
     settings?.show(false, state, board);
     showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
     showInteraction(guestTab === "agents" && !guestGram);
@@ -587,6 +590,7 @@ function render() {
   select.hidden = showConnect || showsGram || showsSettings || interactionVisible();
   showInteraction(!showConnect && !showsGram && !showsSettings);
   $("roster").hidden = showConnect || showsGram || showsSettings;
+  starAsk?.update(!$("roster").hidden);
   showGram(showsGram);
   settings?.show(showsSettings, state, board);
   void renderRows();
@@ -738,6 +742,7 @@ async function init() {
     tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
   }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
+  starAsk = initStarAsk($("sidebar"), symbol, render);
   guestHome = initGuestHome($("sidebar"), $("detail"), {
     agents: () => { guestTab = "agents"; guestGram = false; render(); },
     settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; render(); },
