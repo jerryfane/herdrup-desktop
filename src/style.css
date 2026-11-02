@@ -461,8 +461,9 @@ html, body {
   position: absolute;
   top: 4px;
   bottom: 4px;
-  left: calc(4px + var(--tab-index, 0) * (100% - 8px) / 3);
-  width: calc((100% - 8px) / 3);
+  /* --tab-count: 3 for the owner, 2 for a guest's Agents and Settings (main.ts buildTabBar). */
+  left: calc(4px + var(--tab-index, 0) * (100% - 8px) / var(--tab-count, 3));
+  width: calc((100% - 8px) / var(--tab-count, 3));
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-on-accent) 12%, transparent);
   transition: left var(--motion-tab-duration) var(--motion-tab-ease);

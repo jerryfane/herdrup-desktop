@@ -2,23 +2,82 @@
 .guest-content { display: grid; gap: 16px; padding: 20px; }
 .guest-content textarea { box-sizing: border-box; min-height: 110px; width: 100%; resize: vertical; padding: 12px; color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 12px; }
 .guest-hero { margin: 8px 0; font-size: 24px; text-align: center; }
-.guest-card, .guest-agent-card { margin: 0; border: 1px solid var(--color-hairline); border-radius: 18px; background: var(--color-surface); }
+.guest-card { margin: 0; border: 1px solid var(--color-hairline); border-radius: 18px; background: var(--color-surface); }
 .guest-key-value { display: flex; gap: 16px; justify-content: space-between; padding: 13px 16px; }
 .guest-key-value + .guest-key-value { border-top: 1px solid var(--color-hairline); }
 .guest-key-value dt { color: var(--color-text-dim); }
 .guest-key-value dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
 .guest-note { color: var(--color-text-dim); font-size: 13px; line-height: 1.5; }
 .guest-error { padding: 0 20px; color: var(--color-text); }
-.guest-navigation { padding: 16px; display: flex; flex-direction: column; gap: 16px; height: 100%; box-sizing: border-box; }
-.guest-home-header { display: flex; gap: 12px; align-items: center; }
-.guest-home-header h2 { font-size: 18px; margin: 0; overflow-wrap: anywhere; }
-.guest-agent-card { padding: 16px; text-align: left; display: grid; gap: 6px; color: var(--color-text); }
-.guest-agent-card strong { font-size: 19px; }
-.guest-agent-card span { font-size: 13px; color: var(--color-text-dim); }
-.guest-tabs { display: flex; gap: 12px; margin-top: auto; }
-.guest-tabs button { flex: 1; }
-.guest-tabs button[aria-current="true"] { text-decoration: underline; text-underline-offset: 6px; }
-.guest-settings { overflow: auto; box-sizing: border-box; max-width: 650px; height: 100%; padding: 28px; margin: auto; }
-.guest-settings h3 { margin-top: 26px; }
-.guest-mode #sidebar > :not(.guest-navigation) { display: none !important; }
+
+/* ---- Guest home: herdrup's GuestHomeView (App/GuestHomeView.swift, f2df68b) in the
+   sidebar, between the owner's top bar and glass tab bar, where the roster sits. ---- */
+.guest-mode #sidebar > :not(.topbar, .tabbar, .guest-navigation) { display: none !important; }
 .guest-navigation[hidden], .guest-settings[hidden] { display: none; }
+.guest-navigation {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* agentsTab's ScrollView: 24 below its content, which runs under the floating tab bar. */
+  padding-bottom: calc(var(--tabbar-inset) + 24px);
+  scrollbar-width: none;
+  color: var(--color-text);
+  font-family: var(--font-app);
+}
+.guest-navigation::-webkit-scrollbar { display: none; }
+/* sharedBy (GuestHomeView.swift 180-194): the machine in app 20 bold, tracking -0.2, over
+   "Shared by <owner> · 1 agent" in app 14 textDim, 2 apart; 20 sides, 4 above, 10 below. */
+.guest-home-header { display: flex; flex-direction: column; gap: 2px; padding: 4px 20px 10px; }
+.guest-home-header h2, .guest-home-header p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guest-home-header h2 { font: 700 calc(20px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); letter-spacing: -0.2px; color: var(--color-text); }
+.guest-home-header p { font: 400 calc(14px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); color: var(--color-text-dim); }
+/* agentRow (GuestHomeView.swift 232-276) is the roster's .row (style.css); with no listed
+   agent its avatar shows at 0.55. */
+.guest-agent-row { cursor: pointer; }
+.guest-agent-row[aria-disabled="true"] { cursor: default; }
+.guest-agent-row.unavailable .avatar { opacity: 0.55; }
+.guest-agent-row:focus-visible { outline: 2px solid var(--color-text); outline-offset: -2px; }
+/* .loading (GuestHomeView.swift 202-203): the ProgressView in textDim, 64 tall, 26 down. */
+.guest-home-loading { display: grid; place-items: center; height: 64px; margin-top: 26px; color: var(--color-text-dim); }
+/* message() (GuestHomeView.swift 284-309): centred on a surface card, radius 20, with the
+   hairline; 20 by 22 inside, 24 sides and 26 above outside. */
+.guest-home-message { display: flex; flex-direction: column; align-items: center; margin: 26px 24px 0; padding: 22px 20px; border: 1px solid var(--color-hairline); border-radius: 20px; background: var(--color-surface); text-align: center; }
+.guest-home-message-icon { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 12px; border-radius: 50%; background: var(--color-surface-raised); color: var(--color-text-dim); }
+.guest-home-message strong { margin-bottom: 6px; font: 600 calc(17px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); color: var(--color-text); }
+.guest-home-message p { margin: 0; font: 400 calc(14px * var(--ui-font-scale, 1))/calc(1em * var(--leading-app) + 3.5px) var(--font-app); color: var(--color-text-dim); overflow-wrap: anywhere; }
+/* The lost share's "Remove share" (GuestHomeView.swift 217-224): a 34 pt capsule, 6 down. */
+.guest-home-message .guest-destructive { height: 34px; margin-top: 12px; padding: 0 14px; font-size: calc(13.5px * var(--ui-font-scale, 1)); }
+/* GuestShellStyle.note (GuestAcceptView.swift 20-31), 18 below the list: app 13 textDim,
+   radius 14, 14 by 13.5 inside, 16 sides. Neutral surface and hairline, not violet. */
+.guest-home-note { margin: 18px 16px 0; padding: 13.5px 14px; border: 1px solid var(--color-hairline); border-radius: 14px; background: var(--color-surface); color: var(--color-text-dim); font: 400 calc(13px * var(--ui-font-scale, 1))/calc(1em * var(--leading-app) + 2.75px) var(--font-app); }
+
+/* ---- Guest Settings: GuestSettingsView (App/GuestSettingsView.swift) in the detail
+   column, on the owner Settings page's frame (settings.css). ---- */
+.guest-settings { font-family: var(--font-app); }
+.guest-settings .settings-page-body { padding-top: 14px; }
+/* GuestShellStyle.card, 16 sides; its rows carry their own padding (the share sheet's
+   .guest-card pads itself, guestShare.css). */
+.guest-settings .guest-settings-card { margin: 0 16px; padding: 0; }
+/* The header (GuestSettingsView.swift 24-29): "Settings" in app 20 semibold, leading, 16 by 12. */
+.guest-settings .settings-page-title { place-items: center start; padding: 0 16px; font-size: calc(20px * var(--ui-font-scale, 1)); }
+/* GuestShellStyle.keyValue (GuestAcceptView.swift 34-40): app 15, the key textDim, 16 by
+   13; mono values (GuestSettingsView.swift 128-130) machine 13.5 medium. */
+.guest-settings .guest-key-value { align-items: baseline; font: 400 calc(15px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); }
+.guest-settings .guest-key-value dd { color: var(--color-text); }
+.guest-settings .guest-key-value dd.mono { font: 500 calc(13.5px * var(--ui-font-scale, 1))/var(--leading-machine) var(--font-machine); }
+/* GuestShellStyle.section (GuestAcceptView.swift 9-18): machine 12 semibold, tracking
+   1.56, uppercase, textFaint, then a quiet rule; 16 sides, 20 above and 8 below. */
+.guest-settings-section { display: flex; align-items: center; gap: 8px; margin: 20px 16px 8px; color: var(--color-text-faint); font: 600 calc(12px * var(--ui-font-scale, 1))/var(--leading-machine) var(--font-machine); letter-spacing: 1.56px; text-transform: uppercase; }
+.guest-settings-section::after { content: ""; flex: 1; height: 1px; background: var(--color-hairline-quiet); }
+.guest-settings-section + .guest-settings-card + .guest-settings-section { margin-top: 26px; }
+/* "Device key" over the fingerprint (GuestSettingsView.swift 46-58): 4 apart, 16 by 13. */
+.guest-settings .guest-device-key { display: flex; flex-direction: column; gap: 4px; padding: 13px 16px; }
+.guest-device-key > span:first-child { color: var(--color-text-dim); font: 400 calc(15px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); }
+.guest-device-key > span:last-child { color: var(--color-text); font: 500 calc(13.5px * var(--ui-font-scale, 1))/var(--leading-machine) var(--font-machine); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+/* The notes (59-62, 73-76): app 13 textFaint, 30 sides. */
+.guest-settings-note { margin: 8px 30px 0; color: var(--color-text-faint); font: 400 calc(13px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); }
+.guest-leave-note { margin-top: 10px; text-align: center; }
+/* Leave share (64-72) and Remove share: died ink in a capsule stroked with died at 0.45. */
+.guest-destructive { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 999px; background: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status-died) 45%, transparent); color: var(--status-died); font: 600 calc(15px * var(--ui-font-scale, 1)) var(--font-app); cursor: pointer; }
+.guest-destructive:disabled { opacity: 0.5; cursor: default; }
+.guest-leave { display: flex; width: calc(100% - 32px); height: 46px; margin: 30px 16px 0; }
