@@ -22,6 +22,7 @@ import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { animateDisclosures, applyMotions, motionSeconds } from "./motion";
 import { initStarAsk } from "./starAsk";
 import { errorText } from "./errors";
+import { appUpdatesShown, watchAppUpdate } from "./appUpdates";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -191,15 +192,25 @@ function placeTitle() {
 let tabBarGeneration = 0;
 // Gram's unread count, as the last snapshot reported it (gram.ts barChanged).
 let gramUnread = 0;
+// Whether a newer Herdrup waits to be installed (appUpdates.ts).
+let appUpdateWaiting = false;
+watchAppUpdate(s => { appUpdateWaiting = s.phase === "available"; setTabBadge(); });
 /** sidebarTabItem's tabBadge (HerdrApp.swift 2864-2905): the count on the Gram icon's
  *  top-trailing corner, "99+" past 99, hidden at zero. Neutral, like the rail badge,
  *  under the desktop colour rule. */
 function setTabBadge() {
-  const badge = document.querySelector<HTMLElement>("#tabbar .tab-badge");
-  if (!badge) return;
-  badge.hidden = gramUnread === 0;
-  badge.textContent = gramUnread > 99 ? "99+" : String(gramUnread);
-  badge.closest(".tab")?.setAttribute("aria-label", gramUnread ? `Gram, ${gramUnread} unread` : "Gram");
+  const badge = document.querySelector<HTMLElement>('#tabbar .tab-badge[data-tab="gram"]');
+  if (badge) {
+    badge.hidden = gramUnread === 0;
+    badge.textContent = gramUnread > 99 ? "99+" : String(gramUnread);
+    badge.closest(".tab")?.setAttribute("aria-label", gramUnread ? `Gram, ${gramUnread} unread` : "Gram");
+  }
+  // The same badge on Settings while a newer Herdrup waits (Settings' suggestion of it).
+  const settings = document.querySelector<HTMLElement>('#tabbar .tab-badge[data-tab="settings"]');
+  if (settings) {
+    settings.hidden = !appUpdateWaiting; settings.textContent = "1";
+    settings.closest(".tab")?.setAttribute("aria-label", appUpdateWaiting ? "Settings, update available" : "Settings");
+  }
 }
 async function buildTabBar() {
   const generation = ++tabBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
@@ -226,9 +237,10 @@ async function buildTabBar() {
       });
       const i = el("div", "icon");
       await place(i, icon, 21, "medium");
-      if (key === "gram") {
+      // The guest's Settings is its own page, without the app update.
+      if (key === "gram" || key === "settings" && !guestView && appUpdatesShown) {
         const badge = el("span", "tab-badge");
-        badge.setAttribute("aria-hidden", "true");
+        badge.setAttribute("aria-hidden", "true"); badge.dataset.tab = key; badge.hidden = true;
         i.append(badge);
       }
       t.append(i, el("span", "t-tab-label", label));

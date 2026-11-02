@@ -107,6 +107,36 @@ export interface AgentView {
   plainTerminal: boolean;
 }
 
+/** AppUpdateState is what Settings shows about updating Herdrup itself. */
+export interface AppUpdateState {
+  /** Current is the running version. */
+  current: string;
+  /**
+   * Phase is "disabled", "idle" (not checked yet), "checking", "upToDate",
+   * "available", "failed" (the last check failed), "installing" or
+   * "restarting".
+   */
+  phase: string;
+  /** Reason says why the app cannot update itself, in "disabled". */
+  reason: string;
+  /**
+   * Version and Notes (Markdown) are the newer version's, in "available"
+   * and while it installs.
+   */
+  version: string;
+  notes: string;
+  /** Downloaded and Total are the bytes of the download, in "installing". */
+  downloaded: number;
+  total: number;
+  /** Error is why the last check ("failed") or install ("available") failed. */
+  error: string;
+  /**
+   * CheckedAt is when the last check ended, in Unix milliseconds; 0 for
+   * never.
+   */
+  checkedAt: number;
+}
+
 /**
  * Avatar is what an agent's avatar draws, resolved the way herdrup's
  * AgentAvatarAppearance is.
@@ -918,6 +948,10 @@ export const Desk = {
   alertAgentFailure(title: string, detail: string): Promise<void> {
     return call("Desk.AlertAgentFailure", title, detail);
   },
+  /** AppUpdate returns the state of the app's own update. */
+  appUpdate(): Promise<AppUpdateState> {
+    return call("Desk.AppUpdate");
+  },
   /**
    * The UI supplies the exact build/mode it confirmed, never an unqualified
    * "install latest". Uncertain apply results are followed, never resubmitted.
@@ -960,6 +994,10 @@ export const Desk = {
    */
   chatTranscript(token: string, after: string, before: string, subagent: string): Promise<string> {
     return call("Desk.ChatTranscript", token, after, before, subagent);
+  },
+  /** CheckAppUpdate checks for a newer version of the app now. */
+  checkAppUpdate(): Promise<AppUpdateState> {
+    return call("Desk.CheckAppUpdate");
   },
   closeAccountLogin(token: string, loginID: string): Promise<void> {
     return call("Desk.CloseAccountLogin", token, loginID);
@@ -1221,6 +1259,13 @@ export const Desk = {
    */
   inspectGuestInvitation(text: string): Promise<GuestInvitation> {
     return call("Desk.InspectGuestInvitation", text);
+  },
+  /**
+   * InstallAppUpdate installs the newer version that the last check found
+   * and relaunches the app into it; AppUpdateChanged reports the progress.
+   */
+  installAppUpdate(): Promise<void> {
+    return call("Desk.InstallAppUpdate");
   },
   logoutSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.LogoutSettingsAccount", token, id);
@@ -1646,6 +1691,11 @@ export const events = {
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
   settingsAccountMenu: event<AccountMenuChoice>("settings:account-menu"),
+  /**
+   * AppUpdateChanged is sent whenever the state of the app's own update
+   * changes: a check starts or ends, the download progresses, it installs.
+   */
+  appUpdateChanged: event<AppUpdateState>("app-update:changed"),
   dictationChanged: event<DictationEvent>("dictation:changed"),
   /**
    * AgentOpen wakes the page for a scoped notification or tray activation.
