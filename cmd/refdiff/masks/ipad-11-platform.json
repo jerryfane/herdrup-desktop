@@ -1,0 +1,213 @@
+{
+  "device": "ipad-11",
+  "note": "Platform differences in herdrup's ipad-11 Gram, Settings and detail references (herdr-app 380190): true content the desktop shows on purpose. Reference points with the status bar included. Every rect names its states; refdiff rejects a platform-difference rect without them. Board states use ipad-11.json instead. Not masked by owner decision (2026-11-01, herdr-app 380597): the Gram unread count on the sidebar tab and rail stays grey on the desktop while Swift draws it system red (HerdrApp.swift 2896-2905); those pixels stay counted.",
+  "rects": [
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @433.5,114",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 114,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-composer-ambiguous",
+        "gram-composer-attachment",
+        "gram-mixed-image",
+        "gram-mixed-latest"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @418.75,174",
+      "kind": "platform-difference",
+      "x": 418.75,
+      "y": 174,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-composer-ambiguous",
+        "gram-composer-attachment",
+        "gram-mixed-image",
+        "gram-mixed-latest"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 hetzner-1 @433.5,456",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 456,
+      "w": 55.71,
+      "h": 16,
+      "states": [
+        "gram-composer-ambiguous",
+        "gram-composer-attachment",
+        "gram-mixed-image",
+        "gram-mixed-latest"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @418.75,604",
+      "kind": "platform-difference",
+      "x": 418.75,
+      "y": 604,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-composer-ambiguous",
+        "gram-composer-attachment",
+        "gram-mixed-image",
+        "gram-mixed-latest"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 hetzner-1 @433.5,97",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 97,
+      "w": 55.71,
+      "h": 16,
+      "states": [
+        "gram-mixed-code"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @433.5,258",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 258,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-mixed-code"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @418.75,318",
+      "kind": "platform-difference",
+      "x": 418.75,
+      "y": 318,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-mixed-code"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 hetzner-1 @433.5,600",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 600,
+      "w": 55.71,
+      "h": 16,
+      "states": [
+        "gram-mixed-code"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @418.75,748",
+      "kind": "platform-difference",
+      "x": 418.75,
+      "y": 748,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-mixed-code"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @418.75,151",
+      "kind": "platform-difference",
+      "x": 418.75,
+      "y": 151,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-mixed-folded"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 hetzner-1 @433.5,375",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 375,
+      "w": 55.71,
+      "h": 16,
+      "states": [
+        "gram-mixed-folded"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @433.5,536",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 536,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-mixed-folded"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 127.0.0.1 @418.75,596",
+      "kind": "platform-difference",
+      "x": 418.75,
+      "y": 596,
+      "w": 48.53,
+      "h": 16,
+      "states": [
+        "gram-mixed-folded"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "gram-machine-suffix \u00b7 hetzner-1 @433.5,151",
+      "kind": "platform-difference",
+      "x": 433.5,
+      "y": 151,
+      "w": 55.71,
+      "h": 16,
+      "states": [
+        "gram-search-results"
+      ],
+      "why": "Gram's sender line: the desktop shows the live machine attribution after the name; herdrup's reference never injects guestMachineLabel (9845ecf HerdrApp.swift 368-375, desktopReference). herdr-app 380190. Only the suffix text: from where the name ends (measured in the hosted desktop capture, run 41304331391), 1 pt for anti-aliasing above, below and right."
+    },
+    {
+      "name": "settings-version-line",
+      "kind": "platform-difference",
+      "x": 74,
+      "y": 672,
+      "w": 170,
+      "h": 20,
+      "states": [
+        "settings-about-index"
+      ],
+      "why": "Settings' version footer: herdrup prints its own bundle version, 'herdrup mobile <version> (<build>)' (9845ecf HerdrApp.swift 9419-9429); the desktop prints the real desktop version. herdr-app 380190. Only that line: the union of the reference's line and the desktop's (hosted run 41304331391), above the 'dark only, on purpose' stance, which stays compared."
+    },
+    {
+      "name": "settings-tab-bar-glass",
+      "kind": "platform-difference",
+      "x": 13.5,
+      "y": 726,
+      "w": 293,
+      "h": 62,
+      "states": [
+        "settings-about-index",
+        "settings-machines-empty",
+        "settings-machines-federation",
+        "settings-machines-index"
+      ],
+      "why": "The sidebar tab bar's Liquid Glass capsule (herdrup 9845ecf HerdrApp.swift 2818-2843), the same rect as the board masks' tab-bar-glass. In Settings the list scrolls under it and the glass refracts it (bent, blurred rows inside the capsule: settings-sidebar-bottom.png in the herdrup-desk evidence directory); CSS cannot draw refraction. herdr-app 380610. The tab icons and labels inside stay compared in the Gram and detail captures, where the glass is over the bare sidebar."
+    }
+  ]
+}

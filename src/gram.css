@@ -33,7 +33,7 @@
 /* The needs-you pill belongs to the agent list (sessions.ts); Gram's bar has its own count. */
 .sidebar:has(.gram-side:not([hidden])) .needs-you-pill { display: none; }
 .slot.action { cursor: default; }
-.gram-side { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom)); scrollbar-width: none; }
+.gram-side { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: var(--tabbar-inset); scrollbar-width: none; }
 .gsearch { height: 40px; margin-top: var(--space-stack-tight); }
 .gsearch input {
   flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: none;
@@ -82,6 +82,8 @@
   background: var(--color-ground); font-family: var(--font-app); color: var(--color-text);
   --gram-column: 1000px; --gram-header: 80px;
 }
+/* The ground ignores the native safe area; content keeps its resting inset. */
+.detail > .gram::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: var(--home-inset); background: var(--color-ground); pointer-events: none; }
 .gcol { width: min(var(--gram-column), 100%); margin-left: auto; margin-right: auto; }
 .gram-body { position: relative; flex: 1; min-height: 0; }
 .gram-content { position: absolute; inset: 0; display: flex; flex-direction: column; }
@@ -94,16 +96,19 @@
   content: ""; position: absolute; inset: 0 calc((100% - 100vw) / 2); z-index: -1; pointer-events: none;
   background: linear-gradient(var(--color-ground) 0%, color-mix(in srgb, var(--color-ground) 85%, transparent) 55%, transparent 100%);
 }
+/* gramGlass (GramView.swift 3282-3292): Apple's Liquid Glass on iPadOS 26, which the
+   references draw as the measured glass colour (--glass-fill). */
 .glass {
-  background: color-mix(in srgb, var(--color-surface-raised) 72%, transparent);
-  -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  background: var(--glass-fill);
   border: 1px solid var(--color-hairline); border-radius: 999px;
 }
 .gidentity { display: flex; flex-direction: column; align-items: center; }
 .gcluster { position: relative; width: 78px; height: 48px; }
 .gcluster .gavatar { position: absolute; }
 .gpill { position: relative; margin-top: -6px; height: 24px; padding: 0 10px; display: flex; align-items: center; gap: 2px; font-size: 13px; font-weight: 600; }
-.gtrailing { position: absolute; right: 16px; top: 8px; display: flex; padding: 0 2px; }
+/* iPadHeader's ZStack (GramView.swift 618-633) centres the 44 pt capsule on the 66 pt identity
+   (cluster 48 + pill 24 - spacing 6): 8 + (66 - 44) / 2 from the top. */
+.gtrailing { position: absolute; right: 16px; top: 19px; display: flex; padding: 0 2px; }
 .gsaved-toggle { width: 40px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text); }
 .gsaved-toggle.on { color: var(--color-brand); }
 .gnew {
@@ -112,6 +117,8 @@
   border-radius: 999px; background: var(--color-surface-raised); color: var(--color-text);
   font: 600 15px var(--font-app);
 }
+/* GramView.swift 1157-1175: the button fades in; tapping it scrolls smoothly (gram.ts). */
+.gnew:not([hidden]) { animation: motion-fade var(--motion-quick-duration) var(--motion-quick-ease) both; }
 .gram-banner { padding: 8px 16px 0; font-size: 12px; color: var(--status-died); }
 
 /* States: centred, 32 pt sides, 8 apart. */
@@ -259,9 +266,12 @@
 .gcard.expanded { flex-direction: column; align-items: stretch; gap: 8px; padding-top: 11px; }
 .gfield { position: relative; flex: 1; min-width: 0; align-self: center; padding: 0 2px 0 12px; }
 .gcard.expanded .gfield { align-self: stretch; }
+/* Composer draft text: ComposerTextMetrics' pitch and first-line offset (composerMetrics.ts);
+   the field stays 24 pt per line (ComposerStyle.lineHeight). */
 .gfield-input, .gfield-mirror, .gfield-probe {
-  font: 400 16px/24px var(--font-app); white-space: pre-wrap; overflow-wrap: break-word; margin: 0; padding: 0; border: 0;
+  font: 400 16px/var(--composer-text-pitch) var(--font-app); white-space: pre-wrap; overflow-wrap: break-word; margin: 0; padding: 0; border: 0;
 }
+.gfield-input, .gfield-mirror { padding-top: var(--composer-text-offset); }
 .gfield-input {
   position: relative; display: block; width: 100%; height: 24px; resize: none; outline: none; background: none;
   color: transparent; caret-color: var(--color-text); overflow-y: auto; scrollbar-width: none;
@@ -273,15 +283,17 @@
 .gaccent { color: var(--color-brand); }
 .gstrip { display: flex; gap: 8px; padding: 0 7px; overflow-x: auto; scrollbar-width: none; }
 .gactions { display: flex; gap: 4px; align-self: flex-end; }
-.gaction { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); }
-.gaction-circle { position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; border-radius: 50%; background: var(--color-surface-raised); z-index: -1; }
-.gaction { isolation: isolate; }
-.gaction.primary { color: var(--color-ground); }
-.gaction.primary .gaction-circle { background: var(--color-text); }
-.gaction:disabled { opacity: 0.45; }
-.gaction.busy .gglyph { animation: gspin 1.2s linear infinite; }
-.gaction.primary .gring .track { stroke: currentColor; opacity: 0.3; }
-.gaction.primary .gring .share { stroke: currentColor; }
+.composer-action { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); isolation: isolate; }
+/* `.gram button { color: inherit }` outranks the class alone; ComposerActionIcon tints
+   every glyph textDim (ComposerView.swift 492). Primary stays below. */
+.gram .composer-action { color: var(--color-text-dim); }
+.composer-action::before { content: ""; position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; border-radius: 50%; background: var(--color-surface-raised); z-index: -1; }
+.composer-action.primary { color: var(--color-ground); }
+.composer-action.primary::before { background: var(--color-text); }
+.composer-action:disabled { opacity: 0.45; }
+.composer-action.busy .gglyph { animation: gspin 1.2s linear infinite; }
+.composer-action.primary .gring .track { stroke: currentColor; opacity: 0.3; }
+.composer-action.primary .gring .share { stroke: currentColor; }
 
 /* Chips: 228 wide, surfaceRaised, radius 15. */
 .gchip { flex: none; width: 228px; display: flex; align-items: center; gap: 9px; padding: 9px 3px 9px 9px; border-radius: 15px; background: var(--color-surface-raised); }
@@ -333,8 +345,9 @@ dialog.gsheet .gsheet-done { position: absolute; right: 0; background: none; col
 .gcol-handle { position: absolute; top: 0; bottom: 0; width: 20px; z-index: 1; cursor: col-resize; display: flex; align-items: center; justify-content: center; }
 .gcol-handle.leading { left: calc(50% - var(--gram-reach) - 10px); }
 .gcol-handle.trailing { left: calc(50% + var(--gram-reach) - 10px); }
-.gcol-line { position: absolute; top: 0; bottom: 0; left: 9.5px; width: 1px; background: var(--color-hairline); opacity: 0; }
-.gcol-grip { width: 4px; height: 40px; border-radius: 2px; background: color-mix(in srgb, var(--color-text-dim) 60%, transparent); opacity: 0; }
+/* ConversationColumn.swift 213-214: the handles fade in on hover (.easeOut(duration: 0.12)). */
+.gcol-line { position: absolute; top: 0; bottom: 0; left: 9.5px; width: 1px; background: var(--color-hairline); opacity: 0; transition: opacity var(--motion-handle-duration) var(--motion-handle-ease); }
+.gcol-grip { width: 4px; height: 40px; border-radius: 2px; background: color-mix(in srgb, var(--color-text-dim) 60%, transparent); opacity: 0; transition: opacity var(--motion-handle-duration) var(--motion-handle-ease), background-color var(--motion-handle-duration) var(--motion-handle-ease); }
 .gcol-handle:hover .gcol-line, .gcol-handle:hover .gcol-grip, .resizing .gcol-line, .resizing .gcol-grip { opacity: 1; }
 .gcol-handle.dragging .gcol-grip { background: var(--gram-grip-active); }
 .gcol-readout {

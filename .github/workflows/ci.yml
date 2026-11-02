@@ -94,6 +94,24 @@ jobs:
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-0 xvfb
+      - name: Fetch pinned offline speech engine
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        uses: actions/checkout@v5
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
+          path: .speech-source
+      - name: Build offline speech resources for the existing smoke runner
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        shell: bash
+        env:
+          WHISPER_SOURCE: ${{ github.workspace }}/.speech-source
+          HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
+        run: |
+          case "$RUNNER_OS" in
+            Linux) bun speech/build.ts linux/amd64 ;;
+            Windows) bun speech/build.ts windows/amd64 ;;
+          esac
       - name: Build the app with the smoke hook
         shell: bash
         env:
@@ -114,7 +132,7 @@ jobs:
         run: |
           bin="$RUNNER_TEMP/fakeherdr$(go env GOEXE)"
           go build -o "$bin" ./cmd/fakeherdr
-          "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
+          "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" -interactions -guests > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
           for _ in $(seq 50); do [ -s "$RUNNER_TEMP/client.key" ] && break; sleep 0.2; done
           test -s "$RUNNER_TEMP/client.key" || { cat "$RUNNER_TEMP/fakeherdr.log"; exit 1; }
           show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
@@ -133,4 +151,8 @@ jobs:
           name: smoke-${{ runner.os }}
           retention-days: 14
           if-no-files-found: ignore
-          path: ${{ runner.temp }}/herdrup-${{ runner.os }}.png
+          path: |
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png-preview-*.png
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png-typing.*
+            ${{ runner.temp }}/herdrup-${{ runner.os }}.png-guest.*

@@ -70,6 +70,9 @@ func main() {
 		if err := json.Unmarshal(data, &mask); err != nil {
 			fail(fmt.Errorf("%s: %w", *maskPath, err))
 		}
+		if err := mask.Validate(); err != nil {
+			fail(fmt.Errorf("%s: %w", *maskPath, err))
+		}
 	}
 	rects := mask.RectsFor(*state)
 	rep.MaskRects = len(rects)

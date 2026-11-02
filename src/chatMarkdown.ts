@@ -1,4 +1,4 @@
-import { marked } from "marked";
+import { marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 
@@ -41,11 +41,88 @@ export function markdown(text: string): HTMLElement {
    code.parentElement?.replaceWith(diagram);
   }).catch(() => { code.title = "Diagram could not be rendered; source is shown."; });
  }
+ // ChatMarkdownTable: a horizontal scroller around a rounded, clipped frame whose
+ // columns share the width but never shrink below 96 pt (scaled) each.
+ for (const table of body.querySelectorAll("table")) {
+  const scroller = document.createElement("div"); scroller.className = "chat-table";
+  const frame = document.createElement("div"); frame.className = "chat-table-frame";
+  const columns = Math.max(1, ...[...table.rows].map(row => row.cells.length));
+  frame.style.setProperty("--table-columns", String(columns));
+  // ChatView.swift ChatStyle.ok for gains; not a generated design token (as the plan card).
+  frame.style.setProperty("--chat-ok", "#7fc89a");
+  table.replaceWith(scroller); frame.append(table); scroller.append(frame);
+  for (const cell of table.querySelectorAll("td")) {
+   const value = cell.textContent?.trim() ?? "";
+   if (/^[0-9+\-−$]/.test(value) && /[0-9]/.test(value)) cell.classList.add("chat-table-number", ...(value.startsWith("+") ? ["chat-table-gain"] : []));
+  }
+ }
  for (const pre of body.querySelectorAll("pre")) {
   const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy";
   const code = pre.querySelector("code")?.textContent ?? "";
   copy.onclick = () => { void Desk.gramCopyText(code); };
   pre.append(copy);
  }
+ return body;
+}
+
+// One selectable text surface, matching Swift's readable message: explicit list
+// markers, tab-separated table cells, source for diagrams, and no Copy controls.
+export function readableMarkdown(text: string): HTMLElement {
+ const inline = (text: string) => {
+  const span = document.createElement("span");
+  span.innerHTML = DOMPurify.sanitize(marked.parseInline(text, { async: false }) as string, {
+   ALLOWED_TAGS: ["strong", "em", "del", "code", "a", "br"], ALLOWED_ATTR: ["href"],
+  });
+  for (const br of span.querySelectorAll("br")) br.replaceWith("\n");
+  return span;
+ };
+ const blocks = (tokens: Token[], depth = 0, separator = "\n\n"): HTMLElement => {
+  const body = document.createElement("span");
+  for (const token of tokens) {
+   let block: Node;
+   switch (token.type) {
+    case "space": case "checkbox": continue; // A task's marker is emitted by its list item.
+    case "heading": {
+     const heading = document.createElement("strong"); heading.append(inline(token.text)); block = heading; break;
+    }
+    case "code": {
+     const code = document.createElement("code"); code.textContent = token.text; block = code; break;
+    }
+    case "hr": block = document.createTextNode("———"); break;
+    case "blockquote": block = blocks((token as Tokens.Blockquote).tokens, depth); break;
+    case "list": {
+     const list = document.createElement("span");
+     token.items.forEach((item: { task: boolean; checked?: boolean; tokens: Token[] }, index: number) => {
+      if (index) list.append("\n");
+      const marker = item.task ? item.checked ? "☑ " : "☐ " : token.ordered ? `${Number(token.start) + index}. ` : "• ";
+      list.append("    ".repeat(depth) + marker, blocks(item.tokens, depth + 1, "\n"));
+     });
+     block = list; break;
+    }
+    case "table": {
+     const table = document.createElement("span");
+     const row = (cells: { text: string }[], header: boolean) => {
+      const line = document.createElement(header ? "strong" : "span");
+      cells.forEach((cell, index) => { if (index) line.append("\t"); line.append(inline(cell.text)); });
+      return line;
+     };
+     table.append(row(token.header, true));
+     for (const cells of token.rows) table.append("\n", row(cells, false));
+     block = table; break;
+    }
+    default: block = inline("text" in token ? token.text : token.raw);
+   }
+   if (body.childNodes.length) body.append(separator);
+   body.append(block);
+  }
+  return body;
+ };
+ const body = document.createElement("div"); body.className = "chat-readable-text";
+ body.append(blocks(marked.lexer(text)));
+ body.addEventListener("click", event => {
+  const link = (event.target as HTMLElement).closest("a");
+  if (!link) return;
+  event.preventDefault(); void Desk.openExternalURL(link.getAttribute("href") ?? "").catch(() => {});
+ });
  return body;
 }

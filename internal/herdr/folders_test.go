@@ -101,6 +101,25 @@ func TestFolderLayoutMatchesHerdrup(t *testing.T) {
 	}
 }
 
+// herdrup #597 (057f506) AgentGroupsTests.testFolderSortsByItsMostRecentAgentAmongTheOtherAgents:
+// starred first; then newest first, a folder at its newest agent; a tie puts the folder first.
+func TestFolderSortsByItsMostRecentAgent(t *testing.T) {
+	idle := func(name string, ms int) herdrapi.AgentInfo {
+		return agent(t, `{"pane_id":"p-`+name+`","name":"`+name+`","agent_status":"idle","last_completed_turn":{"completed_unix_ms":`+strconv.Itoa(ms)+`}}`)
+	}
+	infos := []herdrapi.AgentInfo{idle("fresh", 900), idle("mid", 500), idle("old", 100),
+		idle("docs-a", 300), idle("docs-b", 600), idle("ops-a", 50), idle("pinned", 10), idle("tie", 600)}
+	g := &Groups{Stars: []string{"pinned"}, Folders: []herdrapi.AgentGroupFolder{
+		folder("f-docs", "Docs", 0, "docs-a", "docs-b"),
+		folder("f-ops", "Ops", 1, "ops-a"),
+	}}
+	b := BuildBoard(infos, View{Groups: g, Open: map[string]bool{"f-docs": true}})
+	want := []string{"idle(8): p-pinned* p-fresh [f-docs open 2 agents/idle] p-docs-b>f-docs p-docs-a>f-docs p-tie p-mid p-old [f-ops closed 1 agent/idle]"}
+	if got := items(b); !reflect.DeepEqual(got, want) {
+		t.Errorf("got\n%q\nwant\n%q", got, want)
+	}
+}
+
 func TestFolderSummaryLines(t *testing.T) {
 	for _, tc := range []struct {
 		groups []Group
@@ -116,14 +135,14 @@ func TestFolderSummaryLines(t *testing.T) {
 	} {
 		var ms []member
 		for i, g := range tc.groups {
-			ms = append(ms, member{Row{Title: string(rune('a' + i))}, g})
+			ms = append(ms, member{row: Row{Title: string(rune('a' + i))}, group: g})
 		}
 		s := summarise(folder("f", "F", 0), ms, false)
 		if s.Summary != tc.want {
 			t.Errorf("%v: %q, want %q", tc.groups, s.Summary, tc.want)
 		}
 	}
-	s := summarise(folder("f", "F", 0), []member{{Row{ID: "1"}, NeedsYou}, {Row{ID: "2"}, Stopped}, {Row{ID: "3"}, NeedsYou}, {Row{ID: "4"}, Idle}, {Row{ID: "5"}, Idle}}, true)
+	s := summarise(folder("f", "F", 0), []member{{row: Row{ID: "1"}, group: NeedsYou}, {row: Row{ID: "2"}, group: Stopped}, {row: Row{ID: "3"}, group: NeedsYou}, {row: Row{ID: "4"}, group: Idle}, {row: Row{ID: "5"}, group: Idle}}, true)
 	if s.Waiting != 2 || s.Stopped != 1 || s.Count != "5 agents" || len(s.Picture) != 4 || s.Picture[3].ID != "4" {
 		t.Errorf("summary %+v", s)
 	}

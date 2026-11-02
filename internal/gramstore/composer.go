@@ -96,6 +96,7 @@ type Composer struct {
 	mu          sync.Mutex
 	files       []Attachment
 	sending     bool
+	closed      bool
 	sendingPath string
 	failedPath  string
 	// draftPosted counts posts that carried the draft's text: the page
@@ -142,7 +143,14 @@ func (c *Composer) Add(files []Attachment) {
 	c.mu.Lock()
 	var added []Attachment
 	for _, a := range files {
-		if c.index(a.Path) >= 0 || len(c.files) >= MaxAttachments {
+		if index := c.index(a.Path); index >= 0 {
+			if a.source != c.files[index].source {
+				a.retireSource()
+			}
+			continue
+		}
+		if c.closed || len(c.files) >= MaxAttachments {
+			a.retireSource()
 			continue
 		}
 		c.files = append(c.files, a)
@@ -178,6 +186,7 @@ func (c *Composer) Remove(path string) error {
 	}
 	c.mu.Unlock()
 	c.up.Remove(a)
+	a.retireSource()
 	c.changed("")
 	return nil
 }
@@ -190,7 +199,17 @@ func (c *Composer) Pause()  { c.up.Pause() }
 func (c *Composer) Resume() { c.up.Resume() }
 
 // Close abandons the draft.
-func (c *Composer) Close() { c.up.Close() }
+func (c *Composer) Close() {
+	c.mu.Lock()
+	c.closed = true
+	files := c.files
+	c.files = nil
+	c.mu.Unlock()
+	c.up.Close()
+	for _, a := range files {
+		a.retireSource()
+	}
+}
 
 // Chip is one staged file as its chip draws it.
 type Chip struct {
@@ -245,7 +264,22 @@ func (c *Composer) Chip(path string) (Chip, bool) {
 // the composer and a failed one stays for a retry. Nothing is sent when
 // there is neither text nor a staged file of paths.
 func (c *Composer) Send(ctx context.Context, text string, paths []string, post PostFunc) error {
+	return c.send(ctx, text, paths, post, nil)
+}
+
+// SendPrompt retains posted file identities until finish reports that the prompt
+// reached (or may have reached) the agent. A definite rejection preserves the
+// batch for retry without posting its Grams twice.
+func (c *Composer) SendPrompt(ctx context.Context, paths []string, post PostFunc, finish func([]Attachment) (bool, error)) error {
+	return c.send(ctx, "", paths, post, finish)
+}
+
+func (c *Composer) send(ctx context.Context, text string, paths []string, post PostFunc, finish func([]Attachment) (bool, error)) error {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return context.Canceled
+	}
 	if c.sending {
 		c.mu.Unlock()
 		return ErrSending
@@ -314,11 +348,25 @@ func (c *Composer) Send(ctx context.Context, text string, paths []string, post P
 		c.changed(a.Path)
 	})
 
+	consume := finish == nil
+	var finishErr error
+	if finish != nil && failure == nil {
+		c.mu.Lock()
+		for i := range batch {
+			if index := c.index(batch[i].Path); index >= 0 {
+				batch[i] = c.files[index]
+			}
+		}
+		c.mu.Unlock()
+		consume, finishErr = finish(batch)
+	}
+
 	c.mu.Lock()
 	var posted []string
 	c.files = slices.DeleteFunc(c.files, func(a Attachment) bool {
-		if a.MessageID != "" {
+		if consume && a.MessageID != "" && slices.Contains(paths, a.Path) {
 			posted = append(posted, a.Path)
+			a.retireSource()
 			return true
 		}
 		return false
@@ -329,7 +377,7 @@ func (c *Composer) Send(ctx context.Context, text string, paths []string, post P
 	c.mu.Unlock()
 	c.up.Forget(posted)
 	if failure == nil {
-		return nil
+		return finishErr
 	}
 	reason := "Couldn't send. Try again."
 	var api *bridge.APIError

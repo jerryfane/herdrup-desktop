@@ -224,6 +224,7 @@ func (w *window) setUp(controller uintptr) {
 		withHandler(fn, func(h uintptr) uintptr { return comCall(w.webview, index, h, uintptr(unsafe.Pointer(&tok))) })
 	}
 	add(wvAddNavigationStarting, w.navigationStarting)
+	add(wvAddFrameNavigationStarting, w.frameNavigationStarting)
 	add(wvAddContentLoading, func(_, _ uintptr) { w.h.NavigationCommitted(w.URL()) })
 	add(wvAddNavigationCompleted, w.navigationCompleted)
 	add(wvAddDocumentTitleChanged, func(_, _ uintptr) {
@@ -277,7 +278,11 @@ func (w *window) setUp(controller uintptr) {
 		w.addFilter("http://" + scheme + ".localhost/*")
 		w.addFilter("http://*." + scheme + ".localhost/*") // its other hosts
 	}
-	w.filterAllRequests()
+	if err := w.filterAllRequests(); err != nil {
+		w.webViewFailed(err)
+		comCall(controller, ctlClose)
+		return
+	}
 	withHandler(w.acceleratorKeyPressed, func(h uintptr) uintptr {
 		return comCall(controller, ctlAddAcceleratorKeyPressed, h, uintptr(unsafe.Pointer(&tok)))
 	})
@@ -342,6 +347,19 @@ func (w *window) resizeWebView() {
 func (w *window) focusWebView() {
 	if w.controller != 0 {
 		comCall(w.controller, ctlMoveFocus, 0) // COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC
+	}
+}
+
+// A child navigation must not alter the top-level page's trust, context or
+// LoadHTML bookkeeping. It only asks the app's frame policy for permission.
+func (w *window) frameNavigationStarting(_, args uintptr) {
+	var p uintptr
+	comCall(args, navStartingGetURI, uintptr(unsafe.Pointer(&p)))
+	uri := w.appURL(takeWstr(p))
+	var user int32
+	comCall(args, navStartingGetIsUserInitiated, uintptr(unsafe.Pointer(&user)))
+	if !w.h.WillNavigate(platform.Navigation{URL: uri, UserInitiated: user != 0}) {
+		comCall(args, navStartingPutCancel, 1)
 	}
 }
 

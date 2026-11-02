@@ -20,6 +20,7 @@ type Attachment struct {
 	UploadID string `json:"-"`
 	// MessageID is the posted Gram, kept so a retry skips this file.
 	MessageID string `json:"-"`
+	source    *stagedSource
 }
 
 // PhaseKind is where one attachment's upload stands.

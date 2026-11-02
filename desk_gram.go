@@ -248,6 +248,9 @@ type gramDesk struct {
 	badge                                           int
 	visible                                         bool
 	wake                                            chan struct{}
+	notificationBaseline                            bool
+	notificationNewest                              uint64
+	notificationIDs                                 map[string]bool
 
 	composer *gramstore.Composer
 	// lastUpload is the last upload event per path, to send one a percent.
@@ -288,6 +291,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 	g.epoch++
 	g.inbox = gramstore.Inbox{}
 	g.pending, g.deleted, g.markingRead = nil, map[string]bool{}, map[string]bool{}
+	g.notificationBaseline, g.notificationNewest, g.notificationIDs = false, 0, nil
 	g.phase, g.unavailable = "loading", ""
 	g.sendError, g.markAllNote, g.refreshAck, g.refreshNote = "", "", "", ""
 	g.ackToken++
@@ -312,6 +316,15 @@ func (d *Desk) gramReset(l *link, machine string) {
 // gramEngine is an engine client on the current session of l.
 func (d *Desk) gramEngine(l *link) (*engine.Client, error) {
 	d.mu.Lock()
+	if d.link == l && l != nil && l.guest != nil {
+		if !l.guest.Features().Gram {
+			d.mu.Unlock()
+			return nil, errors.New("Gram is not enabled for this shared agent")
+		}
+		client, err := l.engineLocked()
+		d.mu.Unlock()
+		return client, err
+	}
 	var c *bridge.Client
 	var session string
 	if d.link == l && l != nil {
@@ -562,19 +575,19 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 // gramBadge reads the unread count while Gram does not show: an
 // unconditional unread_only list, counted by the daemon's unread_count.
 func (d *Desk) gramBadge(ctx context.Context, l *link) {
-	ec, err := d.gramEngine(l)
+	answer, err := d.gramAnswer(ctx, l, herdrapi.GramListParams{UnreadOnly: true})
 	if err != nil {
 		return
 	}
-	listing, err := ec.GramList(ctx, herdrapi.GramListParams{UnreadOnly: true})
-	if err != nil {
-		return
-	}
-	n, ok := gramstore.FromList(listing.List, listing.Unchanged).BadgeCount()
+	n, ok := answer.BadgeCount()
 	g := &d.gram
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !ok || g.link != l || g.badge == n {
+	if !ok || g.link != l {
+		return
+	}
+	d.gramNotificationsLocked(answer.Messages)
+	if g.badge == n {
 		return
 	}
 	g.badge = n
@@ -620,14 +633,8 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 	d.publishGramLocked()
 	g.mu.Unlock()
 
-	var listing engine.GramListing
-	ec, err := d.gramEngine(l)
+	answer, err := d.gramAnswer(ctx, l, params)
 	if err == nil {
-		listing, err = ec.GramList(ctx, params)
-	}
-	var answer gramstore.Answer
-	if err == nil {
-		answer = gramstore.FromList(listing.List, listing.Unchanged)
 		if _, xerr := d.savedGrams().ExpireFiles(answer.Messages); xerr != nil {
 			d.alertSaved(xerr)
 		}
@@ -662,6 +669,9 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 		}
 		d.publishGramLocked()
 		return gramFailed
+	}
+	if !answer.Unchanged {
+		d.gramNotificationsLocked(answer.Messages)
 	}
 	changed := g.inbox.Apply(answer, asked)
 	g.phase, g.unavailable, g.refreshNote, g.failures = "loaded", "", "", 0
@@ -776,10 +786,6 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 		}
 		g.mu.Unlock()
 	}()
-	ec, err := d.gramEngine(l)
-	if err != nil {
-		return false, err
-	}
 	for range 2 {
 		for range gramWaitSteps {
 			g.mu.Lock()
@@ -796,7 +802,7 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 		if cursor == "" {
 			return false, nil
 		}
-		listing, err := ec.GramList(ctx, herdrapi.GramListParams{Limit: new(uint64(gramPageSize)), BeforeID: &cursor})
+		answer, err := d.gramAnswer(ctx, l, herdrapi.GramListParams{Limit: new(uint64(gramPageSize)), BeforeID: &cursor})
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, err
@@ -808,7 +814,6 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 			g.mu.Unlock()
 			return false, err
 		}
-		answer := gramstore.FromList(listing.List, listing.Unchanged)
 		g.mu.Lock()
 		if g.link != l {
 			g.mu.Unlock()
@@ -846,10 +851,7 @@ func (d *Desk) GramMarkRead(ctx context.Context, id string) error {
 	}
 	g.markingRead[id] = true
 	g.mu.Unlock()
-	ec, err := d.gramEngine(l)
-	if err == nil {
-		err = ec.GramMarkRead(ctx, herdrapi.GramMarkReadParams{ID: &id})
-	}
+	err = d.gramRead(ctx, l, id)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link != l {
@@ -869,6 +871,9 @@ func (d *Desk) GramMarkRead(ctx context.Context, id string) error {
 // list too: the ids come from an unread_only list, each marked by its own
 // gram.mark_read, in two passes so an id another mark had in flight is
 // tried again. Failures are reported as "N of M could not be marked read."
+// A list that failed part-way still marks what it and the held list show,
+// and says some may still be unread; the badge then never drops below what
+// is known to remain.
 func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 	l, err := d.gramLink()
 	if err != nil {
@@ -891,21 +896,17 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 		}
 		g.mu.Unlock()
 	}()
-	ec, err := d.gramEngine(l)
-	if err != nil {
-		return err
-	}
+	answer, listErr := d.gramAnswer(ctx, l, herdrapi.GramListParams{UnreadOnly: true})
 	var pending []string
-	if listing, err := ec.GramList(ctx, herdrapi.GramListParams{UnreadOnly: true}); err == nil {
-		for _, m := range gramstore.FromList(listing.List, listing.Unchanged).Messages {
-			if gramstore.IsUnread(m) {
-				pending = append(pending, m.ID)
-			}
+	for _, m := range answer.Messages {
+		if gramstore.IsUnread(m) {
+			pending = append(pending, m.ID)
 		}
-	} else {
+	}
+	if listErr != nil {
 		g.mu.Lock()
 		for _, m := range g.inbox.Messages() {
-			if gramstore.IsUnread(m) {
+			if gramstore.IsUnread(m) && !slices.Contains(pending, m.ID) {
 				pending = append(pending, m.ID)
 			}
 		}
@@ -933,7 +934,7 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 			g.markingRead[id] = true
 			attempted++
 			g.mu.Unlock()
-			err := ec.GramMarkRead(ctx, herdrapi.GramMarkReadParams{ID: &id})
+			err := d.gramRead(ctx, l, id)
 			g.mu.Lock()
 			if err == nil {
 				marked[id] = true
@@ -957,9 +958,15 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 	for id := range marked {
 		g.inbox.MarkRead(id)
 	}
-	g.badge = g.inbox.UnreadCount()
+	if listErr == nil {
+		g.badge = g.inbox.UnreadCount()
+	} else {
+		// Unread beyond what was listed are not known gone.
+		g.badge = max(g.badge-len(marked), g.inbox.UnreadCount())
+		g.markAllNote = "Couldn't list every unread message. Some may still be unread."
+	}
 	if failed > 0 {
-		g.markAllNote = fmt.Sprintf("%d of %d could not be marked read.", failed, attempted)
+		g.markAllNote = strings.TrimSpace(g.markAllNote + " " + fmt.Sprintf("%d of %d could not be marked read.", failed, attempted))
 	}
 	return nil
 }

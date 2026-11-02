@@ -1,0 +1,17 @@
+.composer-recording { display:flex; align-items:center; gap:8px; height:24px; flex:1; min-width:0; }
+.chat-composer.expanded > .composer-recording { flex:none; width:100%; padding:0 6px 0 12px; box-sizing:border-box; }
+.composer-recording[hidden] { display:none; }
+.composer-recording-dot { flex:0 0 8px; height:8px; border-radius:50%; background:var(--status-died); }
+.composer-recording canvas { display:block; min-width:0; flex:1; width:0; height:22px; }
+.composer-recording > span:last-child { font:500 12px monospace; color:var(--color-text-faint); font-variant-numeric:tabular-nums; }
+.composer-recording-stop { width:14px; height:14px; border-radius:3px; background:currentColor; }
+.composer-mic-spinner { width:18px; height:18px; border:2px solid var(--color-hairline); border-top-color:currentColor; border-radius:50%; animation:mic-spin .8s linear infinite; }
+.composer-microphone[aria-pressed] { text-decoration:none; }
+.gactions > .composer-microphone { display:flex; align-items:center; justify-content:center; width:44px; height:44px; padding:0; color:var(--color-text-dim); }
+.gfield:has(.composer-recording:not([hidden])) .gfield-mirror { top:24px; }
+.gfield-input[hidden], .chat-input[hidden] { display:none; }
+@keyframes mic-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .composer-mic-spinner { animation:none; } }
+.dictation-error { max-width:340px; color:var(--color-text); background:var(--color-surface); border:1px solid var(--color-hairline); border-radius:16px; padding:24px; }
+.dictation-error h2 { font-size:18px; margin:0 0 12px; }
+.dictation-error p { white-space:pre-wrap; }

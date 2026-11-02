@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
@@ -30,21 +31,7 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 		if err != nil {
 			return "", err
 		}
-		f, err := os.Open(a.Path)
-		if err != nil {
-			return "", err
-		}
-		defer f.Close()
-		st, err := f.Stat()
-		if err != nil {
-			return "", err
-		}
-		if st.Size() > gramstore.MaxFileBytes {
-			return "", errors.New(a.Name + " is over the 100 MB limit")
-		}
-		progress(0, st.Size())
-		id, _, err := ec.GramUploadFrom(ctx, f, st.Size(), func(sent int64) { progress(sent, st.Size()) })
-		return id, err
+		return uploadComposerFile(ctx, ec, a, progress)
 	}
 	discard := func(uploadID string) {
 		ec, err := d.gramEngine(l)
@@ -70,6 +57,10 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 		if !ok || m.File == nil {
 			return
 		}
+		if !a.RetainSource() {
+			return
+		}
+		defer a.ReleaseSource()
 		cache := d.gramCache()
 		if _, ok := cache.StoreCopy(a.Path, a.MessageID, a.Name, a.Mime, m.File.SHA256); !ok {
 			return
@@ -84,8 +75,31 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 	return c
 }
 
+func uploadComposerFile(ctx context.Context, ec *engine.Client, a gramstore.Attachment, progress func(sent, total int64)) (string, error) {
+	if !a.RetainSource() {
+		return "", context.Canceled
+	}
+	defer a.ReleaseSource()
+	f, err := os.Open(a.Path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if st.Size() > gramstore.MaxFileBytes {
+		return "", errors.New(a.Name + " is over the 100 MB limit")
+	}
+	progress(0, st.Size())
+	id, _, err := ec.GramUploadFrom(ctx, f, st.Size(), func(sent int64) { progress(sent, st.Size()) })
+	return id, err
+}
+
 // gramPostRetryDelay separates the tries of a post refused with
 // upload_in_progress (herdrup retryDelayNanoseconds: 1 s).
+
 var gramPostRetryDelay = gramstore.DefaultRetryDelay
 
 // gramComposerChanged follows a change to the composer: path's upload
@@ -186,6 +200,17 @@ func (d *Desk) GramPickFiles(ctx context.Context) ([]string, error) {
 	return staged, nil
 }
 
+// GramAttachFiles stages native dropped files through the existing uploader.
+func (d *Desk) GramAttachFiles(paths []string) ([]string, error) {
+	l, c, err := d.gramComposer()
+	if err != nil {
+		return nil, err
+	}
+	staged, note := d.gramStage(c, paths)
+	d.gramNote(l, note)
+	return staged, nil
+}
+
 // GramCancelAttachment removes an attached file: its upload stops, and one
 // that finished is discarded on herdr.
 func (d *Desk) GramCancelAttachment(path string) error {
@@ -245,9 +270,32 @@ func (d *Desk) GramPost(ctx context.Context, text string, to []string, attachmen
 		if err != nil {
 			return "", err
 		}
+		d.mu.Lock()
+		if l.guest != nil {
+			recipient = nil
+			for _, agent := range l.agents {
+				if agent.Name != nil && strings.TrimSpace(*agent.Name) != "" {
+					name := *agent.Name
+					recipient = &name
+					break
+				}
+			}
+			if recipient == nil {
+				d.mu.Unlock()
+				return "", errors.New("The shared agent is not available for Gram")
+			}
+		}
+		d.mu.Unlock()
 		p := herdrapi.GramPostParams{Text: body, To: recipient}
 		if a != nil {
 			p.File = &herdrapi.GramFileUpload{UploadID: a.UploadID, Name: a.Name, Mime: a.Mime}
+		}
+		if l.guest != nil {
+			id, err := l.guest.GramPost(ctx, p)
+			if err == nil {
+				d.gramRefresh(ctx, l)
+			}
+			return id, err
 		}
 		res, err := ec.GramPost(ctx, p)
 		if err != nil {

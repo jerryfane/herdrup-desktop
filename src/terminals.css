@@ -1,0 +1,13 @@
+.saved-terminals-heading { margin:20px 16px 8px; color:var(--color-text-dim); font:600 calc(13px * var(--ui-font-scale, 1)) var(--font-app); }
+.row.saved-terminal-row { display:flex; align-items:center; gap:var(--space-stack-large); height:60px; box-sizing:border-box; padding:10px var(--space-screen-inset); cursor:pointer; }
+.saved-terminal-icon { display:flex; align-items:center; justify-content:center; width:40px; height:40px; flex:none; border-radius:var(--radius-tile); background:var(--color-surface-raised); border:1px solid var(--color-hairline); color:var(--color-text-dim); }
+.saved-terminal-text { display:flex; flex-direction:column; gap:3px; min-width:0; flex:1; }
+.saved-terminal-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--color-text); }
+.saved-terminal-kind { color:var(--color-text-faint); }
+.saved-terminal-row button { flex:none; color:var(--color-text-dim); background:transparent; border:0; font-size:22px; cursor:pointer; }
+.new-terminal-sheet, .terminal-manage-sheet { width:min(480px, calc(100vw - 32px)); color:var(--color-text); }
+.terminal-manage-actions, .terminal-confirmation { display:flex; flex-wrap:wrap; gap:12px; margin-top:16px; }
+.terminal-manage-actions[hidden], .terminal-confirmation[hidden] { display:none; }
+.terminal-confirmation p { flex-basis:100%; }
+.terminal-label-input { box-sizing:border-box; width:100%; padding:12px; color:var(--color-text); background:var(--color-surface); border:1px solid var(--color-hairline); border-radius:12px; font:400 calc(15px * var(--ui-font-scale, 1)) var(--font-app); }
+.terminal-manage-status, .new-terminal-status { color:var(--color-text-dim); overflow-wrap:anywhere; }

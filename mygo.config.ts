@@ -1,5 +1,15 @@
 import { defineConfig } from "mygo-cli";
 import pkg from "./package.json" with { type: "json" };
+import { join } from "node:path";
+import { existsSync } from "node:fs";
+
+const speech = process.env.HERDRUP_SPEECH_RESOURCES;
+const speechFiles = speech ? [
+  join(speech, existsSync(join(speech, "herdrup-speech.exe")) ? "herdrup-speech.exe" : "herdrup-speech"),
+  join(speech, "ggml-tiny.bin"),
+  join(speech, "whisper-LICENSE"),
+  join(speech, "speech-LICENSES"),
+] : [];
 
 export default defineConfig({
   name: "Herdrup",
@@ -8,6 +18,7 @@ export default defineConfig({
   // items to it.
   identifier: "com.jerryfane.herdrup-desktop",
   version: pkg.version,
+  urlSchemes: ["herdrup"],
   copyright: "© 2026 Jerry Fane",
   // `mygo dev` runs devCommand and loads devUrl; `mygo build` runs
   // buildCommand and embeds frontendDist into the app.
@@ -17,6 +28,7 @@ export default defineConfig({
   frontendDist: "dist",
   bindings: "src/mygo.ts",
   out: "build",
+  resources: speechFiles,
   linux: {
     maintainer: "Jerry Fane <jerryfane@users.noreply.github.com>",
     comment: "Answer your herdr coding agents from the desktop",
@@ -27,6 +39,8 @@ export default defineConfig({
   // these variables only when the repository variable
   // MACOS_SIGNING_IDENTITY exists. Without them the app is signed ad hoc.
   macos: {
+    infoPlist: { NSCameraUsageDescription: "Scan the one-time pairing code shown by herdr on your computer." },
+    entitlements: "camera.entitlements.plist",
     signingIdentity: process.env.HERDRUP_SIGNING_IDENTITY,
     notarize: process.env.HERDRUP_NOTARY_KEYCHAIN
       ? { keychainProfile: "notary", keychain: process.env.HERDRUP_NOTARY_KEYCHAIN }

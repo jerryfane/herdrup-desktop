@@ -1,0 +1,40 @@
+.guest-share-sheet { width:min(520px,calc(100vw - 32px)); max-height:calc(100vh - 48px); padding:0; border:1px solid var(--color-hairline); border-radius:24px; background:var(--color-ground); color:var(--color-text); font:400 15px var(--font-app); }
+.guest-share-sheet::backdrop { background:color-mix(in srgb, var(--color-ground) 60%, transparent); }
+.guest-share-sheet > header { position:sticky; top:0; z-index:1; background:var(--color-ground); display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px; border-bottom:1px solid var(--color-hairline); }
+.guest-share-sheet > header h2 { margin:0; font:600 17px var(--font-app); }
+.guest-share-content { padding:20px 16px 24px; }
+.guest-share-heading { margin:0; text-align:center; font:700 20px var(--font-app); }
+.guest-share-subtitle { margin:8px 16px 20px; text-align:center; color:var(--color-text-dim); font:400 13px/1.5 var(--font-app); }
+.guest-section { margin:18px 0; }
+.guest-section-title { display:flex; align-items:center; gap:8px; margin:0 0 8px; color:var(--color-text-faint); font:600 10.5px var(--font-machine); letter-spacing:1.2px; }
+.guest-section-title::after { content:""; flex:1; height:1px; background:var(--color-hairline); }
+.guest-card { padding:12px 16px; border:1px solid var(--color-hairline); border-radius:18px; background:var(--color-surface); }
+.guest-card > input { width:100%; box-sizing:border-box; padding:4px 0; border:0; background:transparent; color:var(--color-text); font:400 16px var(--font-app); }
+.guest-field-hint { display:block; margin:6px 0 0; color:var(--color-text-faint); font:400 12.5px/1.4 var(--font-app); }
+.guest-access-row { display:flex; align-items:center; gap:12px; padding:12px 16px; font:400 15px/1.4 var(--font-app); }
+.guest-access-row strong { font-weight:600; }
+.guest-access-off { color:var(--color-text-faint); }
+.guest-access-marker { flex:none; position:relative; width:22px; height:22px; border:1.5px solid var(--color-hairline); border-radius:50%; }
+.guest-access-marker.is-on { display:grid; place-items:center; background:var(--color-text); color:var(--color-ground); font:800 14px var(--font-app); }
+.guest-card:has(> .guest-access-row) { padding:0; }
+.guest-access-row + .guest-access-row, .guest-access-row + .guest-gram-row { border-top:1px solid var(--color-hairline); }
+.guest-gram-row { display:flex; align-items:center; gap:16px; padding:12px 16px; }
+.guest-gram-row strong { font:600 15px var(--font-app); }
+.guest-gram-row > span { flex:1; }
+.guest-pill, .guest-create { padding:10px 18px; border:1px solid var(--color-hairline); border-radius:99px; background:var(--color-surface-raised); color:var(--color-text); font:600 16px var(--font-app); cursor:pointer; }
+.guest-create { width:100%; min-height:50px; color:var(--color-ground); background:var(--color-text); }
+.guest-create:disabled { opacity:.4; cursor:default; }
+.guest-failure { margin:16px; color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
+.guest-invite-qr { display:block; box-sizing:content-box; width:118px; height:118px; padding:10px; border-radius:14px; background:var(--color-on-accent); object-fit:contain; margin:22px auto 18px; image-rendering:pixelated; }
+.guest-invite-actions { display:flex; justify-content:center; gap:10px; margin-top:16px; }
+.guest-invite-details { padding:0; }
+.guest-invite-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 16px; }
+.guest-invite-row + .guest-invite-row { border-top:1px solid var(--color-hairline); }
+.guest-invite-row > span:last-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right; }
+.guest-invite-key { flex:none; color:var(--color-text-dim); }
+.guest-machine-text { font:500 13.5px var(--font-machine); }
+.guest-edit-field { display:flex; align-items:center; gap:10px; height:50px; padding:0 14px; border-radius:14px; border-color:var(--color-text-faint); }
+.guest-edit-field > input { min-width:0; }
+.guest-edit-label { flex:none; color:var(--color-text-faint); font:500 12px var(--font-machine); letter-spacing:.7px; }
+.guest-section > .guest-field-hint { margin-left:2px; margin-right:2px; }
+.guest-label-preview { padding:10px 12px; margin:10px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; border-radius:12px; background:var(--color-ground-machine); color:var(--color-text-dim); font:400 13px/1.5 var(--font-machine); }

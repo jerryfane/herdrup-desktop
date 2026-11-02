@@ -3,8 +3,11 @@ module github.com/jerryfane/herdrup-desktop
 go 1.27.3
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/ebitengine/purego v0.11.1
 	github.com/egoist/mygo v0.7.1
+	github.com/flynn/noise v1.1.0
+	github.com/rivo/uniseg v0.4.7
 	golang.org/x/crypto v0.58.0
 )
 

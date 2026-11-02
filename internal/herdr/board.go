@@ -235,7 +235,7 @@ func BuildBoard(agents []herdrapi.AgentInfo, v View) Board {
 			n++
 		}
 		b.Sections[n-1].Rows = append(b.Sections[n-1].Rows, r)
-		members = append(members, member{r, e.group})
+		members = append(members, member{r, e.group, completed(e.info)})
 	}
 	b.Total = len(live)
 	open := func(id string) bool { return v.Query != "" || v.Open[id] }

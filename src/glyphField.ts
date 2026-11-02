@@ -4,10 +4,10 @@
 // (`DesktopReferenceMock.holdsStill`). The label itself is the page's, not drawn here.
 
 /** A cell's size in points (SelectAgentField.swift:89-90). */
-const CELL_W = 8;
-const CELL_H = 15;
+export const CELL_W = 8;
+export const CELL_H = 15;
 /** The glyphs' point size, IBM Plex Mono regular (SelectAgentField.swift:91,131). */
-const GLYPH_SIZE = 11;
+export const GLYPH_SIZE = 11;
 /** IBM Plex Mono's hhea ascender and descender in em: the bundled IBMPlexMono-Regular.ttf,
  *  the same file herdrup ships, is 1025 / -275 per 1000 with no line gap. UIFont's
  *  `ascender` and `lineHeight` come from these; Chromium's canvas metrics round them to
@@ -21,7 +21,7 @@ export const SCRAMBLE = Array.from("·.:-=+*#%$_/\\|[]{}<>01agen");
 
 /** The label over the field, Geist medium 15 pt in textDim (SelectAgentField.swift:21-23).
  *  Its width sizes the field's quiet zone. */
-const SELECT_AGENT_LABEL = "Select an agent";
+export const SELECT_AGENT_LABEL = "Select an agent";
 const LABEL_FONT = '500 15px "Geist"';
 
 /** The seed herdrup's reference screenshots draw the field from
@@ -132,30 +132,39 @@ export async function loadGlyphFieldFonts(font: string): Promise<void> {
  *  label's width (the quiet zone) are measured here. */
 export function drawRestingGlyphField(
   canvas: HTMLCanvasElement,
-  opts: { widthPt: number; heightPt: number; scale: number; seed: bigint; colours: Record<string, string>; font: string },
-): void {
+  opts: { widthPt: number; heightPt: number; scale: number; seed: bigint; colours: Record<string, string>; font: string; labelFont: string },
+): RestingField | null {
   const { widthPt, heightPt, scale, seed, colours, font } = opts;
-  const ground = colours.groundMachine, ink = colours.hairline;
-  if (!ground || !ink) throw new Error("drawRestingGlyphField needs the groundMachine and hairline colours");
-
+  if (!colours.groundMachine || !colours.hairline) throw new Error("drawRestingGlyphField needs the groundMachine and hairline colours");
   canvas.width = Math.ceil(widthPt * scale);
   canvas.height = Math.ceil(heightPt * scale);
   canvas.style.width = `${widthPt}px`;
   canvas.style.height = `${heightPt}px`;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("drawRestingGlyphField: no 2D context");
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  ctx.fillStyle = ground;
-  ctx.fillRect(0, 0, widthPt, heightPt);
-
-  ctx.font = LABEL_FONT;
+  ctx.font = opts.labelFont;
   const field = restingField(widthPt, heightPt, ctx.measureText(SELECT_AGENT_LABEL).width, seed);
-  if (!field) return;
+  drawRestingCells(ctx, field, { widthPt, heightPt, scale, ground: colours.groundMachine, ink: colours.hairline, font });
+  return field;
+}
 
-  ctx.font = `${GLYPH_SIZE}px ${font}`;
+/** Paints ground and every kept cell of `field` (null: ground only) into `ctx`, which is
+ *  `widthPt`×`heightPt` points at `scale` device pixels per point (RestFieldJob.render). */
+export function drawRestingCells(
+  ctx: CanvasRenderingContext2D,
+  field: RestingField | null,
+  opts: { widthPt: number; heightPt: number; scale: number; ground: string; ink: string; font: string },
+): void {
+  const { scale } = opts;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = opts.ground;
+  ctx.fillRect(0, 0, opts.widthPt, opts.heightPt);
+  if (!field) return;
+  ctx.font = `${GLYPH_SIZE}px ${opts.font}`;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = ink;
+  ctx.fillStyle = opts.ink;
   // Apple's rasteriser does not hint. Chromium on Linux does, which moves bars and stems by
   // up to a pixel (2.6 % of the reference column off by more than 8 levels, against 0.06 %
   // without); geometricPrecision turns it off. Browsers without the property ignore it.

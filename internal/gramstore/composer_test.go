@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -329,5 +331,138 @@ func TestSkipNote(t *testing.T) {
 	}
 	if SkipNote(nil, 0) != "" {
 		t.Fatal("a note for nothing skipped")
+	}
+}
+
+func TestComposerOwnedPasteWaitsForCanceledReader(t *testing.T) {
+	a, err := StageBytes("paste.bin", "application/octet-stream", []byte("clipboard bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.retireSource)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+	c := NewComposer(func(ctx context.Context, file Attachment, _ func(int64, int64)) (string, error) {
+		defer close(done)
+		if !file.RetainSource() {
+			return "", context.Canceled
+		}
+		defer file.ReleaseSource()
+		f, err := os.Open(file.Path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		close(started)
+		<-ctx.Done()
+		<-release
+		return "", ctx.Err()
+	}, nil, nil)
+	t.Cleanup(func() { c.Close(); once.Do(func() { close(release) }) })
+	c.Add([]Attachment{a})
+	until(t, "clipboard reader opens", func() bool {
+		select {
+		case <-started:
+			return true
+		default:
+			return false
+		}
+	})
+	if err := c.Remove(a.Path); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(a.Path); err != nil || string(data) != "clipboard bytes" {
+		t.Fatalf("source retired while reader was active: %q, %v", data, err)
+	}
+	once.Do(func() { close(release) })
+	until(t, "clipboard reader releases", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
+	if _, err := os.Stat(filepath.Dir(a.Path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private staging directory survived cancellation: %v", err)
+	}
+}
+
+func TestComposerOwnedPasteSurvivesRetryUntilPostSucceeds(t *testing.T) {
+	a, err := StageBytes("paste.bin", "application/octet-stream", []byte("retry bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.retireSource)
+	r := newRig()
+	t.Cleanup(r.c.Close)
+	r.postErrors[a.Name] = []error{errors.New("refused")}
+	r.c.Add([]Attachment{a})
+	if err := r.c.Send(context.Background(), "", []string{a.Path}, r.post); err == nil {
+		t.Fatal("post was not refused")
+	}
+	if data, err := os.ReadFile(a.Path); err != nil || string(data) != "retry bytes" {
+		t.Fatalf("retry lost clipboard bytes: %q, %v", data, err)
+	}
+	var kept string
+	r.c.Keep = func(file Attachment) {
+		if !file.RetainSource() {
+			return
+		}
+		defer file.ReleaseSource()
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		kept = string(data)
+	}
+	if err := r.c.Send(context.Background(), "", []string{a.Path}, r.post); err != nil {
+		t.Fatal(err)
+	}
+	if kept != "retry bytes" {
+		t.Fatalf("posted cache copy got %q", kept)
+	}
+	if _, err := os.Stat(filepath.Dir(a.Path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sent clipboard staging survived: %v", err)
+	}
+}
+
+func TestComposerRejectsLateOwnedPasteWithoutDeletingPickedFiles(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprintf("full=%t", full), func(t *testing.T) {
+			r := newRig()
+			t.Cleanup(r.c.Close)
+			picked := filepath.Join(t.TempDir(), "picked.bin")
+			if err := os.WriteFile(picked, []byte("user file"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			r.c.Add([]Attachment{{Path: picked, Name: "picked.bin", Size: 9}})
+			if full {
+				for i := 1; i < MaxAttachments; i++ {
+					r.c.Add([]Attachment{file(fmt.Sprintf("picked-%d", i))})
+				}
+			} else {
+				r.c.Close()
+			}
+			a, err := StageBytes("late.bin", "application/octet-stream", []byte("late clipboard"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(a.retireSource)
+			r.c.Add([]Attachment{a})
+			if r.c.Has(a.Path) {
+				t.Fatal("closed/full composer accepted late clipboard bytes")
+			}
+			if _, err := os.Stat(filepath.Dir(a.Path)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected paste leaked: %v", err)
+			}
+			r.c.Close()
+			if data, err := os.ReadFile(picked); err != nil || string(data) != "user file" {
+				t.Fatalf("borrowed file changed: %q, %v", data, err)
+			}
+		})
 	}
 }

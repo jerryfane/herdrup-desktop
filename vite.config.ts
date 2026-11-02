@@ -1,6 +1,8 @@
 import { defineConfig } from "vite";
+import { uiTypography } from "./uiTypography.ts";
 
 export default defineConfig({
+  css: { postcss: { plugins: [uiTypography()] } },
   server: {
     // The app loads this address during `mygo dev` (devUrl in mygo.json).
     port: 5173,

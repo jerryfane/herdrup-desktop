@@ -29,8 +29,8 @@ type QuitEvent struct {
 	Preventable
 }
 
-// NavigateEvent is passed to Page.OnWillNavigate listeners. Preventing it
-// cancels the navigation.
+// NavigateEvent is passed to Page.OnWillNavigate and Page.OnWillFrameNavigate
+// listeners. Preventing it cancels the navigation.
 type NavigateEvent struct {
 	Preventable
 	URL string

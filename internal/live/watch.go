@@ -4,6 +4,8 @@ package live
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
@@ -38,6 +40,10 @@ type Update struct {
 	Pong   herdrapi.ResponseResultPong
 	Live   bool // true when events_v2 drives updates, false when polling
 	Listed time.Time
+	// Lifecycle alerts come from actual stream events, never a pane merely
+	// disappearing from a filtered list or an unavailable federation peer.
+	ExitedPaneID   string
+	FinishedPaneID string
 }
 
 // Watch lists agents and keeps them current, calling update after every
@@ -140,6 +146,9 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 		case <-tick.C:
 			reload()
 		case m := <-stream:
+			if m.exitedPaneID != "" {
+				update(Update{Agents: agents, Pong: pong, Live: live, Listed: m.at, ExitedPaneID: m.exitedPaneID})
+			}
 			if m.change == nil {
 				if m.reload {
 					reload()
@@ -149,8 +158,21 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 			changes.record(*m.change, m.at)
 			switch effect, patched := m.change.EffectOf(agents, m.at); effect {
 			case Patch:
+				finished := ""
+				if m.change.Turn {
+					for _, a := range agents {
+						if a.PaneID != m.change.PaneID || a.Archived != nil {
+							continue
+						}
+						last := a.LastCompletedTurn
+						if last == nil || *m.change.TurnEpoch > last.TurnEpoch || (*m.change.TurnEpoch == last.TurnEpoch && *m.change.TurnN > last.Turn) {
+							finished = a.PaneID
+						}
+						break
+					}
+				}
 				agents = patched
-				update(Update{Agents: agents, Pong: pong, Live: live, Listed: m.at})
+				update(Update{Agents: agents, Pong: pong, Live: live, Listed: m.at, FinishedPaneID: finished})
 			case ReloadUnlisted:
 				if unlisted.request(m.change.PaneID, m.at) {
 					reload()
@@ -163,9 +185,10 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 // streamMsg is one thing the stream says: a change, or that the agents
 // must be re-listed.
 type streamMsg struct {
-	change *Change
-	reload bool
-	at     time.Time
+	change       *Change
+	reload       bool
+	at           time.Time
+	exitedPaneID string
 }
 
 // follow keeps an events.subscribe open (engine.Subscribe) and passes on
@@ -193,8 +216,16 @@ func follow(ctx context.Context, c *engine.Client, t Timing, out chan<- streamMs
 			if e.Line == nil {
 				return
 			}
-			if change, reload := Decode(*e.Line); change != nil || reload {
-				send(streamMsg{change: change, reload: reload})
+			change, reload := Decode(*e.Line)
+			exited := ""
+			if strings.ReplaceAll(e.Line.Event, ".", "_") == "pane_exited" {
+				var p herdrapi.EventDataPaneExited
+				if json.Unmarshal(e.Line.Data, &p) == nil {
+					exited = p.PaneID
+				}
+			}
+			if change != nil || reload {
+				send(streamMsg{change: change, reload: reload, exitedPaneID: exited})
 			}
 		case engine.EventLagged:
 			send(streamMsg{reload: true})

@@ -107,6 +107,23 @@ func TestStateScopedMaskOnlyHidesItsStates(t *testing.T) {
 	}
 }
 
+func TestPlatformDifferenceMustNameItsStates(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rect Rect
+		ok   bool
+	}{
+		{"scoped platform difference", Rect{Name: "version", Kind: KindPlatformDifference, States: []string{"settings-about-index"}}, true},
+		{"board rect without kind", Rect{Name: "tab-bar-glass"}, true},
+		{"platform difference on every capture", Rect{Name: "everything", Kind: KindPlatformDifference}, false},
+		{"unknown kind", Rect{Name: "x", Kind: "cosmetic", States: []string{"gram-empty"}}, false},
+	} {
+		if err := (Mask{Rects: []Rect{tc.rect}}).Validate(); (err == nil) != tc.ok {
+			t.Errorf("%s: Validate() = %v, want ok %v", tc.name, err, tc.ok)
+		}
+	}
+}
+
 // glyph draws a 6×10 px bar with soft edges at (x, y): something with
 // detail for the displacement scan to line up.
 func glyph(img *image.RGBA, x, y int) {

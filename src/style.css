@@ -13,12 +13,17 @@
   --home-inset: 20px;
   /* A hairline is one device pixel (SwiftUI 1 / displayScale). */
   --pixel: 1px;
-  /* iPadOS 26 floating sidebar: inset and corner measured on the
-     references (ipad-11 and ipad-pro-13 agree). */
-  --sidebar-inset: 10px;
-  --sidebar-radius: 21.5px;
+  /* iOS 27's accepted regular-width references start the 320 pt sidebar
+     at the window edge, without the former floating card's inset. */
+  --sidebar-inset: 0px;
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
+  /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
+     6 pt above and 12 below (HerdrApp.swift 2401, 2843), over the home inset. */
+  --tabbar-inset: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
+  /* Liquid Glass over the bare ground, as every 9845ecf reference draws it: a flat #31354e
+     (sidebar tab bar, Gram header capsules); CSS has no refraction, so it is drawn flat. */
+  --glass-fill: color-mix(in srgb, var(--color-on-accent) 5%, var(--color-surface-raised));
 }
 
 * { box-sizing: border-box; }
@@ -108,6 +113,8 @@ html, body {
   justify-content: center;
   color: var(--color-text-dim);
   font: var(--text-placeholder-weight) var(--text-placeholder-size) var(--text-placeholder-font);
+  /* The label lets the pointer through to the glyph field (allowsHitTesting(false)). */
+  pointer-events: none;
 }
 
 /* ---- Sidebar card ---- */
@@ -117,10 +124,8 @@ html, body {
   top: 0;
   bottom: var(--sidebar-inset);
   width: var(--size-sidebar-min);
-  /* Background and corner clip: a continuous RoundedRectangle of
-     --sidebar-radius in ground (paintShape). Fitted to the references'
-     corners, the continuous curve matches at 21.25-21.5 pt; a circular
-     border-radius does not. */
+  /* HerdrApp.iPadLayout paints Palette.ground directly behind the column. */
+  background: var(--color-ground);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -174,7 +179,8 @@ html, body {
   min-height: 0;
   overflow-y: auto;
   /* The tab bar floats over the list's end (safeAreaInset). */
-  padding-bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom));
+  padding-bottom: var(--tabbar-inset);
+  scroll-padding-bottom: var(--tabbar-inset);
   scrollbar-width: none;
 }
 .roster::-webkit-scrollbar { display: none; }
@@ -212,6 +218,8 @@ html, body {
   height: var(--size-agent-row);
   padding-left: var(--space-row-lead);
 }
+.row.selected { isolation: isolate; }
+.row-selection { position: absolute; inset: 0 var(--size-selection-inset); z-index: -1; pointer-events: none; }
 .row.indented { padding-left: var(--space-row-lead-indented); }
 .row .text {
   flex: 1;
@@ -255,7 +263,7 @@ html, body {
   height: var(--pixel);
   background: var(--color-hairline);
 }
-.row.no-sep .text::after { display: none; }
+.row.no-sep .text::after, .row.selected .text::after, .row:has(+ .row.selected) .text::after { display: none; }
 
 /* AgentAvatar: a 44 pt circle and its 22 pt badge, offset 4 pt out. */
 .avatar {
@@ -305,7 +313,12 @@ html, body {
 .badge.stopped { --badge-fill: var(--status-died); }
 .badge.offline { --badge-fill: var(--color-surface-raised); color: var(--color-text-dim); }
 .badge.working { color: var(--status-working); }
-.badge.working > svg { display: block; overflow: visible; }
+/* TurningRing (herdrup 9845ecf DesignSystem.swift 223-262): the working badge's broken ring
+   turns once every 0.9 s, linear, forever; still while status motion is off (screenshots,
+   html.holds-still). */
+.badge.working > svg { display: block; overflow: visible; transform-origin: 50% 50%; animation: status-turn 0.9s linear infinite; }
+.holds-still .badge.working > svg { animation: none; }
+@keyframes status-turn { to { transform: rotate(360deg); } }
 
 /* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
 .disclosure {
@@ -386,7 +399,7 @@ html, body {
   left: 0;
   right: 0;
   top: calc(var(--size-top-bar) + var(--space-stack-medium));
-  bottom: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
+  bottom: var(--tabbar-inset);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -394,7 +407,9 @@ html, body {
 }
 
 /* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
-   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour. */
+   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour over the bare
+   sidebar in every 9845ecf reference (#31354e: board, Gram and detail captures alike), and
+   the selected pill, white 12% on top, gives their #4a4d63. */
 .tabbar {
   position: absolute;
   left: 14px;
@@ -406,7 +421,7 @@ html, body {
   padding: 4px;
   display: flex;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-surface) 45%, var(--color-ground-machine));
+  background: var(--glass-fill);
 }
 .tab {
   flex: 1;
@@ -418,21 +433,50 @@ html, body {
   border-radius: 999px;
   color: var(--color-text-dim);
 }
-.tab .icon { height: 28px; display: flex; align-items: center; }
-.tab.selected {
+.tab .icon { position: relative; height: 28px; display: flex; align-items: center; }
+/* tabBadge (HerdrApp.swift 2864-2905): top-trailing of the icon, moved 12 pt right and
+   3 pt up; at least 18 pt, 5 pt sides, badgeCount text. Neutral like the rail badge. */
+.tab-badge {
+  position: absolute;
+  top: -3px;
+  right: -12px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--color-hairline);
+  border-radius: 999px;
+  background: var(--color-surface-raised);
   color: var(--color-text);
+  font: var(--text-badge-count-weight) var(--text-badge-count-size)/1 var(--text-badge-count-font);
+  font-variant-numeric: var(--text-badge-count-numeric);
+}
+/* The selected tab's pill is the bar's ::before, so it can slide between tabs
+   (.animation(.smooth(duration: 0.3), value: selectedTab), HerdrApp.swift 2837). */
+.tab { position: relative; z-index: 1; transition: color var(--motion-tab-duration) var(--motion-tab-ease); }
+.tab.selected { color: var(--color-text); }
+.tabbar::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: calc(4px + var(--tab-index, 0) * (100% - 8px) / 3);
+  width: calc((100% - 8px) / 3);
+  border-radius: 999px;
   background: color-mix(in srgb, var(--color-on-accent) 12%, transparent);
+  transition: left var(--motion-tab-duration) var(--motion-tab-ease);
 }
 
-/* The connect form (until Settings has its own screen, #7). */
+/* Saved-host connection home; its readable column is defined in hosts.css. */
 .connect {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  max-width: 520px;
-  margin: 40px auto;
-  padding: 0 20px;
+  bottom: 0;
+  overflow: auto;
+  background: var(--color-ground);
   font-family: var(--font-app);
   -webkit-user-select: text;
   user-select: text;
@@ -684,7 +728,7 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
   transform: translateY(-100%);
   pointer-events: none;
   /* spring(response: 0.32, dampingFraction: 0.86). */
-  transition: opacity 0.32s cubic-bezier(0.2, 0.9, 0.3, 1), transform 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+  transition: opacity var(--motion-pill-duration) var(--motion-pill-ease), transform var(--motion-pill-duration) var(--motion-pill-ease);
 }
 .needs-you-pill.shown { opacity: 1; transform: none; pointer-events: auto; }
 .needs-you-pill .faces { display: flex; flex: none; }
@@ -710,3 +754,18 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
 .needs-you-pill .detail { color: var(--color-text-dim); max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
 .needs-you-pill .chev { color: var(--color-text-dim); flex: none; }
 /* ==== End slice: avatars, sessions and card extras ==== */
+
+/* ==== Motion: herdrup's animations (motion.ts sets each duration and curve; every
+   duration is 0 under Reduce Motion). ==== */
+/* Minimising the sidebar slides the columns (HerdrApp.swift toggleSidebar); only a toggle
+   (sidebar.ts adds .sidebar-moving), not the column hiding for the host home. */
+.sidebar-minimized .sidebar { transform: translateX(-100%); }
+.sidebar-moving .detail { transition: left var(--motion-sidebar-duration) var(--motion-sidebar-ease); }
+.sidebar-moving .sidebar { transition: transform var(--motion-sidebar-duration) var(--motion-sidebar-ease), visibility 0s; }
+.sidebar-moving.sidebar-minimized .sidebar { transition: transform var(--motion-sidebar-duration) var(--motion-sidebar-ease), visibility 0s linear var(--motion-sidebar-duration); }
+.sidebar-moving .sidebar-rail:not([hidden]) { animation: motion-fade var(--motion-sidebar-duration) var(--motion-sidebar-ease) both; }
+/* The machine's home and the host list push in from the trailing edge
+   (.push(from: .trailing), HerdrApp.swift 229-233, 637). */
+.pushing > .sidebar, .pushing > .detail, .pushing > .sidebar-rail:not([hidden]) { animation: motion-push var(--motion-home-duration) var(--motion-home-ease) both; }
+@keyframes motion-fade { from { opacity: 0; } }
+@keyframes motion-push { from { transform: translateX(100vw); } }

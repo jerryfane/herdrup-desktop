@@ -20,17 +20,58 @@ import (
 // (design/reference/agent-list in herdrup), the closed sections the page
 // opens before the capture.
 var refExpand = map[string][]string{
-	"loading":           nil,
-	"empty":             nil,
-	"populated":         nil,
-	"idle-expanded":     {"idle"},
-	"archived-expanded": {"archived"},
-	"all-expanded":      {"idle", "archived"},
+	"loading":                      nil,
+	"empty":                        nil,
+	"populated":                    nil,
+	"idle-expanded":                {"idle"},
+	"archived-expanded":            {"archived"},
+	"all-expanded":                 {"idle", "archived"},
+	"folders":                      {"folder:herdr"},
+	"avatars":                      nil,
+	"sessions":                     nil,
+	"federated":                    nil,
+	"needs-you-pill":               nil,
+	"needs-you-rail":               nil,
+	"gram-mixed-latest":            nil,
+	"gram-mixed-image":             nil,
+	"gram-mixed-folded":            nil,
+	"gram-mixed-code":              nil,
+	"gram-saved":                   nil,
+	"gram-search-results":          nil,
+	"gram-search-empty":            nil,
+	"gram-composer-attachment":     nil,
+	"gram-composer-ambiguous":      nil,
+	"gram-empty":                   nil,
+	"gram-loading":                 nil,
+	"settings-machines-index":      nil,
+	"settings-machines-federation": nil,
+	"settings-machines-empty":      nil,
+	"settings-about-index":         nil,
+	"detail-chat":                  nil,
+	"detail-terminal":              nil,
+	"detail-writer-collapsed":      nil,
+	"detail-writer-expanded":       nil,
+	"detail-host-selection":        nil,
 }
 
 // refEnabled reports whether this run is a reference capture: a smoke
 // build (main.smoke=1) started with HERDRUP_REF_STATE.
 func refEnabled() bool { return smokeEnabled() && os.Getenv("HERDRUP_REF_STATE") != "" }
+
+// Reference timestamps are absolute. Freeze wall time only in a reference run;
+// timers and performance.now keep advancing so the real asynchronous UI settles.
+func refPreload() string {
+	if !refEnabled() {
+		return ""
+	}
+	// herdrupHoldsStill is herdrup's DesktopReferenceMock.holdsStill: status motion and the
+	// glyph field keep their first picture so captures settle (main.ts reads it).
+	return `;(() => { globalThis.herdrupHoldsStill = true; const NativeDate = Date; const now = 1793180460000;
+globalThis.Date = class extends NativeDate {
+  constructor(...args) { if (args.length) super(...args); else super(now); }
+  static now() { return now; }
+}; })();`
+}
 
 // refTiming bounds the waits of a reference capture. Total stays under
 // the bridge's 60 s call timeout, after which the loading state turns
@@ -89,11 +130,16 @@ func runRef(desk *Desk, win *mygo.Window) {
 		}
 		t.total = d
 	}
+	cleanup, err := prepareGramReference(desk, state)
+	if err != nil {
+		log.Printf("ref: prepare Gram: %v", err)
+		os.Exit(1)
+	}
 	placeRefWindow(win, w, h)
 	rep := refReport{State: state, Want: [2]int{w, h}}
-	var err error
 	if rep.BackingScale, rep.ScaleOverride, err = refDeviceScale(win, scale); err != nil {
 		rep.Outcome = "device scale: " + err.Error()
+		cleanup()
 		go finishRef(win, out, &rep, false)
 		return
 	}
@@ -105,14 +151,40 @@ func runRef(desk *Desk, win *mygo.Window) {
 		User:    os.Getenv("HERDRUP_SMOKE_USER"),
 		KeyPath: os.Getenv("HERDRUP_SMOKE_KEY"),
 	}
-	if err := desk.Connect(m, ""); err != nil {
-		rep.Outcome = "connect: " + err.Error()
-		go finishRef(win, out, &rep, false)
-		return
+	if strings.HasPrefix(state, "settings-") {
+		// Native DesktopReferenceMock's configured home-box display name.
+		m.Nickname = "reference-hub"
+	}
+	if state != "detail-host-selection" {
+		if err := desk.Connect(m, ""); err != nil {
+			rep.Outcome = "connect: " + err.Error()
+			cleanup()
+			go finishRef(win, out, &rep, false)
+			return
+		}
 	}
 	go func() {
-		ok, why := driveRef(win, w, h, expand, t)
+		var ok bool
+		var why string
+		if state == "detail-host-selection" {
+			ok, why = waitReferenceHosts(win, w, h, t.total)
+		} else {
+			ok, why = driveRef(win, w, h, expand, t)
+		}
+		if ok {
+			ok, why = driveBoardReference(win, state)
+		}
+		if ok {
+			ok, why = driveGramReference(desk, win, state)
+		}
+		if ok {
+			ok, why = driveSettingsReference(win, state)
+		}
+		if ok {
+			ok, why = driveDetailReference(win, state)
+		}
 		rep.Outcome = why
+		cleanup()
 		finishRef(win, out, &rep, ok)
 	}()
 }
@@ -236,6 +308,35 @@ type refReport struct {
 
 var refOnce sync.Once
 
+// stableRefCapture matches DesktopReferenceCaptureCase.capture: three identical
+// PNGs half a second apart, with a thirty-second deadline. Keep the last frame
+// on failure so an unsettled surface remains inspectable.
+func stableRefCapture(win *mygo.Window) ([]byte, error) {
+	previous, err := win.CapturePage()
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	identical := 0
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		png, err := win.CapturePage()
+		if err != nil {
+			return previous, err
+		}
+		if bytes.Equal(previous, png) {
+			identical++
+		} else {
+			identical = 0
+		}
+		previous = png
+		if identical >= 2 {
+			return png, nil
+		}
+	}
+	return previous, fmt.Errorf("screen never held still for a second")
+}
+
 // finishRef saves the page and the sidecar, then quits, with status 1
 // when ok is false or anything could not be saved.
 func finishRef(win *mygo.Window, out string, rep *refReport, ok bool) {
@@ -253,14 +354,27 @@ func finishRef(win *mygo.Window, out string, rep *refReport, ok bool) {
 				rep.DevicePixelRatio, _ = a[2].(float64)
 			}
 		}
-		png, err := win.CapturePage()
-		if err == nil {
-			err = os.WriteFile(out, png, 0o644)
+		var png []byte
+		var err error
+		if ok {
+			png, err = stableRefCapture(win)
+		} else {
+			png, err = win.CapturePage()
+		}
+		if len(png) > 0 {
+			if writeErr := os.WriteFile(out, png, 0o644); writeErr != nil {
+				if err == nil {
+					err = writeErr
+				} else {
+					err = fmt.Errorf("%w; save: %v", err, writeErr)
+				}
+			}
 		}
 		if err != nil {
 			ok = false
 			rep.Outcome += "; capture: " + err.Error()
-		} else if cfg, _, err := image.DecodeConfig(bytes.NewReader(png)); err == nil {
+		}
+		if cfg, _, err := image.DecodeConfig(bytes.NewReader(png)); err == nil {
 			rep.CapturePx = [2]int{cfg.Width, cfg.Height}
 			rep.CaptureScale = float64(cfg.Width) / float64(rep.Want[0])
 		}

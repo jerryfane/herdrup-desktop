@@ -333,31 +333,32 @@ type Window struct {
 	held     []message
 	domReady bool
 
-	onClose            listeners[func(*CloseEvent)]
-	onClosed           listeners[func()]
-	onFocus            listeners[func()]
-	onBlur             listeners[func()]
-	onShow             listeners[func()]
-	onHide             listeners[func()]
-	onReadyToShow      listeners[func()]
-	onResize           listeners[func()]
-	onFileDrop         listeners[func(*FileDropEvent)]
-	onWillDownload     listeners[func(*DownloadEvent)]
-	onDownloadDone     listeners[func(*Download)]
-	onMove             listeners[func()]
-	onMaximize         listeners[func()]
-	onUnmaximize       listeners[func()]
-	onMinimize         listeners[func()]
-	onRestore          listeners[func()]
-	onEnterFullScreen  listeners[func()]
-	onLeaveFullScreen  listeners[func()]
-	onPageTitleUpdated listeners[func(*TitleEvent)]
-	onWillNavigate     listeners[func(*NavigateEvent)]
-	onDidNavigate      listeners[func(string)]
-	onDOMReady         listeners[func()]
-	onDidFinishLoad    listeners[func()]
-	onDidFailLoad      listeners[func(*LoadError)]
-	onRenderGone       listeners[func(string)]
+	onClose             listeners[func(*CloseEvent)]
+	onClosed            listeners[func()]
+	onFocus             listeners[func()]
+	onBlur              listeners[func()]
+	onShow              listeners[func()]
+	onHide              listeners[func()]
+	onReadyToShow       listeners[func()]
+	onResize            listeners[func()]
+	onFileDrop          listeners[func(*FileDropEvent)]
+	onWillDownload      listeners[func(*DownloadEvent)]
+	onDownloadDone      listeners[func(*Download)]
+	onMove              listeners[func()]
+	onMaximize          listeners[func()]
+	onUnmaximize        listeners[func()]
+	onMinimize          listeners[func()]
+	onRestore           listeners[func()]
+	onEnterFullScreen   listeners[func()]
+	onLeaveFullScreen   listeners[func()]
+	onPageTitleUpdated  listeners[func(*TitleEvent)]
+	onWillNavigate      listeners[func(*NavigateEvent)]
+	onWillFrameNavigate listeners[func(*NavigateEvent)]
+	onDidNavigate       listeners[func(string)]
+	onDOMReady          listeners[func()]
+	onDidFinishLoad     listeners[func()]
+	onDidFailLoad       listeners[func(*LoadError)]
+	onRenderGone        listeners[func(string)]
 
 	// themeColor is the page's theme color, as its bridge told it, and
 	// hasThemeColor whether it has one. themeColorPending is set from a
@@ -1674,6 +1675,13 @@ func (p *Page) OnWillNavigate(fn func(e *NavigateEvent)) (off func()) {
 	return p.w.onWillNavigate.add(fn, false)
 }
 
+// OnWillFrameNavigate is called before a child frame navigates, including its
+// initial load. Preventing the event leaves its current document in place.
+// This is separate from OnWillNavigate, which observes the top-level page.
+func (p *Page) OnWillFrameNavigate(fn func(e *NavigateEvent)) (off func()) {
+	return p.w.onWillFrameNavigate.add(fn, false)
+}
+
 // OnDidNavigate is called when a navigation committed and a new page
 // started.
 func (p *Page) OnDidNavigate(fn func(url string)) (off func()) {
@@ -1817,11 +1825,18 @@ func (h *windowHandler) WillNavigate(nav platform.Navigation) bool {
 		})
 		return false
 	}
-	if !nav.IsMainFrame || nav.Unasked {
+	if nav.IsMainFrame && nav.Unasked {
+		return true
+	}
+	if !nav.IsMainFrame && h.w.onWillFrameNavigate.len() == 0 {
 		return true
 	}
 	e := &NavigateEvent{URL: nav.URL, UserInitiated: nav.UserInitiated}
-	fire1(&h.w.onWillNavigate, e)
+	if nav.IsMainFrame {
+		fire1(&h.w.onWillNavigate, e)
+	} else {
+		fire1(&h.w.onWillFrameNavigate, e)
+	}
 	return !e.prevented
 }
 

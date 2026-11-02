@@ -49,6 +49,7 @@ const (
 	CapabilityAgentGroups      Capability = "agent_groups"
 	CapabilityGramUploadStream Capability = "gram_upload_stream"
 	CapabilityAPIBridgeMulti   Capability = "api_bridge_multi"
+	CapabilityServerUpdate     Capability = "server_update"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -78,6 +79,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.GramUploadStream
 	case CapabilityAPIBridgeMulti:
 		return caps.APIBridgeMulti
+	case CapabilityServerUpdate:
+		return caps.ServerUpdate
 	}
 	return false
 }
@@ -97,6 +100,18 @@ var Methods = []Method{
 	{Name: "machine.status", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultMachineStatus]("machine_status")}},
 	// schema.rs:154; src/app/api/accounts.rs:125.
 	{Name: "accounts.list", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
+	{Name: "accounts.create", Params: typeOf[AccountsCreateParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
+	{Name: "accounts.remove", Params: typeOf[AccountsRemoveParams](), Results: []Result{result[ResponseResultAccountsList]("accounts_list")}},
+	{Name: "agent.restart", Params: typeOf[AgentRestartParams](), Results: []Result{result[ResponseResultAgentInfo]("agent_info")}},
+	{Name: "pane.split", Params: typeOf[PaneSplitParams](), Results: []Result{result[ResponseResultPaneInfo]("pane_info")}},
+	{Name: "agent.kinds", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultAgentKinds]("agent_kinds")}},
+	{Name: "agent.start", Params: typeOf[AgentStartParams](), Results: []Result{result[ResponseResultAgentStarted]("agent_started")}},
+	{Name: "pane.process_info", Params: typeOf[PaneProcessInfoParams](), Results: []Result{result[ResponseResultPaneProcessInfo]("pane_process_info")}},
+	{Name: "fs.list_dir", Params: typeOf[FsListDirParams](), Results: []Result{result[ResponseResultDirList]("dir_list")}},
+	{Name: "pane.close", Params: typeOf[PaneTarget](), Results: []Result{result[ResponseResultOk]("ok")}},
+	{Name: "pane.rename", Params: typeOf[PaneRenameParams](), Results: []Result{result[ResponseResultPaneInfo]("pane_info")}},
+	{Name: "pane.read", Params: typeOf[PaneReadParams](), Results: []Result{result[ResponseResultPaneRead]("pane_read")}},
+	{Name: "pane.send_keys", Params: typeOf[PaneSendKeysParams](), Results: []Result{result[ResponseResultOk]("ok")}},
 	// schema.rs:82; src/app/api/gram.rs:389.
 	{Name: "gram.send", Params: typeOf[GramSendParams](), Results: []Result{result[ResponseResultGramSent]("gram_sent")}},
 	// schema.rs:83; gram.rs:469.
@@ -137,6 +152,8 @@ var Methods = []Method{
 	{Name: "pane.set_pty_size", Params: typeOf[PaneSetPtySizeParams](), Results: []Result{result[ResponseResultPanePTYSize]("pane_pty_size")}},
 	// schema.rs:131; src/app/api/agents.rs:59.
 	{Name: "agent.list", Params: typeOf[AgentListParams](), Results: []Result{result[ResponseResultAgentList]("agent_list")}},
+	// schema.rs:133; agents.rs:818.
+	{Name: "agent.read", Params: typeOf[AgentReadParams](), Results: []Result{result[ResponseResultPaneRead]("pane_read")}},
 	// schema.rs:134; src/app/api/transcript.rs:122.
 	{Name: "agent.transcript", Params: typeOf[AgentTranscriptParams](), Results: []Result{result[ResponseResultAgentTranscript]("agent_transcript")}, Capability: CapabilityAgentTranscript},
 	// schema.rs:138; agents.rs:253.
@@ -162,6 +179,10 @@ var Methods = []Method{
 	// schema.rs:216; acknowledged at src/api/server/gram_upload_stream.rs:207,
 	// then GramUploadFrame out and GramUploadFrameReply back.
 	{Name: "gram.upload.stream", Params: typeOf[GramUploadStreamParams](), Results: []Result{result[ResponseResultOk]("ok")}, Capability: CapabilityGramUploadStream, Streaming: true},
+	{Name: "server.staged_update", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultStagedUpdate]("staged_update")}},
+	{Name: "server.update_check", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultUpdateCheck]("update_check")}, Capability: CapabilityServerUpdate},
+	{Name: "server.update_apply", Params: typeOf[ServerUpdateApplyParams](), Results: []Result{result[ResponseResultUpdateApply]("update_apply")}, Capability: CapabilityServerUpdate},
+	{Name: "server.update_status", Params: typeOf[EmptyParams](), Results: []Result{result[ResponseResultUpdateStatus]("update_status")}, Capability: CapabilityServerUpdate},
 	// schema.rs:227; acknowledged at src/api/server.rs:2793, then
 	// SubscriptionStreamEvent and SubscriptionControlLine lines. A herdr
 	// without events_v2 accepts the call but ignores events_v2: its lines

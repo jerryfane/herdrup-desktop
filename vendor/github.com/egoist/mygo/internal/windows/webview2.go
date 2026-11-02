@@ -42,6 +42,7 @@ const (
 	wvAddContentLoading                      = 9
 	wvAddPermissionRequested                 = 23
 	wvAddNavigationCompleted                 = 15
+	wvAddFrameNavigationStarting             = 17
 	wvAddProcessFailed                       = 25
 	wvAddScriptToExecuteOnDocumentCreated    = 27
 	wvRemoveScriptToExecuteOnDocumentCreated = 28
@@ -121,6 +122,7 @@ const (
 	procFailedGetKind             = 3
 	wv4AddDownloadStarting        = 75  // ICoreWebView2_4
 	wv13GetProfile                = 105 // ICoreWebView2_13
+	wv22AddSourceFilter           = 123 // ICoreWebView2_22.AddWebResourceRequestedFilterWithRequestSourceKinds
 	profile2ClearBrowsingDataAll  = 12  // ICoreWebView2Profile2
 	dlStartGetOperation           = 3
 	dlStartPutCancel              = 5
@@ -162,6 +164,7 @@ var (
 	iidICoreWebView2_4                           = guid("20d02d59-6df2-42dc-bd06-f98a694b1302")
 	iidICoreWebView2_8                           = guid("e9632730-6e1e-43ab-b7b8-7b2c9e62e094")
 	iidICoreWebView2_13                          = guid("f75f09a8-667e-4983-88d6-c8773f315e84")
+	iidICoreWebView2_22                          = guid("db75dfc7-a857-4632-a398-6969dde26c0a")
 	iidICoreWebView2Profile2                     = guid("fa740d4b-5eae-4344-a8ad-74be31925397")
 )
 
