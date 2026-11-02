@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/guest"
 )
 
 // guestOwnerHost is the owner's herdr behind a fake guest relay: one omp
@@ -61,6 +62,12 @@ func (h *guestOwnerHost) handle(method string, raw json.RawMessage) (any, *fakeh
 			h.status, h.seq = "working", h.seq+1
 		}
 		return map[string]any{"type": "ok"}, nil
+	case "agent.transcript":
+		page := map[string]any{"type": "agent_transcript", "agent": "omp", "pane_id": "w1:p2", "session_id": "s1", "after": "c1", "entries": []any{}}
+		if h.status == "working" {
+			page["working"] = map[string]any{"intent": "Reading"}
+		}
+		return page, nil
 	}
 	return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
 }
@@ -72,8 +79,9 @@ func (h *guestOwnerHost) sent() ([]map[string]any, [][]string) {
 }
 
 // openGuestAgent redeems the relay's invitation, connects the share and
-// opens its agent page, as a guest does from the invite link.
-func openGuestAgent(t *testing.T, relay *fakeherdr.GuestRelay) (*Desk, AgentView) {
+// opens its agent page, as a guest does from the invite link; clock times
+// the guest's status poll and relay backoff.
+func openGuestAgent(t *testing.T, relay *fakeherdr.GuestRelay, clock guest.Clock) (*Desk, AgentView) {
 	t.Helper()
 	relay.TerminalID, relay.AgentName = "t2", "docs"
 	relay.OwnerName, relay.MachineLabel, relay.GuestName = "Jerry", "studio", "visitor"
@@ -83,6 +91,7 @@ func openGuestAgent(t *testing.T, relay *fakeherdr.GuestRelay) (*Desk, AgentView
 	}
 	t.Cleanup(func() { _ = relay.Close() })
 	d := newDesk(t.TempDir())
+	d.guestClock = clock
 	t.Cleanup(d.Disconnect)
 	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)))
 	if err != nil {
@@ -112,7 +121,7 @@ func TestGuestAnswersAndMenuKeysGoThroughTheGuestLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	relay.Handle = owner.handle
-	d, view := openGuestAgent(t, relay)
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
 	ctx := context.Background()
 
 	reply, err := d.ChatAnswer(ctx, view.Token, "q1", "Yes")
@@ -156,7 +165,7 @@ func TestGuestOnAnOlderHostWaitsForTheOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	relay.Handle, relay.OwnerOnlyAnswers = owner.handle, true
-	d, view := openGuestAgent(t, relay)
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
 	ctx := context.Background()
 
 	reply, err := d.ChatAnswer(ctx, view.Token, "q1", "Yes")
@@ -184,7 +193,7 @@ func TestGuestKeyAfterACommitIsNotAnOlderHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	relay.Handle = owner.handle
-	d, view := openGuestAgent(t, relay)
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
 	ctx := context.Background()
 	if err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil {
 		t.Fatalf("committing key: %v", err)
@@ -211,7 +220,7 @@ func TestGuestKeyOnAFreeTextPromptIsNotAnOlderHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	relay.Handle = owner.handle
-	d, view := openGuestAgent(t, relay)
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
 	ctx := context.Background()
 	if err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil {
 		t.Fatalf("key on a free-text prompt read as an older host: %v", err)

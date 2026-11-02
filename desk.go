@@ -121,7 +121,10 @@ type Desk struct {
 	// inviteTransport fetches short invite links' sealed invites; nil is
 	// http.DefaultTransport. Replaced in tests.
 	inviteTransport http.RoundTripper
-	pins            *bridge.FilePinStore
+	// guestClock times a guest's relay backoff and status poll
+	// (desk_guest.go); replaced in tests.
+	guestClock guest.Clock
+	pins       *bridge.FilePinStore
 
 	mu                 sync.Mutex
 	pendingGuestInvite string
@@ -184,6 +187,9 @@ type link struct {
 	guest       *guest.Transport
 	guestClient *engine.Client
 	access      *guest.Access
+	// guestPoll wakes a guest's status poll (runGuest) after a send, an
+	// answer or a menu key; nil for the owner.
+	guestPoll chan struct{}
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
 	// ctx is the current watch's; it ends when the session or connection
@@ -208,6 +214,7 @@ func newDesk(dir string) *Desk {
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
 		terminals:   &terminalStore{path: filepath.Join(dir, "terminals.json")},
 		guestStore:  guest.NewStore(filepath.Join(dir, "shared-connections.json")),
+		guestClock:  guest.SystemClock,
 		pins:        bridge.NewFilePinStore(filepath.Join(dir, "host-keys.json")),
 		alert:       alertGroups,
 		failure:     alertAgentFailure,

@@ -32,7 +32,9 @@ type GuestConnection struct {
 	// Availability classifies an "error" phase as herdrup's guest home does
 	// (App/GuestHomeView.swift 346-356): "offline" when the relay reports the
 	// machine offline, "lost" when the owner no longer shares the agent, ""
-	// otherwise.
+	// otherwise. "reconnecting" goes with a "connecting" or "connected" phase
+	// instead: the relay refuses this network's connects (429 rate_limited)
+	// and the guest waits to try again (Message says how long).
 	Availability string `json:"availability,omitempty"`
 }
 
@@ -131,9 +133,9 @@ func (d *Desk) ConnectGuest(id string) error {
 	if err != nil {
 		return err
 	}
-	transport := guest.NewTransport(*access, identity)
+	transport := guest.NewTransport(*access, identity, d.guestClock)
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: "guest:" + id, guest: transport, guestClient: engine.New(transport), access: access, ctx: ctx}
+	l := &link{id: "guest:" + id, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()
@@ -183,8 +185,26 @@ func guestAvailability(err error) string {
 		return "lost"
 	case errors.Is(err, guest.ErrHostOffline):
 		return "offline"
+	case errors.Is(err, guest.ErrRateLimited):
+		return "reconnecting"
 	}
 	return ""
+}
+
+// guestStatusPoll is how often a guest lists the shared agent. Every guest
+// request is its own relay connect, and the relay allows a network 30 a
+// minute for this list, the chat's poll (src/chatPoll.ts) and Gram's
+// (desk_gram.go) together: the list waits 15 s, and a send, an answer or a
+// menu key asks again at once (pollGuestStatus).
+const guestStatusPoll = 15 * time.Second
+
+// pollGuestStatus has a guest's status poll list the agent now; nothing for
+// the owner.
+func (l *link) pollGuestStatus() {
+	select {
+	case l.guestPoll <- struct{}{}:
+	default:
+	}
 }
 
 func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
@@ -200,18 +220,29 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 		d.setState(ctx, ConnState{Phase: phase, Machine: label, Message: message, Guest: &GuestConnection{Access: access, Features: l.guest.Features(), Fingerprint: fingerprint, Availability: availability}})
 	}
 	publishState("connecting", "", "")
-	gramStarted := false
+	gramStarted, listed := false, false
 	for ctx.Err() == nil {
+		wait := guestStatusPoll
 		result, err := client.AgentList(ctx, herdrapi.AgentListParams{})
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil {
+		if errors.Is(err, guest.ErrRateLimited) {
+			// Not an error: the transport connects again when its backoff
+			// ends, and the agent's page stays open meanwhile.
+			wait = max(wait, l.guest.RateLimitedUntil().Sub(d.guestClock.Now()))
+			phase := "connecting"
+			if listed {
+				phase = "connected"
+			}
+			publishState(phase, fmt.Sprintf("The relay is receiving too many connections from this network. Trying again in %d s.", int((wait+time.Second-1)/time.Second)), guestAvailability(err))
+		} else if err != nil {
 			publishState("error", err.Error(), guestAvailability(err))
 			if errors.Is(err, guest.ErrRevoked) {
 				return
 			}
 		} else {
+			listed = true
 			agents := make([]herdrapi.AgentInfo, 0, 1)
 			for _, agent := range result.Agents {
 				if agent.TerminalID == l.access.AgentTarget || agent.PaneID == l.access.AgentTarget {
@@ -238,7 +269,8 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(3 * time.Second):
+		case <-l.guestPoll:
+		case <-d.guestClock.After(wait):
 		}
 	}
 }

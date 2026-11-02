@@ -469,7 +469,9 @@ export interface GuestConnection {
    * Availability classifies an "error" phase as herdrup's guest home does
    * (App/GuestHomeView.swift 346-356): "offline" when the relay reports the
    * machine offline, "lost" when the owner no longer shares the agent, ""
-   * otherwise.
+   * otherwise. "reconnecting" goes with a "connecting" or "connected" phase
+   * instead: the relay refuses this network's connects (429 rate_limited)
+   * and the guest waits to try again (Message says how long).
    */
   availability?: string;
 }

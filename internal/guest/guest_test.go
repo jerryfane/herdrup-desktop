@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -224,7 +225,7 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	if access.AgentTarget != "%42" || access.GuestID != "grant-1" || access.OwnerName != "Owner" {
 		t.Fatalf("incomplete access: %+v", access)
 	}
-	transport := NewTransport(access, identity)
+	transport := NewTransport(access, identity, SystemClock)
 	defer transport.Close()
 	longText := strings.Repeat("x", maxNoisePlaintext*2)
 	var result struct {
@@ -295,7 +296,7 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	}
 	wrong := access
 	wrong.Endpoint.HostPublicKey = bytes.Repeat([]byte{9}, 32)
-	untrusted := NewTransport(wrong, identity)
+	untrusted := NewTransport(wrong, identity, SystemClock)
 	defer untrusted.Close()
 	if err := untrusted.Call(context.Background(), "ping", nil, &result); err == nil {
 		t.Fatal("wrong host identity accepted")
@@ -311,5 +312,30 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	}
 	if _, err := transport.OpenStream(context.Background(), "ping", nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("closed transport reopened: %v", err)
+	}
+}
+
+// After the relay's 429 a transport waits 15 s, then twice as long while
+// the relay keeps refusing, at most a minute.
+func TestRelayBackoffDoublesToAMinute(t *testing.T) {
+	var got []time.Duration
+	for last := time.Duration(0); len(got) < 5; {
+		last = relayBackoff(last)
+		got = append(got, last)
+	}
+	want := []time.Duration{15 * time.Second, 30 * time.Second, time.Minute, time.Minute, time.Minute}
+	if !slices.Equal(got, want) {
+		t.Fatalf("backoffs %v, want %v", got, want)
+	}
+}
+
+// The relay's 429, as its header or its status alone, is ErrRateLimited.
+func TestRelayRateLimitIsErrRateLimited(t *testing.T) {
+	header := &http.Response{StatusCode: 429, Header: http.Header{"X-Herdr-Guest-Error": {"rate_limited"}}}
+	bare := &http.Response{StatusCode: 429, Header: http.Header{}}
+	for _, response := range []*http.Response{header, bare} {
+		if err := upgradeError(response, nil); !errors.Is(err, ErrRateLimited) {
+			t.Fatalf("429 %v: %v", response.Header, err)
+		}
 	}
 }

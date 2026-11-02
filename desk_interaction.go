@@ -350,6 +350,7 @@ func (d *Desk) ChatPrompt(ctx context.Context, token, text string) (string, erro
 		return "", gramstore.ErrSending
 	}
 	defer v.sendMu.Unlock()
+	defer v.at.link.pollGuestStatus()
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
 	chips := v.composer.Snapshot().Chips
@@ -412,6 +413,7 @@ func (d *Desk) ChatAnswer(ctx context.Context, token, askID, option string) (Cha
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
+	defer v.at.link.pollGuestStatus()
 	params := herdrapi.AgentAnswerParams{Target: v.PaneID, AskID: askID, Option: option}
 	var result herdrapi.ResponseResultAgentAnswer
 	if guestLink := v.at.link.guest; guestLink != nil {

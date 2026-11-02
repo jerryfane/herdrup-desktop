@@ -1,6 +1,7 @@
 import { Desk, type AgentTarget, type BoardUpdate, type ConnState, type Row } from "./mygo";
 import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
+import { RELAY_RECONNECTING } from "./chatPoll";
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the
  * roster's avatar with its status badge, the initial placement and the loading spinner. */
@@ -112,6 +113,9 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     content = await message("xmark", `${access.agentName}: access removed`, `${access.ownerName} no longer shares ${access.agentName} with you.`, remove);
    } else if (state.phase === "error") {
     content = await message("exclamationmark.triangle", `Can't reach ${access.agentName}`, state.message);
+   } else if (guest.availability === "reconnecting" && !board) {
+    // The relay refuses this network's connects for now (429): Go waits and tries again.
+    content = await message("arrow.clockwise", RELAY_RECONNECTING, state.message);
    } else if (state.phase !== "connected" || !board) {
     // .loading: ProgressView, 64 pt tall, 26 below the header.
     content = node("div", "guest-home-loading"); content.innerHTML = deps.spinner;
@@ -120,10 +124,13 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     const open = row ? () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: row.id }) : null;
     content = await agentRow(access.agentName, row, rowState, openPane === row?.id, open);
    }
+   // Listed before the relay's 429: the row stays, and says it is reconnecting below it.
+   const reconnecting = guest.availability === "reconnecting" && board ? node("p", "guest-home-note", `${RELAY_RECONNECTING} ${state.message}`) : null;
+   reconnecting?.setAttribute("role", "status");
    // GuestShellStyle.note, 18 below; neutral here (no colour-coded cards).
    const note = node("p", "guest-home-note", `You can see only the agents ${access.ownerName} shares with you.`);
    if (version !== generation) return;
-   navigation.replaceChildren(header, content, note);
+   navigation.replaceChildren(header, content, ...(reconnecting ? [reconnecting] : []), note);
    const surface = content.classList.contains("selected") ? node("div", "row-selection") : null;
    if (surface) {
     surface.setAttribute("aria-hidden", "true"); content.prepend(surface);
