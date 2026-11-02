@@ -59,8 +59,10 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
  const inspect = async () => {
   if (busy || disposed) return; busy = true; error.textContent = ""; review.disabled = true;
   try {
-   const invite = await Desk.inspectGuestInvitation(input.value);
-   if (disposed) return;
+   // Accept redeems exactly the reviewed text; an edit while it was being read makes this review stale.
+   const reviewed = input.value;
+   const invite = await Desk.inspectGuestInvitation(reviewed);
+   if (disposed || input.value !== reviewed) return;
    const accept = action("Accept", () => { void redeem(); });
    const summary = details([["Machine", invite.machineLabel], ["Agent", invite.agentName], ["You appear as", invite.guestName]]);
    content.replaceChildren(node("h3", "guest-hero", `${invite.ownerName} shared ${invite.agentName} with you`), node("p", "", "You can use this agent, not the owner's other agents or machines."), summary,
@@ -69,7 +71,7 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
    async function redeem() {
     if (busy || disposed) return; busy = true; cancel.disabled = true; accept.disabled = true; accept.textContent = "Accepting…"; error.textContent = "";
     try {
-     const access = await Desk.acceptGuestInvitation(input.value);
+     const access = await Desk.acceptGuestInvitation(reviewed);
      input.value = ""; await saved();
      if (disposed) return;
      content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", `${access.agentName} is saved on this device.`), action("Open shared agent", () => {
