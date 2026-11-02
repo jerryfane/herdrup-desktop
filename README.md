@@ -6,8 +6,9 @@ computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screen
 the system webview (WKWebView, WebKitGTK, WebView2).
 
 **Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
-`v0.1.0-preview.2` adds interactive agent Terminal, omp Chat,
-expanded writing for Chat and Gram, and a saved-host selection page to the
+`v0.1.0-preview.4` matches the native herdrup app's look and motion, adds its agent
+menus (right-click an agent; the agent page's ••• menu) and the GitHub star ask, on top
+of interactive agent Terminal, omp Chat, expanded writing, saved-host selection, the
 agent board, Gram attachments and desktop tray/notifications.
 
 Select an agent to open its detail view. Terminal supports live PTY input/output,
