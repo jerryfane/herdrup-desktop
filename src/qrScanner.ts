@@ -38,7 +38,7 @@ export function scanQR(video: HTMLVideoElement, found: (text: string) => void, u
       await video.play(); if (!disposed) frame();
     } catch (error) {
       const name = error instanceof DOMException ? error.name : "";
-      fail(name === "NotAllowedError" || name === "SecurityError" ? "Camera access was denied. Allow Herdrup to use the camera in your privacy settings, then try again." : name === "NotFoundError" ? "No camera was found. Connect a camera and try again." : "The camera could not start. Another app may be using it; close that app and try again.");
+      fail(name === "NotAllowedError" || name === "SecurityError" ? "Camera access was denied. Allow herdrup to use the camera in your privacy settings, then try again." : name === "NotFoundError" ? "No camera was found. Connect a camera and try again." : "The camera could not start. Another app may be using it; close that app and try again.");
     }
   })();
   return stop;

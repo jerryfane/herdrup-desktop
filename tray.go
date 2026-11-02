@@ -121,7 +121,7 @@ func trayTitle(n int) string {
 
 func trayToolTip(n int) string {
 	if n == 0 {
-		return "Herdrup"
+		return "herdrup"
 	}
 	return needsYouText(n)
 }
@@ -129,7 +129,7 @@ func trayToolTip(n int) string {
 // trayMenu opens the window, or the window on one of the agents needing
 // you, and quits.
 func trayMenu(d *Desk, win *mygo.Window, board presenceBoard) *mygo.Menu {
-	items := []*mygo.MenuItem{{Label: "Open Herdrup", Click: func(*mygo.MenuItem, *mygo.Window) { showWindow(win) }}}
+	items := []*mygo.MenuItem{{Label: "Open herdrup", Click: func(*mygo.MenuItem, *mygo.Window) { showWindow(win) }}}
 	for _, r := range board.rows {
 		target := AgentTarget{board.machineID, board.session, r.ID}
 		items = append(items, &mygo.MenuItem{Label: r.Title, Click: func(*mygo.MenuItem, *mygo.Window) {

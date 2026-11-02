@@ -141,7 +141,7 @@ jobs:
           refs="$RUNNER_TEMP/refs"
           out="$RUNNER_TEMP/parity"
           mkdir -p "$out/captures" "$out/diffs" "$out/reports" "$out/logs" "$RUNNER_TEMP/keys"
-          app="$(ls -d build/darwin-*/Herdrup.app)/Contents/MacOS/Herdrup"
+          app="$(ls -d build/darwin-*/herdrup.app)/Contents/MacOS/herdrup"
           port=2300
           : > "$out/failed"
 

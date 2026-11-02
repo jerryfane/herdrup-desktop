@@ -96,18 +96,18 @@ export class AppUpdateSettings {
     const checked = s ? appUpdateCheckedLine(s.checkedAt) : "";
     const header = (text: string) => this.root.append(node("h2", text));
     const actions = node("div", "", "settings-update-actions");
-    const every = `Herdrup checks for new versions, previews included, every ${appUpdateIntervalHours} hours.`;
+    const every = `herdrup checks for new versions, previews included, every ${appUpdateIntervalHours} hours.`;
     switch (s?.phase) {
       case "disabled":
-        header(`Herdrup ${current}`);
+        header(`herdrup ${current}`);
         this.text(s.reason || "This build can't update itself.");
         return;
       case "checking":
-        header(`Herdrup ${current}`);
+        header(`herdrup ${current}`);
         this.text("Checking for updates…");
         break;
       case "upToDate":
-        header("Herdrup is up to date");
+        header("herdrup is up to date");
         this.text(`You have ${current}, the newest version.`);
         break;
       case "failed":
@@ -136,11 +136,11 @@ export class AppUpdateSettings {
         actions.append(this.button("Update and restart", () => Desk.installAppUpdate(), "app-update-install", busy));
         actions.append(this.button("Release notes", () => Desk.openExternalURL(`https://github.com/jerryfane/herdrup-desktop/releases/tag/v${encodeURIComponent(s.version)}`), "app-update-notes"));
         this.root.append(actions);
-        if (!busy) this.text("Herdrup quits and opens the new version. Your agents keep running on their machines.", "settings-update-faint");
+        if (!busy) this.text("herdrup quits and opens the new version. Your agents keep running on their machines.", "settings-update-faint");
         return;
       }
       default:
-        header(`Herdrup ${current}`);
+        header(`herdrup ${current}`);
         this.text(s ? "Not checked yet." : "Reading the update status…");
         if (!s) return;
     }

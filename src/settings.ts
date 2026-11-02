@@ -231,7 +231,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       node.id = "settings-suggestion-update"; rows.push(node);
     }
     if (appVersion) {
-      const node = row(`Update Herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), "A newer version of this app is ready", pill(1, "waiting"));
+      const node = row(`Update herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), "A newer version of this app is ready", pill(1, "waiting"));
       node.id = "settings-suggestion-app-update"; rows.push(node);
     }
     if (exhausted.length) {
@@ -364,7 +364,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       };
       const copy = button("Copy report", () => {
         const reportText = typingLatency.snapshot().map(item => [item.host, ...latencyLines(item)].join("\n")).join("\n\n");
-        void Desk.gramCopyText(`Herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
+        void Desk.gramCopyText(`herdrup typing latency — xterm render / overlay draw\n${reportText || "No typing measured yet."}`).then(() => { copy.textContent = "Copied"; }).catch(report);
       }); copy.className = "settings-plain-row action";
       const reset = button("Reset", () => { typingLatency.reset(); copy.textContent = "Copy report"; refreshLatency(); }); reset.className = "settings-plain-row action";
       body.append(instruction, results, group("REPORT", [copy, reset]), explanation);

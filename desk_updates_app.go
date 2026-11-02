@@ -280,7 +280,7 @@ func appUpdateDisabledReason(goos, exe string) string {
 	if goos == "linux" {
 		return "Installed by your package manager; update it there."
 	}
-	return "Herdrup can't write to the folder it's installed in, so it can't update itself."
+	return "herdrup can't write to the folder it's installed in, so it can't update itself."
 }
 
 // AppUpdate returns the state of the app's own update.

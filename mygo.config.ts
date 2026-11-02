@@ -19,7 +19,9 @@ const speechFiles = speech ? [
 const updatePublicKey = process.env.HERDRUP_UPDATE_PUBLIC_KEY ?? "";
 
 export default defineConfig({
-  name: "Herdrup",
+  // The name users see, lower case as herdrup's (project.yml CFBundleDisplayName); slug keeps
+  // the files, identifier the preferences and keychain.
+  name: "herdrup",
   slug: "herdrup",
   // Fixed after the first release: the OS ties preferences and keychain
   // items to it.

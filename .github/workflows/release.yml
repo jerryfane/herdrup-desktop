@@ -118,15 +118,15 @@ jobs:
           hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mnt"
           trap 'hdiutil detach "$mnt"' EXIT
           ls -la "$mnt"
-          app="$mnt/Herdrup.app"
-          test -x "$app/Contents/MacOS/Herdrup"
+          app="$mnt/herdrup.app"
+          test -x "$app/Contents/MacOS/herdrup"
           test -L "$mnt/Applications"
-          archs="$(lipo -archs "$app/Contents/MacOS/Herdrup")"
+          archs="$(lipo -archs "$app/Contents/MacOS/herdrup")"
           echo "architectures: $archs"
           case "$archs" in *arm64*x86_64*|*x86_64*arm64*) ;; *) exit 1 ;; esac
           codesign --verify --deep --strict --verbose=2 "$app"
           # It starts and keeps running from the disk image.
-          "$app/Contents/MacOS/Herdrup" > "$RUNNER_TEMP/app.log" 2>&1 &
+          "$app/Contents/MacOS/herdrup" > "$RUNNER_TEMP/app.log" 2>&1 &
           pid=$!
           sleep 15
           kill -0 "$pid" || { cat "$RUNNER_TEMP/app.log"; exit 1; }
@@ -180,18 +180,18 @@ jobs:
           $p = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$dir" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
           Get-ChildItem $dir
-          if (-not (Test-Path "$dir\Herdrup.exe")) { throw 'Herdrup.exe not installed' }
+          if (-not (Test-Path "$dir\herdrup.exe")) { throw 'herdrup.exe not installed' }
           if (-not (Test-Path "$dir\Uninstall.exe")) { throw 'Uninstall.exe not installed' }
           # It starts and keeps running.
-          $app = Start-Process -FilePath "$dir\Herdrup.exe" -PassThru
+          $app = Start-Process -FilePath "$dir\herdrup.exe" -PassThru
           Start-Sleep -Seconds 15
-          if ($app.HasExited) { throw "Herdrup.exe exited with $($app.ExitCode)" }
+          if ($app.HasExited) { throw "herdrup.exe exited with $($app.ExitCode)" }
           Stop-Process -Id $app.Id -Force
           $app.WaitForExit()
           # _? keeps the uninstaller in place, so -Wait waits for it.
           $u = Start-Process -FilePath "$dir\Uninstall.exe" -ArgumentList '/S', "_?=$dir" -Wait -PassThru
           if ($u.ExitCode -ne 0) { throw "uninstaller exited with $($u.ExitCode)" }
-          if (Test-Path "$dir\Herdrup.exe") { throw 'Herdrup.exe left after uninstall' }
+          if (Test-Path "$dir\herdrup.exe") { throw 'herdrup.exe left after uninstall' }
 
   check-linux:
     name: Check the Debian package and install.sh
@@ -281,4 +281,4 @@ jobs:
           prerelease=
           case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "Herdrup $GITHUB_REF_NAME" --generate-notes $prerelease dist/*
+            --verify-tag --title "herdrup $GITHUB_REF_NAME" --generate-notes $prerelease dist/*
