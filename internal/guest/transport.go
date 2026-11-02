@@ -60,9 +60,11 @@ type Transport struct {
 	mu       sync.RWMutex
 	features Features
 	// backoff is the wait after the last 429 and retryAt its end; both zero
-	// once a connect goes through.
-	backoff time.Duration
-	retryAt time.Time
+	// once a connect goes through. refusals counts the 429s that started a
+	// backoff, so a connect that began before one cannot end it.
+	backoff  time.Duration
+	retryAt  time.Time
+	refusals uint64
 }
 
 func NewTransport(access Access, identity Identity, clock Clock) *Transport {
@@ -96,6 +98,29 @@ func (t *Transport) limited() {
 	}
 	t.backoff = relayBackoff(t.backoff)
 	t.retryAt = now.Add(t.backoff)
+	t.refusals++
+}
+
+// attempt says whether a connect may go out now, and the refusals so far:
+// what admitted needs to know whether a 429 came while it was in flight.
+func (t *Transport) attempt() (uint64, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.refusals, !t.clock.Now().Before(t.retryAt)
+}
+
+// admitted records a connect the relay let through, begun after refusals
+// 429s. It ends the backoff only when no 429 came while it was in flight: a
+// handshake the relay admitted before refusing a later connect says nothing
+// about the relay now, and ending that cooldown would let the next request
+// reach the relay and restart the escalation at 15 s.
+func (t *Transport) admitted(refusals uint64, features Features) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.features = features
+	if t.refusals == refusals {
+		t.backoff, t.retryAt = 0, time.Time{}
+	}
 }
 
 func (t *Transport) Call(ctx context.Context, method string, params, result any) error {
@@ -126,7 +151,8 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 	if err := t.ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !t.RateLimitedUntil().IsZero() {
+	refusals, ok := t.attempt()
+	if !ok {
 		return nil, ErrRateLimited
 	}
 	hello, err := json.Marshal(struct {
@@ -151,10 +177,7 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 	if connected.reply.GuestID != t.access.GuestID {
 		return nil, ErrRevoked
 	}
-	t.mu.Lock()
-	t.features = connected.reply.Features
-	t.backoff, t.retryAt = 0, time.Time{}
-	t.mu.Unlock()
+	t.admitted(refusals, connected.reply.Features)
 	request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(t.seq.Add(1), 10), method, params)
 	if err != nil {
 		return nil, err

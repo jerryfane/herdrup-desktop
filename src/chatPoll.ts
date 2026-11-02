@@ -5,6 +5,8 @@
 // 30 s otherwise. herdrup's owner chat also follows the pane's events (ChatView.swift:227-241);
 // the owner here has none and keeps its 1.5 s poll over SSH, which has no connect limit.
 
+import type { Entry } from "./interactionModel";
+
 /** ChatModel.fastPollSeconds: while a send waits to show up, or while omp works. */
 export const CHAT_POLL_FAST_MS = 3_000;
 /** ChatModel.waitForPoll's slow poll: a backstop while the agent is idle. */
@@ -41,4 +43,11 @@ export const RELAY_RECONNECTING = "Reconnecting…";
 /** The relay's 429 as Go words it (guest.ErrRateLimited). */
 export function isRelayRateLimited(message: string): boolean {
  return message.includes("The relay is receiving too many connections");
+}
+
+/** Whether a transcript read shows a pending send: a user entry in the live tail (`page`, read
+ *  after the last cursor) that the page did not hold before the read (`held`). Older history
+ *  from "Earlier messages" is held, not new, so it never stands in for the unseen prompt. */
+export function sendShown(held: ReadonlySet<string>, page: readonly Entry[]): boolean {
+ return page.some(entry => entry.kind === "user" && !held.has(entry.id));
 }
