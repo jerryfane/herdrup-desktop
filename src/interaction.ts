@@ -228,7 +228,9 @@ class Detail {
   this.input.dispatchEvent(new Event("input"));
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
  draftKey: string;
- // A text-only prompt cleared from the composer but not yet given to herdr: it stays the stored draft until dispatch.
+ // A text-only prompt cleared from the composer but not yet given to herdr. The composer stays
+ // editable meanwhile (as Swift's replyBar), so the stored draft holds this prompt ahead of
+ // whatever is typed next until dispatch: closing first loses neither.
  unsentPrompt = "";
  constructor(readonly target: AgentTarget, initialDraft?: string, readonly plainTerminal = false) {
   this.draftKey = "herdrup.prompt." + JSON.stringify(target);
@@ -245,7 +247,7 @@ class Detail {
   this.input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void this.sendPrompt(); } });
  }
  saveDraft() {
-  const draft = this.input.value || this.unsentPrompt;
+  const draft = [this.unsentPrompt, this.input.value].filter(Boolean).join("\n\n");
   try { if (draft) localStorage.setItem(this.draftKey, draft); else localStorage.removeItem(this.draftKey); }
   catch { this.status.textContent = "Draft is kept in this window only: local storage is unavailable."; }
  }
@@ -1188,7 +1190,7 @@ class Detail {
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
   } catch(e) {
    if (!this.disposed) {
-    this.unsentPrompt = "";
+    this.unsentPrompt = ""; this.saveDraft();
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }
     this.status.textContent = String(e);
    }
