@@ -50,13 +50,18 @@
 .agent-detail .chat-terminal-switch button { height: 26px; padding: 0 16px; border: 0; border-radius: 99px; font: 600 13px var(--font-app); color: var(--color-text-dim); background: none; }
 .agent-detail .chat-terminal-switch button[aria-pressed="true"] { background: var(--color-surface-raised); color: var(--color-text); text-decoration: none; }
 .agent-detail input, .agent-detail select, .host-password input { min-width: 0; color: var(--color-text); background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 7px; padding: 7px; font: inherit; }
-.interaction-status { padding: 0 14px; font-size: 13px; white-space: pre-wrap; }
-.interaction-status:not(:empty) { padding-block: 8px; border-bottom: 1px solid var(--color-hairline); }
+/* herdrup's actionNote (HerdrApp.swift 5849-5855): app 12 in textDim, leading, 16 sides, 4 above and
+   below, just above the quick keys (Terminal) or the composer (Chat). */
+.interaction-status { padding: 0 16px; font: 400 12px/var(--leading-app) var(--font-app); color: var(--color-text-dim); white-space: pre-wrap; }
+.interaction-status:not(:empty) { padding-block: 4px; }
+.interaction-body > .interaction-status { position: absolute; left: 0; right: 0; bottom: calc(var(--composer-height, 68px) + 50px); z-index: 1; }
+.interaction-body[data-mode="chat"] > .interaction-status { bottom: var(--composer-height, 68px); }
+.interaction-body > .interaction-status:empty { display: none; }
 .interaction-body { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 /* Only the resting composer reserves height. Extra lines overlay both viewports;
    the warm terminal keeps its quick-key allowance even while Chat covers it. */
-.terminal-surface, .chat-surface { position: absolute; inset: 0 0 68px; display: flex; flex-direction: column; background: var(--color-ground-machine); }
-.terminal-surface { bottom: 118px; }
+.terminal-surface, .chat-surface { position: absolute; inset: 0 0 calc(68px + var(--note-height, 0px)); display: flex; flex-direction: column; background: var(--color-ground-machine); }
+.terminal-surface { bottom: calc(118px + var(--note-height, 0px)); }
 .terminal-surface.covered { opacity: 0; pointer-events: none; }
 .chat-surface[hidden] { display: none; }
 .interaction-body > .chat-composer { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; }

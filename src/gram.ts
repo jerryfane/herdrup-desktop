@@ -41,6 +41,7 @@ import {
   type GramUploadProgress,
   type SavedGram,
 } from "./mygo";
+import { errorText } from "./errors";
 
 let guestRecipient: string | null = null;
 export function setGuestGramRecipient(name: string | null) {
@@ -1383,7 +1384,7 @@ function buildComposer(): HTMLElement {
   stopClipboardPaste = composerClipboardPaste(input, () => {
     if (picking || posting || snap?.sending || !shown) return Promise.reject(new Error("Wait for the current attachment operation to finish."));
     return Desk.gramPasteClipboard();
-  }, error => { banner.hidden = false; banner.textContent = String(error); });
+  }, error => { banner.hidden = false; banner.textContent = errorText(error); });
   mentionHost = el("div", "gmentions");
   mentionHost.hidden = true;
   dictation = new ComposerDictation(input, renderComposer, () => editor.collapse());
@@ -1394,7 +1395,7 @@ function buildComposer(): HTMLElement {
     if (posting || picking || snap?.sending || dictation?.busy) return;
     setDraft(text, text.length);
     void send();
-  }, error => { banner.hidden = false; banner.textContent = String(error); });
+  }, error => { banner.hidden = false; banner.textContent = errorText(error); });
   prompts.mount(card);
   c.append(mentionHost, hintEl, card);
 

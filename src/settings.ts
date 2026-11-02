@@ -35,6 +35,7 @@ import chatsIcon from "../third_party/phosphor/web/chats.svg?url";
 import sparkleIcon from "../third_party/phosphor/web/sparkle-bold.svg?url";
 import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
+import { errorText } from "./errors";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -83,7 +84,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let reconnectButton: HTMLButtonElement | null = null, reach: HTMLElement | null = null;
   let reconnectNote: HTMLElement | null = null;
   let openDialog: HTMLDialogElement | null = null;
-  const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
+  const report = (error: unknown) => { message.textContent = errorText(error); message.hidden = false; };
   let settingsToken = "";
   const accountSummary = el("span", "settings-row-value"), guestSummary = el("span", "settings-row-value"), notificationSummary = el("span", "settings-row-value");
   const headers: Partial<Record<Page, { text: string; warn: boolean }>> = {};

@@ -1,6 +1,7 @@
 import { Desk } from "./mygo";
 import type { PeerSummary, SavedMachineStatus } from "./mygo";
 import { guestOwnerName } from "./guestInviteModel";
+import { errorText } from "./errors";
 
 type Machine = { alias: string; label: string };
 type Grant = { terminal_id?: string; agent_name?: string };
@@ -65,7 +66,7 @@ export class GuestSettings {
     const token = this.token, at = ++this.generation;
     const results = await Promise.all(this.machines.map(async machine => {
       try { return { ...JSON.parse(await Desk.settingsGuestMachine(token, machine.alias)), machine } as Result; }
-      catch (error) { return { machine, error: String(error) } as Result; }
+      catch (error) { return { machine, error: errorText(error) } as Result; }
     }));
     if (token !== this.token || at !== this.generation) return;
     this.results = results; this.loaded = true; this.render();

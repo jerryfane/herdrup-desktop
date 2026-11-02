@@ -1,5 +1,6 @@
 import { Desk } from "./mygo";
 import type { NotificationSettings, NotificationPreferences } from "./mygo";
+import { errorText } from "./errors";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
@@ -46,7 +47,7 @@ export class NotificationsSettings {
     test.onclick = async () => {
       test.disabled = true;
       try { await Desk.testNotification(); this.status.textContent = "Test sent to the desktop service. Check your system's notification centre; delivery does not prove a banner was shown."; }
-      catch (error) { this.status.textContent = String(error); }
+      catch (error) { this.status.textContent = errorText(error); }
       finally { test.disabled = !this.state?.supported; }
     };
     card.append(test);

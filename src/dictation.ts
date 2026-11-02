@@ -1,6 +1,7 @@
 import { Dictation, events } from "./mygo";
 import { composerGlyph } from "./composer";
 import "./dictation.css";
+import { errorText } from "./errors";
 
 // Serialize ownership changes across composers. A new capture cannot start until
 // the previous helper has exited and released its microphone.
@@ -68,7 +69,7 @@ export class ComposerDictation {
       if (this.token !== token || this.disposed) return;
       try { await Dictation.start(token, navigator.language || "en"); }
       catch (error) {
-        if (this.token === token && !this.disposed) { this.stop(); this.showError(String(error)); }
+        if (this.token === token && !this.disposed) { this.stop(); this.showError(errorText(error)); }
       }
     });
   }
@@ -81,7 +82,7 @@ export class ComposerDictation {
     this.render();
     enqueue(async () => {
       try { await Dictation.stop(token); }
-      catch (error) { if (!this.disposed) this.showError(String(error)); }
+      catch (error) { if (!this.disposed) this.showError(errorText(error)); }
     });
   }
   private render(notify = true) {

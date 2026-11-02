@@ -13,6 +13,7 @@ import {
   type TransferAgent, type TransferInfo,
 } from "./agentActionsModel";
 import "./agentActions.css";
+import { errorText } from "./errors";
 
 /** What the sheets borrow from the Agents list (main.ts). */
 export interface AgentActionDeps {
@@ -36,7 +37,7 @@ function button(text: string, cls: string, run: () => void) {
 }
 /** A failed Desk call's text: mygo rejects with a CallError whose message
  * is Go's error. */
-const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
+const failure = errorText;
 
 /** herdrup's roster perform() (HerdrApp.swift 2249-2257) discloses a failed
  * action as "couldn't <verb> <title>: <error>"; the desktop shows it as the

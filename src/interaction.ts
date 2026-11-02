@@ -31,6 +31,7 @@ import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
 import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
+import { errorText } from "./errors";
 
 const noteStyles: Record<string, { label: string; symbol: string; icon?: string }> = {
  gitmoot: { label: "Gitmoot", symbol: "envelope", icon: envelopeIcon },
@@ -219,7 +220,7 @@ class Detail {
  prompts = new SavedPromptsMenu(text => {
   if (this.disposed || this.sending || this.dictation.busy) return;
   this.input.value = text; this.input.dispatchEvent(new Event("input")); void this.sendPrompt();
- }, error => { this.status.textContent = String(error); });
+ }, error => { this.status.textContent = errorText(error); });
  sending = false;
  attachments: GramAttachment[] = [];
  attachmentStrip = el("div", "gstrip pane-attachments");
@@ -275,7 +276,7 @@ class Detail {
    }
    catch(e) {
     if (batch !== undefined) prediction?.acked(batch, true);
-    if (streamID === this.terminalID && !this.disposed) { this.inputFailed = true; this.status.textContent = String(e) + " Reconnect before typing again."; }
+    if (streamID === this.terminalID && !this.disposed) { this.inputFailed = true; this.status.textContent = errorText(e) + " Reconnect before typing again."; }
    }
   });
  }
@@ -345,7 +346,9 @@ class Detail {
   modes.append(this.chatButton, this.terminalButton);
   modes.hidden = true;
   if (this.disposed) return;
-  root.replaceChildren(bar, modes, this.status, this.body);
+  // The note sits above the key row and composer, as herdrup's actionNote (HerdrApp.swift 5849-5855).
+  root.replaceChildren(bar, modes, this.body);
+  this.body.append(this.status);
   try {
    const view = await (this.plainTerminal ? Desk.openTerminalView(this.target, this.token) : Desk.openAgentView(this.target, this.token));
    if (this.disposed) { await Desk.closeAgentView(this.token); return; }
@@ -363,11 +366,11 @@ class Detail {
     modes.replaceChildren(...(chatAvailable ? [this.chatButton] : []), this.terminalButton, gram);
    }
    await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal");
-  } catch (e) { if (!this.disposed) this.status.textContent = String(e); }
+  } catch (e) { if (!this.disposed) this.status.textContent = errorText(e); }
  }
  changeTextSize(surface: TextSurface, delta: number | "reset") {
   try { changeTextSize(surface, delta); }
-  catch (error) { this.status.textContent = String(error); }
+  catch (error) { this.status.textContent = errorText(error); }
  }
  showPaneMenu() {
   const view = this.view;
@@ -376,7 +379,7 @@ class Detail {
    paneID: view.paneID, plain: this.plainTerminal,
    hasSelection: this.mode === "terminal" && !!this.terminal?.hasSelection(),
    canShare: !this.plainTerminal && !view.guest,
-  }).catch(error => { if (!this.disposed) this.status.textContent = String(error); });
+  }).catch(error => { if (!this.disposed) this.status.textContent = errorText(error); });
  }
  /** Carries out the ••• item Go reports (HerdrApp.swift 6227-6281). */
  choosePaneAction(action: string) {
@@ -385,7 +388,7 @@ class Detail {
   switch (action) {
    case "copy-screen": case "copy-recent":
     // PaneHeaderControls.swift 80-101: agent.read (visible / recent) onto the pasteboard.
-    void Desk.readAgentText(this.token, action === "copy-recent").then(text => { if (!this.disposed) return Desk.gramCopyText(text); }).catch(error => { if (!this.disposed) this.status.textContent = String(error); });
+    void Desk.readAgentText(this.token, action === "copy-recent").then(text => { if (!this.disposed) return Desk.gramCopyText(text); }).catch(error => { if (!this.disposed) this.status.textContent = errorText(error); });
     break;
    case "copy-selection": void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); break;
    // Section "Text size" (PaneHeaderControls.swift 105-119).
@@ -603,12 +606,12 @@ class Detail {
   // SearchAddon decorations require xterm's proposed decoration API.
   const term = new Terminal({ fontFamily: styles.getPropertyValue("--font-machine"), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme });
   this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false;
-  term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = String(e); }); } };
+  term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = errorText(e); }); } };
   term.loadAddon(this.fit); term.loadAddon(this.search);
   this.search.onDidChangeResults(result => {
    if (this.mode === "terminal" && this.findOpen) this.findCount.textContent = result.resultCount ? `${result.resultIndex + 1} of ${result.resultCount}` : "No matches";
   });
-  term.loadAddon(new WebLinksAddon((_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = String(e); }); }));
+  term.loadAddon(new WebLinksAddon((_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = errorText(e); }); }));
   term.open(canvas);
   this.prediction = new TerminalPrediction(term, this.target.machineID);
   const armHistory = () => { this.historyArmed = true; this.updateHistoryPaging(true); };
@@ -634,13 +637,13 @@ class Detail {
    if (this.disposed || generation !== this.generation || streamID !== this.terminalID || !this.terminalReady || !canvas.clientWidth) return;
    this.fit?.fit();
    this.updateHistoryPaging();
-   void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => { if (generation === this.generation && streamID === this.terminalID) this.status.textContent = "Resize: " + String(e); });
+   void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => { if (generation === this.generation && streamID === this.terminalID) this.status.textContent = "Resize: " + errorText(e); });
   };
   this.fitTerminal = fit;
   this.resize = new ResizeObserver(() => { clearTimeout(this.resizeTimer); this.resizeTimer = window.setTimeout(fit, 120); });
   this.resize.observe(canvas);
   try { await Desk.startTerminal(this.token, streamID); if (generation !== this.generation || streamID !== this.terminalID || this.disposed) return; this.terminalReady = true; fit(); if (this.mode === "terminal") term.focus(); }
-  catch(e) { if (generation === this.generation && streamID === this.terminalID && !this.disposed) this.status.textContent = String(e); }
+  catch(e) { if (generation === this.generation && streamID === this.terminalID && !this.disposed) this.status.textContent = errorText(e); }
  }
  frame(event: { streamID: string; frame?: ByteFrame; error?: string }) {
   if (!this.terminal || event.streamID !== this.terminalID) return;
@@ -663,7 +666,7 @@ class Detail {
    }
    else if (f.frame === "resize" && f.cols && f.rows) this.terminal.resize(f.cols, f.rows);
    else if (f.frame === "exited") { this.prediction?.reset(); this.status.textContent = "Pane exited."; this.terminalReady = false; }
-  } catch(e) { this.prediction?.reset(); this.status.textContent = "Invalid terminal frame: " + String(e); this.terminalReady = false; }
+  } catch(e) { this.prediction?.reset(); this.status.textContent = "Invalid terminal frame: " + errorText(e); this.terminalReady = false; }
   this.updateHistoryPaging();
  }
  updateHistoryPaging(schedule = false) {
@@ -695,14 +698,14 @@ class Detail {
    if (inserted === null) return;
    this.historyCursor = inserted === 0 && page.history_b64 ? null : page.cursor ?? null;
   } catch(error) {
-   if (current()) { this.status.textContent = `Earlier output: ${String(error)}`; this.historyRetryAt = Date.now() + 2000; }
+   if (current()) { this.status.textContent = `Earlier output: ${errorText(error)}`; this.historyRetryAt = Date.now() + 2000; }
   } finally {
    if (request === this.historyRequest) { this.historyLoading = false; this.updateHistoryPaging(true); }
   }
  }
  renderAttachments() {
   this.attachmentStrip.hidden = this.attachments.length === 0;
-  const failed = (error: unknown) => { if (!this.disposed) this.status.textContent = String(error); };
+  const failed = (error: unknown) => { if (!this.disposed) this.status.textContent = errorText(error); };
   this.attachmentStrip.replaceChildren(...this.attachments.map(file => composerAttachment(file, this.sending,
    () => { void Desk.paneRemoveAttachment(this.token, file.path).catch(failed); },
    () => { void Desk.paneRetryAttachment(this.token, file.path).catch(failed); })));
@@ -712,7 +715,7 @@ class Detail {
   if (this.disposed || this.sending || this.picking || !this.token) return;
   this.picking = true; this.attach.disabled = true;
   try { if (paths) await Desk.paneAttachFiles(this.token, paths); else await Desk.panePickFiles(this.token); }
-  catch(error) { if (!this.disposed) this.status.textContent = String(error); }
+  catch(error) { if (!this.disposed) this.status.textContent = errorText(error); }
   finally { this.picking = false; this.attach.disabled = this.sending; }
  }
  openChat(generation: number) {
@@ -732,7 +735,7 @@ class Detail {
   if (!this.plainTerminal) {
    this.stopFileDrop = composerFileDrop(composer, paths => { void this.pickFiles(paths); });
    this.stopClipboardPaste = composerClipboardPaste(this.input, () => Desk.panePasteClipboard(this.token), error => {
-    if (!this.disposed) this.status.textContent = String(error);
+    if (!this.disposed) this.status.textContent = errorText(error);
    });
   }
   this.mountKeys();
@@ -762,6 +765,8 @@ class Detail {
    this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
    const composerHeight = composer.offsetHeight + 12;
    this.body.style.setProperty("--composer-height", `${composerHeight}px`);
+   // The note takes layout height, as in herdrup (it is part of bottomChromeHeight there).
+   this.body.style.setProperty("--note-height", `${this.status.offsetHeight}px`);
    this.fitPromptBubbles();
   };
   this.editor = new ComposerEditor(composer, this.input, layout);
@@ -770,6 +775,7 @@ class Detail {
   this.composerResize.observe(composer);
   this.composerResize.observe(this.body);
   this.composerResize.observe(this.chatSurface);
+  this.composerResize.observe(this.status);
   this.chatFollowing = true;
   this.chatJump.className = "chat-jump-latest"; this.chatJump.hidden = true;
   this.chatJump.setAttribute("aria-label", "Jump to latest message"); this.chatJump.title = "Jump to latest message";
@@ -799,7 +805,7 @@ class Detail {
    this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page;
    for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
    this.drawChat();
-  } catch(e) { if (!this.disposed && generation === this.generation && poll === this.chatPoll) this.status.textContent = "Chat: " + String(e) + " You can switch to Terminal."; }
+  } catch(e) { if (!this.disposed && generation === this.generation && poll === this.chatPoll) this.status.textContent = "Chat: " + errorText(e) + " You can switch to Terminal."; }
   finally { if (!this.disposed && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, 1500); }
  }
  async loadEarlier(generation: number) {
@@ -813,7 +819,7 @@ class Detail {
    this.chatFollowing = false;
    this.entries = mergeTranscript(this.entries, page.entries, true); this.oldestCursor = page.before;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
-  } catch(e) { this.status.textContent = String(e); }
+  } catch(e) { this.status.textContent = errorText(e); }
  }
  drawChat(follow = true) {
   const opened = new Set([...this.transcript.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d => d.dataset.id));
@@ -984,7 +990,7 @@ class Detail {
     if (older) messages.scrollTop += messages.scrollHeight - height;
     else if (follow) messages.scrollTop = messages.scrollHeight;
     notice.textContent = "";
-   } catch(error) { if (open) notice.textContent = String(error); }
+   } catch(error) { if (open) notice.textContent = errorText(error); }
    finally { busy = false; earlier.disabled = false; if (open && !this.disposed) timer = window.setTimeout(() => { void load(false); }, 1500); }
   };
   dialog.addEventListener("close", () => { open = false; clearTimeout(timer); dialog.remove(); if (this.subagentSheet === dialog) this.subagentSheet = null; }, { once: true });
@@ -1147,7 +1153,7 @@ class Detail {
   const open = () => {
    const id = crypto.randomUUID(); this.messageMenu = { id, text, markdown };
    void Desk.chatMenu(id, offersMarkdown).catch(error => {
-    if (!this.disposed && this.messageMenu?.id === id) { this.messageMenu = null; this.status.textContent = String(error); }
+    if (!this.disposed && this.messageMenu?.id === id) { this.messageMenu = null; this.status.textContent = errorText(error); }
    });
   };
   element.addEventListener("contextmenu", event => { event.preventDefault(); open(); });
@@ -1229,7 +1235,7 @@ class Detail {
    if (!this.disposed) {
     this.unsentPrompt = ""; this.saveDraft();
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }
-    this.status.textContent = String(e);
+    this.status.textContent = errorText(e);
    }
   }
   finally {

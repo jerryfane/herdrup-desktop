@@ -19,6 +19,7 @@ const setup = {
 };
 import qrIcon from "../third_party/phosphor/web/qr-code.svg?url";
 import clipboardIcon from "../third_party/phosphor/web/clipboard.svg?url";
+import { errorText } from "./errors";
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text = ""): HTMLElementTagNameMap[K] {
@@ -41,7 +42,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const rows = element("div", "host-home-rows");
  section.append(element("h2", "", "SAVED"), rows);
  const message = element("p", "host-home-message"); message.setAttribute("role", "status"); message.hidden = true;
- const report = (error: unknown) => { message.textContent = String(error); message.hidden = false; };
+ const report = (error: unknown) => { message.textContent = errorText(error); message.hidden = false; };
  const sheet = element("dialog", "host-editor");
  const sheetHeader = element("header", "host-editor-header");
  const title = element("strong", "");

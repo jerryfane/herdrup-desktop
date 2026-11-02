@@ -2,6 +2,7 @@ import { Desk, events } from "./mygo";
 import type { AccountLoginState } from "./mygo";
 import { agentGuideFooter, type Glyph } from "./copyForAgent";
 import { accountsAgentPrompt } from "./agentPrompts";
+import { errorText } from "./errors";
 
 type Account = {
   id: string; kind: string; label: string; config_dir: string; email?: string; active: boolean;
@@ -54,7 +55,7 @@ export class AccountSettings {
   private async refresh() {
     const token = this.token;
     try { const accounts = accountsFrom(await Desk.settingsAccounts(token)); if (this.token === token) { this.accounts = accounts; this.error = ""; } }
-    catch (error) { if (this.token === token) this.error = String(error); }
+    catch (error) { if (this.token === token) this.error = errorText(error); }
     finally { if (this.token === token) { this.loading = false; this.render(); } }
   }
   private render() {
@@ -170,7 +171,7 @@ export class AccountSettings {
   }
   private login(account: Account) {
     const token = this.token, loginID = crypto.randomUUID(), modal = this.dialog(`Log in · ${account.label}`);
-    const status = el("p", "", "Getting a sign-in link…"), link = button("Open sign-in link", () => { if (current?.url) void Desk.openExternalURL(current.url).catch(error => { status.textContent = String(error); }); });
+    const status = el("p", "", "Getting a sign-in link…"), link = button("Open sign-in link", () => { if (current?.url) void Desk.openExternalURL(current.url).catch(error => { status.textContent = errorText(error); }); });
     link.disabled = true;
     const code = el("input"); code.type = "password"; code.autocomplete = "off"; code.placeholder = "Paste authorization code"; code.setAttribute("aria-label", "Authorization code");
     const form = el("form", "settings-account-form"), submit = el("button", "", "Sign in"); submit.type = "submit"; submit.disabled = true;
@@ -187,7 +188,7 @@ export class AccountSettings {
       try {
         const state = await Desk.pollAccountLogin(token, loginID); if (!valid() || at !== serial) return; update(state);
         if (state.phase === "signedIn") { code.value = ""; timer = window.setTimeout(() => { if (valid()) { modal.close(); void this.refresh(); } }, 1600); return; }
-      } catch (error) { if (valid() && at === serial) status.textContent = String(error); }
+      } catch (error) { if (valid() && at === serial) status.textContent = errorText(error); }
       if (valid() && at === serial) timer = window.setTimeout(() => { void poll(at); }, 4000);
     };
     const start = async (setup: boolean) => {
@@ -195,14 +196,14 @@ export class AccountSettings {
       starting = true;
       const at = ++serial; window.clearTimeout(timer); submit.disabled = true; link.disabled = true; code.value = ""; status.textContent = "Getting a sign-in link…";
       try { const state = await Desk.startAccountLogin(token, loginID, account.id, setup); if (valid() && at === serial) { update(state); void poll(at); } }
-      catch (error) { if (valid() && at === serial) status.textContent = String(error); }
+      catch (error) { if (valid() && at === serial) status.textContent = errorText(error); }
       finally { starting = false; }
     };
     form.onsubmit = event => {
       event.preventDefault(); if (submit.disabled || !code.value.trim()) return;
       sending = true; submit.disabled = true; const at = ++serial; window.clearTimeout(timer);
       void Desk.submitAccountLogin(token, loginID, code.value).then(() => { if (valid() && at === serial && current) update({ ...current, phase: "submitting", message: "Signing you in…" }); })
-        .catch(error => { if (valid() && at === serial) status.textContent = String(error); })
+        .catch(error => { if (valid() && at === serial) status.textContent = errorText(error); })
         .finally(() => { sending = false; if (valid() && at === serial && current) { submit.disabled = current.phase === "submitting" || current.phase === "signedIn"; void poll(at); } });
     };
     const setup = button("Use setup token instead", () => {
