@@ -71,6 +71,10 @@ export const MOTIONS: Record<string, Motion> = {
   settle: eased(0.2, "ease-out"),
   // ConversationColumn.swift 213: the column's resize handles appearing.
   handle: eased(0.12, "ease-out"),
+  // ChatScrollPosition.swift 54: the chat jump button's glide to the tail,
+  // UIView.animate(withDuration: 0.3, options: .curveEaseOut). Drawn by glideChatToLatest
+  // (interaction.ts) a frame at a time along easeOut, as scrollTop has no CSS transition.
+  glide: eased(0.3, "ease-out"),
 };
 
 /** Sets every motion's CSS variables on `root`. */
@@ -85,6 +89,20 @@ export function applyMotions(root: HTMLElement, reduce: boolean) {
 export function motionSeconds(name: string): number {
   const value = getComputedStyle(document.documentElement).getPropertyValue(`--motion-${name}-duration`).trim();
   return value.endsWith("ms") ? parseFloat(value) / 1000 : parseFloat(value) || 0;
+}
+
+/** CSS `ease-out`, UIKit's `.curveEaseOut`: cubic-bezier(0, 0, 0.58, 1), the progress at time
+ *  fraction `x` (0 to 1). For motion drawn frame by frame, where no CSS curve applies. */
+export function easeOut(x: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  // x(t) = 3(1-t)t²·0.58 + t³ rises monotonically, so bisect for the t that gives x.
+  let lo = 0, hi = 1, t = x;
+  for (let i = 0; i < 40; i++) {
+    t = (lo + hi) / 2;
+    if (3 * (1 - t) * t * t * 0.58 + t * t * t < x) lo = t; else hi = t;
+  }
+  return 3 * (1 - t) * t * t + t * t * t;
 }
 
 /** Animates `el` from `from` px tall to the height it has now, as SwiftUI animates a view
