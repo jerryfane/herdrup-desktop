@@ -213,8 +213,6 @@
 .gcode-copy { display: flex; align-items: center; gap: 4px; padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
 .gcode-copy-glyph { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
 .gcode-copy.copied, .gcode-copy-glyph.copied { color: var(--status-done); }
-/* Outside .gram (Chat, the agent page's composer) these buttons drop the global button fill. */
-.gcode-copy, .gcode-copy-glyph, .gchip-remove { background: none; border: 0; border-radius: 0; cursor: default; }
 
 /* File cards. */
 .gfile { position: relative; }
