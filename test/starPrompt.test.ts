@@ -48,4 +48,11 @@ describe("star prompt", () => {
     expect(s.values.get("starPrompt.sentPrompts")).toBe(String(STAR_AFTER_SENDS));
     expect(changes).toBe(1);
   });
+
+  test("unreachable storage never fails a delivered send or the list (issue #80)", () => {
+    // bun has no localStorage: reaching it throws, as a SecurityError does in a webview.
+    expect(() => recordOwnerSend()).not.toThrow();
+    expect(showsStarPrompt(false)).toBe(false);
+    expect(sentPrompts()).toBe(0);
+  });
 });
