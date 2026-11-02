@@ -65,8 +65,11 @@ func (d *Desk) guestIdentity() (guest.Identity, error) {
 	return guest.LoadIdentity(path)
 }
 
-func (d *Desk) InspectGuestInvitation(text string) (GuestInvitation, error) {
-	invite, err := guest.Parse(text, time.Now())
+// InspectGuestInvitation reads an invitation for review. A short link's sealed
+// invite is fetched from its relay first, so this can fail with
+// guest.ErrInviteRevoked or the retryable guest.ErrInviteUnreachable.
+func (d *Desk) InspectGuestInvitation(ctx context.Context, text string) (GuestInvitation, error) {
+	invite, err := guest.Resolve(ctx, text, time.Now(), d.inviteTransport)
 	if err != nil {
 		return GuestInvitation{}, err
 	}
@@ -80,7 +83,7 @@ func (d *Desk) SharedConnections() ([]guest.Access, error) { return d.guestStore
 func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Access, error) {
 	d.guestAcceptMu.Lock()
 	defer d.guestAcceptMu.Unlock()
-	invite, err := guest.Parse(text, time.Now())
+	invite, err := guest.Resolve(ctx, text, time.Now(), d.inviteTransport)
 	if err != nil {
 		return guest.Access{}, err
 	}

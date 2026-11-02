@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -116,7 +117,10 @@ type Desk struct {
 	pairingMu     sync.Mutex
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
-	pins          *bridge.FilePinStore
+	// inviteTransport fetches short invite links' sealed invites; nil is
+	// http.DefaultTransport. Replaced in tests.
+	inviteTransport http.RoundTripper
+	pins            *bridge.FilePinStore
 
 	mu                 sync.Mutex
 	pendingGuestInvite string

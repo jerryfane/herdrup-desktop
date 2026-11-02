@@ -1180,6 +1180,11 @@ export const Desk = {
   hasGuestInvitationClipboardText(): Promise<boolean> {
     return call("Desk.HasGuestInvitationClipboardText");
   },
+  /**
+   * InspectGuestInvitation reads an invitation for review. A short link's sealed
+   * invite is fetched from its relay first, so this can fail with
+   * guest.ErrInviteRevoked or the retryable guest.ErrInviteUnreachable.
+   */
   inspectGuestInvitation(text: string): Promise<GuestInvitation> {
     return call("Desk.InspectGuestInvitation", text);
   },
