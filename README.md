@@ -481,6 +481,16 @@ machine asks for credentials in the connection form. With a tray, closing the wi
 hides it there; quit from the tray or the menu bar (App, File, Edit and Window). On Linux the tray needs
 `libayatana-appindicator3-1`; without it the app runs without one and closing the window quits.
 
+Right-click an agent row for herdrup's agent menu: Stop agent, Rename, Avatar…, Star, Move to
+folder, Restart agent, Switch harness, Swap subscription and Archive (native, with SF Symbol icons on
+macOS). Rename opens herdrup's sheet with the "Will be saved as" preview; Restart and Swap ask first;
+Avatar… offers Use default, the twelve mascots and a photo moved and scaled to a 256 px JPEG; Switch
+harness prepares, reviews and confirms a session transfer. The agent page's ••• is the same native
+menu as herdrup's: Copy screen, Copy recent output, Copy selection, Text size, Share with someone,
+Avatar…, Mute notifications and Close agent. A muted agent shows a struck bell in place of the dots
+and raises no desktop notification; the mute is this device's, kept per pane id as `mutedPanes` in
+`notifications.json`.
+
 ### herdr API types
 
 `internal/herdrapi` holds herdr's API on the wire. `types_gen.go` is generated from herdr's schema

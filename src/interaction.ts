@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { TerminalPrediction } from "./terminalPrediction";
 import terminalTheme from "../third_party/herdrup/terminal-theme.json";
 import { openGuestShare } from "./guestShare";
+import { openAvatarSheet } from "./agentActions";
 import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
@@ -25,6 +26,7 @@ import { defaultChatMode } from "./chatPreference";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
+import bellSlashIcon from "../third_party/phosphor/web/bell-slash.svg?url";
 import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
@@ -61,6 +63,7 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
   if (event.note) current.status.textContent = event.note;
  });
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
+ events.paneActionChosen.on(event => { if (current?.view?.paneID === event.paneID && !current.disposed) current.choosePaneAction(event.action); });
  events.stateChanged.on(state => {
   const view = current?.view, access = state.guest?.access;
   if (!current || !view?.guest || !access || current.target.machineID !== `guest:${access.endpoint.hostID}/${access.guestID}`) return;
@@ -145,8 +148,7 @@ class Detail {
  findToggle: HTMLButtonElement | null = null;
  findIndex = 0;
  findMatches: HTMLElement[][] = [];
- actions = el("div", "pane-actions");
- outsideActions = (event: PointerEvent) => { if (!(event.target instanceof Node) || !this.actions.contains(event.target)) this.actions.hidden = true; };
+ more: HTMLButtonElement | null = null;
  status = el("div", "interaction-status");
  body = el("div", "interaction-body");
  column = new ConversationColumn(this.body, () => this.input.dispatchEvent(new Event("input")));
@@ -322,34 +324,12 @@ class Detail {
   find.className = "pane-find-toggle"; find.setAttribute("aria-label", "Search"); find.setAttribute("aria-pressed", "false");
   find.append(await symbol("magnifyingglass", 15, "semibold"));
   this.findToggle = find;
-  const more = button("", () => { this.actions.hidden = !this.actions.hidden; });
+  // The ••• menu (HerdrApp.swift 6227-6281, PaneHeaderControls.swift 80-119) is Go's native
+  // menu (Desk.paneMenu); the item chosen comes back as events.paneActionChosen.
+  const more = button("", () => this.showPaneMenu());
   more.setAttribute("aria-label", this.plainTerminal ? "Terminal actions" : "Agent actions");
-  more.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><g fill="currentColor"><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/></g></svg>';
-  more.onpointerdown = event => event.stopPropagation();
+  this.more = more; void this.showMuted(false);
   capsule.append(find, refresh, more);
-  this.actions.hidden = true;
-  this.actions.setAttribute("role", "menu");
-  for (const [label, recent] of [["Copy screen", false], ["Copy recent output", true]] as const) {
-   this.actions.append(button(label, () => {
-    this.actions.hidden = true;
-    void Desk.readAgentText(this.token, recent).then(text => { if (!this.disposed) return Desk.gramCopyText(text); }).catch(error => { if (!this.disposed) this.status.textContent = String(error); });
-   }));
-  }
-  this.actions.append(button("Copy selection", () => { this.actions.hidden = true; void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); }));
-  const share = button("Share with someone", () => {
-   this.actions.hidden = true;
-   if (!this.view || this.view.guest || this.disposed) return;
-   this.guestShareSheet?.close();
-   this.guestShareSheet = openGuestShare(this.token, this.view.name);
-  });
-  if (!this.plainTerminal) this.actions.append(share);
-  this.actions.append(el("div", "pane-action-heading", "Text size"));
-  for (const [label, delta] of [["Increase", 1], ["Decrease", -1], ["Reset", "reset"]] as const) {
-   this.actions.append(button(label, () => {
-    this.actions.hidden = true;
-    this.changeTextSize(this.mode, delta);
-   }));
-  }
   this.findInput.type = "search"; this.findInput.placeholder = "Find";
   this.findInput.oninput = () => this.updateFind(true);
   this.findInput.onkeydown = event => {
@@ -360,19 +340,18 @@ class Detail {
   const next = button("", () => this.updateFind(false, 1)); next.setAttribute("aria-label", "Next match"); next.append(await symbol("chevron.down", 12, "semibold"));
   this.findBar.append(this.findInput, this.findCount, previous, next); this.findBar.hidden = true;
   this.titleBlock.append(this.title, this.stateLine);
-  bar.append(back, this.titleBlock, this.findBar, capsule, this.actions);
+  bar.append(back, this.titleBlock, this.findBar, capsule);
   const modes = el("div", "chat-terminal-switch");
   modes.append(this.chatButton, this.terminalButton);
   modes.hidden = true;
   if (this.disposed) return;
-  document.addEventListener("pointerdown", this.outsideActions);
   root.replaceChildren(bar, modes, this.status, this.body);
   try {
    const view = await (this.plainTerminal ? Desk.openTerminalView(this.target, this.token) : Desk.openAgentView(this.target, this.token));
    if (this.disposed) { await Desk.closeAgentView(this.token); return; }
    this.view = view; this.title.textContent = view.heading;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
-   share.hidden = view.guest;
+   void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
    const chatAvailable = /^omp(?:$| |-)/i.test(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
    if (this.disposed) return;
    this.attach.hidden = view.guest && !view.guestGram;
@@ -389,6 +368,61 @@ class Detail {
  changeTextSize(surface: TextSurface, delta: number | "reset") {
   try { changeTextSize(surface, delta); }
   catch (error) { this.status.textContent = String(error); }
+ }
+ showPaneMenu() {
+  const view = this.view;
+  if (!view || this.disposed) return;
+  void Desk.paneMenu({
+   paneID: view.paneID, plain: this.plainTerminal,
+   hasSelection: this.mode === "terminal" && !!this.terminal?.hasSelection(),
+   canShare: !this.plainTerminal && !view.guest,
+  }).catch(error => { if (!this.disposed) this.status.textContent = String(error); });
+ }
+ /** Carries out the ••• item Go reports (HerdrApp.swift 6227-6281). */
+ choosePaneAction(action: string) {
+  const view = this.view;
+  if (!view) return;
+  switch (action) {
+   case "copy-screen": case "copy-recent":
+    // PaneHeaderControls.swift 80-101: agent.read (visible / recent) onto the pasteboard.
+    void Desk.readAgentText(this.token, action === "copy-recent").then(text => { if (!this.disposed) return Desk.gramCopyText(text); }).catch(error => { if (!this.disposed) this.status.textContent = String(error); });
+    break;
+   case "copy-selection": void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); break;
+   // Section "Text size" (PaneHeaderControls.swift 105-119).
+   case "text-increase": this.changeTextSize(this.mode, 1); break;
+   case "text-decrease": this.changeTextSize(this.mode, -1); break;
+   case "text-reset": this.changeTextSize(this.mode, "reset"); break;
+   case "share":
+    if (view.guest) return;
+    this.guestShareSheet?.close();
+    this.guestShareSheet = openGuestShare(this.token, view.name);
+    break;
+   // AgentAvatarMenuButton → AgentAvatarSheet (AgentAvatarViews.swift 277-283; HerdrApp.swift 6252-6254).
+   case "avatar": openAvatarSheet(view.paneID, view.heading); break;
+   // Go has flipped the stored mute; the label follows (HerdrApp.swift 6255-6261).
+   case "mute": case "unmute": void this.showMuted(action === "mute"); break;
+   // Close agent: Go closed the pane; back to the agents list (HerdrApp.swift 6262-6269).
+   case "close": closeInteraction(true); document.getElementById("select")!.hidden = false; break;
+  }
+ }
+ /** PaneActionsMenuLabel (PaneHeaderControls.swift 66-77): an ellipsis, or a struck bell in
+  *  waiting while this pane's notifications are muted, 15 pt medium in a 40×44 box. */
+ async showMuted(muted: boolean) {
+  const more = this.more;
+  if (!more) return;
+  more.classList.toggle("muted", muted);
+  if (!muted) {
+   more.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><g fill="currentColor"><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/></g></svg>';
+   return;
+  }
+  if (navigator.platform.startsWith("Mac")) {
+   const glyph = await symbol("bell.slash", 15, "medium");
+   if (more.classList.contains("muted")) more.replaceChildren(glyph);
+   return;
+  }
+  const glyph = el("span", "pane-muted-glyph");
+  glyph.style.setProperty("--muted-icon", `url("${bellSlashIcon}")`);
+  more.replaceChildren(glyph);
  }
  resizeText() {
   this.prediction?.reset();
@@ -487,7 +521,6 @@ class Detail {
  stopSurface() {
   closeWriter(); this.generation++;
   clearInterval(this.statusTimer);
-  document.removeEventListener("pointerdown", this.outsideActions);
   this.dismissChatSheets();
   this.editor?.dispose(); this.editor = null;
   this.stopFileDrop?.(); this.stopFileDrop = null;
