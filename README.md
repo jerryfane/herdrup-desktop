@@ -671,7 +671,7 @@ The existing Linux and Windows smoke jobs also compile the pinned offline speech
 helper and package its model and licences. That checks the platform toolchain and
 bundle contents; the board screenshot is not microphone or dictation acceptance.
 
-The current pin is Swift merge `9845ecf0743c7dce8073dc4a00db23b1fec069a8`.
+The current pin is Swift merge `edb64db55a8e73a1a2a80c307210873b3ffca459` (#594).
 The reference manifests retain each screenshot's producing head; that delivery
 commit is not a claim that the desktop matches all 64 native reference images.
 

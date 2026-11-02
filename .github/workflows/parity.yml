@@ -10,7 +10,7 @@ on:
     inputs:
       references:
         description: Branch, tag or commit of jerryfane/herdrup with the references (default the pinned commit)
-        default: 9845ecf0743c7dce8073dc4a00db23b1fec069a8
+        default: edb64db55a8e73a1a2a80c307210873b3ffca459
   push:
     branches: ['feat/parity-*']
 
@@ -22,9 +22,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Accepted reference delivery: herdrup #580's merge commit. Each manifest
-  # retains the source head that produced its original screenshot bytes.
-  REFERENCES: ${{ inputs.references || '9845ecf0743c7dce8073dc4a00db23b1fec069a8' }}
+  # Accepted reference delivery: herdrup #594's merge commit (federation
+  # circles and violet actions). Each manifest retains the source head that
+  # produced its original screenshot bytes.
+  REFERENCES: ${{ inputs.references || 'edb64db55a8e73a1a2a80c307210873b3ffca459' }}
   # refdiff thresholds: a pixel differs when a channel is more than
   # PARITY_TOL (0-255) off; a capture fails when more than
   # PARITY_MAX_OVER_PCT percent of its compared pixels differ, or when
