@@ -4,8 +4,36 @@ import (
 	"context"
 
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
+	"github.com/jerryfane/herdrup-desktop/internal/guest"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
+
+// guestGramLister is the guest transport's history read.
+type guestGramLister interface {
+	GramList(ctx context.Context, limit uint64, before *string) (guest.GramPage, error)
+}
+
+// guestGramPage reads the guest history asked for. The host has no
+// unread_only filter for guests, so an unread-only ask (the badge, Mark all
+// read) walks every older page: the newest page alone misses older unread.
+func guestGramPage(ctx context.Context, lister guestGramLister, limit uint64, params herdrapi.GramListParams) (guest.GramPage, error) {
+	page, err := lister.GramList(ctx, limit, params.BeforeID)
+	if err != nil || !params.UnreadOnly {
+		return page, err
+	}
+	for next := page; next.HasMore && len(next.Messages) > 0; {
+		before := next.Messages[len(next.Messages)-1].ID
+		if next, err = lister.GramList(ctx, limit, &before); err != nil {
+			return guest.GramPage{}, err
+		}
+		if len(next.Messages) > 0 && next.Messages[len(next.Messages)-1].ID == before {
+			break // a cursor that does not advance would never end
+		}
+		page.Messages = append(page.Messages, next.Messages...)
+		page.HasMore = next.HasMore
+	}
+	return page, nil
+}
 
 // gramAnswer keeps the guest wire contract separate from owner API results.
 // Like Swift GuestGramMessage.gramMessage(agent:), it projects the guest's
@@ -23,7 +51,7 @@ func (d *Desk) gramAnswer(ctx context.Context, l *link, params herdrapi.GramList
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	page, err := l.guest.GramList(ctx, limit, params.BeforeID)
+	page, err := guestGramPage(ctx, l.guest, limit, params)
 	if err != nil {
 		return gramstore.Answer{}, err
 	}
