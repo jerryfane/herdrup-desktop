@@ -177,8 +177,15 @@ canvas MediaStream and an isolated TCP pairing endpoint; physical-camera capture
 and Windows/macOS camera acceptance are not verified.
 
 Guest invitations accept `herdrup://guest-invite#…` links, matching HTTPS relay
-links, or pasted invitation text. Review shows the owner, shared agent, guest name
-and this device's key fingerprint before any relay connection. Acceptance uses
+links, or pasted invitation text. A short link (`https://<relay>/i/<id><key>`, one
+34-character segment) names an invite the relay keeps encrypted: review first asks
+that link's own relay for `/v1/invite/<id>` (the id only; the key never leaves this
+device), with no redirects, a 2 KB limit and 15 seconds in all, then opens it
+(AES-128-GCM) and requires it to name that relay. A relay that no longer holds it
+reads “This invite has expired or was revoked.”; a relay that can't be reached asks
+to check the connection and try again, and Review retries the same link. Review
+shows the owner, shared agent, guest name and this device's key fingerprint before
+any guest session starts. Acceptance uses
 Noise IK over WebSocket, authenticates the host key from the invitation, and
 binds the grant to this installation's persistent X25519 identity. The private
 key stays in the app's private data directory; invitation bearer secrets are not

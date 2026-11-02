@@ -2,6 +2,7 @@ package guest
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -24,7 +25,7 @@ func TestInvitationOriginExpiryAndIdentityBoundaries(t *testing.T) {
 		return base64.RawURLEncoding.EncodeToString(raw)
 	}
 	for _, link := range []string{AppLinkPrefix + payload(), "https://relay.example/base/i/" + payload(), "https://relay.example/base/i#" + payload(), "Join my agent: " + AppLinkPrefix + payload() + " Thanks!"} {
-		invitation, err := Parse(link, now)
+		invitation, err := resolve(context.Background(), link, now, offline(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +34,7 @@ func TestInvitationOriginExpiryAndIdentityBoundaries(t *testing.T) {
 		}
 	}
 	for _, prefix := range []string{"https://evil.example/base/i/", "https://relay.example/other/i/", "http://relay.example/base/i/", "https://relay.example:444/base/i/"} {
-		if _, err := Parse(prefix+payload(), now); err == nil {
+		if _, err := resolve(context.Background(), prefix+payload(), now, offline(t)); err == nil {
 			t.Fatalf("untrusted origin/path accepted: %s", prefix)
 		}
 	}
@@ -43,13 +44,13 @@ func TestInvitationOriginExpiryAndIdentityBoundaries(t *testing.T) {
 	}{{"host_pub", encoded(16)}, {"secret", encoded(16)}, {"host_id", encoded(32)}, {"invite_id", encoded(32)}, {"relay", "http://public.example"}, {"guest_name", "-guest"}, {"owner_name", "Owner\nInjected"}, {"machine_label", strings.Repeat("x", 129)}} {
 		old := fields[change.key]
 		fields[change.key] = change.value
-		if _, err := Parse(AppLinkPrefix+payload(), now); err == nil {
+		if _, err := resolve(context.Background(), AppLinkPrefix+payload(), now, offline(t)); err == nil {
 			t.Fatalf("invalid %s accepted", change.key)
 		}
 		fields[change.key] = old
 	}
 	fields["expires_unix"] = now.Unix()
-	if _, err := Parse(AppLinkPrefix+payload(), now); !errors.Is(err, ErrExpired) {
+	if _, err := resolve(context.Background(), AppLinkPrefix+payload(), now, offline(t)); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expiry boundary: %v", err)
 	}
 }
