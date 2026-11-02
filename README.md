@@ -405,6 +405,10 @@ endpoint is not live) waits for the next start or focus; there is no retry loop.
 Turning the switch off ends a ping in flight and deletes the ID; turning it on
 makes a new one. Smoke builds, reference captures and tests send nothing unless
 `HERDRUP_USAGE_PING_URL` names a stub endpoint, which then replaces the relay.
+A Linux native-window check against a local stub saw one ping on start with the
+contract body, none on a same-day X focus change, `{"off":true}` and no ping after
+switching off, and a new ID pinged on the next day's focus after switching on.
+macOS and Windows pings are not verified.
 This is not complete Settings parity: additional preferences, daemon updates,
 native invite sending and full reference comparison remain.
 
