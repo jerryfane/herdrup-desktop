@@ -85,9 +85,34 @@ func (c *Client) AccountsRemove(ctx context.Context, id string) (herdrapi.Respon
 	return call[herdrapi.ResponseResultAccountsList](ctx, c, "accounts.remove", herdrapi.AccountsRemoveParams{ID: id})
 }
 
+// AgentRestart is agent.restart. An empty account is a plain restart and
+// omits "account" (herdrup HerdrClient.swift:1286-1319, encodeIfPresent);
+// any other account swaps the agent onto it.
 func (c *Client) AgentRestart(ctx context.Context, pane, account string) error {
-	_, err := call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.restart", herdrapi.AgentRestartParams{Target: pane, Account: &account})
+	p := herdrapi.AgentRestartParams{Target: pane}
+	if account != "" {
+		p.Account = &account
+	}
+	_, err := call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.restart", p)
 	return err
+}
+
+// AgentTransferSession is agent.transfer_session (capability
+// agent_session_transfer): a prepare, or with Confirm and TransferID the
+// confirmation (herdrup HerdrClient.swift:1326-1383).
+func (c *Client) AgentTransferSession(ctx context.Context, p herdrapi.AgentTransferSessionParams) (herdrapi.ResponseResultAgentInfo, error) {
+	return call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.transfer_session", p)
+}
+
+// AgentRename is agent.rename: sets the agent's name (herdrup
+// HerdrClient.swift:1385-1400).
+func (c *Client) AgentRename(ctx context.Context, target, name string) (herdrapi.ResponseResultAgentInfo, error) {
+	return call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.rename", herdrapi.AgentRenameParams{Target: target, Name: &name})
+}
+
+// AgentArchive is agent.archive (herdrup HerdrClient.swift:1524-1560).
+func (c *Client) AgentArchive(ctx context.Context, p herdrapi.AgentArchiveParams) (herdrapi.ResponseResultAgentInfo, error) {
+	return call[herdrapi.ResponseResultAgentInfo](ctx, c, "agent.archive", p)
 }
 
 func (c *Client) BackgroundPane(ctx context.Context) (string, error) {
