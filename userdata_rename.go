@@ -22,9 +22,13 @@ const formerAppName = "Herdrup"
 // is left as it is, and so is the former one.
 func moveFormerUserData(config, current string) error {
 	from, to := filepath.Join(config, formerAppName), filepath.Join(config, current)
+	machines := filepath.Join(to, "machines.json")
 	old, err := os.Stat(from)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		// Moved already, or never there: a key path still under the former
+		// folder can only mean a launch whose rewrite failed after the move
+		// (PR #100 review). Each launch repairs it; with none it changes nothing.
+		return movedKeyPaths(machines, from, to)
 	}
 	if err != nil || !old.IsDir() {
 		return err
@@ -46,7 +50,7 @@ func moveFormerUserData(config, current string) error {
 	if err := os.Rename(from, to); err != nil {
 		return err
 	}
-	return movedKeyPaths(filepath.Join(to, "machines.json"), from, to)
+	return movedKeyPaths(machines, from, to)
 }
 
 // movedKeyPaths points the saved machines whose private key the app keeps

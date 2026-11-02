@@ -133,3 +133,37 @@ func TestMovedUserDataKeepsPairedHostKeys(t *testing.T) {
 		t.Errorf("the user's own key path changed: %s", ms[1].KeyPath)
 	}
 }
+
+// A rewrite that fails after the move (here: its temporary file cannot be
+// written) must not strand the paired host for good: the next launch, which
+// finds no former folder to move, repairs the key path (PR #100 review).
+func TestFailedKeyPathRewriteIsRepairedNextLaunch(t *testing.T) {
+	config := t.TempDir()
+	if same, err := sameDir(config); err != nil || same {
+		t.Skipf("file system ignores case (%v)", err)
+	}
+	former, current := filepath.Join(config, "Herdrup"), filepath.Join(config, "herdrup")
+	paired := filepath.Join(former, "identities", "herdr-pair-abc.key")
+	write(t, paired, "PAIRED KEY")
+	data, _ := json.Marshal(map[string]any{"machines": []map[string]any{{"host": "h", "user": "u", "keyPath": paired, "paired": true}}})
+	write(t, filepath.Join(former, "machines.json"), string(data))
+	if err := os.MkdirAll(filepath.Join(former, "machines.json.tmp"), 0o755); err != nil {
+		t.Fatal(err) // moves with the folder and blocks the rewrite
+	}
+	if err := moveFormerUserData(config, "herdrup"); err == nil {
+		t.Fatal("the blocked rewrite reported success")
+	}
+	if err := os.Remove(filepath.Join(current, "machines.json.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := moveFormerUserData(config, "herdrup"); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := newDesk(current).Machines()
+	if err != nil || len(ms) != 1 {
+		t.Fatalf("saved hosts: %+v, %v", ms, err)
+	}
+	if got := read(t, ms[0].KeyPath); got != "PAIRED KEY" {
+		t.Fatalf("paired host's key after the repair: %q at %s", got, ms[0].KeyPath)
+	}
+}
