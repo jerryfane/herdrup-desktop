@@ -216,6 +216,7 @@ async function buildTabBar() {
       // activates it, and the selected tab reads as the current page. A div with a button's role,
       // not a <button>, which WebKit letters differently (parity 41516232593).
       const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
+      t.dataset.tab = key;
       t.tabIndex = 0;
       t.setAttribute("role", "button");
       if (key === selectedTab) t.setAttribute("aria-current", "page");
@@ -247,7 +248,10 @@ async function buildTabBar() {
     }),
   );
   if (generation !== tabBarGeneration) return;
+  // A rebuild replaces every tab; keep the keyboard on the same tab (issue #96).
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("#tabbar .tab")?.dataset.tab;
   $("tabbar").replaceChildren(...nodes);
+  if (focused) nodes.find((n) => n.dataset.tab === focused)?.focus();
   // The selected pill slides between tabs (HerdrApp.swift 2837).
   $("tabbar").style.setProperty("--tab-count", String(items.length));
   $("tabbar").style.setProperty("--tab-index", String(items.findIndex(([key]) => key === selectedTab)));
