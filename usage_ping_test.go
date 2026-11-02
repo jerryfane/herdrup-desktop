@@ -66,7 +66,7 @@ type pingClock struct {
 	t  time.Time
 }
 
-func (c *pingClock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *pingClock) now() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
 func (c *pingClock) set(t time.Time) { c.mu.Lock(); c.t = t; c.mu.Unlock() }
 
 func testPinger(t *testing.T, url string) (*usagePing, *pingClock) {
