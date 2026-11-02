@@ -102,6 +102,12 @@ export class LiveGlyphField {
     this.active = []; this.ripples = []; this.writers = [];
     this.ctx.font = `${GLYPH_SIZE}px ${this.font}`;
     this.advances.clear();
+    if (this.holdsStill) {
+      // The reference picture is drawn straight onto the visible canvas: copying it from the
+      // offscreen one brightens antialiased glyphs ~14 % on macOS WebKit (parity 41400271237).
+      drawRestingCells(this.ctx, this.field, { widthPt, heightPt, scale, ground: this.ground, ink: this.palette[1]!, font: this.font });
+      return;
+    }
     this.renderRest();
     this.draw();
     this.wake();
