@@ -339,3 +339,110 @@ func TestRelayRateLimitIsErrRateLimited(t *testing.T) {
 		}
 	}
 }
+
+// Request A passes the relay's admission and waits for the host's Noise
+// reply; B is refused with 429 meanwhile. A's late success must not end the
+// cooldown B started: the next request stays off the relay, so the
+// escalation does not restart at 15 s (post-merge review of #103, F1).
+func TestAnAdmittedHandshakeBegunBeforeA429KeepsItsCooldown(t *testing.T) {
+	host, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := LoadIdentity(filepath.Join(t.TempDir(), "identity"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 16))
+	var connects atomic.Int32
+	helloA, releaseA := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if connects.Add(1) != 1 {
+			w.Header().Set("X-Herdr-Guest-Error", "rate_limited")
+			http.Error(w, `{"error":"rate_limited"}`, http.StatusTooManyRequests)
+			return
+		}
+		socket, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer socket.CloseNow()
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		handshake, err := noise.NewHandshakeState(noise.Config{CipherSuite: cipherSuite, Pattern: noise.HandshakeIK, Prologue: []byte("herdr-guest/1:" + hostID), StaticKeypair: host})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, encrypted, err := socket.Read(ctx)
+		if err != nil {
+			return
+		}
+		if _, _, _, err := handshake.ReadMessage(nil, encrypted); err != nil {
+			t.Error(err)
+			return
+		}
+		close(helloA)
+		<-releaseA
+		message, receive, send, err := handshake.WriteMessage(nil, []byte(`{"ok":true,"guest_id":"grant-1"}`))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := socket.Write(ctx, websocket.MessageBinary, message); err != nil {
+			return
+		}
+		var line []byte
+		for !bytes.Contains(line, []byte{'\n'}) {
+			_, encrypted, err := socket.Read(ctx)
+			if err != nil {
+				return
+			}
+			plain, err := receive.Decrypt(nil, nil, encrypted)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			line = append(line, plain...)
+		}
+		reply, err := send.Encrypt(nil, nil, []byte(`{"result":{"type":"pong"}}`+"\n"))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = socket.Write(ctx, websocket.MessageBinary, reply)
+		_ = socket.Close(websocket.StatusNormalClosure, "")
+	}))
+	defer server.Close()
+	access := Access{GuestID: "grant-1", Endpoint: Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}}
+	transport := NewTransport(access, identity, SystemClock)
+	defer transport.Close()
+	ctx := context.Background()
+
+	done := make(chan error, 1)
+	go func() {
+		var pong map[string]any
+		done <- transport.Call(ctx, "ping", nil, &pong)
+	}()
+	<-helloA
+	if err := transport.Call(ctx, "ping", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("B while the relay refuses: %v", err)
+	}
+	cooldown := transport.RateLimitedUntil()
+	if cooldown.IsZero() {
+		t.Fatal("B's 429 started no cooldown")
+	}
+	close(releaseA)
+	if err := <-done; err != nil {
+		t.Fatalf("A, admitted before B's 429: %v", err)
+	}
+	if got := transport.RateLimitedUntil(); !got.Equal(cooldown) {
+		t.Fatalf("A's late success moved the cooldown from %v to %v", cooldown, got)
+	}
+	if err := transport.Call(ctx, "ping", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("C during the cooldown: %v", err)
+	}
+	if n := connects.Load(); n != 2 {
+		t.Fatalf("%d connects reached the relay, want 2 (A and B)", n)
+	}
+}

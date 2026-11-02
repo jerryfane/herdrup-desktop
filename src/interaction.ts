@@ -18,7 +18,7 @@ import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
-import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING } from "./chatPoll";
+import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING, sendShown } from "./chatPoll";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
@@ -226,9 +226,9 @@ class Detail {
  oldestCursor: string | undefined;
  chatEpoch = 0;
  chatPoll = 0;
- // A guest's last send that has not shown up in the transcript: the user entries before it, and
- // until when it keeps the poll fast (ChatModel.hasPendingSend and fastPollUntil, chatPoll.ts).
- sendFollow: { users: number; until: number } | null = null;
+ // A guest's last send that has not shown up in the transcript: until when it keeps the poll fast
+ // (ChatModel.hasPendingSend and fastPollUntil, chatPoll.ts).
+ sendFollow: { until: number } | null = null;
  answering = false;
  answerProblem: { askID: string; message: string; offersTerminal: boolean } | null = null;
  localAnswers = new Map<string, string[]>();
@@ -945,6 +945,9 @@ class Detail {
   try {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", ""));
    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
+   // What the page held before this read, older history included: only the live tail's new user
+   // entries can be the send.
+   const held = new Set(this.entries.map(entry => entry.id));
    if (!this.chat || this.chat.session_id !== page.session_id) {
     this.entries = []; this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear();
@@ -954,7 +957,7 @@ class Detail {
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
    for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
-   if (this.sendFollow && this.entries.filter(entry => entry.kind === "user").length > this.sendFollow.users) this.sendFollow = null;
+   if (this.sendFollow && sendShown(held, page.entries ?? [])) this.sendFollow = null;
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
   } catch(e) {
@@ -1397,7 +1400,7 @@ class Detail {
    this.unsentPrompt = ""; this.saveDraft();
    const ownerSend = this.view?.guest === false;
    // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
-   this.sendFollow = { users: this.entries.filter(entry => entry.kind === "user").length, until: Date.now() + CHAT_SEND_FOLLOW_MS };
+   this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
    const result = JSON.parse(await Desk.chatPrompt(this.token, text));
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
