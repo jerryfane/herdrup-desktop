@@ -1624,7 +1624,7 @@ class Detail {
    ], { duration: SPEC.press.duration });
   }
   const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal
-   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
+   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
   const setOutgoing = (state: Outgoing["state"] | null) => {
    if (!outgoing || this.disposed) return;
    this.outgoing = state ? this.outgoing.map(o => o.id === outgoing.id ? { ...o, state } : o) : this.outgoing.filter(o => o.id !== outgoing.id);
