@@ -5,14 +5,14 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, BoardUpdate, ChatAnswerReply, ConnState, Desk as GoDesk, GuestInvitation,
+ Access as PageAccess, AgentTarget, AgentView, BoardUpdate, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
 import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
-import { acceptInvite, GuestTransport, type Access, type WebSocketFactory } from "../webguest/transport";
+import { acceptInvite, GuestTransport, type Access, type Features as TransportFeatures, type WebSocketFactory } from "../webguest/transport";
 import { buildBoard, displayName, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, untagged } from "./engine";
 import { emit } from "./events";
@@ -37,6 +37,9 @@ export const PROMPT_WAIT = { timeout_ms: 6000, until: ["working", "idle", "block
 const UNCONFIRMED_CODES = ["timeout", "agent_prompt_unverifiable", "agent_prompt_stalled", "agent_status_unobserved_after_submit", "agent_prompt_unsubmitted"];
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** The transport's features as ConnState carries them (Go guest.Features' JSON names). */
+export const pageFeatures = (f: TransportFeatures): Features => ({ gram: f.gram, push: f.push, multi_request: f.multiRequest });
 
 // ---- Pure mappings, each Go's ----
 
@@ -227,7 +230,7 @@ export function createGuestDesk(env: DeskEnv) {
  async function runGuest(l: Active, print: string) {
   const signal = l.life.signal;
   const publish = (phase: string, msg: string, availability: string) =>
-   setState(signal, { phase, message: msg, machine: l.access.machineLabel, herdr: "", live: false, guest: { access: pageAccess(l.access), features: l.transport.features, fingerprint: print, ...(availability !== "" ? { availability } : {}) } });
+   setState(signal, { phase, message: msg, machine: l.access.machineLabel, herdr: "", live: false, guest: { access: pageAccess(l.access), features: pageFeatures(l.transport.features), fingerprint: print, ...(availability !== "" ? { availability } : {}) } });
   publish("connecting", "", "");
   let listed = false;
   let kicked = false;

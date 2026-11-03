@@ -18,11 +18,13 @@ const guestRelayAgent = "t2"
 // logs the one invitation it redeems. The shared agent waits on a select
 // menu until a guest's committing key (Enter, Escape, 1-9, y, n) moves it on,
 // so the guest's menu keys and answer buttons can be exercised; ownerOnly is
-// a herdr older than guest answers, which refuses both. connectLimit is the
-// relay's guest connects a minute (0: none); every connect is logged, so a
-// guest's connect rate can be counted. While pauseFile exists the share is
-// paused (GuestRelay.Pause); every change is logged.
-func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly, gram bool, connectLimit int, pauseFile string, webOrigin string) error {
+// a herdr older than guest answers, which refuses both. multiRequest serves
+// a guest's requests in turn on one session (herdr #356); every session's
+// end is logged. connectLimit is the relay's guest connects a minute (0:
+// none); every connect is logged, so a guest's connect rate can be counted.
+// While pauseFile exists the share is paused (GuestRelay.Pause); every
+// change is logged.
+func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly, gram, multiRequest bool, connectLimit int, pauseFile string, webOrigin string) error {
 	relay, err := fakeherdr.NewGuestRelay()
 	if err != nil {
 		return err
@@ -32,7 +34,7 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly, gram bool, con
 	}
 	relay.TerminalID, relay.AgentName = guestRelayAgent, "docs"
 	relay.OwnerName, relay.MachineLabel, relay.GuestName = "Fixture Owner", "fakeherdr", "visitor"
-	relay.OwnerOnlyAnswers, relay.Streams, relay.Gram = ownerOnly, s.Streams, gram
+	relay.OwnerOnlyAnswers, relay.Streams, relay.Gram, relay.MultiRequest = ownerOnly, s.Streams, gram, multiRequest
 	relay.LimitConnects(connectLimit)
 	relay.OnRequest = func(method string) { log.Printf("fakeherdr guest relay: request %s", method) }
 	connects := 0
@@ -43,6 +45,9 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly, gram bool, con
 			outcome = "refused 429 rate_limited"
 		}
 		log.Printf("fakeherdr guest relay: connect %d %s", connects, outcome)
+	}
+	relay.OnSessionEnd = func(index int, c fakeherdr.GuestConnect) {
+		log.Printf("fakeherdr guest relay: session %d ended (%s) after %d requests", index+1, c.End, c.Requests)
 	}
 	var mu sync.Mutex
 	menuOpen, seq := true, 1.0

@@ -61,6 +61,19 @@ type GuestRelay struct {
 	// OnConnect hears each guest connect as it is admitted or refused. It
 	// runs with the relay locked.
 	OnConnect func(GuestConnect)
+	// OnSessionEnd hears each admitted session end, with its connect's
+	// index in Connects. It runs with the relay locked.
+	OnSessionEnd func(index int, c GuestConnect)
+	// MultiRequest is a herdr that serves requests in turn on one guest
+	// session (jerryfane/herdr#356, guest_gate.rs serve_session) and says so
+	// as features.multi_request; without it a session answers one request.
+	MultiRequest bool
+	// IdleLimit is how long a MultiRequest session waits for its next
+	// request (herdr's SESSION_IDLE_TIMEOUT); 0 is herdr's 60 s.
+	IdleLimit time.Duration
+	// DropReply makes the gate serve a request and then end the session
+	// without its reply, as a connection lost after herdr acted on it.
+	DropReply func(method string) bool
 
 	hostID   string
 	host     noise.DHKey
@@ -76,6 +89,9 @@ type GuestRelay struct {
 	// the relay refuses one with 429 rate_limited (LimitConnects).
 	connects     []GuestConnect
 	connectLimit int
+	// ends ends each live session as herdr does on a revoke or its stop
+	// (EndSessions), by connect index.
+	ends map[int]context.CancelFunc
 	// paused is the share paused (Pause).
 	paused bool
 	// commit is the granted agent's state_change_seq when a guest batch last
@@ -85,11 +101,22 @@ type GuestRelay struct {
 }
 
 // GuestConnect is one guest connect to the relay: one WebSocket and Noise
-// handshake, which a guest opens for every request.
+// handshake, which a guest opens for every request unless the host serves
+// several on one (MultiRequest).
 type GuestConnect struct {
 	At time.Time
 	// Refused is the relay's 429 rate_limited.
 	Refused bool
+	// Requests counts the request lines its session served.
+	Requests int
+	// Overlapped says the guest sent on the session while a request was
+	// still being answered, which herdr reads as the guest leaving.
+	Overlapped bool
+	// End says why an admitted session ended, once it has: "guest" (the
+	// guest closed it), "reply" (one request answered, no MultiRequest),
+	// "idle", "guest_paused", "guest_revoked", "invalid_request", "stream",
+	// "dropped" (DropReply), "ended" (EndSessions) or "handshake".
+	End string
 }
 
 // GuestCall is one request a guest made: its method, its params as the gate
@@ -172,8 +199,9 @@ func (r *GuestRelay) LimitConnects(n int) {
 	r.mu.Unlock()
 }
 
-// admit records a guest connect and says whether the limit lets it through.
-func (r *GuestRelay) admit() bool {
+// admit records a guest connect and says whether the limit lets it through,
+// and its index in Connects.
+func (r *GuestRelay) admit() (int, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
@@ -191,7 +219,48 @@ func (r *GuestRelay) admit() bool {
 	if r.OnConnect != nil {
 		r.OnConnect(connect)
 	}
-	return !connect.Refused
+	return len(r.connects) - 1, !connect.Refused
+}
+
+// EndSessions ends every live guest session as herdr does when it stops or
+// the guest is revoked while idle: the host closes it.
+func (r *GuestRelay) EndSessions() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, end := range r.ends {
+		end()
+	}
+}
+
+// session tracks the connect at index while its session lives: its requests
+// and, when it is over, why it ended.
+func (r *GuestRelay) session(index int, end context.CancelFunc) (served, overlapped func(), ended func(string)) {
+	r.mu.Lock()
+	if r.ends == nil {
+		r.ends = map[int]context.CancelFunc{}
+	}
+	r.ends[index] = end
+	r.mu.Unlock()
+	served = func() {
+		r.mu.Lock()
+		r.connects[index].Requests++
+		r.mu.Unlock()
+	}
+	overlapped = func() {
+		r.mu.Lock()
+		r.connects[index].Overlapped = true
+		r.mu.Unlock()
+	}
+	ended = func(why string) {
+		r.mu.Lock()
+		delete(r.ends, index)
+		r.connects[index].End = why
+		if r.OnSessionEnd != nil {
+			r.OnSessionEnd(index, r.connects[index])
+		}
+		r.mu.Unlock()
+	}
+	return served, overlapped, ended
 }
 
 func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
@@ -199,11 +268,17 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	if !r.admit() {
+	index, admitted := r.admit()
+	if !admitted {
 		w.Header().Set("X-Herdr-Guest-Error", "rate_limited")
 		http.Error(w, `{"error":"rate_limited"}`, http.StatusTooManyRequests)
 		return
 	}
+	end, stop := context.WithCancel(req.Context())
+	defer stop()
+	served, overlapped, ended := r.session(index, stop)
+	why := "guest"
+	defer func() { ended(why) }()
 	socket, err := websocket.Accept(w, req, &websocket.AcceptOptions{OriginPatterns: r.WebOrigins})
 	if err != nil {
 		return
@@ -234,24 +309,50 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 	_ = json.Unmarshal(plain, &hello)
 	reply, request := r.hello(hello.InviteID, hello.Secret, hello.GuestID, handshake.PeerStatic())
 	answer, receive, send, err := handshake.WriteMessage(nil, reply)
-	if err != nil || socket.Write(ctx, websocket.MessageBinary, answer) != nil || !request {
+	if err != nil || socket.Write(ctx, websocket.MessageBinary, answer) != nil {
 		return
 	}
-	var line []byte
-	for !bytes.Contains(line, []byte{'\n'}) {
-		_, message, err := socket.Read(ctx)
-		if err != nil {
-			return
-		}
-		chunk, err := receive.Decrypt(nil, nil, message)
-		if err != nil {
-			return
-		}
-		line = append(line, chunk...)
+	if !request {
+		why = "handshake"
+		_ = socket.Close(websocket.StatusNormalClosure, "")
+		return
 	}
+	// The guest's frames, decrypted in order, until it leaves.
+	chunks := make(chan []byte)
+	go func() {
+		defer close(chunks)
+		for {
+			_, message, err := socket.Read(ctx)
+			if err != nil {
+				return
+			}
+			chunk, err := receive.Decrypt(nil, nil, message)
+			if err != nil {
+				return
+			}
+			select {
+			case chunks <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	var buffer []byte
 	// A reply line goes out in Noise messages of at most 65535 bytes, as herdr's gate and
 	// internal/guest/session.go write them (a Gram file chunk's line is larger).
 	emit := func(out []byte) error {
+		// A guest sends its next request only after the reply: a line, or a
+		// frame waiting, before the reply goes out overlaps this request.
+		select {
+		case chunk, open := <-chunks:
+			if open {
+				buffer = append(buffer, chunk...)
+			}
+		default:
+		}
+		if len(buffer) > 0 {
+			overlapped()
+		}
 		for line := append(out, '\n'); len(line) > 0; {
 			n := min(len(line), 65535-16)
 			sealed, err := send.Encrypt(nil, nil, line[:n])
@@ -265,7 +366,45 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		}
 		return nil
 	}
-	r.request(ctx, bytes.TrimSpace(line[:bytes.IndexByte(line, '\n')]), emit)
+	idle := r.IdleLimit
+	if idle == 0 {
+		idle = 60 * time.Second
+	}
+	for {
+		timer := time.NewTimer(idle)
+		for bytes.IndexByte(buffer, '\n') < 0 && why == "guest" {
+			select {
+			case chunk, open := <-chunks:
+				if !open {
+					timer.Stop()
+					return
+				}
+				buffer = append(buffer, chunk...)
+			case <-timer.C:
+				why = "idle"
+			case <-end.Done():
+				why = "ended"
+			}
+		}
+		timer.Stop()
+		if why != "guest" {
+			break
+		}
+		at := bytes.IndexByte(buffer, '\n')
+		line := bytes.TrimSpace(buffer[:at])
+		buffer = buffer[at+1:]
+		served()
+		if why = r.request(ctx, line, emit); why == "dropped" {
+			return
+		}
+		if why == "" && !r.MultiRequest {
+			why = "reply"
+		}
+		if why != "" {
+			break
+		}
+		why = "guest"
+	}
 	_ = socket.Close(websocket.StatusNormalClosure, "")
 }
 
@@ -291,24 +430,34 @@ func (r *GuestRelay) hello(inviteID, secret, guestID string, key []byte) ([]byte
 	case guestID == "" || guestID != r.guestID || !bytes.Equal(key, r.guestKey):
 		return refuse("unknown")
 	}
+	// An older herdr says nothing of multi_request.
+	features := map[string]bool{"gram": r.Gram}
+	if r.MultiRequest {
+		features["multi_request"] = true
+	}
 	b, _ := json.Marshal(map[string]any{
 		"ok": true, "guest_id": r.guestID, "name": r.GuestName, "machine_label": r.MachineLabel,
 		"owner_name": r.OwnerName, "agent": map[string]string{"name": r.AgentName, "target": r.TerminalID},
-		"features": map[string]bool{"gram": r.Gram},
+		"features": features,
 	})
 	return b, inviteID == ""
 }
 
 // request answers one guest request as herdr's guest gate (serve_request,
-// guest_gate.rs:703-1060), for the methods a HerdrUp guest uses.
-func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte) error) {
+// guest_gate.rs:703-1060), for the methods a HerdrUp guest uses. ends says
+// why the session ends after it, or is empty when the session may go on
+// (serve_session in jerryfane/herdr#356): a guest_paused refusal, a line
+// that is not a request, a stream, or DropReply's lost reply.
+func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte) error) (ends string) {
 	var req struct {
 		ID     string          `json:"id"`
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(line, &req); err != nil {
-		return
+		b, _ := json.Marshal(map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "invalid request: " + err.Error()}})
+		_ = emit(b)
+		return "invalid_request"
 	}
 	if r.OnRequest != nil {
 		r.OnRequest(req.Method)
@@ -325,6 +474,10 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	}
 	_ = json.Unmarshal(req.Params, &p)
 	write := func(value any, apiErr *APIError) {
+		if r.DropReply != nil && r.DropReply(req.Method) {
+			ends = "dropped"
+			return
+		}
 		out := map[string]any{"id": req.ID, "result": value}
 		if apiErr != nil {
 			out = map[string]any{"id": req.ID, "error": apiErr}
@@ -335,6 +488,9 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	refuse := func(code string) {
 		r.record(GuestCall{Method: req.Method, Refusal: code})
 		write(nil, &APIError{Code: code, Message: "guests can't do that"})
+		if code == "guest_paused" && ends == "" {
+			ends = code
+		}
 	}
 	// forward sends the request on to the owner's herdr with the granted
 	// pane in place of the guest's name for it.
@@ -525,7 +681,9 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		raw, _ := json.Marshal(m)
 		r.record(GuestCall{Method: req.Method, Params: raw})
 		stream(ctx, req.ID, raw, emit)
+		ends = "stream"
 	}
+	return ends
 }
 
 func (r *GuestRelay) record(call GuestCall) {

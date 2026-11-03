@@ -248,6 +248,11 @@ export interface Endpoint {
 export interface Features {
   gram: boolean;
   push: boolean;
+  /**
+   * MultiRequest is a host that answers further requests on a session
+   * after a reply (herdr guest_gate.rs serve_session, jerryfane/herdr#356).
+   */
+  multi_request: boolean;
 }
 
 /** Folder is what a folder row shows (herdrup AgentFolderSummary). */

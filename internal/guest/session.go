@@ -29,6 +29,9 @@ var ErrRateLimited = errors.New("The relay is receiving too many connections. Tr
 type Features struct {
 	Gram bool `json:"gram"`
 	Push bool `json:"push"`
+	// MultiRequest is a host that answers further requests on a session
+	// after a reply (herdr guest_gate.rs serve_session, jerryfane/herdr#356).
+	MultiRequest bool `json:"multi_request"`
 }
 
 type Access struct {
@@ -63,6 +66,14 @@ type session struct {
 	send    *noise.CipherState
 	receive *noise.CipherState
 	reply   helloReply
+	// A session a call may leave for the next one (features.multi_request)
+	// is read by pump, so that one left idle hears herdr end it. frames
+	// carries what pump decrypted; dead closes when pump stops, err saying
+	// why; stopPump ends it.
+	frames   chan []byte
+	dead     chan struct{}
+	err      error
+	stopPump context.CancelFunc
 }
 
 func refusal(code string) error {
@@ -199,26 +210,54 @@ func openSession(ctx context.Context, endpoint Endpoint, identity Identity, hell
 	return &session{socket: socket, send: send, receive: receive, reply: reply}, nil
 }
 
-func (s *session) close() { _ = s.socket.CloseNow() }
+func (s *session) close() {
+	if s.stopPump != nil {
+		s.stopPump()
+	}
+	_ = s.socket.CloseNow()
+}
 
-func (s *session) sendLine(ctx context.Context, line []byte) error {
+// sendLine sends line and its "\n". sent says a frame of it went out whole:
+// until one has, herdr cannot have the request.
+func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err error) {
 	// Frame boundaries are unrelated to API line boundaries.
 	line = append(line, '\n')
 	for len(line) > 0 {
 		length := min(len(line), maxNoisePlaintext)
 		encrypted, err := s.send.Encrypt(nil, nil, line[:length])
 		if err != nil {
-			return err
+			return sent, err
 		}
 		if err := s.socket.Write(ctx, websocket.MessageBinary, encrypted); err != nil {
-			return socketError(err)
+			return sent, socketError(err)
 		}
+		sent = true
 		line = line[length:]
 	}
-	return nil
+	return sent, nil
 }
 
 func (s *session) readChunk(ctx context.Context) ([]byte, error) {
+	if s.frames == nil {
+		return s.readFrame(ctx)
+	}
+	select {
+	case plain := <-s.frames:
+		return plain, nil
+	case <-s.dead:
+		// A frame that came before the end is read first.
+		select {
+		case plain := <-s.frames:
+			return plain, nil
+		default:
+			return nil, s.err
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *session) readFrame(ctx context.Context) ([]byte, error) {
 	kind, encrypted, err := s.socket.Read(ctx)
 	if err != nil {
 		return nil, socketError(err)
@@ -231,6 +270,42 @@ func (s *session) readChunk(ctx context.Context) ([]byte, error) {
 		return nil, errors.New("A shared-machine message failed authentication; the connection was refused.")
 	}
 	return plaintext, nil
+}
+
+// startPump reads the session from here on in the background. Call it
+// before the session is shared.
+func (s *session) startPump() {
+	ctx, stop := context.WithCancel(context.Background())
+	s.frames, s.dead, s.stopPump = make(chan []byte, 1), make(chan struct{}), stop
+	go s.pump(ctx)
+}
+
+func (s *session) pump(ctx context.Context) {
+	defer close(s.dead)
+	for {
+		plain, err := s.readFrame(ctx)
+		if err != nil {
+			s.err = err
+			return
+		}
+		select {
+		case s.frames <- plain:
+		case <-ctx.Done():
+			s.err = ctx.Err()
+			return
+		}
+	}
+}
+
+// quiet says an idle pumped session is still open and herdr sent nothing on
+// it: herdr writes only replies, so anything else means it is spent.
+func (s *session) quiet() bool {
+	select {
+	case <-s.dead:
+		return false
+	default:
+		return len(s.frames) == 0
+	}
 }
 
 func Accept(ctx context.Context, invite Invite, identity Identity, device string, now time.Time) (Access, error) {
