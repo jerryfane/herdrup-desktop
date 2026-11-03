@@ -88,7 +88,7 @@ func upgradeError(response *http.Response, err error) error {
 	case "host_offline":
 		return ErrHostOffline
 	case "host_busy":
-		return errors.New("The shared machine is busy. Try again shortly.")
+		return errHostBusy
 	case "rate_limited":
 		return ErrRateLimited
 	}
@@ -102,11 +102,33 @@ func upgradeError(response *http.Response, err error) error {
 	}
 }
 
+// errHostBusy is the relay's host_busy, as an HTTP refusal (older relays),
+// a close reason or close code 4504.
+var errHostBusy = errors.New("The shared machine is busy. Try again shortly.")
+
+// The relay's close codes for a guest upgrade it accepted only to refuse
+// (herdrup GuestRelay, PR themartianapp/herdrup#610). A browser cannot read
+// the HTTP status of a refused upgrade, so the relay closes with these
+// instead; older relays still answer with HTTP errors (upgradeError).
+const (
+	closeRateLimited websocket.StatusCode = 4429
+	closeHostOffline websocket.StatusCode = 4503
+	closeHostBusy    websocket.StatusCode = 4504
+)
+
 func socketError(err error) error {
 	var closed websocket.CloseError
 	if errors.As(err, &closed) {
+		switch closed.Code {
+		case closeRateLimited:
+			return ErrRateLimited
+		case closeHostOffline:
+			return ErrHostOffline
+		case closeHostBusy:
+			return errHostBusy
+		}
 		if closed.Reason == "host_busy" {
-			return errors.New("The shared machine is busy. Try again shortly.")
+			return errHostBusy
 		}
 		if closed.Code == websocket.StatusNormalClosure && closed.Reason == "" {
 			return io.EOF
