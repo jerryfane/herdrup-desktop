@@ -156,9 +156,11 @@ let gramUnread = 0;
 // Whether a newer Herdrup waits to be installed (appUpdates.ts).
 let appUpdateWaiting = false;
 watchAppUpdate(s => { appUpdateWaiting = s.phase === "available"; setTabBadge(); });
-/** sidebarTabItem's tabBadge (HerdrApp.swift 2864-2905): the count on the Gram icon's
- *  top-trailing corner, "99+" past 99, hidden at zero. Neutral, like the rail badge,
- *  under the desktop colour rule. */
+// The unread badges' fill: native's Color(uiColor: .systemRed) in its dark scheme. It is a
+// system colour, not a herdrup design token, so it is set here (owner, 2026-11-03: red, as native).
+document.documentElement.style.setProperty("--system-red", "#ff453a");
+/** sidebarTabItem's tabBadge (HerdrApp.swift 2871-2881): the count on the Gram icon's
+ *  top-trailing corner, "99+" past 99, hidden at zero; white on system red. */
 function setTabBadge() {
   const badge = document.querySelector<HTMLElement>('#tabbar .tab-badge[data-tab="gram"]');
   if (badge) {

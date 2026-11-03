@@ -440,8 +440,8 @@ html, body {
 }
 .tab:focus-visible { outline: 2px solid var(--color-text-dim); outline-offset: -2px; }
 .tab .icon { position: relative; height: 28px; display: flex; align-items: center; }
-/* tabBadge (HerdrApp.swift 2864-2905): top-trailing of the icon, moved 12 pt right and
-   3 pt up; at least 18 pt, 5 pt sides, badgeCount text. Neutral like the rail badge. */
+/* tabBadge (HerdrApp.swift 2871-2881): top-trailing of the icon, moved 12 pt right and
+   3 pt up; at least 18 pt, 5 pt sides, badgeCount text, white on system red (main.ts). */
 .tab-badge {
   position: absolute;
   top: -3px;
@@ -451,10 +451,9 @@ html, body {
   padding: 0 5px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--color-hairline);
   border-radius: 999px;
-  background: var(--color-surface-raised);
-  color: var(--color-text);
+  background: var(--system-red);
+  color: var(--color-on-accent);
   font: var(--text-badge-count-weight) var(--text-badge-count-size)/1 var(--text-badge-count-font);
   font-variant-numeric: var(--text-badge-count-numeric);
 }
