@@ -16,7 +16,7 @@ const speechFiles = speech ? [
 // here builds have no updates, and Settings says the app can't update
 // itself; the release workflow's MYGO_UPDATER_PRIVATE_KEY signs them once
 // it is.
-const updatePublicKey = process.env.HERDRUP_UPDATE_PUBLIC_KEY ?? "";
+const updatePublicKey = process.env.HERDRUP_UPDATE_PUBLIC_KEY ?? "6bVRDAXyyLFOskNDICgizAF54eXdwHrxUED3XW5m0EQ=";
 
 export default defineConfig({
   // The name users see, lower case as herdrup's (project.yml CFBundleDisplayName); slug keeps
