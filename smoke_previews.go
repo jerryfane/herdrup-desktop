@@ -51,6 +51,7 @@ func smokePreviews(parent *mygo.Window, capture string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
+	diagDataNavigate(parent, dir)
 	for _, mode := range []string{"off", "on", "navigate", "data-navigate"} {
 		requests.Store(0)
 		navigation := ""
