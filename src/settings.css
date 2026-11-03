@@ -73,8 +73,7 @@
 .settings-plain-row:disabled { color:var(--color-text-faint); }
 /* Owner, 2026-11-01 (herdr-app 380652): tappable text actions take Palette.brand, as Swift's
    groupedActionRow/actionRow (HerdrApp.swift 9441-9466) and the app-wide .tint(Palette.brand)
-   on plain buttons (2548) draw them. Nothing else in Settings changes colour; the Gram unread
-   badge stays grey (owner, 380597). */
+   on plain buttons (2548) draw them. Nothing else in Settings changes colour. */
 .settings-plain-row.action:enabled, .settings-federation-row > button:enabled { color:var(--color-brand); }
 .settings-action-note { font:400 11px/var(--leading-app) var(--font-app); }
 .settings-latency-report { padding:13px 18px; display:flex; flex-direction:column; gap:6px; margin:0; font:400 15px/1.4 var(--font-app); }
