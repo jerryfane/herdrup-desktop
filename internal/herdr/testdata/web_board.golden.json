@@ -1,0 +1,2856 @@
+[
+ {
+  "name": "empty list",
+  "displayNames": [],
+  "board": {
+   "sections": [],
+   "archived": [],
+   "needsYou": 0,
+   "total": 0,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "shared agent",
+  "displayNames": [
+   "reviewer"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "w1:p2",
+       "title": "reviewer",
+       "agent": "claude",
+       "status": "working",
+       "badge": "working",
+       "preview": "herdrup · reading files",
+       "initial": "R",
+       "tint": 0,
+       "match": [
+        "reviewer",
+        "⠋ π > reading files"
+       ],
+       "name": "reviewer",
+       "starred": false,
+       "avatar": {
+        "kind": "mascot",
+        "mascot": "herdy"
+       },
+       "account": "work",
+       "statusSinceUnixMs": 1762000000000,
+       "activity": "reading files"
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "w1:p2",
+        "title": "reviewer",
+        "agent": "claude",
+        "status": "working",
+        "badge": "working",
+        "preview": "herdrup · reading files",
+        "initial": "R",
+        "tint": 0,
+        "match": [
+         "reviewer",
+         "⠋ π > reading files"
+        ],
+        "name": "reviewer",
+        "starred": false,
+        "avatar": {
+         "kind": "mascot",
+         "mascot": "herdy"
+        },
+        "account": "work",
+        "statusSinceUnixMs": 1762000000000,
+        "activity": "reading files"
+       }
+      }
+     ],
+     "agentCount": 1
+    }
+   ],
+   "archived": [],
+   "needsYou": 0,
+   "total": 1,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "every section and order",
+  "displayNames": [
+   "idle-old",
+   "finished",
+   "tie-ten",
+   "tie-nine",
+   "zero-turn",
+   "never-turned",
+   "worker-a",
+   "worker-b",
+   "asker",
+   "menu",
+   "Laptop/builder",
+   "Laptop/watcher",
+   "Desk/stale",
+   "m2/fine",
+   "lost",
+   "silent",
+   "newer"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "needsYou",
+     "label": "needs you",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "m1/p3",
+       "title": "Laptop/builder",
+       "agent": "",
+       "status": "unknown",
+       "badge": "offline",
+       "preview": "m1/p3",
+       "initial": "L",
+       "tint": 0,
+       "match": [
+        "Laptop/builder",
+        "m1/builder"
+       ],
+       "name": "m1/builder",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-blocked",
+       "title": "asker",
+       "agent": "",
+       "status": "blocked",
+       "badge": "waiting",
+       "preview": "Allow edit?",
+       "initial": "A",
+       "tint": 1,
+       "match": [
+        "asker",
+        "✳ Allow edit?"
+       ],
+       "name": "asker",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "Allow edit?"
+      },
+      {
+       "id": "p-pending",
+       "title": "menu",
+       "agent": "",
+       "status": "idle",
+       "badge": "waiting",
+       "preview": "p-pending",
+       "initial": "M",
+       "tint": 0,
+       "match": [
+        "menu"
+       ],
+       "name": "menu",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "m1/p3",
+        "title": "Laptop/builder",
+        "agent": "",
+        "status": "unknown",
+        "badge": "offline",
+        "preview": "m1/p3",
+        "initial": "L",
+        "tint": 0,
+        "match": [
+         "Laptop/builder",
+         "m1/builder"
+        ],
+        "name": "m1/builder",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-blocked",
+        "title": "asker",
+        "agent": "",
+        "status": "blocked",
+        "badge": "waiting",
+        "preview": "Allow edit?",
+        "initial": "A",
+        "tint": 1,
+        "match": [
+         "asker",
+         "✳ Allow edit?"
+        ],
+        "name": "asker",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "Allow edit?"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-pending",
+        "title": "menu",
+        "agent": "",
+        "status": "idle",
+        "badge": "waiting",
+        "preview": "p-pending",
+        "initial": "M",
+        "tint": 0,
+        "match": [
+         "menu"
+        ],
+        "name": "menu",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 3
+    },
+    {
+     "key": "unrecognised",
+     "label": "unrecognised",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "m1/p4",
+       "title": "Laptop/watcher",
+       "agent": "",
+       "status": "unknown",
+       "badge": "offline",
+       "preview": "m1/p4",
+       "initial": "L",
+       "tint": 1,
+       "match": [
+        "Laptop/watcher",
+        "m1/watcher"
+       ],
+       "name": "m1/watcher",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-future",
+       "title": "newer",
+       "agent": "",
+       "status": "paused",
+       "badge": "unrecognised",
+       "preview": "p-future",
+       "initial": "N",
+       "tint": 0,
+       "match": [
+        "newer"
+       ],
+       "name": "newer",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-nostatus",
+       "title": "silent",
+       "agent": "",
+       "status": "",
+       "badge": "unrecognised",
+       "preview": "p-nostatus",
+       "initial": "S",
+       "tint": 2,
+       "match": [
+        "silent"
+       ],
+       "name": "silent",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-unknown",
+       "title": "lost",
+       "agent": "",
+       "status": "unknown",
+       "badge": "unrecognised",
+       "preview": "p-unknown",
+       "initial": "L",
+       "tint": 2,
+       "match": [
+        "lost"
+       ],
+       "name": "lost",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "m1/p4",
+        "title": "Laptop/watcher",
+        "agent": "",
+        "status": "unknown",
+        "badge": "offline",
+        "preview": "m1/p4",
+        "initial": "L",
+        "tint": 1,
+        "match": [
+         "Laptop/watcher",
+         "m1/watcher"
+        ],
+        "name": "m1/watcher",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-future",
+        "title": "newer",
+        "agent": "",
+        "status": "paused",
+        "badge": "unrecognised",
+        "preview": "p-future",
+        "initial": "N",
+        "tint": 0,
+        "match": [
+         "newer"
+        ],
+        "name": "newer",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-nostatus",
+        "title": "silent",
+        "agent": "",
+        "status": "",
+        "badge": "unrecognised",
+        "preview": "p-nostatus",
+        "initial": "S",
+        "tint": 2,
+        "match": [
+         "silent"
+        ],
+        "name": "silent",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-unknown",
+        "title": "lost",
+        "agent": "",
+        "status": "unknown",
+        "badge": "unrecognised",
+        "preview": "p-unknown",
+        "initial": "L",
+        "tint": 2,
+        "match": [
+         "lost"
+        ],
+        "name": "lost",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 4
+    },
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p-work-b",
+       "title": "worker-b",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p-work-b",
+       "initial": "W",
+       "tint": 1,
+       "match": [
+        "worker-b"
+       ],
+       "name": "worker-b",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "m2/p1",
+       "title": "Desk/stale",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "m2/p1",
+       "initial": "D",
+       "tint": 0,
+       "match": [
+        "Desk/stale",
+        "m2/stale"
+       ],
+       "name": "m2/stale",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "stale": true
+      },
+      {
+       "id": "p-work-a",
+       "title": "worker-a",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p-work-a",
+       "initial": "W",
+       "tint": 0,
+       "match": [
+        "worker-a"
+       ],
+       "name": "worker-a",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-work-b",
+        "title": "worker-b",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p-work-b",
+        "initial": "W",
+        "tint": 1,
+        "match": [
+         "worker-b"
+        ],
+        "name": "worker-b",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "m2/p1",
+        "title": "Desk/stale",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "m2/p1",
+        "initial": "D",
+        "tint": 0,
+        "match": [
+         "Desk/stale",
+         "m2/stale"
+        ],
+        "name": "m2/stale",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "stale": true
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-work-a",
+        "title": "worker-a",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p-work-a",
+        "initial": "W",
+        "tint": 0,
+        "match": [
+         "worker-a"
+        ],
+        "name": "worker-a",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 3
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p-done",
+       "title": "finished",
+       "agent": "",
+       "status": "done",
+       "badge": "none",
+       "preview": "p-done",
+       "initial": "F",
+       "tint": 0,
+       "match": [
+        "finished"
+       ],
+       "name": "finished",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p10",
+       "title": "tie-ten",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p10",
+       "initial": "T",
+       "tint": 3,
+       "match": [
+        "tie-ten"
+       ],
+       "name": "tie-ten",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p9",
+       "title": "tie-nine",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p9",
+       "initial": "T",
+       "tint": 2,
+       "match": [
+        "tie-nine"
+       ],
+       "name": "tie-nine",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-idle-old",
+       "title": "idle-old",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-idle-old",
+       "initial": "I",
+       "tint": 0,
+       "match": [
+        "idle-old"
+       ],
+       "name": "idle-old",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-zero",
+       "title": "zero-turn",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-zero",
+       "initial": "Z",
+       "tint": 3,
+       "match": [
+        "zero-turn"
+       ],
+       "name": "zero-turn",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "m2/p2",
+       "title": "m2/fine",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "m2/p2",
+       "initial": "M",
+       "tint": 0,
+       "match": [
+        "m2/fine"
+       ],
+       "name": "m2/fine",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-noturn",
+       "title": "never-turned",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-noturn",
+       "initial": "N",
+       "tint": 1,
+       "match": [
+        "never-turned"
+       ],
+       "name": "never-turned",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-done",
+        "title": "finished",
+        "agent": "",
+        "status": "done",
+        "badge": "none",
+        "preview": "p-done",
+        "initial": "F",
+        "tint": 0,
+        "match": [
+         "finished"
+        ],
+        "name": "finished",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p10",
+        "title": "tie-ten",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p10",
+        "initial": "T",
+        "tint": 3,
+        "match": [
+         "tie-ten"
+        ],
+        "name": "tie-ten",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p9",
+        "title": "tie-nine",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p9",
+        "initial": "T",
+        "tint": 2,
+        "match": [
+         "tie-nine"
+        ],
+        "name": "tie-nine",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-idle-old",
+        "title": "idle-old",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-idle-old",
+        "initial": "I",
+        "tint": 0,
+        "match": [
+         "idle-old"
+        ],
+        "name": "idle-old",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-zero",
+        "title": "zero-turn",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-zero",
+        "initial": "Z",
+        "tint": 3,
+        "match": [
+         "zero-turn"
+        ],
+        "name": "zero-turn",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "m2/p2",
+        "title": "m2/fine",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "m2/p2",
+        "initial": "M",
+        "tint": 0,
+        "match": [
+         "m2/fine"
+        ],
+        "name": "m2/fine",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-noturn",
+        "title": "never-turned",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-noturn",
+        "initial": "N",
+        "tint": 1,
+        "match": [
+         "never-turned"
+        ],
+        "name": "never-turned",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 7
+    }
+   ],
+   "archived": [],
+   "needsYou": 3,
+   "total": 17,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "archived",
+  "displayNames": [
+   "old",
+   "newer",
+   "anonymous",
+   "same-time",
+   "not-false",
+   "not-empty",
+   "not-zero",
+   "not-list",
+   "not-null"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p-l1",
+       "title": "not-false",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-l1",
+       "initial": "N",
+       "tint": 0,
+       "match": [
+        "not-false"
+       ],
+       "name": "not-false",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-l2",
+       "title": "not-empty",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-l2",
+       "initial": "N",
+       "tint": 0,
+       "match": [
+        "not-empty"
+       ],
+       "name": "not-empty",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-l3",
+       "title": "not-zero",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-l3",
+       "initial": "N",
+       "tint": 2,
+       "match": [
+        "not-zero"
+       ],
+       "name": "not-zero",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-l4",
+       "title": "not-list",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-l4",
+       "initial": "N",
+       "tint": 1,
+       "match": [
+        "not-list"
+       ],
+       "name": "not-list",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-l5",
+       "title": "not-null",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-l5",
+       "initial": "N",
+       "tint": 2,
+       "match": [
+        "not-null"
+       ],
+       "name": "not-null",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-l1",
+        "title": "not-false",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-l1",
+        "initial": "N",
+        "tint": 0,
+        "match": [
+         "not-false"
+        ],
+        "name": "not-false",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-l2",
+        "title": "not-empty",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-l2",
+        "initial": "N",
+        "tint": 0,
+        "match": [
+         "not-empty"
+        ],
+        "name": "not-empty",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-l3",
+        "title": "not-zero",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-l3",
+        "initial": "N",
+        "tint": 2,
+        "match": [
+         "not-zero"
+        ],
+        "name": "not-zero",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-l4",
+        "title": "not-list",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-l4",
+        "initial": "N",
+        "tint": 1,
+        "match": [
+         "not-list"
+        ],
+        "name": "not-list",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-l5",
+        "title": "not-null",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-l5",
+        "initial": "N",
+        "tint": 2,
+        "match": [
+         "not-null"
+        ],
+        "name": "not-null",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 5
+    }
+   ],
+   "archived": [
+    {
+     "id": "p-a2",
+     "title": "newer",
+     "agent": "",
+     "status": "working",
+     "badge": "none",
+     "preview": "p-a2",
+     "initial": "N",
+     "tint": 0,
+     "archivedNote": "archived",
+     "match": [
+      "newer"
+     ],
+     "name": "newer",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    },
+    {
+     "id": "p-a3",
+     "title": "anonymous",
+     "agent": "",
+     "status": "blocked",
+     "badge": "offline",
+     "preview": "p-a3",
+     "initial": "A",
+     "tint": 1,
+     "archivedNote": "archived · cleanup",
+     "match": [
+      "anonymous"
+     ],
+     "name": "anonymous",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    },
+    {
+     "id": "p-a4",
+     "title": "same-time",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p-a4",
+     "initial": "S",
+     "tint": 2,
+     "archivedNote": "archived by bo",
+     "match": [
+      "same-time"
+     ],
+     "name": "same-time",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    },
+    {
+     "id": "p-a1",
+     "title": "old",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p-a1",
+     "initial": "O",
+     "tint": 3,
+     "archivedNote": "archived by ana · done with it",
+     "match": [
+      "old"
+     ],
+     "name": "old",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 0,
+   "total": 5,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "names titles and previews",
+  "displayNames": [
+   "π > writing tests",
+   "p-bare",
+   "same",
+   "p-null",
+   "chevron",
+   "spinner",
+   "tabbed",
+   "glyphs",
+   "  ",
+   "xavier",
+   "﻿zed",
+   "ßeta",
+   "ᾳlpha",
+   "ᾀrchon",
+   "émile",
+   "🐄 cow",
+   "m9/scout",
+   "other/scout",
+   "Studio/titled",
+   "Studio/p-fed4",
+   "astral pane",
+   "private-use pane",
+   ""
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "",
+       "title": "",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "",
+       "initial": "?",
+       "tint": 1,
+       "match": [
+        ""
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "m9/p-fed4",
+       "title": "Studio/p-fed4",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "m9/p-fed4",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "Studio/p-fed4"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-accent",
+       "title": "émile",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-accent",
+       "initial": "É",
+       "tint": 1,
+       "match": [
+        "émile"
+       ],
+       "name": "émile",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-bare",
+       "title": "p-bare",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-bare",
+       "initial": "P",
+       "tint": 0,
+       "match": [
+        "p-bare"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-bom",
+       "title": "﻿zed",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-bom",
+       "initial": "﻿",
+       "tint": 2,
+       "match": [
+        "﻿zed"
+       ],
+       "name": "﻿zed",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-emoji",
+       "title": "🐄 cow",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-emoji",
+       "initial": "🐄",
+       "tint": 1,
+       "match": [
+        "🐄 cow"
+       ],
+       "name": "🐄 cow",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-fed1",
+       "title": "m9/scout",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-fed1",
+       "initial": "M",
+       "tint": 2,
+       "match": [
+        "m9/scout"
+       ],
+       "name": "m9/scout",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-fed2",
+       "title": "other/scout",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-fed2",
+       "initial": "O",
+       "tint": 0,
+       "match": [
+        "other/scout"
+       ],
+       "name": "other/scout",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-fed3",
+       "title": "Studio/titled",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "m9/titled",
+       "initial": "S",
+       "tint": 1,
+       "match": [
+        "Studio/titled",
+        "m9/titled"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "m9/titled"
+      },
+      {
+       "id": "p-greek",
+       "title": "ᾳlpha",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-greek",
+       "initial": "ᾼ",
+       "tint": 1,
+       "match": [
+        "ᾳlpha"
+       ],
+       "name": "ᾳlpha",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-greek2",
+       "title": "ᾀrchon",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-greek2",
+       "initial": "ᾈ",
+       "tint": 2,
+       "match": [
+        "ᾀrchon"
+       ],
+       "name": "ᾀrchon",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-nel",
+       "title": "xavier",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-nel",
+       "initial": "X",
+       "tint": 2,
+       "match": [
+        "xavier"
+       ],
+       "name": "xavier",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-noprompt",
+       "title": "chevron",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "app · > not a prompt",
+       "initial": "C",
+       "tint": 2,
+       "match": [
+        "chevron",
+        "> not a prompt"
+       ],
+       "name": "chevron",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "> not a prompt"
+      },
+      {
+       "id": "p-null",
+       "title": "p-null",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-null",
+       "initial": "P",
+       "tint": 2,
+       "match": [
+        "p-null"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-onlyspin",
+       "title": "glyphs",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-onlyspin",
+       "initial": "G",
+       "tint": 2,
+       "match": [
+        "glyphs",
+        "π ⠋ "
+       ],
+       "name": "glyphs",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-same",
+       "title": "same",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "dir · same",
+       "initial": "S",
+       "tint": 3,
+       "match": [
+        "same"
+       ],
+       "name": "same",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "same"
+      },
+      {
+       "id": "p-sharp",
+       "title": "ßeta",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-sharp",
+       "initial": "ß",
+       "tint": 1,
+       "match": [
+        "ßeta"
+       ],
+       "name": "ßeta",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-space",
+       "title": "  ",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-space",
+       "initial": "?",
+       "tint": 0,
+       "match": [
+        "  "
+       ],
+       "name": "  ",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-spin",
+       "title": "spinner",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "done",
+       "initial": "S",
+       "tint": 1,
+       "match": [
+        "spinner",
+        "  ⠋⠙ ✶  π  >  >  done"
+       ],
+       "name": "spinner",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "done"
+      },
+      {
+       "id": "p-tab",
+       "title": "tabbed",
+       "agent": "codex",
+       "status": "idle",
+       "badge": "none",
+       "preview": "⠋\tnot split",
+       "initial": "T",
+       "tint": 3,
+       "match": [
+        "tabbed",
+        "⠋\tnot split"
+       ],
+       "name": "tabbed",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "⠋\tnot split"
+      },
+      {
+       "id": "p-title",
+       "title": "π > writing tests",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "writing tests",
+       "initial": "Π",
+       "tint": 1,
+       "match": [
+        "π > writing tests"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "writing tests"
+      },
+      {
+       "id": "p-",
+       "title": "private-use pane",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-",
+       "initial": "P",
+       "tint": 3,
+       "match": [
+        "private-use pane"
+       ],
+       "name": "private-use pane",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-😀",
+       "title": "astral pane",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-😀",
+       "initial": "A",
+       "tint": 0,
+       "match": [
+        "astral pane"
+       ],
+       "name": "astral pane",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "",
+        "title": "",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "",
+        "initial": "?",
+        "tint": 1,
+        "match": [
+         ""
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "m9/p-fed4",
+        "title": "Studio/p-fed4",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "m9/p-fed4",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "Studio/p-fed4"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-accent",
+        "title": "émile",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-accent",
+        "initial": "É",
+        "tint": 1,
+        "match": [
+         "émile"
+        ],
+        "name": "émile",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-bare",
+        "title": "p-bare",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-bare",
+        "initial": "P",
+        "tint": 0,
+        "match": [
+         "p-bare"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-bom",
+        "title": "﻿zed",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-bom",
+        "initial": "﻿",
+        "tint": 2,
+        "match": [
+         "﻿zed"
+        ],
+        "name": "﻿zed",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-emoji",
+        "title": "🐄 cow",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-emoji",
+        "initial": "🐄",
+        "tint": 1,
+        "match": [
+         "🐄 cow"
+        ],
+        "name": "🐄 cow",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-fed1",
+        "title": "m9/scout",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-fed1",
+        "initial": "M",
+        "tint": 2,
+        "match": [
+         "m9/scout"
+        ],
+        "name": "m9/scout",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-fed2",
+        "title": "other/scout",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-fed2",
+        "initial": "O",
+        "tint": 0,
+        "match": [
+         "other/scout"
+        ],
+        "name": "other/scout",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-fed3",
+        "title": "Studio/titled",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "m9/titled",
+        "initial": "S",
+        "tint": 1,
+        "match": [
+         "Studio/titled",
+         "m9/titled"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "m9/titled"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-greek",
+        "title": "ᾳlpha",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-greek",
+        "initial": "ᾼ",
+        "tint": 1,
+        "match": [
+         "ᾳlpha"
+        ],
+        "name": "ᾳlpha",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-greek2",
+        "title": "ᾀrchon",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-greek2",
+        "initial": "ᾈ",
+        "tint": 2,
+        "match": [
+         "ᾀrchon"
+        ],
+        "name": "ᾀrchon",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-nel",
+        "title": "xavier",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-nel",
+        "initial": "X",
+        "tint": 2,
+        "match": [
+         "xavier"
+        ],
+        "name": "xavier",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-noprompt",
+        "title": "chevron",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "app · > not a prompt",
+        "initial": "C",
+        "tint": 2,
+        "match": [
+         "chevron",
+         "> not a prompt"
+        ],
+        "name": "chevron",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "> not a prompt"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-null",
+        "title": "p-null",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-null",
+        "initial": "P",
+        "tint": 2,
+        "match": [
+         "p-null"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-onlyspin",
+        "title": "glyphs",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-onlyspin",
+        "initial": "G",
+        "tint": 2,
+        "match": [
+         "glyphs",
+         "π ⠋ "
+        ],
+        "name": "glyphs",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-same",
+        "title": "same",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "dir · same",
+        "initial": "S",
+        "tint": 3,
+        "match": [
+         "same"
+        ],
+        "name": "same",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "same"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-sharp",
+        "title": "ßeta",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-sharp",
+        "initial": "ß",
+        "tint": 1,
+        "match": [
+         "ßeta"
+        ],
+        "name": "ßeta",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-space",
+        "title": "  ",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-space",
+        "initial": "?",
+        "tint": 0,
+        "match": [
+         "  "
+        ],
+        "name": "  ",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-spin",
+        "title": "spinner",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "done",
+        "initial": "S",
+        "tint": 1,
+        "match": [
+         "spinner",
+         "  ⠋⠙ ✶  π  >  >  done"
+        ],
+        "name": "spinner",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "done"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-tab",
+        "title": "tabbed",
+        "agent": "codex",
+        "status": "idle",
+        "badge": "none",
+        "preview": "⠋\tnot split",
+        "initial": "T",
+        "tint": 3,
+        "match": [
+         "tabbed",
+         "⠋\tnot split"
+        ],
+        "name": "tabbed",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "⠋\tnot split"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-title",
+        "title": "π > writing tests",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "writing tests",
+        "initial": "Π",
+        "tint": 1,
+        "match": [
+         "π > writing tests"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "writing tests"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-",
+        "title": "private-use pane",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-",
+        "initial": "P",
+        "tint": 3,
+        "match": [
+         "private-use pane"
+        ],
+        "name": "private-use pane",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-😀",
+        "title": "astral pane",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-😀",
+        "initial": "A",
+        "tint": 0,
+        "match": [
+         "astral pane"
+        ],
+        "name": "astral pane",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 23
+    }
+   ],
+   "archived": [],
+   "needsYou": 0,
+   "total": 23,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "avatars",
+  "displayNames": [
+   "known",
+   "unshipped",
+   "nomascot",
+   "photo",
+   "m4/remote",
+   "paneless",
+   "",
+   "",
+   "shortsha",
+   "nonhex",
+   "nosha",
+   "futurestyle",
+   "nullavatar"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "",
+       "title": "paneless",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "",
+       "initial": "P",
+       "tint": 2,
+       "match": [
+        "paneless"
+       ],
+       "name": "paneless",
+       "starred": false,
+       "avatar": {
+        "kind": "image",
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "target": "paneless"
+       }
+      },
+      {
+       "id": "",
+       "title": "",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "",
+       "initial": "?",
+       "tint": 1,
+       "match": [
+        ""
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "image",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "target": "av7"
+       }
+      },
+      {
+       "id": "",
+       "title": "",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "",
+       "initial": "?",
+       "tint": 1,
+       "match": [
+        ""
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "image",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+       }
+      },
+      {
+       "id": "m4/p-i2",
+       "title": "m4/remote",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "m4/p-i2",
+       "initial": "M",
+       "tint": 1,
+       "match": [
+        "m4/remote"
+       ],
+       "name": "m4/remote",
+       "starred": false,
+       "avatar": {
+        "kind": "image",
+        "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "target": "m4/p-i2"
+       }
+      },
+      {
+       "id": "p-i1",
+       "title": "photo",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-i1",
+       "initial": "P",
+       "tint": 0,
+       "match": [
+        "photo"
+       ],
+       "name": "photo",
+       "starred": false,
+       "avatar": {
+        "kind": "image",
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "target": "av4"
+       }
+      },
+      {
+       "id": "p-i3",
+       "title": "shortsha",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-i3",
+       "initial": "S",
+       "tint": 1,
+       "match": [
+        "shortsha"
+       ],
+       "name": "shortsha",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-i4",
+       "title": "nonhex",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-i4",
+       "initial": "N",
+       "tint": 3,
+       "match": [
+        "nonhex"
+       ],
+       "name": "nonhex",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-i5",
+       "title": "nosha",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-i5",
+       "initial": "N",
+       "tint": 1,
+       "match": [
+        "nosha"
+       ],
+       "name": "nosha",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-m1",
+       "title": "known",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-m1",
+       "initial": "K",
+       "tint": 3,
+       "match": [
+        "known"
+       ],
+       "name": "known",
+       "starred": false,
+       "avatar": {
+        "kind": "mascot",
+        "mascot": "drop"
+       }
+      },
+      {
+       "id": "p-m2",
+       "title": "unshipped",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-m2",
+       "initial": "U",
+       "tint": 1,
+       "match": [
+        "unshipped"
+       ],
+       "name": "unshipped",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-m3",
+       "title": "nomascot",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-m3",
+       "initial": "N",
+       "tint": 0,
+       "match": [
+        "nomascot"
+       ],
+       "name": "nomascot",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-s1",
+       "title": "futurestyle",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-s1",
+       "initial": "F",
+       "tint": 2,
+       "match": [
+        "futurestyle"
+       ],
+       "name": "futurestyle",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-s2",
+       "title": "nullavatar",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-s2",
+       "initial": "N",
+       "tint": 1,
+       "match": [
+        "nullavatar"
+       ],
+       "name": "nullavatar",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "",
+        "title": "paneless",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "",
+        "initial": "P",
+        "tint": 2,
+        "match": [
+         "paneless"
+        ],
+        "name": "paneless",
+        "starred": false,
+        "avatar": {
+         "kind": "image",
+         "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+         "target": "paneless"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "",
+        "title": "",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "",
+        "initial": "?",
+        "tint": 1,
+        "match": [
+         ""
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "image",
+         "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+         "target": "av7"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "",
+        "title": "",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "",
+        "initial": "?",
+        "tint": 1,
+        "match": [
+         ""
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "image",
+         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "m4/p-i2",
+        "title": "m4/remote",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "m4/p-i2",
+        "initial": "M",
+        "tint": 1,
+        "match": [
+         "m4/remote"
+        ],
+        "name": "m4/remote",
+        "starred": false,
+        "avatar": {
+         "kind": "image",
+         "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+         "target": "m4/p-i2"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-i1",
+        "title": "photo",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-i1",
+        "initial": "P",
+        "tint": 0,
+        "match": [
+         "photo"
+        ],
+        "name": "photo",
+        "starred": false,
+        "avatar": {
+         "kind": "image",
+         "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+         "target": "av4"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-i3",
+        "title": "shortsha",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-i3",
+        "initial": "S",
+        "tint": 1,
+        "match": [
+         "shortsha"
+        ],
+        "name": "shortsha",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-i4",
+        "title": "nonhex",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-i4",
+        "initial": "N",
+        "tint": 3,
+        "match": [
+         "nonhex"
+        ],
+        "name": "nonhex",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-i5",
+        "title": "nosha",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-i5",
+        "initial": "N",
+        "tint": 1,
+        "match": [
+         "nosha"
+        ],
+        "name": "nosha",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-m1",
+        "title": "known",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-m1",
+        "initial": "K",
+        "tint": 3,
+        "match": [
+         "known"
+        ],
+        "name": "known",
+        "starred": false,
+        "avatar": {
+         "kind": "mascot",
+         "mascot": "drop"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-m2",
+        "title": "unshipped",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-m2",
+        "initial": "U",
+        "tint": 1,
+        "match": [
+         "unshipped"
+        ],
+        "name": "unshipped",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-m3",
+        "title": "nomascot",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-m3",
+        "initial": "N",
+        "tint": 0,
+        "match": [
+         "nomascot"
+        ],
+        "name": "nomascot",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-s1",
+        "title": "futurestyle",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-s1",
+        "initial": "F",
+        "tint": 2,
+        "match": [
+         "futurestyle"
+        ],
+        "name": "futurestyle",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-s2",
+        "title": "nullavatar",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-s2",
+        "initial": "N",
+        "tint": 1,
+        "match": [
+         "nullavatar"
+        ],
+        "name": "nullavatar",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 13
+    }
+   ],
+   "archived": [],
+   "needsYou": 0,
+   "total": 13,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "accounts and time in state",
+  "displayNames": [
+   "lost-account",
+   "resolved",
+   "default",
+   "older-herdr"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p-acc1",
+       "title": "lost-account",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-acc1",
+       "initial": "L",
+       "tint": 1,
+       "match": [
+        "lost-account"
+       ],
+       "name": "lost-account",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "noAccount": true,
+       "account": "gone",
+       "statusSinceUnixMs": 0
+      },
+      {
+       "id": "p-acc2",
+       "title": "resolved",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-acc2",
+       "initial": "R",
+       "tint": 1,
+       "match": [
+        "resolved"
+       ],
+       "name": "resolved",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "account": "home",
+       "statusSinceUnixMs": 1762000000123
+      },
+      {
+       "id": "p-acc3",
+       "title": "default",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-acc3",
+       "initial": "D",
+       "tint": 0,
+       "match": [
+        "default"
+       ],
+       "name": "default",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p-acc4",
+       "title": "older-herdr",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p-acc4",
+       "initial": "O",
+       "tint": 0,
+       "match": [
+        "older-herdr"
+       ],
+       "name": "older-herdr",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-acc1",
+        "title": "lost-account",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-acc1",
+        "initial": "L",
+        "tint": 1,
+        "match": [
+         "lost-account"
+        ],
+        "name": "lost-account",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "noAccount": true,
+        "account": "gone",
+        "statusSinceUnixMs": 0
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-acc2",
+        "title": "resolved",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-acc2",
+        "initial": "R",
+        "tint": 1,
+        "match": [
+         "resolved"
+        ],
+        "name": "resolved",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "account": "home",
+        "statusSinceUnixMs": 1762000000123
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-acc3",
+        "title": "default",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-acc3",
+        "initial": "D",
+        "tint": 0,
+        "match": [
+         "default"
+        ],
+        "name": "default",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p-acc4",
+        "title": "older-herdr",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p-acc4",
+        "initial": "O",
+        "tint": 0,
+        "match": [
+         "older-herdr"
+        ],
+        "name": "older-herdr",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 4
+    }
+   ],
+   "archived": [],
+   "needsYou": 0,
+   "total": 4,
+   "emptyFolders": []
+  }
+ }
+]

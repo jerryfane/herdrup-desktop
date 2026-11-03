@@ -1,0 +1,103 @@
+[
+ {
+  "name": "empty list",
+  "agents": []
+ },
+ {
+  "name": "shared agent",
+  "agents": [
+   {"pane_id": "w1:p2", "terminal_id": "t-9", "tab_id": "w1:t1", "workspace_id": "w1", "focused": true, "revision": 7, "name": "reviewer", "agent": "claude", "agent_status": "working", "cwd": "/home/ana/herdrup/", "terminal_title_stripped": "⠋ π > reading files", "status_since_unix_ms": 1762000000000, "account": "work", "avatar": {"style": "mascot", "mascot": "herdy", "updated_unix_ms": 1}, "last_completed_turn": {"completed_unix_ms": 1761999990000, "turn": 4}}
+  ]
+ },
+ {
+  "name": "every section and order",
+  "agents": [
+   {"pane_id": "p-idle-old", "terminal_id": "t1", "name": "idle-old", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 100, "turn": 1}},
+   {"pane_id": "p-done", "terminal_id": "t2", "name": "finished", "agent_status": "done", "last_completed_turn": {"completed_unix_ms": 300, "turn": 2}},
+   {"pane_id": "p10", "terminal_id": "t3", "name": "tie-ten", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 200, "turn": 1}},
+   {"pane_id": "p9", "terminal_id": "t4", "name": "tie-nine", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 200, "turn": 1}},
+   {"pane_id": "p-zero", "terminal_id": "t5", "name": "zero-turn", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 0, "turn": 0}},
+   {"pane_id": "p-noturn", "terminal_id": "t6", "name": "never-turned", "agent_status": "idle"},
+   {"pane_id": "p-work-a", "terminal_id": "t7", "name": "worker-a", "agent_status": "working", "input_pending": false},
+   {"pane_id": "p-work-b", "terminal_id": "t8", "name": "worker-b", "agent_status": "working", "last_completed_turn": {"completed_unix_ms": 50, "turn": 1}},
+   {"pane_id": "p-blocked", "terminal_id": "t9", "name": "asker", "agent_status": "blocked", "terminal_title_stripped": "✳ Allow edit?"},
+   {"pane_id": "p-pending", "terminal_id": "t10", "name": "menu", "agent_status": "idle", "input_pending": true},
+   {"pane_id": "m1/p3", "terminal_id": "t11", "name": "m1/builder", "machine_id": "m1", "machine_label": "Laptop", "agent_status": "unknown", "last_known_status": "blocked", "reachability": "unreachable"},
+   {"pane_id": "m1/p4", "terminal_id": "t12", "name": "m1/watcher", "machine_id": "m1", "machine_label": "Laptop", "agent_status": "unknown", "last_known_status": "working", "reachability": "unreachable"},
+   {"pane_id": "m2/p1", "terminal_id": "t13", "name": "m2/stale", "machine_id": "m2", "machine_label": "Desk", "agent_status": "working", "reachability": "degraded"},
+   {"pane_id": "m2/p2", "terminal_id": "t14", "name": "m2/fine", "machine_id": "m2", "agent_status": "idle", "reachability": "reachable"},
+   {"pane_id": "p-unknown", "terminal_id": "t15", "name": "lost", "agent_status": "unknown"},
+   {"pane_id": "p-nostatus", "terminal_id": "t16", "name": "silent"},
+   {"pane_id": "p-future", "terminal_id": "t17", "name": "newer", "agent_status": "paused"}
+  ]
+ },
+ {
+  "name": "archived",
+  "agents": [
+   {"pane_id": "p-a1", "terminal_id": "ta1", "name": "old", "agent_status": "idle", "archived": {"at": "2026-01-02T03:04:05Z", "by": "ana", "reason": "done with it"}},
+   {"pane_id": "p-a2", "terminal_id": "ta2", "name": "newer", "agent_status": "working", "archived": {"at": "2026-03-01T00:00:00Z", "by": "", "reason": null}, "reachability": "degraded", "machine_id": "m3"},
+   {"pane_id": "p-a3", "terminal_id": "ta3", "name": "anonymous", "agent_status": "blocked", "archived": {"at": "2026-02-01T00:00:00Z", "by": "", "reason": "cleanup"}, "reachability": "unreachable", "machine_id": "m3"},
+   {"pane_id": "p-a4", "terminal_id": "ta4", "name": "same-time", "agent_status": "idle", "archived": {"at": "2026-02-01T00:00:00Z", "by": "bo"}},
+   {"pane_id": "p-l1", "terminal_id": "tl1", "name": "not-false", "agent_status": "idle", "archived": false},
+   {"pane_id": "p-l2", "terminal_id": "tl2", "name": "not-empty", "agent_status": "idle", "archived": ""},
+   {"pane_id": "p-l3", "terminal_id": "tl3", "name": "not-zero", "agent_status": "idle", "archived": 0},
+   {"pane_id": "p-l4", "terminal_id": "tl4", "name": "not-list", "agent_status": "idle", "archived": []},
+   {"pane_id": "p-l5", "terminal_id": "tl5", "name": "not-null", "agent_status": "idle", "archived": null}
+  ]
+ },
+ {
+  "name": "names titles and previews",
+  "agents": [
+   {"pane_id": "p-title", "terminal_id": "n1", "agent_status": "idle", "terminal_title_stripped": "π > writing tests", "cwd": "/"},
+   {"pane_id": "p-bare", "terminal_id": "n2", "agent_status": "idle", "cwd": ""},
+   {"pane_id": "p-same", "terminal_id": "n3", "agent_status": "idle", "name": "same", "terminal_title_stripped": "same", "cwd": "relative/dir"},
+   {"pane_id": "p-null", "terminal_id": "n4", "agent_status": "idle", "name": null, "terminal_title_stripped": null, "cwd": null, "agent": null},
+   {"pane_id": "p-noprompt", "terminal_id": "n5", "agent_status": "idle", "name": "chevron", "terminal_title_stripped": "> not a prompt", "cwd": "/srv//app//"},
+   {"pane_id": "p-spin", "terminal_id": "n6", "agent_status": "idle", "name": "spinner", "terminal_title_stripped": "  ⠋⠙ ✶  π  >  >  done", "cwd": "."},
+   {"pane_id": "p-tab", "terminal_id": "n7", "agent_status": "idle", "name": "tabbed", "terminal_title_stripped": "⠋\tnot split", "agent": "codex"},
+   {"pane_id": "p-onlyspin", "terminal_id": "n8", "agent_status": "idle", "name": "glyphs", "terminal_title_stripped": "π ⠋ "},
+   {"pane_id": "p-space", "terminal_id": "n9", "agent_status": "idle", "name": " \u0085 "},
+   {"pane_id": "p-nel", "terminal_id": "n10", "agent_status": "idle", "name": "\u0085xavier"},
+   {"pane_id": "p-bom", "terminal_id": "n11", "agent_status": "idle", "name": "\ufeffzed"},
+   {"pane_id": "p-sharp", "terminal_id": "n12", "agent_status": "idle", "name": "ßeta"},
+   {"pane_id": "p-greek", "terminal_id": "n13", "agent_status": "idle", "name": "ᾳlpha"},
+   {"pane_id": "p-greek2", "terminal_id": "n14", "agent_status": "idle", "name": "ᾀrchon"},
+   {"pane_id": "p-accent", "terminal_id": "n15", "agent_status": "idle", "name": "émile"},
+   {"pane_id": "p-emoji", "terminal_id": "n16", "agent_status": "idle", "name": "🐄 cow"},
+   {"pane_id": "p-fed1", "terminal_id": "n17", "agent_status": "idle", "name": "m9/scout", "machine_id": "m9"},
+   {"pane_id": "p-fed2", "terminal_id": "n18", "agent_status": "idle", "name": "other/scout", "machine_id": "m9", "machine_label": "Studio"},
+   {"pane_id": "p-fed3", "terminal_id": "n19", "agent_status": "idle", "terminal_title_stripped": "m9/titled", "machine_id": "m9", "machine_label": "Studio"},
+   {"pane_id": "m9/p-fed4", "terminal_id": "n20", "agent_status": "idle", "machine_id": "m9", "machine_label": "Studio"},
+   {"pane_id": "p-😀", "terminal_id": "n21", "agent_status": "idle", "name": "astral pane"},
+   {"pane_id": "p-\ue000", "terminal_id": "n22", "agent_status": "idle", "name": "private-use pane"},
+   {"pane_id": "", "terminal_id": "", "agent_status": "idle"}
+  ]
+ },
+ {
+  "name": "avatars",
+  "agents": [
+   {"pane_id": "p-m1", "terminal_id": "av1", "name": "known", "agent_status": "idle", "avatar": {"style": "mascot", "mascot": "drop", "sha256": null, "updated_unix_ms": 2}},
+   {"pane_id": "p-m2", "terminal_id": "av2", "name": "unshipped", "agent_status": "idle", "avatar": {"style": "mascot", "mascot": "dragon", "updated_unix_ms": 2}},
+   {"pane_id": "p-m3", "terminal_id": "av3", "name": "nomascot", "agent_status": "idle", "avatar": {"style": "mascot", "mascot": null, "updated_unix_ms": 2}},
+   {"pane_id": "p-i1", "terminal_id": "av4", "name": "photo", "agent_status": "idle", "avatar": {"style": "image", "sha256": "0123456789ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef", "updated_unix_ms": 2}},
+   {"pane_id": "m4/p-i2", "terminal_id": "av5", "name": "m4/remote", "machine_id": "m4", "agent_status": "idle", "avatar": {"style": "image", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "updated_unix_ms": 2}},
+   {"pane_id": "", "terminal_id": "", "name": "paneless", "agent_status": "idle", "avatar": {"style": "image", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "updated_unix_ms": 2}},
+   {"pane_id": "", "terminal_id": "av7", "machine_id": "m4", "agent_status": "idle", "avatar": {"style": "image", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "updated_unix_ms": 2}},
+   {"pane_id": "", "terminal_id": "", "agent_status": "idle", "avatar": {"style": "image", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "updated_unix_ms": 2}},
+   {"pane_id": "p-i3", "terminal_id": "av9", "name": "shortsha", "agent_status": "idle", "avatar": {"style": "image", "sha256": "abc", "updated_unix_ms": 2}},
+   {"pane_id": "p-i4", "terminal_id": "av10", "name": "nonhex", "agent_status": "idle", "avatar": {"style": "image", "sha256": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", "updated_unix_ms": 2}},
+   {"pane_id": "p-i5", "terminal_id": "av11", "name": "nosha", "agent_status": "idle", "avatar": {"style": "image", "updated_unix_ms": 2}},
+   {"pane_id": "p-s1", "terminal_id": "av12", "name": "futurestyle", "agent_status": "idle", "avatar": {"style": "emoji", "mascot": "herdy", "updated_unix_ms": 2}},
+   {"pane_id": "p-s2", "terminal_id": "av13", "name": "nullavatar", "agent_status": "idle", "avatar": null}
+  ]
+ },
+ {
+  "name": "accounts and time in state",
+  "agents": [
+   {"pane_id": "p-acc1", "terminal_id": "ac1", "name": "lost-account", "agent_status": "idle", "account": "gone", "account_unresolved": true, "status_since_unix_ms": 0},
+   {"pane_id": "p-acc2", "terminal_id": "ac2", "name": "resolved", "agent_status": "idle", "account": "home", "account_config_dir": "/home/ana/.claude-home", "account_unresolved": false, "status_since_unix_ms": 1762000000123},
+   {"pane_id": "p-acc3", "terminal_id": "ac3", "name": "default", "agent_status": "idle", "account": "", "account_unresolved": null, "status_since_unix_ms": null},
+   {"pane_id": "p-acc4", "terminal_id": "ac4", "name": "older-herdr", "agent_status": "idle", "account": null}
+  ]
+ }
+]
