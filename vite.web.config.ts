@@ -34,7 +34,7 @@ const runtimeAssets = [
   ...readdirSync(resolve(root, "public/herdrup/mascots")).sort().map(f => `herdrup/mascots/${f}`),
   ...readdirSync(resolve(root, "public/herdrup/composer")).sort().map(f => `herdrup/composer/${f}`),
   "mermaid/mermaid.min.js", "mermaid/Mermaid-LICENSE.txt",
-  "fonts/Geist-OFL.txt", "fonts/IBMPlexMono-OFL.txt",
+  "fonts/Geist-OFL.txt", "fonts/IBMPlexMono-OFL.txt", "herdrup/fonts/NerdFonts-LICENSE.txt",
 ];
 function runtimeFiles(): Plugin {
   return {
@@ -76,7 +76,11 @@ export default defineConfig({
   publicDir: false,
   css: { postcss: { plugins: [uiTypography()] } },
   // tokens.css names the fonts as public/ files; here they are bundled with hashed names.
-  resolve: { alias: [{ find: /^\/fonts\/(.+)$/, replacement: join(root, "public/fonts/$1") }] },
+  resolve: { alias: [
+    { find: /^\/fonts\/(.+)$/, replacement: join(root, "public/fonts/$1") },
+    // interaction.css names the terminal symbols font (public/herdrup/fonts) the same way.
+    { find: /^\/herdrup\/fonts\/(.+)$/, replacement: join(root, "public/herdrup/fonts/$1") },
+  ] },
   plugins: [browserBridge(), runtimeFiles(), devServer()],
   server: { port: 24750, strictPort: true },
   build: {
