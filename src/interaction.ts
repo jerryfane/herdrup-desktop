@@ -1232,8 +1232,13 @@ class Detail {
   const finished = agents.filter(agent => agent.status !== "running");
   const summary = subagentsSummary(agents);
   const heading = (text: string, open: boolean, className: string, label: string, hint: string, toggle: () => void) => {
-   const control = button("", () => { const from = card.getBoundingClientRect().height; toggle(); draw(); animateHeight(card, from, "quick"); });
-   control.className = className;
+   // draw() replaces the heading; focus moves to its replacement, so a keyboard user can toggle back (#132).
+   const control = button("", () => {
+    const from = card.getBoundingClientRect().height, focused = document.activeElement === control;
+    toggle(); draw(); animateHeight(card, from, "quick");
+    if (focused) card.querySelector<HTMLElement>(`[data-disclosure="${className}"]`)?.focus({ preventScroll: true });
+   });
+   control.className = className; control.dataset.disclosure = className;
    control.setAttribute("aria-expanded", String(open)); control.setAttribute("aria-label", label); control.title = hint;
    const chevron = el("span", "chat-plan-chevron"); chevron.setAttribute("aria-hidden", "true");
    void symbol(open ? "chevron.down" : "chevron.right", 10, "bold").then(icon => chevron.append(icon));
