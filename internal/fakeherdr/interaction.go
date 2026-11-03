@@ -69,7 +69,9 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		if p.After == fmt.Sprint(len(x.entries)) {
 			entries = nil
 		}
-		page := map[string]any{"type": "agent_transcript", "agent": "omp", "pane_id": p.Target, "session_id": "demo-session", "after": fmt.Sprint(len(x.entries)), "entries": entries}
+		page := map[string]any{"type": "agent_transcript", "agent": "omp", "pane_id": p.Target, "session_id": "demo-session", "after": fmt.Sprint(len(x.entries)), "entries": entries,
+			// The model omp runs and its effort, as herdr reports it (TranscriptModel).
+			"model": map[string]any{"id": "claude-opus-5-5", "provider": "anthropic", "thinking_level": "high"}}
 		page["plan"] = []map[string]any{
 			{"text": "Inspect the workspace", "status": "completed", "phase": "Review"},
 			{"text": "Check terminal input", "status": "in_progress", "phase": "Verify"},

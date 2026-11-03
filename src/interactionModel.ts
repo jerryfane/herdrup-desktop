@@ -13,6 +13,19 @@ export interface TranscriptPage {
  pending_ask?: { id: string; answerable: boolean; questions: Question[] };
  working?: { intent?: string; [key: string]: unknown };
  subagents?: { id: string; label?: string; task?: string; status?: string; has_transcript: boolean }[];
+ /** The model omp runs and its effort (herdr TranscriptModel); the newest page's. */
+ model?: TranscriptModel | null;
+}
+export interface TranscriptModel { id: string; provider: string; thinking_level?: string | null; thinking_auto?: boolean | null }
+/** The chat's model line, as AgentTranscript.swift TranscriptModel words it: "claude-opus-5-5 · high",
+ *  "high (auto)" once omp's auto picked a level, "auto" before it has, the id alone without a level. */
+export function modelLine(model: TranscriptModel): { label: string; accessibilityLabel: string } {
+ const level = model.thinking_level || null, auto = !!model.thinking_auto;
+ const effort = level ? (auto ? `${level} (auto)` : level) : auto ? "auto" : null;
+ return {
+  label: effort ? `${model.id} · ${effort}` : model.id,
+  accessibilityLabel: `Model: ${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
+ };
 }
 export function mergeTranscript(current: Entry[], page: Entry[], older = false): Entry[] {
  const updates = new Map(page.map(e => [e.id, e]));
