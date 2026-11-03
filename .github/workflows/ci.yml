@@ -43,6 +43,9 @@ jobs:
         env:
           CGO_ENABLED: "1"
       - run: bun run typecheck
+      # Go is on PATH here: test/webguestInterop.test.ts builds cmd/fakeherdr
+      # and runs the web guest against its Go relay.
+      - run: bun test
       - name: Install NSIS for the Windows installer
         run: sudo apt-get update && sudo apt-get install -y nsis
       # MyGo needs no cgo, so Ubuntu compiles every platform; macOS disk
