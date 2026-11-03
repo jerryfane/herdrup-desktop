@@ -91,9 +91,12 @@ function closeError(code: number, reason: string): GuestError | null {
 type Received = Uint8Array | "text";
 
 /** The most a socket holds unread. Go reads with a 65535-byte limit and TCP holds the rest back
- *  (session.go:16, 136); a page cannot push back, so bytes past this end the connection instead.
- *  Any reply this large already exceeds the line limit. */
+ *  (session.go:16, 136); a page cannot push back, so a backlog past these ends the connection
+ *  instead. Any reply this large already exceeds the line limit. */
 export const MAX_QUEUED_BYTES = MAX_REPLY_LINE_BYTES + MAX_NOISE_MESSAGE;
+/** Frames count apart from their bytes, so empty or text frames cannot queue without end: room
+ *  for a whole 64 MiB reply in 1 KiB pieces. */
+export const MAX_QUEUED_FRAMES = 65536;
 
 /** A relay WebSocket as a pull stream of frames. Aborting its signal closes it (transport.go:435). */
 class RelaySocket {
@@ -122,8 +125,8 @@ class RelaySocket {
    const frame = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : "text";
    const size = frame === "text" ? 0 : frame.length;
    // Checked on arrival, as Go's read limit is (session.go:136): an oversized frame or a backlog
-   // past MAX_QUEUED_BYTES ends the connection and frees what it holds.
-   if (size > MAX_NOISE_MESSAGE || socket.#queued + size > MAX_QUEUED_BYTES) {
+   // past MAX_QUEUED_BYTES or MAX_QUEUED_FRAMES ends the connection and frees what it holds.
+   if (size > MAX_NOISE_MESSAGE || socket.#queued + size > MAX_QUEUED_BYTES || socket.#inbox.length >= MAX_QUEUED_FRAMES) {
     socket.#overflow(size > MAX_NOISE_MESSAGE);
     return;
    }

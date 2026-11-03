@@ -6,7 +6,7 @@ import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { Invite } from "../src/webguest/invite";
 import { MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT } from "../src/webguest/noise";
-import { acceptInvite, GuestTransport, MAX_QUEUED_BYTES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
+import { acceptInvite, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
 import { memoryRelay, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
@@ -218,6 +218,25 @@ test("an unread backlog past the queue limit ends the connection and frees it", 
  for (let i = 0; i < 5000 && !closedByGuest; i++) await Bun.sleep(0);
  expect(closedByGuest).toBe(true);
  expect(sent).toBeLessThanOrEqual(MAX_QUEUED_BYTES + MAX_NOISE_MESSAGE);
+ expect(await stream.next().catch((error: Error) => error.message)).toBe("The shared machine sent more than this page can hold.");
+}, 60_000);
+
+// PR #109 re-review: empty frames carry no bytes, so the byte bound alone let them queue
+// without end.
+test("unread empty frames past the frame limit end the connection", async () => {
+ let sent = 0, closedByGuest = false;
+ const { relay, webSocket } = memoryRelay(async (conn, handshake) => {
+  const host = (await handshake()).reply({ ok: true, guest_id: "grant-1" });
+  await host.readLine();
+  const empty = new Uint8Array(0);
+  for (; sent <= MAX_QUEUED_FRAMES && !conn.ended; sent++) { conn.send(empty); if (sent % 256 === 0) await Promise.resolve(); }
+  closedByGuest = conn.ended;
+ });
+ const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const stream = await transport.openStream("events.subscribe");
+ for (let i = 0; i < 5000 && !closedByGuest; i++) await Bun.sleep(0);
+ expect(closedByGuest).toBe(true);
+ expect(sent).toBeLessThanOrEqual(MAX_QUEUED_FRAMES + 256);
  expect(await stream.next().catch((error: Error) => error.message)).toBe("The shared machine sent more than this page can hold.");
 }, 60_000);
 
