@@ -1623,7 +1623,9 @@ class Detail {
     { transform: "scale(1)" },
    ], { duration: SPEC.press.duration });
   }
-  const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal
+  // Only against a loaded transcript (TranscriptStore.stageOutgoing's hasSnapshot): the first
+  // page would otherwise count every old prompt as new and could take the bubble (#139).
+  const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal && this.chat
    ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
   const setOutgoing = (state: Outgoing["state"] | null) => {
    if (!outgoing || this.disposed) return;

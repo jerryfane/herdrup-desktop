@@ -80,8 +80,12 @@ function normalized(text: string): string {
 function sentAs(o: Outgoing, recorded: string): boolean {
  const caption = normalized(o.text);
  if (!o.files) return caption === recorded;
- const reference = caption ? recorded.slice(caption.length).replace(/^\n\n/, "") : recorded;
- return (!caption || recorded.startsWith(caption + "\n\n")) && reference.startsWith("[") && reference.includes(" attached via Herdr Gram");
+ // The caption goes out untrimmed (only the whole prompt is normalized here), so whatever
+ // whitespace ended it sits before the blank line and the reference (#138).
+ if (caption && !recorded.startsWith(caption)) return false;
+ const rest = recorded.slice(caption.length);
+ const reference = rest.trimStart();
+ return (!caption || (rest !== reference && rest.includes("\n\n"))) && reference.startsWith("[") && reference.includes(" attached via Herdr Gram");
 }
 
 /** After a transcript read (TranscriptOutbox.reconcile): a new user entry in the live tail

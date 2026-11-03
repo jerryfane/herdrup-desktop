@@ -38,6 +38,17 @@ test("a send with files matches only its files prompt", () => {
  expect(ids(reconcileOutgoing([bare], new Set(), [user("u5", ref)], 0))).toEqual([]);
 });
 
+test("a files caption ending in whitespace still matches", () => {
+ // The bubble keeps the trimmed caption; herdr records the one typed (#138).
+ const ref = "[Photo attached via Herdr Gram message g1. Download it with `herdr gram get-file g1 -o /tmp/herdr-photo-g1.png`, then inspect /tmp/herdr-photo-g1.png.]";
+ for (const typed of ["look ", "look\n", "look\t", "look\r\n", "  look"]) {
+  const out = sent(typed.trim(), { files: 1 });
+  expect(ids(reconcileOutgoing([out], new Set(), [user("u1", typed + "\n\n" + ref)], 0))).toEqual([]);
+ }
+ // A longer word that starts with the caption is not it.
+ expect(ids(reconcileOutgoing([sent("look", { files: 1 })], new Set(), [user("u2", "lookup\n\n" + ref)], 0))).toEqual(["look"]);
+});
+
 test("an accepted prompt still unseen after its minute says so; one still sending waits", () => {
  const out = reconcileOutgoing([sent("a"), sent("b", { state: "sending" })], new Set(), [], 60_000);
  expect(out.map(o => o.state)).toEqual(["notSeen", "sending"]);
