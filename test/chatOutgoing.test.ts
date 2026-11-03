@@ -15,7 +15,7 @@ test("the reader's own prompt in the tail removes its outgoing bubble", () => {
  expect(ids(reconcileOutgoing([sent("a")], held, [user("u1", "a"), { kind: "reply", id: "r2", ts_ms: 2, text: "a" }], 0))).toEqual(["a"]);
 });
 
-test("someone else's prompt leaves the reader's bubble in place", () => {
+test("other authors keep the bubble", () => {
  // The owner's pending prompt; a guest writes meanwhile, even with the same words.
  expect(ids(reconcileOutgoing([sent("hi")], new Set(), [user("u2", "hi", "guest", "nike")], 0))).toEqual(["hi"]);
  // A guest's pending prompt: the owner's and another guest's prompts are not it; its own is.
