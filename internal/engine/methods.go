@@ -51,6 +51,34 @@ func (c *Client) AgentList(ctx context.Context, p herdrapi.AgentListParams) (her
 	return call[herdrapi.ResponseResultAgentList](ctx, c, "agent.list", p)
 }
 
+// GuestAgentList is agent.list through herdr's guest gate, whose agents
+// also carry guest_running (GuestAgentView, guest_gate.rs:282-320), which
+// the schema leaves out. running[i] is agents[i]'s; absent (an older host)
+// is running, as herdrup reads it (Wire.swift:360-361).
+func (c *Client) GuestAgentList(ctx context.Context) (list herdrapi.ResponseResultAgentList, running []bool, err error) {
+	v, raw, err := c.doRaw(ctx, "agent.list", herdrapi.AgentListParams{})
+	if err != nil {
+		return list, nil, err
+	}
+	list, ok := v.(herdrapi.ResponseResultAgentList)
+	if !ok {
+		return list, nil, fmt.Errorf("engine: agent.list result decoded as %T, want %T", v, list)
+	}
+	var guest struct {
+		Agents []struct {
+			GuestRunning *bool `json:"guest_running"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(raw, &guest); err != nil {
+		return list, nil, err
+	}
+	running = make([]bool, len(list.Agents))
+	for i := range running {
+		running[i] = i >= len(guest.Agents) || guest.Agents[i].GuestRunning == nil || *guest.Agents[i].GuestRunning
+	}
+	return list, running, nil
+}
+
 // AgentRead returns the visible screen or retained output, as text or ANSI.
 func (c *Client) AgentRead(ctx context.Context, p herdrapi.AgentReadParams) (herdrapi.ResponseResultPaneRead, error) {
 	return call[herdrapi.ResponseResultPaneRead](ctx, c, "agent.read", p)

@@ -41,6 +41,12 @@ type GuestRelay struct {
 	OwnerName, MachineLabel, GuestName string
 	// OwnerOnlyAnswers is a herdr older than guest answers.
 	OwnerOnlyAnswers bool
+	// NoGuestRunning is a host older than guest_running, which leaves it out
+	// of the agents it lists.
+	NoGuestRunning bool
+	// OnRequest hears every guest request's method as it arrives, refused
+	// ones included.
+	OnRequest func(method string)
 	// Now is the relay's clock for LimitConnects and Connects; nil is the
 	// wall clock.
 	Now func() time.Time
@@ -62,6 +68,8 @@ type GuestRelay struct {
 	// the relay refuses one with 429 rate_limited (LimitConnects).
 	connects     []GuestConnect
 	connectLimit int
+	// paused is the share paused (Pause).
+	paused bool
 	// commit is the granted agent's state_change_seq when a guest batch last
 	// committed a menu choice; committed says one has.
 	commit    uint64
@@ -285,6 +293,9 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	if err := json.Unmarshal(line, &req); err != nil {
 		return
 	}
+	if r.OnRequest != nil {
+		r.OnRequest(req.Method)
+	}
 	if len(req.Params) == 0 {
 		req.Params = json.RawMessage("{}")
 	}
@@ -330,7 +341,11 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		}
 		return m
 	}
-	agent, live := r.granted()
+	agent, found := r.granted()
+	r.mu.Lock()
+	paused := r.paused
+	r.mu.Unlock()
+	live := found && !paused
 	pane, _ := agent["pane_id"].(string)
 	names := func(target string) bool {
 		return target == r.TerminalID || target == r.AgentName || (live && target == pane)
@@ -343,7 +358,11 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	case "agent.list":
 		agents := []any{}
 		if live {
-			agents = append(agents, guestView(agent))
+			agents = append(agents, r.guestView(agent))
+		} else if found {
+			// paused_view (guest_gate.rs:308-320): the grant alone, not running.
+			agents = append(agents, map[string]any{"terminal_id": r.TerminalID, "pane_id": agent["pane_id"], "name": r.AgentName,
+				"agent": agent["agent"], "display_agent": nil, "agent_status": "unknown", "guest_running": false})
 		}
 		write(map[string]any{"type": "agent_list", "agents": agents}, nil)
 	case "agent.get":
@@ -352,7 +371,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		} else if !live {
 			refuse("guest_paused")
 		} else {
-			write(map[string]any{"type": "agent_info", "agent": guestView(agent)}, nil)
+			write(map[string]any{"type": "agent_info", "agent": r.guestView(agent)}, nil)
 		}
 	case "agent.transcript":
 		if p.Subagent != nil || !names(p.Target) {
@@ -452,8 +471,8 @@ func (r *GuestRelay) record(call GuestCall) {
 	r.mu.Unlock()
 }
 
-// granted finds the shared agent in the owner's agent.list; live is false
-// when it is gone (the share is paused).
+// granted finds the shared agent in the owner's agent.list; found is false
+// when it is gone.
 func (r *GuestRelay) granted() (map[string]any, bool) {
 	value, apiErr := r.Handle("agent.list", json.RawMessage("{}"))
 	if apiErr != nil {
@@ -472,10 +491,23 @@ func (r *GuestRelay) granted() (map[string]any, bool) {
 	return nil, false
 }
 
+// Pause pauses the share as herdr does when the agent leaves its pane's
+// foreground (GrantState::Paused, guest_gate.rs:254): agent.list shows it
+// with guest_running false, and the agent's methods refuse guest_paused.
+func (r *GuestRelay) Pause(paused bool) {
+	r.mu.Lock()
+	r.paused = paused
+	r.mu.Unlock()
+}
+
 // guestView is the only agent fields a guest sees (GuestAgentView,
-// guest_gate.rs:313-345); input_pending is left out when false.
-func guestView(agent map[string]any) map[string]any {
-	view := map[string]any{"guest_running": true}
+// guest_gate.rs:282-306); input_pending is left out when false, and
+// guest_running too for a host older than it (NoGuestRunning).
+func (r *GuestRelay) guestView(agent map[string]any) map[string]any {
+	view := map[string]any{}
+	if !r.NoGuestRunning {
+		view["guest_running"] = true
+	}
 	for _, key := range []string{"terminal_id", "pane_id", "name", "agent", "display_agent", "agent_status", "avatar"} {
 		view[key] = agent[key]
 	}

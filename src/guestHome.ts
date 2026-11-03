@@ -53,10 +53,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
  }
 
  /** agentRow (GuestHomeView.swift 232-276): the owner's roster row (main.ts agentRow), the
-  * avatar with its status badge, the name over "<kind> · <state>" (meta, 278-282), dimmed
-  * and reading "Agent unavailable" when the host lists no agent. */
- async function agentRow(name: string, row: Row | undefined, state: string | undefined, selected: boolean, open: (() => void) | null) {
-  const item = node("div", "row guest-agent-row" + (row?.badge === "waiting" ? " waiting" : "") + (row ? "" : " unavailable") + (selected ? " selected" : ""));
+  * avatar with its status badge, the name over "<kind> · <state>" (meta, 278-282). With no
+  * listed agent, or one the host says isn't running (availability "paused"), it reads "Agent
+  * unavailable" with the avatar dimmed and no badge (235-245, 255). */
+ async function agentRow(name: string, row: Row | undefined, state: string | undefined, running: boolean, selected: boolean, open: (() => void) | null) {
+  const item = node("div", "row guest-agent-row" + (running && row?.badge === "waiting" ? " waiting" : "") + (row && running ? "" : " unavailable") + (selected ? " selected" : ""));
   item.dataset.testid = "guest-agent-row";
   item.setAttribute("role", "button");
   item.setAttribute("aria-current", String(selected));
@@ -67,7 +68,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    item.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } };
   }
   let face: HTMLElement;
-  if (row) face = await deps.avatar(row);
+  if (row) face = await deps.avatar(running ? row : { ...row, badge: "" });
   else {
    // No listed agent: the default tile with the share's initial (AgentAvatarView(agent: nil)).
    face = node("div", "avatar"); const tile = node("div", "tile tint-0");
@@ -76,7 +77,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const text = node("div", "text"), line1 = node("div", "line1"), chev = node("span", "chev");
   chev.append(await deps.symbol("chevron.right", 12, "semibold"));
   line1.append(node("span", "name t-row-name", name), node("span", "spacer"), chev);
-  const meta = row ? [row.agent, state].filter(Boolean).join(" · ") : "Agent unavailable";
+  const meta = row && running ? [row.agent, state].filter(Boolean).join(" · ") : "Agent unavailable";
   text.append(line1, node("div", "preview t-row-preview", meta));
   item.append(face, text);
   return item;
@@ -122,7 +123,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     content.setAttribute("role", "status"); content.setAttribute("aria-label", "Connecting");
    } else {
     const open = row ? () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: row.id }) : null;
-    content = await agentRow(access.agentName, row, rowState, openPane === row?.id, open);
+    content = await agentRow(access.agentName, row, rowState, guest.availability !== "paused", openPane === row?.id, open);
    }
    // Listed before the relay's 429: the row stays, and says it is reconnecting below it.
    const reconnecting = guest.availability === "reconnecting" && board ? node("p", "guest-home-note", `${RELAY_RECONNECTING} ${state.message}`) : null;

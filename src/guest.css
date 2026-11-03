@@ -47,6 +47,9 @@
 .guest-home-message p { margin: 0; font: 400 calc(14px * var(--ui-font-scale, 1))/calc(1em * var(--leading-app) + 3.5px) var(--font-app); color: var(--color-text-dim); overflow-wrap: anywhere; }
 /* The lost share's "Remove share" (GuestHomeView.swift 217-224): a 34 pt capsule, 6 down. */
 .guest-home-message .guest-destructive { height: 34px; margin-top: 12px; padding: 0 14px; font-size: calc(13.5px * var(--ui-font-scale, 1)); }
+/* The paused share's GuestCenterMessage over the unmounted terminal (GuestPaneView.swift
+   486-490, 1014-1039): the same card, 24 sides, 204 down. */
+.guest-paused-message { margin: 204px 24px 0; }
 /* GuestShellStyle.note (GuestAcceptView.swift 20-31), 18 below the list: app 13 textDim,
    radius 14, 14 by 13.5 inside, 16 sides. Neutral surface and hairline, not violet. */
 .guest-home-note { margin: 18px 16px 0; padding: 13.5px 14px; border: 1px solid var(--color-hairline); border-radius: 14px; background: var(--color-surface); color: var(--color-text-dim); font: 400 calc(13px * var(--ui-font-scale, 1))/calc(1em * var(--leading-app) + 2.75px) var(--font-app); }

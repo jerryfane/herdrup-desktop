@@ -34,7 +34,9 @@ type GuestConnection struct {
 	// machine offline, "lost" when the owner no longer shares the agent, ""
 	// otherwise. "reconnecting" goes with a "connecting" or "connected" phase
 	// instead: the relay refuses this network's connects (429 rate_limited)
-	// and the guest waits to try again (Message says how long).
+	// and the guest waits to try again (Message says how long). "paused" goes
+	// with "connected": the owner's agent is not running or not listed
+	// (App/GuestPaneView.swift:737-753).
 	Availability string `json:"availability,omitempty"`
 }
 
@@ -223,7 +225,7 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 	gramStarted, listed := false, false
 	for ctx.Err() == nil {
 		wait := guestStatusPoll
-		result, err := client.AgentList(ctx, herdrapi.AgentListParams{})
+		result, running, err := client.GuestAgentList(ctx)
 		if ctx.Err() != nil {
 			return
 		}
@@ -244,9 +246,15 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 		} else {
 			listed = true
 			agents := make([]herdrapi.AgentInfo, 0, 1)
-			for _, agent := range result.Agents {
+			// Paused while the shared agent is missing or not running
+			// (App/GuestPaneView.swift:737-753).
+			availability := "paused"
+			for i, agent := range result.Agents {
 				if agent.TerminalID == l.access.AgentTarget || agent.PaneID == l.access.AgentTarget {
 					agents = append(agents, agent)
+					if running[i] {
+						availability = ""
+					}
 					break
 				}
 			}
@@ -254,7 +262,7 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 				gramStarted = true
 				go d.watchGram(ctx, l)
 			}
-			publishState("connected", "", "")
+			publishState("connected", "", availability)
 			d.mu.Lock()
 			if ctx.Err() != nil || d.link != l {
 				d.mu.Unlock()

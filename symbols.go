@@ -142,6 +142,8 @@ var standIns = [...]standIn{
 	{"bubble.left.and.exclamationmark.bubble.right", "chats", false},
 	{"paperclip", "paperclip", false},
 	{"tray.and.arrow.down", "tray-arrow-down", false},
+	// A paused share (herdrup App/GuestPaneView.swift centerMessage).
+	{"pause.fill", "pause", true},
 }
 
 // sfMetric is how macOS lays out one stand-in's SF Symbol at each weight

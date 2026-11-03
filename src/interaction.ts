@@ -19,6 +19,7 @@ import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING, sendShown } from "./chatPoll";
+import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
@@ -92,6 +93,9 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
   // a list goes through (desk_guest.go runGuest).
   if (state.guest?.availability === "reconnecting") current.status.textContent = RELAY_RECONNECTING;
   else if (current.status.textContent === RELAY_RECONNECTING) current.status.textContent = "";
+  // Paused or running again once a list goes through (desk_guest.go runGuest); offline, lost and
+  // reconnecting leave the page as it was.
+  if (state.phase === "connected" && state.guest?.availability !== "reconnecting") current.applyGuestAvailability(state.guest?.availability);
  });
  onTextSizeChanged(() => current?.resizeText());
  window.addEventListener("keydown", event => {
@@ -187,6 +191,10 @@ class Detail {
  // The guest's host refused its terminal size: herdrup's note line says so instead of an error
  // (GuestPaneView.resizeRefused, GuestPaneView.swift:81, 449, 573).
  resizeRefused = false;
+ // The shared agent isn't running (GuestPaneView availability .paused); null while it runs.
+ guestPaused: GuestPausedPage | null = null;
+ // The terminal area holds the paused message rather than a stream (replaceTerminal).
+ terminalPaused = false;
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
  private workingRow?: HTMLElement;
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
@@ -394,7 +402,9 @@ class Detail {
  updateGuestQuestion(): GuestQuestion | null {
   const view = this.view;
   if (!view?.guest) return null;
-  const question = guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal", this.resizeRefused);
+  // Paused: NOT RUNNING, with no note line and no menu keys (GuestPaneView.swift:406-409, 571).
+  const question: GuestQuestion = this.guestPaused ? { banner: null, tone: "faint", menuKeys: false, label: this.guestPaused.pill }
+   : guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal", this.resizeRefused);
   this.guestBanner.textContent = question.banner ?? "";
   this.guestBanner.hidden = !question.banner;
   this.guestBanner.dataset.keys = String(question.menuKeys);
@@ -457,13 +467,46 @@ class Detail {
    this.attach.hidden = view.guest && !view.guestGram;
    modes.hidden = !chatAvailable && !view.guestGram;
    if (view.guest) {
+    this.guestPaused = guestPausedPage((await Desk.state().catch(() => null))?.guest?.availability, view.name);
+    if (this.disposed) return;
     this.guestChat = chatAvailable; this.guestModes = modes;
     const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram")));
     gram.hidden = !view.guestGram; this.guestGramButton = gram;
     modes.replaceChildren(...(chatAvailable ? [this.chatButton] : []), this.terminalButton, gram);
    }
    await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal");
+   if (view.guest) this.showGuestPaused();
   } catch (e) { if (!this.disposed) this.status.textContent = errorText(e); }
+ }
+ /** The share paused or resumed (GuestPaneView.setAvailability, GuestPaneView.swift:757-762). */
+ applyGuestAvailability(availability: string | undefined) {
+  const view = this.view;
+  if (!view?.guest) return;
+  const next = guestPausedPage(availability, view.name);
+  if (!next === !this.guestPaused) return;
+  this.guestPaused = next;
+  this.showGuestPaused();
+  if (!this.mounted) return;
+  // The terminal is unmounted while paused and remounted fresh on resume (:441-445, streamGen).
+  void this.reconnectTerminal();
+  // The chat reads no more while paused (live: false, :133) and polls again on resume.
+  if (next) clearTimeout(this.refreshTimer);
+  else if (this.mode === "chat") void this.refreshChat(this.generation);
+ }
+ /** Pill, note line and composer for the share's availability: paused, the composer is off and
+  *  says "Agent unavailable" (canCompose, placeholder: GuestPaneView.swift:515, 587-596). */
+ showGuestPaused() {
+  const paused = !!this.guestPaused;
+  this.updateStatus(...this.shownStatus);
+  this.input.disabled = paused;
+  this.input.placeholder = this.guestPaused?.placeholder ?? "Type a reply…";
+  this.send.disabled = paused || this.sending || this.dictation.busy;
+  this.attach.disabled = paused || this.sending || this.picking;
+  this.prompts.button.disabled = paused || this.sending || this.dictation.busy;
+  this.dictation.button.disabled = paused || this.sending;
+  // The working row goes with the poll (ChatView live).
+  if (this.chat && this.mode === "chat") this.drawChat(false);
+  this.input.dispatchEvent(new Event("input"));
  }
  changeTextSize(surface: TextSurface, delta: number | "reset") {
   try { changeTextSize(surface, delta); }
@@ -535,9 +578,10 @@ class Detail {
  updateStatus(group: string, label: string, since?: number) {
   clearInterval(this.statusTimer);
   this.shownStatus = [group, label, since];
+  if (this.guestPaused) since = undefined;
   // NEEDS <OWNER> while the question waits for the owner (GuestPaneView.statusPill, GuestPaneView.swift:411-413).
   const shown = this.updateGuestQuestion()?.label ?? label;
-  this.stateLine.dataset.group = group;
+  this.stateLine.dataset.group = this.guestPaused ? "paused" : group;
   this.stateLine.replaceChildren(el("span", "pane-state-dot"), el("span", "pane-state-label", shown), this.stateAge);
   const updateAge = () => {
    if (since === undefined) { this.stateAge.textContent = ""; return; }
@@ -711,8 +755,8 @@ class Detail {
    this.mounted = true;
    this.body.append(this.terminalSurface, this.chatSurface, ...this.column.handles, this.column.readout);
    this.openChat(generation);
-   this.terminalStartup = this.openTerminal(generation);
-   await this.terminalStartup;
+   if (this.guestPaused) await this.reconnectTerminal();
+   else { this.terminalStartup = this.openTerminal(generation); await this.terminalStartup; }
   } else if (mode === "chat") {
    void this.refreshChat(generation);
   } else {
@@ -721,8 +765,12 @@ class Detail {
   this.input.dispatchEvent(new Event("input"));
  }
  // One reconnect at a time: a refresh while one runs joins it rather than opening a second stream.
- reconnectTerminal() {
-  this.terminalReconnect ??= this.replaceTerminal().finally(() => { this.terminalReconnect = null; });
+ reconnectTerminal(): Promise<void> {
+  this.terminalReconnect ??= this.replaceTerminal().finally(() => {
+   this.terminalReconnect = null;
+   // The share paused or resumed while this one ran: follow it.
+   if (!this.disposed && !!this.guestPaused !== this.terminalPaused) void this.reconnectTerminal();
+  });
   return this.terminalReconnect;
  }
  async replaceTerminal() {
@@ -738,6 +786,17 @@ class Detail {
   await Desk.stopTerminal(this.token, this.terminalID);
   if (this.disposed) return;
   this.terminalSurface.replaceChildren();
+  this.terminalPaused = !!this.guestPaused;
+  if (this.guestPaused) {
+   // Unmounted while paused, with the centre message in its place (GuestPaneView.swift:441-445, 487-491).
+   this.terminalStartup = null; this.terminalID = "";
+   const { icon, title, detail } = this.guestPaused.center;
+   const card = el("div", "guest-home-message guest-paused-message");
+   const disc = el("span", "guest-home-message-icon"); disc.append(await symbol(icon, 17, "semibold"));
+   card.append(disc, el("strong", "", title), el("p", "", detail));
+   if (!this.disposed) this.terminalSurface.replaceChildren(card);
+   return;
+  }
   this.terminalStartup = this.openTerminal(this.generation);
   await this.terminalStartup;
  }
@@ -799,6 +858,7 @@ class Detail {
  }
  frame(event: { streamID: string; frame?: ByteFrame; error?: string }) {
   if (!this.terminal || event.streamID !== this.terminalID) return;
+  if (event.error && this.view?.guest && isGuestPaused(event.error)) { this.applyGuestAvailability("paused"); return; }
   if (event.error) { this.prediction?.reset(); this.status.textContent = "Terminal disconnected: " + event.error; this.terminalReady = false; this.updateHistoryPaging(true); return; }
   const f = event.frame; if (!f) return;
   if (!this.sequence.accept(f)) { this.prediction?.reset(); this.status.textContent = "Terminal stream changed. Reconnect to obtain a fresh screen."; this.terminalReady = false; this.updateHistoryPaging(true); return; }
@@ -868,12 +928,12 @@ class Detail {
   this.picking = true; this.attach.disabled = true;
   try { if (paths) await Desk.paneAttachFiles(this.token, paths); else await Desk.panePickFiles(this.token); }
   catch(error) { if (!this.disposed) this.status.textContent = errorText(error); }
-  finally { this.picking = false; this.attach.disabled = this.sending; }
+  finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
   this.entries = []; this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null;
   this.answerProblem = null; this.localAnswers.clear();
-  this.input.disabled = false; this.send.disabled = this.sending;
+  this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
   const composer = el("div", "chat-composer");
   const actions = el("div", "composer-actions");
   this.attach.className = "composer-action";
@@ -973,7 +1033,7 @@ class Detail {
    }
   }
   finally {
-   if (!this.disposed && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) {
+   if (!this.disposed && !this.guestPaused && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) {
     const delay = chatPollDelay({ guest: !!this.view?.guest, working: !!this.chat?.working, sendPending: !!this.sendFollow, followUntil: this.sendFollow?.until ?? 0, now: Date.now() });
     this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, delay);
    }
@@ -1038,7 +1098,7 @@ class Detail {
   * element, kept attached across polls, so the dots' animation never restarts. */
  private renderWorking(): HTMLElement | null {
   const group = this.shownStatus[0];
-  if (this.chatFailed || !(group === "working" || (!group && this.chat?.working))) return null;
+  if (this.guestPaused || this.chatFailed || !(group === "working" || (!group && this.chat?.working))) return null;
   const intent = this.chat?.working?.intent || "";
   const row = this.workingRow ??= el("div", "chat-working");
   if (row.dataset.intent !== intent || !row.firstChild) {
@@ -1414,7 +1474,7 @@ class Detail {
  }
  async sendPrompt() {
   const text = this.input.value;
-  if (this.sending || this.dictation.busy || this.inputFailed || (!text.trim() && !this.attachments.length)) return;
+  if (this.guestPaused || this.sending || this.dictation.busy || this.inputFailed || (!text.trim() && !this.attachments.length)) return;
   const hasAttachments = this.attachments.length > 0;
   if (!hasAttachments) { this.unsentPrompt = text; this.input.value = ""; this.input.dispatchEvent(new Event("input")); }
   this.sending = true; this.dictation.button.disabled = true; this.send.disabled = true; this.attach.disabled = true; this.prompts.button.disabled = true; this.renderAttachments();
@@ -1439,11 +1499,15 @@ class Detail {
    if (!this.disposed) {
     this.unsentPrompt = ""; this.saveDraft();
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }
-    this.status.textContent = errorText(e);
+    const message = errorText(e);
+    this.status.textContent = (this.view?.guest && guestSendFailure(message, this.view.name)) || message;
+    // A refused send moves the page to paused at once (failureNote's apply, GuestPaneView.swift:915-917).
+    if (this.view?.guest && isGuestPaused(message)) this.applyGuestAvailability("paused");
    }
   }
   finally {
-   this.sending = false; this.dictation.button.disabled = false; this.send.disabled = this.dictation.busy; this.attach.disabled = this.picking; this.prompts.button.disabled = this.dictation.busy;
+   const paused = !!this.guestPaused;
+   this.sending = false; this.dictation.button.disabled = paused; this.send.disabled = paused || this.dictation.busy; this.attach.disabled = paused || this.picking; this.prompts.button.disabled = paused || this.dictation.busy;
    if (!this.disposed) this.renderAttachments();
   }
  }
