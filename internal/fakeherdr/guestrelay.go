@@ -41,6 +41,10 @@ type GuestRelay struct {
 	OwnerName, MachineLabel, GuestName string
 	// OwnerOnlyAnswers is a herdr older than guest answers.
 	OwnerOnlyAnswers bool
+	// WebOrigins are page origins (host[:port] patterns) whose WebSockets the
+	// relay accepts besides its own: the web guest served from another local
+	// port. The real relay serves /web/ from its own origin.
+	WebOrigins []string
 	// NoGuestRunning is a host older than guest_running, which leaves it out
 	// of the agents it lists.
 	NoGuestRunning bool
@@ -200,7 +204,7 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, `{"error":"rate_limited"}`, http.StatusTooManyRequests)
 		return
 	}
-	socket, err := websocket.Accept(w, req, nil)
+	socket, err := websocket.Accept(w, req, &websocket.AcceptOptions{OriginPatterns: r.WebOrigins})
 	if err != nil {
 		return
 	}

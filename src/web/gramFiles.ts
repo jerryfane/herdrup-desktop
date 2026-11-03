@@ -44,7 +44,7 @@ export async function readChunks(chunk: (offset: number) => Promise<FileChunk>, 
 export type SavePlan = { kind: "stream" } | { kind: "blob" } | { kind: "too-large"; note: string };
 export function savePlan(size: number, canStream: boolean, cap = BLOB_SAVE_MAX_BYTES): SavePlan {
  if (canStream) return { kind: "stream" };
- if (size > cap) return { kind: "too-large", note: `This browser can't save files over ${Math.round(cap / 1e6)} MB. Use the HerdrUp app, or a browser that can save to a chosen file.` };
+ if (size > cap) return { kind: "too-large", note: `This browser can't save files over ${Math.round(cap / 1e6)} MB. Use the herdrup app, or a browser that can save to a chosen file.` };
  return { kind: "blob" };
 }
 
