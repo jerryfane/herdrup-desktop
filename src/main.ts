@@ -19,7 +19,7 @@ import { showNewAgent, showNewTerminal } from "./create";
 import { terminalRows } from "./terminals";
 import { initGuestHome } from "./guestHome";
 import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
-import { animateDisclosures, applyMotions, motionSeconds } from "./motion";
+import { animateDisclosures, applyMotions, motionMode, motionSeconds, SPEC } from "./motion";
 import { initStarAsk } from "./starAsk";
 import { errorText } from "./errors";
 import { appUpdatesShown, watchAppUpdate } from "./appUpdates";
@@ -331,6 +331,7 @@ async function renderRows() {
             const row = await agentRow(e.row, true);
             // The needs-you pill watches the waiting rows (sessions.ts).
             row.dataset.section = e.section;
+            if (e.row.folderID) row.dataset.folderId = e.row.folderID;
             nodes.push(row);
             break;
           }
@@ -359,6 +360,7 @@ async function renderRows() {
   searchField.hidden = !board;
   rowsEl.replaceChildren(...nodes);
   refreshRowSelection();
+  applyFolderMotion();
   renderSessionPills();
   const needsYou = tab === "agents" && !choosingHost && board && searchInput.value === "" ? (board.board.sections.find((s: Section) => s.key === "needsYou")?.rows ?? []) : [];
   const waitingRows = [...rowsEl.querySelectorAll<HTMLElement>('[data-section="needsYou"]')];
@@ -373,7 +375,63 @@ let drawn = false;
 
 // A folder's picture shows its first members' avatars without the status
 // badge (herdrup AgentFolderPicture).
-const folderDeps: FolderDeps = { el, symbol, picture: (r) => avatarFace(r.avatar, () => initialTile(r)) };
+const folderDeps: FolderDeps = { el, symbol, picture: (r) => avatarFace(r.avatar, () => initialTile(r)), toggled: folderToggled };
+
+// A folder opening or closing (motion spec §2, herdr-round5 motion-spec-send-folders.md). The
+// state is saved at the click (folders.ts); this draws the change once the board shows it.
+let folderMotion: { id: string; open: boolean; at: number; leaving: HTMLElement[] } | null = null;
+function folderToggled(id: string, isOpen: boolean) {
+  // Closing: the members drawn now are what collapses away.
+  const leaving = isOpen ? [] : [...rowsEl.querySelectorAll<HTMLElement>(".row[data-folder-id]")].filter((r) => r.dataset.folderId === id);
+  folderMotion = { id, open: isOpen, at: performance.now(), leaving };
+}
+function applyFolderMotion() {
+  const m = folderMotion;
+  if (!m) return;
+  if (performance.now() - m.at > 3000) { folderMotion = null; return; }
+  const row = [...rowsEl.querySelectorAll<HTMLElement>(".row.folder")].find((r) => r.dataset.folder === m.id);
+  const chev = row?.querySelector<HTMLElement>(".chev");
+  if (!row || !chev || chev.classList.contains("open") !== m.open) return; // not drawn yet
+  folderMotion = null;
+  const mode = motionMode();
+  if (mode === "still") return;
+  if (mode === "full") {
+    const [from, to] = m.open ? [0, 90] : [90, 0];
+    chev.animate([{ transform: `rotate(${from}deg)` }, { transform: `rotate(${to}deg)` }], { duration: SPEC.chevron.duration, easing: SPEC.chevron.ease });
+  }
+  // The rows move inside a clipping box whose height animates, so the rows under the folder
+  // ride the change; the box unwraps (open) or leaves (close) when it lands.
+  const clip = (rows: HTMLElement[]) => {
+    const box = el("div", "folder-motion");
+    row.after(box); box.append(...rows);
+    return { box, height: box.getBoundingClientRect().height };
+  };
+  if (m.open) {
+    const members: HTMLElement[] = [];
+    for (let n = row.nextElementSibling; n instanceof HTMLElement && n.dataset.folderId === m.id; n = n.nextElementSibling) members.push(n);
+    if (!members.length) return;
+    if (mode === "reduced") {
+      for (const r of members) r.animate([{ opacity: 0 }, { opacity: 1 }], { duration: SPEC.fade.duration });
+      return;
+    }
+    const o = SPEC.folderOpen, { box, height } = clip(members);
+    const motions = [box.animate([{ height: "0px" }, { height: `${height}px` }], { duration: o.duration, easing: o.ease })];
+    members.forEach((r, i) => motions.push(r.animate(
+      [{ opacity: 0, transform: `translateY(-${o.rise}px)` }, { opacity: 1, transform: "none" }],
+      { duration: o.duration, easing: o.ease, delay: Math.min(i, o.staggered - 1) * o.stagger, fill: "backwards" })));
+    const unwrap = () => { if (box.isConnected) box.replaceWith(...box.childNodes); };
+    void Promise.all(motions.map((a) => a.finished)).then(unwrap, unwrap);
+  } else {
+    if (mode === "reduced" || !m.leaving.length) return;
+    // The rows drawn before the close, now detached: inert copies that count as no row
+    // (selection, needs-you, folder lookups).
+    for (const r of m.leaving) { for (const key of Object.keys(r.dataset)) delete r.dataset[key]; r.classList.remove("selected"); }
+    const c = SPEC.folderClose, { box, height } = clip(m.leaving);
+    box.inert = true; box.setAttribute("aria-hidden", "true");
+    const remove = () => box.remove();
+    box.animate([{ height: `${height}px`, opacity: 1 }, { height: "0px", opacity: 0 }], { duration: c.duration, easing: c.ease, fill: "forwards" }).finished.then(remove, remove);
+  }
+}
 
 // ---- Detail column ----
 

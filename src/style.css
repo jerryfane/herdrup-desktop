@@ -575,6 +575,9 @@ button.ghost { color: var(--color-text-dim); background: transparent; box-shadow
 .row.folder .count { color: var(--color-text-dim); }
 .row.folder .chev { display: flex; }
 .row.folder .chev.open { transform: rotate(90deg); }
+/* A folder's rows while they open or close (main.ts applyFolderMotion): the box clips them while
+   its height animates, so the rows below move with it. */
+.folder-motion { overflow: hidden; }
 .row.folder .preview { -webkit-line-clamp: 1; }
 /* Count pill: 13 bold tabular in ground ink, padding 7, at least 22 x 22,
    a capsule (AgentFolderRow.countPill). */

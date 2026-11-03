@@ -51,3 +51,26 @@ export function isRelayRateLimited(message: string): boolean {
 export function sendShown(held: ReadonlySet<string>, page: readonly Entry[]): boolean {
  return page.some(entry => entry.kind === "user" && !held.has(entry.id));
 }
+
+/** A prompt the reader sent that the transcript does not show yet (TranscriptOutbox.swift),
+ *  drawn at the chat's tail the moment it is sent. */
+export type OutgoingState = "sending" | "submitted" | "unconfirmed" | "notSeen";
+export interface Outgoing { id: string; text: string; files: number; state: OutgoingState; until: number }
+
+/** The line under an outgoing bubble (ChatView.outgoingBubble). */
+export function outgoingReceipt(state: OutgoingState): string {
+ switch (state) {
+  case "sending": return "Sending…";
+  case "submitted": return "Accepted by agent";
+  case "unconfirmed": return "Confirmation pending";
+  case "notSeen": return "Not seen in chat · check Terminal";
+ }
+}
+
+/** After a transcript read: each new user entry in the live tail stands for the oldest
+ *  outgoing prompt, which leaves; one still unseen after its minute reads "Not seen in chat"
+ *  (TranscriptOutbox.unseenAfter). */
+export function reconcileOutgoing(outgoing: readonly Outgoing[], held: ReadonlySet<string>, page: readonly Entry[], now: number): Outgoing[] {
+ const shown = page.filter(entry => entry.kind === "user" && !held.has(entry.id)).length;
+ return outgoing.slice(shown).map(o => o.state !== "sending" && o.state !== "notSeen" && now >= o.until ? { ...o, state: "notSeen" } : o);
+}

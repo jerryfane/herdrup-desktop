@@ -19,13 +19,13 @@ import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
-import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING, sendShown } from "./chatPoll";
+import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
-import { animateHeight, easeOut, motionSeconds } from "./motion";
+import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode } from "./chatPreference";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -243,6 +243,11 @@ class Detail {
  // A guest's last send that has not shown up in the transcript: until when it keeps the poll fast
  // (ChatModel.hasPendingSend and fastPollUntil, chatPoll.ts).
  sendFollow: { until: number } | null = null;
+ // Prompts sent from here that the transcript does not show yet, drawn at the tail at once
+ // (motion spec §1), and their nodes, kept so each enters once and its receipt cross-fades.
+ outgoing: Outgoing[] = [];
+ outgoingNodes = new Map<string, HTMLElement>();
+ outgoingCount = 0;
  answering = false;
  answerProblem: { askID: string; message: string; offersTerminal: boolean } | null = null;
  localAnswers = new Map<string, string[]>();
@@ -681,8 +686,8 @@ class Detail {
   *  screen above the tail, then glides the last screen in 0.3 s ease-out. The tail counts as
   *  reached at once, so the button and the composer fade go now and following resumes.
   *  Reduce Motion (a 0 s glide) jumps. */
- glideChatToLatest() {
-  const scroll = this.chatScroll, seconds = motionSeconds("glide");
+ glideChatToLatest(motion?: { seconds: number; curve: (x: number) => number }) {
+  const scroll = this.chatScroll, seconds = motion ? motion.seconds : motionSeconds("glide"), curve = motion?.curve ?? easeOut;
   const bottom = () => scroll.scrollHeight - scroll.clientHeight;
   this.stopChatGlide(); this.chatFollowing = true;
   if (!seconds || Math.abs(bottom() - scroll.scrollTop) <= 0.5) { this.followChat(); return; }
@@ -692,7 +697,7 @@ class Detail {
    if (this.findOpen || this.mode !== "chat") { this.stopChatGlide(); return; }
    const progress = Math.min(1, (now - start) / (seconds * 1000));
    // The tail is read every frame, so output arriving mid-glide extends the glide.
-   scroll.scrollTop = from + (bottom() - from) * easeOut(progress);
+   scroll.scrollTop = from + (bottom() - from) * curve(progress);
    if (progress < 1) this.chatGlide = requestAnimationFrame(step);
    else { this.chatGlide = 0; this.followChat(); }
   };
@@ -947,7 +952,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null;
+  this.entries = []; this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null; this.outgoing = [];
   this.answerProblem = null; this.localAnswers.clear();
   this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
   const composer = el("div", "chat-composer");
@@ -1030,6 +1035,7 @@ class Detail {
    // entries can be the send.
    const held = new Set(this.entries.map(entry => entry.id));
    if (!this.chat || this.chat.session_id !== page.session_id) {
+    if (this.chat) this.outgoing = [];
     this.entries = []; this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear();
    }
@@ -1039,6 +1045,7 @@ class Detail {
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
    for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
    if (this.sendFollow && sendShown(held, page.entries ?? [])) this.sendFollow = null;
+   this.outgoing = reconcileOutgoing(this.outgoing, held, page.entries ?? [], Date.now());
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
   } catch(e) {
@@ -1086,6 +1093,8 @@ class Detail {
   if (pending && !this.entries.some(entry => entry.kind === "ask" && entry.id === pending.id)) {
    nodes.push(this.renderQuestion({ kind:"ask", id:pending.id, ts_ms:0, questions:pending.questions }, pending));
   }
+  for (const message of this.outgoing) nodes.push(this.renderOutgoing(message));
+  for (const id of this.outgoingNodes.keys()) if (!this.outgoing.some(message => message.id === id)) this.outgoingNodes.delete(id);
   const plan = currentPlan(this.chat, this.entries);
   if (plan.length) nodes.push(this.renderPlan(plan));
   const agents = this.chat?.subagents ?? [];
@@ -1127,6 +1136,41 @@ class Detail {
    row.setAttribute("role", "status"); row.setAttribute("aria-label", intent ? `Working: ${intent}` : "Working");
   }
   return row;
+ }
+ /** ChatView.outgoingBubble: a prompt sent from here, at the tail until the transcript shows it,
+  *  with its receipt under it. It enters once (motion spec §1.3: from opacity 0, 14 px down and
+  *  96 % scale, anchored bottom-trailing); a later receipt cross-fades in 150 ms (§1.5). */
+ private renderOutgoing(message: Outgoing): HTMLElement {
+  const receipt = (message.files ? `${message.files} file${message.files === 1 ? "" : "s"} · ` : "") + outgoingReceipt(message.state);
+  const mode = motionMode();
+  let node = this.outgoingNodes.get(message.id);
+  if (node) {
+   const line = node.querySelector<HTMLElement>(".chat-send-receipt")!;
+   if (line.textContent !== receipt) {
+    line.textContent = receipt;
+    if (mode !== "still") line.animate([{ opacity: 0 }, { opacity: 1 }], { duration: SPEC.receipt.duration });
+   }
+   return node;
+  }
+  node = el("article", "chat-message user chat-outgoing");
+  if (message.text) {
+   const bubble = el("div", "chat-user-text");
+   bubble.append(el("span", "chat-user-content", message.text)); node.append(bubble);
+   this.promptLayoutDirty = true;
+  }
+  const line = el("span", "chat-send-receipt", receipt);
+  line.setAttribute("role", "status");
+  node.append(line);
+  if (mode === "full") {
+   node.animate([
+    { opacity: 0, transform: "translateY(14px) scale(0.96)" },
+    { opacity: 1, transform: "none" },
+   ], { duration: SPEC.bubble.duration, easing: SPEC.bubble.ease });
+  } else if (mode === "reduced") {
+   node.animate([{ opacity: 0 }, { opacity: 1 }], { duration: SPEC.fade.duration });
+  }
+  this.outgoingNodes.set(message.id, node);
+  return node;
  }
  /** ChatView.sessionFooter's model line: the model omp runs and its effort, under the conversation
   *  (ChatView.swift chat-model). One element, kept attached while its text holds. */
@@ -1560,8 +1604,38 @@ class Detail {
  async sendPrompt() {
   const text = this.input.value;
   if (this.guestPaused || this.sending || this.dictation.busy || this.inputFailed || (!text.trim() && !this.attachments.length)) return;
-  const hasAttachments = this.attachments.length > 0;
+  const hasAttachments = this.attachments.length > 0, files = this.attachments.length;
+  // Motion spec §1, all in the tap's frame: the composer clearing (its height shrinking on the
+  // bubble's curve), the press, the bubble entering and the chat gliding to it.
+  const mode = motionMode();
+  if (mode === "full" && !hasAttachments) {
+   this.input.style.transition = `height ${SPEC.bubble.duration}ms ${SPEC.bubble.ease}`;
+   window.setTimeout(() => { this.input.style.transition = ""; }, SPEC.bubble.duration + 20);
+  }
   if (!hasAttachments) { this.unsentPrompt = text; this.input.value = ""; this.input.dispatchEvent(new Event("input")); }
+  if (mode === "full") {
+   // Clearing the field swaps Send for Saved Prompts in this frame, so the press plays on the
+   // trailing action slot: whichever of the two now shows (spec §3, as iOS).
+   const trailing = this.send.hidden ? this.prompts.button : this.send;
+   trailing.animate([
+    { transform: "scale(1)", easing: "ease-out" },
+    { transform: "scale(0.88)", offset: SPEC.press.down, easing: SPEC.bubble.ease },
+    { transform: "scale(1)" },
+   ], { duration: SPEC.press.duration });
+  }
+  const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal
+   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
+  const setOutgoing = (state: Outgoing["state"] | null) => {
+   if (!outgoing || this.disposed) return;
+   this.outgoing = state ? this.outgoing.map(o => o.id === outgoing.id ? { ...o, state } : o) : this.outgoing.filter(o => o.id !== outgoing.id);
+   if (this.mode === "chat") this.drawChat(false);
+  };
+  if (outgoing) {
+   this.outgoing = [...this.outgoing, outgoing];
+   this.drawChat(false);
+   if (mode === "full") this.glideChatToLatest({ seconds: SPEC.bubble.duration / 1000, curve: cubicBezier(...SPEC.bubble.bezier) });
+   else { this.chatFollowing = true; this.followChat(); }
+  }
   this.sending = true; this.dictation.button.disabled = true; this.send.disabled = true; this.attach.disabled = true; this.prompts.button.disabled = true; this.renderAttachments();
   try {
    await this.inputQueue;
@@ -1572,6 +1646,7 @@ class Detail {
    // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
    this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
    const result = JSON.parse(await Desk.chatPrompt(this.token, text));
+   setOutgoing(result.delivery === "submitted" ? "submitted" : "unconfirmed");
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
    if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.saveDraft(); this.input.dispatchEvent(new Event("input")); }
@@ -1581,6 +1656,8 @@ class Detail {
    if (!this.disposed && this.view?.guest && this.mode === "chat") void this.refreshChat(this.generation);
   } catch(e) {
    this.sendFollow = null;
+   // A failed send keeps today's error: the text back in the field and the reason (spec §1.5).
+   setOutgoing(null);
    if (!this.disposed) {
     this.unsentPrompt = ""; this.saveDraft();
     if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }

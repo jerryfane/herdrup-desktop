@@ -77,6 +77,47 @@ export const MOTIONS: Record<string, Motion> = {
   glide: eased(0.3, "ease-out"),
 };
 
+/** Sending a prompt and opening/closing a folder: the shared spec both apps follow (owner,
+ *  2026-11-03; herdr-round5-20261029/motion-spec-send-folders.md). iOS draws the listed
+ *  springs; the desktop these curves. Drawn with the Web Animations API (sendMotion,
+ *  interaction.ts; folderMotion, main.ts) since Reduce Motion fades rather than skips. */
+export const SPEC = {
+  // The send button's press: 1 → 0.88 in 60 ms ease-out, back to 1 by 160 ms.
+  press: { duration: 160, down: 60 / 160 },
+  // The outgoing bubble entering, and the scroll to the tail with it.
+  bubble: { duration: 300, ease: "cubic-bezier(0.2, 0.9, 0.25, 1)", bezier: [0.2, 0.9, 0.25, 1] as const },
+  // The bubble's receipt changing.
+  receipt: { duration: 150 },
+  chevron: { duration: 200, ease: "ease-in-out" },
+  folderOpen: { duration: 260, ease: "cubic-bezier(0.2, 0.8, 0.2, 1)", stagger: 18, staggered: 6, rise: 6 },
+  folderClose: { duration: 200, ease: "cubic-bezier(0.4, 0, 0.2, 1)" },
+  // Reduce Motion: cross-fades only.
+  fade: { duration: 120 },
+};
+
+/** How motion draws now: "still" in reference captures (html.holds-still), "reduced" under
+ *  prefers-reduced-motion, else "full". */
+export function motionMode(): "full" | "reduced" | "still" {
+  if (document.documentElement.classList.contains("holds-still")) return "still";
+  return matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : "full";
+}
+
+/** CSS cubic-bezier(x1, y1, x2, y2) as a function of time fraction `x` (0 to 1), for motion
+ *  drawn a frame at a time. */
+export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (x: number) => number {
+  const at = (t: number, a: number, b: number) => 3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t;
+  return x => {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    let lo = 0, hi = 1, t = x;
+    for (let i = 0; i < 40; i++) {
+      t = (lo + hi) / 2;
+      if (at(t, x1, x2) < x) lo = t; else hi = t;
+    }
+    return at(t, y1, y2);
+  };
+}
+
 /** Sets every motion's CSS variables on `root`. */
 export function applyMotions(root: HTMLElement, reduce: boolean) {
   for (const [name, m] of Object.entries(MOTIONS)) {
