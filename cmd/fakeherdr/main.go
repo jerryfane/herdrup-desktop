@@ -51,6 +51,7 @@ func main() {
 	guestOwnerAnswers := flag.Bool("guest-owner-answers", false, "with -guest-relay, answer as a herdr older than guest answers: agent.answer and pane.send_keys are guest_forbidden and pending_ask.answerable is withheld")
 	guestConnectLimit := flag.Int("guest-connect-limit", 0, "with -guest-relay, refuse a guest connect with 429 rate_limited once this many arrived in the minute before it, as the relay's GUEST_CONNECT_LIMIT (30) does a network's; 0 is no limit. Every connect is logged either way")
 	guestPauseFile := flag.String("guest-pause-file", "", "with -guest-relay, pause the share while this file exists (agent.list shows the agent with guest_running false and its methods refuse guest_paused), as herdr does when the agent leaves its pane's foreground; checked every 500 ms")
+	guestGram := flag.Bool("guest-gram", false, "with -guest-relay, share Gram with the guest: features.gram is on and the gate serves the guest Gram methods on the fake Gram store")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -208,7 +209,7 @@ func main() {
 		serveCurrent(s)
 	}
 	if *guestRelay != "" {
-		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestConnectLimit, *guestPauseFile); err != nil {
+		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestGram, *guestConnectLimit, *guestPauseFile); err != nil {
 			log.Fatal(err)
 		}
 	}
