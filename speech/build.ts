@@ -6,7 +6,9 @@ import { resolve, join } from "node:path";
 const revision = "927cfce34f31707e17f2bff35c349632fb9e2c3a";
 const modelHash = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21";
 const platform = process.argv[2];
-if (!["linux/amd64", "windows/amd64", "darwin/universal"].includes(platform ?? "")) throw new Error("Usage: bun speech/build.ts linux/amd64|windows/amd64|darwin/universal");
+if (!["linux/amd64", "linux/arm64", "windows/amd64", "darwin/universal"].includes(platform ?? "")) throw new Error("Usage: bun speech/build.ts linux/amd64|linux/arm64|windows/amd64|darwin/universal");
+// Linux builds natively on the runner of its architecture (release.yml), so the engine is built
+// for the host and named by the platform.
 const windows = platform === "windows/amd64";
 if (windows && process.platform !== "win32") throw new Error("Build Windows speech on Windows with Visual Studio and a current Windows SDK. Ubuntu MinGW headers lack required thread power-throttling APIs.");
 if (!process.env.WHISPER_SOURCE || !process.env.HERDRUP_SPEECH_RESOURCES) throw new Error("Set WHISPER_SOURCE to the pinned checkout and HERDRUP_SPEECH_RESOURCES to an owned build-scratch directory.");
@@ -35,7 +37,7 @@ const hash = new Bun.CryptoHasher("sha256");
 for await (const chunk of Bun.file(model).stream()) hash.update(chunk);
 if (hash.digest("hex") !== modelHash) throw new Error("Speech model checksum mismatch; remove the invalid model before retrying.");
 const executable = `herdrup-speech${windows ? ".exe" : ""}`;
-const arches = platform === "darwin/universal" ? ["arm64", "x86_64"] : ["amd64"];
+const arches = platform === "darwin/universal" ? ["arm64", "x86_64"] : [platform!.split("/")[1]!];
 const binaries: string[] = [];
 for (const arch of arches) {
   const build = join(output, `build-${platform!.replace("/", "-")}-${arch}`);
