@@ -471,7 +471,9 @@ export interface GuestConnection {
    * machine offline, "lost" when the owner no longer shares the agent, ""
    * otherwise. "reconnecting" goes with a "connecting" or "connected" phase
    * instead: the relay refuses this network's connects (429 rate_limited)
-   * and the guest waits to try again (Message says how long).
+   * and the guest waits to try again (Message says how long). "paused" goes
+   * with "connected": the owner's agent is not running or not listed
+   * (App/GuestPaneView.swift:737-753).
    */
   availability?: string;
 }
