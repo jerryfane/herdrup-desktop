@@ -9,7 +9,7 @@ the system webview (WKWebView, WebKitGTK, WebView2).
 `v0.1.0-preview.7` adds the guest screens in a browser (no install), a resizable sidebar,
 native chat colours and code highlighting, the terminal's Nerd Font icons, and guest
 connections that reuse one session and never resend a request, on top of the lower-case name
-and type, Chat working dots, in-app updates (off until releases are signed), agent menus,
+and type, Chat working dots, in-app updates (signed from this release on), agent menus,
 interactive agent Terminal, omp Chat, saved-host selection, the agent board, Gram attachments
 and desktop tray/notifications.
 
