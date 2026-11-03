@@ -50,6 +50,7 @@ func main() {
 	guestRelay := flag.String("guest-relay", "", "also serve a guest relay and herdr's guest gate on this loopback address (127.0.0.1:0 for any port) and log a one-use invitation for the docs agent, which waits on a menu until a guest's committing key; never a real relay or grant")
 	guestOwnerAnswers := flag.Bool("guest-owner-answers", false, "with -guest-relay, answer as a herdr older than guest answers: agent.answer and pane.send_keys are guest_forbidden and pending_ask.answerable is withheld")
 	guestConnectLimit := flag.Int("guest-connect-limit", 0, "with -guest-relay, refuse a guest connect with 429 rate_limited once this many arrived in the minute before it, as the relay's GUEST_CONNECT_LIMIT (30) does a network's; 0 is no limit. Every connect is logged either way")
+	guestPauseFile := flag.String("guest-pause-file", "", "with -guest-relay, pause the share while this file exists (agent.list shows the agent with guest_running false and its methods refuse guest_paused), as herdr does when the agent leaves its pane's foreground; checked every 500 ms")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -207,7 +208,7 @@ func main() {
 		serveCurrent(s)
 	}
 	if *guestRelay != "" {
-		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestConnectLimit); err != nil {
+		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestConnectLimit, *guestPauseFile); err != nil {
 			log.Fatal(err)
 		}
 	}

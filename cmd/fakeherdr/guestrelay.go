@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -19,8 +20,9 @@ const guestRelayAgent = "t2"
 // so the guest's menu keys and answer buttons can be exercised; ownerOnly is
 // a herdr older than guest answers, which refuses both. connectLimit is the
 // relay's guest connects a minute (0: none); every connect is logged, so a
-// guest's connect rate can be counted.
-func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool, connectLimit int) error {
+// guest's connect rate can be counted. While pauseFile exists the share is
+// paused (GuestRelay.Pause); every change is logged.
+func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool, connectLimit int, pauseFile string) error {
 	relay, err := fakeherdr.NewGuestRelay()
 	if err != nil {
 		return err
@@ -29,6 +31,7 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool, connectLi
 	relay.OwnerName, relay.MachineLabel, relay.GuestName = "Fixture Owner", "fakeherdr", "visitor"
 	relay.OwnerOnlyAnswers, relay.Streams = ownerOnly, s.Streams
 	relay.LimitConnects(connectLimit)
+	relay.OnRequest = func(method string) { log.Printf("fakeherdr guest relay: request %s", method) }
 	connects := 0
 	relay.OnConnect = func(c fakeherdr.GuestConnect) {
 		connects++
@@ -95,5 +98,18 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool, connectLi
 		return err
 	}
 	log.Printf("fakeherdr guest relay on %s; open this invitation in HerdrUp: %s", base, relay.InviteLink(base, time.Now().Add(24*time.Hour)))
+	if pauseFile != "" {
+		go func() {
+			paused := false
+			for range time.Tick(500 * time.Millisecond) {
+				_, err := os.Stat(pauseFile)
+				if now := err == nil; now != paused {
+					paused = now
+					relay.Pause(paused)
+					log.Printf("fakeherdr guest relay: paused %v", paused)
+				}
+			}
+		}()
+	}
 	return nil
 }

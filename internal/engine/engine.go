@@ -230,18 +230,29 @@ func checkTag(m herdrapi.Method, r herdrapi.ResponseResult) error {
 
 // do sends one request and returns its checked result.
 func (c *Client) do(ctx context.Context, name string, params any) (herdrapi.ResponseResultVariant, error) {
+	v, _, err := c.doRaw(ctx, name, params)
+	return v, err
+}
+
+// doRaw is do that also returns the result as herdr sent it, for fields
+// the schema leaves out.
+func (c *Client) doRaw(ctx context.Context, name string, params any) (herdrapi.ResponseResultVariant, json.RawMessage, error) {
 	m := method(name)
 	if err := c.gate(ctx, m); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var raw json.RawMessage
+	if err := c.t.Call(ctx, name, params, &raw); err != nil {
+		return nil, nil, c.mapError(name, err)
 	}
 	var r herdrapi.ResponseResult
-	if err := c.t.Call(ctx, name, params, &r); err != nil {
-		return nil, c.mapError(name, err)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, nil, fmt.Errorf("decode herdr result: %w", err)
 	}
 	if err := checkTag(m, r); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return r.Value, nil
+	return r.Value, raw, nil
 }
 
 // call is do for a method with one result type.

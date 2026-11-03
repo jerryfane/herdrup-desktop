@@ -47,6 +47,7 @@ var pageSymbols = []struct{ symbol, file string }{
 	{"bubble.left.and.exclamationmark.bubble.right", "regular/chats.svg"},
 	{"paperclip", "regular/paperclip.svg"},
 	{"tray.and.arrow.down", "regular/tray-arrow-down.svg"},
+	{"pause.fill", "fill/pause-fill.svg"},
 }
 
 // svgOf decodes an Image data URL and reads its root attributes.
