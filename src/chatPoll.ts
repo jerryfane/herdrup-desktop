@@ -55,7 +55,9 @@ export function sendShown(held: ReadonlySet<string>, page: readonly Entry[]): bo
 /** A prompt the reader sent that the transcript does not show yet (TranscriptOutbox.swift),
  *  drawn at the chat's tail the moment it is sent. */
 export type OutgoingState = "sending" | "submitted" | "unconfirmed" | "notSeen";
-export interface Outgoing { id: string; text: string; files: number; state: OutgoingState; until: number }
+/** `guest` is the sender's guest name, "" for the owner: herdr records a guest's prompt with
+ *  author "guest" and that name (normalize.rs user_author), the owner's as "owner". */
+export interface Outgoing { id: string; text: string; files: number; guest: string; state: OutgoingState; until: number }
 
 /** The line under an outgoing bubble (ChatView.outgoingBubble). */
 export function outgoingReceipt(state: OutgoingState): string {
@@ -67,10 +69,25 @@ export function outgoingReceipt(state: OutgoingState): string {
  }
 }
 
-/** After a transcript read: each new user entry in the live tail stands for the oldest
- *  outgoing prompt, which leaves; one still unseen after its minute reads "Not seen in chat"
- *  (TranscriptOutbox.unseenAfter). */
+/** TranscriptOutbox.normalized: CRLF as LF, trimmed. */
+function normalized(text: string): string {
+ return text.replace(/\r\n?/g, "\n").trim();
+}
+
+/** After a transcript read (TranscriptOutbox.reconcile): a new user entry in the live tail
+ *  removes the oldest outgoing prompt with the same author and text. One that carried files
+ *  matches any of its author's new prompts, as herdr records those with the files' note.
+ *  Another person's prompt removes nothing. One still unseen after its minute reads "Not seen
+ *  in chat" (TranscriptOutbox.unseenAfter). */
 export function reconcileOutgoing(outgoing: readonly Outgoing[], held: ReadonlySet<string>, page: readonly Entry[], now: number): Outgoing[] {
- const shown = page.filter(entry => entry.kind === "user" && !held.has(entry.id)).length;
- return outgoing.slice(shown).map(o => o.state !== "sending" && o.state !== "notSeen" && now >= o.until ? { ...o, state: "notSeen" } : o);
+ const left = [...outgoing];
+ for (const entry of page) {
+  if (entry.kind !== "user" || held.has(entry.id)) continue;
+  const guest = entry.author === "guest" ? (typeof entry.author_name === "string" ? entry.author_name : "") : "";
+  const author = entry.author === "guest" ? `guest:${guest}` : "owner";
+  const text = normalized(entry.text ?? "");
+  const index = left.findIndex(o => (o.guest ? `guest:${o.guest}` : "owner") === author && (o.files > 0 || normalized(o.text) === text));
+  if (index >= 0) left.splice(index, 1);
+ }
+ return left.map(o => o.state !== "sending" && o.state !== "notSeen" && now >= o.until ? { ...o, state: "notSeen" } : o);
 }
