@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -75,6 +77,22 @@ setInterval(()=>{proof.elapsed=Date.now()-start;proof.inlineImage=document.image
 			return err
 		}
 		err = smokePreviewFrame(win, mode)
+		if errors.Is(err, errProofStalled) {
+			// #107: on windows-latest the first data-navigate of a run has stopped
+			// receiving the frame's messages while its document kept running (the
+			// capture shows it) and every isolation field held; 36 repetitions on
+			// demand never reproduced it. A fresh window must pass the same check.
+			log.Printf("smoke: %v; trying %s once more in a fresh window", err, mode)
+			// Kept for review: it shows whether the stalled frame still held its own document.
+			if png, captureErr := win.CapturePage(); captureErr == nil {
+				_ = os.WriteFile(capture+"-preview-"+mode+"-stalled.png", png, 0o600)
+			}
+			win.Close()
+			if win, err = webpreview.Open(parent, path, "Preview smoke: "+mode, mode != "off"); err != nil {
+				return err
+			}
+			err = smokePreviewFrame(win, mode)
+		}
 		if png, captureErr := win.CapturePage(); captureErr == nil {
 			captureErr = os.WriteFile(capture+"-preview-"+mode+".png", png, 0o600)
 			if err == nil {
@@ -113,13 +131,27 @@ func smokePreviewFrame(win *mygo.Window, mode string) error {
 					return nil
 				}
 			} else if p, ok := state["proof"].(map[string]any); ok {
-				elapsed, _ := p["elapsed"].(float64)
-				if elapsed >= 1000 && p["bridge"] == "undefined" && p["parentAccess"] == "blocked" && p["storage"] == "blocked" && p["fetch"] == "blocked" && p["websocket"] == "blocked" && p["popup"] == true && p["inlineImage"] == float64(12) {
+				if elapsed, _ := p["elapsed"].(float64); elapsed >= 1000 && isolated(p) {
 					return nil
 				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	if state, ok := last.(map[string]any); ok && mode != "off" && state["frame"] == true && state["opaque"] == true {
+		if p, ok := state["proof"].(map[string]any); ok && isolated(p) {
+			return fmt.Errorf("preview smoke %s: %w: %v", mode, errProofStalled, last)
+		}
+	}
 	return fmt.Errorf("preview smoke %s: rendering/isolation check failed: %v", mode, last)
+}
+
+// errProofStalled is a check that saw every isolation field hold but stopped
+// receiving the frame's proof before it had run a second.
+var errProofStalled = errors.New("the frame's proof stopped arriving")
+
+// isolated reports whether a frame's proof shows it cut off: no bridge, no
+// parent, storage, fetch, WebSocket or popup, and its inline image drawn.
+func isolated(p map[string]any) bool {
+	return p["bridge"] == "undefined" && p["parentAccess"] == "blocked" && p["storage"] == "blocked" && p["fetch"] == "blocked" && p["websocket"] == "blocked" && p["popup"] == true && p["inlineImage"] == float64(12)
 }
