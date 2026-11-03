@@ -1,0 +1,7 @@
+/* The in-page stand-in for the desktop's native popup menus (menu.ts), drawn as the host list's
+   context menu (hosts.css .host-context-menu). */
+.web-menu { position:fixed; z-index:100; min-width:180px; max-width:min(320px, 90vw); padding:6px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
+.web-menu button { display:block; width:100%; text-align:left; border:0; border-radius:8px; background:none; color:var(--color-text); font:400 15px/var(--leading-app) var(--font-app); padding:8px 12px; }
+.web-menu button:not(:disabled):is(:hover, :focus-visible) { background:var(--color-surface-raised); outline:none; }
+.web-menu button:disabled { color:var(--color-text-faint); }
+.web-menu hr { margin:4px 0; border:0; border-top:1px solid var(--color-hairline); }

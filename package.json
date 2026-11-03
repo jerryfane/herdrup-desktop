@@ -10,6 +10,8 @@
     "vendor:mygo": "bun run third_party/mygo/vendor.ts",
     "dev:web": "vite",
     "build:web": "tsc --noEmit && vite build",
+    "dev:guest-web": "vite --config vite.web.config.ts",
+    "build:guest-web": "tsc --noEmit && vite build --config vite.web.config.ts && bun run scripts/guestWebManifest.ts dist-web",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

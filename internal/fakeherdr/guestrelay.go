@@ -41,9 +41,17 @@ type GuestRelay struct {
 	OwnerName, MachineLabel, GuestName string
 	// OwnerOnlyAnswers is a herdr older than guest answers.
 	OwnerOnlyAnswers bool
+	// WebOrigins are page origins (host[:port] patterns) whose WebSockets the
+	// relay accepts besides its own: the web guest served from another local
+	// port. The real relay serves /web/ from its own origin.
+	WebOrigins []string
 	// NoGuestRunning is a host older than guest_running, which leaves it out
 	// of the agents it lists.
 	NoGuestRunning bool
+	// Gram is the share-gram switch: features.gram, and the gate serves the
+	// guest Gram methods (gram.list's guest projection, gram.mark_read,
+	// gram.post to the granted agent, uploads and file chunks).
+	Gram bool
 	// OnRequest hears every guest request's method as it arrives, refused
 	// ones included.
 	OnRequest func(method string)
@@ -196,7 +204,7 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, `{"error":"rate_limited"}`, http.StatusTooManyRequests)
 		return
 	}
-	socket, err := websocket.Accept(w, req, nil)
+	socket, err := websocket.Accept(w, req, &websocket.AcceptOptions{OriginPatterns: r.WebOrigins})
 	if err != nil {
 		return
 	}
@@ -241,12 +249,21 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		}
 		line = append(line, chunk...)
 	}
+	// A reply line goes out in Noise messages of at most 65535 bytes, as herdr's gate and
+	// internal/guest/session.go write them (a Gram file chunk's line is larger).
 	emit := func(out []byte) error {
-		sealed, err := send.Encrypt(nil, nil, append(out, '\n'))
-		if err != nil {
-			return err
+		for line := append(out, '\n'); len(line) > 0; {
+			n := min(len(line), 65535-16)
+			sealed, err := send.Encrypt(nil, nil, line[:n])
+			if err != nil {
+				return err
+			}
+			if err := socket.Write(ctx, websocket.MessageBinary, sealed); err != nil {
+				return err
+			}
+			line = line[n:]
 		}
-		return socket.Write(ctx, websocket.MessageBinary, sealed)
+		return nil
 	}
 	r.request(ctx, bytes.TrimSpace(line[:bytes.IndexByte(line, '\n')]), emit)
 	_ = socket.Close(websocket.StatusNormalClosure, "")
@@ -277,7 +294,7 @@ func (r *GuestRelay) hello(inviteID, secret, guestID string, key []byte) ([]byte
 	b, _ := json.Marshal(map[string]any{
 		"ok": true, "guest_id": r.guestID, "name": r.GuestName, "machine_label": r.MachineLabel,
 		"owner_name": r.OwnerName, "agent": map[string]string{"name": r.AgentName, "target": r.TerminalID},
-		"features": map[string]bool{},
+		"features": map[string]bool{"gram": r.Gram},
 	})
 	return b, inviteID == ""
 }
@@ -351,6 +368,52 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		return target == r.TerminalID || target == r.AgentName || (live && target == pane)
 	}
 	switch req.Method {
+	case "gram.list", "gram.mark_read", "gram.post", "gram.upload_chunk", "gram.upload.discard", "gram.get_file_chunk":
+		if !r.Gram {
+			refuse("guest_forbidden")
+			return
+		}
+		if paused {
+			refuse("guest_paused")
+			return
+		}
+		m := params()
+		switch req.Method {
+		case "gram.list":
+			limit, _ := m["limit"].(float64)
+			if limit < 1 || limit > 500 {
+				write(nil, &APIError{Code: "invalid_params", Message: "limit must be 1 to 500"})
+				return
+			}
+			m = map[string]any{"limit": limit, "before_id": m["before_id"]}
+		case "gram.mark_read":
+			m = map[string]any{"ids": m["ids"]}
+		case "gram.post":
+			m["to"] = r.AgentName
+		}
+		result, apiErr := forward(m)
+		if apiErr != nil || req.Method != "gram.list" {
+			write(result, apiErr)
+			return
+		}
+		// The guest projection: no owner read mark, claim or recipient.
+		listed, _ := result["messages"].([]any)
+		messages := make([]any, 0, len(listed))
+		for _, v := range listed {
+			o, _ := v.(map[string]any)
+			read, _ := o["read_by_owner"].(bool)
+			if o["direction"] != "agent_to_owner" {
+				read = true
+			}
+			g := map[string]any{"id": o["id"], "direction": o["direction"], "from": o["from"], "text": o["text"], "created_unix_ms": o["created_unix_ms"], "read": read}
+			for _, k := range []string{"file", "expired_file"} {
+				if o[k] != nil {
+					g[k] = o[k]
+				}
+			}
+			messages = append(messages, g)
+		}
+		write(map[string]any{"messages": messages, "has_more": result["has_more"] == true}, nil)
 	case "ping":
 		// project_pong (guest_gate.rs:421-435): only what the gate serves.
 		write(map[string]any{"type": "pong", "version": "fake", "protocol": 22,

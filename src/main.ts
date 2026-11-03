@@ -1,7 +1,7 @@
 import "core-js/actual/promise/with-resolvers";
 import { symbol } from "./symbol";
 import { Desk, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
-import { continuousPath, paintShape } from "./continuous";
+import { paintShape } from "./continuous";
 import { loadGlyphFieldFonts } from "./glyphField";
 import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
@@ -23,6 +23,8 @@ import { animateDisclosures, applyMotions, motionSeconds } from "./motion";
 import { initStarAsk } from "./starAsk";
 import { errorText } from "./errors";
 import { appUpdatesShown, watchAppUpdate } from "./appUpdates";
+import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
+import { barSlot, commitTabBar, commitTopBar, guestBarActions, placeTitle, tabNode } from "./bars";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -102,30 +104,15 @@ let topBarGeneration = 0;
 async function buildTopBar() {
   const generation = ++topBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
   let titleNodes: Node[], actionNodes: HTMLElement[];
-  const slot = async (name: string, label: string) => {
-    const s = el("div", "slot");
-    s.title = label;
-    await place(s, name, 15, "medium");
-    return s;
-  };
+  const slot = barSlot;
   const back = await slot("chevron.left", guestView ? "Machines" : "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
   const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
   if (guestView) {
-    // GuestHomeView.header (App/GuestHomeView.swift 164-178): SectionTopBar(title: "Agents")
-    // with Back to the machines and no actions. While Gram replaces the terminal, the right
-    // capsule carries the way back to it (the pane's Terminal tab, GuestPaneView.swift 233).
     titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
-    actionNodes = [];
-    if (guestView.gram) {
-      const terminal = await slot("terminal", "Back to Terminal");
-      terminal.tabIndex = 0; terminal.setAttribute("role", "button"); terminal.setAttribute("aria-label", "Back to Terminal");
-      terminal.onclick = guestActions.terminal;
-      terminal.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); guestActions.terminal(); } };
-      actionNodes.push(terminal);
-    }
+    actionNodes = await guestBarActions(guestView.gram, guestActions.terminal);
   } else if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
@@ -157,34 +144,8 @@ async function buildTopBar() {
   }
   // Symbol loads can overlap another tab change. Commit one complete, current bar.
   if (generation !== topBarGeneration) return;
-  const leading = $("bar-leading"), actions = $("bar-actions");
-  // SectionTopBar(title: "Settings") passes no leading slot (HerdrApp.swift 2388);
   // Agents and Gram carry the back to the host list.
-  leading.hidden = selectedTab === "settings";
-  leading.replaceChildren(back);
-  $("bar-title").replaceChildren(...titleNodes);
-  actions.replaceChildren(...actionNodes);
-  // The guest home's bar has no actions (GuestHomeView.swift 166-171): no empty capsule.
-  actions.hidden = actionNodes.length === 0;
-  // The capsules' shapes go with their children.
-  paintShape(leading, { radius: "capsule", fill: "var(--color-surface-raised)" });
-  paintShape(actions, { radius: "capsule", fill: "var(--color-surface-raised)" });
-  placeTitle();
-}
-
-/** SectionBarLayout: centre the title on the bar when it fits, else keep it
- * 8 pt clear of both capsules (herdrup App/SectionTopBar.swift). */
-function placeTitle() {
-  const bar = $("bar-title").parentElement as HTMLElement;
-  const title = $("bar-title");
-  const leading = $("bar-leading").getBoundingClientRect().width;
-  const actions = $("bar-actions").getBoundingClientRect().width;
-  const width = bar.getBoundingClientRect().width;
-  const titleLeading = leading > 0 ? leading + 8 : 0;
-  const available = Math.max(0, width - titleLeading - actions - 8);
-  const w = Math.min(title.getBoundingClientRect().width, available);
-  const centre = Math.max(titleLeading + w / 2, Math.min(width / 2, titleLeading + available - w / 2));
-  title.style.left = `${centre - w / 2}px`;
+  commitTopBar(selectedTab !== "settings", back, titleNodes, actionNodes);
 }
 
 // ---- Tab bar ----
@@ -223,30 +184,9 @@ async function buildTabBar() {
     ["settings", "gearshape.fill", "Settings"],
   ];
   const nodes = await Promise.all(
-    items.map(async ([key, icon, label]) => {
-      // Keyboard users reach and switch tabs (issue #94): Tab focuses it, Enter or Space
-      // activates it, and the selected tab reads as the current page. A div with a button's role,
-      // not a <button>, which WebKit letters differently (parity 41516232593).
-      const t = el("div", "tab" + (key === selectedTab ? " selected" : ""));
-      t.dataset.tab = key;
-      t.tabIndex = 0;
-      t.setAttribute("role", "button");
-      if (key === selectedTab) t.setAttribute("aria-current", "page");
-      t.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        t.click();
-      });
-      const i = el("div", "icon");
-      await place(i, icon, 21, "medium");
+    items.map(([key, icon, label]) =>
       // The guest's Settings is its own page, without the app update.
-      if (key === "gram" || key === "settings" && !guestView && appUpdatesShown) {
-        const badge = el("span", "tab-badge");
-        badge.setAttribute("aria-hidden", "true"); badge.dataset.tab = key; badge.hidden = true;
-        i.append(badge);
-      }
-      t.append(i, el("span", "t-tab-label", label));
-      t.addEventListener("click", () => {
+      tabNode(key, icon, label, key === selectedTab, key === "gram" || key === "settings" && !guestView && appUpdatesShown, () => {
         if (guestView) {
           if (key === "settings") guestActions.settings(); else guestActions.agents();
           return;
@@ -256,124 +196,16 @@ async function buildTabBar() {
         void buildTabBar();
         void buildTopBar();
         render();
-      });
-      return t;
-    }),
+      })),
   );
   if (generation !== tabBarGeneration) return;
-  // A rebuild replaces every tab; keep the keyboard on the same tab (issue #96).
-  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("#tabbar .tab")?.dataset.tab;
-  $("tabbar").replaceChildren(...nodes);
-  if (focused) nodes.find((n) => n.dataset.tab === focused)?.focus();
-  // The selected pill slides between tabs (HerdrApp.swift 2837).
-  $("tabbar").style.setProperty("--tab-count", String(items.length));
-  $("tabbar").style.setProperty("--tab-index", String(items.findIndex(([key]) => key === selectedTab)));
+  commitTabBar(nodes, items.findIndex(([key]) => key === selectedTab));
   setTabBadge();
 }
 
 // ---- Rows ----
 
 const px = (name: string) => parseFloat(cssVar(name));
-
-/** The badge's shape as herdrup draws it (AgentAvatar.glyph): a continuous
- * RoundedRectangle (continuous.ts) filled, then stroked in ground colour
- * centred on the same path, half of it outside. "Round" badges use herdrup's
- * literal corner radius 11, which on the 22 pt box is a continuous capsule,
- * not a circle; squares use radius.badgeSquare.
- *
- * The SVG overhangs the badge box by BADGE_PAD (whole points, more than half
- * the stroke) on every side, so its origin stays on a device pixel: WebKit
- * snaps an SVG's origin to the pixel grid, and an overhang of exactly half the
- * 2.5 pt stroke put it on a half pixel and moved the whole badge 0.5 px. */
-const BADGE_PAD = 2;
-function badgeShape(square: boolean): HTMLElement {
-  const size = px("--size-status-badge");
-  const stroke = px("--size-status-badge-stroke");
-  const radius = square ? px("--radius-badge-square") : 11;
-  const box = size + 2 * BADGE_PAD;
-  const d = continuousPath(size, size, radius, BADGE_PAD, BADGE_PAD);
-  const shape = el("span", "shape");
-  shape.style.inset = `${-BADGE_PAD}px`;
-  shape.innerHTML = `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}"><path class="fill" d="${d}"/><path class="edge" d="${d}" stroke-width="${stroke}"/></svg>`;
-  return shape;
-}
-
-async function badge(kind: string): Promise<HTMLElement | null> {
-  const b = el("div", "badge " + kind);
-  b.append(badgeShape(kind === "stopped" || kind === "offline"));
-  switch (kind) {
-    case "waiting":
-      b.append(await symbol("exclamationmark", 10, "heavy"));
-      return b;
-    case "unrecognised":
-      b.append(await symbol("questionmark", 10, "heavy"));
-      return b;
-    case "stopped":
-      b.append(await symbol("xmark", 10, "heavy"));
-      return b;
-    case "offline":
-      b.append(await symbol("wifi.slash", 10, "heavy"));
-      return b;
-    case "working": {
-      // TurningRing(diameter: 12, lineWidth: 2) at rest (herdrup
-      // App/DesignSystem.swift): Circle().trim(0, 0.72) in a 12 pt frame, so
-      // the path's radius is 6 and the 2 pt round-capped stroke reaches 7,
-      // past the frame (overflow: visible); from 3 o'clock clockwise, over
-      // the ground-filled circle the other badges also have.
-      const r = 6;
-      const len = 2 * Math.PI * r;
-      b.insertAdjacentHTML(
-        "beforeend",
-        `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${len * 0.72} ${len}"/></svg>`,
-      );
-      return b;
-    }
-  }
-  return null;
-}
-
-const measure = document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
-
-/** A tile with the agent's initial. placeInitials positions the letter once
- * the tile is in the document. */
-function initialTile(r: Row): HTMLElement {
-  const tile = el("div", `tile tint-${r.tint}`);
-  const glyph = el("span", "initial", r.initial);
-  tile.append(glyph);
-  return tile;
-}
-
-/** Puts each tile's initial where SwiftUI puts a centred Text: the run's
- * origin rounded to the nearest device pixel. Left to flex centring, WebKit
- * rounded fractions above a half down, which drew M and W 1 device pixel left
- * of herdrup's. The advance is measured in the letter's computed font, which
- * is loaded first: canvas text falls back to another face while a web font is
- * still loading, and `document.fonts.ready` does not wait for a face nothing
- * had asked for yet (the system font's narrower A put it 1 pixel right). */
-async function placeInitials(root: ParentNode) {
-  const tiles = [...root.querySelectorAll<HTMLElement>(".tile")].flatMap((tile) => {
-    const glyph = tile.querySelector<HTMLElement>(".initial");
-    if (!glyph) return [];
-    const s = getComputedStyle(glyph);
-    return [{ tile, glyph, font: `${s.fontWeight} ${s.fontSize} ${s.fontFamily}` }];
-  });
-  await Promise.all([...new Set(tiles.map((t) => t.font))].map((f) => document.fonts.load(f)));
-  for (const { tile, glyph, font } of tiles) {
-    measure.font = font;
-    const advance = measure.measureText(glyph.textContent ?? "").width;
-    const box = tile.getBoundingClientRect().width;
-    if (box <= 0) continue; // A hidden page is positioned when its layout becomes visible.
-    glyph.style.left = `${Math.round(((box - advance) / 2) * devicePixelRatio) / devicePixelRatio}px`;
-  }
-}
-
-async function avatar(r: Row): Promise<HTMLElement> {
-  const a = el("div", "avatar");
-  a.append(avatarFace(r.avatar, () => initialTile(r)));
-  const b = await badge(r.badge);
-  if (b) a.append(b);
-  return a;
-}
 
 function refreshRowSelection() {
   const inScope = selectedAgent && board && selectedAgent.machineID === board.machineID &&
@@ -540,20 +372,6 @@ let drawn = false;
 // A folder's picture shows its first members' avatars without the status
 // badge (herdrup AgentFolderPicture).
 const folderDeps: FolderDeps = { el, symbol, picture: (r) => avatarFace(r.avatar, () => initialTile(r)) };
-
-// UIActivityIndicatorView (medium) frozen on its first frame, as herdrup's
-// loading references show it (measured on both): 8 round-capped spokes 2.5 pt
-// wide from radius 3.6 to 10 in a 20 pt box, textDim at opacity 0.85 at 9
-// o'clock, then counter-clockwise 0.85 - 0.144 per spoke for three more, and
-// the other four at 0.275.
-const spinnerSVG = (() => {
-  let s = `<svg width="20" height="20" viewBox="-10 -10 20 20">`;
-  for (let i = 0; i < 8; i++) {
-    const opacity = i < 4 ? 0.85 - i * 0.144 : 0.275;
-    s += `<rect x="-1.25" y="-10" width="2.5" height="6.4" rx="1.25" fill="currentColor" opacity="${opacity.toFixed(3)}" transform="rotate(${-90 - i * 45})"/>`;
-  }
-  return s + "</svg>";
-})();
 
 // ---- Detail column ----
 

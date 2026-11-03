@@ -705,6 +705,28 @@ with the box and baseline SwiftUI gives `Image(systemName:).font(.system(size:we
 The `Symbols` workflow (on demand, macOS) checks the AppKit images against SwiftUI's at 1x, 2x and 3x,
 checks `symbols_sfmetrics.go` against AppKit, and uploads every image.
 
+## Web guest
+
+`bun run build:guest-web` builds the guest screens for a browser into `dist-web/`, served by the
+guest relay at `https://guest.herdrup.app/web/`. There is no Go behind the page:
+`vite.web.config.ts` points `src/mygo.ts` and `mygo-runtime` at `src/web/`, whose `Desk` is the
+guest subset of the Go Desk (invite, status, board, agent view, chat, read-only terminal, Gram) on
+the `src/webguest/` transport; every other method rejects with "Not available in the browser".
+Symbols come from `src/web/symbols.data.ts` (`go run ./cmd/websymbols`, `-check` in CI); dictation
+is not offered.
+
+- The invite arrives as `/web/#<payload>` (the long v1 payload, a short link's 34-character segment
+  on the same relay, or a whole link). The page removes the fragment with `history.replaceState`
+  before anything else, redeems it, and keeps the grant and a non-extractable WebCrypto key in
+  IndexedDB: one browser holds one guest. Later visits resume it; without one the page says whose
+  invite link to open.
+- The build is deterministic and writes `dist-web/manifest.json` (source commit, build command,
+  SHA-256 of every file) for the relay's copy. No inline script and no `eval`: the relay sends
+  `default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+  and `web/index.html` repeats it as a meta policy (without `frame-ancestors`).
+- `bun run dev:guest-web` serves it on port 24750. `test/webDeskLive.test.ts` runs it against
+  `cmd/fakeherdr -interactions -guest-relay 127.0.0.1:0`.
+
 ## Layout
 
 | Path | What |

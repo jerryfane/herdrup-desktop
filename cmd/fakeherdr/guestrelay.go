@@ -22,14 +22,17 @@ const guestRelayAgent = "t2"
 // relay's guest connects a minute (0: none); every connect is logged, so a
 // guest's connect rate can be counted. While pauseFile exists the share is
 // paused (GuestRelay.Pause); every change is logged.
-func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly bool, connectLimit int, pauseFile string) error {
+func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly, gram bool, connectLimit int, pauseFile string, webOrigin string) error {
 	relay, err := fakeherdr.NewGuestRelay()
 	if err != nil {
 		return err
 	}
+	if webOrigin != "" {
+		relay.WebOrigins = []string{webOrigin}
+	}
 	relay.TerminalID, relay.AgentName = guestRelayAgent, "docs"
 	relay.OwnerName, relay.MachineLabel, relay.GuestName = "Fixture Owner", "fakeherdr", "visitor"
-	relay.OwnerOnlyAnswers, relay.Streams = ownerOnly, s.Streams
+	relay.OwnerOnlyAnswers, relay.Streams, relay.Gram = ownerOnly, s.Streams, gram
 	relay.LimitConnects(connectLimit)
 	relay.OnRequest = func(method string) { log.Printf("fakeherdr guest relay: request %s", method) }
 	connects := 0

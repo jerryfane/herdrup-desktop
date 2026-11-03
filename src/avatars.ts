@@ -65,7 +65,7 @@ export function loadPhoto(a: Avatar): Promise<string | null> {
 }
 
 /** The mascot's art, synced from herdrup (public/herdrup/mascots). */
-export const mascotURL = (id: string) => `/herdrup/mascots/${id}.svg`;
+export const mascotURL = (id: string) => `${import.meta.env.BASE_URL}herdrup/mascots/${id}.svg`;
 
 /** The bundled mascots in picker order (herdrup AgentMascot,
  * Sources/HerdrKit/AgentAvatarDescriptor.swift 11-12); the picker names

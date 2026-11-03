@@ -1,0 +1,9 @@
+/* The browser guest's own screen: the plain page without a grant (main.ts showWelcome), drawn as
+   the guest home's message card (guest.css .guest-home-message) on the ground. */
+.web-welcome-visible #sidebar, .web-welcome-visible #detail { display: none; }
+.web-welcome { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.web-welcome-card { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 420px; padding: 28px 24px; text-align: center; border: 1px solid var(--color-hairline); border-radius: var(--radius-card); background: var(--color-surface); color: var(--color-text); font-family: var(--font-app); user-select: text; -webkit-user-select: text; }
+.web-welcome-card h1 { margin: 0; font-size: 20px; font-weight: 700; }
+.web-welcome-card p { margin: 0; color: var(--color-text-dim); font-size: 15px; line-height: 1.45; }
+.web-welcome-card .web-welcome-error { color: var(--color-text); }
+.web-welcome-card .guest-home-loading { height: 40px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); }

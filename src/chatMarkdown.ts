@@ -11,7 +11,7 @@ function mermaid(): Promise<Mermaid> {
  if (!loading) {
   const { promise, resolve, reject } = Promise.withResolvers<Mermaid>();
   loading = promise;
-  const script = document.createElement("script"); script.src = "/mermaid/mermaid.min.js";
+  const script = document.createElement("script"); script.src = `${import.meta.env.BASE_URL}mermaid/mermaid.min.js`;
   script.onload = () => {
    if (!window.mermaid) { reject(new Error("Diagram renderer unavailable")); return; }
    window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "dark", htmlLabels: false, flowchart: { htmlLabels: false } });
