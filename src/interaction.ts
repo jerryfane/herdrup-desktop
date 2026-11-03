@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING, sendShown } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -199,6 +199,7 @@ class Detail {
  terminalPaused = false;
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
  private workingRow?: HTMLElement;
+ private modelRow?: HTMLElement;
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
  private chatFailed = false;
  ctrlArmed = false;
@@ -1085,6 +1086,8 @@ class Detail {
   if (agents.length) nodes.push(this.renderSubagents(agents));
   const working = this.renderWorking();
   if (working) nodes.push(working);
+  const model = this.renderModel();
+  if (model) nodes.push(model);
   // Keep unchanged rows attached: detaching them on each poll loses keyboard focus.
   const retained = new Set<Node>(nodes);
   for (let child = this.transcript.firstChild; child;) {
@@ -1118,6 +1121,17 @@ class Detail {
    row.setAttribute("role", "status"); row.setAttribute("aria-label", intent ? `Working: ${intent}` : "Working");
   }
   return row;
+ }
+ /** ChatView.sessionFooter's model line: the model omp runs and its effort, under the conversation
+  *  (ChatView.swift chat-model). One element, kept attached while its text holds. */
+ private renderModel(): HTMLElement | null {
+  const model = this.chat?.model;
+  if (!model?.id) return null;
+  const { label, accessibilityLabel } = modelLine(model);
+  const line = this.modelRow ??= el("div", "chat-model");
+  if (line.textContent !== label) line.textContent = label;
+  line.setAttribute("aria-label", accessibilityLabel);
+  return line;
  }
  private fitPromptBubbles() {
   const first = this.transcript.querySelector<HTMLElement>(".chat-message.user");
