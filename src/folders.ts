@@ -59,6 +59,8 @@ export interface FolderDeps {
   symbol(name: string, size: number, weight: string): Promise<HTMLElement>;
   /** A member's picture inside the folder's (no badge). */
   picture(r: Row): HTMLElement;
+  /** A click opened or closed folder `id` (main.ts draws the motion once the board shows it). */
+  toggled(id: string, open: boolean): void;
 }
 
 /** The star after a starred agent's name: star.fill 12 semibold in
@@ -104,6 +106,7 @@ export async function folderRow(f: Folder, d: FolderDeps): Promise<HTMLElement> 
   text.append(line1, d.el("div", "preview t-row-preview", f.summary));
   row.append(pic, text);
   row.addEventListener("click", () => {
+    d.toggled(f.id, !f.open);
     void Desk.setFolderOpen(f.id, !f.open);
   });
   row.addEventListener("contextmenu", (e) => {
