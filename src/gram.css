@@ -207,6 +207,7 @@
 .gcode:not(.one-line) { display: flex; flex-direction: column; gap: 4px; padding: 7px 10px 8px; }
 .gcode-scroll { overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
 .gcode-text { margin: 0; font: 400 13px/18px var(--font-machine); white-space: pre; -webkit-user-select: text; user-select: text; }
+.gcode.syntax .gcode-text { color: var(--chat-code-text); }
 .gcode-head { display: flex; align-items: center; gap: 8px; }
 .gcode-lang { font-size: 11.5px; color: var(--color-text-dim); }
 .gcode-spacer { flex: 1; }

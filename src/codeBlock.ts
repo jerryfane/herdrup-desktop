@@ -14,9 +14,13 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: s
 
 /** `copied`: this code is CopiedCommandReceipt's text; `onCopy` records it
  * after the clipboard write. */
-export function codeBlock(code: string, language: string | null, copied: boolean, onCopy: () => void): HTMLElement {
-  const b = el("div", "gcode");
-  paintShape(b, { radius: 11, fill: "var(--color-ground-machine)", stroke: "var(--color-hairline)", strokeWidth: 1 });
+export function codeBlock(code: string, language: string | null, copied: boolean, onCopy: () => void, syntax = false): HTMLElement {
+  const b = el("div", syntax ? "gcode syntax" : "gcode");
+  // Chat's blocks take the chat palette's code colours; Gram's stay plain (GramCodeBlock syntax:
+  // .current in ChatMarkdownView, nil in Gram).
+  paintShape(b, syntax
+    ? { radius: 11, fill: "var(--chat-code-background)", stroke: "var(--chat-code-border)", strokeWidth: 1 }
+    : { radius: 11, fill: "var(--color-ground-machine)", stroke: "var(--color-hairline)", strokeWidth: 1 });
   const copy = (e: Event) => {
     e.stopPropagation();
     void Desk.gramCopyText(code);
@@ -51,7 +55,7 @@ export function codeBlock(code: string, language: string | null, copied: boolean
 
 /** CopiedCommandReceipt for a block that redraws itself: "Copied" for 1.6 s,
  * then back. */
-export function selfCopyingCodeBlock(code: string, language: string | null): HTMLElement {
+export function selfCopyingCodeBlock(code: string, language: string | null, syntax = false): HTMLElement {
   let timer: number | undefined;
   const draw = (copied: boolean): HTMLElement => codeBlock(code, language, copied, () => {
     const next = draw(true);
@@ -59,7 +63,7 @@ export function selfCopyingCodeBlock(code: string, language: string | null): HTM
     current = next;
     clearTimeout(timer);
     timer = window.setTimeout(() => { const back = draw(false); current.replaceWith(back); current = back; }, 1600);
-  });
+  }, syntax);
   let current = draw(false);
   return current;
 }
