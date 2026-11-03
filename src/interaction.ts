@@ -278,8 +278,10 @@ class Detail {
  picking = false;
  attach = button("", () => { void this.pickFiles(); });
  dictation = new ComposerDictation(this.input, () => {
-  const busy = this.dictation?.busy ?? false;
-  this.send.disabled = this.sending || busy; this.prompts.button.disabled = this.sending || busy;
+  const busy = this.dictation?.busy ?? false, paused = !!this.guestPaused;
+  this.send.disabled = paused || this.sending || busy; this.prompts.button.disabled = paused || this.sending || busy;
+  // Dictation's render sets the field's disabled state from its own busy flag alone.
+  if (paused) this.input.disabled = true;
   this.input.dispatchEvent(new Event("input"));
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
  draftKey: string;
@@ -497,6 +499,10 @@ class Detail {
   *  says "Agent unavailable" (canCompose, placeholder: GuestPaneView.swift:515, 587-596). */
  showGuestPaused() {
   const paused = !!this.guestPaused;
+  // The mic is also the running dictation's stop button: disabling it would leave capture on
+  // with no way to end it (#113 review). Stop first; its words stay in the field, and its
+  // render must not re-enable the input after the lines below.
+  if (paused) this.dictation.stop();
   this.updateStatus(...this.shownStatus);
   this.input.disabled = paused;
   this.input.placeholder = this.guestPaused?.placeholder ?? "Type a reply…";
