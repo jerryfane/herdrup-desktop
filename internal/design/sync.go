@@ -120,6 +120,10 @@ var Assets = []Asset{
 	{"App/Assets.xcassets/Mascot-prism.imageset/mascot.svg", "public/herdrup/mascots/prism.svg"},
 	{"App/Assets.xcassets/Mascot-nib.imageset/mascot.svg", "public/herdrup/mascots/nib.svg"},
 	{"App/Assets.xcassets/Mascot-drop.imageset/mascot.svg", "public/herdrup/mascots/drop.svg"},
+	// The terminal's Nerd Fonts symbols, private-use codepoints only, and their attribution
+	// (LiveTerminalView.swift fontCascade; src/terminalFont.ts).
+	{"App/Fonts/HerdrupSymbols-Regular.ttf", "public/herdrup/fonts/HerdrupSymbols-Regular.ttf"},
+	{"App/Fonts/NerdFonts-LICENSE.txt", "public/herdrup/fonts/NerdFonts-LICENSE.txt"},
 	{"design/herdrup-appicon.svg", "public/herdrup/appicon.svg"},
 	{"Shared/Assets.xcassets/AppLogo.imageset/AppLogo@3x.png", "public/herdrup/app-logo.png"},
 	// mygo builds every platform's app icon from this 1024x1024 PNG.
