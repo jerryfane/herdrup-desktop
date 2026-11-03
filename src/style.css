@@ -16,6 +16,8 @@
   /* iOS 27's accepted regular-width references start the 320 pt sidebar
      at the window edge, without the former floating card's inset. */
   --sidebar-inset: 0px;
+  /* The column's width: dragged between the size tokens and remembered (sidebar.ts). */
+  --sidebar-width: var(--size-sidebar-min);
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
   /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
@@ -100,7 +102,7 @@ html, body {
 /* ---- Detail column (App/HerdrApp.swift detailColumn) ---- */
 .detail {
   position: fixed;
-  left: calc(var(--sidebar-inset) + var(--size-sidebar-min));
+  left: calc(var(--sidebar-inset) + var(--sidebar-width));
   right: 0;
   top: 0;
   bottom: var(--home-inset);
@@ -126,7 +128,7 @@ html, body {
   left: var(--sidebar-inset);
   top: 0;
   bottom: var(--sidebar-inset);
-  width: var(--size-sidebar-min);
+  width: var(--sidebar-width);
   /* HerdrApp.iPadLayout paints Palette.ground directly behind the column. */
   background: var(--color-ground);
   overflow: hidden;

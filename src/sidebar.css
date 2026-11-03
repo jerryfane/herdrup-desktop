@@ -13,3 +13,8 @@
 .sidebar-rail-dot { width:6px; height:6px; border-radius:50%; background:var(--status-waiting); }
 .sidebar-rail-count.working .sidebar-rail-dot { background:var(--status-working); }
 .sidebar-rail button:focus-visible { outline:2px solid var(--color-text); outline-offset:2px; }
+/* The split view's column divider (HerdrApp.swift iPadLayout, navigationSplitViewColumnWidth):
+   an invisible strip on the sidebar's edge that drags its width. */
+.sidebar-resizer { position:fixed; z-index:20; top:0; bottom:var(--sidebar-inset); left:calc(var(--sidebar-inset) + var(--sidebar-width) - 3px); width:6px; cursor:col-resize; touch-action:none; }
+.sidebar-resizer:focus-visible { outline:none; background:var(--color-hairline); }
+.sidebar-resizing, .sidebar-resizing * { cursor:col-resize !important; user-select:none; }
