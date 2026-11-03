@@ -32,10 +32,12 @@ export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) =
   }
   const waiting = count("need you"), working = count("working"); waiting(0); working(0); divider.hidden = true;
   document.body.append(rail);
+  const resizer = sidebarResizer(changed);
   function apply() {
     const collapsed = minimized && available;
     document.body.classList.toggle("sidebar-minimized", collapsed);
     sidebar.inert = collapsed; rail.hidden = !collapsed;
+    resizer.hidden = collapsed || !available;
   }
   let moving = 0;
   function setMinimized(value: boolean) {
@@ -68,4 +70,66 @@ export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) =
       tabs.get("gram")!.setAttribute("aria-label", count ? `Gram, ${count} unread` : "Gram");
     },
   };
+}
+
+/** Where the dragged width is remembered (HerdrApp.swift "ui.sidebarWidth"). */
+export const SIDEBAR_WIDTH_KEY = "ui.sidebarWidth";
+
+/** A remembered width, clamped to the column's bounds; the minimum when none is stored or it is
+ *  unreadable (HerdrApp.swift recordSidebarWidth keeps sidebarWidthRange). */
+export function storedSidebarWidth(raw: string | null, min: number, max: number): number {
+  const width = raw === null || raw.trim() === "" ? NaN : Number(raw);
+  return Number.isFinite(width) ? Math.min(max, Math.max(min, Math.round(width))) : min;
+}
+
+/** Drags the sidebar's edge between the bounds, as the split view's divider does; the width is
+ *  stored once it has held still for half a second (HerdrApp.swift sidebarWidthSettle), so a
+ *  drag commits once, where it ended. Arrow keys move it 10 px for keyboard users. */
+function sidebarResizer(changed: () => void): HTMLElement {
+  const root = document.documentElement;
+  // DesignTokens.Size.sidebarMin...sidebarMax, as tokens.css carries them.
+  const token = (name: string) => parseFloat(getComputedStyle(root).getPropertyValue(name));
+  const min = token("--size-sidebar-min"), max = token("--size-sidebar-max");
+  let width = min;
+  try { width = storedSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_KEY), min, max); } catch { /* Session-only if storage is unavailable. */ }
+  const handle = document.createElement("div");
+  handle.className = "sidebar-resizer"; handle.tabIndex = 0;
+  handle.setAttribute("role", "separator"); handle.setAttribute("aria-orientation", "vertical");
+  handle.setAttribute("aria-label", "Sidebar width");
+  handle.setAttribute("aria-valuemin", String(min)); handle.setAttribute("aria-valuemax", String(max));
+  let settle = 0;
+  const set = (next: number) => {
+   next = Math.min(max, Math.max(min, Math.round(next)));
+   if (next === width && root.style.getPropertyValue("--sidebar-width")) return;
+   width = next;
+   root.style.setProperty("--sidebar-width", `${width}px`);
+   handle.setAttribute("aria-valuenow", String(width));
+   changed();
+   clearTimeout(settle);
+   settle = window.setTimeout(() => {
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)); } catch (error) { console.warn("Sidebar width is session-only", error); }
+   }, 500);
+  };
+  root.style.setProperty("--sidebar-width", `${width}px`);
+  handle.setAttribute("aria-valuenow", String(width));
+  handle.onpointerdown = event => {
+   if (event.button !== 0) return;
+   event.preventDefault();
+   handle.setPointerCapture(event.pointerId);
+   const start = event.clientX, from = width;
+   document.body.classList.add("sidebar-resizing");
+   handle.onpointermove = move => set(from + move.clientX - start);
+   handle.onpointerup = handle.onpointercancel = () => {
+    handle.onpointermove = handle.onpointerup = handle.onpointercancel = null;
+    document.body.classList.remove("sidebar-resizing");
+   };
+  };
+  handle.onkeydown = event => {
+   const step = event.key === "ArrowRight" ? 10 : event.key === "ArrowLeft" ? -10 : 0;
+   if (event.key === "Home") { event.preventDefault(); set(min); }
+   else if (event.key === "End") { event.preventDefault(); set(max); }
+   else if (step) { event.preventDefault(); set(width + step); }
+  };
+  document.body.append(handle);
+  return handle;
 }
