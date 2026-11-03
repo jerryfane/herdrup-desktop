@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -98,7 +99,13 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		return page, nil, true
 	case "agent.prompt":
 		n := len(x.entries)
-		x.entries = append(x.entries, map[string]any{"kind": "user", "id": fmt.Sprintf("u%d", n), "ts_ms": n + 10, "author": "owner", "text": p.Text}, map[string]any{"kind": "reply", "id": fmt.Sprintf("r%d", n), "ts_ms": n + 11, "text": "Sample backend received your prompt. No live model was called.", "final": true})
+		user := map[string]any{"kind": "user", "id": fmt.Sprintf("u%d", n), "ts_ms": n + 10, "author": "owner", "text": p.Text}
+		// A guest's "<name> (via HerdrUp): " prefix becomes the author
+		// (herdr agent_transcript/normalize.rs user_author).
+		if name, rest, ok := strings.Cut(p.Text, " (via HerdrUp): "); ok && strings.TrimSpace(name) != "" && !strings.Contains(name, "\n") {
+			user["author"], user["author_name"], user["text"] = "guest", strings.TrimSpace(name), rest
+		}
+		x.entries = append(x.entries, user, map[string]any{"kind": "reply", "id": fmt.Sprintf("r%d", n), "ts_ms": n + 11, "text": "Sample backend received your prompt. No live model was called.", "final": true})
 		// herdr reports a verified submission only to a prompt that waits for
 		// the agent's status; without one it answers written_to_pty (api/wait.rs).
 		delivery := "written_to_pty"

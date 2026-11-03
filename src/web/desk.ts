@@ -356,7 +356,8 @@ export function createGuestDesk(env: DeskEnv) {
    const view: AgentView = {
     token, paneID: agent.pane_id ?? "", name, harness, heading: parts.join(" · "), group: group.key, status: group.label,
     ...(agent.status_since_unix_ms != null ? { statusSinceUnixMs: agent.status_since_unix_ms } : {}),
-    guest: true, guestGram: l.transport.features.gram, ...(l.access.ownerName !== "" ? { guestOwner: l.access.ownerName } : {}), plainTerminal: false,
+    guest: true, guestGram: l.transport.features.gram, ...(l.access.ownerName !== "" ? { guestOwner: l.access.ownerName } : {}),
+    ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
    unmount();
    const life = new AbortController();

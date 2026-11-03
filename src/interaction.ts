@@ -18,7 +18,7 @@ import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
-import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
+import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING, sendShown } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
@@ -1384,7 +1384,7 @@ class Detail {
   card.append(el("p", "chat-question-title", questions.map(question => question.question).join("\n")));
   // A guest answers as the owner does unless the host keeps answers for the owner (ChatAskCard,
   // ChatView.swift:1738-1870).
-  const viewer: Viewer = this.view?.guest ? { guest: true, owner: this.view.guestOwner ?? "" } : { guest: false };
+  const viewer = this.viewer();
   const waiting = waitingForOwner(viewer, this.answersRefused);
   if (answer) {
    const chosen = el("p", "chat-question-answer", "✓ " + chooser(viewer, waiting));
@@ -1526,6 +1526,10 @@ class Detail {
   if (row.kind === "work") return this.renderWork(row);
   return this.renderEntry(row.entry);
  }
+ /** Who reads this chat (ChatView.swift ChatViewer). */
+ private viewer(): Viewer {
+  return this.view?.guest ? { guest: true, me: this.view.guestSelf ?? "", owner: this.view.guestOwner ?? "" } : { guest: false };
+ }
  renderEntry(entry: Entry): HTMLElement {
   if (entry.kind === "ask") return this.renderQuestion(entry, undefined, false, false);
   if (entry.kind === "note") return this.renderNote(entry);
@@ -1536,6 +1540,9 @@ class Detail {
   if (entry.kind === "user" || entry.kind === "reply") {
    const article = el("article", `chat-message ${entry.kind}`);
    if (entry.kind === "user") {
+    // ChatView.promptBubble: whose prompt it was, above the bubble, when not the reader's own.
+    const byline = promptByline(this.viewer(), entry.author, entry.author_name);
+    if (byline) { article.classList.add("has-byline"); article.append(el("span", "chat-byline", byline)); }
     const bubble = el("div", "chat-user-text");
     bubble.append(el("span", "chat-user-content", entry.text ?? "")); article.append(bubble);
     this.promptLayoutDirty = true;
