@@ -45,6 +45,30 @@ function runtimeFiles(): Plugin {
   };
 }
 
+/** `bun run dev:guest-web` only (the build is unchanged by it). The entry sits outside root
+ *  (web/), which the dev server would load from /src/…, outside the base: it is named by its file
+ *  instead (/web/@fs/…). The runtime files are served from public/ as they are, where the dev
+ *  server's page fallback would answer them with index.html. */
+const types: Record<string, string> = { ".svg": "image/svg+xml", ".js": "text/javascript", ".txt": "text/plain; charset=utf-8" };
+function devServer(): Plugin {
+  return {
+    name: "herdrup-guest-web-dev",
+    apply: "serve",
+    transformIndexHtml: {
+      order: "pre",
+      handler: html => html.replace(`src="../src/web/main.ts"`, `src="/@fs${resolve(src, "web/main.ts")}"`),
+    },
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? "").split("?", 1)[0]!.replace(/^\/web\//, "");
+        if (!runtimeAssets.includes(path)) { next(); return; }
+        res.setHeader("Content-Type", types[path.slice(path.lastIndexOf("."))] ?? "application/octet-stream");
+        res.end(readFileSync(resolve(root, "public", path)));
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: resolve(root, "web"),
   base: "/web/",
@@ -53,7 +77,7 @@ export default defineConfig({
   css: { postcss: { plugins: [uiTypography()] } },
   // tokens.css names the fonts as public/ files; here they are bundled with hashed names.
   resolve: { alias: [{ find: /^\/fonts\/(.+)$/, replacement: join(root, "public/fonts/$1") }] },
-  plugins: [browserBridge(), runtimeFiles()],
+  plugins: [browserBridge(), runtimeFiles(), devServer()],
   server: { port: 24750, strictPort: true },
   build: {
     outDir: resolve(root, "dist-web"),
