@@ -739,8 +739,9 @@ func (r *GuestRelay) guestView(agent map[string]any) map[string]any {
 }
 
 // projectTranscript leaves out what a guest may not see (project_transcript,
-// guest_gate.rs:565-640): notes, step details and plan blockers. A host
-// older than guest answers also withholds answerable.
+// guest_gate.rs:565-640): notes, step details, plan blockers and subagents'
+// assignments and conversations. A host older than guest answers also
+// withholds answerable.
 func projectTranscript(page map[string]any, ownerOnly bool) {
 	entries, _ := page["entries"].([]any)
 	kept := make([]any, 0, len(entries))
@@ -758,6 +759,14 @@ func projectTranscript(page map[string]any, ownerOnly bool) {
 		for _, item := range plan {
 			if m, ok := item.(map[string]any); ok {
 				delete(m, "blocker")
+			}
+		}
+	}
+	if subagents, ok := page["subagents"].([]any); ok {
+		for _, value := range subagents {
+			if m, ok := value.(map[string]any); ok {
+				delete(m, "task")
+				m["has_transcript"] = false
 			}
 		}
 	}

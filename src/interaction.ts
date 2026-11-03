@@ -17,12 +17,12 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, RELAY_RECONNECTING, sendShown } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
-import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, WorkRow } from "./interactionModel";
+import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, easeOut, motionSeconds } from "./motion";
@@ -259,6 +259,11 @@ class Detail {
  // The terminal's jump button (HerdrApp.swift:5856-5858 owner, GuestPaneView.swift:470-472 guest).
  terminalJump = jumpToLatestButton("terminal-jump-latest", "Jump to latest output", () => this.jumpTerminalToTail());
  subagentSheet: HTMLDialogElement | null = null;
+ // The Subagents card's disclosures (ChatView's "subagents-closed" and "subagents-finished").
+ subagentsClosed = false;
+ subagentsFinishedShown = false;
+ // Ticks running subagents' elapsed time each second (ChatSubagentRow's TimelineView).
+ subagentTick: number | undefined;
  questionSheet: HTMLDialogElement | null = null;
  noteSheet: HTMLDialogElement | null = null;
  selectionSheet: HTMLDialogElement | null = null;
@@ -731,6 +736,7 @@ class Detail {
   this.composerResize?.disconnect(); this.composerResize = null;
   this.column.dispose();
   clearTimeout(this.refreshTimer);
+  clearInterval(this.subagentTick); this.subagentTick = undefined;
   clearTimeout(this.resizeTimer);
   clearTimeout(this.historyTimer); this.historyRequest++;
   this.resize?.disconnect(); this.resize = null;
@@ -1210,23 +1216,71 @@ class Detail {
   };
   draw(); return card;
  }
- renderSubagents(agents: NonNullable<TranscriptPage["subagents"]>): HTMLElement {
+ /** ChatView.subagentsCard: omp's `task` subagents, each running one with what it does now and
+  *  for how long, the finished ones folded into one line. An owner's row with a transcript opens
+  *  that conversation read-only; a guest's rows do not open (herdr refuses them). The card stays
+  *  attached while its subagents are unchanged, so a poll keeps a focused row focused. */
+ renderSubagents(agents: TranscriptSubagent[]): HTMLElement {
+  if (agents.some(agent => agent.status === "running")) this.subagentTick ??= window.setInterval(() => this.tickSubagents(), 1000);
+  const opens = !this.view?.guest;
+  const signature = JSON.stringify([agents, opens]);
+  const previous = this.transcript.querySelector<HTMLElement>(".chat-subagents");
+  if (previous?.dataset.signature === signature) return previous;
+  const card = el("section", "chat-subagents chat-message");
+  card.dataset.signature = signature;
+  // ChatView.swift's ChatStyle.ok is distinct from the shared agent-state green.
+  card.style.setProperty("--chat-ok", "#7fc89a");
   const running = agents.filter(agent => agent.status === "running");
   const finished = agents.filter(agent => agent.status !== "running");
-  const previous = this.transcript.querySelector<HTMLDetailsElement>(".chat-subagents");
-  const card = el("details", "chat-subagents"); card.open = previous?.open ?? true;
-  card.append(el("summary", "", `SUBAGENTS · ${running.length ? `${running.length} RUNNING` : `${finished.length} FINISHED`}`));
-  const row = (agent: typeof agents[number]) => {
-   const item = button("", () => this.openSubagent(agent.id)); item.className = "chat-subagent-row"; item.disabled = !agent.has_transcript;
-   item.append(el("strong", "", agent.id), el("span", "", agent.label ?? agent.task ?? ""), el("small", "", agent.status ?? ""));
+  const summary = subagentsSummary(agents);
+  const heading = (text: string, open: boolean, className: string, label: string, hint: string, toggle: () => void) => {
+   const control = button("", () => { const from = card.getBoundingClientRect().height; toggle(); draw(); animateHeight(card, from, "quick"); });
+   control.className = className;
+   control.setAttribute("aria-expanded", String(open)); control.setAttribute("aria-label", label); control.title = hint;
+   const chevron = el("span", "chat-plan-chevron"); chevron.setAttribute("aria-hidden", "true");
+   void symbol(open ? "chevron.down" : "chevron.right", 10, "bold").then(icon => chevron.append(icon));
+   control.append(chevron, el("span", "", text));
+   return control;
+  };
+  const row = (agent: TranscriptSubagent) => {
+   const words = subagentRow(agent, Date.now()), opensRow = opens && agent.has_transcript;
+   const item = opensRow ? button("", () => this.openSubagent(agent.id)) : el("div");
+   item.className = "chat-subagent-row"; item.dataset.mark = words.mark;
+   item.setAttribute("aria-label", words.spoken);
+   if (opensRow) item.title = "Opens its conversation"; else item.setAttribute("role", "group");
+   const mark = el("span", "chat-subagent-mark", { running: "", completed: "✓", failed: "✗", unknown: "?" }[words.mark]);
+   mark.setAttribute("aria-hidden", "true");
+   const title = el("span", "chat-subagent-title");
+   title.append(el("strong", "", words.title), el("span", "", words.label));
+   const detail = el("span", "chat-subagent-detail", words.detail);
+   if (words.mark === "running") { detail.dataset.started = String(agent.started_ms ?? 0); detail.dataset.intent = agent.last_intent ?? ""; }
+   const lines = el("span", "chat-subagent-lines"); lines.append(title, detail);
+   item.append(mark, lines);
+   if (opensRow) {
+    const chevron = el("span", "chat-subagent-chevron"); chevron.setAttribute("aria-hidden", "true");
+    void symbol("chevron.right", 10, "bold").then(icon => chevron.append(icon));
+    item.append(chevron);
+   }
    return item;
   };
-  card.append(...running.map(row));
-  if (finished.length) {
-   const folded = el("details"); folded.open = previous?.querySelector("details")?.open ?? false;
-   folded.append(el("summary", "", `${finished.length} finished`), ...finished.map(row)); card.append(folded);
+  const draw = () => {
+   const open = !this.subagentsClosed, showsFinished = this.subagentsFinishedShown;
+   card.replaceChildren(heading(`SUBAGENTS · ${summary.toUpperCase()}`, open, "chat-plan-heading", `Subagents, ${summary}`,
+    open ? "Hides the subagents" : "Shows the subagents", () => { this.subagentsClosed = !this.subagentsClosed; }));
+   if (!open) return;
+   card.append(...running.map(row));
+   if (!finished.length) return;
+   card.append(heading(`${finished.length} finished`, showsFinished, "chat-plan-heading chat-subagents-finished", `${finished.length} finished`,
+    showsFinished ? "Hides the finished subagents" : "Shows the finished subagents", () => { this.subagentsFinishedShown = !this.subagentsFinishedShown; }));
+   if (showsFinished) card.append(...finished.map(row));
+  };
+  draw(); return card;
+ }
+ private tickSubagents() {
+  const now = Date.now();
+  for (const detail of this.transcript.querySelectorAll<HTMLElement>(".chat-subagent-detail[data-started]")) {
+   detail.textContent = subagentRow({ id: "", status: "running", started_ms: Number(detail.dataset.started), last_intent: detail.dataset.intent || null, has_transcript: false }, now).detail;
   }
-  return card;
  }
  openSubagent(id: string) {
   this.subagentSheet?.close();
@@ -1295,9 +1349,7 @@ class Detail {
   }
   if (work.steps.length) {
    const details = el("details", "chat-work-steps"); details.dataset.id = `s:${work.id}`;
-   const seconds = Math.max(0, Math.floor((work.endMs - work.startMs) / 1000));
-   const minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60), rest = minutes % 60;
-   const duration = seconds < 60 ? `${Math.max(seconds, 1)} s` : minutes < 60 ? `${minutes} min` : rest ? `${hours} h ${rest} min` : `${hours} h`;
+   const duration = chatDuration(work.endMs - work.startMs);
    const summary = this.workSummary(details), label = el("span");
    label.append(el("span", "", work.live ? "Working" : `Worked for ${duration}`), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
    summary.append(label);

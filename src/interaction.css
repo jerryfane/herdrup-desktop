@@ -232,12 +232,21 @@
 .host-password label { display: flex; flex-direction: column; gap: 8px; }
 .host-password form { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 .agent-detail .chat-earlier, .subagent-sheet .chat-earlier { display: block; margin: 0 auto 12px; padding: 4px 8px; border: 0; background: none; color: var(--color-text-faint); font: 400 13px var(--font-app); }
-.chat-subagents { width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 12px auto; padding: 10px 12px; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 14px; }
-.chat-subagents > summary { color: var(--color-text-faint); font: 600 10.5px var(--font-machine); letter-spacing: 1.2px; cursor: pointer; }
-.chat-subagents > details { margin-top: 8px; font: 600 12px var(--font-app); color: var(--color-text-faint); }
-.agent-detail .chat-subagent-row { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 8px 0; border: 0; background: none; font: 400 13px var(--font-app); text-align: left; }
-.chat-subagent-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-dim); }
-.chat-subagent-row small { color: var(--color-text-faint); }
+/* ChatView.subagentsCard: the plan card's surface, padding and heading; rows as ChatSubagentRow. */
+.chat-subagents { box-sizing:border-box; display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:0; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:14px; background:var(--color-surface); }
+.agent-detail .chat-plan-heading.chat-subagents-finished, .subagent-sheet .chat-plan-heading.chat-subagents-finished { font:600 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); letter-spacing:0; }
+.agent-detail .chat-subagent-row { display:flex; align-items:baseline; gap:8px; width:100%; min-width:0; padding:0; border:0; background:none; color:var(--color-text); text-align:left; }
+.chat-subagent-mark { flex:none; width:12px; text-align:center; font:600 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+.chat-subagent-row[data-mark="running"] .chat-subagent-mark::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--status-working); vertical-align:middle; }
+.chat-subagent-row[data-mark="completed"] .chat-subagent-mark { color:var(--chat-ok); }
+.chat-subagent-row[data-mark="failed"] .chat-subagent-mark { color:var(--status-died); }
+.chat-subagent-lines { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; }
+.chat-subagent-title, .chat-subagent-detail { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-subagent-title { font:400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text); }
+.chat-subagent-title strong { font-weight:600; }
+.chat-subagent-title span { color:var(--color-text-dim); }
+.chat-subagent-detail { font:400 calc(12.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+.chat-subagent-chevron { display:flex; flex:none; align-self:center; color:var(--color-text-faint); }
 .subagent-sheet { width: min(580px, calc(100vw - 32px)); height: min(660px, calc(100vh - 32px)); padding: 0; overflow: hidden; color: var(--color-text); background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 20px; }
 .subagent-sheet[open] { display: flex; flex-direction: column; }
 .subagent-sheet > header { position: relative; display: flex; align-items: center; justify-content: center; flex: none; height: 64px; padding: 10px; font: 600 16px var(--font-app); }
