@@ -236,10 +236,9 @@
 .chat-subagents { box-sizing:border-box; display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:0; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:14px; background:var(--color-surface); }
 .agent-detail .chat-plan-heading.chat-subagents-finished, .subagent-sheet .chat-plan-heading.chat-subagents-finished { font:600 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); letter-spacing:0; }
 .agent-detail .chat-subagent-row { display:flex; align-items:baseline; gap:8px; width:100%; min-width:0; padding:0; border:0; background:none; color:var(--color-text); text-align:left; }
-.chat-subagent-mark { flex:none; width:12px; text-align:center; font:600 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+/* Marks in ink, not status colours (fleet UI rule): only a running row carries a dot, blue. */
+.chat-subagent-mark { flex:none; width:12px; text-align:center; font:600 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-dim); }
 .chat-subagent-row[data-mark="running"] .chat-subagent-mark::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--status-working); vertical-align:middle; }
-.chat-subagent-row[data-mark="completed"] .chat-subagent-mark { color:var(--chat-ok); }
-.chat-subagent-row[data-mark="failed"] .chat-subagent-mark { color:var(--status-died); }
 .chat-subagent-lines { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; }
 .chat-subagent-title, .chat-subagent-detail { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-subagent-title { font:400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text); }
