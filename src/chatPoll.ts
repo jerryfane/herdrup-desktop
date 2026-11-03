@@ -74,11 +74,20 @@ function normalized(text: string): string {
  return text.replace(/\r\n?/g, "\n").trim();
 }
 
+/** Whether `recorded` (normalized) is the prompt an outgoing message became. A send with files
+ *  goes out as its caption, a blank line and the files' reference, or the reference alone
+ *  (paneAttachmentPrompt, desk_interaction_compose.go): "[… attached via Herdr Gram …]". */
+function sentAs(o: Outgoing, recorded: string): boolean {
+ const caption = normalized(o.text);
+ if (!o.files) return caption === recorded;
+ const reference = caption ? recorded.slice(caption.length).replace(/^\n\n/, "") : recorded;
+ return (!caption || recorded.startsWith(caption + "\n\n")) && reference.startsWith("[") && reference.includes(" attached via Herdr Gram");
+}
+
 /** After a transcript read (TranscriptOutbox.reconcile): a new user entry in the live tail
- *  removes the oldest outgoing prompt with the same author and text. One that carried files
- *  matches any of its author's new prompts, as herdr records those with the files' note.
- *  Another person's prompt removes nothing. One still unseen after its minute reads "Not seen
- *  in chat" (TranscriptOutbox.unseenAfter). */
+ *  removes the oldest outgoing prompt with the same author and the text it was sent as.
+ *  Another person's prompt, or another prompt of the same author, removes nothing. One still
+ *  unseen after its minute reads "Not seen in chat" (TranscriptOutbox.unseenAfter). */
 export function reconcileOutgoing(outgoing: readonly Outgoing[], held: ReadonlySet<string>, page: readonly Entry[], now: number): Outgoing[] {
  const left = [...outgoing];
  for (const entry of page) {
@@ -86,7 +95,7 @@ export function reconcileOutgoing(outgoing: readonly Outgoing[], held: ReadonlyS
   const guest = entry.author === "guest" ? (typeof entry.author_name === "string" ? entry.author_name : "") : "";
   const author = entry.author === "guest" ? `guest:${guest}` : "owner";
   const text = normalized(entry.text ?? "");
-  const index = left.findIndex(o => (o.guest ? `guest:${o.guest}` : "owner") === author && (o.files > 0 || normalized(o.text) === text));
+  const index = left.findIndex(o => (o.guest ? `guest:${o.guest}` : "owner") === author && sentAs(o, text));
   if (index >= 0) left.splice(index, 1);
  }
  return left.map(o => o.state !== "sending" && o.state !== "notSeen" && now >= o.until ? { ...o, state: "notSeen" } : o);

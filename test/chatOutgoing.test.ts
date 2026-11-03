@@ -26,6 +26,18 @@ test("other authors keep the bubble", () => {
  expect(ids(reconcileOutgoing([sent("hi")], new Set(), [user("u5", "other")], 0))).toEqual(["hi"]);
 });
 
+test("a send with files matches only its files prompt", () => {
+ // As paneAttachmentPrompt writes it: caption, blank line, reference; or the reference alone.
+ const ref = "[Photo attached via Herdr Gram message g1. Download it with `herdr gram get-file g1 -o /tmp/herdr-photo-g1.png`, then inspect /tmp/herdr-photo-g1.png.]";
+ const photo = sent("look at this", { files: 1 });
+ expect(ids(reconcileOutgoing([photo], new Set(), [user("u1", "something else")], 0))).toEqual(["look at this"]);
+ expect(ids(reconcileOutgoing([photo], new Set(), [user("u2", "look at this")], 0))).toEqual(["look at this"]);
+ expect(ids(reconcileOutgoing([photo], new Set(), [user("u3", "look at this\n\n" + ref)], 0))).toEqual([]);
+ const bare = sent("", { id: "bare", files: 1 });
+ expect(ids(reconcileOutgoing([bare], new Set(), [user("u4", "hi")], 0))).toEqual(["bare"]);
+ expect(ids(reconcileOutgoing([bare], new Set(), [user("u5", ref)], 0))).toEqual([]);
+});
+
 test("an accepted prompt still unseen after its minute says so; one still sending waits", () => {
  const out = reconcileOutgoing([sent("a"), sent("b", { state: "sending" })], new Set(), [], 60_000);
  expect(out.map(o => o.state)).toEqual(["notSeen", "sending"]);
