@@ -203,6 +203,9 @@
 .chat-markdown td.chat-table-number { font-size: calc(13.5px * var(--markdown-scale)); font-variant-numeric: tabular-nums; text-align: right; }
 .chat-markdown td.chat-table-gain { color: var(--chat-ok); }
 .chat-diagram svg { max-width: 100%; height: auto; }
+/* A journey's section names are SVG text drawn in their box's own fill by Mermaid's dark theme
+   (the HTML copy it means to show is sanitized away); its style is ID-scoped, hence !important (post-merge review of #143). */
+.chat-diagram svg text.journey-section { fill: var(--color-text) !important; }
 .chat-step { max-width: 860px; margin: 8px auto; padding: 8px 12px; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 8px; }
 .chat-step summary { cursor: pointer; color: var(--color-text-dim); }
 .chat-composer { position: relative; display: flex; gap: 4px; margin: 4px 12px 8px; padding: 6px; align-items: center; background: var(--color-surface); border: 0; outline: 1px solid var(--color-hairline); outline-offset: -1px; border-radius: 28px; }
