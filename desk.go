@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -190,6 +191,9 @@ type link struct {
 	// guestPoll wakes a guest's status poll (runGuest) after a send, an
 	// answer or a menu key; nil for the owner.
 	guestPoll chan struct{}
+	// guestKeyTaken: the host took one of this guest's menu keys, so it is
+	// not a host that keeps answers for the owner (GuestMenuKey).
+	guestKeyTaken atomic.Bool
 	// restart ends the current watch so the next one addresses session.
 	restart context.CancelFunc
 	// ctx is the current watch's; it ends when the session or connection

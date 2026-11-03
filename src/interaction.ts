@@ -394,18 +394,18 @@ class Detail {
   this.updateGuestQuestion();
  }
  /** Presses one of the owner's menu keys in the shared pane (GuestPaneView.sendMenuKey,
-  *  GuestPaneView.swift:788-813). Go asks herdr again after a refusal: one while the agent
-  *  still waits means a host that keeps answers for the owner. */
+  *  GuestPaneView.swift:834-852). A refused key while the agent is still blocked means a host
+  *  that keeps answers for the owner (Go reads the agent again): the keys go and the page
+  *  waits for the owner. */
  sendMenuKey(key: string) {
   const generation = this.generation;
   this.menuKeyQueue = this.menuKeyQueue.then(async () => {
    if (this.disposed || generation !== this.generation || this.answersRefused) return;
    try {
-    // A refused key is herdr's "not now" (no menu, a free-text prompt, its pause after a
-    // committing key), never proof the host keeps answers for the owner (desk_guest_answers.go).
-    await Desk.guestMenuKey(this.token, key);
-    if (this.disposed) return;
+    const reply = await Desk.guestMenuKey(this.token, key);
+    if (this.disposed || generation !== this.generation) return;
     this.status.textContent = "";
+    if (reply.ownerAnswers) this.refuseAnswers();
    } catch (error) { if (!this.disposed) this.status.textContent = errorText(error); }
   });
  }

@@ -499,6 +499,14 @@ export interface GuestInvitation {
 }
 
 /**
+ * GuestMenuKeyReply says whether the guest's host keeps answers for the
+ * owner, learnt from a refused key.
+ */
+export interface GuestMenuKeyReply {
+  ownerAnswers?: boolean;
+}
+
+/**
  * GuestShareDetails describes the agent selected when this view was opened.
  * Routing stays in Go; the page cannot supply a different pane or machine.
  */
@@ -1253,17 +1261,18 @@ export const Desk = {
   },
   /**
    * GuestMenuKey presses one of the bar's menu keys in a guest's shared pane,
-   * as GuestPaneView.sendMenuKey (GuestPaneView.swift:788-813). herdr refuses a
+   * as GuestPaneView.sendMenuKey (GuestPaneView.swift:834-852). herdr refuses a
    * guest's key with guest_forbidden whenever it would not take one: not on a
    * menu, on a free-text prompt, during its pause after a committing key
    * (guest_gate.rs awaits_menu_input and MENU_COMMITS, d78b91c 505-529), and on a
-   * host older than guest answers. Its guest view hides the prompt kind and the
-   * state sequence, so a guest cannot tell these apart, and a refused key says
-   * nothing about the host (PR #90 review): it is ignored. Whether the host
-   * keeps answers for the owner is read from agent.answer and the transcript's
-   * answerable instead (ChatAnswer, the page's withheldFromCaller).
+   * host older than guest answers; its guest view shows only agent_status. As
+   * native, a refusal reads the agent again, and one still blocked means a host
+   * that keeps answers for the owner. Once the host has taken one of this
+   * guest's keys it is not such a host (an older host takes none), so a later
+   * refusal, during herdr's pause while detection still lists the old menu,
+   * learns nothing. A free-text prompt reads as blocked, as in native.
    */
-  guestMenuKey(token: string, key: string): Promise<void> {
+  guestMenuKey(token: string, key: string): Promise<GuestMenuKeyReply> {
     return call("Desk.GuestMenuKey", token, key);
   },
   guestShareDetails(token: string): Promise<GuestShareDetails> {
