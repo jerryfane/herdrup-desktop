@@ -6,8 +6,19 @@ import type { TranscriptPage } from "./interactionModel";
 
 type PendingAsk = NonNullable<TranscriptPage["pending_ask"]>;
 
-/** Who reads the page (ChatView.swift ChatViewer): the owner, or a guest of `owner`'s agent. */
-export type Viewer = { guest: false } | { guest: true; owner: string };
+/** Who reads the page (ChatView.swift ChatViewer): the owner, or guest `me` of `owner`'s agent. */
+export type Viewer = { guest: false } | { guest: true; me: string; owner: string };
+
+/** Whose prompt this was, when it was not the reader's own (ChatView.swift byline): the owner
+ *  reads a guest's as "nike · guest"; a guest reads the owner's as the owner's name and another
+ *  guest's as theirs. herdr reports the author (`author`, `author_name`) after stripping the
+ *  guest's "<name> (via HerdrUp): " prefix; anything but "guest" is the owner (AgentTranscript.swift). */
+export function promptByline(viewer: Viewer, author: unknown, authorName: unknown): string | null {
+ const guest = author === "guest", name = typeof authorName === "string" ? authorName : null;
+ if (!viewer.guest) return guest ? `${name ?? "Guest"} · guest` : null;
+ if (!guest) return viewer.owner || null;
+ return name === viewer.me ? null : `${name ?? "Guest"} · guest`;
+}
 
 /** The host withheld `answerable` from a question the buttons could answer: a host that keeps
  *  answers for the owner (TranscriptPendingAsk.isWithheldFromCaller, AgentTranscript.swift:322-331).

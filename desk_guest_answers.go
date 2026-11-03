@@ -34,6 +34,15 @@ func guestOwner(l *link) string {
 	return l.access.OwnerName
 }
 
+// guestSelf is the guest's own name on the link, "" for the owner's own link.
+// Called with d.mu held.
+func guestSelf(l *link) string {
+	if l.guest == nil || l.access == nil {
+		return ""
+	}
+	return l.access.GuestName
+}
+
 // GuestMenuKey presses one of the bar's menu keys in a guest's shared pane,
 // as GuestPaneView.sendMenuKey (GuestPaneView.swift:788-813). herdr refuses a
 // guest's key with guest_forbidden whenever it would not take one: not on a

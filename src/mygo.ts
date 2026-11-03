@@ -104,6 +104,11 @@ export interface AgentView {
    * (herdrup GuestPaneView.swift:557-575, ChatView.swift:1755-1758).
    */
   guestOwner?: string;
+  /**
+   * GuestSelf is the name a guest's prompts carry: the chat names other
+   * people's prompts, never the reader's own (ChatView.swift byline).
+   */
+  guestSelf?: string;
   plainTerminal: boolean;
 }
 

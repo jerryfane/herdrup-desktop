@@ -35,7 +35,10 @@ type AgentView struct {
 	// GuestOwner names who shared a guest's agent: the question banner and
 	// the answer card wait for them when the host keeps answers for the owner
 	// (herdrup GuestPaneView.swift:557-575, ChatView.swift:1755-1758).
-	GuestOwner    string `json:"guestOwner,omitempty"`
+	GuestOwner string `json:"guestOwner,omitempty"`
+	// GuestSelf is the name a guest's prompts carry: the chat names other
+	// people's prompts, never the reader's own (ChatView.swift byline).
+	GuestSelf     string `json:"guestSelf,omitempty"`
 	PlainTerminal bool   `json:"plainTerminal"`
 }
 
@@ -116,7 +119,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			Heading: strings.Join(parts, " · "), Group: group.Key(), Status: group.Label(),
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
-			GuestOwner: guestOwner(l),
+			GuestOwner: guestOwner(l), GuestSelf: guestSelf(l),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),

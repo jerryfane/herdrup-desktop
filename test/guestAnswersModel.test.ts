@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { canAnswer, chooser, guestQuestion, waitingForOwner, withheldFromCaller } from "../src/guestAnswersModel";
+import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "../src/guestAnswersModel";
 
 // herdrup f2df68b ChatView.swift (ChatAskCard) and GuestPaneView.swift (noteRow, showsMenuKeys).
 const single = (answerable: boolean, options = ["Yes", "No"], multi = false) =>
   ({ id: "a1", answerable, questions: [{ question: "Proceed?", options, multi }] });
-const guest = { guest: true as const, owner: "Jerry" };
+const guest = { guest: true as const, me: "nike", owner: "Jerry" };
 
 describe("guest answers", () => {
   test("a guest answers like the owner until the host refuses", () => {
@@ -38,5 +38,22 @@ describe("guest answers", () => {
     expect(guestQuestion("docs", "Jerry", "working", false, true).banner).toBe("Terminal is view-only · send messages below");
     expect(guestQuestion("docs", "Jerry", "idle", false, false, true)).toEqual({ banner: "View-only · this host doesn't support guest resizing", tone: "faint", menuKeys: false, label: null });
     expect(guestQuestion("docs", "Jerry", "stopped", false, true).banner).toBeNull();
+  });
+});
+
+// Owner report 2026-11-03: Chat did not say when a shared user sent a prompt. ChatView.swift's
+// byline names a prompt that is not the reader's own; herdr reports author and author_name.
+describe("prompt byline", () => {
+  test("the owner sees who of the guests wrote a prompt", () => {
+    expect(promptByline({ guest: false }, "guest", "nike")).toBe("nike · guest");
+    expect(promptByline({ guest: false }, "guest", undefined)).toBe("Guest · guest");
+    expect(promptByline({ guest: false }, "owner", undefined)).toBeNull();
+  });
+  test("a guest sees the owner's and other guests' prompts named, never their own", () => {
+    expect(promptByline(guest, "owner", undefined)).toBe("Jerry");
+    expect(promptByline(guest, undefined, undefined)).toBe("Jerry");
+    expect(promptByline(guest, "guest", "nike")).toBeNull();
+    expect(promptByline(guest, "guest", "jerry-2")).toBe("jerry-2 · guest");
+    expect(promptByline({ ...guest, owner: "" }, "owner", undefined)).toBeNull();
   });
 });
