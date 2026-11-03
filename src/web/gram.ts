@@ -12,7 +12,7 @@ import { agentView, sharedAgents, type GuestView } from "./view";
 import {
  type Attachment, apiCode, Composer, displaySize, ERR_SENDING, MAX_FILE_BYTES, paneAttachmentPrompt, safeFileName, SendError, skipNote, sleep, toBase64, uploadBlob,
 } from "./gramCompose";
-import { BLOB_SAVE_MAX_BYTES, type FileChunk, imageMime, openPlan, PREVIEW_MAX_BYTES, readChunks, savePlan } from "./gramFiles";
+import { BLOB_SAVE_MAX_BYTES, type FileChunk, FileTooLarge, imageMime, openPlan, PREVIEW_MAX_BYTES, readChunks, savePlan, TEXT_PREVIEW_MAX_BYTES } from "./gramFiles";
 import { AGENT_TO_OWNER, type GramInfo, GRAM_MAX_REFRESH_LIMIT, GRAM_PAGE_SIZE, guestGramPage, type GuestGramPage, Inbox, isUnread, projectGuestPage, type WireFile } from "./gramInbox";
 import { HerdrAPIError } from "../webguest/errors";
 
@@ -283,9 +283,10 @@ export function stage(c: Composer, paths: string[]): { staged: string[]; note: s
  const staged: string[] = [], bad: string[] = [], add: Attachment[] = [];
  for (const p of paths) {
   if (c.has(p)) { staged.push(p); continue; }
-  if (add.length >= room) { capped++; continue; }
+  // A pick that does not stage is released at once: only staged files keep their File.
+  if (add.length >= room) { capped++; forgetFile(p); continue; }
   const file = fileForPath(p);
-  if (!file || file.size <= 0 || file.size > MAX_FILE_BYTES) { bad.push(file?.name ?? p.slice(p.indexOf("/") + 1)); continue; }
+  if (!file || file.size <= 0 || file.size > MAX_FILE_BYTES) { bad.push(file?.name ?? p.slice(p.indexOf("/") + 1)); forgetFile(p); continue; }
   const name = safeFileName(file.name);
   const mime = (file.type.split(";")[0] ?? "").trim().toLowerCase() || "application/octet-stream";
   add.push({ path: p, name, mime, isImage: mime.startsWith("image/"), size: file.size, blob: file });
@@ -388,8 +389,9 @@ export function panePromptAttachments(token: string, text: string, submit: (prom
  return (async () => {
   paneRecipient(v);
   let receipt = "";
+  const paths = c.paths();
   try {
-   await c.sendPrompt(c.paths(), async (_text, a, signal) => {
+   await c.sendPrompt(paths, async (_text, a, signal) => {
     if (!a) throw new Error("no attachment to post");
     const { link, recipient } = paneRecipient(v);
     const reply = await link.call<{ message?: { id?: string } }>("gram.post", {
@@ -399,7 +401,12 @@ export function panePromptAttachments(token: string, text: string, submit: (prom
     if (!id) throw new Error("The shared agent did not confirm the posted Gram");
     return id;
    }, async files => { receipt = await submit(paneAttachmentPrompt(text, files)); return true; }, v.signal);
-  } finally { publishPane(token, ""); }
+  } finally {
+   // The files the send consumed leave the composer; their Files go with them.
+   const held = c.paths();
+   for (const p of paths) if (!held.includes(p)) forgetFile(p);
+   publishPane(token, "");
+  }
   return receipt;
  })();
 }
@@ -416,13 +423,14 @@ function fileMeta(id: string): WireFile {
  return f as WireFile;
 }
 
-/** The whole file in memory, with download events (gramDownload). */
-async function fetchBlob(link: WebLink, id: string, size: number, signal?: AbortSignal): Promise<Blob> {
+/** The whole file in memory, with download events (gramDownload); a file over maxSize (a preview's
+ *  cap) stops at the first chunk with FileTooLarge. */
+async function fetchBlob(link: WebLink, id: string, size: number, signal?: AbortSignal, maxSize?: number): Promise<Blob> {
  const parts: Uint8Array<ArrayBuffer>[] = [];
  const progress = (done: number, state: string) => emit("gramDownload", { id, done, size, state, label: displaySize(Math.min(done, size)) + " of " + displaySize(size) });
  progress(0, "downloading");
  try {
-  const { mime } = await readChunks(chunkOf(link, id, signal), size, p => { parts.push(p); }, done => progress(done, "downloading"), signal);
+  const { mime } = await readChunks(chunkOf(link, id, signal), size, p => { parts.push(p); }, done => progress(done, "downloading"), signal, maxSize);
   progress(size, "done");
   return new Blob(parts, { type: mime });
  } catch (error) { progress(size, "failed"); throw error; }
@@ -508,6 +516,7 @@ function savedList(): SavedGram[] {
 
 function reset(link: WebLink | null) {
  g.life.abort(new Error(NOT_CONNECTED));
+ for (const p of g.composer?.paths() ?? []) forgetFile(p);
  g.composer?.close();
  for (const token of [...panes.keys()]) closePaneComposer(token);
  g = fresh(link, g.visible);
@@ -681,7 +690,10 @@ export const gramDesk: Partial<DeskFns> = {
     while (state.imageSlots === 0) await sleep(WAIT_STEP_MS, state.life.signal);
     state.imageSlots--;
     try {
-     const blob = await fetchBlob(link, id, f.size, state.life.signal);
+     let blob: Blob;
+     // A file listed with an unknown size (0) is checked on its real size, from the first chunk.
+     try { blob = await fetchBlob(link, id, f.size, state.life.signal, PREVIEW_MAX_BYTES); }
+     catch (error) { throw error instanceof FileTooLarge ? new Error(`${f.name} has no preview`) : error; }
      const bytes = new Uint8Array(await blob.arrayBuffer());
      return "data:" + imageMime(blob.type.startsWith("image/") ? blob.type : f.mime) + ";base64," + toBase64(bytes);
     } finally { state.imageSlots++; }
@@ -701,8 +713,11 @@ export const gramDesk: Partial<DeskFns> = {
   try { f = fileMeta(id); } catch (error) { note(fileError("open", error)); throw error; }
   const kind = openPlan(f.name, f.mime, f.size);
   if (kind === "save") { await saveFile(id); return; }
-  try { preview(await fetchBlob(link, id, f.size, g.life.signal), kind, f.name); }
-  catch (error) { note(fileError("open", error)); throw error; }
+  try { preview(await fetchBlob(link, id, f.size, g.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES), kind, f.name); }
+  catch (error) {
+   note(error instanceof FileTooLarge ? "Couldn't open the file: it is too large to preview here. Save it instead." : fileError("open", error));
+   throw error;
+  }
  },
 
  async gramCopyText(text: string) { await navigator.clipboard.writeText(text); },

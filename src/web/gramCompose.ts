@@ -485,7 +485,14 @@ export class Composer {
     if (held) { held.uploadID = a.uploadID; held.messageID = a.messageID; }
     this.changed(a.path);
    };
-   const failure = await this.#deliverAll(batch, a => post(a.path === caption ? text : "", a, signal), update, signal);
+   // The caption rides on the first file; once that posts the draft counts as posted (composer.go
+   // send: draftPosted++ for the caption's file), so the page clears it and a retry of the rest
+   // never sends it again.
+   const failure = await this.#deliverAll(batch, async a => {
+    const id = await post(a.path === caption ? text : "", a, signal);
+    if (a.path === caption) this.#draftPosted++;
+    return id;
+   }, update, signal);
    let consume = finish === null, finishError: unknown = null;
    if (finish && !failure) {
     const posted = batch.map(a => this.#files.find(f => f.path === a.path) ?? a);

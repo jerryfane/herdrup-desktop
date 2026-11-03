@@ -18,11 +18,19 @@ export const FILE_DATA_ERROR = "the server returned file data that could not be 
 /** herdrapi.ResponseResultGramFileChunk. */
 export interface FileChunk { data_base64: string; mime: string; name: string; offset: number; sha256: string; size: number }
 
+/** A file whose real size, as its first chunk gives it, is over what the reader may take. */
+export class FileTooLarge extends Error {
+ constructor(readonly size: number) { super("the file is too large"); this.name = "FileTooLarge"; }
+}
+
 /** gramReadChunks (desk_gram_files.go:212-248): the file of size expected (0: unknown) piece by
- *  piece, each at the offset asked, of the file's one size, never past it; sink takes each piece. */
+ *  piece, each at the offset asked, of the file's one size, never past it; sink takes each piece.
+ *  A file over maxSize (a preview's cap) stops at the first chunk, which gives the real size. */
 export async function readChunks(chunk: (offset: number) => Promise<FileChunk>, expected: number,
- sink: (piece: Uint8Array<ArrayBuffer>) => Promise<void> | void, progress: (done: number) => void, signal?: AbortSignal): Promise<{ name: string; mime: string }> {
+ sink: (piece: Uint8Array<ArrayBuffer>) => Promise<void> | void, progress: (done: number) => void, signal?: AbortSignal,
+ maxSize = MAX_FILE_BYTES): Promise<{ name: string; mime: string }> {
  if (expected > MAX_FILE_BYTES) throw new Error(FILE_DATA_ERROR);
+ if (expected > maxSize) throw new FileTooLarge(expected);
  const maxEncoded = Math.floor((DOWNLOAD_CHUNK_BYTES + 2) / 3) * 4;
  let size = expected, known = expected > 0, done = 0;
  for (;;) {
@@ -31,7 +39,10 @@ export async function readChunks(chunk: (offset: number) => Promise<FileChunk>, 
   if (c.size > MAX_FILE_BYTES || (known && c.size !== size) || c.offset !== done || c.data_base64.length > maxEncoded) throw new Error(FILE_DATA_ERROR);
   const b = fromBase64(c.data_base64);
   if (!b || (b.length === 0 && c.size !== done) || b.length > DOWNLOAD_CHUNK_BYTES || b.length > c.size - done) throw new Error(FILE_DATA_ERROR);
-  if (!known) { size = c.size; known = true; }
+  if (!known) {
+   if (c.size > maxSize) throw new FileTooLarge(c.size);
+   size = c.size; known = true;
+  }
   await sink(b);
   done += b.length;
   progress(done);
