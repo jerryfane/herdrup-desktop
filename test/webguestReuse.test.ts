@@ -4,7 +4,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
-import { GuestTransport, REUSE_IDLE_LIMIT_MS, type Access, type TransportOptions } from "../src/webguest/transport";
+import { GuestTransport, REUSE_IDLE_LIMIT_MS, type Access, type TransportOptions, type WebSocketFactory } from "../src/webguest/transport";
 import { guestGate, memoryRelay, startRelay, type GateAnswer, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
@@ -138,6 +138,29 @@ test("a prompt whose reply was lost after sending is not resent", async () => {
  await gate.sessions[0]!.ended;
  expect(relay.connects).toBe(1);
  expect(gate.sessions.map(s => [s.requests, s.end])).toEqual([[2, "dropped"]]);
+});
+
+// herdrup#612 review (P1): a socket can throw after the frame left, and herdr then has the prompt.
+// Here the socket delivers the prompt's frame and throws; the call fails and never sends again.
+test("a prompt whose send threw after the frame left is not resent", async () => {
+ let armed = false;
+ const webSocket: WebSocketFactory = (url) => {
+  const ws = new WebSocket(url);
+  const deliver = ws.send.bind(ws);
+  ws.send = (data: Parameters<WebSocket["send"]>[0]) => {
+   deliver(data);
+   if (armed) { armed = false; throw new Error("connection lost after the frame left"); }
+  };
+  return ws;
+ };
+ const { host, relay, transport } = await setup(true, { webSocket });
+ await list(transport);
+ armed = true;
+ expect(await failure(prompt(transport, "only once"))).not.toBe("accepted");
+ for (let i = 0; i < 100 && host.prompts.length === 0; i++) await Bun.sleep(10);
+ await Bun.sleep(100);
+ expect(host.prompts).toEqual(["only once"]);
+ expect(relay.connects).toBe(1);
 });
 
 test("guest_paused ends reuse and guest_forbidden keeps it", async () => {
