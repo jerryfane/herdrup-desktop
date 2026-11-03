@@ -4,6 +4,7 @@
 import { paintShape } from "./continuous";
 import { Desk } from "./mygo";
 import { symbolNow } from "./symbol";
+import { codeLanguage, codeSpans, type CodeLanguage } from "./codeHighlighter";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) {
   const e = document.createElement(tag);
@@ -26,7 +27,9 @@ export function codeBlock(code: string, language: string | null, copied: boolean
     void Desk.gramCopyText(code);
     onCopy();
   };
-  const pre = el("pre", "gcode-text", code);
+  const pre = el("pre", "gcode-text");
+  const known = syntax ? codeLanguage(language) : null;
+  if (known) pre.append(...highlighted(code, known)); else pre.textContent = code;
   const scroll = el("div", "gcode-scroll");
   scroll.append(pre);
   const button = (cls: string) => {
@@ -66,4 +69,15 @@ export function selfCopyingCodeBlock(code: string, language: string | null, synt
   }, syntax);
   let current = draw(false);
   return current;
+}
+
+/** The code as text runs, each token in its kind's chat colour and plain text uncoloured, so the
+ *  block's code-text colour shows (ChatPalette.swift ChatCodeHighlights.styled). */
+function highlighted(code: string, language: CodeLanguage): Node[] {
+  return codeSpans(code, language).map(span => {
+    if (!span.kind) return document.createTextNode(span.text);
+    const run = document.createElement("span");
+    run.className = `code-${span.kind}`; run.textContent = span.text;
+    return run;
+  });
 }
