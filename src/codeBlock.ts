@@ -29,7 +29,7 @@ export function codeBlock(code: string, language: string | null, copied: boolean
   };
   const pre = el("pre", "gcode-text");
   const known = syntax ? codeLanguage(language) : null;
-  if (known) pre.append(...highlighted(code, known)); else pre.textContent = code;
+  if (known) pre.append(highlighted(code, known)); else pre.textContent = code;
   const scroll = el("div", "gcode-scroll");
   scroll.append(pre);
   const button = (cls: string) => {
@@ -72,12 +72,15 @@ export function selfCopyingCodeBlock(code: string, language: string | null, synt
 }
 
 /** The code as text runs, each token in its kind's chat colour and plain text uncoloured, so the
- *  block's code-text colour shows (ChatPalette.swift ChatCodeHighlights.styled). */
-function highlighted(code: string, language: CodeLanguage): Node[] {
-  return codeSpans(code, language).map(span => {
-    if (!span.kind) return document.createTextNode(span.text);
+ *  block's code-text colour shows (ChatPalette.swift ChatCodeHighlights.styled). One fragment, filled
+ *  a node at a time: a long block has more tokens than a call may take arguments (#122). */
+export function highlighted(code: string, language: CodeLanguage): DocumentFragment {
+  const out = document.createDocumentFragment();
+  for (const span of codeSpans(code, language)) {
+    if (!span.kind) { out.appendChild(document.createTextNode(span.text)); continue; }
     const run = document.createElement("span");
     run.className = `code-${span.kind}`; run.textContent = span.text;
-    return run;
-  });
+    out.appendChild(run);
+  }
+  return out;
 }
