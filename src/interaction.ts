@@ -1228,8 +1228,6 @@ class Detail {
   if (previous?.dataset.signature === signature) return previous;
   const card = el("section", "chat-subagents chat-message");
   card.dataset.signature = signature;
-  // ChatView.swift's ChatStyle.ok is distinct from the shared agent-state green.
-  card.style.setProperty("--chat-ok", "#7fc89a");
   const running = agents.filter(agent => agent.status === "running");
   const finished = agents.filter(agent => agent.status !== "running");
   const summary = subagentsSummary(agents);
