@@ -74,6 +74,10 @@ type session struct {
 	dead     chan struct{}
 	err      error
 	stopPump context.CancelFunc
+	// writeHook, when set (tests only), writes a frame in place of the socket.
+	writeHook func(context.Context, []byte) error
+	// handshook is when the handshake that read reply's features finished.
+	handshook time.Time
 }
 
 func refusal(code string) error {
@@ -217,8 +221,11 @@ func (s *session) close() {
 	_ = s.socket.CloseNow()
 }
 
-// sendLine sends line and its "\n". sent says a frame of it went out whole:
-// until one has, herdr cannot have the request.
+// sendLine sends line and its "\n". sent says a write of it was attempted:
+// from then on herdr may have the request, even when the write reports an
+// error (the bytes can leave before the connection fails), so it must never
+// go again. Until then sent is false only because the session was already
+// known to have ended (ended): nothing of the request was handed over.
 func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err error) {
 	// Frame boundaries are unrelated to API line boundaries.
 	line = append(line, '\n')
@@ -228,13 +235,42 @@ func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err err
 		if err != nil {
 			return sent, err
 		}
-		if err := s.socket.Write(ctx, websocket.MessageBinary, encrypted); err != nil {
-			return sent, socketError(err)
+		if err := s.ended(); err != nil {
+			return sent, err
 		}
 		sent = true
+		if err := s.writeFrame(ctx, encrypted); err != nil {
+			return true, socketError(err)
+		}
 		line = line[length:]
 	}
-	return sent, nil
+	return true, nil
+}
+
+// ended is why a pumped session is known to have ended, or nil: herdr's
+// close (or anything else ending its reader) seen before a write.
+func (s *session) ended() error {
+	if s.dead == nil {
+		return nil
+	}
+	select {
+	case <-s.dead:
+		if s.err != nil {
+			return s.err
+		}
+		return io.EOF
+	default:
+		return nil
+	}
+}
+
+// writeFrame writes one encrypted frame; tests replace it through
+// writeHook to fail a write whose bytes already went out.
+func (s *session) writeFrame(ctx context.Context, frame []byte) error {
+	if s.writeHook != nil {
+		return s.writeHook(ctx, frame)
+	}
+	return s.socket.Write(ctx, websocket.MessageBinary, frame)
 }
 
 func (s *session) readChunk(ctx context.Context) ([]byte, error) {

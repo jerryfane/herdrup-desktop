@@ -41,6 +41,10 @@ export function relayBackoff(lastMs: number): number {
 /** reuseIdleLimit (transport.go): how long a transport keeps a session idle for its next call,
  *  10 s short of herdr's 60 s SESSION_IDLE_TIMEOUT so a call never races herdr's close. */
 export const REUSE_IDLE_LIMIT_MS = 50_000;
+/** The most a session is reused after its handshake, the only place herdr tells the guest its
+ *  features (transport.go reuseAgeLimit): an owner turning Gram sharing on or off reaches the page
+ *  within this. A call in flight is never cut. */
+export const REUSE_AGE_LIMIT_MS = 120_000;
 
 /** multiRequest: the host answers further requests on a session after a reply (features.multi_request). */
 export interface Features { gram: boolean; push: boolean; multiRequest: boolean }
@@ -208,11 +212,13 @@ class RelaySocket {
  }
 
  /** Sends a frame, or throws when it cannot go out: the socket ended, or is closing, which a
-  *  browser tells only by dropping the frame. */
- send(data: Uint8Array) {
+  *  browser tells only by dropping the frame. handing runs just before the frame is handed to the
+  *  socket: from then on herdr may have it, even if the socket throws (herdrup#612 review). */
+ send(data: Uint8Array, handing?: () => void) {
   const end = this.#end;
   if (end !== null) throw end === "eof" ? closed() : end.error;
   if (this.#ws.readyState !== 1) throw closed();
+  handing?.();
   // Every frame is a fresh ciphertext from @noble/ciphers, backed by an ArrayBuffer of its own;
   // its type only says ArrayBufferLike.
   const frame = data as Uint8Array<ArrayBuffer>;
@@ -309,6 +315,8 @@ function refusal(code: string): GuestError {
 
 /** An authenticated relay connection (session.go:61-66). */
 class Session {
+ /** When the handshake that read reply's features finished (ms since the epoch), set by #connect. */
+ handshook = 0;
  constructor(private readonly socket: RelaySocket, private readonly noise: NoiseSession, readonly reply: HelloReply) {}
 
  close() { this.socket.close(); }
@@ -319,14 +327,13 @@ class Session {
  whenEnded(onEnd: () => void) { this.socket.whenEnded(onEnd); }
 
  /** session.go sendLine: the line and its "\n", split at the plaintext limit. onFrame hears each
-  *  frame go out: until one has, herdr cannot have the request. */
+  *  frame about to be handed to the socket: until one is, herdr cannot have the request. */
  sendLine(line: Uint8Array, onFrame?: () => void) {
   const framed = new Uint8Array(line.length + 1);
   framed.set(line);
   framed[line.length] = 0x0a;
   for (let at = 0; at < framed.length; at += MAX_NOISE_PLAINTEXT) {
-   this.socket.send(this.noise.encrypt(framed.subarray(at, at + MAX_NOISE_PLAINTEXT)));
-   onFrame?.();
+   this.socket.send(this.noise.encrypt(framed.subarray(at, at + MAX_NOISE_PLAINTEXT)), onFrame);
   }
  }
 
@@ -591,9 +598,10 @@ export class GuestTransport {
  }
 
  /** One request and its decoded result, within ROUND_TRIP_LIMIT_MS (transport.go Call). It goes on
-  *  the idle session if there is one; when herdr ended that session before any of the request went
-  *  out, so herdr cannot have it, the request goes once more on a fresh session. A request that may
-  *  have reached herdr is never sent again: it could be an agent.prompt. */
+  *  the idle session if there is one; when that session was known to have ended before any frame of
+  *  the request was handed to the socket, so herdr cannot have it, the request goes once more on a
+  *  fresh session. Once a frame was handed over the request is never sent again, whatever the socket
+  *  did: it could be an agent.prompt (herdrup#612 review). */
  async call(method: string, params?: unknown, options: RequestOptions = {}): Promise<unknown> {
   const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
   try {
@@ -650,6 +658,7 @@ export class GuestTransport {
   }
   if (session.reply.guestID !== this.#access.guestID) { session.close(); throw revoked(); }
   this.#admitted(refusals, session.reply.features);
+  session.handshook = this.#now();
   return session;
  }
 
@@ -671,13 +680,15 @@ export class GuestTransport {
   this.#idle = null;
   if (idle === null) return null;
   clearTimeout(idle.timer);
-  if (!idle.session.quiet || this.#now() - idle.since >= REUSE_IDLE_LIMIT_MS) { idle.session.close(); return null; }
+  const now = this.#now();
+  if (!idle.session.quiet || now - idle.since >= REUSE_IDLE_LIMIT_MS || now - idle.session.handshook >= REUSE_AGE_LIMIT_MS) { idle.session.close(); return null; }
   return idle.session;
  }
 
  /** Leaves session idle for the next call, in place of any session idle already, until
   *  REUSE_IDLE_LIMIT_MS passes or herdr ends it (transport.go park). */
  #park(session: Session) {
+  if (this.#now() - session.handshook >= REUSE_AGE_LIMIT_MS) { session.close(); return; }
   if (this.closed) { session.close(); return; }
   const previous = this.#idle;
   if (previous !== null) { clearTimeout(previous.timer); previous.session.close(); }

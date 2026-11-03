@@ -52,6 +52,14 @@ func relayBackoff(last time.Duration) time.Duration {
 // that close.
 const reuseIdleLimit = 50 * time.Second
 
+// reuseAgeLimit is the most a session is reused after its handshake. The
+// handshake is the only place herdr tells the guest its features, so a
+// session kept busy forever would never hear the owner turn Gram sharing on
+// or off; past this age a parked session is closed and the next call
+// handshakes again. A call in flight is never cut (herdr-app, message
+// 388428, as herdrup#612 does on iOS).
+const reuseAgeLimit = 120 * time.Second
+
 // Transport opens an authenticated Noise session for API requests. A host
 // that answers further requests on a session (features.multi_request) keeps
 // the one a call ends with for the next call, so polling stays under the
@@ -157,10 +165,11 @@ func (t *Transport) admitted(refusals uint64, features Features) {
 }
 
 // Call sends one request and decodes its reply. It goes on the idle session
-// if there is one; when herdr ended that session before any of the request
-// went out, so herdr cannot have it, the request goes once more on a fresh
-// session. A request that may have reached herdr is never sent again: it
-// could be an agent.prompt.
+// if there is one; when that session was known to have ended before any
+// write of the request was attempted, so herdr cannot have it, the request
+// goes once more on a fresh session. Once a write was attempted the request
+// is never sent again, whatever the write returned: herdr may have it, and it
+// could be an agent.prompt (herdrup#612 review).
 func (t *Transport) Call(ctx context.Context, method string, params, result any) error {
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
 	defer cancel()
@@ -196,8 +205,8 @@ func (t *Transport) Call(ctx context.Context, method string, params, result any)
 	return t.decode(connected, open, line, result)
 }
 
-// roundTrip sends request on s and reads its reply line. sent says a frame
-// of the request went out whole, so herdr may have it. On an error s is
+// roundTrip sends request on s and reads its reply line. sent says a write
+// of the request was attempted, so herdr may have it. On an error s is
 // closed; otherwise open says it is still open, for decode.
 func roundTrip(ctx context.Context, s *session, request []byte) (line []byte, sent, open bool, err error) {
 	cancelled := context.AfterFunc(ctx, s.close)
@@ -252,8 +261,8 @@ func keepsSession(err error) bool {
 }
 
 // takeIdle takes the idle session for a call, or nil when there is none
-// fit to carry one: herdr ended it or sent on it, or it waited past
-// reuseIdleLimit.
+// fit to carry one: herdr ended it or sent on it, it waited past
+// reuseIdleLimit, or its handshake is older than reuseAgeLimit.
 func (t *Transport) takeIdle() *session {
 	t.idleMu.Lock()
 	idle := t.idle
@@ -263,7 +272,8 @@ func (t *Transport) takeIdle() *session {
 		return nil
 	}
 	close(idle.taken)
-	if !idle.session.quiet() || !t.clock.Now().Before(idle.since.Add(reuseIdleLimit)) {
+	now := t.clock.Now()
+	if !idle.session.quiet() || !now.Before(idle.since.Add(reuseIdleLimit)) || !now.Before(idle.session.handshook.Add(reuseAgeLimit)) {
 		idle.session.close()
 		return nil
 	}
@@ -273,6 +283,10 @@ func (t *Transport) takeIdle() *session {
 // park leaves s idle for the next call, in place of any session idle
 // already, until reuseIdleLimit passes or herdr ends it.
 func (t *Transport) park(s *session) {
+	if !t.clock.Now().Before(s.handshook.Add(reuseAgeLimit)) {
+		s.close()
+		return
+	}
 	idle := &idleSession{session: s, since: t.clock.Now(), taken: make(chan struct{})}
 	expiry := t.clock.After(reuseIdleLimit)
 	t.idleMu.Lock()
@@ -333,6 +347,7 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 		return nil, ErrRevoked
 	}
 	t.admitted(refusals, connected.reply.Features)
+	connected.handshook = t.clock.Now()
 	return connected, nil
 }
 

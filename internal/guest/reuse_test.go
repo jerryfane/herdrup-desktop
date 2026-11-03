@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 )
@@ -123,22 +125,6 @@ func newReuseHost(t *testing.T, multiRequest bool) *reuseHost {
 	return h
 }
 
-// staleIdle leaves the transport's idle session with its socket closed but
-// its end not yet seen, as if herdr's close and the next call crossed.
-func (h *reuseHost) staleIdle(t *testing.T) {
-	t.Helper()
-	h.transport.idleMu.Lock()
-	defer h.transport.idleMu.Unlock()
-	idle := h.transport.idle
-	if idle == nil {
-		t.Fatal("no idle session after a call")
-	}
-	stale := &session{socket: idle.session.socket, send: idle.session.send, receive: idle.session.receive,
-		frames: make(chan []byte, 1), dead: make(chan struct{})}
-	_ = stale.socket.CloseNow()
-	h.transport.idle = &idleSession{session: stale, since: idle.since, taken: idle.taken}
-}
-
 // connects are the guest's connects since it accepted the invitation.
 func (h *reuseHost) connects() []fakeherdr.GuestConnect {
 	return h.relay.Connects()[h.accepted:]
@@ -233,23 +219,58 @@ func TestAServerClosedIdleSessionIsReplaced(t *testing.T) {
 	}
 }
 
-// A request that never left because the reused session was already gone
-// (its write failed) goes once more on a fresh session, and herdr sees it
-// once.
-func TestARequestNotSentOnAStaleSessionGoesOnAFreshOne(t *testing.T) {
+// A session whose end its reader already saw (herdr closed it) hands
+// nothing of a request to the socket: sent stays false, so Call may send the
+// request once more on a fresh session (TestAServerClosedIdleSessionIsReplaced
+// covers that path end to end).
+func TestNothingIsWrittenOnASessionKnownEnded(t *testing.T) {
 	h := newReuseHost(t, true)
 	h.list(t)
-	h.staleIdle(t)
-	if text, err := h.prompt("once"); err != nil || text != "visitor (via HerdrUp): once" {
-		t.Fatalf("prompt on a stale session: %q, %v", text, err)
+	h.transport.idleMu.Lock()
+	idle := h.transport.idle
+	h.transport.idleMu.Unlock()
+	if idle == nil {
+		t.Fatal("no idle session after a call")
 	}
-	if got := prompts(h.relay); len(got) != 1 {
-		t.Fatalf("herdr saw prompts %q, want one", got)
+	ended := &session{socket: idle.session.socket, send: idle.session.send, receive: idle.session.receive,
+		frames: make(chan []byte, 1), dead: make(chan struct{}), err: io.EOF}
+	close(ended.dead)
+	wrote := false
+	ended.writeHook = func(context.Context, []byte) error { wrote = true; return nil }
+	sent, err := ended.sendLine(context.Background(), []byte(`{"id":"x","method":"agent.prompt","params":{}}`))
+	if sent || wrote || !errors.Is(err, io.EOF) {
+		t.Fatalf("send on a known-ended session: sent %v, wrote %v, err %v; want nothing handed over", sent, wrote, err)
 	}
-	// The fresh session is kept for the next call.
+}
+
+// herdrup#612 review (P1): a write that reports an error after its bytes left
+// may still have reached herdr. Here herdr receives the prompt and then the
+// write fails; the call must fail and never send the prompt again.
+func TestAPromptWhoseWriteFailedAfterHerdrHadItIsNotResent(t *testing.T) {
+	h := newReuseHost(t, true)
 	h.list(t)
-	if connects := h.connects(); len(connects) != 2 || connects[1].Requests != 2 {
-		t.Fatalf("connects %+v, want the first and one fresh session serving the prompt and the next call", connects)
+	h.transport.idleMu.Lock()
+	idle := h.transport.idle
+	h.transport.idleMu.Unlock()
+	if idle == nil {
+		t.Fatal("no idle session after a call")
+	}
+	idle.session.writeHook = func(ctx context.Context, frame []byte) error {
+		if err := idle.session.socket.Write(ctx, websocket.MessageBinary, frame); err != nil {
+			return err
+		}
+		return errors.New("connection lost after the write")
+	}
+	if _, err := h.prompt("once"); err == nil {
+		t.Fatal("the prompt whose write failed reported success")
+	}
+	eventually(t, "herdr to receive the prompt", func() bool { return len(prompts(h.relay)) >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	if got := prompts(h.relay); len(got) != 1 {
+		t.Fatalf("herdr saw prompts %q, want exactly one", got)
+	}
+	if connects := h.connects(); len(connects) != 1 {
+		t.Fatalf("connects %+v, want no fresh session after a write was attempted", connects)
 	}
 }
 
@@ -451,5 +472,34 @@ func TestAReusedSessionNeitherConnectsNorEndsTheBackoff(t *testing.T) {
 	connects := h.connects()
 	if len(connects) != 2 || !connects[1].Refused || connects[0].Requests != 3 {
 		t.Fatalf("connects %+v, want the kept session (3 requests) and the refused connect", connects)
+	}
+}
+
+// herdr tells the guest its features (Gram sharing) only in the handshake.
+// A session kept busy past reuseAgeLimit is not reused: the next call
+// handshakes again and so reads an owner's change of Gram sharing (herdr-app
+// message 388428).
+func TestASessionIsNotReusedPastItsAgeLimit(t *testing.T) {
+	h := newReuseHost(t, true)
+	h.list(t)
+	if h.transport.Features().Gram {
+		t.Fatal("Gram on before the owner shared it")
+	}
+	// Calls every 40 s keep the session busy, inside reuseIdleLimit each time.
+	for elapsed := time.Duration(0); elapsed+40*time.Second < reuseAgeLimit; elapsed += 40 * time.Second {
+		h.clock.advance(40 * time.Second)
+		h.list(t)
+	}
+	if connects := h.connects(); len(connects) != 1 {
+		t.Fatalf("connects %+v, want one session until its age limit", connects)
+	}
+	h.relay.Gram = true
+	h.clock.advance(40 * time.Second)
+	h.list(t)
+	if connects := h.connects(); len(connects) != 2 {
+		t.Fatalf("connects %+v, want a fresh handshake past reuseAgeLimit", connects)
+	}
+	if !h.transport.Features().Gram {
+		t.Fatal("the owner's Gram sharing did not reach the guest after the age limit")
 	}
 }
