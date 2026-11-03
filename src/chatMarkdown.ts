@@ -51,8 +51,14 @@ export function markdown(text: string): HTMLElement {
   void mermaid().then(m => m.render(`chat-diagram-${++diagramID}`, source)).then(({ svg }) => {
    const diagram = document.createElement("div"); diagram.className = "chat-diagram";
    diagram.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
-   // A diagram whose labels the sanitizer had to drop would lose its text: keep the source.
-   if (DOMPurify.removed.some(r => "element" in r && r.element instanceof Element && r.element.localName === "foreignObject")) throw new Error("HTML labels");
+   // The sanitizer keeps no foreignObject. Some diagrams (journey) draw an SVG-text copy of
+   // each such label; one whose dropped label text appears nowhere else lost it: keep the
+   // source instead (#142).
+   const words = (text: string | null) => (text ?? "").replace(/\s+/g, " ").trim();
+   const kept = words(diagram.textContent);
+   const lost = DOMPurify.removed.some(r => "element" in r && r.element instanceof Element && r.element.localName === "foreignObject"
+    && words(r.element.textContent) !== "" && !kept.includes(words(r.element.textContent)));
+   if (lost) throw new Error("HTML labels");
    host.replaceWith(diagram);
   }).catch(() => { host.title = "Diagram could not be rendered; source is shown."; });
  }
