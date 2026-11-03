@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Interaction is an opt-in development fixture. It exercises the same SSH
@@ -16,12 +17,14 @@ type Interaction struct {
 	listeners map[chan map[string]any]string
 	seq       uint64
 	answered  bool
+	// When the fixture started: the subagents' times stay put across polls, as herdr's do.
+	launchMs int64
 }
 
 var interactionQuestionOptions = []string{"Run focused checks", "Inspect the diff", "Use Terminal"}
 
 func NewInteraction() *Interaction {
-	return &Interaction{listeners: make(map[chan map[string]any]string), entries: []map[string]any{
+	return &Interaction{launchMs: time.Now().UnixMilli(), listeners: make(map[chan map[string]any]string), entries: []map[string]any{
 		{"kind": "user", "id": "u1", "ts_ms": 1, "author": "owner", "text": "Review the workspace and explain the plan."},
 		{"kind": "thinking", "id": "t1", "ts_ms": 2, "text": "I will inspect the project, then check the implementation."},
 		{"kind": "step", "id": "s1", "ts_ms": 3, "tool": "read", "intent": "Inspecting project", "detail": "src/main.ts", "status": "ok"},
@@ -34,16 +37,17 @@ func NewInteraction() *Interaction {
 }
 func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError, bool) {
 	var p struct {
-		Pane   string `json:"pane_id"`
-		Target string `json:"target"`
-		Text   string `json:"text"`
-		Option string `json:"option"`
-		Cols   int    `json:"cols"`
-		Rows   int    `json:"rows"`
-		After  string `json:"after"`
-		Before string `json:"before"`
-		Cursor string `json:"cursor"`
-		Wait   *struct {
+		Pane     string `json:"pane_id"`
+		Target   string `json:"target"`
+		Text     string `json:"text"`
+		Option   string `json:"option"`
+		Cols     int    `json:"cols"`
+		Rows     int    `json:"rows"`
+		After    string `json:"after"`
+		Before   string `json:"before"`
+		Cursor   string `json:"cursor"`
+		Subagent string `json:"subagent"`
+		Wait     *struct {
 			Until []string `json:"until"`
 		} `json:"wait"`
 	}
@@ -65,11 +69,15 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		}
 		return map[string]any{"type": "pane_history", "pane_id": p.Pane, "history_b64": base64.StdEncoding.EncodeToString([]byte("\x1b]8;id=fixture;https://example.invalid/history\x1b\\Older retained output\x1b]8;;\x1b\\\r\nfirst command completed\r\n")), "cursor": "oldest", "rows": 2}, nil, true
 	case "agent.transcript":
+		if p.Subagent != "" {
+			return x.subagentTranscript(p.Target, p.Subagent)
+		}
 		entries := x.entries
 		if p.After == fmt.Sprint(len(x.entries)) {
 			entries = nil
 		}
 		page := map[string]any{"type": "agent_transcript", "agent": "omp", "pane_id": p.Target, "session_id": "demo-session", "after": fmt.Sprint(len(x.entries)), "entries": entries,
+			"subagents": x.subagents(),
 			// The model omp runs and its effort, as herdr reports it (TranscriptModel).
 			"model": map[string]any{"id": "claude-opus-5-5", "provider": "anthropic", "thinking_level": "high"}}
 		page["plan"] = []map[string]any{
@@ -117,6 +125,46 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		return map[string]any{"type": "agent_answer", "status": "answered", "ask_id": "q1", "option": p.Option, "pane_id": p.Target}, nil, true
 	}
 	return nil, nil, false
+}
+
+// subagents are omp's `task` subagents on every page, as ChatMockTranscript.swift has them:
+// two running, one finished.
+func (x *Interaction) subagents() []map[string]any {
+	subagent := func(id, agent, label, status string, startedAgo int64, finishedAgo int64, intent string) map[string]any {
+		s := map[string]any{"id": id, "agent": agent, "label": label, "task": label + " for the chat round 3 changes.",
+			"status": status, "started_ms": x.launchMs - startedAgo, "finished_ms": nil, "duration_ms": nil,
+			"last_intent": nil, "last_ms": nil, "has_transcript": true}
+		if finishedAgo > 0 {
+			s["finished_ms"], s["duration_ms"] = x.launchMs-finishedAgo, startedAgo-finishedAgo
+		}
+		if intent != "" {
+			s["last_intent"], s["last_ms"] = intent, x.launchMs-5_000
+		}
+		return s
+	}
+	return []map[string]any{
+		subagent("DaemonHeadReview", "reviewer", "Review the daemon head", "running", 40_000, 0, "Running cargo test"),
+		subagent("AppHeadReview", "reviewer", "Review the app head", "running", 125_000, 0, "Reading ChatView.swift"),
+		subagent("MermaidRender", "task", "Render the diagram", "completed", 600_000, 300_000, ""),
+	}
+}
+
+// subagentTranscript is `agent.transcript` with `subagent`: that subagent's own conversation,
+// its assignment and its answer so far.
+func (x *Interaction) subagentTranscript(target, id string) (any, *APIError, bool) {
+	for _, s := range x.subagents() {
+		if s["id"] != id {
+			continue
+		}
+		started := s["started_ms"].(int64)
+		return map[string]any{"type": "agent_transcript", "agent": "omp", "pane_id": target, "session_id": "subagent-" + id, "after": "a1",
+			"entries": []any{
+				map[string]any{"kind": "user", "id": id + "-task", "ts_ms": started, "author": "owner", "text": s["task"]},
+				map[string]any{"kind": "reply", "id": id + "-reply", "ts_ms": started + 2_000, "final": true, "text": id + " fixture conversation."},
+			},
+			"model": map[string]any{"provider": "fixture", "id": "fixture-subagent-model", "thinking_level": "medium"}}, nil, true
+	}
+	return nil, &APIError{Code: "subagent_not_found", Message: "no such subagent"}, true
 }
 func (x *Interaction) emit(pane string, frame map[string]any) {
 	for ch, target := range x.listeners {

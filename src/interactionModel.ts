@@ -12,11 +12,53 @@ export interface TranscriptPage {
  plan?: PlanItem[] | null;
  pending_ask?: { id: string; answerable: boolean; questions: Question[] };
  working?: { intent?: string; [key: string]: unknown };
- subagents?: { id: string; label?: string; task?: string; status?: string; has_transcript: boolean }[];
+ subagents?: TranscriptSubagent[];
  /** The model omp runs and its effort (herdr TranscriptModel); the newest page's. */
  model?: TranscriptModel | null;
 }
 export interface TranscriptModel { id: string; provider: string; thinking_level?: string | null; thinking_auto?: boolean | null }
+/** omp's `task` subagent, as herdr reports it (TranscriptSubagent); a guest gets no `task`. */
+export interface TranscriptSubagent {
+ id: string; agent?: string; label?: string | null; task?: string | null; status?: string;
+ started_ms?: number; finished_ms?: number | null; duration_ms?: number | null;
+ last_intent?: string | null; last_ms?: number | null; has_transcript: boolean;
+}
+/** ChatDay.duration (ChatView.swift): "1 s" at least, then whole minutes, then "2 h 5 min". */
+export function chatDuration(ms: number): string {
+ const seconds = Math.max(0, Math.floor(ms / 1000));
+ if (seconds < 60) return `${Math.max(seconds, 1)} s`;
+ const minutes = Math.floor(seconds / 60);
+ if (minutes < 60) return `${minutes} min`;
+ const hours = Math.floor(minutes / 60), rest = minutes % 60;
+ return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+export type SubagentMark = "running" | "completed" | "failed" | "unknown";
+/** One row of the chat's Subagents card, worded as ChatSubagentRow (ChatView.swift): running,
+ *  its newest intent and how long it has run; finished, how it ended and how long it took. A
+ *  status this build doesn't know reads "status unknown", as TranscriptSubagentStatus.unknown. */
+export function subagentRow(agent: TranscriptSubagent, nowMs: number): { mark: SubagentMark; title: string; label: string; detail: string; spoken: string } {
+ const status = ["running", "completed", "failed", "aborted"].includes(agent.status ?? "") ? agent.status! : "unknown";
+ const word = status === "unknown" ? "status unknown" : status;
+ const started = agent.started_ms ?? 0, running = status === "running";
+ let duration: string | null = null;
+ if (agent.duration_ms != null) duration = chatDuration(agent.duration_ms);
+ else if (agent.finished_ms != null && agent.finished_ms > started && started > 0) duration = chatDuration(agent.finished_ms - started);
+ const elapsed = started > 0 && nowMs > started ? chatDuration(nowMs - started) : null;
+ const intent = agent.last_intent || null;
+ const detail = running
+  ? [intent, elapsed].filter(Boolean).join(" · ")
+  : [word.replace(/\b\w/g, letter => letter.toUpperCase()), duration].filter(Boolean).join(" · ");
+ const spoken = [agent.id, agent.label || null, word, running ? intent : duration].filter(Boolean).join(", ");
+ return {
+  mark: status === "aborted" ? "failed" : status as SubagentMark,
+  title: agent.id, label: agent.label != null ? `: ${agent.label}` : "", detail, spoken,
+ };
+}
+/** The card's heading count: the running ones, else the finished ones. */
+export function subagentsSummary(agents: TranscriptSubagent[]): string {
+ const running = agents.filter(agent => agent.status === "running").length;
+ return running ? `${running} running` : `${agents.length - running} finished`;
+}
 /** The chat's model line, as AgentTranscript.swift TranscriptModel words it: "claude-opus-5-5 · high",
  *  "high (auto)" once omp's auto picked a level, "auto" before it has, the id alone without a level. */
 export function modelLine(model: TranscriptModel): { label: string; accessibilityLabel: string } {
