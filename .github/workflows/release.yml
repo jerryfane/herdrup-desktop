@@ -37,11 +37,16 @@ jobs:
           # Disk images need macOS. One universal app, for Apple silicon and
           # Intel Macs. GitHub's hosted Macs are shared with herdrup's iOS
           # CI: this is the workflow's only macOS job.
-          - { name: macOS, os: macos-latest, platform: darwin/universal }
+          - { name: macOS, artifact: macOS, os: macos-latest, platform: darwin/universal }
           # The offline speech engine requires a current Windows SDK.
           # Build it with MSVC rather than Ubuntu's older MinGW headers.
-          - { name: Windows, os: windows-latest, platform: windows/amd64 }
-          - { name: Linux, os: ubuntu-latest, platform: linux/amd64 }
+          - { name: Windows, artifact: Windows, os: windows-latest, platform: windows/amd64 }
+          - { name: Linux, artifact: Linux, os: ubuntu-latest, platform: linux/amd64 }
+          # Raspberry Pi 4/5 (64-bit OS), built natively on GitHub's Arm runner so its
+          # update is signed like the others and the Pi updates itself (#126). Both
+          # Linux builds write the same install.sh, which picks the archive by
+          # architecture.
+          - { name: Linux arm64, artifact: Linux-arm64, os: ubuntu-24.04-arm, platform: linux/arm64 }
     steps:
       - uses: actions/checkout@v5
       - name: Check the tag against the version
@@ -151,7 +156,7 @@ jobs:
           ls -l "$RUNNER_TEMP/installers"
       - uses: actions/upload-artifact@v4
         with:
-          name: herdrup-${{ matrix.name }}
+          name: herdrup-${{ matrix.artifact }}
           if-no-files-found: error
           retention-days: 14
           path: ${{ runner.temp }}/installers/
@@ -194,17 +199,23 @@ jobs:
           if (Test-Path "$dir\herdrup.exe") { throw 'herdrup.exe left after uninstall' }
 
   check-linux:
-    name: Check the Debian package and install.sh
+    name: Check the Debian package and install.sh (${{ matrix.arch }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, os: ubuntu-latest, artifact: Linux }
+          - { arch: arm64, os: ubuntu-24.04-arm, artifact: Linux-arm64 }
     # A fresh system, so the package's dependencies are what installs the
     # libraries the app needs.
     container: ubuntu:24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: herdrup-Linux
+          name: herdrup-${{ matrix.artifact }}
           path: dist
       - name: Install the Debian package and run it
         run: |
@@ -228,7 +239,7 @@ jobs:
           useradd -m tester
           cp dist/*.tar.gz dist/install.sh /home/tester/
           chown tester /home/tester/*
-          su tester -c 'cd && sh install.sh herdrup-*-linux-amd64.tar.gz'
+          su tester -c 'cd && sh install.sh herdrup-*-linux-${{ matrix.arch }}.tar.gz'
           test -x /home/tester/.local/herdrup.app/herdrup
           su tester -c 'cd && sh install.sh --uninstall'
           test ! -e /home/tester/.local/herdrup.app

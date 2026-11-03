@@ -490,7 +490,8 @@ Each [release](https://github.com/jerryfane/herdrup-desktop/releases) has the in
   `%LOCALAPPDATA%\Programs\Herdrup`, without administrator rights, with a Start menu shortcut and an
   uninstaller in Settings > Apps. It is not signed: SmartScreen asks first (More info > Run anyway).
   `/S` installs silently.
-- **Linux** (x64), either:
+- **Linux** (x64, and arm64 such as a Raspberry Pi 4/5 with a 64-bit OS: use the `arm64` files),
+  either:
   - the Debian package, for Debian and Ubuntu: `sudo apt install ./herdrup_<version>_amd64.deb`
     installs the app in `/opt/herdrup`, with its entry in the applications menu, and pulls in GTK 3
     and WebKitGTK 4.1;
@@ -902,12 +903,13 @@ No threshold or existing mask was relaxed.
 ## Releases
 
 `.github/workflows/release.yml` builds the installers with `mygo build`: the universal macOS disk image
-on GitHub's hosted macOS (its only macOS job), and the Windows installer (NSIS) and the Linux Debian
-package, archive and `install.sh` cross-built on Ubuntu. It then checks each on its OS: the macOS job
+on GitHub's hosted macOS (its only macOS job), the Windows installer (NSIS), and the Linux Debian
+package, archive and `install.sh` for x64 on Ubuntu and for arm64 (Raspberry Pi) on GitHub's Arm
+Ubuntu runner, each with its offline speech engine. It then checks each on its OS: the macOS job
 mounts the disk image, checks the app's architectures and signature and runs it; a Windows job installs
-silently (`/S`), runs the app and uninstalls it; a fresh Ubuntu 24.04 container installs the Debian
-package with apt, runs the app under Xvfb, and installs and uninstalls with `install.sh` as a user. A
-last job writes `SHA256SUMS` of all the files.
+silently (`/S`), runs the app and uninstalls it; for each Linux architecture a fresh Ubuntu 24.04
+container installs the Debian package with apt, runs the app under Xvfb, and installs and uninstalls
+with `install.sh` as a user. A last job writes `SHA256SUMS` of all the files.
 
 To release, set `version` in `package.json`, commit, and push the tag `v<version>` (the workflow fails
 on a tag that does not match). The files and `SHA256SUMS` go on the tag's GitHub release, published
