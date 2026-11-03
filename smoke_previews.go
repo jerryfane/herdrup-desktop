@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -51,45 +52,48 @@ func smokePreviews(parent *mygo.Window, capture string) error {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	diagDataNavigate(parent, dir)
-	for _, mode := range []string{"off", "on", "navigate", "data-navigate"} {
-		requests.Store(0)
-		navigation := ""
-		if mode == "navigate" {
-			navigation = `setTimeout(()=>location.href="` + base + `/navigate",200);`
-		} else if mode == "data-navigate" {
-			navigation = `setTimeout(()=>location.href="data:text/html,<h1>ESCAPED POLICY</h1>",200);`
-		}
-		payload := `<!doctype html><h1>Received preview: ` + mode + `</h1><p id="result">SCRIPTS DISABLED</p><p>Inline content remains visible.</p><style>body{font:20px sans-serif}#result{overflow-wrap:anywhere}</style><img src="data:image/svg+xml;base64,` + base64.StdEncoding.EncodeToString([]byte(image)) + `"><img src="` + base + `/passive"><script>
+	for round := 0; round < 6; round++ {
+		for _, mode := range []string{"off", "on", "navigate", "data-navigate"} {
+			requests.Store(0)
+			navigation := ""
+			if mode == "navigate" {
+				navigation = `setTimeout(()=>location.href="` + base + `/navigate",200);`
+			} else if mode == "data-navigate" {
+				navigation = `setTimeout(()=>location.href="data:text/html,<h1>ESCAPED POLICY</h1>",200);`
+			}
+			payload := `<!doctype html><h1>Received preview: ` + mode + `</h1><p id="result">SCRIPTS DISABLED</p><p>Inline content remains visible.</p><style>body{font:20px sans-serif}#result{overflow-wrap:anywhere}</style><img src="data:image/svg+xml;base64,` + base64.StdEncoding.EncodeToString([]byte(image)) + `"><img src="` + base + `/passive"><script>
 const start=Date.now();let parentAccess="blocked",storage="blocked";
 try{parentAccess=parent.document.title}catch{}try{storage=localStorage.length}catch{}
 const proof={bridge:typeof window.mygo,parentAccess,storage,fetch:"pending",websocket:"pending",popup:window.open("` + base + `/popup")===null};
 fetch("` + base + `/fetch").then(()=>proof.fetch="allowed",()=>proof.fetch="blocked");
 try{const ws=new WebSocket("` + strings.Replace(base, "http://", "ws://", 1) + `/socket");ws.onopen=()=>proof.websocket="allowed";ws.onerror=()=>proof.websocket="blocked"}catch{proof.websocket="blocked"}
 setInterval(()=>{proof.elapsed=Date.now()-start;proof.inlineImage=document.images[0].naturalWidth;document.getElementById("result").textContent=JSON.stringify(proof);parent.postMessage({previewProof:proof},"*")},80);` + navigation + `</script>`
-		path := filepath.Join(dir, mode+".html")
-		if err = os.WriteFile(path, []byte(payload), 0o600); err != nil {
-			return err
-		}
-		win, err := webpreview.Open(parent, path, "Preview smoke: "+mode, mode != "off")
-		if err != nil {
-			return err
-		}
-		err = smokePreviewFrame(win, mode)
-		if png, captureErr := win.CapturePage(); captureErr == nil {
-			captureErr = os.WriteFile(capture+"-preview-"+mode+".png", png, 0o600)
-			if err == nil {
+			path := filepath.Join(dir, mode+".html")
+			if err = os.WriteFile(path, []byte(payload), 0o600); err != nil {
+				return err
+			}
+			win, err := webpreview.Open(parent, path, "Preview smoke: "+mode, mode != "off")
+			if err != nil {
+				return err
+			}
+			err = smokePreviewFrame(win, mode)
+			log.Printf("smoke: diag107 round=%d mode=%s err=%v", round, mode, err)
+			err = nil
+			if png, captureErr := win.CapturePage(); captureErr == nil {
+				captureErr = os.WriteFile(capture+"-preview-"+mode+".png", png, 0o600)
+				if err == nil {
+					err = captureErr
+				}
+			} else if err == nil {
 				err = captureErr
 			}
-		} else if err == nil {
-			err = captureErr
-		}
-		win.Close()
-		if err != nil {
-			return err
-		}
-		if requests.Load() != 0 {
-			return fmt.Errorf("preview smoke %s: received %d forbidden network requests", mode, requests.Load())
+			win.Close()
+			if err != nil {
+				return err
+			}
+			if requests.Load() != 0 {
+				return fmt.Errorf("preview smoke %s: received %d forbidden network requests", mode, requests.Load())
+			}
 		}
 	}
 	return nil
@@ -103,6 +107,9 @@ func smokePreviewFrame(win *mygo.Window, mode string) error {
 		value, err := win.Page().Eval(probe)
 		if err != nil {
 			return err
+		}
+		if mode == "data-navigate" && int(time.Since(started)/time.Millisecond)%1000 < 100 {
+			log.Printf("smoke: diag107 t=%v %v", time.Since(started).Round(100*time.Millisecond), value)
 		}
 		last = value
 		if state, ok := value.(map[string]any); ok && state["frame"] == true && state["opaque"] == true {
