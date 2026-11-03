@@ -5,7 +5,7 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, BoardUpdate, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation,
+ Access as PageAccess, AgentTarget, AgentView, BoardUpdate, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
@@ -159,6 +159,8 @@ interface Active {
  /** link.guestPoll: one pending kick. */
  kick: () => void;
  agents: AgentInfo[];
+ /** link.guestKeyTaken: the host took one of this guest's menu keys (guestMenuKey). */
+ keyTaken?: boolean;
 }
 
 interface MountedView extends GuestView {
@@ -433,13 +435,23 @@ export function createGuestDesk(env: DeskEnv) {
    }
   },
 
-  async guestMenuKey(token: string, key: string): Promise<void> {
+  // desk_guest_answers.go GuestMenuKey: a refused key reads the agent again, and one still
+  // blocked means a host that keeps answers for the owner (GuestPaneView.sendMenuKey), unless
+  // this host has taken one of this guest's keys before.
+  async guestMenuKey(token: string, key: string): Promise<GuestMenuKeyReply> {
    const v = viewOf(token);
    if (!GUEST_MENU_KEYS.includes(key)) throw new Error(`${JSON.stringify(key)} is not a menu key`);
    try {
     await v.active.link.call("pane.send_keys", { pane_id: v.paneID, keys: [key] }, within(v));
+    v.active.keyTaken = true;
+    return {};
    } catch (error) {
     if (!(error instanceof HerdrAPIError && error.code === GUEST_FORBIDDEN)) throw error;
+    if (v.active.keyTaken) return {};
+    let list: GuestList;
+    try { list = guestList(await v.active.client.call("agent.list", {}, "agent_list", "", within(v))); } catch { return {}; }
+    const { agents, availability } = sharedListing(list, v.active.access.agentTarget);
+    return agents[0] && availability === "" && liveGroup(agents[0]).key === "needsYou" ? { ownerAnswers: true } : {};
    } finally {
     v.active.kick();
    }

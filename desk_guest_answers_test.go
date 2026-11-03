@@ -129,7 +129,7 @@ func TestGuestAnswersAndMenuKeysGoThroughTheGuestLink(t *testing.T) {
 		t.Fatalf("guest answer: %+v, %v", reply, err)
 	}
 	for _, key := range []string{"Down", "Enter"} {
-		if err := d.GuestMenuKey(ctx, view.Token, key); err != nil {
+		if _, err := d.GuestMenuKey(ctx, view.Token, key); err != nil {
 			t.Fatalf("menu key %s: %v", key, err)
 		}
 	}
@@ -143,11 +143,11 @@ func TestGuestAnswersAndMenuKeysGoThroughTheGuestLink(t *testing.T) {
 
 	// Enter chose and the agent moved on: herdr refuses the next key, and
 	// that refusal is the race it looks like, not an older host.
-	if err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil {
+	if _, err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil {
 		t.Fatalf("key after the menu closed: %v", err)
 	}
 	// Only the bar's keys leave the page; nothing types text.
-	if err := d.GuestMenuKey(ctx, view.Token, "a"); err == nil {
+	if _, err := d.GuestMenuKey(ctx, view.Token, "a"); err == nil {
 		t.Error("a text key was sent as a menu key")
 	}
 	if _, keys := owner.sent(); len(keys) != 2 {
@@ -172,12 +172,31 @@ func TestGuestOnAnOlderHostWaitsForTheOwner(t *testing.T) {
 	if err != nil || reply.Code != "guest_forbidden" || !reply.OwnerAnswers {
 		t.Fatalf("answer on an older host: %+v, %v", reply, err)
 	}
-	// A refused key is only herdr's "not now": no error, and no verdict on the host.
-	if err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil {
-		t.Fatalf("menu key on an older host: %v", err)
+	// A refused key while the agent is still blocked on it says the same
+	// (GuestPaneView.sendMenuKey: refresh, then isBlocked).
+	if reply, err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil || !reply.OwnerAnswers {
+		t.Fatalf("menu key on an older host: %+v, %v", reply, err)
 	}
 	if answers, keys := owner.sent(); len(answers) != 0 || len(keys) != 0 {
 		t.Errorf("an older host passed a guest's answer on: %v %v", answers, keys)
+	}
+}
+
+// A refused key on an agent that no longer waits (its menu closed, the key
+// raced it) learns nothing about the host.
+func TestGuestKeyRefusedWhenNoLongerBlockedLearnsNothing(t *testing.T) {
+	owner := &guestOwnerHost{status: "working", seq: 5}
+	relay, err := fakeherdr.NewGuestRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.Handle = owner.handle
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
+	if reply, err := d.GuestMenuKey(context.Background(), view.Token, "Down"); err != nil || reply.OwnerAnswers {
+		t.Fatalf("a key refused by an agent that moved on: %+v, %v", reply, err)
+	}
+	if _, keys := owner.sent(); len(keys) != 0 {
+		t.Errorf("the refused key reached the pane: %v", keys)
 	}
 }
 
@@ -195,11 +214,11 @@ func TestGuestKeyAfterACommitIsNotAnOlderHost(t *testing.T) {
 	relay.Handle = owner.handle
 	d, view := openGuestAgent(t, relay, guest.SystemClock)
 	ctx := context.Background()
-	if err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil {
+	if _, err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil {
 		t.Fatalf("committing key: %v", err)
 	}
-	if err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil {
-		t.Fatalf("key during herdr's pause read as an older host: %v", err)
+	if reply, err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil || reply.OwnerAnswers {
+		t.Fatalf("key during herdr's pause read as an older host: %+v, %v", reply, err)
 	}
 	if reply, err := d.ChatAnswer(ctx, view.Token, "q1", "Yes"); err != nil || reply.OwnerAnswers {
 		t.Fatalf("answer after the pause read as an older host: %+v, %v", reply, err)
@@ -210,10 +229,11 @@ func TestGuestKeyAfterACommitIsNotAnOlderHost(t *testing.T) {
 }
 
 // herdr takes no guest keys on a free-text prompt (guest_gate.rs
-// awaits_menu_input) and refuses them while the agent lists as blocked. That
-// refusal is not a host that keeps answers for the owner (PR #90 review):
-// the same host takes the guest's chat answer.
-func TestGuestKeyOnAFreeTextPromptIsNotAnOlderHost(t *testing.T) {
+// awaits_menu_input), and its guest view hides the prompt kind, so that
+// refusal reads as an older host here as in native (GuestPaneView
+// isBlocked): the keys hide. The chat's answer still goes through and says
+// otherwise.
+func TestGuestKeyOnAFreeTextPromptReadsAsNative(t *testing.T) {
 	owner := &guestOwnerHost{status: "blocked", seq: 4, prompt: "free_text"}
 	relay, err := fakeherdr.NewGuestRelay()
 	if err != nil {
@@ -222,8 +242,8 @@ func TestGuestKeyOnAFreeTextPromptIsNotAnOlderHost(t *testing.T) {
 	relay.Handle = owner.handle
 	d, view := openGuestAgent(t, relay, guest.SystemClock)
 	ctx := context.Background()
-	if err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil {
-		t.Fatalf("key on a free-text prompt read as an older host: %v", err)
+	if reply, err := d.GuestMenuKey(ctx, view.Token, "Down"); err != nil || !reply.OwnerAnswers {
+		t.Fatalf("key on a free-text prompt: %+v, %v", reply, err)
 	}
 	if reply, err := d.ChatAnswer(ctx, view.Token, "q1", "Yes"); err != nil || reply.OwnerAnswers || reply.Status != "answered" {
 		t.Fatalf("answer on the same host: %+v, %v", reply, err)

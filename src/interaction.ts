@@ -193,6 +193,8 @@ class Detail {
  // The guest's host refused its terminal size: herdrup's note line says so instead of an error
  // (GuestPaneView.resizeRefused, GuestPaneView.swift:81, 449, 573).
  resizeRefused = false;
+ // The host's grid, from the stream's reset and resize frames: what a refused guest draws at.
+ streamGrid: { cols: number; rows: number } | null = null;
  // The shared agent isn't running (GuestPaneView availability .paused); null while it runs.
  guestPaused: GuestPausedPage | null = null;
  // The terminal area holds the paused message rather than a stream (replaceTerminal).
@@ -392,18 +394,18 @@ class Detail {
   this.updateGuestQuestion();
  }
  /** Presses one of the owner's menu keys in the shared pane (GuestPaneView.sendMenuKey,
-  *  GuestPaneView.swift:788-813). Go asks herdr again after a refusal: one while the agent
-  *  still waits means a host that keeps answers for the owner. */
+  *  GuestPaneView.swift:834-852). A refused key while the agent is still blocked means a host
+  *  that keeps answers for the owner (Go reads the agent again): the keys go and the page
+  *  waits for the owner. */
  sendMenuKey(key: string) {
   const generation = this.generation;
   this.menuKeyQueue = this.menuKeyQueue.then(async () => {
    if (this.disposed || generation !== this.generation || this.answersRefused) return;
    try {
-    // A refused key is herdr's "not now" (no menu, a free-text prompt, its pause after a
-    // committing key), never proof the host keeps answers for the owner (desk_guest_answers.go).
-    await Desk.guestMenuKey(this.token, key);
-    if (this.disposed) return;
+    const reply = await Desk.guestMenuKey(this.token, key);
+    if (this.disposed || generation !== this.generation) return;
     this.status.textContent = "";
+    if (reply.ownerAnswers) this.refuseAnswers();
    } catch (error) { if (!this.disposed) this.status.textContent = errorText(error); }
   });
  }
@@ -831,7 +833,7 @@ class Detail {
   loadTerminalSymbols();
   // SearchAddon decorations require xterm's proposed decoration API.
   const term = new Terminal({ fontFamily: terminalFontFamily(styles.getPropertyValue("--font-machine")), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme });
-  this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false;
+  this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false; this.streamGrid = null;
   term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = errorText(e); }); } };
   term.loadAddon(this.fit); term.loadAddon(this.search);
   this.search.onDidChangeResults(result => {
@@ -862,11 +864,14 @@ class Detail {
   });
   const fit = () => {
    if (this.disposed || generation !== this.generation || streamID !== this.terminalID || !this.terminalReady || !canvas.clientWidth) return;
+   // Once the host refused guest resizing it stays on its own grid: draw that grid and propose
+   // nothing more (LiveTerminalView.fitsStreamWidth, GuestPaneView.swift:442).
+   if (this.resizeRefused) { this.keepStreamGrid(); this.updateHistoryPaging(); this.updateTerminalJump(); return; }
    this.fit?.fit();
    this.updateHistoryPaging(); this.updateTerminalJump();
    void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => {
     if (generation !== this.generation || streamID !== this.terminalID) return;
-    if (this.view?.guest && String(e).includes("guest_forbidden")) { this.resizeRefused = true; this.updateGuestQuestion(); return; }
+    if (this.view?.guest && String(e).includes("guest_forbidden")) { this.resizeRefused = true; this.keepStreamGrid(); this.updateGuestQuestion(); return; }
     const message = errorText(e);
     this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Resize: " + message;
    });
@@ -889,7 +894,7 @@ class Detail {
     clearTimeout(this.historyTimer);
     this.prediction?.reset();
     this.terminal.reset();
-    if (f.cols && f.rows) this.terminal.resize(f.cols, f.rows);
+    if (f.cols && f.rows) { this.streamGrid = { cols: f.cols, rows: f.rows }; this.terminal.resize(f.cols, f.rows); }
     if (f.history_b64) this.terminal.write(bytes(f.history_b64));
     this.terminal.write(bytes(f.data_b64)); this.historyCursor = f.history_cursor ?? null;
    } else if (f.frame === "data") {
@@ -897,10 +902,15 @@ class Detail {
     if (data.length) prediction?.outputReceived();
     this.terminal.write(data, () => { if (data.length) prediction?.outputParsed(); });
    }
-   else if (f.frame === "resize" && f.cols && f.rows) this.terminal.resize(f.cols, f.rows);
+   else if (f.frame === "resize" && f.cols && f.rows) { this.streamGrid = { cols: f.cols, rows: f.rows }; this.terminal.resize(f.cols, f.rows); }
    else if (f.frame === "exited") { this.prediction?.reset(); this.status.textContent = "Pane exited."; this.terminalReady = false; }
   } catch(e) { this.prediction?.reset(); this.status.textContent = "Invalid terminal frame: " + errorText(e); this.terminalReady = false; }
   this.updateHistoryPaging(); this.updateTerminalJump();
+ }
+ /** A refused guest's terminal back on the host's grid, whatever the window fitted it to. */
+ private keepStreamGrid() {
+  const grid = this.streamGrid, term = this.terminal;
+  if (grid && term && (term.cols !== grid.cols || term.rows !== grid.rows)) term.resize(grid.cols, grid.rows);
  }
  updateHistoryPaging(schedule = false) {
   const term = this.terminal;

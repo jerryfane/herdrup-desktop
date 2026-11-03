@@ -165,7 +165,7 @@ func TestGuestOpenAgentStaysUnderTheRelayConnectLimit(t *testing.T) {
 func TestGuestMenuKeyListsTheAgentAtOnce(t *testing.T) {
 	owner := &guestOwnerHost{status: "blocked", seq: 4}
 	page := openGuestPage(t, owner)
-	if err := page.d.GuestMenuKey(context.Background(), page.view.Token, "Enter"); err != nil {
+	if _, err := page.d.GuestMenuKey(context.Background(), page.view.Token, "Enter"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the board to show the agent working after the key", func() bool {

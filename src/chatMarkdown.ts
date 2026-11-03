@@ -14,7 +14,11 @@ function mermaid(): Promise<Mermaid> {
   const script = document.createElement("script"); script.src = `${import.meta.env.BASE_URL}mermaid/mermaid.min.js`;
   script.onload = () => {
    if (!window.mermaid) { reject(new Error("Diagram renderer unavailable")); return; }
-   window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "dark", htmlLabels: false, flowchart: { htmlLabels: false } });
+   // Labels must stay SVG text: the sanitizer below keeps no foreignObject. `secure` makes a
+   // diagram's frontmatter or directive unable to turn HTML labels back on; Mermaid deletes
+   // those keys at every depth (its sanitize), so flowchart.htmlLabels is held too.
+   const secure = ["secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges", "htmlLabels"];
+   window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true, theme: "dark", htmlLabels: false, flowchart: { htmlLabels: false }, secure });
    resolve(window.mermaid);
   };
   script.onerror = () => reject(new Error("Could not load diagram renderer"));
@@ -47,6 +51,8 @@ export function markdown(text: string): HTMLElement {
   void mermaid().then(m => m.render(`chat-diagram-${++diagramID}`, source)).then(({ svg }) => {
    const diagram = document.createElement("div"); diagram.className = "chat-diagram";
    diagram.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+   // A diagram whose labels the sanitizer had to drop would lose its text: keep the source.
+   if (DOMPurify.removed.some(r => "element" in r && r.element instanceof Element && r.element.localName === "foreignObject")) throw new Error("HTML labels");
    host.replaceWith(diagram);
   }).catch(() => { host.title = "Diagram could not be rendered; source is shown."; });
  }
