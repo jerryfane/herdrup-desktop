@@ -18,7 +18,7 @@
 
 import { closed, expired, GuestError, HerdrAPIError, hostOffline, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
-import { Initiator, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
+import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
 
 /** A call's whole round trip, handshake included (session.go:18). */
 export const ROUND_TRIP_LIMIT_MS = 60_000;
@@ -90,10 +90,16 @@ function closeError(code: number, reason: string): GuestError | null {
 
 type Received = Uint8Array | "text";
 
+/** The most a socket holds unread. Go reads with a 65535-byte limit and TCP holds the rest back
+ *  (session.go:16, 136); a page cannot push back, so bytes past this end the connection instead.
+ *  Any reply this large already exceeds the line limit. */
+export const MAX_QUEUED_BYTES = MAX_REPLY_LINE_BYTES + MAX_NOISE_MESSAGE;
+
 /** A relay WebSocket as a pull stream of frames. Aborting its signal closes it (transport.go:435). */
 class RelaySocket {
  #ws: RelayWebSocket;
  #inbox: Received[] = [];
+ #queued = 0;
  #end: { error: unknown } | "eof" | null = null;
  #wake: (() => void) | null = null;
  #signal: AbortSignal;
@@ -113,7 +119,16 @@ class RelaySocket {
   const opened = Promise.withResolvers<void>();
   ws.onopen = () => opened.resolve();
   ws.onmessage = (event) => {
-   socket.#inbox.push(event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : "text");
+   const frame = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : "text";
+   const size = frame === "text" ? 0 : frame.length;
+   // Checked on arrival, as Go's read limit is (session.go:136): an oversized frame or a backlog
+   // past MAX_QUEUED_BYTES ends the connection and frees what it holds.
+   if (size > MAX_NOISE_MESSAGE || socket.#queued + size > MAX_QUEUED_BYTES) {
+    socket.#overflow(size > MAX_NOISE_MESSAGE);
+    return;
+   }
+   socket.#queued += size;
+   socket.#inbox.push(frame);
    socket.#notify();
   };
   // A failed connection's error event is always followed by its close event.
@@ -145,6 +160,14 @@ class RelaySocket {
   wake?.();
  }
 
+ #overflow(oversized: boolean) {
+  this.#inbox = []; this.#queued = 0;
+  this.#finish({ error: other(oversized ? "The shared machine sent an oversized message." : "The shared machine sent more than this page can hold.") });
+  this.#ws.onmessage = null;
+  // A page may close only with 1000 or 3000-4999, so no 1009 here; the relay sees a normal close.
+  try { this.#ws.close(); } catch { /* already closed */ }
+ }
+
  #finish(end: { error: unknown } | "eof") {
   this.#end ??= end;
   this.#notify();
@@ -163,7 +186,7 @@ class RelaySocket {
  async read(): Promise<Received | null> {
   for (;;) {
    const next = this.#inbox.shift();
-   if (next !== undefined) return next;
+   if (next !== undefined) { if (next !== "text") this.#queued -= next.length; return next; }
    const end = this.#end;
    if (end === "eof") return null;
    if (end !== null) throw end.error;

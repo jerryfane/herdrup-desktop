@@ -5,8 +5,8 @@ import { x25519 } from "@noble/curves/ed25519.js";
 import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { Invite } from "../src/webguest/invite";
-import { MAX_NOISE_PLAINTEXT } from "../src/webguest/noise";
-import { acceptInvite, GuestTransport, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
+import { MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT } from "../src/webguest/noise";
+import { acceptInvite, GuestTransport, MAX_QUEUED_BYTES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
 import { memoryRelay, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
@@ -184,6 +184,41 @@ test("a reply line over 64 MiB is refused", async () => {
  const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
  expect(await transport.call("agent.read").catch((error: Error) => error.message)).toBe("Shared-machine reply exceeds the maximum line size.");
  expect(sent).toBeGreaterThan(MAX_REPLY_LINE_BYTES);
+}, 60_000);
+
+// PR #109 review: frames were queued before any size check, so a relay could fill the page's
+// memory while a stream sat unread. Go's read limit (session.go:136) refuses them on arrival.
+test("a frame over the Noise message limit ends the connection on arrival", async () => {
+ let closedByGuest = false;
+ const { relay, webSocket } = memoryRelay(async (conn, handshake) => {
+  const host = (await handshake()).reply({ ok: true, guest_id: "grant-1" });
+  await host.readLine();
+  conn.send(new Uint8Array(MAX_NOISE_MESSAGE + 1));
+  closedByGuest = (await conn.read()) === null;
+ });
+ const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const stream = await transport.openStream("events.subscribe");
+ expect(await stream.next().catch((error: Error) => error.message)).toBe("The shared machine sent an oversized message.");
+ await Bun.sleep(0);
+ expect(closedByGuest).toBe(true);
+});
+
+test("an unread backlog past the queue limit ends the connection and frees it", async () => {
+ let sent = 0, closedByGuest = false;
+ const { relay, webSocket } = memoryRelay(async (conn, handshake) => {
+  const host = (await handshake()).reply({ ok: true, guest_id: "grant-1" });
+  await host.readLine();
+  const frame = new Uint8Array(MAX_NOISE_MESSAGE);
+  // Raw frames the guest never decrypts: nothing reads the stream while they arrive.
+  for (; sent <= MAX_QUEUED_BYTES && !conn.ended; sent += frame.length) { conn.send(frame); await Promise.resolve(); }
+  closedByGuest = conn.ended;
+ });
+ const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const stream = await transport.openStream("events.subscribe");
+ for (let i = 0; i < 5000 && !closedByGuest; i++) await Bun.sleep(0);
+ expect(closedByGuest).toBe(true);
+ expect(sent).toBeLessThanOrEqual(MAX_QUEUED_BYTES + MAX_NOISE_MESSAGE);
+ expect(await stream.next().catch((error: Error) => error.message)).toBe("The shared machine sent more than this page can hold.");
 }, 60_000);
 
 test("a call ends at its round-trip limit, handshake included (session.go:18)", async () => {
