@@ -52,6 +52,14 @@ func relayBackoff(last time.Duration) time.Duration {
 // that close.
 const reuseIdleLimit = 50 * time.Second
 
+// reuseAgeLimit is the most a session is reused after its handshake. The
+// handshake is the only place herdr tells the guest its features, so a
+// session kept busy forever would never hear the owner turn Gram sharing on
+// or off; past this age a parked session is closed and the next call
+// handshakes again. A call in flight is never cut (herdr-app, message
+// 388428, as herdrup#612 does on iOS).
+const reuseAgeLimit = 120 * time.Second
+
 // Transport opens an authenticated Noise session for API requests. A host
 // that answers further requests on a session (features.multi_request) keeps
 // the one a call ends with for the next call, so polling stays under the
@@ -253,8 +261,8 @@ func keepsSession(err error) bool {
 }
 
 // takeIdle takes the idle session for a call, or nil when there is none
-// fit to carry one: herdr ended it or sent on it, or it waited past
-// reuseIdleLimit.
+// fit to carry one: herdr ended it or sent on it, it waited past
+// reuseIdleLimit, or its handshake is older than reuseAgeLimit.
 func (t *Transport) takeIdle() *session {
 	t.idleMu.Lock()
 	idle := t.idle
@@ -264,7 +272,8 @@ func (t *Transport) takeIdle() *session {
 		return nil
 	}
 	close(idle.taken)
-	if !idle.session.quiet() || !t.clock.Now().Before(idle.since.Add(reuseIdleLimit)) {
+	now := t.clock.Now()
+	if !idle.session.quiet() || !now.Before(idle.since.Add(reuseIdleLimit)) || !now.Before(idle.session.handshook.Add(reuseAgeLimit)) {
 		idle.session.close()
 		return nil
 	}
@@ -274,6 +283,10 @@ func (t *Transport) takeIdle() *session {
 // park leaves s idle for the next call, in place of any session idle
 // already, until reuseIdleLimit passes or herdr ends it.
 func (t *Transport) park(s *session) {
+	if !t.clock.Now().Before(s.handshook.Add(reuseAgeLimit)) {
+		s.close()
+		return
+	}
 	idle := &idleSession{session: s, since: t.clock.Now(), taken: make(chan struct{})}
 	expiry := t.clock.After(reuseIdleLimit)
 	t.idleMu.Lock()
@@ -334,6 +347,7 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 		return nil, ErrRevoked
 	}
 	t.admitted(refusals, connected.reply.Features)
+	connected.handshook = t.clock.Now()
 	return connected, nil
 }
 

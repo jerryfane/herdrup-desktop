@@ -76,6 +76,8 @@ type session struct {
 	stopPump context.CancelFunc
 	// writeHook, when set (tests only), writes a frame in place of the socket.
 	writeHook func(context.Context, []byte) error
+	// handshook is when the handshake that read reply's features finished.
+	handshook time.Time
 }
 
 func refusal(code string) error {

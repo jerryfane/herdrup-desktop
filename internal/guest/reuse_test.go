@@ -474,3 +474,32 @@ func TestAReusedSessionNeitherConnectsNorEndsTheBackoff(t *testing.T) {
 		t.Fatalf("connects %+v, want the kept session (3 requests) and the refused connect", connects)
 	}
 }
+
+// herdr tells the guest its features (Gram sharing) only in the handshake.
+// A session kept busy past reuseAgeLimit is not reused: the next call
+// handshakes again and so reads an owner's change of Gram sharing (herdr-app
+// message 388428).
+func TestASessionIsNotReusedPastItsAgeLimit(t *testing.T) {
+	h := newReuseHost(t, true)
+	h.list(t)
+	if h.transport.Features().Gram {
+		t.Fatal("Gram on before the owner shared it")
+	}
+	// Calls every 40 s keep the session busy, inside reuseIdleLimit each time.
+	for elapsed := time.Duration(0); elapsed+40*time.Second < reuseAgeLimit; elapsed += 40 * time.Second {
+		h.clock.advance(40 * time.Second)
+		h.list(t)
+	}
+	if connects := h.connects(); len(connects) != 1 {
+		t.Fatalf("connects %+v, want one session until its age limit", connects)
+	}
+	h.relay.Gram = true
+	h.clock.advance(40 * time.Second)
+	h.list(t)
+	if connects := h.connects(); len(connects) != 2 {
+		t.Fatalf("connects %+v, want a fresh handshake past reuseAgeLimit", connects)
+	}
+	if !h.transport.Features().Gram {
+		t.Fatal("the owner's Gram sharing did not reach the guest after the age limit")
+	}
+}

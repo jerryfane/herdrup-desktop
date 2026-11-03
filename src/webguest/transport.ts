@@ -41,6 +41,10 @@ export function relayBackoff(lastMs: number): number {
 /** reuseIdleLimit (transport.go): how long a transport keeps a session idle for its next call,
  *  10 s short of herdr's 60 s SESSION_IDLE_TIMEOUT so a call never races herdr's close. */
 export const REUSE_IDLE_LIMIT_MS = 50_000;
+/** The most a session is reused after its handshake, the only place herdr tells the guest its
+ *  features (transport.go reuseAgeLimit): an owner turning Gram sharing on or off reaches the page
+ *  within this. A call in flight is never cut. */
+export const REUSE_AGE_LIMIT_MS = 120_000;
 
 /** multiRequest: the host answers further requests on a session after a reply (features.multi_request). */
 export interface Features { gram: boolean; push: boolean; multiRequest: boolean }
@@ -311,6 +315,8 @@ function refusal(code: string): GuestError {
 
 /** An authenticated relay connection (session.go:61-66). */
 class Session {
+ /** When the handshake that read reply's features finished (ms since the epoch), set by #connect. */
+ handshook = 0;
  constructor(private readonly socket: RelaySocket, private readonly noise: NoiseSession, readonly reply: HelloReply) {}
 
  close() { this.socket.close(); }
@@ -652,6 +658,7 @@ export class GuestTransport {
   }
   if (session.reply.guestID !== this.#access.guestID) { session.close(); throw revoked(); }
   this.#admitted(refusals, session.reply.features);
+  session.handshook = this.#now();
   return session;
  }
 
@@ -673,13 +680,15 @@ export class GuestTransport {
   this.#idle = null;
   if (idle === null) return null;
   clearTimeout(idle.timer);
-  if (!idle.session.quiet || this.#now() - idle.since >= REUSE_IDLE_LIMIT_MS) { idle.session.close(); return null; }
+  const now = this.#now();
+  if (!idle.session.quiet || now - idle.since >= REUSE_IDLE_LIMIT_MS || now - idle.session.handshook >= REUSE_AGE_LIMIT_MS) { idle.session.close(); return null; }
   return idle.session;
  }
 
  /** Leaves session idle for the next call, in place of any session idle already, until
   *  REUSE_IDLE_LIMIT_MS passes or herdr ends it (transport.go park). */
  #park(session: Session) {
+  if (this.#now() - session.handshook >= REUSE_AGE_LIMIT_MS) { session.close(); return; }
   if (this.closed) { session.close(); return; }
   const previous = this.#idle;
   if (previous !== null) { clearTimeout(previous.timer); previous.session.close(); }

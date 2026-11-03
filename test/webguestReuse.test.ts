@@ -4,7 +4,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
-import { GuestTransport, REUSE_IDLE_LIMIT_MS, type Access, type TransportOptions, type WebSocketFactory } from "../src/webguest/transport";
+import { GuestTransport, REUSE_AGE_LIMIT_MS, REUSE_IDLE_LIMIT_MS, type Access, type TransportOptions, type WebSocketFactory } from "../src/webguest/transport";
 import { guestGate, memoryRelay, startRelay, type GateAnswer, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
@@ -59,9 +59,9 @@ function herdr() {
  };
 }
 
-async function setup(multiRequest: boolean, options: TransportOptions & { memory?: boolean } = {}) {
+async function setup(multiRequest: boolean, options: TransportOptions & { memory?: boolean; gram?: () => boolean } = {}) {
  const host = herdr();
- const gate = guestGate({ multiRequest, answer: host.answer });
+ const gate = guestGate({ multiRequest, answer: host.answer, ...(options.gram ? { gram: options.gram } : {}) });
  let relay: TestRelay;
  let transportOptions: TransportOptions = options;
  if (options.memory) {
@@ -292,4 +292,22 @@ test("closing the transport closes its idle session", async () => {
  expect(relay.connects).toBe(1);
  transport.close();
  expect(await gate.sessions[0]!.ended).toBe("guest");
+});
+
+// herdr tells the guest its features only in the handshake; a session kept busy past
+// REUSE_AGE_LIMIT_MS is not reused, so the next call reads an owner's change of Gram sharing
+// (herdr-app message 388428; transport.go reuseAgeLimit).
+test("a session is not reused past its age limit", async () => {
+ let now = 1_000_000, gram = false;
+ const { gate, relay, transport } = await setup(true, { now: () => now, gram: () => gram });
+ await list(transport);
+ expect(transport.features.gram).toBe(false);
+ for (let elapsed = 0; elapsed + 40_000 < REUSE_AGE_LIMIT_MS; elapsed += 40_000) { now += 40_000; await list(transport); }
+ expect(relay.connects).toBe(1);
+ gram = true;
+ now += 40_000;
+ await list(transport);
+ expect(relay.connects).toBe(2);
+ expect(transport.features.gram).toBe(true);
+ expect(gate.sessions[0]!.requests).toBeGreaterThan(1);
 });

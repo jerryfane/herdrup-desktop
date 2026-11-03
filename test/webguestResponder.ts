@@ -199,12 +199,12 @@ export type GateAnswer = { result: unknown } | { error: { code: string; message?
  *  (jerryfane/herdr#356, guest_gate.rs serve_session) requests in turn until it ends the session after
  *  idleLimitMs without one, after guest_paused, guest_revoked or invalid_request, or on endAll.
  *  answer may be async: overlapped records a session whose guest sent while a request was out. */
-export function guestGate(options: { multiRequest: boolean; idleLimitMs?: number; guestID?: string; answer: (method: string, params: Record<string, unknown>) => GateAnswer | Promise<GateAnswer> }): { serve: Serve; sessions: GateSession[]; endAll(): void } {
+export function guestGate(options: { multiRequest: boolean; idleLimitMs?: number; guestID?: string; gram?: () => boolean; answer: (method: string, params: Record<string, unknown>) => GateAnswer | Promise<GateAnswer> }): { serve: Serve; sessions: GateSession[]; endAll(): void } {
  const sessions: GateSession[] = [];
  const live = new Set<() => void>();
  const serve: Serve = async (conn, handshake) => {
   const { reply } = await handshake();
-  const host = reply({ ok: true, guest_id: options.guestID ?? "grant-1", features: options.multiRequest ? { multi_request: true } : {} });
+  const host = reply({ ok: true, guest_id: options.guestID ?? "grant-1", features: { ...(options.multiRequest ? { multi_request: true } : {}), ...(options.gram?.() ? { gram: true } : {}) } });
   const session: GateSession = { requests: 0, end: "", overlapped: false, ended: conn.closed.then(() => session.end ||= "guest") };
   sessions.push(session);
   const ended = Promise.withResolvers<"ended">();
