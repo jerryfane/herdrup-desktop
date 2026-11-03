@@ -54,10 +54,14 @@ export class HostConn {
  inbox: (Uint8Array | string)[] = [];
  ended = false;
  #wake: (() => void) | null = null;
+ #closed = Promise.withResolvers<void>();
  constructor(private readonly sink: HostSink) {}
 
+ /** Resolves once the connection is over: the close handshake finished, so the guest heard it. */
+ get closed(): Promise<void> { return this.#closed.promise; }
+
  push(data: Uint8Array | string) { this.inbox.push(data); this.#wake?.(); }
- end() { this.ended = true; this.#wake?.(); }
+ end() { this.ended = true; this.#closed.resolve(); this.#wake?.(); }
 
  async read(): Promise<Uint8Array | string | null> {
   for (;;) {
@@ -165,17 +169,71 @@ export function memoryRelay(serve: Serve): { relay: TestRelay; webSocket: WebSoc
  const relay: TestRelay = { url: "https://relay.example", hostID, hostPublic: x25519.getPublicKey(hostSecret), connects: 0, stop() {} };
  const webSocket: WebSocketFactory = () => {
   relay.connects++;
-  const ws: RelayWebSocket = {
-   binaryType: "blob", onopen: null, onmessage: null, onerror: null, onclose: null,
-   send(data) { conn.push(data.slice()); },
-   close() { conn.end(); },
+  const ws: RelayWebSocket & { readyState: number } = {
+   binaryType: "blob", readyState: 0, onopen: null, onmessage: null, onerror: null, onclose: null,
+   send(data) { if (ws.readyState === 1) conn.push(data.slice()); },
+   close() { ws.readyState = 3; conn.end(); },
   };
+  // The host's close reaches the page's socket at once and its close event a microtask later, as a
+  // browser's does: a frame sent in between is dropped.
   const conn = new HostConn({
    send: (data) => { const copy = typeof data === "string" ? data : data.slice().buffer; queueMicrotask(() => ws.onmessage?.(new MessageEvent("message", { data: copy }))); },
-   close: (code, reason) => { conn.end(); queueMicrotask(() => ws.onclose?.(new CloseEvent("close", { code, reason, wasClean: true }))); },
+   close: (code, reason) => { ws.readyState = 3; conn.end(); queueMicrotask(() => ws.onclose?.(new CloseEvent("close", { code, reason, wasClean: true }))); },
   });
-  queueMicrotask(() => { ws.onopen?.(new Event("open")); host(conn, hostID, hostSecret, serve); });
+  queueMicrotask(() => { ws.readyState = 1; ws.onopen?.(new Event("open")); host(conn, hostID, hostSecret, serve); });
   return ws;
  };
  return { relay, webSocket };
+}
+
+/** One session's life at guestGate: the request lines it served, and why it ended ("" while open):
+ *  "guest" (the guest closed it), "reply" (one request answered, no multiRequest), "idle",
+ *  "guest_paused", "guest_revoked", "invalid_request", "dropped" (a reply lost) or "ended" (endAll).
+ *  ended resolves with that once the connection is over. */
+export interface GateSession { requests: number; end: string; overlapped: boolean; ended: Promise<string> }
+
+/** A request's answer: its result or error reply, or "drop" for a reply lost after herdr served it. */
+export type GateAnswer = { result: unknown } | { error: { code: string; message?: string } } | "drop";
+
+/** herdr's guest gate, as Go's fakeherdr.GuestRelay: one request per session, or with multiRequest
+ *  (jerryfane/herdr#356, guest_gate.rs serve_session) requests in turn until it ends the session after
+ *  idleLimitMs without one, after guest_paused, guest_revoked or invalid_request, or on endAll.
+ *  answer may be async: overlapped records a session whose guest sent while a request was out. */
+export function guestGate(options: { multiRequest: boolean; idleLimitMs?: number; guestID?: string; answer: (method: string, params: Record<string, unknown>) => GateAnswer | Promise<GateAnswer> }): { serve: Serve; sessions: GateSession[]; endAll(): void } {
+ const sessions: GateSession[] = [];
+ const live = new Set<() => void>();
+ const serve: Serve = async (conn, handshake) => {
+  const { reply } = await handshake();
+  const host = reply({ ok: true, guest_id: options.guestID ?? "grant-1", features: options.multiRequest ? { multi_request: true } : {} });
+  const session: GateSession = { requests: 0, end: "", overlapped: false, ended: conn.closed.then(() => session.end ||= "guest") };
+  sessions.push(session);
+  const ended = Promise.withResolvers<"ended">();
+  // endAll closes the connection at once, as herdr's stop or a revoke does.
+  const finish = (why: string) => { live.delete(end); session.end ||= why; conn.close(1000); };
+  const end = () => { finish("ended"); ended.resolve("ended"); };
+  live.add(end);
+  for (;;) {
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const idle = new Promise<"idle">((resolve) => { timer = setTimeout(() => resolve("idle"), options.idleLimitMs ?? 60_000); });
+   const next = await Promise.race([host.readLine(), idle, ended.promise]);
+   clearTimeout(timer);
+   if (next === "idle" || next === "ended") return finish(next);
+   if (next === null) { live.delete(end); session.end ||= "guest"; return; }
+   session.requests++;
+   let request: { id: string; method: string; params?: Record<string, unknown> };
+   try {
+    request = JSON.parse(next) as typeof request;
+   } catch {
+    host.write(JSON.stringify({ id: "", error: { code: "invalid_request", message: "invalid request" } }) + "\n");
+    return finish("invalid_request");
+   }
+   const answer = await options.answer(request.method, request.params ?? {});
+   if (conn.inbox.length > 0) session.overlapped = true;
+   if (answer === "drop") return finish("dropped");
+   host.write(JSON.stringify({ id: request.id, ...answer }) + "\n");
+   if ("error" in answer && ["guest_paused", "guest_revoked"].includes(answer.error.code)) return finish(answer.error.code);
+   if (!options.multiRequest) return finish("reply");
+  }
+ };
+ return { serve, sessions, endAll() { for (const end of [...live]) end(); } };
 }

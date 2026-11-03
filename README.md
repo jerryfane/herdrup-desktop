@@ -200,16 +200,25 @@ glass tab bar, the machine and "Shared by <owner> · 1 agent", the agent as a ro
 row with its status badge, and a card for connecting, offline, access removed (with
 Remove share) and unreachable states. Settings is GuestSettingsView in the detail
 column.
-Terminal, supported omp Chat and owner-enabled Gram use fresh authenticated relay
-sessions, one relay connect per request, and the relay allows a network 30 guest
-connects a minute. A guest therefore paces itself: the agent list every 15 s and at
+Terminal, supported omp Chat and owner-enabled Gram go through authenticated relay
+sessions, and the relay allows a network 30 guest connects a minute. A host whose
+admission says `features.multi_request` (herdr #356) answers further requests on a
+session, one at a time: the guest keeps the session a call ends with for the next
+call, closes it after 50 s idle (herdr ends it at 60 s), and connects afresh when
+herdr ended it (`guest_paused`, `guest_revoked`, a revoke or its stop) or a call
+overlaps one in flight. A request that never left a session herdr had already
+closed goes once more on a fresh session; one that may have reached herdr is never
+sent again. The Terminal's `pane.stream` takes a session over, so it always has its
+own. Without the flag every request is its own relay connect. A guest also paces
+itself: the agent list every 15 s and at
 once after a send, an answer or a menu key; the Chat as herdrup's ChatModel does,
 every 3 s while omp works or a send has yet to show and every 30 s otherwise. After
 the relay's 429 rate_limited no request connects for 15 s, then
 30 s, then 60 s while it keeps refusing, and a connect that goes through starts
 over; meanwhile the page stays open and reads "Reconnecting…", not "Can't reach".
 `fakeherdr -guest-relay … -guest-connect-limit N` logs every connect and refuses
-past N a minute. Guest Gram uses its own read marks and reply schema; it never decodes
+past N a minute; `-guest-multi-request` serves requests in turn on one session as
+herdr #356 does and logs each session's end. Guest Gram uses its own read marks and reply schema; it never decodes
 owner claim/read metadata. Agent renames retain the grant and update Gram routing.
 Leave share forgets local access without deleting this device's identity.
 The Linux native smoke exercised invalid input, cancellation before redemption,

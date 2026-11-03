@@ -53,6 +53,7 @@ func main() {
 	guestWebOrigin := flag.String("guest-web-origin", "", "with -guest-relay, also accept guest WebSockets from this page origin (host:port, e.g. 127.0.0.1:24753), for the web guest served locally")
 	guestPauseFile := flag.String("guest-pause-file", "", "with -guest-relay, pause the share while this file exists (agent.list shows the agent with guest_running false and its methods refuse guest_paused), as herdr does when the agent leaves its pane's foreground; checked every 500 ms")
 	guestGram := flag.Bool("guest-gram", false, "with -guest-relay, share Gram with the guest: features.gram is on and the gate serves the guest Gram methods on the fake Gram store")
+	guestMultiRequest := flag.Bool("guest-multi-request", false, "with -guest-relay, serve requests in turn on one guest session and advertise features.multi_request, as herdr does since jerryfane/herdr#356; each session's end is logged")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -210,7 +211,7 @@ func main() {
 		serveCurrent(s)
 	}
 	if *guestRelay != "" {
-		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestGram, *guestConnectLimit, *guestPauseFile, *guestWebOrigin); err != nil {
+		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestGram, *guestMultiRequest, *guestConnectLimit, *guestPauseFile, *guestWebOrigin); err != nil {
 			log.Fatal(err)
 		}
 	}

@@ -1,11 +1,15 @@
 // The guest relay protocol over a browser WebSocket, ported from internal/guest/session.go and
-// transport.go. herdr serves one request per guest connection (src/api/server.rs:1516-1562 at
-// f0b7ae61), so every request is its own WebSocket and Noise IK handshake:
+// transport.go. A guest connection is a WebSocket and a Noise IK handshake:
 //   wss://<relay>/v1/guest/<host id>, binary frames, no subprotocol
 //   -> message 1: e, es, s, ss + hello {"v":1,"guest_id"} or redeem {"v":1,"invite_id","secret","device"}
 //   <- message 2: e, ee, se + the host's admission reply
 //   -> one JSON-RPC request line, "\n"-terminated, split across frames at the plaintext limit
 //   <- reply lines, "\n"-delimited, frame boundaries unrelated to line boundaries.
+// herdr used to answer one request per connection (src/api/server.rs:1516-1562 at f0b7ae61). A host
+// whose reply says features.multi_request (jerryfane/herdr#356, guest_gate.rs serve_session) reads
+// the next request line after each reply, one request at a time, until it ends the session: after
+// 60 s without a request, after a guest_paused, guest_revoked or invalid_request reply, on a revoke
+// or its stop, or when pane.stream takes the session over. guest_forbidden leaves it open.
 //
 // The relay's refusals (GuestRelay src/relay.ts:61-64, src/host.ts:86-95 at herdrup 9845ecf) are
 // HTTP answers to the upgrade: 429 rate_limited, 503 host_offline or host_busy, each naming its code
@@ -34,7 +38,12 @@ export function relayBackoff(lastMs: number): number {
  return lastMs === 0 ? RELAY_BACKOFF_FIRST_MS : Math.min(2 * lastMs, RELAY_BACKOFF_MAX_MS);
 }
 
-export interface Features { gram: boolean; push: boolean }
+/** reuseIdleLimit (transport.go): how long a transport keeps a session idle for its next call,
+ *  10 s short of herdr's 60 s SESSION_IDLE_TIMEOUT so a call never races herdr's close. */
+export const REUSE_IDLE_LIMIT_MS = 50_000;
+
+/** multiRequest: the host answers further requests on a session after a reply (features.multi_request). */
+export interface Features { gram: boolean; push: boolean; multiRequest: boolean }
 
 /** A grant this browser holds (session.go:34-45). No bearer secret: the invite's stays in memory. */
 export interface Access {
@@ -51,6 +60,8 @@ export interface Access {
 /** The part of the WebSocket API the transport uses, so tests can inject one. */
 export interface RelayWebSocket {
  binaryType: BinaryType;
+ /** WebSocket.OPEN (1) while frames sent go out; a closing or closed socket drops them. */
+ readonly readyState: number;
  send(data: Uint8Array<ArrayBuffer>): void;
  close(): void;
  onopen: ((event: Event) => void) | null;
@@ -113,7 +124,8 @@ class RelaySocket {
  #end: { error: unknown } | "eof" | null = null;
  #wake: (() => void) | null = null;
  #signal: AbortSignal;
- #onAbort = () => { this.#finish({ error: this.#signal.reason }); this.close(); };
+ #onAbort = () => this.abort(this.#signal.reason);
+ #onEnd: (() => void) | null = null;
 
  private constructor(ws: RelayWebSocket, signal: AbortSignal) {
   this.#ws = ws;
@@ -181,11 +193,26 @@ class RelaySocket {
  #finish(end: { error: unknown } | "eof") {
   this.#end ??= end;
   this.#notify();
+  const onEnd = this.#onEnd;
+  this.#onEnd = null;
+  onEnd?.();
  }
 
+ /** Whether the socket is open with nothing unread: an idle session herdr has not ended or sent on. */
+ get quiet(): boolean { return this.#end === null && this.#inbox.length === 0; }
+
+ /** Calls onEnd once the socket ends, however it does; at once if it has. */
+ whenEnded(onEnd: () => void) {
+  if (this.#end !== null) { onEnd(); return; }
+  this.#onEnd = onEnd;
+ }
+
+ /** Sends a frame, or throws when it cannot go out: the socket ended, or is closing, which a
+  *  browser tells only by dropping the frame. */
  send(data: Uint8Array) {
   const end = this.#end;
   if (end !== null) throw end === "eof" ? closed() : end.error;
+  if (this.#ws.readyState !== 1) throw closed();
   // Every frame is a fresh ciphertext from @noble/ciphers, backed by an ArrayBuffer of its own;
   // its type only says ArrayBufferLike.
   const frame = data as Uint8Array<ArrayBuffer>;
@@ -206,9 +233,12 @@ class RelaySocket {
   }
  }
 
- close() {
+ close() { this.abort(closed()); }
+
+ /** Closes the socket; a read waiting on it fails with reason. */
+ abort(reason: unknown) {
   this.#signal.removeEventListener("abort", this.#onAbort);
-  this.#finish({ error: closed() });
+  this.#finish({ error: reason });
   this.#ws.onopen = this.#ws.onmessage = this.#ws.onerror = this.#ws.onclose = null;
   try { this.#ws.close(); } catch { /* already closed */ }
  }
@@ -256,7 +286,7 @@ function parseHelloReply(plaintext: Uint8Array): HelloReply {
  const features = record(object.features) ?? {};
  const reply: HelloReply = {
   ok: object.ok, error: text("error"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
-  agent: null, features: { gram: flag(features, "gram"), push: flag(features, "push") },
+  agent: null, features: { gram: flag(features, "gram"), push: flag(features, "push"), multiRequest: flag(features, "multi_request") },
  };
  if (agent !== null) {
   const name = agent.name ?? "", target = agent.target ?? "";
@@ -282,13 +312,22 @@ class Session {
  constructor(private readonly socket: RelaySocket, private readonly noise: NoiseSession, readonly reply: HelloReply) {}
 
  close() { this.socket.close(); }
+ /** Closes the session; a read waiting on it fails with reason. */
+ abort(reason: unknown) { this.socket.abort(reason); }
+ /** Open, and herdr sent nothing on it since the last reply: fit to carry the next request. */
+ get quiet(): boolean { return this.socket.quiet; }
+ whenEnded(onEnd: () => void) { this.socket.whenEnded(onEnd); }
 
- /** session.go:182-197: the line and its "\n", split at the plaintext limit. */
- sendLine(line: Uint8Array) {
+ /** session.go sendLine: the line and its "\n", split at the plaintext limit. onFrame hears each
+  *  frame go out: until one has, herdr cannot have the request. */
+ sendLine(line: Uint8Array, onFrame?: () => void) {
   const framed = new Uint8Array(line.length + 1);
   framed.set(line);
   framed[line.length] = 0x0a;
-  for (let at = 0; at < framed.length; at += MAX_NOISE_PLAINTEXT) this.socket.send(this.noise.encrypt(framed.subarray(at, at + MAX_NOISE_PLAINTEXT)));
+  for (let at = 0; at < framed.length; at += MAX_NOISE_PLAINTEXT) {
+   this.socket.send(this.noise.encrypt(framed.subarray(at, at + MAX_NOISE_PLAINTEXT)));
+   onFrame?.();
+  }
  }
 
  /** session.go:199-212: the next decrypted frame, or null after a clean close. */
@@ -371,17 +410,16 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
  }
 }
 
-/** A request's reply lines (transport.go:194-238). next resolves to null after the host's clean close. */
-export class GuestStream implements AsyncIterable<string> {
+/** A session's reply lines (transport.go lineReader); frame boundaries are unrelated to them. next
+ *  resolves to null after the host's clean close. */
+class LineReader {
  #session: Session;
- #dispose: () => void;
  #pending: Uint8Array = new Uint8Array(0);
- #closed = false;
 
- constructor(session: Session, dispose: () => void) {
-  this.#session = session;
-  this.#dispose = dispose;
- }
+ constructor(session: Session) { this.#session = session; }
+
+ /** Whether bytes past the last line arrived: herdr sent more than a reply. */
+ get leftover(): boolean { return this.#pending.length > 0; }
 
  async next(): Promise<string | null> {
   const parts: Uint8Array[] = [];
@@ -405,6 +443,23 @@ export class GuestStream implements AsyncIterable<string> {
    this.#pending = chunk;
   }
  }
+}
+
+/** A request's reply lines on a session of its own (transport.go relayStream). next resolves to
+ *  null after the host's clean close. */
+export class GuestStream implements AsyncIterable<string> {
+ #session: Session;
+ #lines: LineReader;
+ #dispose: () => void;
+ #closed = false;
+
+ constructor(session: Session, dispose: () => void) {
+  this.#session = session;
+  this.#lines = new LineReader(session);
+  this.#dispose = dispose;
+ }
+
+ next(): Promise<string | null> { return this.#lines.next(); }
 
  close() {
   if (this.#closed) return;
@@ -454,9 +509,31 @@ export interface TransportOptions {
 
 export interface RequestOptions { signal?: AbortSignal }
 
-/** Opens a fresh authenticated Noise session for each API request (transport.go:49-68). Closing it
- *  ends established streams and pending handshakes. After a refused upgrade every request fails with
- *  a rate_limited GuestError, without connecting, until the backoff ends. */
+/** The idle session a call left for the next one, since `since`, with its expiry timer. */
+interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout> }
+
+/** What a request on a session came to (transport.go roundTrip): its reply line and whether the
+ *  session is still open, or its failure and whether a frame of it went out (so herdr may have it). */
+type RoundTrip = { line: string; open: boolean } | { error: unknown; sent: boolean };
+
+/** guest_gate.rs serve_session (herdr #356) ends the session after these replies. */
+const SESSION_ENDING_CODES = new Set(["guest_paused", "guest_revoked", "invalid_request"]);
+
+/** Whether herdr serves further requests after a reply that decoded to error (transport.go
+ *  keepsSession): not after the codes that end the session, nor after a reply that did not decode. */
+function keepsSession(error: unknown): boolean {
+ if (error === null) return true;
+ return error instanceof HerdrAPIError && !SESSION_ENDING_CODES.has(error.code);
+}
+
+/** Opens authenticated Noise sessions for API requests (transport.go Transport). A host that answers
+ *  further requests on a session (features.multi_request) keeps the one a call ends with for the
+ *  next call, so polling stays under the relay's connect limit; otherwise every request has a fresh
+ *  session. A call takes the idle session, so a session never carries two requests at once; calls
+ *  that overlap it connect. Streams always have a session of their own. Closing the transport ends
+ *  established streams, the idle session and pending handshakes. After a refused upgrade every
+ *  request that needs a connect fails with a rate_limited GuestError, without connecting, until the
+ *  backoff ends. */
 export class GuestTransport {
  #access: Access;
  #identity: StaticKey;
@@ -465,13 +542,14 @@ export class GuestTransport {
  #callLimitMs: number;
  #life = new AbortController();
  #seq = 0;
- #features: Features = { gram: false, push: false };
+ #features: Features = { gram: false, push: false, multiRequest: false };
  // backoffMs is the wait after the last refusal and retryAt its end; both 0 once a connect goes
  // through. refusals counts the refusals that started a backoff, so a connect that began before one
  // cannot end it.
  #backoffMs = 0;
  #retryAt = 0;
  #refusals = 0;
+ #idle: IdleSession | null = null;
 
  constructor(access: Access, identity: StaticKey, options: TransportOptions = {}) {
   this.#access = access;
@@ -483,7 +561,12 @@ export class GuestTransport {
 
  get features(): Features { return { ...this.#features }; }
  get closed(): boolean { return this.#life.signal.aborted; }
- close() { if (!this.closed) this.#life.abort(closed()); }
+ close() {
+  if (!this.closed) this.#life.abort(closed());
+  const idle = this.#idle;
+  this.#idle = null;
+  if (idle !== null) { clearTimeout(idle.timer); idle.session.close(); }
+ }
 
  /** When the transport connects again after a refusal; null when it is not waiting (transport.go:78-87). */
  rateLimitedUntil(): number | null {
@@ -507,48 +590,137 @@ export class GuestTransport {
   if (this.#refusals === refusals) { this.#backoffMs = 0; this.#retryAt = 0; }
  }
 
- /** One request and its decoded result, within ROUND_TRIP_LIMIT_MS (transport.go:126-139). */
+ /** One request and its decoded result, within ROUND_TRIP_LIMIT_MS (transport.go Call). It goes on
+  *  the idle session if there is one; when herdr ended that session before any of the request went
+  *  out, so herdr cannot have it, the request goes once more on a fresh session. A request that may
+  *  have reached herdr is never sent again: it could be an agent.prompt. */
  async call(method: string, params?: unknown, options: RequestOptions = {}): Promise<unknown> {
-  const { signal, dispose } = linkSignals([options.signal], this.#callLimitMs);
+  const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
   try {
-   const stream = await this.openStream(method, params, { signal });
-   try {
-    const line = await stream.next();
-    if (line === null) throw other("The shared machine closed the connection before replying.");
-    return decodeReply(line);
-   } finally {
-    stream.close();
+   if (signal.aborted) throw signal.reason;
+   const request = this.#request(method, params);
+   const reused = this.#takeIdle();
+   if (reused !== null) {
+    const outcome = await roundTrip(reused, request, signal);
+    if ("line" in outcome) return this.#decode(reused, outcome);
+    if (outcome.sent || signal.aborted) throw outcome.error;
    }
+   const session = await this.#connect(signal);
+   const outcome = await roundTrip(session, request, signal);
+   if (!("line" in outcome)) throw outcome.error;
+   return this.#decode(session, outcome);
   } finally {
    dispose();
   }
  }
 
- /** One request whose reply lines are read until the host closes, e.g. pane.stream
-  *  (transport.go:141-192). The caller closes the stream. */
+ /** One request whose reply lines are read until the host closes, e.g. pane.stream, on a session of
+  *  its own: pane.stream takes a session over (transport.go OpenStream). The caller closes the stream. */
  async openStream(method: string, params?: unknown, options: RequestOptions = {}): Promise<GuestStream> {
   if (this.closed) throw this.#life.signal.reason;
   const { signal, dispose } = linkSignals([this.#life.signal, options.signal]);
   let session: Session | null = null;
   try {
-   const refusals = this.#refusals;
-   if (this.#now() < this.#retryAt) throw rateLimited();
-   const hello = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: this.#access.guestID }));
-   try {
-    session = await openSession(this.#access.endpoint, this.#identity, hello, signal, this.#factory);
-   } catch (error) {
-    if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
-    throw error;
-   }
-   if (session.reply.guestID !== this.#access.guestID) throw revoked();
-   this.#admitted(refusals, session.reply.features);
-   const id = "herdrup:guest:" + ++this.#seq;
-   session.sendLine(new TextEncoder().encode(JSON.stringify({ id, method, params: params ?? {} })));
+   session = await this.#connect(signal);
+   session.sendLine(this.#request(method, params));
    return new GuestStream(session, dispose);
   } catch (error) {
    session?.close();
    dispose();
    throw error;
   }
+ }
+
+ #request(method: string, params: unknown): Uint8Array {
+  const id = "herdrup:guest:" + ++this.#seq;
+  return new TextEncoder().encode(JSON.stringify({ id, method, params: params ?? {} }));
+ }
+
+ /** A session for the access (transport.go connect), unless the relay's backoff holds connects back. */
+ async #connect(signal: AbortSignal): Promise<Session> {
+  const refusals = this.#refusals;
+  if (this.#now() < this.#retryAt) throw rateLimited();
+  const hello = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: this.#access.guestID }));
+  let session: Session;
+  try {
+   session = await openSession(this.#access.endpoint, this.#identity, hello, signal, this.#factory);
+  } catch (error) {
+   if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
+   throw error;
+  }
+  if (session.reply.guestID !== this.#access.guestID) { session.close(); throw revoked(); }
+  this.#admitted(refusals, session.reply.features);
+  return session;
+ }
+
+ /** Decodes the reply line session carried, then leaves session idle for the next call when it is
+  *  open and herdr keeps serving it, or closes it (transport.go decode). */
+ #decode(session: Session, outcome: { line: string; open: boolean }): unknown {
+  let result: unknown, failure: unknown = null;
+  try { result = decodeReply(outcome.line); } catch (error) { failure = error; }
+  if (outcome.open && session.reply.features.multiRequest && keepsSession(failure)) this.#park(session);
+  else session.close();
+  if (failure !== null) throw failure;
+  return result;
+ }
+
+ /** Takes the idle session for a call, or null when there is none fit to carry one: herdr ended it
+  *  or sent on it, or it waited REUSE_IDLE_LIMIT_MS (transport.go takeIdle). */
+ #takeIdle(): Session | null {
+  const idle = this.#idle;
+  this.#idle = null;
+  if (idle === null) return null;
+  clearTimeout(idle.timer);
+  if (!idle.session.quiet || this.#now() - idle.since >= REUSE_IDLE_LIMIT_MS) { idle.session.close(); return null; }
+  return idle.session;
+ }
+
+ /** Leaves session idle for the next call, in place of any session idle already, until
+  *  REUSE_IDLE_LIMIT_MS passes or herdr ends it (transport.go park). */
+ #park(session: Session) {
+  if (this.closed) { session.close(); return; }
+  const previous = this.#idle;
+  if (previous !== null) { clearTimeout(previous.timer); previous.session.close(); }
+  const drop = () => {
+   if (this.#idle !== idle) return;
+   this.#idle = null;
+   clearTimeout(idle.timer);
+   session.close();
+  };
+  const idle: IdleSession = { session, since: this.#now(), timer: setTimeout(drop, REUSE_IDLE_LIMIT_MS) };
+  this.#idle = idle;
+  session.whenEnded(drop);
+ }
+}
+
+/** Sends request on session and reads its reply line (transport.go roundTrip). On a failure the
+ *  session is closed; aborting signal closes it with the signal's reason. */
+async function roundTrip(session: Session, request: Uint8Array, signal: AbortSignal): Promise<RoundTrip> {
+ const abort = () => session.abort(signal.reason);
+ signal.addEventListener("abort", abort, { once: true });
+ try {
+  let sent = false;
+  try {
+   session.sendLine(request, () => { sent = true; });
+  } catch (error) {
+   session.close();
+   return { error, sent };
+  }
+  const lines = new LineReader(session);
+  let line: string | null;
+  try {
+   line = await lines.next();
+  } catch (error) {
+   session.close();
+   return { error, sent: true };
+  }
+  if (line === null) {
+   session.close();
+   return { error: other("The shared machine closed the connection before replying."), sent: true };
+  }
+  // Anything after the reply line, or an abort that closed the session meanwhile, spends it.
+  return { line, open: !lines.leftover && !signal.aborted && session.quiet };
+ } finally {
+  signal.removeEventListener("abort", abort);
  }
 }
