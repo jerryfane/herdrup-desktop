@@ -4,6 +4,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { TerminalPrediction } from "./terminalPrediction";
 import terminalTheme from "../third_party/herdrup/terminal-theme.json";
+import { loadTerminalSymbols, terminalFontFamily } from "./terminalFont";
 import { openGuestShare } from "./guestShare";
 import { openAvatarSheet } from "./agentActions";
 import "@xterm/xterm/css/xterm.css";
@@ -815,8 +816,9 @@ class Detail {
   this.terminalJump.hidden = true;
   this.terminalSurface.append(canvas, this.historyButton, this.terminalJump);
   const styles = getComputedStyle(document.documentElement);
+  loadTerminalSymbols();
   // SearchAddon decorations require xterm's proposed decoration API.
-  const term = new Terminal({ fontFamily: styles.getPropertyValue("--font-machine"), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme });
+  const term = new Terminal({ fontFamily: terminalFontFamily(styles.getPropertyValue("--font-machine")), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme });
   this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false;
   term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = errorText(e); }); } };
   term.loadAddon(this.fit); term.loadAddon(this.search);

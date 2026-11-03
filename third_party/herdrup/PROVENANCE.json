@@ -123,6 +123,16 @@
       "sha256": "75d1be5367f860a97ab34f1d65f5fa62107687bce3bc53fa592da41184c750bc"
     },
     {
+      "source": "App/Fonts/HerdrupSymbols-Regular.ttf",
+      "dest": "public/herdrup/fonts/HerdrupSymbols-Regular.ttf",
+      "sha256": "c3f70b695b7c74a68559893cec1412807f97cbe393128bdc28621910b28f13ca"
+    },
+    {
+      "source": "App/Fonts/NerdFonts-LICENSE.txt",
+      "dest": "public/herdrup/fonts/NerdFonts-LICENSE.txt",
+      "sha256": "2cdf0cd5782091376eaa64ed2244c538308d515bec1cb6c4301c02184aafe428"
+    },
+    {
       "source": "design/herdrup-appicon.svg",
       "dest": "public/herdrup/appicon.svg",
       "sha256": "60cbbec91fd6276e697d4f007353882ac3c9ad71758b6a680d19406d32756bb7"

@@ -1,3 +1,12 @@
+/* herdrup's terminal symbols (App/Fonts/HerdrupSymbols-Regular.ttf, synced by cmd/herdrup-sync; licence
+   public/herdrup/fonts/NerdFonts-LICENSE.txt): Nerd Fonts' monospaced icons, private-use codepoints only,
+   so agent TUIs such as omp draw their icons instead of empty boxes. The terminal lists it right
+   after IBM Plex Mono (LiveTerminalView.swift fontCascade). */
+@font-face {
+  font-family: "Herdrup Symbols";
+  src: url("/herdrup/fonts/HerdrupSymbols-Regular.ttf") format("truetype");
+  font-display: block;
+}
 .agent-detail { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--color-ground-machine); color: var(--color-text); min-width: 0; }
 .agent-detail[hidden] { display: none; }
 /* Opening an agent: its page fades in from 40 pt to the right (HerdrApp.swift 3160-3179,
