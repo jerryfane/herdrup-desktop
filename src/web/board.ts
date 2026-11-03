@@ -3,7 +3,7 @@
 // empty View there is no query, no folder and no star, so folders.go layout only turns each
 // section's rows into agent items. Pinned to Go by internal/herdr/testdata/web_board.golden.json.
 
-import type { Avatar, Board, Item, Row, Section } from "../mygo";
+import type { Avatar, AvatarFace, Board, Item, Row, Section } from "../mygo";
 
 /** The agent.list agent fields the board reads (herdrapi.AgentInfo, herdr's JSON names). A
  *  pointer field is absent or null when Go's is nil. */
@@ -152,8 +152,8 @@ function preview(a: AgentInfo): string {
  return folder || act || str(a.pane_id);
 }
 
-// Go path.Base.
-function pathBase(p: string): string {
+/** Go path.Base. */
+export function pathBase(p: string): string {
  if (p === "") return ".";
  p = p.replace(/\/+$/, "");
  return p === "" ? "/" : p.slice(p.lastIndexOf("/") + 1);
@@ -253,4 +253,19 @@ function avatarTarget(a: AgentInfo): string {
  const pane = str(a.pane_id), terminal = str(a.terminal_id);
  if (a.machine_id == null && terminal !== "") return terminal;
  return pane || terminal || str(a.name);
+}
+
+/** desk_gram.go GramSenderAvatar: the roster agent a Gram sender's routing name names
+ *  (gramstore.AgentForSender, sender.go:68-94), else the initial tile of its bare name. */
+export function senderFace(from: string, roster: readonly AgentInfo[]): AvatarFace {
+ const bareOf = (raw: string) => { const i = raw.lastIndexOf("/"); return i < 0 || i === raw.length - 1 ? raw : raw.slice(i + 1); };
+ const bare = bareOf(from);
+ const face: AvatarFace = { avatar: { kind: "initial" }, initial: initial(bare), tint: tintIndex(bare) };
+ const slash = from.indexOf("/");
+ const agent = roster.find((a) => a.name != null && a.name === from)
+  ?? (slash <= 0
+   ? roster.find((a) => a.machine_id == null && a.name != null && a.name === bare)
+   : roster.find((a) => (str(a.machine_id) === from.slice(0, slash) || (a.machine_label != null && a.machine_label === from.slice(0, slash))) && a.name != null && bareOf(a.name) === bare));
+ if (agent !== undefined) face.avatar = avatarOf(agent);
+ return face;
 }

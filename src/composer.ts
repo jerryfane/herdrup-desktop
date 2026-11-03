@@ -130,7 +130,7 @@ export class ComposerEditor {
 export function composerGlyph(name: string, size: number): HTMLElement {
   const glyph = document.createElement("span"); glyph.className = "gglyph";
   glyph.style.width = glyph.style.height = `${size}px`;
-  glyph.style.setProperty("--glyph", `url("/herdrup/composer/${name}.svg")`);
+  glyph.style.setProperty("--glyph", `url("${import.meta.env.BASE_URL}herdrup/composer/${name}.svg")`);
   return glyph;
 }
 

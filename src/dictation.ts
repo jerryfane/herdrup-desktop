@@ -2,6 +2,7 @@ import { Dictation, events } from "./mygo";
 import { composerGlyph } from "./composer";
 import "./dictation.css";
 import { errorText } from "./errors";
+import { webGuest } from "./platform";
 
 // Serialize ownership changes across composers. A new capture cannot start until
 // the previous helper has exited and released its microphone.
@@ -31,6 +32,8 @@ export class ComposerDictation {
     this.button.type = "button";
     this.button.className = "composer-action composer-microphone";
     this.button.onclick = () => { if (this.busy) this.stop(); else this.start(); };
+    // Dictation is the app's bundled recognizer: the browser guest has none.
+    this.button.hidden = webGuest;
     this.strip.className = "composer-recording";
     this.strip.setAttribute("aria-label", "Recording");
     this.strip.setAttribute("role", "status");

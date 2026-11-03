@@ -20,6 +20,7 @@ const setup = {
 import qrIcon from "../third_party/phosphor/web/qr-code.svg?url";
 import clipboardIcon from "../third_party/phosphor/web/clipboard.svg?url";
 import { errorText } from "./errors";
+import { appleSymbols } from "./platform";
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text = ""): HTMLElementTagNameMap[K] {
@@ -73,7 +74,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  }
  window.addEventListener("focus", () => { void refreshPaste(); });
  for (const [button, name, size, fallback] of [[pair, "qrcode.viewfinder", 16, qrIcon], [invite, "qrcode.viewfinder", 15, qrIcon], [paste, "doc.on.clipboard", 16, clipboardIcon]] as const) {
-  if (navigator.platform.startsWith("Mac")) {
+  if (appleSymbols()) {
    void symbol(name, size, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); button.prepend(icon); });
   } else {
    const icon = element("span", "host-action-glyph"); icon.setAttribute("aria-hidden", "true");
@@ -87,7 +88,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  {
   const glyphFor = (sf: string, url: string) => {
    const slot = element("span", "host-empty-glyph"); slot.setAttribute("aria-hidden", "true");
-   if (navigator.platform.startsWith("Mac")) void symbol(sf, 12, "medium").then(node => slot.append(node));
+   if (appleSymbols()) void symbol(sf, 12, "medium").then(node => slot.append(node));
    else { const glyph = element("span", "host-computer-glyph"); glyph.style.setProperty("--host-computer", `url("${url}")`); slot.append(glyph); }
    return slot;
   };
@@ -241,7 +242,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     const row = action("", () => { row.disabled = true; void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(showAgents).catch(report).finally(() => { row.disabled = connecting; }); });
     row.className = "host-home-row"; row.disabled = connecting;
     const icon = element("span", "host-home-icon");
-    if (navigator.platform.startsWith("Mac")) icon.append(await symbol("person.2", 19, "regular"));
+    if (appleSymbols()) icon.append(await symbol("person.2", 19, "regular"));
     else { const glyph = element("span", "host-computer-glyph"); glyph.style.setProperty("--host-computer", `url("${usersIcon}")`); icon.append(glyph); }
     const lines = element("span", "host-home-lines");
     lines.append(element("span", "host-home-name", access.machineLabel), element("span", "host-home-address", `${access.agentName} · shared by ${access.ownerName}`));
@@ -265,7 +266,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     row.disabled = connecting;
     if (busy) row.setAttribute("aria-busy", "true");
     const icon = element("span", "host-home-icon");
-    if (navigator.platform.startsWith("Mac")) icon.append(await symbol("desktopcomputer", 19, "regular"));
+    if (appleSymbols()) icon.append(await symbol("desktopcomputer", 19, "regular"));
     else {
      // SF Symbols are licensed only for Apple platforms; use the same pinned
      // open icon family as the portable symbol renderer.

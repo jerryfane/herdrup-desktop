@@ -35,7 +35,6 @@ export function showMenu(entries: MenuEntry[]): Promise<string | null> {
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
   event.preventDefault();
   const at = items.indexOf(document.activeElement as HTMLButtonElement);
-  items[(at + (event.key === "ArrowDown" ? 1 : items.length - 1) + (at < 0 && event.key === "ArrowDown" ? 0 : 0)) % items.length]?.focus();
   const next = at < 0 ? (event.key === "ArrowDown" ? 0 : items.length - 1) : (at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
   items[next]?.focus();
  };

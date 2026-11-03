@@ -8,6 +8,7 @@
 .composer-mic-spinner { width:18px; height:18px; border:2px solid var(--color-hairline); border-top-color:currentColor; border-radius:50%; animation:mic-spin .8s linear infinite; }
 .composer-microphone[aria-pressed] { text-decoration:none; }
 .gactions > .composer-microphone { display:flex; align-items:center; justify-content:center; width:44px; height:44px; padding:0; color:var(--color-text-dim); }
+.composer-microphone[hidden] { display:none; }
 .gfield:has(.composer-recording:not([hidden])) .gfield-mirror { top:24px; }
 .gfield-input[hidden], .chat-input[hidden] { display:none; }
 @keyframes mic-spin { to { transform:rotate(360deg); } }

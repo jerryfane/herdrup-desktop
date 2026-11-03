@@ -38,6 +38,7 @@ import usageIcon from "../third_party/phosphor/web/chart-bar.svg?url";
 import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
+import { appleSymbols } from "./platform";
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -147,7 +148,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   function glyph(name: string, size = 20, weight = "regular") {
     const slot = el("span", "settings-glyph"); slot.setAttribute("aria-hidden", "true");
-    if (!navigator.platform.startsWith("Mac") && settingIcons[name]) {
+    if (!appleSymbols() && settingIcons[name]) {
       const image = el("span", "settings-portable-glyph");
       image.style.setProperty("--settings-icon", `url("${settingIcons[name]}")`);
       image.style.width = image.style.height = `${size}px`; slot.append(image);

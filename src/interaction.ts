@@ -36,6 +36,7 @@ import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
 import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
 import { errorText } from "./errors";
+import { appleSymbols } from "./platform";
 
 const noteStyles: Record<string, { label: string; symbol: string; icon?: string }> = {
  gitmoot: { label: "Gitmoot", symbol: "envelope", icon: envelopeIcon },
@@ -56,7 +57,7 @@ function jumpToLatestButton(className: string, label: string, action: () => void
  const jump = button("", action);
  jump.className = className; jump.hidden = true;
  jump.setAttribute("aria-label", label); jump.title = label;
- if (navigator.platform.startsWith("Mac")) void symbol("arrow.down", 18, "medium").then(icon => jump.replaceChildren(icon));
+ if (appleSymbols()) void symbol("arrow.down", 18, "medium").then(icon => jump.replaceChildren(icon));
  else {
   const icon = el("span", "jump-latest-glyph"); icon.style.setProperty("--jump-glyph", `url("${arrowDownIcon}")`);
   jump.replaceChildren(icon);
@@ -564,7 +565,7 @@ class Detail {
    more.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><g fill="currentColor"><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/></g></svg>';
    return;
   }
-  if (navigator.platform.startsWith("Mac")) {
+  if (appleSymbols()) {
    const glyph = await symbol("bell.slash", 15, "medium");
    if (more.classList.contains("muted")) more.replaceChildren(glyph);
    return;
@@ -1177,7 +1178,7 @@ class Detail {
     const marker = el("span", "chat-plan-marker");
     marker.setAttribute("aria-hidden", "true");
     const name = completed ? "checkmark" : item.status === "in_progress" ? "arrow.right.circle.fill" : item.status === "blocked" ? "pause.circle" : "circle";
-    if (completed || navigator.platform.startsWith("Mac")) {
+    if (completed || appleSymbols()) {
      void symbol(name, 12, "semibold").then(icon => marker.append(icon));
     } else {
      const icon = el("span", "chat-plan-fallback");
@@ -1386,7 +1387,7 @@ class Detail {
   card.className = "chat-message chat-note";
   card.setAttribute("aria-label", `${style.label} note: ${entry.title ?? ""}`);
   const icon = el("span", "chat-note-icon"); icon.setAttribute("aria-hidden", "true");
-  if (navigator.platform.startsWith("Mac") || !style.icon) {
+  if (appleSymbols() || !style.icon) {
    void symbol(style.symbol, 14, "medium").then(glyph => icon.append(glyph));
   } else {
    const glyph = el("span", "chat-note-glyph");
