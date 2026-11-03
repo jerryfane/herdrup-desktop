@@ -80,8 +80,15 @@ function linkSignals(parents: (AbortSignal | undefined)[], timeoutMs?: number) {
 }
 
 /** session.go:105-123: how a close after the upgrade reads. null is a clean end (io.EOF). */
-function closeError(code: number, reason: string): GuestError | null {
- if (reason === "host_busy") return other("The shared machine is busy. Try again shortly.");
+// The relay's close codes for a guest upgrade it accepted only to refuse (herdrup GuestRelay,
+// themartianapp/herdrup#610; Go session.go socketError): a page can read these, unlike the HTTP
+// status of a refused upgrade, which still reaches it as relayRefused from older relays.
+const CLOSE_RATE_LIMITED = 4429, CLOSE_HOST_OFFLINE = 4503, CLOSE_HOST_BUSY = 4504;
+
+export function closeError(code: number, reason: string): GuestError | null {
+ if (code === CLOSE_RATE_LIMITED) return rateLimited();
+ if (code === CLOSE_HOST_OFFLINE) return hostOffline();
+ if (code === CLOSE_HOST_BUSY || reason === "host_busy") return other("The shared machine is busy. Try again shortly.");
  if (code === 1000 && reason === "") return null;
  if (code === 1001) return hostOffline();
  if (code === 1009) return other("The shared machine rejected an oversized message.");

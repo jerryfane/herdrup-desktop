@@ -284,6 +284,23 @@ test("a refused upgrade is read as rate limited and starts the backoff without r
  expect(transport.rateLimitedUntil()).toBe(clock + 60_000);
 });
 
+// themartianapp/herdrup#610: the relay accepts a guest upgrade it refuses and closes with a code a
+// page can read: 4429 rate_limited, 4503 host_offline, 4504 host_busy (Go session.go socketError).
+test("the relay's refusal close codes read as rate limited, offline and busy", async () => {
+ let clock = 1_000_000, code = 4429, reason = "rate_limited";
+ const relay = track(startRelay({ admit: () => undefined, async serve(conn) { conn.close(code, reason); } }));
+ const transport = new GuestTransport(accessOn(relay), await identity(), { now: () => clock });
+ expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
+ expect(transport.rateLimitedUntil()).toBe(clock + 15_000);
+ expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
+ expect(relay.connects).toBe(1);
+ clock += 15_000;
+ [code, reason] = [4503, "host_offline"];
+ expect(await kindOf(transport.call("ping"))).toBe("host_offline");
+ [code, reason] = [4504, "host_busy"];
+ expect(await transport.call("ping").catch((error: Error) => error.message)).toBe("The shared machine is busy. Try again shortly.");
+});
+
 test("a connect the relay admits ends the backoff", async () => {
  let clock = 1_000_000;
  let refuse = true;

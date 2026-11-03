@@ -446,3 +446,67 @@ func TestAnAdmittedHandshakeBegunBeforeA429KeepsItsCooldown(t *testing.T) {
 		t.Fatalf("%d connects reached the relay, want 2 (A and B)", n)
 	}
 }
+
+// themartianapp/herdrup#610: the relay accepts a guest upgrade it refuses and
+// closes with 4429 rate_limited, 4503 host_offline or 4504 host_busy, which
+// a page can read (an HTTP status it cannot). 4429 starts the backoff like
+// the HTTP 429 does.
+func TestRelayRefusalCloseCodes(t *testing.T) {
+	identity, err := LoadIdentity(filepath.Join(t.TempDir(), "identity"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code atomic.Int32
+	var connects atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connects.Add(1)
+		socket, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		reasons := map[int32]string{4429: "rate_limited", 4503: "host_offline", 4504: "host_busy"}
+		_ = socket.Close(websocket.StatusCode(code.Load()), reasons[code.Load()])
+	}))
+	defer server.Close()
+	hostID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 16))
+	access := Access{GuestID: "grant-1", Endpoint: Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}}
+	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
+	transport := NewTransport(access, identity, clock)
+	defer transport.Close()
+	ctx := context.Background()
+
+	code.Store(4429)
+	if err := transport.Call(ctx, "ping", nil, nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("4429: %v", err)
+	}
+	if got, want := transport.RateLimitedUntil(), clock.Now().Add(15*time.Second); !got.Equal(want) {
+		t.Fatalf("4429 backoff until %v, want %v", got, want)
+	}
+	if err := transport.Call(ctx, "ping", nil, nil); !errors.Is(err, ErrRateLimited) || connects.Load() != 1 {
+		t.Fatalf("during the backoff: %v after %d connects", err, connects.Load())
+	}
+	clock.advance(15 * time.Second)
+	code.Store(4503)
+	if err := transport.Call(ctx, "ping", nil, nil); !errors.Is(err, ErrHostOffline) {
+		t.Fatalf("4503: %v", err)
+	}
+	code.Store(4504)
+	if err := transport.Call(ctx, "ping", nil, nil); err == nil || err.Error() != "The shared machine is busy. Try again shortly." {
+		t.Fatalf("4504: %v", err)
+	}
+}
+
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	return time.After(d)
+}
+func (c *fakeClock) advance(d time.Duration) { c.mu.Lock(); c.now = c.now.Add(d); c.mu.Unlock() }
