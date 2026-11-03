@@ -60,6 +60,13 @@ function groupOf(a: AgentInfo): Group {
  return Group.Unrecognised;
 }
 
+/** GroupOf(a, true)'s Key and Label, for an agent view's group and status (desk_interaction.go
+ *  OpenAgentView). */
+export function liveGroup(a: AgentInfo): { key: string; label: string } {
+ const g = groupOf(a);
+ return { key: groupKeys[g]!, label: groupLabels[g]! };
+}
+
 // Go's string order is UTF-8 byte order, i.e. code point order; JS < compares UTF-16 units.
 function goCompare(a: string, b: string): number {
  const n = Math.min(a.length, b.length);
