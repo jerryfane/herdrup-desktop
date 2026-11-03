@@ -41,7 +41,7 @@ export function markdown(text: string): HTMLElement {
   const source = code?.textContent ?? pre.textContent ?? "";
   const language = /(?:^|\s)language-(\S+)/.exec(code?.className ?? "")?.[1] ?? null;
   const host = document.createElement("div"); host.className = "chat-code";
-  host.append(selfCopyingCodeBlock(source.replace(/\n$/, ""), language));
+  host.append(selfCopyingCodeBlock(source.replace(/\n$/, ""), language, true));
   pre.replaceWith(host);
   if (language !== "mermaid") continue;
   void mermaid().then(m => m.render(`chat-diagram-${++diagramID}`, source)).then(({ svg }) => {

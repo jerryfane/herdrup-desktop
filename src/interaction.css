@@ -140,7 +140,8 @@
 .chat-work-list { margin: 8px 0 0 6px; padding-left: 14px; }
 .chat-tool { margin: 8px 0; }
 .chat-tool summary { display: flex; align-items: baseline; gap: 8px; font-size: calc(13.5px * var(--chat-text-scale, 1)); color: var(--color-text-faint); }
-.chat-tool code { min-width: 46px; font: 600 calc(11.5px * var(--chat-text-scale, 1)) var(--font-machine); color: var(--color-text-dim); }
+/* The tool omp ran, in the theme's accent, as omp's terminal titles it (ChatView.swift stepList). */
+.chat-tool code { min-width: 46px; font: 600 calc(11.5px * var(--chat-text-scale, 1)) var(--font-machine); color: var(--chat-tool-title); }
 .tool-dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--color-text-faint); }
 .tool-dot.running { background: var(--status-working); }
 .chat-tool pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 400 calc(11.5px * var(--chat-text-scale, 1))/1.5 var(--font-machine); }
@@ -154,6 +155,10 @@
 /* Heading ink stays neutral; Swift's extra leading is not a font-scaled inset. */
 .chat-markdown :is(h1, h2, h3, h4, h5, h6) { --heading-leading: 2px; margin: -1px 0; padding-top: 4px; font-weight: 600; font-size: calc(17px * var(--markdown-scale)); line-height: calc(1em * var(--leading-app) + var(--heading-leading)); min-height: calc(round(up, calc(1em * var(--leading-app)), var(--pixel)) + var(--heading-leading) + 4px); color: inherit; }
 .chat-markdown h1 { font-size: calc(23px * var(--markdown-scale)); }
+/* Headings in the chat palette's heading colour; an expanded thought keeps its ink
+   (ChatMarkdownView.swift heading: dim ? tone.ink : ChatPalette.current.heading). */
+.chat-markdown :is(h1, h2, h3, h4, h5, h6) { color: var(--chat-heading); }
+.chat-thought .chat-markdown :is(h1, h2, h3, h4, h5, h6) { color: inherit; }
 .chat-markdown h2 { font-size: calc(20px * var(--markdown-scale)); }
 .chat-markdown blockquote { --quote-leading: 3px; position: relative; display: flex; flex-direction: column; margin: 0; padding-left: 12px; font-size: calc(15.5px * var(--markdown-scale)); color: var(--color-text-dim); }
 .chat-markdown blockquote p { margin: -1.5px 0; line-height: calc(1em * var(--leading-app) + var(--quote-leading)); white-space: pre-wrap; }
@@ -174,6 +179,8 @@
 .chat-markdown code { font-family: var(--font-machine); font-size: max(calc(1em - 2.5px), 10px); }
 /* Swift sets code ink explicitly: text in replies (even inside a dim quote), dim in thoughts. */
 .chat-markdown :not(pre) > code { background: var(--color-surface); color: var(--color-text); }
+/* Links in Palette.working, underline as the webview draws it (ChatMarkdownView.swift ChatInline). */
+.chat-markdown a { color: var(--status-working); }
 .chat-thought > .chat-markdown :not(pre) > code { color: var(--color-text-dim); }
 /* GramCodeBlock in Chat (ChatMarkdownView.swift 51): its code at the chat's text scale (GramCards.swift 557). */
 .chat-markdown .gcode-text { font-size: calc(13px * var(--chat-text-scale, 1)); line-height: calc(18px * var(--chat-text-scale, 1)); }
