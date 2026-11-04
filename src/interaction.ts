@@ -36,6 +36,8 @@ import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
 import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
+import stopCircleIcon from "../third_party/phosphor/web/stop-circle-bold.svg?url";
+import warningCircleIcon from "../third_party/phosphor/web/warning-circle-bold.svg?url";
 import { errorText } from "./errors";
 import { appleSymbols } from "./platform";
 
@@ -1590,6 +1592,25 @@ class Detail {
   if (entry.kind === "plan") {
    // Swift retains this row's gap; only the footer draws the current plan.
    const gap = el("div", "chat-plan-snapshot"); gap.setAttribute("aria-hidden", "true"); return gap;
+  }
+  // ChatRowView .summary: a compaction, its words centred between two quiet hairlines.
+  if (entry.kind === "summary") {
+   const row = el("div", "chat-summary");
+   row.append(el("span", "chat-summary-rule"), el("span", "chat-summary-text", entry.text ?? ""), el("span", "chat-summary-rule"));
+   row.querySelectorAll(".chat-summary-rule").forEach(rule => rule.setAttribute("aria-hidden", "true"));
+   return row;
+  }
+  // ChatRowView .turnFailed: a turn that stopped or failed, with herdr's error if any.
+  if (entry.kind === "turn_end") {
+   const aborted = entry.status === "aborted";
+   const row = el("div", "chat-turn-failed");
+   row.dataset.status = aborted ? "aborted" : "failed";
+   const icon = el("span", "chat-turn-failed-icon"); icon.setAttribute("aria-hidden", "true");
+   // SF Symbols on a Mac; elsewhere the matching Phosphor glyph, as the plan card's markers.
+   if (appleSymbols()) void symbol(aborted ? "stop.circle" : "exclamationmark.circle", 12, "semibold").then(glyph => icon.append(glyph));
+   else { const glyph = el("span", "chat-plan-fallback"); glyph.style.setProperty("--plan-icon", `url("${aborted ? stopCircleIcon : warningCircleIcon}")`); icon.append(glyph); }
+   row.append(icon, el("span", "chat-turn-failed-text", aborted ? "Stopped" : `Failed${entry.error ? ` · ${entry.error}` : ""}`));
+   return row;
   }
   if (entry.kind === "user" || entry.kind === "reply") {
    const article = el("article", `chat-message ${entry.kind}`);
