@@ -60,15 +60,15 @@ test("the golden covers every size and weight the screens draw at", () => {
 // bundled Phosphor SVG beside them (settings.ts settingIcons, interaction.ts noteStyles and plan
 // markers, gram.ts line icons), so Windows and Linux have no stand-in for them either.
 const drawnOnlyOnMac = [
- "arrow.down", "arrow.down.circle", "arrow.down.to.line", "arrow.right", "arrow.right.circle.fill",
- "arrow.triangle.2.circlepath", "arrow.up.and.down", "arrow.up.right", "arrow.uturn.backward.circle.fill",
+ "arrow.down", "arrow.down.circle", "arrow.right", "arrow.right.circle.fill",
+ "arrow.triangle.2.circlepath", "arrow.up.right", "arrow.uturn.backward.circle.fill",
  "bell", "bell.slash", "bubble.left.and.bubble.right", "chart.bar", "checkmark.circle.fill",
  "checkmark.shield.fill", "chevron.left.forwardslash.chevron.right", "chevron.up.chevron.down", "circle",
  "desktopcomputer", "doc.on.clipboard", "doc.text", "envelope", "exclamationmark.bubble", "exclamationmark.circle",
- "exclamationmark.triangle.fill", "gauge.with.needle", "hand.draw", "hand.point.up.left", "hand.tap",
+ "exclamationmark.triangle.fill", "gauge.with.needle",
  "key.horizontal", "keyboard", "lightbulb", "lock.open", "lock.shield", "pause.circle", "person.2",
  "photo.on.rectangle", "plus.circle", "qrcode.viewfinder", "questionmark.circle.fill",
- "shield.lefthalf.filled", "sparkles", "stop.circle", "text.alignleft", "textformat.size", "trash",
+ "shield.lefthalf.filled", "sparkles", "stop.circle", "textformat.size",
 ];
 
 /** The SF Symbol names src/*.ts passes to a symbol drawer: dotted literals anywhere (no other

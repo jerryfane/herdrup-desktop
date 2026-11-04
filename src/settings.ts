@@ -23,11 +23,6 @@ import termsIcon from "../third_party/phosphor/web/file-text.svg?url";
 import codeIcon from "../third_party/phosphor/web/code.svg?url";
 import addIcon from "../third_party/phosphor/web/plus-circle.svg?url";
 import keyboardIcon from "../third_party/phosphor/web/keyboard.svg?url";
-import handIcon from "../third_party/phosphor/web/hand-tap.svg?url";
-import scrollIcon from "../third_party/phosphor/web/arrows-down-up.svg?url";
-import selectionIcon from "../third_party/phosphor/web/text-align-left.svg?url";
-import trashIcon from "../third_party/phosphor/web/trash.svg?url";
-import latestIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import latencyIcon from "../third_party/phosphor/web/gauge.svg?url";
 import updateIcon from "../third_party/phosphor/web/arrow-circle-down.svg?url";
 import externalLinkIcon from "../third_party/phosphor/web/arrow-up-right-bold.svg?url";
@@ -45,13 +40,10 @@ const settingIcons: Record<string, string> = {
   "lock.shield": privacyIcon, "doc.text": termsIcon,
   "chevron.left.forwardslash.chevron.right": codeIcon, "plus.circle": addIcon,
   "key.horizontal": accountIcon,
-  "arrow.down.circle": updateIcon,
   "person.2": guestsIcon,
   "bell": notificationIcon,
   "keyboard": keyboardIcon,
-  "hand.draw": handIcon, "hand.tap": handIcon, "hand.point.up.left": handIcon,
-  "arrow.up.and.down": scrollIcon, "text.alignleft": selectionIcon,
-  "trash": trashIcon, "arrow.down.to.line": latestIcon,
+  "arrow.down.circle": updateIcon,
   "gauge.with.needle": latencyIcon, "arrow.up.right": externalLinkIcon,
   "chevron.up.chevron.down": pickerIcon,
   "bubble.left.and.bubble.right": chatsIcon,
@@ -290,8 +282,6 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     typingRow.append(glyph("keyboard", 18), typingLines, menuPicker(typingChoice));
     const latencyRow = row("Typing latency", "gauge.with.needle", () => choose("typingLatency"));
     latencyRow.setAttribute("aria-current", selected === "typingLatency" ? "page" : "false");
-    const gesturesRow = row("Gestures", "hand.draw", showGestures, "How to move around the app");
-    gesturesRow.id = "settings-gestures";
     const appUpdatesRow = row("App updates", "arrow.down.circle", () => choose("appUpdates"), "", appUpdateValue);
     appUpdatesRow.id = "settings-app-updates";
     appUpdatesRow.setAttribute("aria-current", selected === "appUpdates" ? "page" : "false");
@@ -299,7 +289,6 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     footer.append(el("span", "", `herdrup ${version}`), el("span", "settings-version-stance", "dark only, on purpose"));
     suggestionsKey = ""; renderSuggestions();
     index.replaceChildren(card, suggestions, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
-      gesturesRow,
       latencyRow,
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
@@ -447,48 +436,6 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const header = el("header", "settings-sheet-header"); header.append(el("h2", "", title), button("Close", () => modal.close()));
     modal.append(header); document.body.append(modal); openDialog = modal;
     modal.addEventListener("close", () => { if (openDialog === modal) openDialog = null; modal.remove(); }, { once: true }); return modal;
-  }
-  function showGestures() {
-    const modal = dialog("Gestures");
-    modal.classList.add("settings-gestures-sheet");
-    modal.setAttribute("aria-labelledby", "settings-gestures-title");
-    modal.setAttribute("aria-describedby", "settings-gestures-description");
-    const header = modal.querySelector<HTMLElement>(".settings-sheet-header")!;
-    const heading = header.querySelector("h2")!;
-    heading.id = "settings-gestures-title";
-    const titles = el("div", "settings-gestures-titles");
-    const description = el("p", "", "How to move around herdrup");
-    description.id = "settings-gestures-description";
-    titles.append(heading, description);
-    const close = button("", () => modal.close());
-    close.setAttribute("aria-label", "Close Gestures");
-    close.append(glyph("xmark", 15, "medium"));
-    header.replaceChildren(titles, close);
-    const content = el("div", "settings-gestures-content");
-    for (const [icon, title, detail] of [
-      ["hand.tap", "Click an agent", "Opens its live Terminal or Chat view."],
-      ["chevron.left", "Use the back arrow", "Returns to the agents list."],
-      ["arrow.up.and.down", "Scroll in the terminal", "Use the mouse wheel or trackpad to read earlier output."],
-      ["hand.tap", "Double-click terminal text", "Selects a word. Drag to extend the selection. Hold Shift if the terminal program is using the mouse."],
-      ["text.alignleft", "Triple-click terminal text", "Selects the whole line. Hold Shift if the terminal program is using the mouse."],
-      ["arrow.down.to.line", "Jump to latest output", "Use the terminal quick-key button to return to the newest output."],
-      ["hand.point.up.left", "Right-click an agent", "Star it or move it into a folder."],
-      ["trash", "Right-click a message in Gram", "Choose Delete to remove the message and its file permanently."],
-      ["arrow.clockwise", "Refresh Gram", "Use Refresh in the section bar to fetch the latest messages."],
-    ]) {
-      const item = el("div", "settings-gesture");
-      const lines = el("div", "settings-gesture-lines");
-      lines.append(el("h3", "", title), el("p", "", detail));
-      item.append(glyph(icon!, 18, "medium"), lines);
-      content.append(item);
-    }
-    const footer = el("footer", "settings-gestures-footer");
-    footer.append(button("Got it", () => modal.close()));
-    modal.append(content, footer);
-    modal.addEventListener("close", () => {
-      if (visible) document.getElementById("settings-gestures")?.focus({ preventScroll: true });
-    }, { once: true });
-    modal.showModal();
   }
   function confirmFederation(saved: SavedMachineStatus) {
     const at = generation;
