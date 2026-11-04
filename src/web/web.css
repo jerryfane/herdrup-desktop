@@ -7,3 +7,15 @@
 .web-welcome-card p { margin: 0; color: var(--color-text-dim); font-size: 15px; line-height: 1.45; }
 .web-welcome-card .web-welcome-error { color: var(--color-text); }
 .web-welcome-card .guest-home-loading { height: 40px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); }
+
+/* A phone (the invite's main use): one column, as the iPhone app's stack. The list fills the
+   screen; an open agent covers it, with its own back button; Settings and Gram sit between the
+   top bar and the floating tab bar, which stay. */
+@media (max-width: 700px) {
+  .sidebar { width: 100vw !important; }
+  .sidebar-resizer { display: none; }
+  .detail { left: 0; bottom: 0; z-index: 2; }
+  .select { display: none; }
+  body:not([data-web-detail="page"]):not([data-web-detail="bars"]) .detail { display: none; }
+  body[data-web-detail="bars"] .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
+}

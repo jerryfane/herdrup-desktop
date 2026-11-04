@@ -2,6 +2,9 @@ import { Desk, type AgentTarget, type BoardUpdate, type ConnState, type Row } fr
 import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
+// The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
+// the browser guest loads no owner Settings, so it imports them here.
+import "./settings.css";
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the
  * roster's avatar with its status badge, the initial placement and the loading spinner. */
