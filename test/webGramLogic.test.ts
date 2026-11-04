@@ -183,3 +183,15 @@ test("a chip shows percent while uploading and failure as tap to retry", () => {
  expect(gramAttachment(a, { kind: "uploading", sent: 512, total: 2048 })).toMatchObject({ label: "25% · 2 KB", fraction: 0.25, determinate: true });
  expect(gramAttachment(a, { kind: "uploadFailed", sent: 0, total: 0 })).toMatchObject({ label: "Upload failed · tap to retry", failed: true });
 });
+
+// #610 security review (herdr-app 392335): a guest's file may come without mime (HerdrKit
+// GuestGram.swift); one such file must not stop the feed from projecting.
+test("a guest file without mime projects as application/octet-stream", () => {
+ const file = { name: "log.txt", size: 10, sha256: "" };
+ const { messages } = projectGuestPage({ messages: [
+  { id: "a", direction: "agent_to_owner", from: "docs", text: "", created_unix_ms: 1, read: false, file },
+  { id: "b", direction: "agent_to_owner", from: "docs", text: "", created_unix_ms: 2, read: false, expired_file: file },
+ ], has_more: false }, "docs", false);
+ expect(messages.map(m => (m.file ?? m.expiredFile)!.mime)).toEqual(["application/octet-stream", "application/octet-stream"]);
+ expect(messages[0]!.file!.name).toBe("log.txt");
+});

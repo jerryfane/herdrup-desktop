@@ -7,6 +7,12 @@ type Mermaid = { initialize(options: object): void; render(id: string, text: str
 declare global { interface Window { mermaid?: Mermaid } }
 let loading: Promise<Mermaid> | null = null;
 let diagramID = 0;
+
+/** A clicked link's destination: an HTML anchor's href, or a diagram's SVG anchor, which Mermaid
+ *  writes as xlink:href. Opened through openExternalURL's scheme allow-list either way. */
+export function linkTarget(link: Element): string {
+ return link.getAttribute("href") ?? link.getAttributeNS("http://www.w3.org/1999/xlink", "href") ?? link.getAttribute("xlink:href") ?? "";
+}
 function mermaid(): Promise<Mermaid> {
  if (!loading) {
   const { promise, resolve, reject } = Promise.withResolvers<Mermaid>();
@@ -36,7 +42,7 @@ export function markdown(text: string): HTMLElement {
   const link = (e.target as HTMLElement).closest("a");
   if (!link) return;
   e.preventDefault();
-  void Desk.openExternalURL(link.getAttribute("href") ?? "").catch(() => {});
+  void Desk.openExternalURL(linkTarget(link)).catch(() => {});
  });
  // A fenced block is GramCodeBlock (ChatMarkdownView.swift 51); a diagram replaces
  // its block once drawn, else its source stays as one (ChatMermaidView.swift 190).
@@ -137,7 +143,7 @@ export function readableMarkdown(text: string): HTMLElement {
  body.addEventListener("click", event => {
   const link = (event.target as HTMLElement).closest("a");
   if (!link) return;
-  event.preventDefault(); void Desk.openExternalURL(link.getAttribute("href") ?? "").catch(() => {});
+  event.preventDefault(); void Desk.openExternalURL(linkTarget(link)).catch(() => {});
  });
  return body;
 }

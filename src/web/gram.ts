@@ -89,8 +89,8 @@ async function gramAnswer(link: WebLink, limit: number, unreadOnly: boolean, bef
 
 function gramFile(f: WireFile | undefined): GramFile | undefined {
  if (!f) return undefined;
- const image = f.mime.toLowerCase().startsWith("image/");
- return { name: f.name, mime: f.mime, size: f.size, sizeLabel: displaySize(f.size), isImage: image, preview: image && f.size <= PREVIEW_MAX_BYTES };
+ const mime = f.mime || "application/octet-stream", image = mime.toLowerCase().startsWith("image/");
+ return { name: f.name, mime, size: f.size, sizeLabel: displaySize(f.size), isImage: image, preview: image && f.size <= PREVIEW_MAX_BYTES };
 }
 
 /** The bare agent name of a routing name (gramstore.AgentName). */
