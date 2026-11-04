@@ -34,6 +34,9 @@ func NewInteraction() *Interaction {
 		{"kind": "note", "id": "n2", "ts_ms": 6, "source": "async_result", "title": "Build finished", "body": "The Linux package is ready for the next verification."},
 		{"kind": "note", "id": "n3", "ts_ms": 7, "source": "advisor", "title": "Check cancellation", "body": "Close the view while the request is pending, then inspect the next session."},
 		{"kind": "note", "id": "n4", "ts_ms": 8, "source": "other", "title": "Agent context", "body": "An unclassified note uses the neutral Agent presentation."},
+		// A turn that failed, then omp's compaction (herdr agent_transcript Kind::Compaction).
+		{"kind": "turn_end", "id": "e1", "ts_ms": 9, "status": "error", "error": "model overloaded"},
+		{"kind": "summary", "id": "c1", "ts_ms": 10, "text": "Earlier messages were summarised"},
 	}}
 }
 func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError, bool) {

@@ -206,6 +206,18 @@
 /* A journey's section names are SVG text drawn in their box's own fill by Mermaid's dark theme
    (the HTML copy it means to show is sanitized away); its style is ID-scoped, hence !important (post-merge review of #143). */
 .chat-diagram svg text.journey-section { fill: var(--color-text) !important; }
+/* ChatRowView .summary: HStack(spacing 10) of a 1 pt hairlineQuiet rule, the text (13 pt
+   textFaint, never wrapped) and another rule; 4 pt above and below. */
+.chat-summary { display: flex; align-items: center; gap: 10px; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 4px auto 10px; padding: 4px 0; }
+.chat-summary-rule { flex: 1; height: 1px; background: var(--color-hairline-quiet); }
+.chat-summary-text { flex: none; white-space: nowrap; color: var(--color-text-faint); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+/* ChatRowView .turnFailed: a 12 pt semibold stop or exclamation, 7 pt, 14 pt text up to three
+   lines. Stopped draws faint; Failed keeps its text in ink (fleet rule) and its icon in died. */
+.chat-turn-failed { display: flex; align-items: baseline; gap: 7px; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; color: var(--color-text-faint); font: 400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.chat-turn-failed[data-status="failed"] { color: var(--color-text-dim); }
+.chat-turn-failed[data-status="failed"] .chat-turn-failed-icon { color: var(--status-died); }
+.chat-turn-failed-icon { flex: none; align-self: center; display: flex; }
+.chat-turn-failed-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .chat-step { max-width: 860px; margin: 8px auto; padding: 8px 12px; background: var(--color-surface); border: 1px solid var(--color-hairline); border-radius: 8px; }
 .chat-step summary { cursor: pointer; color: var(--color-text-dim); }
 .chat-composer { position: relative; display: flex; gap: 4px; margin: 4px 12px 8px; padding: 6px; align-items: center; background: var(--color-surface); border: 0; outline: 1px solid var(--color-hairline); outline-offset: -1px; border-radius: 28px; }
