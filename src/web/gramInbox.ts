@@ -2,8 +2,10 @@
 // internal/gramstore/inbox.go. A guest's gram.list carries no digest, store id or unread count, so
 // the Inbox keeps only what a guest answer can change.
 
-/** herdrapi.GramFileInfo. */
+/** herdrapi.GramFileInfo. A guest's file may come without `mime` (HerdrKit GuestGram.swift); the
+ *  projection gives it application/octet-stream, so everything after reads a string. */
 export interface WireFile { name: string; mime: string; size: number; sha256: string }
+type GuestWireFile = Omit<WireFile, "mime"> & { mime?: string | null };
 
 /** internal/guest/gram.go GramMessage: the host's guest projection. */
 export interface GuestGramMessage {
@@ -12,8 +14,8 @@ export interface GuestGramMessage {
  from: string;
  text: string;
  created_unix_ms: number;
- file?: WireFile | null;
- expired_file?: WireFile | null;
+ file?: GuestWireFile | null;
+ expired_file?: GuestWireFile | null;
  read: boolean;
 }
 export interface GuestGramPage { messages: GuestGramMessage[]; has_more: boolean }
@@ -67,8 +69,9 @@ export function projectGuestPage(page: GuestGramPage, agent: string, unreadOnly:
  const messages: GramInfo[] = [];
  for (const m of page.messages) {
   const item: GramInfo = { id: m.id, direction: m.direction, from: m.from, text: m.text, createdUnixMs: m.created_unix_ms, readByOwner: m.read };
-  if (m.file) item.file = m.file;
-  else if (m.expired_file) item.expiredFile = m.expired_file;
+  const file = (f: GuestWireFile): WireFile => ({ ...f, mime: typeof f.mime === "string" && f.mime !== "" ? f.mime : "application/octet-stream" });
+  if (m.file) item.file = file(m.file);
+  else if (m.expired_file) item.expiredFile = file(m.expired_file);
   if (item.direction !== AGENT_TO_OWNER) item.to = agent;
   if (!unreadOnly || isUnread(item)) messages.push(item);
  }
