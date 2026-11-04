@@ -106,6 +106,9 @@ function render() {
  select.hidden = !guestVisible || guestTab === "settings" || guestGram || interactionVisible();
  showGram(guestVisible && guestTab === "agents" && guestGram && !!state.guest?.features.gram);
  showInteraction(guestVisible && guestTab === "agents" && !guestGram);
+ // What the detail column holds, for the phone layout (web.css): the agent page full-screen,
+ // Settings or Gram between the bars, or nothing (the list alone), as the iPhone app's stack.
+ document.body.dataset.webDetail = !guestVisible ? "" : guestTab === "settings" || guestGram ? "bars" : interactionVisible() ? "page" : "";
 }
 
 window.addEventListener("guest-gram", () => {
