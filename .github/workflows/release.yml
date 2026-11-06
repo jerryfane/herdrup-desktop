@@ -289,7 +289,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
-          prerelease=
-          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          # Not a prerelease, even for a preview tag: GitHub's releases/latest, which the
+          # guest invite page links computers to, skips prereleases.
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "herdrup $GITHUB_REF_NAME" --generate-notes $prerelease dist/*
+            --verify-tag --title "herdrup $GITHUB_REF_NAME" --generate-notes --latest dist/*
