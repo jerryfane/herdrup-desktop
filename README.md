@@ -16,9 +16,12 @@ desktop tray/notifications.
 
 Select an agent to open its detail view. Terminal supports live PTY input/output,
 resize, retained scrollback, search, copy and web links. Chat is available for omp
-agents: paged history, Markdown and diagrams, folded thinking/tools, prompt sending
-and supported single-choice questions. Other harnesses open Terminal.
-External images in transcript diagrams are blocked before the browser fetches them.
+agents: paged history, Markdown and diagrams (` ```mermaid `, and ` ```svg ` or an ` ```xml `
+block holding an `<svg>`), folded thinking/tools, prompt sending and supported single-choice
+questions. Other harnesses open Terminal.
+External images in transcript diagrams are blocked before the browser fetches them. An SVG is
+parsed and rewritten without scripts, event handlers, embedded HTML, animation or outside
+references, given the app's colours for its `var(--fg)`-style names, and shown as an image.
 Invalid diagrams stay as source text; history from an old transcript session is discarded.
 Chat headings, quotes, rules and inline-code backgrounds use the native source's
 typography and spacing, including preserved quote line breaks. Heading ink stays

@@ -2,6 +2,7 @@ import { marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
+import { accessibilityLabel, diagramKind, sanitizeSVG, svgVariables } from "./svgDiagram";
 
 type Mermaid = { initialize(options: object): void; render(id: string, text: string): Promise<{ svg: string }> };
 declare global { interface Window { mermaid?: Mermaid } }
@@ -46,6 +47,8 @@ export function markdown(text: string): HTMLElement {
  });
  // A fenced block is GramCodeBlock (ChatMarkdownView.swift 51); a diagram replaces
  // its block once drawn, else its source stays as one (ChatMermaidView.swift 190).
+ // An SVG is cleaned (svgDiagram.ts) and shown as an image, which runs and loads nothing.
+ let variables: Record<string, string> | null = null;
  for (const pre of body.querySelectorAll("pre")) {
   const code = pre.querySelector("code");
   const source = code?.textContent ?? pre.textContent ?? "";
@@ -53,7 +56,21 @@ export function markdown(text: string): HTMLElement {
   const host = document.createElement("div"); host.className = "chat-code";
   host.append(selfCopyingCodeBlock(source.replace(/\n$/, ""), language, true));
   pre.replaceWith(host);
-  if (language !== "mermaid") continue;
+  const kind = diagramKind(language, source);
+  if (kind === "svg") {
+   variables ??= svgVariables(getComputedStyle(document.documentElement));
+   const drawn = sanitizeSVG(source.replace(/\n$/, ""), variables);
+   if (!drawn) { host.title = "SVG could not be drawn; source is shown."; continue; }
+   const diagram = document.createElement("div"); diagram.className = "chat-diagram chat-svg";
+   const image = document.createElement("img");
+   image.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(drawn.svg);
+   image.width = drawn.width; image.height = drawn.height;
+   image.alt = accessibilityLabel(source);
+   diagram.append(image);
+   host.replaceWith(diagram);
+   continue;
+  }
+  if (kind !== "mermaid") continue;
   void mermaid().then(m => m.render(`chat-diagram-${++diagramID}`, source)).then(({ svg }) => {
    const diagram = document.createElement("div"); diagram.className = "chat-diagram";
    diagram.innerHTML = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });

@@ -202,7 +202,9 @@
 .chat-markdown tbody td { border-top: 1px solid var(--color-hairline-quiet); }
 .chat-markdown td.chat-table-number { font-size: calc(13.5px * var(--markdown-scale)); font-variant-numeric: tabular-nums; text-align: right; }
 .chat-markdown td.chat-table-gain { color: var(--chat-ok); }
-.chat-diagram svg { max-width: 100%; height: auto; }
+.chat-diagram svg, .chat-diagram img { max-width: 100%; height: auto; }
+/* A drawn ```svg block (ChatMermaidView .svg): the image at its own size, never wider than the reply. */
+.chat-svg img { display: block; }
 /* A journey's section names are SVG text drawn in their box's own fill by Mermaid's dark theme
    (the HTML copy it means to show is sanitized away); its style is ID-scoped, hence !important (post-merge review of #143). */
 .chat-diagram svg text.journey-section { fill: var(--color-text) !important; }
