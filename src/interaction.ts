@@ -33,6 +33,8 @@ import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
 import bellSlashIcon from "../third_party/phosphor/web/bell-slash.svg?url";
 import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
+import arrowUpIcon from "../third_party/phosphor/regular/arrow-up.svg?url";
+import { isMine, previousMine } from "./chatJumpMine";
 import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
 import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
@@ -55,14 +57,15 @@ function button(text: string, action: () => void) {
  const b = el("button", "", text); b.type = "button"; b.onclick = action; return b;
 }
 /** JumpToLatestButton (JumpToLatestButton.swift:6-27): the 44 pt circle with an 18 pt medium
- *  arrow.down, bottom-centre over the chat or the terminal, shown only away from the tail. */
-function jumpToLatestButton(className: string, label: string, action: () => void) {
+ *  arrow.down, bottom-centre over the chat or the terminal, shown only away from the tail. The
+ *  chat's up arrow to the owner's previous message is the same button with arrow.up. */
+function jumpToLatestButton(className: string, label: string, action: () => void, sf = "arrow.down", glyph = arrowDownIcon) {
  const jump = button("", action);
  jump.className = className; jump.hidden = true;
  jump.setAttribute("aria-label", label); jump.title = label;
- if (appleSymbols()) void symbol("arrow.down", 18, "medium").then(icon => jump.replaceChildren(icon));
+ if (appleSymbols()) void symbol(sf, 18, "medium").then(icon => jump.replaceChildren(icon));
  else {
-  const icon = el("span", "jump-latest-glyph"); icon.style.setProperty("--jump-glyph", `url("${arrowDownIcon}")`);
+  const icon = el("span", "jump-latest-glyph"); icon.style.setProperty("--jump-glyph", `url("${glyph}")`);
   jump.replaceChildren(icon);
  }
  return jump;
@@ -263,7 +266,11 @@ class Detail {
  private promptLayoutWidth = 0;
  private promptLayoutDirty = true;
  chatJump = jumpToLatestButton("chat-jump-latest", "Jump to latest message", () => this.glideChatToLatest());
- // requestAnimationFrame id while the jump button's glide runs (glideChatToLatest); 0 otherwise.
+ // The up arrow stacked above it (turn-origin contract): the owner's previous prompt, loading
+ // older pages until one is found; busy while it loads.
+ chatJumpMine = jumpToLatestButton("chat-jump-previous-mine", "Jump to my previous message", () => { void this.jumpToPreviousMine(); }, "arrow.up", arrowUpIcon);
+ private mineBusy = false;
+ // requestAnimationFrame id while a jump button's glide runs (glideChatToLatest, glideChatTo); 0 otherwise.
  chatGlide = 0;
  // The terminal's jump button (HerdrApp.swift:5856-5858 owner, GuestPaneView.swift:470-472 guest).
  terminalJump = jumpToLatestButton("terminal-jump-latest", "Jump to latest output", () => this.jumpTerminalToTail());
@@ -677,9 +684,70 @@ class Detail {
  }
  chatAtBottom() { return this.chatScroll.scrollHeight - this.chatScroll.scrollTop - this.chatScroll.clientHeight <= 8; }
  updateChatJump() {
-  const away = !!this.chat && !this.chatGlide && !this.chatAtBottom();
+  // An up glide leaves the tail: only a glide to the tail counts as being there.
+  const away = !!this.chat && !(this.chatGlide && this.chatFollowing) && !this.chatAtBottom();
   this.chatSurface.classList.toggle("away-from-tail", away);
   this.chatJump.hidden = !away || this.findOpen;
+  const first = this.mineNodes(1)[0];
+  const above = !!first && this.chatTop(first) < this.chatScroll.scrollTop - 1;
+  this.chatJumpMine.hidden = !this.chat || this.findOpen || this.viewer().guest || !(above || this.oldestCursor || this.mineBusy);
+  this.chatJumpMine.disabled = this.mineBusy;
+  this.chatJumpMine.classList.toggle("busy", this.mineBusy);
+  this.chatJumpMine.setAttribute("aria-busy", String(this.mineBusy));
+ }
+ /** The owner's own prompts on screen, in transcript order (the first `limit` of them). */
+ private mineNodes(limit = Infinity): HTMLElement[] {
+  const nodes: HTMLElement[] = [];
+  for (const entry of this.entries) {
+   if (nodes.length >= limit) break;
+   if (!isMine(entry)) continue;
+   const node = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(entry.id)}"]`);
+   if (node) nodes.push(node);
+  }
+  return nodes;
+ }
+ /** A row's top in the chat scroller's content coordinates. */
+ private chatTop(node: HTMLElement) {
+  return node.getBoundingClientRect().top - this.chatScroll.getBoundingClientRect().top + this.chatScroll.scrollTop;
+ }
+ /** The up arrow's tap: glide to the owner's prompt closest above the view, loading older pages
+  *  (as Earlier messages does) until one is found or the retained history ends. */
+ async jumpToPreviousMine() {
+  if (this.mineBusy) return;
+  const generation = this.generation;
+  try {
+   for (;;) {
+    const target = previousMine(this.mineNodes().map(node => ({ id: node.dataset.id!, top: this.chatTop(node) })), this.chatScroll.scrollTop);
+    if (target !== null) {
+     const node = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(target)}"]`);
+     if (node) this.glideChatTo(this.chatTop(node) - 12);
+     return;
+    }
+    if (!this.oldestCursor) return;
+    this.mineBusy = true; this.updateChatJump();
+    if (!(await this.loadEarlier(generation)) || this.disposed || generation !== this.generation || this.mode !== "chat") return;
+   }
+  } finally { this.mineBusy = false; this.updateChatJump(); }
+ }
+ /** Glides the chat up to `top` like the down arrow's glide (Reduce Motion jumps): from more
+  *  than two screens away it first snaps to one screen below the target. */
+ glideChatTo(top: number) {
+  const scroll = this.chatScroll, seconds = motionSeconds("glide");
+  this.stopChatGlide(); this.chatFollowing = false;
+  const to = Math.max(0, Math.min(top, scroll.scrollHeight - scroll.clientHeight));
+  const land = () => { this.chatGlide = 0; this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); };
+  if (!seconds || Math.abs(to - scroll.scrollTop) <= 0.5) { scroll.scrollTop = to; land(); return; }
+  if (scroll.scrollTop - to > 2 * scroll.clientHeight) scroll.scrollTop = to + scroll.clientHeight;
+  const from = scroll.scrollTop, start = performance.now();
+  const step = (now: number) => {
+   if (this.findOpen || this.mode !== "chat") { this.stopChatGlide(); return; }
+   const progress = Math.min(1, (now - start) / (seconds * 1000));
+   scroll.scrollTop = from + (to - from) * easeOut(progress);
+   if (progress < 1) this.chatGlide = requestAnimationFrame(step);
+   else land();
+  };
+  this.chatGlide = requestAnimationFrame(step);
+  this.updateChatJump();
  }
  followChat() {
   if (this.chatFollowing && !this.chatGlide && !this.findOpen && this.mode === "chat") this.chatScroll.scrollTop = this.chatScroll.scrollHeight;
@@ -1022,8 +1090,8 @@ class Detail {
   this.composerResize.observe(this.chatSurface);
   this.composerResize.observe(this.status);
   this.chatFollowing = true;
-  this.chatJump.hidden = true;
-  this.chatScroll.append(this.transcript); this.chatSurface.append(this.chatScroll, this.chatJump);
+  this.chatJump.hidden = true; this.chatJumpMine.hidden = true;
+  this.chatScroll.append(this.transcript); this.chatSurface.append(this.chatScroll, this.chatJumpMine, this.chatJump);
   // The glide owns the offset until it lands; it counts as at the tail from the tap.
   this.chatScroll.onscroll = () => { if (!this.chatGlide) this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); };
   // The reader's own wheel or drag ends a glide still running, rather than fighting it.
@@ -1074,18 +1142,20 @@ class Detail {
    }
   }
  }
- async loadEarlier(generation: number) {
-  if (!this.chat || !this.oldestCursor) { this.status.textContent = "You are at the start of the retained conversation."; return; }
+ /** Loads the page before the oldest one shown; true when it did. */
+ async loadEarlier(generation: number): Promise<boolean> {
+  if (!this.chat || !this.oldestCursor) { this.status.textContent = "You are at the start of the retained conversation."; return false; }
   const session = this.chat.session_id;
   const epoch = this.chatEpoch;
   try {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, ""));
-   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session || this.chat?.session_id !== session) return;
+   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session || this.chat?.session_id !== session) return false;
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
    this.entries = mergeTranscript(this.entries, page.entries, true); this.oldestCursor = page.before;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
-  } catch(e) { this.status.textContent = errorText(e); }
+   return true;
+  } catch(e) { this.status.textContent = errorText(e); return false; }
  }
  drawChat(follow = true) {
   const opened = new Set([...this.transcript.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d => d.dataset.id));
