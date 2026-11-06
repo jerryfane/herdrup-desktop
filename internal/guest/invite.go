@@ -21,6 +21,21 @@ import (
 
 const AppLinkPrefix = "herdrup://guest-invite#"
 
+// windowsAppLinkPrefix is the app link as Windows hands it to the app it
+// launches: it inserts a slash before the fragment (herdrup://guest-invite/#…,
+// seen from Start-Process, cmd start, explorer and rundll32 alike on Windows
+// Server 2025, 2026-11-05).
+const windowsAppLinkPrefix = "herdrup://guest-invite/#"
+
+// AppLink returns text as the app link herdrup://guest-invite#<payload> when it
+// is one, in either spelling, else text unchanged and false.
+func AppLink(text string) (string, bool) {
+	if payload, ok := strings.CutPrefix(text, windowsAppLinkPrefix); ok {
+		return AppLinkPrefix + payload, true
+	}
+	return text, strings.HasPrefix(text, AppLinkPrefix)
+}
+
 var ErrNotInvite = errors.New("That isn't a herdr guest invitation. Open the invitation link sent by the owner.")
 var ErrExpired = errors.New("This invitation has expired. Ask the owner for a new invitation.")
 
@@ -191,7 +206,8 @@ type inviteLink struct {
 // linkParts preserves the native HTTPS path and legacy fragment forms. The web
 // origin/path must match the relay inside its payload, not just display a link.
 func linkParts(text string) (inviteLink, bool) {
-	if payload, ok := strings.CutPrefix(text, AppLinkPrefix); ok {
+	if link, ok := AppLink(text); ok {
+		payload := strings.TrimPrefix(link, AppLinkPrefix)
 		return inviteLink{payload: payload}, payload != ""
 	}
 	u, err := url.Parse(text)

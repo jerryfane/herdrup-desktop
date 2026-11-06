@@ -39,6 +39,36 @@ func TestGuestAvailabilityClassifiesListingFailures(t *testing.T) {
 	}
 }
 
+// Owner report 2026-11-05: on Windows, "Open in HerdrUp" opened the app but not the invite.
+// Windows launches the app with herdrup://guest-invite/#<payload>, a slash before the
+// fragment (run 42197701253); the app took only the exact herdrup://guest-invite#<payload>.
+func TestGuestInvitationOpensFromTheWindowsSpellingOfTheAppLink(t *testing.T) {
+	desk := newDesk(t.TempDir())
+	encode := func(size int) string { return base64.RawURLEncoding.EncodeToString(make([]byte, size)) }
+	wire, err := json.Marshal(map[string]any{"v": 1, "relay": "https://relay.example", "host_id": encode(16), "host_pub": encode(32), "invite_id": encode(16), "secret": encode(32), "guest_name": "visitor", "machine_label": "Machine", "owner_name": "Owner", "agent_name": "Agent", "expires_unix": time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(wire)
+	if !desk.queueGuestInvitation("herdrup://guest-invite/#" + payload) {
+		t.Fatal("the Windows spelling of the app link was not taken as an invitation")
+	}
+	link := desk.TakeGuestInvitation()
+	if link != guest.AppLinkPrefix+payload {
+		t.Fatalf("queued %q", link)
+	}
+	preview, err := desk.InspectGuestInvitation(context.Background(), "herdrup://guest-invite/#"+payload)
+	if err != nil || preview.AgentName != "Agent" {
+		t.Fatalf("pasted Windows spelling: %+v, %v", preview, err)
+	}
+	// Anything else is still not an invitation.
+	for _, text := range []string{"herdrup://guest-invite", "herdrup://guest-invite/", "herdrup://other#" + payload} {
+		if desk.queueGuestInvitation(text) {
+			t.Errorf("%q was taken as an invitation", text)
+		}
+	}
+}
+
 func TestGuestInvitationCannotReplaceLostIdentityOfSavedShares(t *testing.T) {
 	dir := t.TempDir()
 	desk := newDesk(dir)
