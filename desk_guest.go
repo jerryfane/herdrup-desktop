@@ -42,12 +42,15 @@ type GuestConnection struct {
 
 var GuestInvitationOpened = mygo.NewEvent[bool]("guest-invitation:opened")
 
+// queueGuestInvitation keeps an app link the system opened with herdrup for
+// the page, as herdrup://guest-invite#<payload> whichever spelling it came in.
 func (d *Desk) queueGuestInvitation(text string) bool {
-	if !strings.HasPrefix(text, guest.AppLinkPrefix) {
+	link, ok := guest.AppLink(text)
+	if !ok {
 		return false
 	}
 	d.mu.Lock()
-	d.pendingGuestInvite = text
+	d.pendingGuestInvite = link
 	d.mu.Unlock()
 	GuestInvitationOpened.Broadcast(true)
 	return true
