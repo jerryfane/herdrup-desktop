@@ -3,7 +3,7 @@ import { isMine, previousMine } from "../src/chatJumpMine";
 
 const user = (extra: Record<string, unknown> = {}) => ({ kind: "user", id: "u", ts_ms: 1, text: "hi", ...extra });
 
-test("only the owner's own prompts count as mine", () => {
+test("only prompts the owner sent count as mine", () => {
   expect(isMine(user())).toBe(true);
   expect(isMine(user({ author: "owner" }))).toBe(true);
   expect(isMine(user({ author: "guest", author_name: "nike" }))).toBe(false);
