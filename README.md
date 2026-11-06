@@ -6,12 +6,13 @@ computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screen
 the system webview (WKWebView, WebKitGTK, WebView2).
 
 **Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
-`v0.1.0-preview.8` adds the Subagents card, the model and effort line, shared users' names,
+`v0.1.0-preview.9` opens guest invites from the invite page on Windows and drops Settings →
+Help → Gestures, on top of the Subagents card, the model and effort line, shared users' names,
 the summarised-messages line and a send animation in Chat, animated agent folders, red unread
-badges, and a Raspberry Pi build that updates itself, on top of the guest screens in a browser,
-the resizable sidebar, native chat colours, the terminal's Nerd Font icons, in-app updates,
-agent menus, interactive agent Terminal, omp Chat, saved-host selection, the agent board, Gram
-attachments and desktop tray/notifications.
+badges, a Raspberry Pi build that updates itself, the guest screens in a browser, the resizable
+sidebar, native chat colours, the terminal's Nerd Font icons, in-app updates, agent menus,
+interactive agent Terminal, omp Chat, saved-host selection, the agent board, Gram attachments and
+desktop tray/notifications.
 
 Select an agent to open its detail view. Terminal supports live PTY input/output,
 resize, retained scrollback, search, copy and web links. Chat is available for omp
@@ -302,7 +303,7 @@ alerts are on but this session cannot deliver them.
 
 Settings → About → App updates is Herdrup Desktop's own update (`desk_updates_app.go`,
 `src/appUpdates.ts`, on mygo's `mygo.Updater`); the Machines card's update is herdr's.
-The app follows preview releases (every release is a GitHub prerelease so far): it checks
+The app follows its releases (every release so far is a preview): it checks
 one minute after launch and then every 6 hours while it runs, and Check now checks at once.
 The row shows the last result (Up to date, Update available, Couldn't check, Off); its page
 shows the running version, the newer version with its release notes (the manifest's, and a
@@ -908,7 +909,8 @@ with `install.sh` as a user. A last job writes `SHA256SUMS` of all the files.
 
 To release, set `version` in `package.json`, commit, and push the tag `v<version>` (the workflow fails
 on a tag that does not match). The files and `SHA256SUMS` go on the tag's GitHub release, published
-as soon as every check passes (a prerelease for a tag like `v0.2.0-beta.1`). Run on demand
+as soon as every check passes and marked the latest release, preview tags included: the guest invite
+page's Get HerdrUp for desktop opens `releases/latest`, which skips prereleases. Run on demand
 (`gh workflow run release.yml --ref <branch>`), the workflow builds and checks the same files and
 keeps them as artifacts of the run, with no release. With [signed app updates](#signing-app-updates),
 each platform's update archive, deltas and `update-<platform>.json` go on the release too.
