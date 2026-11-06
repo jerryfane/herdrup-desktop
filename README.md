@@ -6,8 +6,8 @@ computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screen
 the system webview (WKWebView, WebKitGTK, WebView2).
 
 **Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
-`v0.1.0-preview.9` opens guest invites from the invite page on Windows and drops Settings →
-Help → Gestures, on top of the Subagents card, the model and effort line, shared users' names,
+`v0.1.0-preview.10` draws agents' SVG images in Chat, opens guest invites from the invite page on
+Windows and drops Settings → Help → Gestures, on top of the Subagents card, the model and effort line, shared users' names,
 the summarised-messages line and a send animation in Chat, animated agent folders, red unread
 badges, a Raspberry Pi build that updates itself, the guest screens in a browser, the resizable
 sidebar, native chat colours, the terminal's Nerd Font icons, in-app updates, agent menus,
