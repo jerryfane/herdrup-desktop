@@ -29,6 +29,9 @@ type Change struct {
 	TurnEpoch *uint64
 	// CompletedUnixMs is the finished turn's time, 0 when absent.
 	CompletedUnixMs uint64
+	// TurnOrigin is who started the finished turn: mine, other, or nil when
+	// herdr does not know (or is older than turn origins).
+	TurnOrigin *herdrapi.TurnOrigin
 }
 
 // Effect is what one stream line does to the listed agents.
@@ -70,7 +73,7 @@ func Decode(e herdrapi.SubscriptionStreamEvent) (c *Change, reload bool) {
 			Turn: true, PaneID: p.Pane.PaneID, Status: p.Pane.AgentStatus,
 			InputPending: p.Pane.InputPending != nil && *p.Pane.InputPending,
 			PromptKind:   p.Pane.InputPromptKind, Agent: p.Pane.Agent,
-			TurnN: &turn, TurnEpoch: &epoch, CompletedUnixMs: p.CompletedUnixMs,
+			TurnN: &turn, TurnEpoch: &epoch, CompletedUnixMs: p.CompletedUnixMs, TurnOrigin: p.TurnOrigin,
 		}, false
 	case "pane_created", "pane_closed", "pane_exited", "pane_agent_detected":
 		return nil, true
@@ -113,7 +116,7 @@ func (c Change) Apply(a herdrapi.AgentInfo, at time.Time) herdrapi.AgentInfo {
 	if done == 0 && a.LastCompletedTurn != nil {
 		done = a.LastCompletedTurn.CompletedUnixMs
 	}
-	a.LastCompletedTurn = &herdrapi.LastCompletedTurn{Turn: *c.TurnN, TurnEpoch: *c.TurnEpoch, CompletedUnixMs: done}
+	a.LastCompletedTurn = &herdrapi.LastCompletedTurn{Turn: *c.TurnN, TurnEpoch: *c.TurnEpoch, CompletedUnixMs: done, TurnOrigin: c.TurnOrigin}
 	return a
 }
 

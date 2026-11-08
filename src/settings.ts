@@ -95,7 +95,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const guests = new GuestSettings(report, (value, header) => { guestSummary.textContent = value; setHeader("sharedAccess", header); });
   const notifications = new NotificationsSettings(report, (value, header, warn) => {
     notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
-  });
+  }, select => menuPicker(select));
   const previews = new SavedSwitch(glyph("chevron.left.forwardslash.chevron.right", 18), {
     title: "Run JavaScript in previews", fallback: false,
     subtitle: on => on

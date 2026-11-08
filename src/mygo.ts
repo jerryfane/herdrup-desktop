@@ -552,6 +552,14 @@ export interface NotificationPreferences {
   needsInput: boolean;
   dies: boolean;
   finishes: boolean;
+  /**
+   * FinishesMineOnly narrows Finishes to the owner's own requests: "An
+   * agent finishes" is Off / Only my requests / Always (turn-origin
+   * contract, owner 2026-11-06), stored as herdrup's notify.finishes and
+   * notify.finishesMineOnly. A file from before it has no such key, so a
+   * finishes that was on reads as Always.
+   */
+  finishesMineOnly: boolean;
   gram: boolean;
 }
 
@@ -559,6 +567,12 @@ export interface NotificationSettings {
   preferences: NotificationPreferences;
   supported: boolean;
   lastError: string;
+  /**
+   * TurnOrigin is whether the connected herdr tells the owner's requests
+   * apart (ping capability turn_origin); nil while no machine is connected.
+   * Without it "Only my requests" alerts every finished turn.
+   */
+  turnOrigin: boolean | null;
 }
 
 export interface PairedMachine {
@@ -1507,6 +1521,13 @@ export const Desk = {
    */
   setAgentAvatar(paneID: string, c: AvatarChoice): Promise<void> {
     return call("Desk.SetAgentAvatar", paneID, c);
+  },
+  /**
+   * SetFinishNotifications sets "An agent finishes" to off, mine (only my
+   * requests) or always.
+   */
+  setFinishNotifications(choice: string): Promise<void> {
+    return call("Desk.SetFinishNotifications", choice);
   },
   /** SetFolderOpen opens or closes a folder on this device. */
   setFolderOpen(id: string, open: boolean): Promise<void> {

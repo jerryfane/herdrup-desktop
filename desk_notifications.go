@@ -24,12 +24,22 @@ type NotificationPreferences struct {
 	NeedsInput bool `json:"needsInput"`
 	Dies       bool `json:"dies"`
 	Finishes   bool `json:"finishes"`
-	Gram       bool `json:"gram"`
+	// FinishesMineOnly narrows Finishes to the owner's own requests: "An
+	// agent finishes" is Off / Only my requests / Always (turn-origin
+	// contract, owner 2026-11-06), stored as herdrup's notify.finishes and
+	// notify.finishesMineOnly. A file from before it has no such key, so a
+	// finishes that was on reads as Always.
+	FinishesMineOnly bool `json:"finishesMineOnly"`
+	Gram             bool `json:"gram"`
 }
 type NotificationSettings struct {
 	Preferences NotificationPreferences `json:"preferences"`
 	Supported   bool                    `json:"supported"`
 	LastError   string                  `json:"lastError"`
+	// TurnOrigin is whether the connected herdr tells the owner's requests
+	// apart (ping capability turn_origin); nil while no machine is connected.
+	// Without it "Only my requests" alerts every finished turn.
+	TurnOrigin *bool `json:"turnOrigin"`
 }
 type notificationSettings struct {
 	mu          sync.Mutex
@@ -94,13 +104,61 @@ func (d *Desk) saveNotificationsLocked(preferences NotificationPreferences, mute
 	return nil
 }
 func (d *Desk) GetNotificationSettings() (NotificationSettings, error) {
+	turnOrigin := d.turnOriginSupported()
+	preferences, lastError, err := d.notificationPreferences()
+	if err != nil {
+		return NotificationSettings{}, err
+	}
+	return NotificationSettings{Preferences: preferences, Supported: mygo.NotificationsSupported(), LastError: lastError, TurnOrigin: turnOrigin}, nil
+}
+
+func (d *Desk) notificationPreferences() (NotificationPreferences, string, error) {
 	n := &d.notifications
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err := d.loadNotificationsLocked(); err != nil {
-		return NotificationSettings{}, err
+		return NotificationPreferences{}, "", err
 	}
-	return NotificationSettings{Preferences: n.preferences, Supported: mygo.NotificationsSupported(), LastError: n.lastError}, nil
+	return n.preferences, n.lastError, nil
+}
+
+// turnOriginSupported is whether the connected herdr advertises turn_origin;
+// nil while no owner connection has answered a ping.
+func (d *Desk) turnOriginSupported() *bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.link == nil || d.link.guest != nil || d.link.caps == nil {
+		return nil
+	}
+	supported := d.link.caps.TurnOrigin
+	return &supported
+}
+
+// SetFinishNotifications sets "An agent finishes" to off, mine (only my
+// requests) or always.
+func (d *Desk) SetFinishNotifications(choice string) error {
+	n := &d.notifications
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := d.loadNotificationsLocked(); err != nil {
+		return err
+	}
+	next := n.preferences
+	switch choice {
+	case "off":
+		next.Finishes, next.FinishesMineOnly = false, false
+	case "mine":
+		next.Finishes, next.FinishesMineOnly = true, true
+	case "always":
+		next.Finishes, next.FinishesMineOnly = true, false
+	default:
+		return errors.New("unknown choice for An agent finishes")
+	}
+	if err := d.saveNotificationsLocked(next, n.muted); err != nil {
+		return err
+	}
+	n.preferences = next
+	return nil
 }
 func (d *Desk) SetNotificationPreference(kind string, enabled bool) error {
 	n := &d.notifications
@@ -115,8 +173,6 @@ func (d *Desk) SetNotificationPreference(kind string, enabled bool) error {
 		next.NeedsInput = enabled
 	case "dies":
 		next.Dies = enabled
-	case "finishes":
-		next.Finishes = enabled
 	case "gram":
 		next.Gram = enabled
 	default:
@@ -189,6 +245,9 @@ func (d *Desk) agentNotification(a attention) (mygo.NotificationOptions, bool) {
 	if d.PaneMuted(a.target.PaneID) {
 		return mygo.NotificationOptions{}, false
 	}
+	if a.kind == "finishes" && !d.finishAlerts(a.agent) {
+		return mygo.NotificationOptions{}, false
+	}
 	title := attentionTitle(a.agent)
 	switch a.kind {
 	case "dies":
@@ -197,6 +256,21 @@ func (d *Desk) agentNotification(a attention) (mygo.NotificationOptions, bool) {
 		title = strings.TrimSuffix(title, " needs attention") + " finished"
 	}
 	return mygo.NotificationOptions{ID: a.target.notificationID(), Title: title, Body: herdr.Preview(a.agent)}, true
+}
+
+// finishAlerts is whether a finished turn of a may alert under "An agent
+// finishes": with Only my requests, a turn herdr says someone else started
+// (gitmoot, a script, another agent, a guest) stays quiet. An unknown origin
+// alerts (never lose a notification for missing data), so a herdr older than
+// turn origins, or a federated machine's, alerts every finished turn.
+func (d *Desk) finishAlerts(a herdrapi.AgentInfo) bool {
+	n := &d.notifications
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if d.loadNotificationsLocked() != nil || !n.preferences.FinishesMineOnly {
+		return true
+	}
+	return a.LastCompletedTurn == nil || a.LastCompletedTurn.TurnOrigin == nil || *a.LastCompletedTurn.TurnOrigin != herdrapi.TurnOriginOther
 }
 
 // SetPaneMuted turns a pane's notifications off or on, on this device
