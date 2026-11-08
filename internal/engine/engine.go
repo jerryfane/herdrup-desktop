@@ -89,14 +89,33 @@ func (b bridgeTransport) OpenDuplex(ctx context.Context) (Duplex, error) {
 // Client is a typed client for one herdr session.
 type Client struct {
 	t Transport
+	// app: the owner drives this client from the app (NewApp).
+	app bool
 
 	mu     sync.Mutex
 	probed bool // a ping has answered; pong is its result
 	pong   herdrapi.ResponseResultPong
 }
 
-// New returns a client over t.
+// New returns a client over t whose writes carry no input_source: a guest's,
+// a script's or the command line's.
 func New(t Transport) *Client { return &Client{t: t} }
+
+// NewApp returns a client over the owner's own connection, driven from this
+// app: its writes to a pane or agent (pane.send_text, pane.send_keys,
+// agent.prompt and the pane.input.stream open) carry input_source "app", so
+// herdr counts the turns they start or join as the owner's (turn_origin
+// "mine"). herdr drops the claim from anyone but the owner.
+func NewApp(t Transport) *Client { return &Client{t: t, app: true} }
+
+// inputSource is the input_source this client's writes carry.
+func (c *Client) inputSource() *herdrapi.InputSource {
+	if !c.app {
+		return nil
+	}
+	source := herdrapi.InputSourceApp
+	return &source
+}
 
 // Done is closed when the connection ends.
 func (c *Client) Done() <-chan struct{} { return c.t.Done() }

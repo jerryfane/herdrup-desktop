@@ -522,6 +522,10 @@ Like the iOS app, it logs in over SSH and runs herdr's bridge on the machine:
   `herdr machine federate|unfederate <profile id>` on its own exec channel (the id must be 32 lowercase
   hex digits, output is capped at 64 KiB), then re-reads `machine.status`. Federation peers are the
   board's agents grouped by `machine_id`;
+- the owner's writes to an agent or pane (Chat prompts, terminal typing and paste, and the commands
+  Settings types for logins and updates) carry `input_source: "app"`, so herdr counts the turns they
+  start as the owner's (`turn_origin: "mine"`). A guest's writes, from the app or the browser, and
+  `herdrup-cli` never carry it;
 - the host key is pinned on first contact (SHA-256 of the key, per `host:port`); a changed key is refused.
 
 Log in with an Ed25519, ECDSA or RSA key file, or a password. The password is never saved; the saved
