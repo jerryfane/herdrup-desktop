@@ -625,8 +625,9 @@ class Detail {
   };
   updateAge();
   if (since !== undefined) this.statusTimer = window.setInterval(updateAge, 1000);
-  // The working row follows the board status (ChatView's agentStatus) between polls.
-  if (this.chat && this.mode === "chat" && !!this.renderWorking() !== !!this.workingRow?.isConnected) this.drawChat(false);
+  // The working row and the recap follow the board status (ChatView's agentStatus) between
+  // polls, failed ones included: each redraws when whether it shows no longer matches the page.
+  if (this.chat && this.mode === "chat" && (!!this.renderWorking() !== !!this.workingRow?.isConnected || !!this.renderRecap() !== !!this.recapRow?.isConnected)) this.drawChat(false);
  }
  toggleFind(open = !this.findOpen) {
   // A pending up-arrow jump stops when Find opens or closes (herdrup #637, review F2).
