@@ -219,7 +219,7 @@ func TestPaneMuteIsKeptWithThePreferences(t *testing.T) {
 	if err := d.SetPaneMuted("w1:p1", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetNotificationPreference("finishes", true); err != nil {
+	if err := d.SetFinishNotifications("always"); err != nil {
 		t.Fatal(err)
 	}
 	again := newDesk(dir)
