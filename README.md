@@ -406,25 +406,13 @@ daemon: all four categories delivered, disabled categories stayed silent, keyboa
 switch changes and restart persistence worked, and a failed write left the prior
 choice intact. The lifecycle regression passes with the race detector and fails
 on the prior implementation. Windows notification interaction is not verified.
-Received HTML/SVG attachments open in an isolated in-app preview, not the system
-browser. Scripts are off unless the device's “Run JavaScript in previews” setting
-is enabled; changes apply to the next preview. The document has no app origin,
-native bridge or storage access. Inline images/styles remain visible; network
-loads, popups and navigation out of the document are blocked. With scripts enabled,
-non-URL transports such as WebRTC can still signal that the document was opened,
-so the setting warns about that limit. A failed protection setup never falls back
-to the system browser. Other documents keep their system opener; programs remain
-save-only.
-Windows requires the WebView2 source-aware request filter (`ICoreWebView2_22`):
-the older filter misses cross-origin iframe requests. Preview creation checks
-that the native filter is installed before loading received content and fails
-closed on unsupported runtimes.
-Windows and Linux native checks rendered the same document with scripts off and
-on, verified bridge/storage/parent isolation, and blocked fetch, WebSocket and
-remote/data navigation against a local server whose unprotected control did load.
-CI run `41150320378` at `9f0031f` passed these unchanged scenarios on both systems
-and saved their preview screenshots. Older unsupported WebView2 runtime rejection
-has not been exercised.
+Received files open with the system's default app for their type: HTML and SVG
+in the default browser, as on any download (owner, 2026-11-08). The browser
+opens the downloaded copy as a local file, with its own rules for scripts and
+network loads; the app no longer has a preview window of its own. Programs and
+scripts remain save-only. Save to Files starts in the Downloads folder
+(`XDG_DOWNLOAD_DIR` on Linux), or the home folder when there is none; the
+browser guest's save picker asks for Downloads too.
 Settings › About ends with “Share anonymous usage count”, on by default: once a UTC
 day, when the app starts or its window regains focus, it POSTs
 `{"v":1,"install":…,"app":"desktop-macos|desktop-linux|desktop-windows","version":…,"build":…}`

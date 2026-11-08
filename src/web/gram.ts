@@ -452,7 +452,7 @@ function downloadBlob(blob: Blob, name: string) {
  setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
-type SaveFilePicker = (options: { suggestedName: string }) => Promise<{ createWritable(): Promise<{ write(data: Uint8Array<ArrayBuffer>): Promise<void>; close(): Promise<void>; abort(): Promise<void> }> }>;
+type SaveFilePicker = (options: { suggestedName: string; startIn?: "downloads" }) => Promise<{ createWritable(): Promise<{ write(data: Uint8Array<ArrayBuffer>): Promise<void>; close(): Promise<void>; abort(): Promise<void> }> }>;
 
 /** gramSaveFile: streamed into a file the person picks where the browser can, else in memory up to
  *  BLOB_SAVE_MAX_BYTES (refused before anything downloads). */
@@ -467,7 +467,8 @@ async function saveFile(id: string, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
  try {
   if (plan.kind === "blob") { downloadBlob(await fetchBlob(link, id, f.size, g.life.signal), f.name); return; }
   let handle;
-  try { handle = await picker!({ suggestedName: safeFileName(f.name) }); }
+  // The picker opens in Downloads, as the desktop's save dialog does.
+  try { handle = await picker!({ suggestedName: safeFileName(f.name), startIn: "downloads" }); }
   catch (error) { if (error instanceof DOMException && error.name === "AbortError") return; throw error; }
   const out = await handle.createWritable();
   const progress = (done: number, state: string) => emit("gramDownload", { id, done, size: f.size, state, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });

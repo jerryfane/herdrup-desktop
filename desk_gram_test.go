@@ -185,6 +185,16 @@ func TestGramAttachmentUploadsPostsAndOpensFromTheCache(t *testing.T) {
 	if chunks != 3 {
 		t.Fatalf("%d chunk reads for a 1.5 MB file, want 3", chunks)
 	}
+	// Owner 2026-11-08: a received HTML file opens in the default browser, through the
+	// system opener like any other document, not in an in-app preview window.
+	page := agentMsg("h1", "", false)
+	page.File = &herdrapi.GramFileInfo{Name: "report.html", Mime: "text/html"}
+	g.Add(page, []byte("<!doctype html><title>report</title>"))
+	_ = d.GramRefresh(ctx)
+	opened = ""
+	if err := d.GramOpenFile(ctx, "h1"); err != nil || filepath.Ext(opened) != ".html" {
+		t.Fatalf("an HTML file opened as %q, %v; want the system opener on the .html copy", opened, err)
+	}
 	// A program is never handed to the opener.
 	exe := agentMsg("x1", "", false)
 	exe.File = &herdrapi.GramFileInfo{Name: "setup.exe", Mime: "application/octet-stream"}

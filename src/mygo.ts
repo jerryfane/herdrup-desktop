@@ -1110,13 +1110,6 @@ export const Desk = {
     return call("Desk.GetNotificationSettings");
   },
   /**
-   * GetPreviewJavaScript defaults off. A malformed preference is an error rather
-   * than permission to run a received document's scripts.
-   */
-  getPreviewJavaScript(): Promise<boolean> {
-    return call("Desk.GetPreviewJavaScript");
-  },
-  /**
    * GetShareUsageCount reports the "Share anonymous usage count" switch; it
    * defaults on.
    */
@@ -1192,8 +1185,9 @@ export const Desk = {
     return call("Desk.GramMenu", id, items);
   },
   /**
-   * GramOpenFile previews received HTML/SVG in an isolated window. Other documents
-   * use the system opener; programs and scripts remain save-only.
+   * GramOpenFile opens a received file with the system's default app for its
+   * type, HTML in the default browser (owner, 2026-11-08); programs and scripts
+   * remain save-only.
    */
   gramOpenFile(id: string): Promise<void> {
     return call("Desk.GramOpenFile", id);
@@ -1558,9 +1552,6 @@ export const Desk = {
    */
   setPaneMuted(paneID: string, muted: boolean): Promise<void> {
     return call("Desk.SetPaneMuted", paneID, muted);
-  },
-  setPreviewJavaScript(enabled: boolean): Promise<void> {
-    return call("Desk.SetPreviewJavaScript", enabled);
   },
   /**
    * SetShareUsageCount turns the anonymous usage count on or off. Off deletes the

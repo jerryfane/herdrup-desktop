@@ -334,8 +334,22 @@ func mygoOpenDialog(ctx context.Context) ([]string, error) {
 	return mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: mygo.CallerWindow(ctx), Title: "Attach", ButtonLabel: "Attach", Multiple: true})
 }
 
+// mygoSaveDialog asks where to save name, starting in the user's Downloads
+// folder (downloadsFolder: the known folder on Windows, moved or not;
+// XDG_DOWNLOAD_DIR on Linux), or the home folder when there is none. A bare
+// name would start the dialog in the app's working directory.
 func mygoSaveDialog(ctx context.Context, name string) (string, error) {
-	return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: mygo.CallerWindow(ctx), DefaultPath: name, CreateDirectories: true})
+	return mygo.Dialog.Save(mygo.SaveDialogOptions{Parent: mygo.CallerWindow(ctx), DefaultPath: filepath.Join(saveFolder(), name), CreateDirectories: true})
+}
+
+func saveFolder() string {
+	if dir, ok := downloadsFolder(); ok {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return home
 }
 
 func mygoOpenPath(path string) error { return mygo.Shell.OpenPath(path) }

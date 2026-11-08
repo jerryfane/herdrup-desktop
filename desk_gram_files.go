@@ -10,11 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
-	"github.com/jerryfane/herdrup-desktop/internal/webpreview"
 )
 
 // Gram files: downloaded once into a cache by message id (herdrup
@@ -267,14 +265,15 @@ func (d *Desk) gramNote(l *link, text string) {
 	}
 }
 
-// GramOpenFile previews received HTML/SVG in an isolated window. Other documents
-// use the system opener; programs and scripts remain save-only.
+// GramOpenFile opens a received file with the system's default app for its
+// type, HTML in the default browser (owner, 2026-11-08); programs and scripts
+// remain save-only.
 func (d *Desk) GramOpenFile(ctx context.Context, id string) error {
 	l, err := d.gramLink()
 	if err != nil {
 		return err
 	}
-	name, mime, size, err := d.gramFileMeta(id)
+	name, _, size, err := d.gramFileMeta(id)
 	if err != nil {
 		d.gramNote(l, gramFileError("open", err))
 		return err
@@ -284,17 +283,9 @@ func (d *Desk) GramOpenFile(ctx context.Context, id string) error {
 		d.gramNote(l, "Couldn't open the file: programs and scripts can only be saved.")
 		return err
 	}
-	path, fetchedMime, err := d.gramFetch(ctx, l, id, size)
+	path, _, err := d.gramFetch(ctx, l, id, size)
 	if err == nil {
-		if webDocument(name, mime) || webDocument(name, fetchedMime) {
-			var scripts bool
-			scripts, err = d.GetPreviewJavaScript()
-			if err == nil {
-				_, err = webpreview.Open(mygo.CallerWindow(ctx), path, name, scripts)
-			}
-		} else {
-			err = d.openPath(path)
-		}
+		err = d.openPath(path)
 	}
 	if err != nil {
 		d.gramNote(l, gramFileError("open", err))

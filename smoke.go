@@ -132,10 +132,6 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 					}
 					// Let the browser paint the frame it just laid out.
 					time.Sleep(500 * time.Millisecond)
-					if err := smokePreviews(win, out); err != nil {
-						finish(false, err.Error())
-						return
-					}
 					if err := smokeTyping(win, out); err != nil {
 						finish(false, err.Error())
 						return
