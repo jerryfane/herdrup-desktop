@@ -15,8 +15,11 @@ export interface TranscriptPage {
  subagents?: TranscriptSubagent[];
  /** The model omp runs and its effort (herdr TranscriptModel); the newest page's. */
  model?: TranscriptModel | null;
+ /** omp's recap of its last finished turn (herdr TranscriptRecap); the newest page's. */
+ recap?: TranscriptRecap | null;
 }
 export interface TranscriptModel { id: string; provider: string; thinking_level?: string | null; thinking_auto?: boolean | null }
+export interface TranscriptRecap { turn_id: string; text: string }
 /** omp's `task` subagent, as herdr reports it (TranscriptSubagent); a guest gets no `task`. */
 export interface TranscriptSubagent {
  id: string; agent?: string; label?: string | null; task?: string | null; status?: string;

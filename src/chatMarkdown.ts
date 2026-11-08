@@ -103,17 +103,31 @@ export function markdown(text: string): HTMLElement {
  return body;
 }
 
+/** Inline-only Markdown (bold, italic, strikethrough, code, links), as Swift's ChatInline.styled
+ *  draws a line of text; block syntax stays literal text. */
+function inline(text: string): HTMLSpanElement {
+ const span = document.createElement("span");
+ span.innerHTML = DOMPurify.sanitize(marked.parseInline(text, { async: false }) as string, {
+  ALLOWED_TAGS: ["strong", "em", "del", "code", "a", "br"], ALLOWED_ATTR: ["href"],
+ });
+ for (const br of span.querySelectorAll("br")) br.replaceWith("\n");
+ return span;
+}
+
+/** `text` as inline Markdown whose links open through openExternalURL's allow-list. */
+export function inlineMarkdown(text: string): HTMLSpanElement {
+ const span = inline(text);
+ span.addEventListener("click", event => {
+  const link = (event.target as HTMLElement).closest("a");
+  if (!link) return;
+  event.preventDefault(); void Desk.openExternalURL(linkTarget(link)).catch(() => {});
+ });
+ return span;
+}
+
 // One selectable text surface, matching Swift's readable message: explicit list
 // markers, tab-separated table cells, source for diagrams, and no Copy controls.
 export function readableMarkdown(text: string): HTMLElement {
- const inline = (text: string) => {
-  const span = document.createElement("span");
-  span.innerHTML = DOMPurify.sanitize(marked.parseInline(text, { async: false }) as string, {
-   ALLOWED_TAGS: ["strong", "em", "del", "code", "a", "br"], ALLOWED_ATTR: ["href"],
-  });
-  for (const br of span.querySelectorAll("br")) br.replaceWith("\n");
-  return span;
- };
  const blocks = (tokens: Token[], depth = 0, separator = "\n\n"): HTMLElement => {
   const body = document.createElement("span");
   for (const token of tokens) {
