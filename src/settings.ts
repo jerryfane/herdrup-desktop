@@ -96,13 +96,6 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const notifications = new NotificationsSettings(report, (value, header, warn) => {
     notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
   }, select => menuPicker(select));
-  const previews = new SavedSwitch(glyph("chevron.left.forwardslash.chevron.right", 18), {
-    title: "Run JavaScript in previews", fallback: false,
-    subtitle: on => on
-      ? "Scripts run in new previews. Remote loads and navigation stay blocked, but a crafted file could still signal that you opened it."
-      : "HTML and SVG previews ignore scripts. Inline images and styles still display. Changes apply to the next preview.",
-    load: () => Desk.getPreviewJavaScript(), save: on => Desk.setPreviewJavaScript(on),
-  });
   // usageCountRow (HerdrApp.swift): on by default; Go keeps the install ID and deletes it when off.
   const usageCount = new SavedSwitch(glyph("chart.bar", 18), {
     title: "Share anonymous usage count", fallback: true,
@@ -288,7 +281,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const footer = el("div", "settings-version");
     footer.append(el("span", "", `herdrup ${version}`), el("span", "settings-version-stance", "dark only, on purpose"));
     suggestionsKey = ""; renderSuggestions();
-    index.replaceChildren(card, suggestions, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow, previews.root]), group("HELP", [
+    index.replaceChildren(card, suggestions, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
       latencyRow,
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
@@ -507,7 +500,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();
-      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void previews.refresh(); void usageCount.refresh(); void notifications.refresh(); }
+      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void usageCount.refresh(); void notifications.refresh(); }
     },
   };
 }
