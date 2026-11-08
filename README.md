@@ -119,10 +119,12 @@ message while the transcript updates.
 Scrolling back reveals Jump to latest message. New content follows only while
 you are at the tail; history prepends and switching through Terminal preserve
 your reading position. Find hides the jump button while a result is selected.
-An up arrow above it jumps to your previous message, one further up per click, loading earlier
-messages as needed. It skips guests' prompts and prompts the host marks as not yours (gitmoot,
-scripts, other agents); a host that doesn't mark them stops at every owner prompt. Find hides it,
-and guests don't see it.
+An up arrow in the bottom-right corner of the composer's column (12 px above the composer, its
+right edge on the composer's, over the column's resize handle) jumps to your previous message, one
+further up per click, loading earlier messages as needed. It skips guests' prompts and prompts the
+host marks as not yours (gitmoot, scripts, other agents); a host that doesn't mark them stops at
+every owner prompt. Find hides it, and opening or closing Find stops a jump still loading earlier
+messages. Guests don't see it.
 Chat drafts stay local and are scoped to the host, herdr session and pane.
 
 Instant typing ports Swift's confidence-epoch predictor to a separate xterm

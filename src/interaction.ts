@@ -177,6 +177,8 @@ class Detail {
  findInput = el("input");
  findCount = el("span", "pane-find-count");
  findOpen = false;
+ // Counts Find opening and closing: a pending up-arrow jump started under another count stops.
+ findGeneration = 0;
  findToggle: HTMLButtonElement | null = null;
  findIndex = 0;
  findMatches: HTMLElement[][] = [];
@@ -626,6 +628,8 @@ class Detail {
   if (this.chat && this.mode === "chat" && !!this.renderWorking() !== !!this.workingRow?.isConnected) this.drawChat(false);
  }
  toggleFind(open = !this.findOpen) {
+  // A pending up-arrow jump stops when Find opens or closes (herdrup #637, review F2).
+  if (open !== this.findOpen) this.findGeneration++;
   this.findOpen = open;
   this.findBar.hidden = !open; this.titleBlock.hidden = open;
   this.findToggle?.setAttribute("aria-pressed", String(open));
@@ -690,7 +694,7 @@ class Detail {
   this.chatJump.hidden = !away || this.findOpen;
   const first = this.mineNodes(1)[0];
   const above = !!first && this.chatTop(first) < this.chatScroll.scrollTop - 1;
-  this.chatJumpMine.hidden = !this.chat || this.findOpen || this.viewer().guest || !(above || this.oldestCursor || this.mineBusy);
+  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || this.viewer().guest || !(above || this.oldestCursor || this.mineBusy);
   this.chatJumpMine.disabled = this.mineBusy;
   this.chatJumpMine.classList.toggle("busy", this.mineBusy);
   this.chatJumpMine.setAttribute("aria-busy", String(this.mineBusy));
@@ -711,12 +715,16 @@ class Detail {
   return node.getBoundingClientRect().top - this.chatScroll.getBoundingClientRect().top + this.chatScroll.scrollTop;
  }
  /** The up arrow's tap: glide to the owner's prompt closest above the view, loading older pages
-  *  (as Earlier messages does) until one is found or the retained history ends. */
+  *  (as Earlier messages does) until one is found or the retained history ends. Opening or
+  *  closing Find while a page loads cancels it, so a landing page never pulls the chat away
+  *  from the search. */
  async jumpToPreviousMine() {
   if (this.mineBusy) return;
-  const generation = this.generation;
+  const generation = this.generation, find = this.findGeneration;
+  const stale = () => this.disposed || generation !== this.generation || find !== this.findGeneration || this.findOpen || this.mode !== "chat";
   try {
    for (;;) {
+    if (stale()) return;
     const target = previousMine(this.mineNodes().map(node => ({ id: node.dataset.id!, top: this.chatTop(node) })), this.chatScroll.scrollTop);
     if (target !== null) {
      const node = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(target)}"]`);
@@ -725,7 +733,7 @@ class Detail {
     }
     if (!this.oldestCursor) return;
     this.mineBusy = true; this.updateChatJump();
-    if (!(await this.loadEarlier(generation)) || this.disposed || generation !== this.generation || this.mode !== "chat") return;
+    if (!(await this.loadEarlier(generation))) return;
    }
   } finally { this.mineBusy = false; this.updateChatJump(); }
  }
@@ -839,6 +847,7 @@ class Detail {
   this.chatButton.setAttribute("aria-pressed", String(mode === "chat"));
   this.terminalButton.setAttribute("aria-pressed", String(mode === "terminal"));
   this.chatSurface.hidden = mode !== "chat";
+  this.updateChatJump();
   this.terminalSurface.inert = mode === "chat";
   this.terminalSurface.setAttribute("aria-hidden", String(mode === "chat"));
   this.terminalSurface.classList.toggle("covered", mode === "chat");
@@ -1091,7 +1100,8 @@ class Detail {
   this.composerResize.observe(this.status);
   this.chatFollowing = true;
   this.chatJump.hidden = true; this.chatJumpMine.hidden = true;
-  this.chatScroll.append(this.transcript); this.chatSurface.append(this.chatScroll, this.chatJumpMine, this.chatJump);
+  // The up arrow sits in the body, over the composer's column (placement C), not in the chat.
+  this.chatScroll.append(this.transcript); this.chatSurface.append(this.chatScroll, this.chatJump); this.body.append(this.chatJumpMine);
   // The glide owns the offset until it lands; it counts as at the tail from the tap.
   this.chatScroll.onscroll = () => { if (!this.chatGlide) this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); };
   // The reader's own wheel or drag ends a glide still running, rather than fighting it.
