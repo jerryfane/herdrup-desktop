@@ -386,6 +386,15 @@
   50%, 100% { opacity: 0.3; }
 }
 @media (prefers-reduced-motion:reduce) { .chat-working-dot { animation: none; opacity: 0.7; } }
+/* ChatView.recapDivider: a 1 pt hairline, 8 pt gap, then the recap in app 13 pt textDim (inline
+   Markdown as ChatInline.styled: code in machine on surface, links in working blue), 8 pt above
+   and below, in the transcript's column. */
+.chat-recap { box-sizing: border-box; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.chat-recap-rule { height: 1px; background: var(--color-hairline); }
+.chat-recap-text { color: var(--color-text-dim); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-recap-text strong { font-weight: 600; }
+.chat-recap-text code { font-family: var(--font-machine); font-size: max(calc(1em - 2.5px), 10px); background: var(--color-surface); color: var(--color-text-dim); }
+.chat-recap-text a { color: var(--status-working); }
 /* ChatView.sessionFooter's model line: machine 11.5 pt in textFaint, 4 pt leading and vertical
    padding, in the transcript's column. */
 .chat-model { box-sizing: border-box; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 4px 0 4px 4px; color: var(--color-text-faint); font: 400 calc(11.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); overflow-wrap: anywhere; }

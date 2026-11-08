@@ -16,7 +16,7 @@ import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
-import { markdown, readableMarkdown } from "./chatMarkdown";
+import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
@@ -209,6 +209,7 @@ class Detail {
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
  private workingRow?: HTMLElement;
  private modelRow?: HTMLElement;
+ private recapRow?: HTMLElement;
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
  private chatFailed = false;
  ctrlArmed = false;
@@ -1193,6 +1194,8 @@ class Detail {
   if (agents.length) nodes.push(this.renderSubagents(agents));
   const working = this.renderWorking();
   if (working) nodes.push(working);
+  const recap = this.renderRecap();
+  if (recap) nodes.push(recap);
   const model = this.renderModel();
   if (model) nodes.push(model);
   // Keep unchanged rows attached: detaching them on each poll loses keyboard focus.
@@ -1263,6 +1266,22 @@ class Detail {
   }
   this.outgoingNodes.set(message.id, node);
   return node;
+ }
+ /** ChatView.recapDivider: omp's recap of its last finished turn, under a hairline above the
+  *  model line, once the agent is done (no working turn, not working on the board) and no send
+  *  of ours is still waiting to show. One element, rebuilt only when the recap changes. */
+ private renderRecap(): HTMLElement | null {
+  const recap = this.chat?.recap;
+  if (!recap?.text || this.chat?.working || this.shownStatus[0] === "working" || this.outgoing.length) return null;
+  const row = this.recapRow ??= el("div", "chat-recap");
+  const key = recap.turn_id + "\n" + recap.text;
+  if (row.dataset.recap !== key) {
+   row.dataset.recap = key;
+   const text = inlineMarkdown(recap.text); text.className = "chat-recap-text";
+   const rule = el("div", "chat-recap-rule"); rule.setAttribute("aria-hidden", "true");
+   row.replaceChildren(rule, text);
+  }
+  return row;
  }
  /** ChatView.sessionFooter's model line: the model omp runs and its effort, under the conversation
   *  (ChatView.swift chat-model). One element, kept attached while its text holds. */

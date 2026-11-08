@@ -93,6 +93,8 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		}
 		if p.Before == "" {
 			page["before"] = "older"
+			// omp's recap of the last finished turn (herdr TranscriptRecap).
+			page["recap"] = map[string]any{"turn_id": "r1", "text": "Reviewed the **workspace**: the terminal and `agent.transcript` paths are ready; see [the plan](https://example.com/plan)."}
 		} else {
 			page["entries"] = []any{map[string]any{"kind": "user", "id": "older", "ts_ms": 0, "author": "owner", "text": "Earlier conversation page."}}
 		}
