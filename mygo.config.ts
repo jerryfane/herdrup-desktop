@@ -41,8 +41,13 @@ export default defineConfig({
   // Signed updates from this repository's releases, which the app checks,
   // previews included (desk_updates_app.go). mygo build rejects updates
   // without a public key, so there are none until it is known.
+  // No delta updates: mygo's bsdiff did not finish the macOS universal binary
+  // of preview.10 -> preview.11 in 30 min (release run 42460926389, twice;
+  // over 15 min locally, while preview.9 -> preview.10 took 1m16s), so the
+  // release never published. Updates download the whole archive, as before
+  // preview.10.
   updates: updatePublicKey
-    ? { publicKey: updatePublicKey, github: "jerryfane/herdrup-desktop" }
+    ? { publicKey: updatePublicKey, github: "jerryfane/herdrup-desktop", deltas: 0 }
     : undefined,
   linux: {
     maintainer: "Jerry Fane <jerryfane@users.noreply.github.com>",
