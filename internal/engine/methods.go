@@ -89,8 +89,11 @@ func (c *Client) AgentTranscript(ctx context.Context, p herdrapi.AgentTranscript
 	return call[herdrapi.ResponseResultAgentTranscript](ctx, c, "agent.transcript", p)
 }
 
-// AgentPrompt is agent.prompt.
+// AgentPrompt is agent.prompt, carrying this client's input_source.
 func (c *Client) AgentPrompt(ctx context.Context, p herdrapi.AgentPromptParams) (herdrapi.ResponseResultAgentPrompted, error) {
+	if p.InputSource == nil {
+		p.InputSource = c.inputSource()
+	}
 	return call[herdrapi.ResponseResultAgentPrompted](ctx, c, "agent.prompt", p)
 }
 
@@ -169,7 +172,7 @@ func (c *Client) PaneReadText(ctx context.Context, pane string) (string, error) 
 }
 
 func (c *Client) PaneEnter(ctx context.Context, pane string) error {
-	_, err := c.do(ctx, "pane.send_keys", herdrapi.PaneSendKeysParams{PaneID: pane, Keys: []string{"Enter"}})
+	_, err := c.do(ctx, "pane.send_keys", herdrapi.PaneSendKeysParams{PaneID: pane, Keys: []string{"Enter"}, InputSource: c.inputSource()})
 	return err
 }
 

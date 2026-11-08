@@ -15,7 +15,7 @@ import (
 )
 
 func (c *Client) PaneSendText(ctx context.Context, pane, text string) error {
-	_, err := c.do(ctx, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text})
+	_, err := c.do(ctx, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, InputSource: c.inputSource()})
 	return err
 }
 
@@ -59,7 +59,14 @@ func (c *Client) OpenPaneInput(ctx context.Context, pane string) *PaneInput {
 		cancel()
 		return p
 	}
-	line, _ := json.Marshal(map[string]any{"id": "desktop:input", "method": "pane.input.stream", "params": map[string]string{"pane_id": pane}})
+	// herdr's schema does not list pane.input.stream's open params (herdr
+	// src/api/schema/panes.rs PaneInputStreamParams at bbfb1b3); the stream's
+	// input_source applies to every frame written on it.
+	params := struct {
+		PaneID      string                `json:"pane_id"`
+		InputSource *herdrapi.InputSource `json:"input_source,omitempty"`
+	}{pane, c.inputSource()}
+	line, _ := json.Marshal(map[string]any{"id": "desktop:input", "method": "pane.input.stream", "params": params})
 	err = d.WriteLine(line)
 	if err == nil {
 		var ack []byte

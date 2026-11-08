@@ -72,7 +72,7 @@ func (l *link) engineLocked() (*engine.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return engine.New(engine.Bridge(view)), nil
+	return engine.NewApp(engine.Bridge(view)), nil
 }
 
 // herdrClient is a typed client for the herdr session the board shows,
