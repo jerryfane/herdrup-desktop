@@ -933,7 +933,7 @@ as soon as every check passes and marked the latest release, preview tags includ
 page's Get HerdrUp for desktop opens `releases/latest`, which skips prereleases. Run on demand
 (`gh workflow run release.yml --ref <branch>`), the workflow builds and checks the same files and
 keeps them as artifacts of the run, with no release. With [signed app updates](#signing-app-updates),
-each platform's update archive, deltas and `update-<platform>.json` go on the release too.
+each platform's update archive and `update-<platform>.json` go on the release too.
 
 ### Signing app updates
 
@@ -956,14 +956,17 @@ const updatePublicKey = process.env.HERDRUP_UPDATE_PUBLIC_KEY ?? "";
 ```
 
 The release workflow passes the secret to `mygo build`, which signs each platform's archive
-(`herdrup-<version>-<platform>.tar.gz`, now also for macOS and Windows), writes delta updates from
-the published release when there is one, and the manifest `update-<platform>.json`, which the
+(`herdrup-<version>-<platform>.tar.gz`, now also for macOS and Windows), and the manifest
+`update-<platform>.json`, which the
 workflow attaches to the release with the installers. Apps read the manifests of the release of the
 highest version, previews included, through the GitHub API. Without the secret a build with the key
 still succeeds (mygo warns that it signs nothing), but its release has no manifests for apps to
 update to. Release notes in the app come from a `## <version>` section of `CHANGELOG.md` when that
 file exists (it must then have one for every released version); without it the app links to the
 GitHub release. `HERDRUP_UPDATE_PUBLIC_KEY` overrides the key for local test builds.
+Delta updates are off (`deltas: 0` in `mygo.config.ts`): mygo's bsdiff did not finish the macOS
+universal binary from preview.10 to preview.11 within the 30-minute build limit, so that release
+never published. Updates download the whole archive.
 
 ### Signing macOS builds
 
