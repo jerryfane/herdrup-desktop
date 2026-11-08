@@ -40,6 +40,27 @@ func TestDecode(t *testing.T) {
 	}
 }
 
+// Turn-origin brief: "Only my requests" filters a finished turn on the agent's
+// last_completed_turn.turn_origin, so the pane.turn_completed event that both
+// finishes the turn and triggers the alert must leave its origin on the row.
+func TestAFinishedTurnKeepsItsOrigin(t *testing.T) {
+	a := info(t, `{"pane_id":"p","agent_status":"working","agent":"pi","turn":4,"turn_epoch":2,"last_completed_turn":{"turn":4,"turn_epoch":2,"completed_unix_ms":10,"turn_origin":"mine"}}`)
+	for _, want := range []string{"other", "mine", ""} {
+		origin := ""
+		if want != "" {
+			origin = `,"turn_origin":"` + want + `"`
+		}
+		c, _ := Decode(line("pane.turn_completed", `{"pane":{"pane_id":"p","agent_status":"done","agent":"pi"},"turn":5,"turn_epoch":2,"completed_unix_ms":77,"outcome":"completed"`+origin+`}`))
+		got := c.Apply(a, time.UnixMilli(80)).LastCompletedTurn
+		if got == nil || got.Turn != 5 {
+			t.Fatalf("%q: last turn %+v", want, got)
+		}
+		if (want == "" && got.TurnOrigin != nil) || (want != "" && (got.TurnOrigin == nil || string(*got.TurnOrigin) != want)) {
+			t.Errorf("event origin %q left %v on the row", want, got.TurnOrigin)
+		}
+	}
+}
+
 func TestApplyStatusSetsSinceOnlyOnAChange(t *testing.T) {
 	at := time.UnixMilli(5000)
 	a := info(t, `{"pane_id":"p","agent_status":"working","status_since_unix_ms":10,"input_pending":true,"turn":1}`)

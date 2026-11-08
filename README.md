@@ -384,9 +384,15 @@ still needs an approved Windows/Linux route; the app does not substitute email.
 CI `41156524463` at `8755c1e` passed the same native invite scenario on Windows
 and Linux. Both captured QR codes decoded independently to their fixture link;
 both receipts showed default-off and opted-in Gram grants and a successful copy.
-Notifications has four device-local switches: input requests, process exits,
-finished turns and arriving Gram messages. Choices are saved atomically and a
-failed save restores the prior switch state. A test button requests an actual
+Notifications has four device-local choices: input requests, process exits,
+finished turns and arriving Gram messages. "An agent finishes" is Off, Only my
+requests or Always, as on iOS. Only my requests stays quiet for a turn herdr
+marks as started by someone else (`turn_origin: "other"` on the
+`pane.turn_completed` event that triggers the alert: gitmoot, scripts, other
+agents, guests); a turn of unknown origin still alerts. On a herdr without the
+`turn_origin` capability the row says that every finish will alert. A finishes
+switch saved by an earlier build reads as Always. Choices are saved atomically and a
+failed save restores the prior state. A test button requests an actual
 desktop alert; API support does not establish OS permission or visible delivery.
 The app must stay running and connected. Exit/finished-turn alerts require live
 daemon events; closing or filtering out a pane is not an exit. Existing rosters
