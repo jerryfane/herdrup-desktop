@@ -11,7 +11,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
 import type { AgentTarget, AgentView, BoardUpdate, GramAttachment } from "./mygo";
-import { closeWriter, ComposerEditor, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
+import { closeWriter, ComposerEditor, composerEnterSends, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
@@ -328,7 +328,7 @@ class Detail {
   });
   this.input.addEventListener("input", () => this.saveDraft());
   if (initialDraft !== undefined) { this.input.value = initialDraft; this.saveDraft(); }
-  this.input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); void this.sendPrompt(); } });
+  this.input.addEventListener("keydown", e => { if (composerEnterSends(e)) { e.preventDefault(); void this.sendPrompt(); } });
  }
  saveDraft() {
   const draft = [this.unsentPrompt, this.input.value].filter(Boolean).join("\n\n");
