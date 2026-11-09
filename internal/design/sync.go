@@ -596,10 +596,31 @@ func expandDepth(value string, custom map[string][]string, depth int) []string {
 		head := value[:i]
 		// The tail is expanded once, not once per substitution: with each
 		// var() having several values that recomputation is exponential in
-		// the number of references, though the result is capped (#53).
-		tails := expandDepth(value[end+1:], custom, depth)
+		// the number of references, though the result is capped (#53). Only
+		// when the tail uses this variable again is it expanded per value,
+		// with the variable held to that value: one element computes one
+		// value for it, so `var(--w) var(--w)` is never `0 3px` (note #48-f2).
+		// Held, later references have one value, so this stays linear in them.
+		rest := value[end+1:]
+		again := usesVar(rest, m[1], custom, depth)
+		var tails []string
+		if !again {
+			tails = expandDepth(rest, custom, depth)
+		}
 		var out []string
-		for _, s := range subs {
+		for k, s := range subs {
+			if again {
+				held := make(map[string][]string, len(custom))
+				for name, values := range custom {
+					held[name] = values
+				}
+				// A fallback is taken only when the variable is unset.
+				held[m[1]] = nil
+				if k < len(custom[m[1]]) {
+					held[m[1]] = []string{s}
+				}
+				tails = expandDepth(rest, held, depth)
+			}
 			for _, v := range expandDepth(s, custom, depth-1) {
 				for _, t := range tails {
 					if len(out) == maxExpansions {
@@ -612,6 +633,26 @@ func expandDepth(value string, custom map[string][]string, depth int) []string {
 		return out
 	}
 	return []string{value}
+}
+
+var varRef = regexp.MustCompile(`(?i:var)\(\s*(--[A-Za-z0-9_-]+)`)
+
+// usesVar reports whether value references name, directly or through the
+// values of the variables it references, as deep as expandDepth goes.
+func usesVar(value, name string, custom map[string][]string, depth int) bool {
+	for _, r := range varRef.FindAllStringSubmatch(value, -1) {
+		if r[1] == name {
+			return true
+		}
+		if depth > 0 {
+			for _, v := range custom[r[1]] {
+				if usesVar(v, name, custom, depth-1) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // namedColours are the CSS colour keywords (CSS Color 4) plus the system

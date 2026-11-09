@@ -533,12 +533,20 @@ func (t *Tokens) CSS(header string) ([]byte, error) {
 			stack = append(stack, fmt.Sprintf("%q", f["family"]))
 		}
 		fallback, _ := f["fallback"].([]any)
-		for _, fb := range fallback {
-			s, _ := fb.(string)
+		for i, fb := range fallback {
+			s, ok := fb.(string)
+			if !ok || s == "" {
+				return nil, fmt.Errorf("tokens.json font.%s.fallback.%d: want a font name", name, i)
+			}
 			if strings.ContainsAny(s, " ") {
 				s = fmt.Sprintf("%q", s)
 			}
 			stack = append(stack, s)
+		}
+		// The platform font names no family, so only its fallback can make a stack;
+		// an empty one would emit `--font-x: ;`, which browsers drop (design note #18-f1).
+		if len(stack) == 0 {
+			return nil, fmt.Errorf("tokens.json font.%s: needs a fallback", name)
 		}
 		emit("--font-"+kebab(name), strings.Join(stack, ", "))
 	}
