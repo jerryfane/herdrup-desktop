@@ -63,12 +63,16 @@ let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let starAsk: ReturnType<typeof initStarAsk> | null = null;
 let appUpdateAsk: ReturnType<typeof initAppUpdateAsk> | null = null;
-// The capsule over the owner's agents list: a newer app first, else the star ask.
+// The capsule over the owner's agents list: a newer app first, else the star ask. The two
+// share the list's room for it (the star-asking class), which this keeps.
 function updateAsks(listVisible: boolean) {
-  const updateShows = !!appUpdateAsk?.shows(listVisible && appUpdatesShown);
-  starAsk?.update(listVisible && !updateShows);
-  appUpdateAsk?.update(listVisible && appUpdatesShown);
+  const updateShows = !!appUpdateAsk?.update(listVisible && appUpdatesShown);
+  const starShows = !!starAsk?.update(listVisible && !updateShows);
+  $("sidebar").classList.toggle("star-asking", updateShows || starShows);
 }
+// Settings, App updates was asked for (the update notification, the tray): it shows even with
+// no machine connected, as the app's own update needs none, until another tab is chosen.
+let appUpdatesAsked = false;
 let pendingAgent: AgentTarget | null = null;
 let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
@@ -115,7 +119,7 @@ async function buildTopBar() {
   const slot = barSlot;
   const back = await slot("chevron.left", guestView ? "Machines" : "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
-  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; render(); };
+  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; appUpdatesAsked = false; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
   if (guestView) {
@@ -203,6 +207,7 @@ async function buildTabBar() {
         }
         tab = key;
         choosingHost = false;
+        appUpdatesAsked = false;
         void buildTabBar();
         void buildTopBar();
         render();
@@ -471,7 +476,7 @@ onTextSizeChanged(() => {
 let renderedOnce = false, pushTimer = 0;
 function render() {
   if (!renderReady) return;
-  const showConnect = choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
+  const showConnect = !(appUpdatesAsked && tab === "settings") && (choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected"));
   const guestVisible = !!state.guest && !showConnect;
   if (state.guest && !state.guest.features.gram) guestGram = false;
   setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
@@ -555,16 +560,21 @@ events.boardChanged.on((b) => {
 // backend also retains it, so an event before this page exists is not lost.
 events.agentOpen.on((target) => openAgent(target));
 // The update notification and the tray's update item open Settings, App updates (the
-// guest's Settings has no app update).
-events.appUpdateOpen.on(() => {
-  if (guestBar || !appUpdatesShown) return;
+// guest's Settings has no app update). Go keeps the request until the page shows it, so a
+// click that launched the app, or came before Settings existed, is not lost.
+function showAppUpdates() {
+  if (!settings || !renderReady) return;
+  if (guestBar || !appUpdatesShown) { void Desk.appUpdatesShown(); return; }
   tab = "settings";
   choosingHost = false;
-  settings?.openPage("appUpdates");
+  appUpdatesAsked = true;
+  settings.openPage("appUpdates");
   void buildTabBar();
   void buildTopBar();
   render();
-});
+  void Desk.appUpdatesShown();
+}
+events.appUpdateOpen.on(showAppUpdates);
 
 function openAgent(target: AgentTarget) {
   pendingAgent = target;
@@ -745,6 +755,8 @@ async function init() {
   drawField();
   renderReady = true;
   render();
+  // An App updates request from before the page was ready (desk openAppUpdates).
+  void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
   const version = activationVersion;
   const retained = await Desk.pendingAgent();
   if (version === activationVersion) pendingAgent = retained;

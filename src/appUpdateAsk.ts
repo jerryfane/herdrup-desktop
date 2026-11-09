@@ -95,12 +95,11 @@ export function initAppUpdateAsk(sidebar: HTMLElement, symbol: SymbolFn, changed
     act.disabled = now.busy;
     // .star-ask-close sets display, so hidden alone would not hide it.
     close.style.display = now.busy ? "none" : "";
-    sidebar.classList.add("star-asking");
     return true;
   };
   return {
-    /** Whether it shows for listVisible: the owner's agents list is on screen. */
-    shows(listVisible: boolean) { return listVisible && !!appUpdateAsk(state, dismissed()); },
+    /** listVisible: the owner's agents list is on screen. Returns whether it shows; main.ts keeps
+     *  the list's room for it (star-asking). */
     update(listVisible: boolean) { visible = listVisible; return render(); },
   };
 }

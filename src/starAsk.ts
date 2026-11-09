@@ -40,11 +40,12 @@ export function initStarAsk(sidebar: HTMLElement, symbol: SymbolFn, changed: () 
   sidebar.append(ask);
   onStarPromptChanged(changed);
   return {
-    /** listVisible: the owner's agents list is on screen (never the guest view). */
+    /** listVisible: the owner's agents list is on screen (never the guest view). Returns whether
+     *  it shows; main.ts keeps the list's room for it (star-asking). */
     update(listVisible: boolean) {
       const shows = listVisible && showsStarPrompt(false);
       ask.hidden = !shows;
-      sidebar.classList.toggle("star-asking", shows);
+      return shows;
     },
   };
 }

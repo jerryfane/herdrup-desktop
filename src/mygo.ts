@@ -993,6 +993,14 @@ export const Desk = {
   appUpdate(): Promise<AppUpdateState> {
     return call("Desk.AppUpdate");
   },
+  /** AppUpdatesPending reports an App updates request not yet shown. */
+  appUpdatesPending(): Promise<boolean> {
+    return call("Desk.AppUpdatesPending");
+  },
+  /** AppUpdatesShown acknowledges that the page shows App updates. */
+  appUpdatesShown(): Promise<void> {
+    return call("Desk.AppUpdatesShown");
+  },
   /**
    * The UI supplies the exact build/mode it confirmed, never an unqualified
    * "install latest". Uncertain apply results are followed, never resubmitted.

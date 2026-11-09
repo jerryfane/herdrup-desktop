@@ -61,6 +61,7 @@ func newAppUpdateHarness(enabled bool) *appUpdateHarness {
 		updater: h.fake,
 		current: "0.1.0-preview.5",
 		reason:  func() (string, bool) { return "This build can't update itself.", false },
+		release: func() bool { return true },
 		publish: func(s AppUpdateState) {
 			h.mu.Lock()
 			h.events = append(h.events, s)

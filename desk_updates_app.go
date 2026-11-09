@@ -104,9 +104,11 @@ type appUpdates struct {
 	updater appUpdater
 	current string
 	// reason says why a disabled updater is disabled, and whether the app
-	// is a release that only can't write where it is installed (external):
-	// those still learn of newer versions, from latest.
-	reason func() (reason string, external bool)
+	// is installed where it can't write (external). A release (release) so
+	// installed still learns of newer versions, from latest; a development
+	// build never does (review of #167).
+	reason  func() (reason string, external bool)
+	release func() bool
 	// latest is the newest published version (latestPublishedVersion).
 	latest   func(ctx context.Context) (string, error)
 	publish  func(AppUpdateState)
@@ -116,10 +118,10 @@ type appUpdates struct {
 	// check was automatic; it runs outside mu.
 	noticed func(s AppUpdateState, auto bool)
 
-	mu      sync.Mutex
-	state   AppUpdateState
-	release *appRelease
-	watch   chan AppUpdateState
+	mu    sync.Mutex
+	state AppUpdateState
+	found *appRelease
+	watch chan AppUpdateState
 }
 
 func newAppUpdates() *appUpdates {
@@ -130,6 +132,8 @@ func newAppUpdates() *appUpdates {
 			exe, _ := os.Executable()
 			return appUpdateDisabledReason(runtime.GOOS, exe)
 		},
+		// mygo build sets production; mygo.Updater is off for the rest.
+		release:  func() bool { return !mygo.IsDev() },
 		latest:   latestPublishedVersion,
 		publish:  func(s AppUpdateState) { _ = AppUpdateChanged.Broadcast(s) },
 		relaunch: mygo.App.Relaunch,
@@ -175,12 +179,13 @@ func (u *appUpdates) setLocked(s AppUpdateState) {
 	}
 }
 
-// subscribe returns a channel that holds the newest state after each
-// change (the tray's). Call it once, before checks start.
+// subscribe returns a channel that holds the newest state: the current one
+// at once, then the newest after each change (the tray's). Call it once.
 func (u *appUpdates) subscribe() <-chan AppUpdateState {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.watch = make(chan AppUpdateState, 1)
+	u.watch <- u.snapshotLocked()
 	return u.watch
 }
 
@@ -202,8 +207,8 @@ func (u *appUpdates) check(ctx context.Context, auto bool) AppUpdateState {
 	reason, external := "", false
 	if !enabled {
 		reason, external = u.reason()
-		if !external {
-			u.release = nil
+		if !external || !u.release() {
+			u.found = nil
 			s = AppUpdateState{Current: u.current, Phase: "disabled", Reason: reason}
 			u.setLocked(s)
 			u.mu.Unlock()
@@ -244,7 +249,7 @@ func (u *appUpdates) check(ctx context.Context, auto bool) AppUpdateState {
 
 	u.mu.Lock()
 	next.CheckedAt = u.now().UnixMilli()
-	u.release = release
+	u.found = release
 	u.setLocked(next)
 	u.mu.Unlock()
 	if next.Newer() && u.noticed != nil {
@@ -258,7 +263,7 @@ func (u *appUpdates) check(ctx context.Context, auto bool) AppUpdateState {
 func (u *appUpdates) install() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	release := u.release
+	release := u.found
 	if u.state.Phase != "available" || release == nil {
 		return errors.New("there is no update to install; check for updates first")
 	}
@@ -390,8 +395,29 @@ func (d *Desk) CheckAppUpdate(ctx context.Context) AppUpdateState {
 // and relaunches the app into it; AppUpdateChanged reports the progress.
 func (d *Desk) InstallAppUpdate() error { return d.appUpdates.install() }
 
-// openAppUpdates shows Settings, App updates in the page.
-func (d *Desk) openAppUpdates() { _ = AppUpdateOpen.Broadcast(true) }
+// openAppUpdates shows Settings, App updates in the page, once it can: the
+// request waits in AppUpdatesPending until the page shows it (a notification
+// click can launch the app before its window or page exists).
+func (d *Desk) openAppUpdates() {
+	d.mu.Lock()
+	d.pendingAppUpdates = true
+	d.mu.Unlock()
+	_ = AppUpdateOpen.Broadcast(true)
+}
+
+// AppUpdatesPending reports an App updates request not yet shown.
+func (d *Desk) AppUpdatesPending() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pendingAppUpdates
+}
+
+// AppUpdatesShown acknowledges that the page shows App updates.
+func (d *Desk) AppUpdatesShown() {
+	d.mu.Lock()
+	d.pendingAppUpdates = false
+	d.mu.Unlock()
+}
 
 // startAppUpdateChecks follows preview releases, as every release is one
 // so far, and checks for them in the background (never in smoke builds),

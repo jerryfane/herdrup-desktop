@@ -26,6 +26,10 @@ func TestNewerVersionOrdersPreviewsAndReleases(t *testing.T) {
 		{"1.0.0-1", "1.0.0-alpha", true}, // numbers below words
 		{"0.1.0-preview.12", "garbage", false},
 		{"dev", "0.1.0", false},
+		// Numbers of any length (review of #167).
+		{"1.0.0-9223372036854775808", "1.0.0-100000000000000000000", true},
+		{"1.0.0", "9223372036854775808.0.0", true},
+		{"1.0.0-preview.9", "1.0.0-preview.010", true},
 	} {
 		if got := newerVersion(c.current, c.candidate); got != c.want {
 			t.Errorf("newerVersion(%q, %q) = %v, want %v", c.current, c.candidate, got, c.want)
@@ -55,11 +59,17 @@ func TestAppUpdatePackageInstallHearsOfANewerRelease(t *testing.T) {
 	if got = h.check(context.Background(), true); got.Phase != "disabled" || got.Error != "" {
 		t.Fatalf("an unreadable release list reads as %+v, want quietly disabled", got)
 	}
-	// A development build never asks GitHub.
-	h.reason = func() (string, bool) { return "This build can't update itself.", false }
+	// A development build installed where it can't write never asks GitHub (review of #167).
+	h.release = func() bool { return false }
 	before := asked
 	if got = h.check(context.Background(), true); got.Phase != "disabled" || asked != before {
-		t.Fatalf("a development build: %+v after %d requests", got, asked-before)
+		t.Fatalf("a development build in a protected folder: %+v after %d requests", got, asked-before)
+	}
+	// Nor does a build that could write where it is (updates off in the build).
+	h.release = func() bool { return true }
+	h.reason = func() (string, bool) { return "This build can't update itself.", false }
+	if got = h.check(context.Background(), true); got.Phase != "disabled" || asked != before {
+		t.Fatalf("a build without updates: %+v after %d requests", got, asked-before)
 	}
 }
 
@@ -145,5 +155,51 @@ func TestTrayOffersANewerAppOnlyWhenThereIsOne(t *testing.T) {
 	}
 	if item := trayUpdateItem(d, nil, AppUpdateState{Phase: "outdated", Version: "0.1.0-preview.13"}); item == nil || item.Label != "Download herdrup 0.1.0-preview.13…" {
 		t.Errorf("outdated offers %+v", item)
+	}
+}
+
+// The tray subscribes after checks may have run: its first state is the current one, so an
+// update found before the tray existed shows at once (review of #167).
+func TestTheTraySubscriptionStartsWithTheCurrentState(t *testing.T) {
+	h := newAppUpdateHarness(true)
+	h.fake.mu.Lock()
+	h.fake.release = &appRelease{Version: "0.1.0-preview.13"}
+	h.fake.mu.Unlock()
+	h.check(context.Background(), true)
+	updates := h.subscribe()
+	select {
+	case s := <-updates:
+		if s.Version != "0.1.0-preview.13" {
+			t.Fatalf("first state %+v", s)
+		}
+	default:
+		t.Fatal("the subscription starts empty")
+	}
+	h.fake.mu.Lock()
+	h.fake.release = &appRelease{Version: "0.1.0-preview.14"}
+	h.fake.mu.Unlock()
+	h.check(context.Background(), true)
+	var last AppUpdateState
+	for len(updates) > 0 {
+		last = <-updates
+	}
+	if last.Version != "0.1.0-preview.14" {
+		t.Fatalf("newest state %+v", last)
+	}
+}
+
+// A notification click can come before the page exists: the request waits until shown.
+func TestAppUpdatesRequestWaitsUntilThePageShowsIt(t *testing.T) {
+	d := newDesk(t.TempDir())
+	if d.AppUpdatesPending() {
+		t.Fatal("pending before any request")
+	}
+	d.openAppUpdates()
+	if !d.AppUpdatesPending() || !d.AppUpdatesPending() {
+		t.Fatal("the request was not kept for the page")
+	}
+	d.AppUpdatesShown()
+	if d.AppUpdatesPending() {
+		t.Fatal("still pending after the page showed it")
 	}
 }

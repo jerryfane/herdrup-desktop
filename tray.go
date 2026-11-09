@@ -109,7 +109,9 @@ func startPresence(d *Desk, win *mygo.Window) {
 	// the two goroutines that update it in turn.
 	var mu sync.Mutex
 	var board presenceBoard
-	update := d.appUpdates.snapshot()
+	// Filled from the subscription, which starts with the current state; an
+	// update found before the tray existed shows at once (review of #167).
+	var update AppUpdateState
 	render := func() {
 		if tray == nil {
 			return

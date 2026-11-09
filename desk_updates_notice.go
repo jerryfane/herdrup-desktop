@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -74,8 +73,11 @@ func newerVersion(current, candidate string) bool {
 	return okA && okB && compareVersions(b, a) > 0
 }
 
+// version is a parsed semantic version. Numbers stay digit strings, without
+// leading zeros, so any length compares (review of #167): by length, then
+// lexically.
 type version struct {
-	core [3]int
+	core [3]string
 	pre  []string
 }
 
@@ -89,11 +91,10 @@ func parseVersion(s string) (version, bool) {
 	}
 	var v version
 	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
+		if !digits(p) {
 			return version{}, false
 		}
-		v.core[i] = n
+		v.core[i] = trimZeros(p)
 	}
 	if hasPre {
 		if pre == "" {
@@ -104,10 +105,37 @@ func parseVersion(s string) (version, bool) {
 	return v, true
 }
 
+func digits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func trimZeros(s string) string {
+	if t := strings.TrimLeft(s, "0"); t != "" {
+		return t
+	}
+	return "0"
+}
+
+// cmpNumber compares two digit strings without leading zeros.
+func cmpNumber(a, b string) int {
+	if len(a) != len(b) {
+		return cmpInt(len(a), len(b))
+	}
+	return strings.Compare(a, b)
+}
+
 func compareVersions(a, b version) int {
 	for i := range a.core {
-		if a.core[i] != b.core[i] {
-			return cmpInt(a.core[i], b.core[i])
+		if c := cmpNumber(a.core[i], b.core[i]); c != 0 {
+			return c
 		}
 	}
 	switch {
@@ -119,19 +147,18 @@ func compareVersions(a, b version) int {
 		return -1
 	}
 	for i := 0; i < len(a.pre) && i < len(b.pre); i++ {
-		x, errX := strconv.Atoi(a.pre[i])
-		y, errY := strconv.Atoi(b.pre[i])
-		switch {
-		case errX == nil && errY == nil:
-			if x != y {
-				return cmpInt(x, y)
+		x, y := a.pre[i], b.pre[i]
+		switch numX, numY := digits(x), digits(y); {
+		case numX && numY:
+			if c := cmpNumber(trimZeros(x), trimZeros(y)); c != 0 {
+				return c
 			}
-		case errX == nil:
+		case numX:
 			return -1
-		case errY == nil:
+		case numY:
 			return 1
-		case a.pre[i] != b.pre[i]:
-			return strings.Compare(a.pre[i], b.pre[i])
+		case x != y:
+			return strings.Compare(x, y)
 		}
 	}
 	return cmpInt(len(a.pre), len(b.pre))
