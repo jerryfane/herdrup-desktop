@@ -537,10 +537,11 @@ func oneSidedWidths(value string) bool {
 
 var customName = regexp.MustCompile(`^\s*(--[A-Za-z0-9_-]+)\s*(?:,|$)`)
 
-// maxExpansions bounds how many variants of one value are checked, and
-// maxExpansionWork how many expansion steps one declaration may take:
-// choosing one value per repeated variable (below) multiplies the work
-// by each such variable's values (review of #173).
+// maxExpansions bounds how many distinct variants of one value are
+// checked, and maxExpansionWork how many expansion steps one declaration
+// may take: choosing one value per repeated variable (below) multiplies
+// the work by each such variable's values (review of #173). Reaching
+// either leaves the check incomplete, which the lint reports.
 const (
 	maxExpansions    = 256
 	maxExpansionWork = 4096
@@ -554,18 +555,52 @@ const (
 // rule applies. Unknown references without a fallback (tokens) are left
 // as they are.
 //
-// One element computes one value for a variable, so the declaration's own
-// references to it agree, fallbacks included: `var(--w) var(--x, var(--w))`
-// is never `0 3px` (note #48-f2, review of #176). A variable's declared
-// value is resolved where it was declared, perhaps an ancestor whose
-// value is inherited, so its references are expanded on their own
-// (review of #173).
+// A variable computes one value per element, so where a value is computed
+// its references to one variable agree, fallbacks included:
+// `var(--w) var(--x, var(--w))` is never `0 3px` (note #48-f2, review of
+// #176). Each value is its own scope: a declaration, and each variable's
+// declared value, which was computed where it was declared, perhaps on an
+// ancestor whose value is inherited. So `--pair: var(--w) var(--w)` agrees
+// with itself, while `--v: var(--w)` need not match the consumer's --w
+// (reviews of #173, #179).
 //
-// complete is false when the work bound stopped the expansion; the
-// variants then include the value with references left unexpanded, so
-// what is written literally is still checked.
+// complete is false when a bound stopped the expansion; the variants then
+// include the value with references left unexpanded, so what is written
+// literally is still checked.
 func expandVars(value string, custom map[string][]string) (variants []string, complete bool) {
-	e := expander{custom: custom, work: maxExpansionWork, choices: map[string]int{}}
+	e := expander{custom: custom, work: maxExpansionWork}
+	out := e.scope(value, 5)
+	if e.incomplete {
+		out = append(out, value)
+	}
+	return out, !e.incomplete
+}
+
+type expander struct {
+	custom     map[string][]string
+	work       int  // expansion steps left for this declaration
+	incomplete bool // a bound cut the expansion short
+}
+
+// add appends v to out unless it is there already; at the variant bound it
+// marks the expansion incomplete instead.
+func (e *expander) add(out *[]string, seen map[string]bool, v string) {
+	if seen[v] {
+		return
+	}
+	if len(*out) == maxExpansions {
+		e.incomplete = true
+		return
+	}
+	seen[v] = true
+	*out = append(*out, v)
+}
+
+// scope expands value as one computed value: the variables it references
+// more than once are held to one value at a time, each declared value and,
+// when a reference has a fallback or none is declared, "unset" (index one
+// past them).
+func (e *expander) scope(value string, depth int) []string {
 	count, fallback := map[string]int{}, map[string]bool{}
 	var repeated []string
 	for _, r := range varRef.FindAllStringSubmatch(value, -1) {
@@ -574,46 +609,30 @@ func expandVars(value string, custom map[string][]string) (variants []string, co
 		}
 		fallback[r[1]] = fallback[r[1]] || r[2] != ""
 	}
-	// Each declared value, and "unset" (index one past them) when a
-	// reference has a fallback or no value is declared.
-	for _, name := range repeated {
-		e.choices[name] = len(custom[name])
-		if e.choices[name] == 0 || fallback[name] {
-			e.choices[name]++
+	choices := make([]int, len(repeated))
+	for i, name := range repeated {
+		choices[i] = len(e.custom[name])
+		if choices[i] == 0 || fallback[name] {
+			choices[i]++
 		}
 	}
-	out := e.bind(value, repeated, map[string]int{})
-	if e.stopped {
-		out = append(out, value)
-	}
-	return out, !e.stopped
-}
-
-type expander struct {
-	custom  map[string][]string
-	choices map[string]int // values to try for each repeated variable
-	work    int            // expansion steps left for this declaration
-	stopped bool           // the work ran out
-}
-
-// bind expands value once per combination of the repeated variables'
-// choices, holding each to one.
-func (e *expander) bind(value string, names []string, held map[string]int) []string {
-	if len(names) == 0 {
-		return e.expand(value, held, 5)
-	}
-	name := names[0]
 	var out []string
-	for k := 0; k < e.choices[name] && len(out) < maxExpansions && !e.stopped; k++ {
-		held[name] = k
-		for _, v := range e.bind(value, names[1:], held) {
-			if len(out) == maxExpansions {
-				break
+	seen := map[string]bool{}
+	held := map[string]int{}
+	var bind func(i int)
+	bind = func(i int) {
+		if i == len(repeated) {
+			for _, v := range e.expand(value, held, depth) {
+				e.add(&out, seen, v)
 			}
-			out = append(out, v)
+			return
+		}
+		for k := 0; k < choices[i] && !e.incomplete; k++ {
+			held[repeated[i]] = k
+			bind(i + 1)
 		}
 	}
-	delete(held, name)
+	bind(0)
 	return out
 }
 
@@ -622,7 +641,7 @@ func (e *expander) bind(value string, names []string, held map[string]int) []str
 // for "unset" (the reference's fallback).
 func (e *expander) expand(value string, held map[string]int, depth int) []string {
 	if e.work <= 0 {
-		e.stopped = true
+		e.incomplete = true
 		return []string{value}
 	}
 	e.work--
@@ -679,23 +698,19 @@ func (e *expander) expand(value string, held map[string]int, depth int) []string
 		head := value[:i]
 		tails := e.expand(value[end+1:], held, depth)
 		var out []string
+		seen := map[string]bool{}
 		for k, s := range subs {
-			if len(out) == maxExpansions {
-				break
-			}
-			// A declared value's references were resolved where it was
-			// declared, so nothing is held for them; a fallback is written
-			// here, in this declaration, and keeps its choices.
-			scope := held
+			// A declared value is its own scope; a fallback is written
+			// here, in this value, and keeps its choices.
+			var vs []string
 			if k < declared {
-				scope = nil
+				vs = e.scope(s, depth-1)
+			} else {
+				vs = e.expand(s, held, depth-1)
 			}
-			for _, v := range e.expand(s, scope, depth-1) {
+			for _, v := range vs {
 				for _, t := range tails {
-					if len(out) == maxExpansions {
-						break
-					}
-					out = append(out, head+v+t)
+					e.add(&out, seen, head+v+t)
 				}
 			}
 		}

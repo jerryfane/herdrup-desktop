@@ -57,7 +57,8 @@ func TestLintStylesHoldsAVariableToOneValuePerDeclaration(t *testing.T) {
 		":root { --v: var(--w); }\n.e { border-width: var(--w) var(--v); }\n" +
 		".f { border-width: 0 var(--w); }\n" +
 		".g { border-width: var(--w) var(--undefined, var(--w)); }\n" +
-		".h { border-width: var(--unset, var(--w)) var(--w); }\n"
+		".h { border-width: var(--unset, var(--w)) var(--w); }\n" +
+		".parent { --pair: var(--w) var(--w); }\n.i { border-width: var(--pair); }\n"
 	if err := os.WriteFile(filepath.Join(root, "src", "app.css"), []byte(css), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,7 @@ func TestLintStylesHoldsAVariableToOneValuePerDeclaration(t *testing.T) {
 		flagged = append(flagged, e.Error())
 	}
 	got := strings.Join(flagged, "\n")
-	for _, line := range []string{"app.css:3", "app.css:7", "app.css:8"} {
+	for _, line := range []string{"app.css:3", "app.css:7", "app.css:8", "app.css:10"} {
 		if strings.Contains(got, line) {
 			t.Errorf("a uniform width through one variable was flagged at %s:\n%s", line, got)
 		}
@@ -75,6 +76,29 @@ func TestLintStylesHoldsAVariableToOneValuePerDeclaration(t *testing.T) {
 		if !strings.Contains(got, line) {
 			t.Errorf("the side-only width on %s was not flagged:\n%s", line, got)
 		}
+	}
+}
+
+// Variants that come out the same count once, and a variant bound that cuts
+// combinations short leaves the check incomplete: here 256 values of --w in
+// an unused fallback all read the same before --a's stripe value is tried
+// (review of #179).
+func TestLintStylesReachesAStripePastRepeatedSameVariants(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	css := ".a1 { --a: 0 0; }\n.a2 { --a: inset 3px 0; }\n"
+	for i := 0; i < 256; i++ {
+		css += fmt.Sprintf(".w%d { --w: 0; }\n", i)
+	}
+	css += ".card { box-shadow: var(--a), var(--a, var(--w) var(--w)); }\n"
+	if err := os.WriteFile(filepath.Join(root, "src", "app.css"), []byte(css), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	errs := LintStyles(root)
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "app.css:259") || !strings.Contains(errs[0].Error(), "side stripe") {
+		t.Errorf("want the inset stripe on line 259, got %v", errs)
 	}
 }
 
