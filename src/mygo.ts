@@ -118,15 +118,20 @@ export interface AppUpdateState {
   current: string;
   /**
    * Phase is "disabled", "idle" (not checked yet), "checking", "upToDate",
-   * "available", "failed" (the last check failed), "installing" or
-   * "restarting".
+   * "available", "failed" (the last check failed), "installing",
+   * "restarting", or "outdated": a newer version is published, but this
+   * install can't update itself (a package manager's, or a folder it can't
+   * write), so it is downloaded from its release.
    */
   phase: string;
-  /** Reason says why the app cannot update itself, in "disabled". */
+  /**
+   * Reason says why the app cannot update itself, in "disabled" and
+   * "outdated".
+   */
   reason: string;
   /**
-   * Version and Notes (Markdown) are the newer version's, in "available"
-   * and while it installs.
+   * Version and Notes (Markdown) are the newer version's, in "available",
+   * while it installs, and in "outdated" (Version only).
    */
   version: string;
   notes: string;
@@ -988,6 +993,14 @@ export const Desk = {
   appUpdate(): Promise<AppUpdateState> {
     return call("Desk.AppUpdate");
   },
+  /** AppUpdatesPending reports an App updates request not yet shown. */
+  appUpdatesPending(): Promise<boolean> {
+    return call("Desk.AppUpdatesPending");
+  },
+  /** AppUpdatesShown acknowledges that the page shows App updates. */
+  appUpdatesShown(): Promise<void> {
+    return call("Desk.AppUpdatesShown");
+  },
   /**
    * The UI supplies the exact build/mode it confirmed, never an unqualified
    * "install latest". Uncertain apply results are followed, never resubmitted.
@@ -1745,6 +1758,11 @@ export const events = {
    * changes: a check starts or ends, the download progresses, it installs.
    */
   appUpdateChanged: event<AppUpdateState>("app-update:changed"),
+  /**
+   * AppUpdateOpen asks the page to show Settings, App updates: a click on the
+   * update notification or the tray's update item.
+   */
+  appUpdateOpen: event<boolean>("app-update:open"),
   dictationChanged: event<DictationEvent>("dictation:changed"),
   /**
    * AgentOpen wakes the page for a scoped notification or tray activation.

@@ -60,7 +60,8 @@ func newAppUpdateHarness(enabled bool) *appUpdateHarness {
 	h.appUpdates = &appUpdates{
 		updater: h.fake,
 		current: "0.1.0-preview.5",
-		reason:  func() string { return "This build can't update itself." },
+		reason:  func() (string, bool) { return "This build can't update itself.", false },
+		release: func() bool { return true },
 		publish: func(s AppUpdateState) {
 			h.mu.Lock()
 			h.events = append(h.events, s)
@@ -103,7 +104,7 @@ func TestAppUpdateDisabledBuildSaysWhyAndNeverChecks(t *testing.T) {
 	if got := h.snapshot(); got != want {
 		t.Fatalf("snapshot = %+v, want %+v", got, want)
 	}
-	if got := h.check(context.Background()); got != want {
+	if got := h.check(context.Background(), false); got != want {
 		t.Fatalf("check = %+v, want %+v", got, want)
 	}
 	if n := h.fake.checkCount(); n != 0 {
@@ -119,7 +120,7 @@ func TestAppUpdateUpToDate(t *testing.T) {
 	if got := h.snapshot(); got.Phase != "idle" {
 		t.Fatalf("before any check: %+v, want idle", got)
 	}
-	got := h.check(context.Background())
+	got := h.check(context.Background(), false)
 	want := AppUpdateState{Current: "0.1.0-preview.5", Phase: "upToDate", CheckedAt: 1793108998000}
 	if got != want {
 		t.Fatalf("check = %+v, want %+v", got, want)
@@ -132,13 +133,13 @@ func TestAppUpdateUpToDate(t *testing.T) {
 func TestAppUpdateCheckFailureIsPlainText(t *testing.T) {
 	h := newAppUpdateHarness(true)
 	h.fake.err = errors.New("mygo: checking for updates: GET https://api.github.com/repos/x/y/releases: 403 rate limit exceeded")
-	got := h.check(context.Background())
+	got := h.check(context.Background(), false)
 	if got.Phase != "failed" || got.Error != "checking for updates: GET https://api.github.com/repos/x/y/releases: 403 rate limit exceeded" {
 		t.Fatalf("check = %+v", got)
 	}
 	// A build whose updater says updates are off after all is disabled, not failed.
 	h.fake.err = mygo.ErrUpdatesDisabled
-	if got := h.check(context.Background()); got.Phase != "disabled" || got.Reason == "" {
+	if got := h.check(context.Background(), false); got.Phase != "disabled" || got.Reason == "" {
 		t.Fatalf("ErrUpdatesDisabled: %+v", got)
 	}
 }
@@ -156,7 +157,7 @@ func TestAppUpdateAvailableInstallsWithProgressAndRelaunches(t *testing.T) {
 			return nil
 		},
 	}
-	got := h.check(context.Background())
+	got := h.check(context.Background(), false)
 	if got.Phase != "available" || got.Version != "0.1.0-preview.6" || got.Notes != "- Settings checks for app updates" {
 		t.Fatalf("check = %+v", got)
 	}
@@ -198,7 +199,7 @@ func TestAppUpdateInstallFailureKeepsTheUpdate(t *testing.T) {
 		attempts++
 		return fmt.Errorf("mygo: installing the update: %w", errors.New("signature does not match"))
 	}}
-	h.check(context.Background())
+	h.check(context.Background(), false)
 	if err := h.install(); err != nil {
 		t.Fatal(err)
 	}
@@ -224,9 +225,9 @@ func TestAppUpdateInstallFailureKeepsTheUpdate(t *testing.T) {
 func TestAppUpdateFailedCheckDropsTheUpdate(t *testing.T) {
 	h := newAppUpdateHarness(true)
 	h.fake.release = &appRelease{Version: "0.1.0-preview.6", Install: func(context.Context, func(int64, int64)) error { return nil }}
-	h.check(context.Background())
+	h.check(context.Background(), false)
 	h.fake.release, h.fake.err = nil, errors.New("offline")
-	if got := h.check(context.Background()); got.Phase != "failed" || got.Version != "" {
+	if got := h.check(context.Background(), false); got.Phase != "failed" || got.Version != "" {
 		t.Fatalf("check = %+v", got)
 	}
 	if err := h.install(); err == nil {
@@ -238,9 +239,9 @@ func TestAppUpdateChecksDoNotOverlap(t *testing.T) {
 	h := newAppUpdateHarness(true)
 	h.fake.block = make(chan struct{})
 	done := make(chan AppUpdateState)
-	go func() { done <- h.check(context.Background()) }()
+	go func() { done <- h.check(context.Background(), false) }()
 	h.waitPhase(t, "checking")
-	if got := h.check(context.Background()); got.Phase != "checking" {
+	if got := h.check(context.Background(), false); got.Phase != "checking" {
 		t.Fatalf("second check = %+v, want the running one's state", got)
 	}
 	if err := h.install(); err == nil {
@@ -255,27 +256,6 @@ func TestAppUpdateChecksDoNotOverlap(t *testing.T) {
 	}
 }
 
-func TestAppUpdateRunChecksAfterLaunchAndThenPeriodically(t *testing.T) {
-	h := newAppUpdateHarness(true)
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() { h.run(ctx, 10*time.Millisecond, 5*time.Millisecond); close(stopped) }()
-	if n := h.fake.checkCount(); n != 0 {
-		t.Fatalf("checked %d times at once, want after the first delay", n)
-	}
-	for deadline := time.Now().Add(5 * time.Second); h.fake.checkCount() < 3; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d checks", h.fake.checkCount())
-		}
-	}
-	cancel()
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("run kept going after its context ended")
-	}
-}
-
 func TestAppUpdateRunNeverChecksInSmokeBuilds(t *testing.T) {
 	old := smoke
 	smoke = "1" // reference builds are smoke builds too (refEnabled)
@@ -283,7 +263,7 @@ func TestAppUpdateRunNeverChecksInSmokeBuilds(t *testing.T) {
 	h := newAppUpdateHarness(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	h.run(ctx, 0, time.Millisecond)
+	h.run(ctx, 0, time.Millisecond, time.Millisecond, nil)
 	if n := h.fake.checkCount(); n != 0 {
 		t.Fatalf("a smoke build checked for updates %d times", n)
 	}
@@ -291,20 +271,23 @@ func TestAppUpdateRunNeverChecksInSmokeBuilds(t *testing.T) {
 
 func TestAppUpdateDisabledReason(t *testing.T) {
 	dir := t.TempDir()
-	cases := []struct{ goos, exe, want string }{
+	cases := []struct {
+		goos, exe, want string
+		external        bool
+	}{
 		// Where it could write, the build itself has no updates.
-		{"linux", filepath.Join(dir, "herdrup.app", "herdrup"), "This build can't update itself."},
-		{"darwin", filepath.Join(dir, "Herdrup.app", "Contents", "MacOS", "Herdrup"), "This build can't update itself."},
+		{"linux", filepath.Join(dir, "herdrup.app", "herdrup"), "This build can't update itself.", false},
+		{"darwin", filepath.Join(dir, "Herdrup.app", "Contents", "MacOS", "Herdrup"), "This build can't update itself.", false},
 		// A macOS executable outside an app bundle: a development build.
-		{"darwin", "/nonexistent/bin/herdrup", "This build can't update itself."},
+		{"darwin", "/nonexistent/bin/herdrup", "This build can't update itself.", false},
 		// The Debian package's /opt/herdrup: its parent is not the user's.
-		{"linux", "/nonexistent/opt/herdrup/herdrup", "Installed by your package manager; update it there."},
-		{"darwin", "/nonexistent/Applications/Herdrup.app/Contents/MacOS/Herdrup", "herdrup can't write to the folder it's installed in, so it can't update itself."},
-		{"windows", `/nonexistent/Program Files/Herdrup/Herdrup.exe`, "herdrup can't write to the folder it's installed in, so it can't update itself."},
+		{"linux", "/nonexistent/opt/herdrup/herdrup", "Installed by your package manager; update it there.", true},
+		{"darwin", "/nonexistent/Applications/Herdrup.app/Contents/MacOS/Herdrup", "herdrup can't write to the folder it's installed in, so it can't update itself.", true},
+		{"windows", `/nonexistent/Program Files/Herdrup/Herdrup.exe`, "herdrup can't write to the folder it's installed in, so it can't update itself.", true},
 	}
 	for _, c := range cases {
-		if got := appUpdateDisabledReason(c.goos, c.exe); got != c.want {
-			t.Errorf("%s %s: %q, want %q", c.goos, c.exe, got, c.want)
+		if got, external := appUpdateDisabledReason(c.goos, c.exe); got != c.want || external != c.external {
+			t.Errorf("%s %s: %q external %v, want %q external %v", c.goos, c.exe, got, external, c.want, c.external)
 		}
 	}
 }

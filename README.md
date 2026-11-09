@@ -315,17 +315,32 @@ alerts are on but this session cannot deliver them.
 Settings → About → App updates is Herdrup Desktop's own update (`desk_updates_app.go`,
 `src/appUpdates.ts`, on mygo's `mygo.Updater`); the Machines card's update is herdr's.
 The app follows its releases (every release so far is a preview): it checks
-one minute after launch and then every 6 hours while it runs, and Check now checks at once.
+one minute after launch, then whenever 6 hours have passed on the clock since the last check
+(looked at every 10 minutes and as the computer wakes, so a laptop asleep past the 6 hours checks
+on waking), and Check now checks at once.
 The row shows the last result (Up to date, Update available, Couldn't check, Off); its page
 shows the running version, the newer version with its release notes (the manifest's, and a
 link to the GitHub release), check errors as plain text, and one Update and restart button
 that downloads the signed update with a progress bar, replaces the app and relaunches it.
-While an update waits, Settings suggests it under the machine card and the Settings tab
-carries the same neutral badge as Gram's unread count. A build without update signing
-says "This build can't update itself."; on Linux the Debian package (any install in a folder
-the user cannot write) says "Installed by your package manager; update it there.", and an
-unwritable install elsewhere says Herdrup can't write to its folder. Smoke and
-reference builds never check, and the reference captures leave the row out.
+A newer version found by a scheduled check is announced without opening Settings (owner,
+2026-11-08, `desk_updates_notice.go`, `src/appUpdateAsk.ts`):
+
+- one desktop notification per version (remembered in `app-update.json`), whose click opens
+  Settings → App updates; a check you run yourself shows it there instead;
+- the tray menu's "Update herdrup to …" item, and "· update available" in its tooltip;
+- a capsule over the agents list (the GitHub star ask's, which waits behind it) with Update,
+  which downloads and restarts, and ×, which hides it until the next version;
+- Settings' suggestion under the machine card, and the Settings tab's badge.
+
+A development build says "This build can't update itself." and never checks, nor does a
+production build that could write where it is installed but has no update signing. An install
+that can't write where it is installed still hears of new versions: the Debian package (any
+install in a folder the user cannot write) says "Installed by your package manager; update it
+there.", and an unwritable install elsewhere says Herdrup can't write to its folder; both read
+the latest GitHub release and offer Download, which opens it, in the same places. That includes
+a production build made without update signing (`HERDRUP_UPDATE_PUBLIC_KEY=""`, local tests
+only): mygo exposes no flag for it, and its build info does not record the linker flags that
+set it. Smoke and reference builds never check, and the reference captures leave the row out.
 
 The Settings index shows live account counts, shared people or invites,
 enabled notification categories and text sizes. It reuses the page models and updates

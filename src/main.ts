@@ -21,8 +21,9 @@ import { initGuestHome } from "./guestHome";
 import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { animateDisclosures, applyMotions, motionMode, motionSeconds, SPEC } from "./motion";
 import { initStarAsk } from "./starAsk";
+import { initAppUpdateAsk } from "./appUpdateAsk";
 import { errorText } from "./errors";
-import { appUpdatesShown, watchAppUpdate } from "./appUpdates";
+import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
 import { barSlot, commitTabBar, commitTopBar, guestBarActions, placeTitle, tabNode } from "./bars";
 
@@ -61,6 +62,23 @@ let hostsHold = () => false;
 let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let starAsk: ReturnType<typeof initStarAsk> | null = null;
+let appUpdateAsk: ReturnType<typeof initAppUpdateAsk> | null = null;
+// The capsule over the owner's agents list: a newer app first, else the star ask. The two
+// share the list's room for it (the star-asking class), which this keeps.
+function updateAsks(listVisible: boolean) {
+  const updateShows = !!appUpdateAsk?.update(listVisible && appUpdatesShown);
+  const starShows = !!starAsk?.update(listVisible && !updateShows);
+  $("sidebar").classList.toggle("star-asking", updateShows || starShows);
+}
+// Settings, App updates was asked for (the update notification, the tray): it shows even with
+// no machine connected, as the app's own update needs none, until another tab is chosen.
+let appUpdatesAsked = false;
+// The owner's tab bar and the sidebar rail choose a tab here, which also leaves the App
+// updates request (review of #167).
+function selectTab(next: typeof tab) {
+  tab = next; choosingHost = false; appUpdatesAsked = false;
+  void buildTabBar(); void buildTopBar(); render();
+}
 let pendingAgent: AgentTarget | null = null;
 let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
@@ -107,7 +125,7 @@ async function buildTopBar() {
   const slot = barSlot;
   const back = await slot("chevron.left", guestView ? "Machines" : "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
-  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; render(); };
+  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; appUpdatesAsked = false; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
   if (guestView) {
@@ -153,9 +171,9 @@ async function buildTopBar() {
 let tabBarGeneration = 0;
 // Gram's unread count, as the last snapshot reported it (gram.ts barChanged).
 let gramUnread = 0;
-// Whether a newer Herdrup waits to be installed (appUpdates.ts).
+// Whether a newer Herdrup is out (appUpdates.ts): to install, or to download.
 let appUpdateWaiting = false;
-watchAppUpdate(s => { appUpdateWaiting = s.phase === "available"; setTabBadge(); });
+watchAppUpdate(s => { appUpdateWaiting = appUpdateNewer(s); setTabBadge(); });
 // The unread badges' fill: native's Color(uiColor: .systemRed) in its dark scheme. It is a
 // system colour, not a herdrup design token, so it is set here (owner, 2026-11-03: red, as native).
 document.documentElement.style.setProperty("--system-red", "#ff453a");
@@ -193,11 +211,7 @@ async function buildTabBar() {
           if (key === "settings") guestActions.settings(); else guestActions.agents();
           return;
         }
-        tab = key;
-        choosingHost = false;
-        void buildTabBar();
-        void buildTopBar();
-        render();
+        selectTab(key);
       })),
   );
   if (generation !== tabBarGeneration) return;
@@ -463,7 +477,7 @@ onTextSizeChanged(() => {
 let renderedOnce = false, pushTimer = 0;
 function render() {
   if (!renderReady) return;
-  const showConnect = choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected");
+  const showConnect = !(appUpdatesAsked && tab === "settings") && (choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected"));
   const guestVisible = !!state.guest && !showConnect;
   if (state.guest && !state.guest.features.gram) guestGram = false;
   setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
@@ -481,7 +495,7 @@ function render() {
     rail?.update("agents", null, false);
     field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
     $("roster").hidden = true;
-    starAsk?.update(false);
+    updateAsks(false);
     settings?.show(false, state, board);
     showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
     showInteraction(guestTab === "agents" && !guestGram);
@@ -507,7 +521,7 @@ function render() {
   select.hidden = showConnect || showsGram || showsSettings || interactionVisible();
   showInteraction(!showConnect && !showsGram && !showsSettings);
   $("roster").hidden = showConnect || showsGram || showsSettings;
-  starAsk?.update(!$("roster").hidden);
+  updateAsks(!$("roster").hidden);
   showGram(showsGram);
   settings?.show(showsSettings, state, board);
   void renderRows();
@@ -546,6 +560,22 @@ events.boardChanged.on((b) => {
 // Retain activation until the originating board has actually rendered. The
 // backend also retains it, so an event before this page exists is not lost.
 events.agentOpen.on((target) => openAgent(target));
+// The update notification and the tray's update item open Settings, App updates (the
+// guest's Settings has no app update). Go keeps the request until the page shows it, so a
+// click that launched the app, or came before Settings existed, is not lost.
+function showAppUpdates() {
+  if (!settings || !renderReady) return;
+  if (guestBar || !appUpdatesShown) { void Desk.appUpdatesShown(); return; }
+  tab = "settings";
+  choosingHost = false;
+  appUpdatesAsked = true;
+  settings.openPage("appUpdates");
+  void buildTabBar();
+  void buildTopBar();
+  render();
+  void Desk.appUpdatesShown();
+}
+events.appUpdateOpen.on(showAppUpdates);
 
 function openAgent(target: AgentTarget) {
   pendingAgent = target;
@@ -663,11 +693,10 @@ async function init() {
     placeInitials,
     symbol,
   });
-  rail = await initSidebarRail($("sidebar"), next => {
-    tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
-  }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
+  rail = await initSidebarRail($("sidebar"), selectTab, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
+  appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
@@ -725,6 +754,8 @@ async function init() {
   drawField();
   renderReady = true;
   render();
+  // An App updates request from before the page was ready (desk openAppUpdates).
+  void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
   const version = activationVersion;
   const retained = await Desk.pendingAgent();
   if (version === activationVersion) pendingAgent = retained;

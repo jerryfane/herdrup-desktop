@@ -18,12 +18,23 @@ export function appUpdateSummary(s: AppUpdateState | null): string {
     case "disabled": return "Off";
     case "checking": return "Checking…";
     case "upToDate": return "Up to date";
-    case "available": return "Update available";
+    case "available": case "outdated": return "Update available";
     case "installing": { const p = appUpdatePercent(s); return p === null ? "Updating…" : `Updating · ${p}%`; }
     case "restarting": return "Restarting…";
     case "failed": return "Couldn't check";
     default: return "";
   }
+}
+
+/** Whether a newer Herdrup is out (AppUpdateState.Newer): one this app installs, or, where it
+ *  can't update itself ("outdated"), one to download. */
+export function appUpdateNewer(s: AppUpdateState | null): boolean {
+  return !!s?.version && ["available", "installing", "restarting", "outdated"].includes(s.phase);
+}
+
+/** The GitHub release of version (desk_updates_notice.go appReleaseURL). */
+export function appReleaseURL(version: string): string {
+  return `https://github.com/jerryfane/herdrup-desktop/releases/tag/v${encodeURIComponent(version)}`;
 }
 
 /** How much of the download is done, 0-100, or null while its size is unknown. */
@@ -102,6 +113,15 @@ export class AppUpdateSettings {
         header(`herdrup ${current}`);
         this.text(s.reason || "This build can't update itself.");
         return;
+      case "outdated":
+        // An install its package manager or a protected folder keeps: the new version is
+        // downloaded from its release.
+        header(`Version ${s.version} is available`);
+        this.text(`You have ${current}.`);
+        this.text(s.reason, "settings-update-faint");
+        actions.append(this.button("Download", () => Desk.openExternalURL(appReleaseURL(s.version)), "app-update-download"));
+        this.root.append(actions);
+        return;
       case "checking":
         header(`herdrup ${current}`);
         this.text("Checking for updates…");
@@ -134,7 +154,7 @@ export class AppUpdateSettings {
         }
         const busy = s.phase !== "available";
         actions.append(this.button("Update and restart", () => Desk.installAppUpdate(), "app-update-install", busy));
-        actions.append(this.button("Release notes", () => Desk.openExternalURL(`https://github.com/jerryfane/herdrup-desktop/releases/tag/v${encodeURIComponent(s.version)}`), "app-update-notes"));
+        actions.append(this.button("Release notes", () => Desk.openExternalURL(appReleaseURL(s.version)), "app-update-notes"));
         this.root.append(actions);
         if (!busy) this.text("herdrup quits and opens the new version. Your agents keep running on their machines.", "settings-update-faint");
         return;

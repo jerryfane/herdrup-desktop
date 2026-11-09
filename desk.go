@@ -147,6 +147,9 @@ type Desk struct {
 	// (presence.go, tray.go).
 	presence     *presence
 	pendingAgent *AgentTarget
+	// pendingAppUpdates is an App updates request (the update notification's
+	// or the tray's) the page has not shown yet.
+	pendingAppUpdates bool
 	// openFolders keeps the folders open on this device; alert shows a
 	// folder save that failed.
 	openFolders *openFolders
