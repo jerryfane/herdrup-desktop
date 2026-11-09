@@ -338,7 +338,8 @@ production build that could write where it is installed but has no update signin
 that can't write where it is installed still hears of new versions: the Debian package (any
 install in a folder the user cannot write) says "Installed by your package manager; update it
 there.", and an unwritable install elsewhere says Herdrup can't write to its folder; both read
-the latest GitHub release and offer Download, which opens it, in the same places. That includes
+the latest GitHub release and offer Download, which opens it, in the same places (a release
+list that can't be read shows "Couldn't check for updates", as a failed signed check does). That includes
 a production build made without update signing (`HERDRUP_UPDATE_PUBLIC_KEY=""`, local tests
 only): mygo exposes no flag for it, and its build info does not record the linker flags that
 set it. Smoke and reference builds never check, and the reference captures leave the row out.

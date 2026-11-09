@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { AppUpdateState } from "../src/mygo";
-import { appUpdateAsk } from "../src/appUpdateAsk";
+import { appUpdateAsk, appUpdateDismissed } from "../src/appUpdateAsk";
 import { appUpdateNewer } from "../src/appUpdates";
 
 const state = (fields: Partial<AppUpdateState>): AppUpdateState => ({
@@ -32,4 +32,11 @@ test("the Settings badge counts every newer version, to install or to download",
   for (const phase of ["available", "installing", "restarting", "outdated"]) expect(appUpdateNewer(state({ phase, version: "0.1.0-preview.13" }))).toBe(true);
   for (const phase of ["idle", "checking", "upToDate", "failed", "disabled"]) expect(appUpdateNewer(state({ phase }))).toBe(false);
   expect(appUpdateNewer(null)).toBe(false);
+});
+
+// Issue #169: a storage whose reads throw stopped the agents list from rendering.
+test("an unreadable dismissal reads as none dismissed", () => {
+  const throwing = { getItem: () => { throw new DOMException("denied", "SecurityError"); }, setItem: () => {} };
+  expect(appUpdateDismissed(throwing)).toBeNull();
+  expect(appUpdateDismissed(null)).toBeNull();
 });

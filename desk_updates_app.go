@@ -237,12 +237,17 @@ func (u *appUpdates) check(ctx context.Context, auto bool) AppUpdateState {
 			next.Phase, next.Version, next.Notes = "available", release.Version, release.Notes
 		}
 	} else {
-		// An install that updates elsewhere: say when a newer release is out,
-		// and stay quietly "disabled" when that can't be read.
+		// An install that updates elsewhere: say when a newer release is out, and
+		// that the check failed when the latest release can't be read.
 		latest, err := u.latest(ctx)
-		next.Phase, next.Reason = "disabled", reason
-		if err == nil && newerVersion(u.current, latest) {
+		next.Reason = reason
+		switch {
+		case err != nil:
+			next.Phase, next.Error = "failed", plainUpdateError(err)
+		case newerVersion(u.current, latest):
 			next.Phase, next.Version = "outdated", latest
+		default:
+			next.Phase = "disabled"
 		}
 	}
 	cancel()
