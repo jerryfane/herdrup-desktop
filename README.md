@@ -6,8 +6,9 @@ computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screen
 the system webview (WKWebView, WebKitGTK, WebView2).
 
 **Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
-`v0.1.0-preview.12` adds "An agent finishes: Only my requests", an up arrow to your previous
-message and the agent's recap in Chat, and opens received HTML in your default browser, on top of
+`v0.1.0-preview.13` tells you when a newer version is out (a notification, the tray and a capsule
+over the agents list), on top of "An agent finishes: Only my requests", an up arrow to your previous
+message and the agent's recap in Chat, received HTML in your default browser,
 SVG images in Chat, guest invites opened from the invite page on Windows,
 the Subagents card, the model and effort line, shared users' names,
 the summarised-messages line and a send animation in Chat, animated agent folders, red unread
