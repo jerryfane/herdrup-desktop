@@ -56,8 +56,8 @@ func TestAppUpdatePackageInstallHearsOfANewerRelease(t *testing.T) {
 		t.Fatalf("the running version reads as %+v", got)
 	}
 	latest, latestErr = "", errors.New("offline")
-	if got = h.check(context.Background(), true); got.Phase != "disabled" || got.Error != "" {
-		t.Fatalf("an unreadable release list reads as %+v, want quietly disabled", got)
+	if got = h.check(context.Background(), true); got.Phase != "failed" || got.Error != "offline" || got.Newer() {
+		t.Fatalf("an unreadable release list reads as %+v, want a failed check", got)
 	}
 	// A development build installed where it can't write never asks GitHub (review of #167).
 	h.release = func() bool { return false }

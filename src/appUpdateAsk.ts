@@ -36,6 +36,12 @@ function local(): Store | null {
   try { return localStorage; } catch { return null; }
 }
 
+/** The version whose capsule was dismissed; a storage that can't be read dismissed none,
+ *  so it can't stop the agents list from rendering (issue #169). */
+export function appUpdateDismissed(store: Store | null = local()): string | null {
+  try { return store?.getItem(DISMISSED) ?? null; } catch { return null; }
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) {
   const e = document.createElement(tag);
   e.className = cls;
@@ -65,7 +71,7 @@ export function initAppUpdateAsk(sidebar: HTMLElement, symbol: SymbolFn, changed
   sidebar.append(ask);
 
   let state: AppUpdateState | null = null, visible = false;
-  const dismissed = () => store?.getItem(DISMISSED) ?? null;
+  const dismissed = () => appUpdateDismissed(store);
   const dismiss = () => {
     if (!state) return;
     try { store?.setItem(DISMISSED, state.version); } catch (error) { console.error("update ask not dismissed", error); }
