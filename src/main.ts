@@ -73,6 +73,12 @@ function updateAsks(listVisible: boolean) {
 // Settings, App updates was asked for (the update notification, the tray): it shows even with
 // no machine connected, as the app's own update needs none, until another tab is chosen.
 let appUpdatesAsked = false;
+// The owner's tab bar and the sidebar rail choose a tab here, which also leaves the App
+// updates request (review of #167).
+function selectTab(next: typeof tab) {
+  tab = next; choosingHost = false; appUpdatesAsked = false;
+  void buildTabBar(); void buildTopBar(); render();
+}
 let pendingAgent: AgentTarget | null = null;
 let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
@@ -205,12 +211,7 @@ async function buildTabBar() {
           if (key === "settings") guestActions.settings(); else guestActions.agents();
           return;
         }
-        tab = key;
-        choosingHost = false;
-        appUpdatesAsked = false;
-        void buildTabBar();
-        void buildTopBar();
-        render();
+        selectTab(key);
       })),
   );
   if (generation !== tabBarGeneration) return;
@@ -692,9 +693,7 @@ async function init() {
     placeInitials,
     symbol,
   });
-  rail = await initSidebarRail($("sidebar"), next => {
-    tab = next; choosingHost = false; void buildTabBar(); void buildTopBar(); render();
-  }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
+  rail = await initSidebarRail($("sidebar"), selectTab, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
   appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);

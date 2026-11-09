@@ -332,12 +332,15 @@ A newer version found by a scheduled check is announced without opening Settings
   which downloads and restarts, and ×, which hides it until the next version;
 - Settings' suggestion under the machine card, and the Settings tab's badge.
 
-A build without update signing says "This build can't update itself." and never checks. An
-install that can't update itself still hears of new versions: the Debian package (any install
-in a folder the user cannot write) says "Installed by your package manager; update it there.",
-and an unwritable install elsewhere says Herdrup can't write to its folder; both read the
-latest GitHub release and offer Download, which opens it, in the same places. Smoke and
-reference builds never check, and the reference captures leave the row out.
+A development build says "This build can't update itself." and never checks, nor does a
+production build that could write where it is installed but has no update signing. An install
+that can't write where it is installed still hears of new versions: the Debian package (any
+install in a folder the user cannot write) says "Installed by your package manager; update it
+there.", and an unwritable install elsewhere says Herdrup can't write to its folder; both read
+the latest GitHub release and offer Download, which opens it, in the same places. That includes
+a production build made without update signing (`HERDRUP_UPDATE_PUBLIC_KEY=""`, local tests
+only): mygo exposes no flag for it, and its build info does not record the linker flags that
+set it. Smoke and reference builds never check, and the reference captures leave the row out.
 
 The Settings index shows live account counts, shared people or invites,
 enabled notification categories and text sizes. It reuses the page models and updates
