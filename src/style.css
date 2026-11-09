@@ -512,6 +512,9 @@ html, body {
 .star-ask-body { font: 400 13px/17px var(--font-app); color: var(--color-text-dim); }
 .star-ask-star { flex: none; height: 32px; padding: 0 14px; border-radius: 16px; background: var(--color-text); color: var(--color-ground); font: 600 15px var(--font-app); }
 .star-ask-close { flex: none; width: 36px; height: 36px; margin-right: 6px; padding: 0; display: grid; place-items: center; border-radius: 50%; background: transparent; color: var(--color-text-dim); }
+/* The newer-app capsule (appUpdateAsk.ts) uses the star ask's: its action greys while the update downloads. */
+.star-ask-star:disabled { opacity: 0.45; }
+.app-update-ask .star-ask-star { margin-right: 6px; }
 
 /* Saved-host connection home; its readable column is defined in hosts.css. */
 .connect {

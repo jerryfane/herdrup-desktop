@@ -21,8 +21,9 @@ import { initGuestHome } from "./guestHome";
 import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { animateDisclosures, applyMotions, motionMode, motionSeconds, SPEC } from "./motion";
 import { initStarAsk } from "./starAsk";
+import { initAppUpdateAsk } from "./appUpdateAsk";
 import { errorText } from "./errors";
-import { appUpdatesShown, watchAppUpdate } from "./appUpdates";
+import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
 import { barSlot, commitTabBar, commitTopBar, guestBarActions, placeTitle, tabNode } from "./bars";
 
@@ -61,6 +62,13 @@ let hostsHold = () => false;
 let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let starAsk: ReturnType<typeof initStarAsk> | null = null;
+let appUpdateAsk: ReturnType<typeof initAppUpdateAsk> | null = null;
+// The capsule over the owner's agents list: a newer app first, else the star ask.
+function updateAsks(listVisible: boolean) {
+  const updateShows = !!appUpdateAsk?.shows(listVisible && appUpdatesShown);
+  starAsk?.update(listVisible && !updateShows);
+  appUpdateAsk?.update(listVisible && appUpdatesShown);
+}
 let pendingAgent: AgentTarget | null = null;
 let selectedAgent: AgentTarget | null = null;
 let activationVersion = 0;
@@ -153,9 +161,9 @@ async function buildTopBar() {
 let tabBarGeneration = 0;
 // Gram's unread count, as the last snapshot reported it (gram.ts barChanged).
 let gramUnread = 0;
-// Whether a newer Herdrup waits to be installed (appUpdates.ts).
+// Whether a newer Herdrup is out (appUpdates.ts): to install, or to download.
 let appUpdateWaiting = false;
-watchAppUpdate(s => { appUpdateWaiting = s.phase === "available"; setTabBadge(); });
+watchAppUpdate(s => { appUpdateWaiting = appUpdateNewer(s); setTabBadge(); });
 // The unread badges' fill: native's Color(uiColor: .systemRed) in its dark scheme. It is a
 // system colour, not a herdrup design token, so it is set here (owner, 2026-11-03: red, as native).
 document.documentElement.style.setProperty("--system-red", "#ff453a");
@@ -481,7 +489,7 @@ function render() {
     rail?.update("agents", null, false);
     field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
     $("roster").hidden = true;
-    starAsk?.update(false);
+    updateAsks(false);
     settings?.show(false, state, board);
     showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
     showInteraction(guestTab === "agents" && !guestGram);
@@ -507,7 +515,7 @@ function render() {
   select.hidden = showConnect || showsGram || showsSettings || interactionVisible();
   showInteraction(!showConnect && !showsGram && !showsSettings);
   $("roster").hidden = showConnect || showsGram || showsSettings;
-  starAsk?.update(!$("roster").hidden);
+  updateAsks(!$("roster").hidden);
   showGram(showsGram);
   settings?.show(showsSettings, state, board);
   void renderRows();
@@ -546,6 +554,17 @@ events.boardChanged.on((b) => {
 // Retain activation until the originating board has actually rendered. The
 // backend also retains it, so an event before this page exists is not lost.
 events.agentOpen.on((target) => openAgent(target));
+// The update notification and the tray's update item open Settings, App updates (the
+// guest's Settings has no app update).
+events.appUpdateOpen.on(() => {
+  if (guestBar || !appUpdatesShown) return;
+  tab = "settings";
+  choosingHost = false;
+  settings?.openPage("appUpdates");
+  void buildTabBar();
+  void buildTopBar();
+  render();
+});
 
 function openAgent(target: AgentTarget) {
   pendingAgent = target;
@@ -668,6 +687,7 @@ async function init() {
   }, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
+  appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();

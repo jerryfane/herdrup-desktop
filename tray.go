@@ -5,6 +5,8 @@ import (
 	"log"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/egoist/mygo"
 )
@@ -51,6 +53,13 @@ func installMenuBar() {
 // reaches it too; win is the window once it exists.
 func onNotificationClick(d *Desk, win **mygo.Window) {
 	mygo.App.OnNotificationClick(func(id string) {
+		if strings.HasPrefix(id, appUpdateNotificationPrefix) {
+			d.openAppUpdates()
+			if *win != nil {
+				showWindow(*win)
+			}
+			return
+		}
 		if target, ok := notificationTarget(id); ok {
 			d.requestAgent(target)
 			if *win != nil {
@@ -73,7 +82,7 @@ func startPresence(d *Desk, win *mygo.Window) {
 	}
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID: "herdrup", Icon: icon, IconIsTemplate: template,
-		ToolTip: trayToolTip(0), Menu: trayMenu(d, win, presenceBoard{}),
+		ToolTip: trayToolTip(0, AppUpdateState{}), Menu: trayMenu(d, win, presenceBoard{}, AppUpdateState{}),
 	})
 	if err != nil {
 		log.Printf("tray: %v", err)
@@ -96,16 +105,37 @@ func startPresence(d *Desk, win *mygo.Window) {
 			}
 		})
 	}
-	show := func(board presenceBoard) {
-		rows := board.rows
+	// The tray follows both the agents needing you and a newer app; mu keeps
+	// the two goroutines that update it in turn.
+	var mu sync.Mutex
+	var board presenceBoard
+	update := d.appUpdates.snapshot()
+	render := func() {
 		if tray == nil {
 			return
 		}
 		if runtime.GOOS == "darwin" {
-			tray.SetTitle(trayTitle(len(rows)))
+			tray.SetTitle(trayTitle(len(board.rows)))
 		}
-		tray.SetToolTip(trayToolTip(len(rows)))
-		tray.SetMenu(trayMenu(d, win, board))
+		tray.SetToolTip(trayToolTip(len(board.rows), update))
+		tray.SetMenu(trayMenu(d, win, board, update))
+	}
+	show := func(next presenceBoard) {
+		mu.Lock()
+		defer mu.Unlock()
+		board = next
+		render()
+	}
+	if tray != nil {
+		updates := d.appUpdates.subscribe()
+		go func() {
+			for s := range updates {
+				mu.Lock()
+				update = s
+				render()
+				mu.Unlock()
+			}
+		}()
 	}
 	go d.presence.serve(show, func(a attention) { go d.showAgentNotification(a) })
 }
@@ -119,16 +149,20 @@ func trayTitle(n int) string {
 	return strconv.Itoa(n)
 }
 
-func trayToolTip(n int) string {
-	if n == 0 {
-		return "herdrup"
+func trayToolTip(n int, update AppUpdateState) string {
+	text := "herdrup"
+	if n > 0 {
+		text = needsYouText(n)
 	}
-	return needsYouText(n)
+	if update.Newer() {
+		text += " · update available"
+	}
+	return text
 }
 
 // trayMenu opens the window, or the window on one of the agents needing
-// you, and quits.
-func trayMenu(d *Desk, win *mygo.Window, board presenceBoard) *mygo.Menu {
+// you, offers a newer app, and quits.
+func trayMenu(d *Desk, win *mygo.Window, board presenceBoard, update AppUpdateState) *mygo.Menu {
 	items := []*mygo.MenuItem{{Label: "Open herdrup", Click: func(*mygo.MenuItem, *mygo.Window) { showWindow(win) }}}
 	for _, r := range board.rows {
 		target := AgentTarget{board.machineID, board.session, r.ID}
@@ -137,8 +171,31 @@ func trayMenu(d *Desk, win *mygo.Window, board presenceBoard) *mygo.Menu {
 			showWindow(win)
 		}})
 	}
+	if item := trayUpdateItem(d, win, update); item != nil {
+		items = append(items, mygo.Separator(), item)
+	}
 	items = append(items, mygo.Separator(), &mygo.MenuItem{Role: mygo.RoleQuit})
 	return mygo.NewMenu(items)
+}
+
+// trayUpdateItem offers a newer app: Settings, App updates, to install it,
+// or its release page where this install can't update itself.
+func trayUpdateItem(d *Desk, win *mygo.Window, update AppUpdateState) *mygo.MenuItem {
+	if !update.Newer() {
+		return nil
+	}
+	if update.Phase == "outdated" {
+		version := update.Version
+		return &mygo.MenuItem{Label: "Download herdrup " + version + "…", Click: func(*mygo.MenuItem, *mygo.Window) {
+			if err := d.OpenExternalURL(appReleaseURL(version)); err != nil {
+				log.Printf("tray: %v", err)
+			}
+		}}
+	}
+	return &mygo.MenuItem{Label: "Update herdrup to " + update.Version + "…", Click: func(*mygo.MenuItem, *mygo.Window) {
+		d.openAppUpdates()
+		showWindow(win)
+	}}
 }
 
 func showWindow(win *mygo.Window) {

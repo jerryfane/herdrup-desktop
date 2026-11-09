@@ -194,7 +194,8 @@ func (p NotificationPreferences) enabled(kind string) bool {
 		return p.Finishes
 	case "gram":
 		return p.Gram
-	case "test":
+	case "test", "appUpdate":
+		// A newer app is announced once per version (desk_updates_notice.go).
 		return true
 	}
 	return false

@@ -12,7 +12,7 @@ import guestsIcon from "../third_party/phosphor/web/users.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
 import { SavedSwitch } from "./settingsSwitch";
 import { ServerUpdateSettings, type UpdateSuggestion } from "./settingsUpdates";
-import { AppUpdateSettings, appUpdateSummary, appUpdatesShown, watchAppUpdate } from "./appUpdates";
+import { AppUpdateSettings, appUpdateNewer, appUpdateSummary, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import notificationIcon from "../third_party/phosphor/web/bell.svg?url";
 import { version } from "../package.json";
 import "./settings.css";
@@ -206,8 +206,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   // suggestionsGroup (HerdrApp.swift 8087-8127): only while something waits, under the card.
   function renderSuggestions() {
-    const appVersion = appUpdatesShown && appUpdate?.phase === "available" ? appUpdate.version : "";
-    const key = JSON.stringify([update, exhausted, appVersion]);
+    const appVersion = appUpdatesShown && appUpdateNewer(appUpdate) ? appUpdate!.version : "";
+    const appSubtitle = appUpdate?.phase === "outdated" ? "Download it from its release page" : "A newer version of this app is ready";
+    const key = JSON.stringify([update, exhausted, appVersion, appSubtitle]);
     if (key === suggestionsKey) return;
     suggestionsKey = key;
     const rows: HTMLElement[] = [];
@@ -217,7 +218,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       node.id = "settings-suggestion-update"; rows.push(node);
     }
     if (appVersion) {
-      const node = row(`Update herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), "A newer version of this app is ready", pill(1, "waiting"));
+      const node = row(`Update herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), appSubtitle, pill(1, "waiting"));
       node.id = "settings-suggestion-app-update"; rows.push(node);
     }
     if (exhausted.length) {
@@ -494,6 +495,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   });
   renderIndex(); renderPage();
   return {
+    /** Shows one page of Settings (the update notification's and the tray's App updates). */
+    openPage(next: Page) { choose(next); },
     show(show: boolean, nextState: ConnState, nextBoard: BoardUpdate | null) {
       const nextID = `${nextBoard?.machineID ?? ""}\0${nextBoard?.session ?? ""}`;
       const reload = show && (!visible || identity !== nextID || state?.phase !== nextState.phase);
