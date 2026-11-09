@@ -9,6 +9,12 @@ export function closeWriter() {
   for (const editor of editors) editor.collapse();
 }
 
+/** Return sends the prompt; Shift+Return writes a new line (owner, 2026-11-09), and Return
+ *  that confirms an input method's composition (Japanese, Chinese…) sends nothing. */
+export function composerEnterSends(e: Pick<KeyboardEvent, "key" | "shiftKey" | "isComposing">): boolean {
+  return e.key === "Enter" && !e.shiftKey && !e.isComposing;
+}
+
 // MyGo supplies real native paths without reading large files into JS memory.
 export function composerFileDrop(card: HTMLElement, attach: (paths: string[]) => void): () => void {
   const dragover = (event: DragEvent) => {

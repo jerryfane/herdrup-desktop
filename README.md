@@ -128,7 +128,8 @@ further up per click, loading earlier messages as needed. It skips guests' promp
 host marks as not yours (gitmoot, scripts, other agents); a host that doesn't mark them stops at
 every owner prompt. Find hides it, and opening or closing Find stops a jump still loading earlier
 messages. Guests don't see it.
-Chat drafts stay local and are scoped to the host, herdr session and pane.
+Chat drafts stay local and are scoped to the host, herdr session and pane. In the composer,
+Return sends and Shift+Return starts a new line.
 
 Instant typing ports Swift's confidence-epoch predictor to a separate xterm
 overlay; guessed text never enters the terminal buffer. Settings offers Auto,
