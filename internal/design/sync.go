@@ -538,9 +538,9 @@ func oneSidedWidths(value string) bool {
 var customName = regexp.MustCompile(`^\s*(--[A-Za-z0-9_-]+)\s*(?:,|$)`)
 
 // maxExpansions bounds how many variants of one value are checked, and
-// maxExpansionWork how many expansion steps one declaration may take: a
-// variable referenced again is expanded once per value (below), which
-// several such variables would otherwise multiply (review of #173).
+// maxExpansionWork how many expansion steps one declaration may take:
+// choosing one value per repeated variable (below) multiplies the work
+// by each such variable's values (review of #173).
 const (
 	maxExpansions    = 256
 	maxExpansionWork = 4096
@@ -554,26 +554,75 @@ const (
 // rule applies. Unknown references without a fallback (tokens) are left
 // as they are.
 //
-// One element computes one value for a variable, so its references in the
-// same declaration agree: `var(--w) var(--w)` is never `0 3px` (note
-// #48-f2). Only direct references are held together: a variable reached
-// through another one (`--v: var(--w)`) may have been computed on an
-// ancestor and inherited, so it is expanded on its own.
-func expandVars(value string, custom map[string][]string) []string {
-	e := expander{custom: custom, work: maxExpansionWork}
-	return e.expand(value, nil, 5)
+// One element computes one value for a variable, so the declaration's own
+// references to it agree, fallbacks included: `var(--w) var(--x, var(--w))`
+// is never `0 3px` (note #48-f2, review of #176). A variable's declared
+// value is resolved where it was declared, perhaps an ancestor whose
+// value is inherited, so its references are expanded on their own
+// (review of #173).
+//
+// complete is false when the work bound stopped the expansion; the
+// variants then include the value with references left unexpanded, so
+// what is written literally is still checked.
+func expandVars(value string, custom map[string][]string) (variants []string, complete bool) {
+	e := expander{custom: custom, work: maxExpansionWork, choices: map[string]int{}}
+	count, fallback := map[string]int{}, map[string]bool{}
+	var repeated []string
+	for _, r := range varRef.FindAllStringSubmatch(value, -1) {
+		if count[r[1]]++; count[r[1]] == 2 {
+			repeated = append(repeated, r[1])
+		}
+		fallback[r[1]] = fallback[r[1]] || r[2] != ""
+	}
+	// Each declared value, and "unset" (index one past them) when a
+	// reference has a fallback or no value is declared.
+	for _, name := range repeated {
+		e.choices[name] = len(custom[name])
+		if e.choices[name] == 0 || fallback[name] {
+			e.choices[name]++
+		}
+	}
+	out := e.bind(value, repeated, map[string]int{})
+	if e.stopped {
+		out = append(out, value)
+	}
+	return out, !e.stopped
 }
 
 type expander struct {
-	custom map[string][]string
-	work   int // expansion steps left for this declaration
+	custom  map[string][]string
+	choices map[string]int // values to try for each repeated variable
+	work    int            // expansion steps left for this declaration
+	stopped bool           // the work ran out
 }
 
-// expand substitutes value's references. held maps a variable referenced
-// again in this declaration to the value chosen for it: an index into its
-// declared values, or one past them for "unset" (its fallback).
+// bind expands value once per combination of the repeated variables'
+// choices, holding each to one.
+func (e *expander) bind(value string, names []string, held map[string]int) []string {
+	if len(names) == 0 {
+		return e.expand(value, held, 5)
+	}
+	name := names[0]
+	var out []string
+	for k := 0; k < e.choices[name] && len(out) < maxExpansions && !e.stopped; k++ {
+		held[name] = k
+		for _, v := range e.bind(value, names[1:], held) {
+			if len(out) == maxExpansions {
+				break
+			}
+			out = append(out, v)
+		}
+	}
+	delete(held, name)
+	return out
+}
+
+// expand substitutes value's references, holding each variable in held to
+// its chosen value: an index into its declared values, or one past them
+// for "unset" (the reference's fallback).
 func (e *expander) expand(value string, held map[string]int, depth int) []string {
 	if e.work <= 0 {
+		e.stopped = true
 		return []string{value}
 	}
 	e.work--
@@ -598,17 +647,19 @@ func (e *expander) expand(value string, held map[string]int, depth int) []string
 		inner := value[i+4 : end]
 		m := customName.FindStringSubmatch(inner)
 		var subs []string
+		declared := 0
 		if m != nil && depth > 0 {
 			subs = append(subs, e.custom[m[1]]...)
+			declared = len(subs)
 			if comma := strings.IndexByte(inner, ','); comma >= 0 {
 				subs = append(subs, inner[comma+1:])
 			}
 			if k, ok := held[m[1]]; ok {
 				switch {
-				case k < len(e.custom[m[1]]):
-					subs = subs[k : k+1]
-				case len(subs) > len(e.custom[m[1]]):
-					subs = subs[len(subs)-1:]
+				case k < declared:
+					subs, declared = subs[k:k+1], 1
+				case len(subs) > declared:
+					subs, declared = subs[declared:], 0
 				default:
 					subs = nil // unset, and this reference has no fallback
 				}
@@ -622,37 +673,27 @@ func (e *expander) expand(value string, held map[string]int, depth int) []string
 			i = end + next
 			continue
 		}
-		head, rest := value[:i], value[end+1:]
 		// The tail is expanded once, not once per substitution: with each
 		// var() having several values that recomputation is exponential in
-		// the number of references, though the result is capped (#53). A
-		// tail that references this variable again is expanded per value,
-		// with the variable held to it.
-		_, isHeld := held[m[1]]
-		again := !isHeld && referencesVar(rest, m[1])
-		var tails []string
-		if !again {
-			tails = e.expand(rest, held, depth)
-		}
+		// the number of references, though the result is capped (#53).
+		head := value[:i]
+		tails := e.expand(value[end+1:], held, depth)
 		var out []string
 		for k, s := range subs {
-			if len(out) == maxExpansions || e.work <= 0 {
-				return out
+			if len(out) == maxExpansions {
+				break
 			}
-			if again {
-				next := make(map[string]int, len(held)+1)
-				for name, v := range held {
-					next[name] = v
-				}
-				next[m[1]] = k
-				tails = e.expand(rest, next, depth)
+			// A declared value's references were resolved where it was
+			// declared, so nothing is held for them; a fallback is written
+			// here, in this declaration, and keeps its choices.
+			scope := held
+			if k < declared {
+				scope = nil
 			}
-			// A substituted value is the variable's own: its references
-			// were resolved where it was declared, so nothing is held.
-			for _, v := range e.expand(s, nil, depth-1) {
+			for _, v := range e.expand(s, scope, depth-1) {
 				for _, t := range tails {
 					if len(out) == maxExpansions {
-						return out
+						break
 					}
 					out = append(out, head+v+t)
 				}
@@ -663,17 +704,7 @@ func (e *expander) expand(value string, held map[string]int, depth int) []string
 	return []string{value}
 }
 
-var varRef = regexp.MustCompile(`(?i:var)\(\s*(--[A-Za-z0-9_-]+)`)
-
-// referencesVar reports whether value references name directly.
-func referencesVar(value, name string) bool {
-	for _, r := range varRef.FindAllStringSubmatch(value, -1) {
-		if r[1] == name {
-			return true
-		}
-	}
-	return false
-}
+var varRef = regexp.MustCompile(`(?i:var)\(\s*(--[A-Za-z0-9_-]+)\s*(,)?`)
 
 // namedColours are the CSS colour keywords (CSS Color 4) plus the system
 // colours most likely to slip in. currentColor, transparent and the CSS-wide
@@ -716,8 +747,16 @@ func lintDeclaration(prop, value string, custom map[string][]string) []string {
 	// Custom properties are linted too: --accent: #ce58a4 is a raw colour
 	// however it is later used.
 	var out []string
-	if sideBorder.MatchString(prop) || isStripe(prop, expandVars(value, custom)) {
+	if sideBorder.MatchString(prop) {
 		out = append(out, stripe)
+	} else if prop == "border-width" || prop == "box-shadow" {
+		// Only these draw a stripe isStripe can see, so only they are expanded.
+		variants, complete := expandVars(value, custom)
+		if isStripe(prop, variants) {
+			out = append(out, stripe)
+		} else if !complete {
+			out = append(out, fmt.Sprintf("too many var() combinations to check for a side stripe (over %d steps); use fewer variables here", maxExpansionWork))
+		}
 	}
 	if textProperties[prop] {
 		return out
