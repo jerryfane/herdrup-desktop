@@ -40,3 +40,32 @@ func TestLintStylesManyReferencesToAVariableWithSeveralValues(t *testing.T) {
 		t.Fatal("LintStyles took longer than 5s on 40 references to a two-valued variable")
 	}
 }
+
+// One element computes one value for a variable, so two references to it
+// in a declaration agree: `var(--w) var(--w)` is uniformly 0 or 3px, never
+// a side-only width. A different value beside it still is (note #48-f2).
+func TestLintStylesHoldsAVariableToOneValuePerDeclaration(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	css := ".a { --w: 0; }\n.b { --w: 3px; }\n.c { border-width: var(--w) var(--w); }\n" +
+		".d { --v: var(--w); }\n.e { border-width: var(--w) var(--v); }\n" +
+		".f { border-width: 0 var(--w); }\n"
+	if err := os.WriteFile(filepath.Join(root, "src", "app.css"), []byte(css), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var flagged []string
+	for _, e := range LintStyles(root) {
+		flagged = append(flagged, e.Error())
+	}
+	got := strings.Join(flagged, "\n")
+	for _, line := range []string{"app.css:3", "app.css:5"} {
+		if strings.Contains(got, line) {
+			t.Errorf("a uniform width through one variable was flagged at %s:\n%s", line, got)
+		}
+	}
+	if !strings.Contains(got, "app.css:6") {
+		t.Errorf("the side-only width on line 6 was not flagged:\n%s", got)
+	}
+}

@@ -108,11 +108,13 @@ func TestCSS(t *testing.T) {
 
 func TestParseRejectsBadLayoutTokens(t *testing.T) {
 	for name, tc := range map[string]struct{ from, to, want string }{
-		"space as a string":      {`"radius": {"card": 14}`, `"radius": {"card": "14px"}`, "radius.card: want a number"},
-		"tracking as a string":   {`"tracking": 1.2`, `"tracking": "wide"`, "tracking: want a number"},
-		"tabular not a boolean":  {`"tabular": true`, `"tabular": 1`, "tabular: want true or false"},
-		"text role, no font":     {`"rowName": {"font": "system"`, `"rowName": {"font": "serif"`, `font "serif" is not a key`},
-		"bundled font, no faces": {`"family": "system"`, `"family": "Inter"`, "needs faces"},
+		"space as a string":        {`"radius": {"card": 14}`, `"radius": {"card": "14px"}`, "radius.card: want a number"},
+		"tracking as a string":     {`"tracking": 1.2`, `"tracking": "wide"`, "tracking: want a number"},
+		"tabular not a boolean":    {`"tabular": true`, `"tabular": 1`, "tabular: want true or false"},
+		"text role, no font":       {`"rowName": {"font": "system"`, `"rowName": {"font": "serif"`, `font "serif" is not a key`},
+		"bundled font, no faces":   {`"family": "system"`, `"family": "Inter"`, "needs faces"},
+		"system font, no fallback": {`, "fallback": ["-apple-system", "Segoe UI", "sans-serif"]}`, `}`, "font.system: needs a fallback"},
+		"fallback not a name":      {`"SF Mono"`, `7`, "font.machine.fallback.1: want a font name"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := strings.Replace(fixture, tc.from, tc.to, 1)
