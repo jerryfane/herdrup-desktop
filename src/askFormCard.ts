@@ -184,8 +184,10 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   const multiline = field.input_type === "textarea";
   const box = multiline ? el("textarea", "ask-form-input") : el("input", "ask-form-input");
   if (box instanceof HTMLInputElement) {
-   box.type = ["number", "email", "url", "date", "time", "datetime-local", "month", "week", "tel", "color", "range", "password"].includes(field.input_type ?? "") ? field.input_type! : "text";
-   // Bounds before the value: a range clamps its value to the bounds it has when it's set.
+   // A range is a number box: omp reads it as a number with only the bounds it declares, and a
+   // native slider would add the browser's 0–100 and clamp the recommendation (issue #182).
+   const type = field.input_type === "range" ? "number" : field.input_type ?? "";
+   box.type = ["number", "email", "url", "date", "time", "datetime-local", "month", "week", "tel", "color", "password"].includes(type) ? type : "text";
    if (field.min != null) box.min = String(field.min);
    if (field.max != null) box.max = String(field.max);
   } else box.rows = 3;
