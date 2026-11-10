@@ -77,7 +77,15 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  };
  const nodes: HTMLElement[] = [];
  const readOnly = !input.answerable;
- const step = readOnly ? 0 : Math.min(state.step, count);
+ // Read-only steps through the fields too (no review: nothing is sent from here). herdr makes
+ // every form with a textarea read-only (herdr #392 r5), so this is often the owner's own form.
+ const step = Math.max(0, Math.min(state.step, readOnly ? count - 1 : count));
+ // A form of hidden inputs only lists no fields: nothing to show but the way to answer it.
+ if (readOnly && count === 0) {
+  if (form.intro) nodes.push(el("p", "ask-form-intro", form.intro));
+  nodes.push(button("chat-question-terminal", input.terminal, "Answer in Terminal"));
+  return nodes;
+ }
 
  if (step === count) {
   nodes.push(header("Review", count, count));
@@ -190,6 +198,17 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  }
  nodes.push(options);
  if (readOnly) {
+  if (count > 1) {
+   const foot = el("div", "ask-form-foot");
+   const back = button("ask-form-link", () => go(step - 1, false));
+   back.append(symbolNow("chevron.left", 10, "bold"), el("span", "", "Back"));
+   back.disabled = step === 0;
+   const forward = button("ask-form-link", () => go(step + 1, false));
+   forward.append(el("span", "", "Next"), symbolNow("chevron.right", 10, "bold"));
+   forward.disabled = step === count - 1;
+   foot.append(back, forward);
+   nodes.push(foot);
+  }
   if (input.waiting !== null) {
    const line = el("p", "chat-question-waiting");
    line.append(el("span", "chat-question-waiting-dot"), el("span", "", `WAITING FOR ${input.waiting.toUpperCase()} TO ANSWER`));

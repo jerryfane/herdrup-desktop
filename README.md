@@ -118,7 +118,8 @@ with the agent's recommendation preselected and marked Recommended, an Other… 
 field, Back and Next, and a review step whose Submit answers the whole form at once
 (`agent.answer_form`, sending only what differs from the recommendation). Answered, the card
 lists one answer per line. Answering needs a herdr that advertises `ask_form` and marks the form
-answerable; otherwise the first field shows read-only with Answer in Terminal, and a guest whose
+answerable (herdr leaves a form with a textarea to the Terminal); otherwise the form shows
+read-only, still one field at a time with Back and Next, with Answer in Terminal, and a guest whose
 host keeps answers for the owner sees "Waiting for … to answer". Older `questions` asks keep
 the cards above.
 Transcript notes show their source, time and sender in a compact card. Open a note

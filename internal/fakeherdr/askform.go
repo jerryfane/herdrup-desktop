@@ -12,7 +12,9 @@ import (
 const (
 	// AskFormAnswerable: ping advertises ask_form and the form is answerable.
 	AskFormAnswerable = "answerable"
-	// AskFormReadOnly: form_answerable is false (controls herdr can't drive).
+	// AskFormReadOnly: form_answerable is false, as herdr makes a form with a
+	// <textarea> (herdr #392 r5: omp's editor can't be cleared safely); its
+	// notes field is that textarea, prefilled.
 	AskFormReadOnly = "readonly"
 	// AskFormMoved: agent.answer_form answers ask_form_moved, as when
 	// someone is answering in the Terminal.
@@ -74,10 +76,12 @@ var askFormFields = []formField{
 		{"dashboard", "A row in the Team dashboard (Partners) and a Gram to you", true},
 		{"email", "Email to an @lenscale.ai inbox (write which in Other)", false},
 	}},
-	{Name: "notes", Kind: "text", Title: "Anything else", InputType: "textarea", Placeholder: "Optional"},
+	{Name: "notes", Kind: "text", Title: "Anything else", InputType: "text", Placeholder: "Optional"},
 }
 
-func askFormJSON() map[string]any {
+// askFormJSON is the form as herdr reports it; readOnly makes the notes field
+// the prefilled textarea that leaves herdr unable to answer.
+func askFormJSON(readOnly bool) map[string]any {
 	fields := make([]any, len(askFormFields))
 	for i, f := range askFormFields {
 		options := make([]any, len(f.Options))
@@ -91,6 +95,9 @@ func askFormJSON() map[string]any {
 		}
 		if f.Kind == "text" {
 			field["input_type"], field["placeholder"], field["value"] = f.InputType, f.Placeholder, ""
+			if readOnly {
+				field["input_type"], field["value"] = "textarea", "Ship after the review.\nNo launch post yet."
+			}
 		}
 		fields[i] = field
 	}
@@ -211,7 +218,7 @@ func (x *Interaction) handleAskForm(raw json.RawMessage) (any, *APIError) {
 	}
 	x.entries = append(x.entries, map[string]any{
 		"kind": "ask", "id": "q1", "ts_ms": 5, "questions": askFormQuestions(), "answer": lines,
-		"form": askFormJSON(), "form_answer": answers, "form_status": "answered",
+		"form": askFormJSON(false), "form_answer": answers, "form_status": "answered",
 	})
 	x.answered = true
 	return map[string]any{"type": "ask_form_answered", "status": "answered", "answers": answers}, nil

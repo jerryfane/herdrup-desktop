@@ -102,7 +102,7 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		}
 		if !x.answered && x.form != "" {
 			page["pending_ask"] = map[string]any{"id": "q1", "answerable": false, "questions": askFormQuestions(),
-				"form": askFormJSON(), "form_answerable": x.form != AskFormReadOnly}
+				"form": askFormJSON(x.form == AskFormReadOnly), "form_answerable": x.form != AskFormReadOnly}
 		} else if !x.answered {
 			page["pending_ask"] = map[string]any{"id": "q1", "answerable": true, "questions": []any{map[string]any{"question": "Which verification should run?", "multi": false, "options": interactionQuestionOptions}}}
 		}
