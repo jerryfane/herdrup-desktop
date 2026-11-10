@@ -1237,7 +1237,9 @@ class Detail {
  }
  /** What a question card shows depends on: redraw it only when one of these changes. */
  private questionSignature(row: ChatRow | null, id: string): unknown[] {
-  return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version, this.localFormAnswers.get(id), this.view?.askForm];
+  // A form's state appears on its first draw at version 0: count none as 0 too, or the first
+  // unchanged poll would redraw the card and take the focus from a field being typed in.
+  return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.view?.askForm];
  }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
   * its board status, or with none yet the transcript's working turn — and the chat loads. One
@@ -1565,7 +1567,7 @@ class Detail {
   const viewer = this.viewer();
   const waiting = waitingForOwner(viewer, this.answersRefused);
   const form = entry.form ?? (pending?.id === entry.id ? pending.form : null) ?? null;
-  if (form || entry.form_answer || entry.form_status) { this.renderFormQuestion(card, entry, form, pending, viewer, waiting); return row; }
+  if (form || entry.form_answer || entry.form_status) { this.renderFormQuestion(card, entry, form, pending, viewer, waiting, showLink ? "chat" : "sheet"); return row; }
   card.append(el("p", "chat-question-title", questions.map(question => question.question).join("\n")));
   if (answer) {
    const chosen = el("p", "chat-question-answer", "✓ " + chooser(viewer, waiting));
@@ -1599,7 +1601,7 @@ class Detail {
  /** omp's HTML-form ask (owner 2026-11-10, proposal B): the stepper while it waits, the answers
   *  once given. Answering needs a host with capabilities.ask_form and herdr's form_answerable;
   *  otherwise the form shows read-only with "Answer in Terminal", or a guest waits for the owner. */
- renderFormQuestion(card: HTMLElement, entry: Entry, form: AskForm | null, pending: TranscriptPage["pending_ask"], viewer: Viewer, waiting: string | null) {
+ renderFormQuestion(card: HTMLElement, entry: Entry, form: AskForm | null, pending: TranscriptPage["pending_ask"], viewer: Viewer, waiting: string | null, surface: "chat" | "sheet") {
   card.classList.add("ask-form");
   const local = entry.form_answer ? undefined : this.localFormAnswers.get(entry.id);
   const answers = entry.form_answer ?? local?.answers;
@@ -1625,6 +1627,7 @@ class Detail {
    answerable: !!this.view?.askForm && active.form_answerable === true && waiting === null && !problem?.offersTerminal,
    sending: this.answering,
    problem,
+   surface,
    changed: () => this.drawChat(false),
    submit: values => { void this.answerForm(entry.id, values, () => draftAnswers(form, state.draft)); },
    terminal: () => { void this.chooseMode("terminal"); },
@@ -1648,7 +1651,7 @@ class Detail {
     if (this.entries[i]!.kind === "summary") break;
     if (this.entries[i]!.kind === "user") { prompt = this.entries[i]; break; }
    }
-   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version, this.localFormAnswers.get(id), this.view?.askForm]);
+   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.view?.askForm]);
    if (next === signature) return; signature = next;
    const expanded = content.querySelector("details")?.open ?? false;
    content.replaceChildren();

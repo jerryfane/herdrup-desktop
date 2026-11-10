@@ -31,6 +31,29 @@ test("a form with herdr's omitted fields reads as their defaults", () => {
  expect(formValues(f, { ...draft, where: chooseOption(f.fields[0]!, draft.where!, "a") })).toEqual({ where: { options: ["a"] } });
 });
 
+// A field left out keeps its default, so emptying a prefilled text field must be sent.
+test("clearing a prefilled text field sends empty text", () => {
+ const f = form(text("notes", { value: "ship it" }));
+ expect(formValues(f, { notes: { options: [], other: null, text: "" } })).toEqual({ notes: { text: "" } });
+});
+
+// omp checks lengths and the pattern on the number a number field submits (omp textValue).
+test("a number field is checked and reported as the number it reads as", () => {
+ const n = text("n", { input_type: "number", value: "1.0", maxlength: 1, pattern: "[0-9]" });
+ const draft = formDraft(form(n)).n!;
+ expect(fieldProblem(n, draft)).toBeNull();
+ expect(fieldAnswer(n, draft)).toBe("1");
+});
+
+// herdr refuses control characters in what it types, except a textarea's new lines and tabs.
+test("an answer herdr can't type is caught before Submit", () => {
+ const where = choice("where");
+ expect(fieldProblem(where, { options: [], other: "two\nlines", text: "" })).toBe("Keep your answer on one line");
+ const draft = (value: string) => ({ options: [], other: null, text: value });
+ expect(fieldProblem(text("n"), draft("a\tb"))).toBe("Keep your answer on one line");
+ expect(fieldProblem(text("n", { input_type: "textarea" }), draft("line one\nline two\tok"))).toBeNull();
+});
+
 test("a radio answers with exactly one option or Other", () => {
  const f = form(choice("where"));
  const where = f.fields[0]!;

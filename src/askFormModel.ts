@@ -83,10 +83,27 @@ export function fieldQuestion(field: AskFormField): string {
  return oneLine(field.title || description || lone || field.name);
 }
 
+/** A text field's value as omp submits it (omp textValue): a number or range input's text as
+ *  the number it reads as ("1.0" is 1), any other text as typed. */
+function submittedText(field: AskFormField, text: string): string {
+ const type = field.input_type ?? "text";
+ if ((type === "number" || type === "range") && text.trim() !== "") {
+  const number = Number(text);
+  if (Number.isFinite(number)) return String(number);
+ }
+ return text;
+}
+
+/** herdr types answers into omp's form and refuses control characters, except a textarea's
+ *  new lines and tabs (herdr src/api/answer/form.rs has_control_chars). */
+function hasControlChars(text: string, multiline: boolean): boolean {
+ return [...text].some(ch => /\p{Cc}/u.test(ch) && !(multiline && (ch === "\n" || ch === "\t")));
+}
+
 /** What omp will report for the field (omp answerText): option labels, comma-joined, "Other: …"
  *  for typed text, the text of a text field; "" when nothing is chosen. */
 export function fieldAnswer(field: AskFormField, draft: FieldDraft): string {
- if (field.kind === "text") return draft.text;
+ if (field.kind === "text") return submittedText(field, draft.text);
  const labels = optionsOf(field).filter(option => draft.options.includes(option.value) && !option.disabled).map(option => oneLine(option.label) || option.value);
  const typed = field.other ? draft.other?.trim() : "";
  if (typed) {
@@ -109,18 +126,21 @@ export function fieldProblem(field: AskFormField, draft: FieldDraft): string | n
  if (field.kind === "choice") {
   const typed = field.other && (draft.other?.trim() ?? "") !== "";
   if (draft.other !== null && !typed && !field.multi) return "Type your answer, or pick an option";
+  if (typed && hasControlChars(draft.other!, false)) return "Keep your answer on one line";
   if (!field.required || draft.options.length > 0 || typed) return null;
   return isListChoice(field) ? "Select at least one" : "Required";
  }
- const text = draft.text;
- if (text.trim() === "") return field.required ? "Required" : null;
+ if (draft.text.trim() === "") return field.required ? "Required" : null;
  const type = field.input_type ?? "text";
+ if (hasControlChars(draft.text, type === "textarea")) return "Keep your answer on one line";
  if (type === "number" || type === "range") {
-  const number = Number(text);
+  const number = Number(draft.text);
   if (!Number.isFinite(number)) return "Enter a number";
   if (field.min != null && number < field.min) return `Must be at least ${field.min}`;
   if (field.max != null && number > field.max) return `Must be at most ${field.max}`;
  }
+ // Lengths and the pattern apply to what omp submits, as its fieldError checks them.
+ const text = submittedText(field, draft.text);
  if (field.minlength != null && text.length < field.minlength) return `Needs at least ${field.minlength} characters`;
  if (field.maxlength != null && text.length > field.maxlength) return `At most ${field.maxlength} characters`;
  if (type === "email" && !/^[^\s@]+@[^\s@]+$/.test(text)) return "Enter an email address";

@@ -20,6 +20,9 @@ describe("guest answers", () => {
     expect(withheldFromCaller(single(false, ["a", "b"], true))).toBe(false);
     expect(withheldFromCaller(single(false, []))).toBe(false);
     expect(withheldFromCaller({ id: "a2", answerable: false, questions: [single(false).questions[0]!, single(false).questions[0]!] })).toBe(false);
+    // An HTML form's answerable is always false and its one-question fallback looks withheld;
+    // form_answerable says whether this caller may answer.
+    expect(withheldFromCaller({ ...single(false), form: { fields: [] }, form_answerable: true })).toBe(false);
   });
 
   test("an answer is credited as native does", () => {

@@ -30,12 +30,12 @@ export interface AskFormState {
  shownProblem: string | null;
  /** Bumped on every change that redraws the card; typing doesn't, so it keeps the focus. */
  version: number;
- /** Other was just opened: its field takes the focus once drawn. */
- focusOther: boolean;
+ /** Other was just opened on this card: its field takes the focus once that card is drawn. */
+ focusOther: "chat" | "sheet" | null;
 }
 
 export function askFormState(form: AskForm): AskFormState {
- return { step: 0, draft: formDraft(form), fromReview: false, shownProblem: null, version: 0, focusOther: false };
+ return { step: 0, draft: formDraft(form), fromReview: false, shownProblem: null, version: 0, focusOther: null };
 }
 
 export interface AskFormCardInput {
@@ -47,6 +47,9 @@ export interface AskFormCardInput {
  waiting: string | null;
  sending: boolean;
  problem: { message: string; offersTerminal: boolean } | null;
+ /** Which card this is: the transcript's or the question sheet's. Both draw the same state, so
+  *  a focus request belongs to the one whose Other was clicked. */
+ surface: "chat" | "sheet";
  /** Redraw after a change to `state`. */
  changed(): void;
  submit(values: Record<string, FieldValue>): void;
@@ -150,28 +153,34 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   if (field.other) {
    if (readOnly) options.append(el("div", "ask-form-option readonly ghost", "Other…"));
    else if (draft.other === null) {
-    options.append(button("ask-form-option ghost", () => { set(chooseOther(field, draftOf(field))); state.focusOther = true; state.version++; input.changed(); }, "Other…"));
+    options.append(button("ask-form-option ghost", () => { set(chooseOther(field, draftOf(field))); state.focusOther = input.surface; state.version++; input.changed(); }, "Other…"));
    } else {
     const other = el("label", "ask-form-other");
     const caption = field.multi ? button("ask-form-other-caption", () => { set(chooseOther(field, draftOf(field))); state.version++; input.changed(); }, "Other") : el("span", "ask-form-other-caption", "Other");
     if (field.multi) caption.setAttribute("aria-label", "Remove Other");
-    const box = el("textarea", "ask-form-input");
-    box.rows = 1; box.value = draft.other; box.placeholder = "Type your answer";
+    // One line: herdr types it into omp's Other field, which takes no new lines.
+    const box = el("input", "ask-form-input");
+    box.type = "text"; box.value = draft.other; box.placeholder = "Type your answer";
     box.disabled = input.sending;
-    const fit = () => { box.style.height = "auto"; box.style.height = `${box.scrollHeight}px`; };
-    box.oninput = () => { set({ ...draftOf(field), other: box.value }); fit(); };
-    box.onkeydown = event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); next(); } };
+    box.oninput = () => set({ ...draftOf(field), other: box.value });
+    box.onkeydown = event => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); next(); } };
     other.append(caption, box);
     options.append(other);
-    const focus = state.focusOther; state.focusOther = false;
-    requestAnimationFrame(() => { fit(); if (focus && box.isConnected) box.focus(); });
+    if (state.focusOther === input.surface) {
+     state.focusOther = null;
+     requestAnimationFrame(() => { if (box.isConnected) box.focus(); });
+    }
    }
   }
  } else {
   const multiline = field.input_type === "textarea";
   const box = multiline ? el("textarea", "ask-form-input") : el("input", "ask-form-input");
-  if (box instanceof HTMLInputElement) box.type = ["number", "email", "url", "date", "time", "datetime-local", "month", "week", "tel", "color", "range"].includes(field.input_type ?? "") ? field.input_type! : "text";
-  else box.rows = 3;
+  if (box instanceof HTMLInputElement) {
+   box.type = ["number", "email", "url", "date", "time", "datetime-local", "month", "week", "tel", "color", "range", "password"].includes(field.input_type ?? "") ? field.input_type! : "text";
+   // Bounds before the value: a range clamps its value to the bounds it has when it's set.
+   if (field.min != null) box.min = String(field.min);
+   if (field.max != null) box.max = String(field.max);
+  } else box.rows = 3;
   box.value = readOnly ? field.value ?? "" : draft.text;
   box.placeholder = field.placeholder ?? "";
   box.disabled = readOnly || input.sending;
