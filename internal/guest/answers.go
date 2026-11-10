@@ -21,6 +21,16 @@ func (t *Transport) AgentAnswer(ctx context.Context, params herdrapi.AgentAnswer
 	return reply, err
 }
 
+// AgentAnswerForm is agent.answer_form on the granted agent: an omp
+// HTML-form ask, under the same guest-answer rules as agent.answer. herdr
+// says whether this guest may answer through the pending ask's
+// form_answerable; a host that refuses it answers guest_forbidden.
+func (t *Transport) AgentAnswerForm(ctx context.Context, params herdrapi.AgentAnswerFormParams) (herdrapi.ResponseResultAskFormAnswered, error) {
+	var reply herdrapi.ResponseResultAskFormAnswered
+	err := t.Call(ctx, "agent.answer_form", params, &reply)
+	return reply, err
+}
+
 // SendMenuKeys is pane.send_keys on the granted pane. The gate takes only
 // menu keys, at most one that commits the menu and that one last, and only
 // while the agent awaits menu input (guest_gate.rs:472-524, 992-1038).

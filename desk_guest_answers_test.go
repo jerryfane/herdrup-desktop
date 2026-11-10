@@ -10,6 +10,7 @@ import (
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 	"github.com/jerryfane/herdrup-desktop/internal/guest"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
 // guestOwnerHost is the owner's herdr behind a fake guest relay: one omp
@@ -48,6 +49,11 @@ func (h *guestOwnerHost) handle(method string, raw json.RawMessage) (any, *fakeh
 		_ = json.Unmarshal(raw, &p)
 		h.answers = append(h.answers, p)
 		return map[string]any{"type": "agent_answer", "status": "answered"}, nil
+	case "agent.answer_form":
+		var p map[string]any
+		_ = json.Unmarshal(raw, &p)
+		h.answers = append(h.answers, p)
+		return map[string]any{"type": "ask_form_answered", "status": "answered", "answers": []any{map[string]any{"name": "where", "question": "Where to build", "answer": "Apex"}}}, nil
 	case "pane.send_keys":
 		var p struct {
 			PaneID string   `json:"pane_id"`
@@ -155,6 +161,31 @@ func TestGuestAnswersAndMenuKeysGoThroughTheGuestLink(t *testing.T) {
 	}
 }
 
+// A guest answers an omp HTML form as it answers a question: agent.answer_form
+// goes through the guest link with the guest's values, and the owner's
+// herdr's answers come back.
+func TestGuestFormAnswerGoesThroughTheGuestLink(t *testing.T) {
+	owner := &guestOwnerHost{status: "blocked", seq: 4}
+	relay, err := fakeherdr.NewGuestRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.Handle = owner.handle
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
+	if !view.AskForm {
+		t.Fatalf("a guest's page must leave forms to form_answerable: %+v", view)
+	}
+	reply, err := d.ChatAnswerForm(context.Background(), view.Token, "q1", map[string]herdrapi.AskFormValue{"where": {Options: []string{"apex"}}})
+	if err != nil || reply.Status != "answered" || len(reply.Answers) != 1 || reply.Answers[0].Answer != "Apex" || reply.OwnerAnswers {
+		t.Fatalf("guest form answer: %+v, %v", reply, err)
+	}
+	answers, _ := owner.sent()
+	want := []map[string]any{{"target": "w1:p2", "ask_id": "q1", "values": map[string]any{"where": map[string]any{"options": []any{"apex"}}}}}
+	if !reflect.DeepEqual(answers, want) {
+		t.Errorf("owner's herdr got %v, want %v", answers, want)
+	}
+}
+
 // A herdr older than guest answers refuses both with guest_forbidden: the
 // page learns the host keeps answers for the owner and waits for them
 // (ChatView.swift:153-155, GuestPaneView.swift:806-808).
@@ -176,6 +207,9 @@ func TestGuestOnAnOlderHostWaitsForTheOwner(t *testing.T) {
 	// (GuestPaneView.sendMenuKey: refresh, then isBlocked).
 	if reply, err := d.GuestMenuKey(ctx, view.Token, "Enter"); err != nil || !reply.OwnerAnswers {
 		t.Fatalf("menu key on an older host: %+v, %v", reply, err)
+	}
+	if reply, err := d.ChatAnswerForm(ctx, view.Token, "q1", nil); err != nil || reply.Code != "guest_forbidden" || !reply.OwnerAnswers {
+		t.Fatalf("form answer on an older host: %+v, %v", reply, err)
 	}
 	if answers, keys := owner.sent(); len(answers) != 0 || len(keys) != 0 {
 		t.Errorf("an older host passed a guest's answer on: %v %v", answers, keys)

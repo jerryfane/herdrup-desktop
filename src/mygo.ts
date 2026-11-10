@@ -110,6 +110,12 @@ export interface AgentView {
    */
   guestSelf?: string;
   plainTerminal: boolean;
+  /**
+   * AskForm: the host answers omp's HTML-form asks (capabilities.ask_form).
+   * A guest's gate advertises no capabilities, so for a guest herdr's
+   * form_answerable on the pending ask decides alone.
+   */
+  askForm: boolean;
 }
 
 /** AppUpdateState is what Settings shows about updating Herdrup itself. */
@@ -145,6 +151,27 @@ export interface AppUpdateState {
    * never.
    */
   checkedAt: number;
+}
+
+/** One answered field, copied from the ask result's `details.answers`. */
+export interface AskFormAnswer {
+  /** The chosen label, `Other: <text>`, comma-joined labels, or the text. */
+  answer: string;
+  name: string;
+  question: string;
+}
+
+/** One field's answer in `agent.answer_form`. */
+export interface AskFormValue {
+  /**
+   * Choice fields: the chosen option values (a radio group or single
+   * select takes at most one; none when answering with `other`).
+   */
+  options?: string[];
+  /** Choice fields with `other`: the free text typed into Other. */
+  other?: string;
+  /** Text fields: the whole answer, replacing any prefilled text. */
+  text?: string;
 }
 
 /**
@@ -208,6 +235,19 @@ export interface BoardUpdate {
   session: string;
   /** MachineID identifies the saved SSH connection that owns this board. */
   machineID: string;
+}
+
+export interface ChatAnswerFormReply {
+  /**
+   * Status: answered once the tool result matched; sent_unconfirmed when
+   * the keys went in but no result arrived in time (Answers then empty).
+   */
+  status?: AgentAnswerStatus;
+  answers?: AskFormAnswer[];
+  code?: string;
+  message?: string;
+  /** OwnerAnswers: as ChatAnswerReply's. */
+  ownerAnswers?: boolean;
 }
 
 export interface ChatAnswerReply {
@@ -1029,6 +1069,13 @@ export const Desk = {
   },
   chatAnswer(token: string, askID: string, option: string): Promise<ChatAnswerReply> {
     return call("Desk.ChatAnswer", token, askID, option);
+  },
+  /**
+   * ChatAnswerForm answers an omp HTML-form ask with agent.answer_form; values
+   * holds only the fields that differ from the agent's recommendation.
+   */
+  chatAnswerForm(token: string, askID: string, values: Record<string, AskFormValue>): Promise<ChatAnswerFormReply> {
+    return call("Desk.ChatAnswerForm", token, askID, values);
   },
   /** ChatMenu uses an OS menu so transcript polling cannot replace an open menu. */
   chatMenu(id: string, offersMarkdown: boolean): Promise<void> {

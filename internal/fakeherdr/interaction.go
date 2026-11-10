@@ -20,6 +20,8 @@ type Interaction struct {
 	answered  bool
 	// When the fixture started: the subagents' times stay put across polls, as herdr's do.
 	launchMs int64
+	// form is the ask-form mode (askform.go); "" serves the plain question.
+	form string
 }
 
 var interactionQuestionOptions = []string{"Run focused checks", "Inspect the diff", "Use Terminal"}
@@ -98,7 +100,10 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		} else {
 			page["entries"] = []any{map[string]any{"kind": "user", "id": "older", "ts_ms": 0, "author": "owner", "text": "Earlier conversation page."}}
 		}
-		if !x.answered {
+		if !x.answered && x.form != "" {
+			page["pending_ask"] = map[string]any{"id": "q1", "answerable": false, "questions": askFormQuestions(),
+				"form": askFormJSON(), "form_answerable": x.form != AskFormReadOnly}
+		} else if !x.answered {
 			page["pending_ask"] = map[string]any{"id": "q1", "answerable": true, "questions": []any{map[string]any{"question": "Which verification should run?", "multi": false, "options": interactionQuestionOptions}}}
 		}
 		return page, nil, true
@@ -118,6 +123,9 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 			delivery = "submitted"
 		}
 		return map[string]any{"type": "agent_prompted", "agent": map[string]any{"pane_id": p.Target, "agent": "omp", "agent_status": "idle"}, "delivery": delivery}, nil, true
+	case "agent.answer_form":
+		value, problem := x.handleAskForm(raw)
+		return value, problem, true
 	case "agent.answer":
 		if x.answered {
 			return nil, &APIError{Code: "ask_not_pending", Message: "The question is no longer pending"}, true

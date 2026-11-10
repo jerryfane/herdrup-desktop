@@ -112,6 +112,15 @@ Answer refusals stay inside that card. Changed options or an unavailable termina
 question UI offer Answer in Terminal, which dismisses the sheet and focuses the
 live terminal. A successful answer stays visible while the transcript catches up;
 server-reported answers supersede the local choice.
+omp's HTML-form questions (omp 18.18.3 and later) show one field at a time: "1 of N" with
+progress dashes, the agent's intro on the first step, each field's title and context, its options
+with the agent's recommendation preselected and marked Recommended, an Other… row that opens a text
+field, Back and Next, and a review step whose Submit answers the whole form at once
+(`agent.answer_form`, sending only what differs from the recommendation). Answered, the card
+lists one answer per line. Answering needs a herdr that advertises `ask_form` and marks the form
+answerable; otherwise the first field shows read-only with Answer in Terminal, and a guest whose
+host keeps answers for the owner sees "Waiting for … to answer". Older `questions` asks keep
+the cards above.
 Transcript notes show their source, time and sender in a compact card. Open a note
 to view its sheet; Show context expands the selectable Markdown body.
 Right-click a prompt, reply or expanded thought (or press Shift+F10 while it is

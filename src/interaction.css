@@ -353,6 +353,54 @@
 .chat-question:not([data-state="open"]) .chat-question-title { margin-bottom:4px; font-size:calc(14px * var(--chat-text-scale, 1)); font-weight:500; color:var(--color-text-dim); }
 .chat-question-answer { margin:0; color:var(--color-text-dim); font:400 calc(14.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-question-answer strong { color:var(--color-text); font-weight:600; }
+/* omp's HTML-form ask: the stepper (owner 2026-11-10, proposal B; iPhone's .bcard). Neutral card,
+   no colour per field; the selected option fills with ink as the old card's primary button. */
+.ask-form-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.ask-form-step { font:600 11px var(--font-machine); letter-spacing:1.2px; text-transform:uppercase; color:var(--color-text-faint); }
+.ask-form-bars { display:flex; gap:4px; }
+.ask-form-bars i { width:16px; height:4px; border-radius:2px; background:var(--color-hairline); }
+.ask-form-bars i.done { background:var(--color-text-dim); }
+.ask-form-bars i.current { background:var(--color-text); }
+.ask-form-intro, .ask-form-answered-intro { margin:0 0 10px; color:var(--color-text-dim); font:400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); white-space:pre-wrap; }
+.ask-form-answered-intro { margin-bottom:6px; font-weight:500; }
+.ask-form-title { margin:0; color:var(--color-text); font:600 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.ask-form-description { margin:4px 0 0; color:var(--color-text-dim); font:400 calc(13.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); white-space:pre-wrap; }
+.ask-form-options { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+.chat-question .ask-form-option { display:flex; flex-direction:column; align-items:stretch; width:100%; min-height:40px; padding:10px 14px; border:0; border-radius:12px; background:var(--color-surface-raised); color:var(--color-text); text-align:left; text-decoration:none; font:500 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); cursor:pointer; }
+/* Filled, as iPhone's selected row; not the generic pressed-button underline. */
+.chat-question .ask-form-option.selected { background:var(--color-text); color:var(--color-ground); text-decoration:none; }
+.chat-question .ask-form-option.ghost { background:none; outline:1px solid var(--color-hairline); outline-offset:-1px; color:var(--color-text-dim); }
+.chat-question .ask-form-option.readonly { background:none; outline:1px solid var(--color-hairline-quiet); outline-offset:-1px; color:var(--color-text-dim); cursor:default; }
+.chat-question .ask-form-option:disabled { opacity:.6; cursor:default; }
+.ask-form-recommended { margin-top:2px; color:var(--color-text-faint); font:500 calc(12.5px * var(--chat-text-scale, 1))/1.3 var(--font-app); }
+.ask-form-option.selected .ask-form-recommended { color:var(--color-ground); opacity:.55; }
+.ask-form-other { display:flex; flex-direction:column; gap:7px; padding:9px 12px 12px; border-radius:12px; background:var(--color-surface-raised); }
+.chat-question .ask-form-other-caption { align-self:flex-start; padding:0; border:0; background:none; color:var(--color-text-dim); font:500 calc(12.5px * var(--chat-text-scale, 1))/1.3 var(--font-app); }
+button.ask-form-other-caption { cursor:pointer; }
+.chat-question .ask-form-input { display:block; width:100%; box-sizing:border-box; margin:0; padding:7px 10px; border:1px solid var(--color-hairline); border-radius:8px; background:var(--color-ground); color:var(--color-text); font:400 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); resize:none; overflow:hidden; }
+.chat-question textarea.ask-form-input[rows="3"] { overflow:auto; resize:vertical; }
+.chat-question .ask-form-input:focus { outline:none; border-color:var(--color-text-dim); }
+.ask-form-problem { margin:8px 0 0; color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
+.ask-form-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin-top:12px; }
+.chat-question .ask-form-link { display:flex; align-items:center; gap:3px; padding:0; border:0; background:none; color:var(--color-text-dim); font:600 calc(14px * var(--chat-text-scale, 1)) var(--font-app); cursor:pointer; }
+.chat-question .ask-form-link:disabled { color:var(--color-hairline); cursor:default; }
+.ask-form-hint { color:var(--color-text-faint); font:400 13px var(--font-app); }
+.chat-question .ask-form-next, .chat-question .ask-form-submit { height:34px; padding:0 20px; border:0; border-radius:17px; background:var(--color-text); color:var(--color-ground); font:600 14px var(--font-app); cursor:pointer; }
+.chat-question .ask-form-submit { width:100%; height:40px; border-radius:12px; font-size:15px; }
+.chat-question .ask-form-next:disabled, .chat-question .ask-form-submit:disabled { opacity:.6; cursor:default; }
+.ask-form-review { display:flex; flex-direction:column; margin:8px 0 12px; }
+.chat-question .ask-form-review-row { display:flex; align-items:center; gap:10px; width:100%; padding:9px 0; border:0; border-top:1px solid var(--color-hairline-quiet); background:none; color:var(--color-text); text-align:left; cursor:pointer; }
+.chat-question .ask-form-review-row:first-child { border-top:0; }
+.ask-form-review-text { display:flex; flex:1; min-width:0; flex-direction:column; }
+.ask-form-review-question { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--color-text-dim); font:400 13px/1.3 var(--font-app); }
+.ask-form-review-answer { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font:500 calc(14.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.ask-form-review-answer.none { color:var(--color-text-faint); }
+.ask-form-review-meta { display:flex; align-items:center; gap:4px; flex:none; color:var(--color-text-faint); font:600 12.5px var(--font-app); }
+.ask-form-review-meta > span { color:var(--color-text); }
+.ask-form-answered-head { display:flex; align-items:center; gap:7px; margin:0; color:var(--color-text-dim); font:400 calc(14.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.ask-form-answered-row { display:flex; align-items:baseline; gap:10px; margin:6px 0 0; font:500 calc(14.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.ask-form-answered-number { flex:none; width:8px; color:var(--color-text-faint); font:400 12px var(--font-machine); }
+.ask-form-answered-text { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .agent-detail .chat-note, .subagent-sheet .chat-note { display:flex; align-items:center; gap:10px; padding:10px 12px; border:0; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:14px; background:var(--color-surface); color:var(--color-text); text-align:left; cursor:pointer; }
 .chat-note-icon { display:flex; align-items:center; justify-content:center; flex:none; width:30px; height:30px; border-radius:9px; background:var(--color-surface-raised); color:var(--color-text-dim); }
 .chat-note-glyph { width:14px; height:14px; background:currentColor; mask:var(--note-icon) center/contain no-repeat; -webkit-mask:var(--note-icon) center/contain no-repeat; }

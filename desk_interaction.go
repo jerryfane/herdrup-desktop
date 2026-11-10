@@ -40,6 +40,10 @@ type AgentView struct {
 	// people's prompts, never the reader's own (ChatView.swift byline).
 	GuestSelf     string `json:"guestSelf,omitempty"`
 	PlainTerminal bool   `json:"plainTerminal"`
+	// AskForm: the host answers omp's HTML-form asks (capabilities.ask_form).
+	// A guest's gate advertises no capabilities, so for a guest herdr's
+	// form_answerable on the pending ask decides alone.
+	AskForm bool `json:"askForm"`
 }
 
 type interaction struct {
@@ -120,6 +124,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
 			GuestOwner: guestOwner(l), GuestSelf: guestSelf(l),
+			AskForm: l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),
@@ -432,6 +437,48 @@ func (d *Desk) ChatAnswer(ctx context.Context, token, askID, option string) (Cha
 		return ChatAnswerReply{}, err
 	}
 	return ChatAnswerReply{Status: result.Status}, nil
+}
+
+type ChatAnswerFormReply struct {
+	// Status: answered once the tool result matched; sent_unconfirmed when
+	// the keys went in but no result arrived in time (Answers then empty).
+	Status  herdrapi.AgentAnswerStatus `json:"status,omitempty"`
+	Answers []herdrapi.AskFormAnswer   `json:"answers,omitempty"`
+	Code    string                     `json:"code,omitempty"`
+	Message string                     `json:"message,omitempty"`
+	// OwnerAnswers: as ChatAnswerReply's.
+	OwnerAnswers bool `json:"ownerAnswers,omitempty"`
+}
+
+// ChatAnswerForm answers an omp HTML-form ask with agent.answer_form; values
+// holds only the fields that differ from the agent's recommendation.
+func (d *Desk) ChatAnswerForm(ctx context.Context, token, askID string, values map[string]herdrapi.AskFormValue) (ChatAnswerFormReply, error) {
+	v, err := d.agentView(token)
+	if err != nil {
+		return ChatAnswerFormReply{}, err
+	}
+	ctx, cancel := viewRequest(ctx, v.ctx)
+	defer cancel()
+	defer v.at.link.pollGuestStatus()
+	params := herdrapi.AgentAnswerFormParams{Target: v.PaneID, AskID: askID, Values: values}
+	var result herdrapi.ResponseResultAskFormAnswered
+	if guestLink := v.at.link.guest; guestLink != nil {
+		result, err = guestLink.AgentAnswerForm(ctx, params)
+	} else {
+		result, err = v.client.AgentAnswerForm(ctx, params)
+	}
+	if err != nil {
+		var api *bridge.APIError
+		if errors.As(err, &api) {
+			return ChatAnswerFormReply{Code: api.Code, Message: api.Message, OwnerAnswers: v.Guest && api.Code == guestForbidden}, nil
+		}
+		var unsupported *engine.ErrUnsupported
+		if errors.As(err, &unsupported) {
+			return ChatAnswerFormReply{Code: "ask_unsupported", Message: unsupported.Error()}, nil
+		}
+		return ChatAnswerFormReply{}, err
+	}
+	return ChatAnswerFormReply{Status: result.Status, Answers: result.Answers}, nil
 }
 
 // OpenExternalURL deliberately excludes executable/file URLs from model output.

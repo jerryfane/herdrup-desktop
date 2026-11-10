@@ -620,8 +620,9 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		m := params()
 		m["target"], m["text"] = pane, r.GuestName+" (via HerdrUp): "+p.Text
 		write(forward(m))
-	case "agent.answer":
-		// guest_gate.rs:972-991; refused before herdr #352.
+	case "agent.answer", "agent.answer_form":
+		// guest_gate.rs:972-991; refused before herdr #352. agent.answer_form
+		// follows agent.answer's rules (herdr ask-form contract).
 		if r.OwnerOnlyAnswers || !names(p.Target) {
 			refuse("guest_forbidden")
 			return
@@ -633,7 +634,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		m := params()
 		m["target"] = pane
 		result, apiErr := forward(m)
-		if apiErr == nil {
+		if apiErr == nil && req.Method == "agent.answer" {
 			result = map[string]any{"type": "agent_answer", "status": result["status"]}
 		}
 		write(result, apiErr)

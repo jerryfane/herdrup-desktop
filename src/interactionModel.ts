@@ -1,3 +1,4 @@
+import type { AskForm, AskFormAnswer, AskFormStatus } from "./askFormModel";
 export interface Question { question: string; options: string[]; multi: boolean; recommended?: number }
 export interface PlanItem { text: string; status?: string; done?: boolean; phase?: string; blocker?: string }
 export interface Entry {
@@ -5,12 +6,15 @@ export interface Entry {
  intent?: string; detail?: string; tool?: string; status?: string; error?: string;
  source?: string; from?: string;
  questions?: Question[]; answer?: string[]; items?: PlanItem[];
+ /** omp's HTML-form ask (herdr ask-form contract): the form, and once the tool result arrives
+  *  its answers and how it ended. */
+ form?: AskForm | null; form_answer?: AskFormAnswer[] | null; form_status?: AskFormStatus | null;
  [key: string]: unknown;
 }
 export interface TranscriptPage {
  after: string; before?: string; session_id: string; entries: Entry[];
  plan?: PlanItem[] | null;
- pending_ask?: { id: string; answerable: boolean; questions: Question[] };
+ pending_ask?: { id: string; answerable: boolean; questions: Question[]; form?: AskForm | null; form_answerable?: boolean };
  working?: { intent?: string; [key: string]: unknown };
  subagents?: TranscriptSubagent[];
  /** The model omp runs and its effort (herdr TranscriptModel); the newest page's. */
