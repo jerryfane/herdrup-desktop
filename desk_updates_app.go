@@ -21,9 +21,14 @@ const (
 	// The first automatic check waits for the app to settle after launch;
 	// later ones run once appUpdateInterval has passed on the clock since the
 	// last, which a computer asleep past it (a timer would not count the
-	// sleep) makes due on waking.
+	// sleep) makes due on waking. Coming back to the window, or waking the
+	// computer, checks once appUpdateSoon has passed: a release is seen when
+	// the owner next looks, not hours later (owner 2026-11-10: Preview 14
+	// showed no notice until Check now). GitHub allows 60 unauthenticated
+	// requests an hour, so at most one check every 10 minutes leaves room.
 	appUpdateFirstCheck = time.Minute
-	appUpdateInterval   = 6 * time.Hour
+	appUpdateInterval   = time.Hour
+	appUpdateSoon       = 10 * time.Minute
 	appUpdateTick       = 10 * time.Minute
 	appUpdateTimeout    = time.Minute
 )
@@ -326,10 +331,11 @@ func (u *appUpdates) due(interval time.Duration) bool {
 }
 
 // run checks first after launch, then whenever interval has passed since
-// the last check, looking every tick and when the system wakes (wake)
-// until ctx ends. Smoke and reference builds never check: their captures
-// must not depend on GitHub, and a check could show an update in them.
-func (u *appUpdates) run(ctx context.Context, first, interval, tick time.Duration, wake <-chan struct{}) {
+// the last check, looking every tick, and when nudged (the window gains
+// focus, the system wakes) once soon has passed, until ctx ends. Smoke and
+// reference builds never check: their captures must not depend on GitHub,
+// and a check could show an update in them.
+func (u *appUpdates) run(ctx context.Context, first, interval, soon, tick time.Duration, nudge <-chan struct{}) {
 	if smokeEnabled() {
 		return
 	}
@@ -344,13 +350,15 @@ func (u *appUpdates) run(ctx context.Context, first, interval, tick time.Duratio
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
+		wait := interval
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		case <-wake:
+		case <-nudge:
+			wait = soon
 		}
-		if u.due(interval) {
+		if u.due(wait) {
 			u.check(ctx, true)
 		}
 	}
@@ -426,17 +434,20 @@ func (d *Desk) AppUpdatesShown() {
 
 // startAppUpdateChecks follows preview releases, as every release is one
 // so far, and checks for them in the background (never in smoke builds),
-// also as the system wakes. A newer version found by a scheduled check is
-// announced once, with a desktop notification.
+// also as the system wakes and the window gains focus (nudgeAppUpdates). A
+// newer version found by a scheduled check is announced once, with a
+// desktop notification.
 func (d *Desk) startAppUpdateChecks() {
 	mygo.Updater.SetPrereleases(true)
 	d.appUpdates.noticed = d.noticeAppUpdate
-	wake := make(chan struct{}, 1)
-	mygo.Power.OnResume(func() {
-		select {
-		case wake <- struct{}{}:
-		default:
-		}
-	})
-	go d.appUpdates.run(context.Background(), appUpdateFirstCheck, appUpdateInterval, appUpdateTick, wake)
+	mygo.Power.OnResume(d.nudgeAppUpdates)
+	go d.appUpdates.run(context.Background(), appUpdateFirstCheck, appUpdateInterval, appUpdateSoon, appUpdateTick, d.appUpdateNudge)
+}
+
+// nudgeAppUpdates asks for a check if one is soon due; it never blocks.
+func (d *Desk) nudgeAppUpdates() {
+	select {
+	case d.appUpdateNudge <- struct{}{}:
+	default:
+	}
 }

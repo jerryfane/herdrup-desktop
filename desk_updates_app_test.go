@@ -263,7 +263,7 @@ func TestAppUpdateRunNeverChecksInSmokeBuilds(t *testing.T) {
 	h := newAppUpdateHarness(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	h.run(ctx, 0, time.Millisecond, time.Millisecond, nil)
+	h.run(ctx, 0, time.Millisecond, time.Millisecond, time.Millisecond, nil)
 	if n := h.fake.checkCount(); n != 0 {
 		t.Fatalf("a smoke build checked for updates %d times", n)
 	}

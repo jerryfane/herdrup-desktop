@@ -107,18 +107,17 @@ func TestAppUpdateIsAnnouncedOncePerVersionAcrossRestarts(t *testing.T) {
 	}
 }
 
-// A laptop asleep past the 6 hours: a timer would wait 6 more hours of awake time; the
-// check is due by the clock as soon as it wakes or the next tick comes.
+// A laptop asleep past the hour: a timer would wait for awake time; the check
+// is due by the clock as soon as the next tick comes.
 func TestAppUpdateRunChecksWhenTheClockSaysItIsDue(t *testing.T) {
 	h := newAppUpdateHarness(true)
 	var mu sync.Mutex
 	now := time.UnixMilli(1793108998000)
 	h.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
-	wake := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go h.run(ctx, 0, 6*time.Hour, time.Hour, wake)
+	go h.run(ctx, 0, time.Hour, 10*time.Minute, 5*time.Millisecond, nil)
 	waitChecks := func(n int) {
 		t.Helper()
 		for deadline := time.Now().Add(5 * time.Second); h.fake.checkCount() < n; time.Sleep(time.Millisecond) {
@@ -128,14 +127,45 @@ func TestAppUpdateRunChecksWhenTheClockSaysItIsDue(t *testing.T) {
 		}
 	}
 	waitChecks(1)
-	advance(5 * time.Hour)
-	wake <- struct{}{}
+	advance(50 * time.Minute)
 	time.Sleep(50 * time.Millisecond)
 	if n := h.fake.checkCount(); n != 1 {
-		t.Fatalf("checked %d times 5 hours after the last check", n)
+		t.Fatalf("ticks checked %d times 50 minutes after the last check", n)
 	}
-	advance(2 * time.Hour) // asleep through the rest
-	wake <- struct{}{}
+	advance(20 * time.Minute) // asleep through the rest of the hour
+	waitChecks(2)
+}
+
+// Coming back to the window, or waking the computer, checks once 10 minutes
+// have passed (owner 2026-11-10: Preview 14 showed no notice until Check now),
+// and not more often, so focus changes can't run into GitHub's rate limit.
+func TestAppUpdateNudgeChecksSoonButNotOnEveryFocus(t *testing.T) {
+	h := newAppUpdateHarness(true)
+	var mu sync.Mutex
+	now := time.UnixMilli(1793108998000)
+	h.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	nudge := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.run(ctx, 0, time.Hour, 10*time.Minute, time.Hour, nudge)
+	waitChecks := func(n int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); h.fake.checkCount() < n; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d checks, want %d", h.fake.checkCount(), n)
+			}
+		}
+	}
+	waitChecks(1)
+	advance(5 * time.Minute)
+	nudge <- struct{}{}
+	time.Sleep(50 * time.Millisecond)
+	if n := h.fake.checkCount(); n != 1 {
+		t.Fatalf("a focus 5 minutes after a check checked again (%d checks)", n)
+	}
+	advance(6 * time.Minute)
+	nudge <- struct{}{}
 	waitChecks(2)
 }
 

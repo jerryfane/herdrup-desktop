@@ -331,9 +331,10 @@ alerts are on but this session cannot deliver them.
 Settings → About → App updates is Herdrup Desktop's own update (`desk_updates_app.go`,
 `src/appUpdates.ts`, on mygo's `mygo.Updater`); the Machines card's update is herdr's.
 The app follows its releases (every release so far is a preview): it checks
-one minute after launch, then whenever 6 hours have passed on the clock since the last check
-(looked at every 10 minutes and as the computer wakes, so a laptop asleep past the 6 hours checks
-on waking), and Check now checks at once.
+one minute after launch, then whenever an hour has passed on the clock since the last check
+(looked at every 10 minutes, so a laptop asleep past the hour checks soon after waking), when you
+come back to the window or the computer wakes if 10 minutes have passed, and Check now checks
+at once.
 The row shows the last result (Up to date, Update available, Couldn't check, Off); its page
 shows the running version, the newer version with its release notes (the manifest's, and a
 link to the GitHub release), check errors as plain text, and one Update and restart button
