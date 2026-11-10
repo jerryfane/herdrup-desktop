@@ -646,7 +646,10 @@ class Detail {
   else { this.findInput.value = ""; this.updateFind(true); if (this.mode === "terminal") this.terminal?.focus(); }
   this.updateChatJump();
  }
- updateFind(reset = false, step = 0) {
+ /** `reveal`: bring the current match into view. Only the owner's own Find actions do; a redraw
+  *  re-marks the matches where the reader left them (owner 2026-11-10: each poll snapped the
+  *  chat back to a match while scrolling). */
+ updateFind(reset = false, step = 0, reveal = true) {
   const query = this.findInput.value;
   if (this.mode === "terminal") {
    if (!query) { this.search?.clearDecorations(); this.findCount.textContent = ""; return; }
@@ -689,7 +692,7 @@ class Detail {
   this.findMatches.forEach((marks, index) => marks.forEach(mark => mark.classList.toggle("current", index === this.findIndex)));
   this.findCount.textContent = query ? count ? `${this.findIndex + 1} of ${count}` : "No matches" : "";
   const match = this.findMatches[this.findIndex]?.[0];
-  if (match && this.findOpen) {
+  if (match && this.findOpen && reveal) {
    for (let ancestor = match.parentElement; ancestor && ancestor !== this.transcript; ancestor = ancestor.parentElement) if (ancestor instanceof HTMLDetailsElement) ancestor.open = true;
    match.scrollIntoView({ block: "center" });
   }
@@ -1232,7 +1235,7 @@ class Detail {
   }
   this.fitPromptBubbles();
   if (follow) this.followChat();
-  if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index); }
+  if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index, false); }
   this.refreshQuestion?.();
  }
  /** What a question card shows depends on: redraw it only when one of these changes. */

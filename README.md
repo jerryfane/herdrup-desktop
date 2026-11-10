@@ -130,7 +130,9 @@ list markers and table cells preserved. An open native menu keeps its original
 message while the transcript updates.
 Scrolling back reveals Jump to latest message. New content follows only while
 you are at the tail; history prepends and switching through Terminal preserve
-your reading position. Find hides the jump button while a result is selected.
+your reading position. Find hides the jump button while a result is selected. Find scrolls to a
+match only when you type, press Return or Next/Previous; new messages keep the matches
+highlighted without moving the chat while you scroll.
 An up arrow in the bottom-right corner of the composer's column (12 px above the composer, its
 right edge on the composer's, over the column's resize handle) jumps to your previous message, one
 further up per click, loading earlier messages as needed. It skips guests' prompts and prompts the
