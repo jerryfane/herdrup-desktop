@@ -348,7 +348,8 @@
 .chat-question-context { margin-top:12px; font:400 14px var(--font-app); }
 .chat-question-context summary { cursor:pointer; }
 .chat-question-sheet button:disabled { opacity:.6; cursor:default; }
-@media (min-width:768px) { .chat-question-row > .chat-question { max-width:520px; } }
+/* Question cards take the chat column's width, as the plan and Subagents cards do (owner
+   2026-11-10: a 520 px cap left a form narrow beside them). */
 .chat-question:not([data-state="open"]) { padding:10px 12px; }
 .chat-question:not([data-state="open"]) .chat-question-title { margin-bottom:4px; font-size:calc(14px * var(--chat-text-scale, 1)); font-weight:500; color:var(--color-text-dim); }
 .chat-question-answer { margin:0; color:var(--color-text-dim); font:400 calc(14.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
