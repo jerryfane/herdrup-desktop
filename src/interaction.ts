@@ -1924,8 +1924,11 @@ class Detail {
     this.refuseAnswers();
    } else if (result.code) {
     // ask_form_moved: someone is answering in the Terminal; ask_unsupported: controls herdr
-    // can't drive. Both hand the form to the Terminal (contract: agent.answer_form errors).
-    const terminal = result.code === "ask_form_moved" || result.code === "ask_unsupported";
+    // can't drive. Both hand the form to the Terminal (contract: agent.answer_form errors), as
+    // does an ask_form_invalid herdr ends with "answer in the terminal": a textarea too long to
+    // edit from the app (herdr-app 449707). Other invalid answers stay editable here.
+    const terminal = result.code === "ask_form_moved" || result.code === "ask_unsupported"
+     || result.code === "ask_form_invalid" && /answer in the terminal\.?$/i.test(result.message ?? "");
     this.answerProblem = {
      askID,
      message: result.code === "ask_form_moved" ? "The form changed in the Terminal. Finish it there."
