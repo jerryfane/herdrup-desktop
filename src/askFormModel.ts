@@ -121,18 +121,20 @@ export function fieldChanged(field: AskFormField, draft: FieldDraft, initial: Fi
 }
 
 /** Why the field's answer can't be sent, or null (omp fieldError). Other chosen but left blank is
- *  no answer, as omp counts it. */
-export function fieldProblem(field: AskFormField, draft: FieldDraft): string | null {
+ *  no answer, as omp counts it. `initial` is the recommendation: herdr types only what differs
+ *  from it, and only that must be typeable (an untouched default with a tab is kept as it is). */
+export function fieldProblem(field: AskFormField, draft: FieldDraft, initial: FieldDraft): string | null {
  if (field.kind === "choice") {
-  const typed = field.other && (draft.other?.trim() ?? "") !== "";
-  if (draft.other !== null && !typed && !field.multi) return "Type your answer, or pick an option";
-  if (typed && hasControlChars(draft.other!, false)) return "Keep your answer on one line";
-  if (!field.required || draft.options.length > 0 || typed) return null;
+  const other = field.other ? draft.other?.trim() ?? "" : "";
+  if (draft.other !== null && !other && !field.multi) return "Type your answer, or pick an option";
+  // herdr types the trimmed text (formValues), so only control characters inside it matter.
+  if (other && hasControlChars(other, false)) return "Keep your answer on one line";
+  if (!field.required || draft.options.length > 0 || other) return null;
   return isListChoice(field) ? "Select at least one" : "Required";
  }
  if (draft.text.trim() === "") return field.required ? "Required" : null;
  const type = field.input_type ?? "text";
- if (hasControlChars(draft.text, type === "textarea")) return "Keep your answer on one line";
+ if (draft.text !== initial.text && hasControlChars(draft.text, type === "textarea")) return "Keep your answer on one line";
  if (type === "number" || type === "range") {
   const number = Number(draft.text);
   if (!Number.isFinite(number)) return "Enter a number";
@@ -166,9 +168,8 @@ export function formValues(form: AskForm, draft: FormDraft): Record<string, Fiel
  }
  return values;
 }
-
 /** The first field whose answer can't be sent, as its index, or -1. */
 export function firstProblem(form: AskForm, draft: FormDraft): number {
  const initial = formDraft(form);
- return form.fields.findIndex(field => fieldProblem(field, draft[field.name] ?? initial[field.name]!) !== null);
+ return form.fields.findIndex(field => fieldProblem(field, draft[field.name] ?? initial[field.name]!, initial[field.name]!) !== null);
 }

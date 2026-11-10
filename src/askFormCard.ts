@@ -129,7 +129,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  // After a choice that finishes the field: the next field, or back to the review.
  const advance = () => go(state.fromReview ? count : step + 1);
  const next = () => {
-  const problem = fieldProblem(field, draftOf(field));
+  const problem = fieldProblem(field, draftOf(field), initial[field.name]!);
   if (problem) { state.shownProblem = field.name; state.version++; input.changed(); return; }
   advance();
  };
@@ -201,7 +201,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   return nodes;
  }
  if (state.shownProblem === field.name) {
-  const problem = fieldProblem(field, draftOf(field));
+  const problem = fieldProblem(field, draftOf(field), initial[field.name]!);
   if (problem) nodes.push(el("p", "ask-form-problem", problem));
  }
  const foot = el("div", "ask-form-foot");
