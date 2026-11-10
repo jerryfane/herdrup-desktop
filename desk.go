@@ -150,6 +150,9 @@ type Desk struct {
 	// pendingAppUpdates is an App updates request (the update notification's
 	// or the tray's) the page has not shown yet.
 	pendingAppUpdates bool
+	// appUpdateNudge asks the app-update loop for a check if one is soon due
+	// (nudgeAppUpdates: the window gains focus, the system wakes).
+	appUpdateNudge chan struct{}
 	// openFolders keeps the folders open on this device; alert shows a
 	// folder save that failed.
 	openFolders *openFolders
@@ -226,9 +229,10 @@ func newDesk(dir string) *Desk {
 		alert:       alertGroups,
 		failure:     alertAgentFailure,
 		openDialog:  mygoOpenDialog, saveDialog: mygoSaveDialog, openPath: mygoOpenPath, writeClipboard: mygoWriteText,
-		presence:   newPresence(),
-		appUpdates: newAppUpdates(),
-		usage:      newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
+		presence:       newPresence(),
+		appUpdates:     newAppUpdates(),
+		appUpdateNudge: make(chan struct{}, 1),
+		usage:          newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
 	}
 }
 

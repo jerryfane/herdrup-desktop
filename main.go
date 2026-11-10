@@ -115,6 +115,9 @@ func main() {
 		// at most once a UTC day (usage_ping.go).
 		desk.usage.trigger()
 		win.OnFocus(desk.usage.trigger)
+		// Coming back to the window checks for a newer herdrup once 10
+		// minutes have passed since the last check (desk_updates_app.go).
+		win.OnFocus(desk.nudgeAppUpdates)
 		win.OnClose(func(*mygo.CloseEvent) { dictation.stopAll() })
 		if refEnabled() {
 			runRef(desk, win)
