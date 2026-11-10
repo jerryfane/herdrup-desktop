@@ -52,6 +52,8 @@ const (
 	CapabilityServerUpdate     Capability = "server_update"
 	// The schema's agent_session_transfer flag (src/api/schema/server.rs:68).
 	CapabilityAgentSessionTransfer Capability = "agent_session_transfer"
+	// agent.answer_form and the `form` on asks (herdr ask-form contract, 2026-11-10).
+	CapabilityAskForm Capability = "ask_form"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -85,6 +87,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.ServerUpdate
 	case CapabilityAgentSessionTransfer:
 		return caps.AgentSessionTransfer
+	case CapabilityAskForm:
+		return caps.AskForm
 	}
 	return false
 }
@@ -181,6 +185,8 @@ var Methods = []Method{
 	{Name: "agent.prompt", Params: typeOf[AgentPromptParams](), Results: []Result{result[ResponseResultAgentPrompted]("agent_prompted")}},
 	// schema.rs:151; src/api/answer.rs:63.
 	{Name: "agent.answer", Params: typeOf[AgentAnswerParams](), Results: []Result{result[ResponseResultAgentAnswer]("agent_answer")}, Capability: CapabilityAgentAnswer},
+	// Answers an omp HTML-form ask (herdr ask-form contract).
+	{Name: "agent.answer_form", Params: typeOf[AgentAnswerFormParams](), Results: []Result{result[ResponseResultAskFormAnswered]("ask_form_answered")}, Capability: CapabilityAskForm},
 	// schema.rs:192; src/app/api/panes.rs:1905.
 	{Name: "pane.history", Params: typeOf[PaneHistoryParams](), Results: []Result{result[ResponseResultPaneHistory]("pane_history")}, Capability: CapabilityPaneHistory},
 	// schema.rs:194; acknowledged at src/api/server/pane_output_stream.rs:249,

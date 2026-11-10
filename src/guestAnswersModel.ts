@@ -22,9 +22,10 @@ export function promptByline(viewer: Viewer, author: unknown, authorName: unknow
 
 /** The host withheld `answerable` from a question the buttons could answer: a host that keeps
  *  answers for the owner (TranscriptPendingAsk.isWithheldFromCaller, AgentTranscript.swift:322-331).
- *  A multi-part, multi-select or free-text question is never answerable, so it says nothing. */
+ *  A multi-part, multi-select or free-text question is never answerable, so it says nothing; nor
+ *  does an HTML form, whose `answerable` is always false (form_answerable decides instead). */
 export function withheldFromCaller(ask: PendingAsk | undefined): boolean {
- if (!ask || ask.answerable || ask.questions.length !== 1) return false;
+ if (!ask || ask.answerable || ask.form || ask.questions.length !== 1) return false;
  const only = ask.questions[0]!;
  return !only.multi && only.options.length > 0;
 }

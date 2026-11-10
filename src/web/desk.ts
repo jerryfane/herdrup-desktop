@@ -5,7 +5,7 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, BoardUpdate, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
+ Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
@@ -359,6 +359,8 @@ export function createGuestDesk(env: DeskEnv) {
     token, paneID: agent.pane_id ?? "", name, harness, heading: parts.join(" · "), group: group.key, status: group.label,
     ...(agent.status_since_unix_ms != null ? { statusSinceUnixMs: agent.status_since_unix_ms } : {}),
     guest: true, guestGram: l.transport.features.gram, ...(l.access.ownerName !== "" ? { guestOwner: l.access.ownerName } : {}),
+    // desk_interaction.go AskForm: a guest's gate advertises no capabilities; form_answerable decides.
+    askForm: true,
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
    unmount();
@@ -424,6 +426,26 @@ export function createGuestDesk(env: DeskEnv) {
    } catch (error) {
     if (error instanceof HerdrAPIError) {
      const reply: ChatAnswerReply = {};
+     if (error.code !== "") reply.code = error.code;
+     if (error.apiMessage !== "") reply.message = error.apiMessage;
+     if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;
+     return reply;
+    }
+    throw error;
+   } finally {
+    v.active.kick();
+   }
+  },
+
+  async chatAnswerForm(token: string, askID: string, values: Record<string, AskFormValue>): Promise<ChatAnswerFormReply> {
+   const v = viewOf(token);
+   try {
+    // guest.Transport.AgentAnswerForm: straight to the relay, as agent.answer (answers.go).
+    const result = await v.active.link.call<Pick<ChatAnswerFormReply, "status" | "answers"> | null>("agent.answer_form", { target: v.paneID, ask_id: askID, values }, within(v));
+    return { ...(result?.status ? { status: result.status } : {}), answers: result?.answers ?? [] };
+   } catch (error) {
+    if (error instanceof HerdrAPIError) {
+     const reply: ChatAnswerFormReply = {};
      if (error.code !== "") reply.code = error.code;
      if (error.apiMessage !== "") reply.message = error.apiMessage;
      if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;

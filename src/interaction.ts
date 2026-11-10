@@ -22,6 +22,8 @@ import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withh
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
+import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
+import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
@@ -261,6 +263,10 @@ class Detail {
  answering = false;
  answerProblem: { askID: string; message: string; offersTerminal: boolean } | null = null;
  localAnswers = new Map<string, string[]>();
+ /** omp's HTML-form asks: where the owner is in each, and the answers agent.answer_form
+  *  reported before the transcript shows them. */
+ formStates = new Map<string, AskFormState>();
+ localFormAnswers = new Map<string, { answers: AskFormAnswer[]; sent: boolean }>();
  entries: Entry[] = [];
  transcript = el("div", "chat-transcript");
  chatScroll = el("div", "chat-scroll");
@@ -1132,13 +1138,17 @@ class Detail {
    if (!this.chat || this.chat.session_id !== page.session_id) {
     if (this.chat) this.outgoing = [];
     this.entries = []; this.oldestCursor = page.before;
-    this.answerProblem = null; this.localAnswers.clear();
+    this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
    this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
-   for (const entry of this.entries) if (entry.kind === "ask" && entry.answer) this.localAnswers.delete(entry.id);
+   for (const entry of this.entries) {
+    if (entry.kind !== "ask") continue;
+    if (entry.answer) this.localAnswers.delete(entry.id);
+    if (entry.form_answer || entry.form_status) { this.localFormAnswers.delete(entry.id); this.formStates.delete(entry.id); }
+   }
    if (this.sendFollow && sendShown(held, page.entries ?? [])) this.sendFollow = null;
    this.outgoing = reconcileOutgoing(this.outgoing, held, page.entries ?? [], Date.now());
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
@@ -1176,7 +1186,7 @@ class Detail {
   const opened = new Set([...this.transcript.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d => d.dataset.id));
   const nodes = groupTranscript(this.entries, !!this.chat?.working).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
-   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(row.entry.id), this.answersRefused] : row);
+   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id) : row);
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
    node.dataset.id = row.id; node.dataset.signature = signature;
@@ -1188,7 +1198,16 @@ class Detail {
   nodes.unshift(this.earlier);
   const pending = this.chat?.pending_ask;
   if (pending && !this.entries.some(entry => entry.kind === "ask" && entry.id === pending.id)) {
-   nodes.push(this.renderQuestion({ kind:"ask", id:pending.id, ts_ms:0, questions:pending.questions }, pending));
+   // Kept attached while unchanged, as entry rows are: a form's Other or text field keeps its
+   // focus and caret across polls.
+   const id = `pending-ask:${pending.id}`, signature = JSON.stringify(this.questionSignature(null, pending.id));
+   const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
+   if (old?.dataset.signature === signature) nodes.push(old);
+   else {
+    const node = this.renderQuestion({ kind:"ask", id:pending.id, ts_ms:0, questions:pending.questions, form:pending.form }, pending);
+    node.dataset.id = id; node.dataset.signature = signature;
+    nodes.push(node);
+   }
   }
   for (const message of this.outgoing) nodes.push(this.renderOutgoing(message));
   for (const id of this.outgoingNodes.keys()) if (!this.outgoing.some(message => message.id === id)) this.outgoingNodes.delete(id);
@@ -1218,6 +1237,12 @@ class Detail {
   if (follow) this.followChat();
   if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index, false); }
   this.refreshQuestion?.();
+ }
+ /** What a question card shows depends on: redraw it only when one of these changes. */
+ private questionSignature(row: ChatRow | null, id: string): unknown[] {
+  // A form's state appears on its first draw at version 0: count none as 0 too, or the first
+  // unchanged poll would redraw the card and take the focus from a field being typed in.
+  return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.view?.askForm];
  }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
   * its board status, or with none yet the transcript's working turn — and the chat loads. One
@@ -1540,11 +1565,13 @@ class Detail {
    const open = button("Open question", () => this.openQuestion(entry.id));
    open.className = "chat-question-open"; row.append(open);
   }
-  card.append(el("p", "chat-question-title", questions.map(question => question.question).join("\n")));
   // A guest answers as the owner does unless the host keeps answers for the owner (ChatAskCard,
   // ChatView.swift:1738-1870).
   const viewer = this.viewer();
   const waiting = waitingForOwner(viewer, this.answersRefused);
+  const form = entry.form ?? (pending?.id === entry.id ? pending.form : null) ?? null;
+  if (form || entry.form_answer || entry.form_status) { this.renderFormQuestion(card, entry, form, pending, viewer, waiting, showLink ? "chat" : "sheet"); return row; }
+  card.append(el("p", "chat-question-title", questions.map(question => question.question).join("\n")));
   if (answer) {
    const chosen = el("p", "chat-question-answer", "✓ " + chooser(viewer, waiting));
    chosen.append(el("strong", "", answer.join(", "))); card.append(chosen); return row;
@@ -1574,6 +1601,41 @@ class Detail {
   }
   return row;
  }
+ /** omp's HTML-form ask (owner 2026-11-10, proposal B): the stepper while it waits, the answers
+  *  once given. Answering needs a host with capabilities.ask_form and herdr's form_answerable;
+  *  otherwise the form shows read-only with "Answer in Terminal", or a guest waits for the owner. */
+ renderFormQuestion(card: HTMLElement, entry: Entry, form: AskForm | null, pending: TranscriptPage["pending_ask"], viewer: Viewer, waiting: string | null, surface: "chat" | "sheet") {
+  card.classList.add("ask-form");
+  const local = entry.form_answer ? undefined : this.localFormAnswers.get(entry.id);
+  const answers = entry.form_answer ?? local?.answers;
+  if (answers || entry.form_status) {
+   card.dataset.state = "answered";
+   const credit: AnswerCredit = !viewer.guest ? "you" : waiting === null ? "anyone" : { owner: waiting };
+   card.append(...askFormAnswered(form, answers ?? [], entry.form_status ?? null, credit, local?.sent ?? false));
+   return;
+  }
+  const active = pending?.id === entry.id ? pending : undefined;
+  if (!active || !form) {
+   card.dataset.state = "unanswered";
+   if (form?.intro) card.append(el("p", "ask-form-intro", form.intro));
+   card.append(el("p", "chat-question-note", "Not answered"));
+   return;
+  }
+  card.dataset.state = "open";
+  let state = this.formStates.get(entry.id);
+  if (!state) { state = askFormState(form); this.formStates.set(entry.id, state); }
+  const problem = this.answerProblem?.askID === entry.id ? this.answerProblem : null;
+  card.append(...askFormCard({
+   form, state, waiting,
+   answerable: !!this.view?.askForm && active.form_answerable === true && waiting === null && !problem?.offersTerminal,
+   sending: this.answering,
+   problem,
+   surface,
+   changed: () => this.drawChat(false),
+   submit: values => { void this.answerForm(entry.id, values, () => draftAnswers(form, state.draft)); },
+   terminal: () => { void this.chooseMode("terminal"); },
+  }));
+ }
  openQuestion(id: string) {
   this.questionSheet?.close();
   const dialog = el("dialog", "subagent-sheet chat-question-sheet");
@@ -1586,13 +1648,13 @@ class Detail {
   const refresh = () => {
    const pending = this.chat?.pending_ask;
    const index = this.entries.findIndex(entry => entry.kind === "ask" && entry.id === id);
-   const entry = this.entries[index] ?? (pending?.id === id ? {kind:"ask", id, ts_ms:0, questions:pending.questions} : undefined);
+   const entry = this.entries[index] ?? (pending?.id === id ? {kind:"ask", id, ts_ms:0, questions:pending.questions, form:pending.form} : undefined);
    let prompt: Entry | undefined;
    for (let i = index < 0 ? this.entries.length - 1 : index - 1; i >= 0; i--) {
     if (this.entries[i]!.kind === "summary") break;
     if (this.entries[i]!.kind === "user") { prompt = this.entries[i]; break; }
    }
-   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused]);
+   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.view?.askForm]);
    if (next === signature) return; signature = next;
    const expanded = content.querySelector("details")?.open ?? false;
    content.replaceChildren();
@@ -1841,6 +1903,46 @@ class Detail {
    this.answering = false;
    if (current()) this.drawChat(false);
    // The answer shows in the transcript now, not at the next poll (ChatModel.answer, ChatView.swift:174).
+   if (current() && this.mode === "chat") void this.refreshChat(this.generation);
+  }
+ }
+ /** Submit an HTML-form ask's answers (agent.answer_form; `values` lists only the fields that
+  *  differ from the agent's recommendation). `sentAnswers` words the draft, shown while herdr
+  *  sent the answers but hasn't confirmed them (sent_unconfirmed). */
+ async answerForm(askID: string, values: Record<string, FieldValue>, sentAnswers: () => AskFormAnswer[]) {
+  if (this.answering || this.localFormAnswers.has(askID)) return;
+  const epoch = this.chatEpoch, session = this.chat?.session_id;
+  const current = () => !this.disposed && epoch === this.chatEpoch && session === this.chat?.session_id;
+  this.answering = true; this.answerProblem = null;
+  this.drawChat(false);
+  try {
+   const result = await Desk.chatAnswerForm(this.token, askID, values);
+   if (!current()) return;
+   if (result.code === "ask_not_pending") {
+    if (this.chat?.pending_ask?.id === askID) this.chat.pending_ask = undefined;
+   } else if (result.ownerAnswers) {
+    this.refuseAnswers();
+   } else if (result.code) {
+    // ask_form_moved: someone is answering in the Terminal; ask_unsupported: controls herdr
+    // can't drive. Both hand the form to the Terminal (contract: agent.answer_form errors).
+    const terminal = result.code === "ask_form_moved" || result.code === "ask_unsupported";
+    this.answerProblem = {
+     askID,
+     message: result.code === "ask_form_moved" ? "The form changed in the Terminal. Finish it there."
+      : result.code === "ask_unsupported" ? "This form can't be answered from the chat."
+      : `Couldn't send: ${result.message}`,
+     offersTerminal: terminal,
+    };
+   } else if (result.status === "sent_unconfirmed") {
+    this.localFormAnswers.set(askID, { answers: sentAnswers(), sent: true });
+   } else {
+    this.localFormAnswers.set(askID, { answers: result.answers ?? [], sent: false });
+   }
+  } catch {
+   if (current()) this.answerProblem = { askID, message: "Couldn't reach the agent. Try again.", offersTerminal: false };
+  } finally {
+   this.answering = false;
+   if (current()) this.drawChat(false);
    if (current() && this.mode === "chat") void this.refreshChat(this.generation);
   }
  }

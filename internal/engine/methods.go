@@ -102,6 +102,12 @@ func (c *Client) AgentAnswer(ctx context.Context, p herdrapi.AgentAnswerParams) 
 	return call[herdrapi.ResponseResultAgentAnswer](ctx, c, "agent.answer", p)
 }
 
+// AgentAnswerForm is agent.answer_form (capability ask_form): answers an omp
+// HTML-form ask; a field left out of Values keeps the agent's default.
+func (c *Client) AgentAnswerForm(ctx context.Context, p herdrapi.AgentAnswerFormParams) (herdrapi.ResponseResultAskFormAnswered, error) {
+	return call[herdrapi.ResponseResultAskFormAnswered](ctx, c, "agent.answer_form", p)
+}
+
 // AccountsList is accounts.list: the credential accounts, whose labels
 // name the account an agent row shows.
 func (c *Client) AccountsList(ctx context.Context) (herdrapi.ResponseResultAccountsList, error) {
