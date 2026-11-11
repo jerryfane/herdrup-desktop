@@ -6,7 +6,9 @@ computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screen
 the system webview (WKWebView, WebKitGTK, WebView2).
 
 **Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
-`v0.1.0-preview.15` answers omp's form questions in Chat one field at a time, text boxes included,
+`v0.1.0-preview.16` fits a phone: at 700 px and narrower it uses the iPhone app's one-column
+navigation, a long press opens a right-click menu, and `HERDRUP_KIOSK=1` runs it full screen as
+a device's only app. It also answers omp's form questions in Chat one field at a time, text boxes included,
 in cards as wide as the chat, checks for a newer version hourly and when you come back to the
 window, starts a new line with Shift+Return, and keeps your place while Find is open, on top of
 telling you when a newer version is out (a notification, the tray and a capsule over the agents
