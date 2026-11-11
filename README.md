@@ -6,9 +6,11 @@ computer. Built with [mygo](https://github.com/egoist/mygo): Go, with the screen
 the system webview (WKWebView, WebKitGTK, WebView2).
 
 **Status: preview** (epic [#13](https://github.com/jerryfane/herdrup-desktop/issues/13)).
-`v0.1.0-preview.14` answers omp's form questions in Chat one field at a time, starts a new line
-with Shift+Return, and keeps your place while Find is open, on top of telling you when a newer
-version is out (a notification, the tray and a capsule over the agents list), "An agent finishes:
+`v0.1.0-preview.15` answers omp's form questions in Chat one field at a time, text boxes included,
+in cards as wide as the chat, checks for a newer version hourly and when you come back to the
+window, starts a new line with Shift+Return, and keeps your place while Find is open, on top of
+telling you when a newer version is out (a notification, the tray and a capsule over the agents
+list), "An agent finishes:
 Only my requests", an up arrow to your previous
 message and the agent's recap in Chat, received HTML in your default browser,
 SVG images in Chat, guest invites opened from the invite page on Windows,
