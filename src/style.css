@@ -831,33 +831,34 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
    and narrower, herdrup's iPhone navigation (HerdrApp.swift, the compact TabView). One
    column: the list with the top bar and the floating tab bar, and over it, as main.ts's
    placeDetail says in body[data-detail], an agent's or a Settings page covering the screen
-   ("page"), or Gram between the bars ("bars"). The browser guest's page has its own
-   (web/web.css, data-web-detail). Phones have no home indicator inset here (cage). ==== */
+   ("page"), or Gram between the bars ("bars"). This entry's only (index.html's html.desk):
+   the browser guest, which shares this stylesheet, has its own (web/web.css,
+   data-web-detail). A minimised sidebar is expanded here (sidebar.ts initSidebarRail). Phones
+   have no home indicator inset here (cage). ==== */
 .compact-back-button { display: none; }
 @media (max-width: 700px) {
-  :root { --home-inset: 0px; --sidebar-width: 100vw; }
-  .sidebar { width: 100vw !important; }
-  .sidebar-resizer, .sidebar-rail, .select, .field { display: none !important; }
-  .detail { left: 0; bottom: 0; z-index: 2; }
-  .detail > .gram::after { display: none; }
-  body:not([data-detail="page"]):not([data-detail="bars"]) > .detail { display: none; }
-  body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
+  :root.desk { --home-inset: 0px; --sidebar-width: 100vw; }
+  .desk .sidebar { width: 100vw !important; }
+  .desk .sidebar-resizer, .desk .select, .desk .field { display: none !important; }
+  .desk .detail { left: 0; bottom: 0; z-index: 2; }
+  .desk .detail > .gram::after { display: none; }
+  .desk body:not([data-detail="page"]):not([data-detail="bars"]) > .detail { display: none; }
+  .desk body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
   /* The sidebar can't be minimised: it is the screen. Gram's conversation rows give way to
      its page, whose header has the Saved bookmark (GramView.swift headerTrailing). */
-  .topbar [aria-label="Minimise sidebar"], .topbar .slot[title="Minimise sidebar"] { display: none; }
-  .gram-side { display: none; }
+  .desk .topbar [aria-label="Minimise sidebar"], .desk .topbar .slot[title="Minimise sidebar"] { display: none; }
+  .desk .gram-side { display: none; }
   /* Gram's column-width handle shows on hover only, and a phone has one column. */
-  .gcol-handle { display: none; }
-  body.sidebar-minimized .sidebar { transform: none; }
+  .desk .gcol-handle { display: none; }
   /* A Settings page's back to the index (main.ts compactBack): iOS's back, top leading. */
-  .compact-back-button:not([hidden]) {
+  .desk .compact-back-button:not([hidden]) {
     position: fixed; z-index: 3; top: 6px; left: 8px;
     display: flex; align-items: center; gap: 2px; height: 44px; padding: 0 10px 0 4px;
     border: 0; border-radius: 22px; background: none; color: var(--color-text);
     font: 500 17px/1 var(--font-app);
   }
-  body.compact-back .settings-detail { padding-top: 50px; }
+  .desk body.compact-back .settings-detail { padding-top: 50px; }
   /* Touch: no target under 44 px (Apple HIG), as the iPhone app's rows and buttons. */
-  .topbar .slot.action, .topbar [role="button"] { min-width: 44px; min-height: 44px; }
-  .gsetup-close, .gcode-copy, .gcode-copy-glyph { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .desk .topbar .slot.action, .desk .topbar [role="button"] { min-width: 44px; min-height: 44px; }
+  .desk .gsetup-close, .desk .gcode-copy, .desk .gcode-copy-glyph { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
 }

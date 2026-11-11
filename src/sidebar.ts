@@ -5,7 +5,9 @@ import "./sidebar.css";
 type Tab = "agents" | "gram" | "settings";
 type Symbol = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 
-export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) => void, changed: () => void, symbol: Symbol) {
+/** `compact` is herdrup's phone layout (main.ts compactQuery): the list is the screen there, so
+ *  a minimised sidebar is expanded, keeping the desktop preference. */
+export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) => void, changed: () => void, symbol: Symbol, compact: MediaQueryList) {
   let minimized = false, available = true;
   try { minimized = localStorage.getItem("sidebarMinimized") === "true"; } catch { /* Session-only if storage is unavailable. */ }
   const rail = document.createElement("nav"); rail.className = "sidebar-rail"; rail.setAttribute("aria-label", "Sections");
@@ -34,7 +36,7 @@ export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) =
   document.body.append(rail);
   const resizer = sidebarResizer(changed);
   function apply() {
-    const collapsed = minimized && available;
+    const collapsed = minimized && available && !compact.matches;
     document.body.classList.toggle("sidebar-minimized", collapsed);
     sidebar.inert = collapsed; rail.hidden = !collapsed;
     resizer.hidden = collapsed || !available;
@@ -52,9 +54,10 @@ export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) =
   }
   expand.onclick = () => setMinimized(false);
   window.addEventListener("keydown", event => {
-    if (!available || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k" || document.querySelector("dialog[open]")) return;
+    if (!available || compact.matches || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k" || document.querySelector("dialog[open]")) return;
     event.preventDefault(); event.stopPropagation(); setMinimized(!minimized);
   }, true);
+  compact.addEventListener("change", apply);
   apply();
   return {
     minimize: () => setMinimized(true),

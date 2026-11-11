@@ -724,7 +724,7 @@ async function init() {
     placeInitials,
     symbol,
   });
-  rail = await initSidebarRail($("sidebar"), selectTab, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
+  rail = await initSidebarRail($("sidebar"), selectTab, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol, compactQuery);
   // The back button of a Settings page in the phone layout (placeDetail): to the index.
   compactBack = el("button", "compact-back-button");
   compactBack.type = "button"; compactBack.hidden = true;
