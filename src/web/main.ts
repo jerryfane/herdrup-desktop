@@ -6,6 +6,7 @@
 import "core-js/actual/promise/with-resolvers";
 import "../style.css";
 import "./web.css";
+import { enableLongPress } from "../longPress";
 import { Desk, events, type AgentTarget, type BoardUpdate, type ConnState } from "../mygo";
 import { symbol } from "../symbol";
 import { avatar, placeInitials, spinnerSVG } from "../faces";
@@ -142,6 +143,7 @@ async function init() {
  applyMotions(document.documentElement, reduceMotion.matches);
  reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
  animateDisclosures(document.body);
+ enableLongPress();
  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
  initInteraction($("detail"), symbol, target => { selectedAgent = target; render(); });
  await initGram({ el, symbol, placeInitials, spinner: spinnerSVG, barChanged: () => {} }, $("detail"), $("sidebar"), $("tabbar"));

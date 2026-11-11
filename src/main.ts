@@ -26,6 +26,7 @@ import { errorText } from "./errors";
 import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
 import { barSlot, commitTabBar, commitTopBar, guestBarActions, placeTitle, tabNode } from "./bars";
+import { enableLongPress } from "./longPress";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -76,8 +77,34 @@ let appUpdatesAsked = false;
 // The owner's tab bar and the sidebar rail choose a tab here, which also leaves the App
 // updates request (review of #167).
 function selectTab(next: typeof tab) {
-  tab = next; choosingHost = false; appUpdatesAsked = false;
+  tab = next; choosingHost = false; appUpdatesAsked = false; settingsPushed = false;
   void buildTabBar(); void buildTopBar(); render();
+}
+// ---- Phone layout (rover, gitmoot 456087) ----
+// At 700 px and narrower (style.css, "Phone layout") the window takes herdrup's iPhone
+// navigation (HerdrApp.swift detailColumn, the compact TabView): one column, as the browser
+// guest's page does (web/main.ts). body[data-detail] says what the detail column shows over
+// the list: "page" covers the screen (an agent's page, with its own back button, or a Settings
+// page, with compactBack), "bars" sits between the top bar and the tab bar (Gram, as the
+// iPhone's Gram tab), and "" leaves the list.
+const compactQuery = matchMedia("(max-width: 700px)");
+// A Settings page chosen from the index, shown over it in the phone layout until its back.
+let settingsPushed = false;
+let compactBack: HTMLButtonElement | null = null;
+/** Sets what the phone layout's detail column shows; `back` is the Settings page's back
+ *  button, shown only in the phone layout. */
+function placeDetail(detail: "page" | "bars" | "", back = false) {
+  document.body.dataset.detail = detail;
+  const backShown = back && compactQuery.matches;
+  document.body.classList.toggle("compact-back", backShown);
+  if (compactBack) compactBack.hidden = !backShown;
+}
+/** The owner's detail column, as render() leaves it and again when an agent's page closes. */
+function placeOwnerDetail(showConnect: boolean) {
+  if (showConnect) placeDetail("page");
+  else if (tab === "agents") placeDetail(interactionVisible() ? "page" : "");
+  else if (tab === "gram") placeDetail("bars");
+  else placeDetail(settingsPushed ? "page" : "", settingsPushed);
 }
 let pendingAgent: AgentTarget | null = null;
 let selectedAgent: AgentTarget | null = null;
@@ -499,6 +526,8 @@ function render() {
     settings?.show(false, state, board);
     showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
     showInteraction(guestTab === "agents" && !guestGram);
+    // The guest's Settings and Gram sit between the bars; the shared agent's page covers them.
+    placeDetail(guestTab === "settings" || guestGram ? "bars" : interactionVisible() ? "page" : "");
     return;
   }
   const showsGram = tab === "gram" && !showConnect;
@@ -525,6 +554,7 @@ function render() {
   showGram(showsGram);
   settings?.show(showsSettings, state, board);
   void renderRows();
+  placeOwnerDetail(showConnect);
 }
 
 // ---- Wiring ----
@@ -664,6 +694,7 @@ async function init() {
   applyMotions(document.documentElement, reduceMotion.matches);
   reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
   animateDisclosures(document.body);
+  enableLongPress();
   // The detail column changes size while the sidebar slides; the field follows it.
   let fieldFrame = 0;
   new ResizeObserver(() => {
@@ -694,18 +725,27 @@ async function init() {
     symbol,
   });
   rail = await initSidebarRail($("sidebar"), selectTab, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol);
+  // The back button of a Settings page in the phone layout (placeDetail): to the index.
+  compactBack = el("button", "compact-back-button");
+  compactBack.type = "button"; compactBack.hidden = true;
+  compactBack.setAttribute("aria-label", "Settings");
+  compactBack.append(await symbol("chevron.left", 17, "semibold"), el("span", "", "Settings"));
+  compactBack.onclick = () => { settingsPushed = false; render(); };
+  document.body.append(compactBack);
+  compactQuery.addEventListener("change", render);
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
   appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
-    // The guest home's row shows the open agent selected, as the roster's does.
-    if (state.guest) render();
+    // The guest home's row shows the open agent selected, as the roster's does; the phone
+    // layout returns to the list when the agent's page closes.
+    if (state.guest || compactQuery.matches) render();
   });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render());
   hostsHold = hosts.holdsHome;
-  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect);
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if (tab === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
   await initGram(
     {
       el,

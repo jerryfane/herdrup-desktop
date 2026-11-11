@@ -513,6 +513,22 @@ Mac and Windows builds are not developer-signed; macOS notarization and real Mac
 tray/notification acceptance are still outstanding. Use the preview to evaluate the implemented
 features, not as a claim that those release gates have passed.
 
+## Phone and kiosk
+
+At 700 px wide and narrower (a phone, or a narrow window, as small as 320 × 420), herdrup takes
+the iPhone app's layout: one column with the floating tab bar.
+- **Agents:** an agent's page covers the screen, with its back button.
+- **Gram:** sits between the top bar and the tab bar.
+- **Settings:** a page covers the index, with a back to it.
+
+Touch targets are at least 44 px, and holding a finger on anything that has a right-click menu
+opens that menu. When an on-screen keyboard shrinks the window, the composer stays above it.
+
+`HERDRUP_KIOSK=1` is for a device where herdrup is the only app, such as RoverOS on a phone under
+the cage compositor. The window fills the screen with no title bar and no minimum size. herdrup
+never updates itself there and never reads GitHub for a newer release: Settings, App updates
+says it is updated with the system it runs on.
+
 ## Install
 
 Each [release](https://github.com/jerryfane/herdrup-desktop/releases) has the installers and their

@@ -61,7 +61,9 @@ function button(label: string, action: () => void) {
 }
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>) {
+/** `opened` runs when a page is chosen: the phone layout shows it in place of the index
+ *  (main.ts, compact). */
+export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>, opened: () => void) {
   const index = el("nav", "settings-index"); index.setAttribute("aria-label", "Settings"); index.hidden = true;
   sidebar.insertBefore(index, document.getElementById("tabbar"));
   const page = el("section", "settings-detail"); page.hidden = true; detail.append(page);
@@ -232,7 +234,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   function choose(next: Page) {
     if (next !== "accounts") accounts.closeDialogs();
     if (next !== "sharedAccess") guests.closeDialogs();
-    selected = next; message.hidden = true; renderIndex(); renderPage();
+    selected = next; message.hidden = true; renderIndex(); renderPage(); opened();
   }
   function renderIndex() {
     machineNameNodes = []; connectionNodes = [];
