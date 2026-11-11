@@ -130,6 +130,15 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 						finish(false, "uncaught startup errors: "+fmt.Sprint(captured))
 						return
 					}
+					// HERDRUP_SMOKE_PHONE=1 (CI, under HERDRUP_KIOSK=1 on a phone-sized
+					// screen): the window starts in the phone layout (style.css), as
+					// RoverOS starts it. Its roster drawing is the check; the typing and
+					// invitation steps below are the desktop layout's.
+					if os.Getenv("HERDRUP_SMOKE_PHONE") == "1" {
+						time.Sleep(500 * time.Millisecond)
+						finish(true, "phone layout: page shows "+strconv.Itoa(want)+" rows")
+						return
+					}
 					// Let the browser paint the frame it just laid out.
 					time.Sleep(500 * time.Millisecond)
 					if err := smokeTyping(win, out); err != nil {

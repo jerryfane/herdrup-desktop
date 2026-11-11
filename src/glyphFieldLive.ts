@@ -290,6 +290,10 @@ export class LiveGlyphField {
   /** The resting picture, then every moving cell: a cover, then its glyph pushed by the lens. */
   private draw() {
     const ctx = this.ctx, f = this.field, s = this.scale;
+    // No area, nothing to draw: the field is hidden at phone width (style.css "Phone layout"),
+    // and copying a 0×0 canvas throws (drawImage InvalidStateError), which at startup stopped
+    // main.ts before its first render.
+    if (!this.rest.width || !this.rest.height) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.drawImage(this.rest, 0, 0);
