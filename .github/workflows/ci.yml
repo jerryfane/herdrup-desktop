@@ -138,7 +138,7 @@ jobs:
           "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" -interactions -guests > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
           for _ in $(seq 50); do [ -s "$RUNNER_TEMP/client.key" ] && break; sleep 0.2; done
           test -s "$RUNNER_TEMP/client.key" || { cat "$RUNNER_TEMP/fakeherdr.log"; exit 1; }
-          show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; echo "--- app (phone)"; cat "$RUNNER_TEMP/herdrup-smoke-phone.log" 2>/dev/null; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
+          show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; if [ -f "$RUNNER_TEMP/herdrup-smoke-phone.log" ]; then echo "--- app (phone)"; cat "$RUNNER_TEMP/herdrup-smoke-phone.log"; fi; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
           trap show_logs EXIT
           case "$RUNNER_OS" in
             Linux)
