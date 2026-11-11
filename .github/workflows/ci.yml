@@ -143,10 +143,10 @@ jobs:
           case "$RUNNER_OS" in
             Linux)
               xvfb-run -a -s "-screen 0 1280x900x24" build/linux-amd64/herdrup
-              # RoverOS's start: kiosk, full screen on a phone-sized screen, so the page
-              # starts in the phone layout (smoke.go HERDRUP_SMOKE_PHONE).
-              HERDRUP_KIOSK=1 HERDRUP_SMOKE_PHONE=1 HERDRUP_SMOKE_LOG="$RUNNER_TEMP/herdrup-smoke-phone.log" HERDRUP_SMOKE_CAPTURE="$RUNNER_TEMP/herdrup-Linux-phone.png" \
-                xvfb-run -a -s "-screen 0 360x780x24" build/linux-amd64/herdrup
+              # RoverOS's start: the page laid out first at a phone's width, in the
+              # phone layout (smoke.go HERDRUP_SMOKE_PHONE sizes the window 360x780).
+              HERDRUP_SMOKE_PHONE=1 HERDRUP_SMOKE_LOG="$RUNNER_TEMP/herdrup-smoke-phone.log" HERDRUP_SMOKE_CAPTURE="$RUNNER_TEMP/herdrup-Linux-phone.png" \
+                xvfb-run -a -s "-screen 0 1280x900x24" build/linux-amd64/herdrup
               test -s "$RUNNER_TEMP/herdrup-Linux-phone.png" ;;
             macOS) "$(ls -d build/darwin-*/herdrup.app)/Contents/MacOS/herdrup" ;;
             Windows)

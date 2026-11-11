@@ -61,6 +61,13 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 			log.SetOutput(f)
 		}
 	}
+	// HERDRUP_SMOKE_PHONE=1: the page starts at a phone's width (RoverOS's 360x780), so
+	// its first layout is the phone layout (style.css, at 700 px and narrower). Sized
+	// here, before the page has laid out; a full-screen window can't be relied on to
+	// fill a CI display, which has no window manager.
+	if os.Getenv("HERDRUP_SMOKE_PHONE") == "1" {
+		win.SetContentSize(360, 780)
+	}
 	win.Page().OnDOMReady(func() { log.Print("smoke: native DOM ready") })
 	// The page's own deadline runs from its load: the webview can start
 	// long after the board reaches Go (WebView2 on hosted Windows took 2 s,
@@ -130,13 +137,14 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 						finish(false, "uncaught startup errors: "+fmt.Sprint(captured))
 						return
 					}
-					// HERDRUP_SMOKE_PHONE=1 (CI, under HERDRUP_KIOSK=1 on a phone-sized
-					// screen): the window starts in the phone layout (style.css), as
-					// RoverOS starts it. Its roster drawing is the check; the typing and
-					// invitation steps below are the desktop layout's.
+					// HERDRUP_SMOKE_PHONE=1 (CI's Linux smoke, second launch): the page
+					// started in the phone layout, as RoverOS starts it. Its roster drawn
+					// without startup errors is the check; the typing and invitation steps
+					// below are the desktop layout's.
 					if os.Getenv("HERDRUP_SMOKE_PHONE") == "1" {
+						width, _ := win.Page().Eval(`innerWidth`)
 						time.Sleep(500 * time.Millisecond)
-						finish(true, "phone layout: page shows "+strconv.Itoa(want)+" rows")
+						finish(true, fmt.Sprintf("phone layout (%v px wide): page shows %d rows", width, want))
 						return
 					}
 					// Let the browser paint the frame it just laid out.
