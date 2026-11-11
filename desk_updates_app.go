@@ -130,13 +130,21 @@ type appUpdates struct {
 }
 
 func newAppUpdates() *appUpdates {
+	var updater appUpdater = mygoUpdater{}
+	reason := func() (string, bool) {
+		exe, _ := os.Executable()
+		return appUpdateDisabledReason(runtime.GOOS, exe)
+	}
+	if kioskEnabled() {
+		// The device's system updates herdrup with itself (kiosk.go): no
+		// self-update, and no GitHub release to download either.
+		updater = kioskUpdater{}
+		reason = func() (string, bool) { return kioskUpdateReason, false }
+	}
 	return &appUpdates{
-		updater: mygoUpdater{},
+		updater: updater,
 		current: mygo.App.Version(),
-		reason: func() (string, bool) {
-			exe, _ := os.Executable()
-			return appUpdateDisabledReason(runtime.GOOS, exe)
-		},
+		reason:  reason,
 		// mygo build sets production; mygo.Updater is off for the rest.
 		release:  func() bool { return !mygo.IsDev() },
 		latest:   latestPublishedVersion,

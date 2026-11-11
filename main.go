@@ -88,11 +88,13 @@ func main() {
 		if len(features) > 0 {
 			url = ""
 		}
-		win = mygo.NewWindow(mygo.WindowOptions{
-			Title:           "herdrup",
-			Width:           960,
-			Height:          680,
-			MinWidth:        560,
+		options := mygo.WindowOptions{
+			Title:  "herdrup",
+			Width:  960,
+			Height: 680,
+			// Narrower than 600 the page takes the phone's one-column layout
+			// (style.css, "Phone layout"), so the window may be as narrow as a phone.
+			MinWidth:        320,
 			MinHeight:       420,
 			BackgroundColor: design.ColorGround,
 			StateKey:        "main",
@@ -101,7 +103,17 @@ func main() {
 			// The menu bar of Linux and Windows windows stays out of the
 			// way of herdrup's layout until Alt or F10; its shortcuts work.
 			AutoHideMenuBar: true,
-		})
+		}
+		if kioskEnabled() {
+			// The device's only app (kiosk.go): the whole screen, no title bar,
+			// no size of its own to restore or keep to. No shadow either: on
+			// Wayland (cage) mygo would otherwise have GTK decorate a frameless
+			// window itself (client-side, around the page); without, GTK draws
+			// nothing (gtk_window_set_decorated false).
+			options.Frameless, options.FullScreen, options.DisableShadow = true, true, true
+			options.MinWidth, options.MinHeight, options.StateKey = 0, 0, ""
+		}
+		win = mygo.NewWindow(options)
 		if len(features) > 0 {
 			if err := enableWebKitFeatures(win, features); err != nil {
 				log.Printf("WebKit features: keeping the engine's layout (%v)", err)
