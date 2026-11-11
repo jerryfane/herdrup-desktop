@@ -1924,12 +1924,17 @@ class Detail {
     this.refuseAnswers();
    } else if (result.code) {
     // ask_form_moved: someone is answering in the Terminal; ask_unsupported: controls herdr
-    // can't drive. Both hand the form to the Terminal (contract: agent.answer_form errors).
-    const terminal = result.code === "ask_form_moved" || result.code === "ask_unsupported";
+    // can't drive. Both hand the form to the Terminal (contract: agent.answer_form errors), as
+    // does any answer herdr refuses with "answer in the terminal", plain or in parentheses: a
+    // textarea too long, an answer like the placeholder, combined characters (herdr #394
+    // form.rs). herdr's own reason is shown then. Other invalid answers stay editable here.
+    const handOff = /\(?answer in the terminal\)?\.?$/i.test(result.message ?? "");
+    const terminal = result.code === "ask_form_moved" || result.code === "ask_unsupported" || result.code === "ask_form_invalid" && handOff;
     this.answerProblem = {
      askID,
-     message: result.code === "ask_form_moved" ? "The form changed in the Terminal. Finish it there."
+     message: result.code === "ask_form_moved" && !handOff ? "The form changed in the Terminal. Finish it there."
       : result.code === "ask_unsupported" ? "This form can't be answered from the chat."
+      : handOff ? `herdr can't answer this from the chat: ${result.message}`
       : `Couldn't send: ${result.message}`,
      offersTerminal: terminal,
     };
