@@ -529,7 +529,10 @@ opens that menu. When an on-screen keyboard shrinks the window, the composer sta
 `HERDRUP_KIOSK=1` is for a device where herdrup is the only app, such as RoverOS on a phone under
 the cage compositor. The window fills the screen with no title bar and no minimum size. herdrup
 never updates itself there and never reads GitHub for a newer release: Settings, App updates
-says it is updated with the system it runs on.
+says it is updated with the system it runs on. The phone layout follows the window's width in
+logical pixels, so a high-density screen needs its scale set: under cage (Wayland) `GDK_SCALE` has
+no effect, so set the output scale with `wlr-randr --output <name> --scale 2` (RoverOS: a 720 × 1560
+screen at scale 2 is 360 × 780).
 
 ## Install
 
