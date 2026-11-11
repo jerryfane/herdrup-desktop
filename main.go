@@ -106,8 +106,11 @@ func main() {
 		}
 		if kioskEnabled() {
 			// The device's only app (kiosk.go): the whole screen, no title bar,
-			// no size of its own to restore or keep to.
-			options.Frameless, options.FullScreen = true, true
+			// no size of its own to restore or keep to. No shadow either: on
+			// Wayland (cage) mygo would otherwise have GTK decorate a frameless
+			// window itself (client-side, around the page); without, GTK draws
+			// nothing (gtk_window_set_decorated false).
+			options.Frameless, options.FullScreen, options.DisableShadow = true, true, true
 			options.MinWidth, options.MinHeight, options.StateKey = 0, 0, ""
 		}
 		win = mygo.NewWindow(options)
