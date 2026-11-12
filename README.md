@@ -802,9 +802,9 @@ is not offered.
 
 | Path | What |
 |---|---|
-| `main.go`, `desk.go` | the window and the `Desk` service the page calls (connect, board, state) |
-| `tray.go`, `presence.go`, `trayicon/` | the tray icon and menu, needs-you notifications and the menu bar |
-| `symbols*.go`, `third_party/phosphor` | the `Symbols` service: SF Symbols on macOS, Phosphor stand-ins elsewhere |
+| `app/main.go`, `app/desk.go` | the window and the `Desk` service the page calls (connect, board, state) |
+| `app/tray.go`, `app/presence.go`, `app/trayicon/` | the tray icon and menu, needs-you notifications and the menu bar |
+| `app/symbols*.go`, `third_party/phosphor` | the `Symbols` service: SF Symbols on macOS, Phosphor stand-ins elsewhere |
 | `internal/bridge` | SSH, host key pinning, `api-bridge --multi`, streams and duplex channels |
 | `internal/herdrapi`, `cmd/herdr-api-gen` | herdr's API types, generated from its pinned schema, and the method table |
 | `internal/engine`, `cmd/herdrup-cli` | the typed herdr client (capability gating, event stream, pane stream, gram upload, saved machines and federation peers) and its CLI |

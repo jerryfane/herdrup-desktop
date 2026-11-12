@@ -3,7 +3,6 @@
 package main
 
 import (
-	"embed"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/jerryfane/herdrup-desktop/third_party/phosphor"
 )
 
 // Apple licenses SF Symbols for its own platforms only, so Windows and
@@ -20,24 +21,21 @@ import (
 // sfMetrics, in a box of the size macOS gives the symbol.
 //
 // Frontend-only glyphs in web/ are bundled by Vite, not embedded a second time.
-//
-//go:embed third_party/phosphor/LICENSE third_party/phosphor/bold third_party/phosphor/fill third_party/phosphor/light third_party/phosphor/regular third_party/phosphor/thin
-var phosphor embed.FS
 
 // phosphorWeights is the Phosphor weight drawn for each SF weight, by
 // symbolWeight: the stroke is fitted with the ink, so these follow SF's
 // stroke widths, not the names.
 var phosphorWeights = [len(symbolWeights)]string{"thin", "thin", "light", "regular", "regular", "bold", "bold", "bold", "bold"}
 
-// file is the Phosphor SVG drawn for s at SF weight w.
+// file is the Phosphor SVG drawn for s at SF weight w, in phosphor.FS.
 func (s standIn) file(w symbolWeight) string {
 	if s.solid {
-		return "third_party/phosphor/fill/" + s.icon + "-fill.svg"
+		return "fill/" + s.icon + "-fill.svg"
 	}
 	if pw := phosphorWeights[w]; pw != "regular" {
-		return "third_party/phosphor/" + pw + "/" + s.icon + "-" + pw + ".svg"
+		return pw + "/" + s.icon + "-" + pw + ".svg"
 	}
-	return "third_party/phosphor/regular/" + s.icon + ".svg"
+	return "regular/" + s.icon + ".svg"
 }
 
 func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (SymbolImage, error) {
@@ -48,7 +46,7 @@ func drawSymbol(name string, pointSize float64, w symbolWeight, scale int) (Symb
 	}
 	box := sfMetrics[mi].weights[w]
 	file := standIns[si].file(w)
-	src, err := phosphor.ReadFile(file)
+	src, err := phosphor.FS.ReadFile(file)
 	if err != nil {
 		return SymbolImage{}, fmt.Errorf("symbols: %w", err)
 	}

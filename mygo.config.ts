@@ -35,6 +35,8 @@ export default defineConfig({
   devCommand: "bun run dev:web",
   buildCommand: "bun run build:web",
   frontendDist: "dist",
+  // The Go app (package main) lives in app/; mygo generate reads it for the bindings.
+  main: "./app",
   bindings: "src/mygo.ts",
   out: "build",
   resources: speechFiles,
@@ -60,7 +62,7 @@ export default defineConfig({
   // MACOS_SIGNING_IDENTITY exists. Without them the app is signed ad hoc.
   macos: {
     infoPlist: { NSCameraUsageDescription: "Scan the one-time pairing code shown by herdr on your computer." },
-    entitlements: "camera.entitlements.plist",
+    entitlements: "resources/camera.entitlements.plist",
     signingIdentity: process.env.HERDRUP_SIGNING_IDENTITY,
     notarize: process.env.HERDRUP_NOTARY_KEYCHAIN
       ? { keychainProfile: "notary", keychain: process.env.HERDRUP_NOTARY_KEYCHAIN }

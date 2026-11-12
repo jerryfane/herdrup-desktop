@@ -4,7 +4,7 @@ import { x25519 } from "@noble/curves/ed25519.js";
 import { CipherState, Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, PROTOCOL_NAME, guestPrologue, type StaticKey } from "../src/webguest/noise";
 import { staticKey } from "../src/webguest/identity";
 import { Responder } from "./webguestResponder";
-import vector from "../testdata/noise_ik_vector.json";
+import vector from "../internal/guest/testdata/noise_ik_vector.json";
 
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 const unhex = (text: string) => new Uint8Array(Buffer.from(text, "hex"));
@@ -21,7 +21,7 @@ async function webCryptoKey(secret: Uint8Array): Promise<StaticKey> {
  return staticKey({ v: 1, kind: "webcrypto", privateKey, publicKey: x25519.getPublicKey(secret) });
 }
 
-// herdr's transcript (testdata/README.md): the guest must write every initiator message byte for
+// herdr's transcript (internal/guest/testdata/README.md): the guest must write every initiator message byte for
 // byte and read every responder message, with the raw-key and the non-extractable WebCrypto DH.
 for (const [name, key] of [["raw key", async () => rawKey(unhex(vector.init_static))], ["WebCrypto key", () => webCryptoKey(unhex(vector.init_static))]] as const) {
  test(`the guest reproduces herdr's Noise IK vector (${name})`, async () => {

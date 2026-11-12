@@ -29,13 +29,13 @@ jobs:
       - name: Draw the symbols
         run: |
           mkdir -p "$RUNNER_TEMP/symbols"
-          HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run 'TestSymbolImageDarwin|TestSymbolDump' .
+          HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run 'TestSymbolImageDarwin|TestSymbolDump' ./app
       - name: Compare with SwiftUI
         if: always()
         run: swift .github/symbols/swiftui.swift "$RUNNER_TEMP/symbols"
       - name: Windows and Linux metrics match AppKit
         if: always()
-        run: HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run TestSFMetrics .
+        run: HERDRUP_SYMBOLS_OUT="$RUNNER_TEMP/symbols" go test -v -count=1 -run TestSFMetrics ./app
       - uses: actions/upload-artifact@v4
         if: always()
         with:

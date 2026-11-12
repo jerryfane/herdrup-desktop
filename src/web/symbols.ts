@@ -2,7 +2,7 @@
 // (symbols_other.go), a Phosphor stand-in fitted to the SF Symbol's box, from the tables
 // `go run ./cmd/websymbols` reads out of the Go sources into symbols.data.ts. The ink bounds there
 // come precomputed, so drawing is IEEE arithmetic only and matches Go's to the byte
-// (test/websymbols.test.ts against testdata/websymbols.golden.json).
+// (test/websymbols.test.ts against app/testdata/websymbols.golden.json).
 
 import type { SymbolImage } from "../mygo";
 import { phosphor, phosphorWeights, sfMetrics, standIns, symbolWeights } from "./symbols.data";

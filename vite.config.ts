@@ -1,5 +1,5 @@
 import { defineConfig } from "vite";
-import { uiTypography } from "./uiTypography.ts";
+import { uiTypography } from "./scripts/uiTypography.ts";
 
 export default defineConfig({
   css: { postcss: { plugins: [uiTypography()] } },
