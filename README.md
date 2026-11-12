@@ -65,7 +65,7 @@ straight between your computer and your own machine over SSH.
 ## Talk to your agents
 
 <p align="center">
-  <img src="docs/readme/chat.webp" width="100%" alt="An omp agent's chat: rendered markdown, a checklist and running subagents">
+  <img src="docs/readme/chat.webp" width="100%" alt="An omp agent's chat: a question with three answers, its checklist and two running subagents">
 </p>
 
 - **Chat**: an [omp](https://github.com/can1357/oh-my-pi) agent opens as a conversation, with
