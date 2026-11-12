@@ -212,6 +212,15 @@ and decoding or leaving the window stops capture. Linux native checks used a rea
 canvas MediaStream and an isolated TCP pairing endpoint; physical-camera capture
 and Windows/macOS camera acceptance are not verified.
 
+Without a camera, the pairing sheet's **Paste pairing code** takes herdr pair's JSON or a
+pairing link, `herdrup://pair#<base64url of that JSON>` (agreed with herdrup iOS and Deimos
+Forge; Windows' `herdrup://pair/#…`, padding, the standard alphabet and percent-encoding are
+read too). The system opens such a link with the app (`urlSchemes`, `Desk.queuePairingLink`).
+A pasted or opened code first shows what it names, the computer (`user@host`) and its
+SSH host key (`SHA256:…`), read in Go without contacting it (`InspectPairingCode`). Pairing
+starts only on Connect. An opened link is held in memory until the page takes it, and is never
+logged; the preview the page shows carries no token.
+
 Guest invitations accept `herdrup://guest-invite#…` links, matching HTTPS relay
 links, or pasted invitation text. A short link (`https://<relay>/i/<id><key>`, one
 34-character segment) names an invite the relay keeps encrypted: review first asks

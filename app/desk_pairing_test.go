@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -239,5 +240,50 @@ func TestPairingUnconfirmedOrRefusedExchangeNeverRetriesOrSaves(t *testing.T) {
 				t.Fatalf("unconfirmed key was saved as usable: %v", err)
 			}
 		})
+	}
+}
+
+// herdr-app 462716: a herdrup://pair# link (as Windows hands it over too) is
+// held for the page, which shows what it names (no contact with the computer:
+// the listener sees no connection) and pairs only on Connect, through the same
+// redemption as a scanned code.
+func TestPairingLinkShowsTheComputerAndPairsOnlyOnConnect(t *testing.T) {
+	d := newDesk(t.TempDir())
+	raw, hostKey, calls, requests, outcome := pairingListener(t, d, `{"type":"pair.ok"}`)
+	link := "herdrup://pair/#" + base64.RawURLEncoding.EncodeToString([]byte(raw))
+	if d.queuePairingLink("herdrup://guest-invite#x") {
+		t.Fatal("a guest invitation was taken for a pairing link")
+	}
+	if !d.queuePairingLink(link) {
+		t.Fatal("pairing link not taken")
+	}
+	text := d.TakePairingLink()
+	if text != "herdrup://pair#"+base64.RawURLEncoding.EncodeToString([]byte(raw)) || d.TakePairingLink() != "" {
+		t.Fatalf("taken link %q, or taken twice", text)
+	}
+	preview, err := d.InspectPairingCode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (PairingPreview{Host: "127.0.0.1", User: "pairing-user", Fingerprint: ssh.FingerprintSHA256(hostKey.PublicKey())}); preview != want {
+		t.Fatalf("preview %+v, want %+v", preview, want)
+	}
+	if hosts, _ := d.Machines(); calls.Load() != 0 || len(hosts) != 0 {
+		t.Fatalf("inspecting contacted the computer (%d) or saved a host (%d)", calls.Load(), len(hosts))
+	}
+	if _, err := d.InspectPairingCode("herdrup://pair#***"); err == nil {
+		t.Fatal("a bad link was read as a pairing code")
+	}
+	if _, err := d.PairMachine(context.Background(), text); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-outcome; err != nil {
+		t.Fatal(err)
+	}
+	if r := <-requests; calls.Load() != 1 || r.Token != "single-use-fixture-token" {
+		t.Fatalf("redemption %d %+v", calls.Load(), r.Type)
+	}
+	if hosts, _ := d.Machines(); len(hosts) != 1 || !hosts[0].Paired {
+		t.Fatalf("hosts %+v", hosts)
 	}
 }

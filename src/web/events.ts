@@ -40,6 +40,7 @@ export const events: { [K in EventName]: GoEvent<Payload<K>> } = {
  gramMenu: event("gramMenu"),
  folderNamingRequested: event("folderNamingRequested"),
  guestInvitationOpened: event("guestInvitationOpened"),
+ pairingLinkOpened: event("pairingLinkOpened"),
  terminalChanged: event("terminalChanged"),
  chatMenu: event("chatMenu"),
  paneAttachments: event("paneAttachments"),

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
 	"golang.org/x/crypto/ssh"
 )
@@ -15,6 +16,51 @@ import (
 type PairedMachine struct {
 	ID       string `json:"id"`
 	Nickname string `json:"nickname"`
+}
+
+// PairingPreview is what a pairing code names, for the user to confirm before
+// anything is sent: the computer and its SSH host key. The token stays in Go.
+type PairingPreview struct {
+	Host        string `json:"host"`
+	User        string `json:"user"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// InspectPairingCode reads a pairing code (herdr pair's JSON, or a
+// herdrup://pair# link) without contacting the computer.
+func (d *Desk) InspectPairingCode(text string) (PairingPreview, error) {
+	payload, err := pairing.Parse(text)
+	if err != nil {
+		return PairingPreview{}, err
+	}
+	return PairingPreview{Host: payload.Host, User: payload.User, Fingerprint: payload.SSHFingerprint()}, nil
+}
+
+// PairingLinkOpened is sent when the system opens a herdrup://pair# link with
+// the app; the page takes it with TakePairingLink and asks before pairing.
+var PairingLinkOpened = mygo.NewEvent[bool]("pairing-link:opened")
+
+// queuePairingLink keeps a pairing link the system opened for the page, in
+// memory only, never logged: it holds a single-use pairing token.
+func (d *Desk) queuePairingLink(text string) bool {
+	link, ok := pairing.AppLink(text)
+	if !ok {
+		return false
+	}
+	d.mu.Lock()
+	d.pendingPairingLink = link
+	d.mu.Unlock()
+	PairingLinkOpened.Broadcast(true)
+	return true
+}
+
+// TakePairingLink hands an opened pairing link to the page once.
+func (d *Desk) TakePairingLink() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	text := d.pendingPairingLink
+	d.pendingPairingLink = ""
+	return text
 }
 
 var pairingHostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}

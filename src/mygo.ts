@@ -626,6 +626,16 @@ export interface PairedMachine {
 }
 
 /**
+ * PairingPreview is what a pairing code names, for the user to confirm before
+ * anything is sent: the computer and its SSH host key. The token stays in Go.
+ */
+export interface PairingPreview {
+  host: string;
+  user: string;
+  fingerprint: string;
+}
+
+/**
  * PaneAction is an agent page ••• item the page carries out. Action is
  * copy-screen, copy-recent, copy-selection, text-increase, text-decrease,
  * text-reset, share, avatar, mute, unmute or close. mute and unmute are
@@ -1359,6 +1369,13 @@ export const Desk = {
     return call("Desk.InspectGuestInvitation", text);
   },
   /**
+   * InspectPairingCode reads a pairing code (herdr pair's JSON, or a
+   * herdrup://pair# link) without contacting the computer.
+   */
+  inspectPairingCode(text: string): Promise<PairingPreview> {
+    return call("Desk.InspectPairingCode", text);
+  },
+  /**
    * InstallAppUpdate installs the newer version that the last check found
    * and relaunches the app into it; AppUpdateChanged reports the progress.
    */
@@ -1684,6 +1701,10 @@ export const Desk = {
   takeGuestInvitation(): Promise<string> {
     return call("Desk.TakeGuestInvitation");
   },
+  /** TakePairingLink hands an opened pairing link to the page once. */
+  takePairingLink(): Promise<string> {
+    return call("Desk.TakePairingLink");
+  },
   terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {
     return call("Desk.TerminalHistory", token, cursor);
   },
@@ -1789,6 +1810,11 @@ export const events = {
   terminalChanged: event<TerminalEvent>("terminal:changed"),
   chatMenu: event<ChatMenuChoice>("chat:menu"),
   paneAttachments: event<PaneAttachments>("pane:attachments"),
+  /**
+   * PairingLinkOpened is sent when the system opens a herdrup://pair# link with
+   * the app; the page takes it with TakePairingLink and asks before pairing.
+   */
+  pairingLinkOpened: event<boolean>("pairing-link:opened"),
   /**
    * SessionsChanged is sent with the session pills: none while fewer than
    * two sessions run, as herdrup hides them then.
