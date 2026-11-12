@@ -229,6 +229,9 @@ type gramDesk struct {
 	// roster is the connection's agent list (desk.go session, gramRoster),
 	// for the agents a message can go to beyond the ones that wrote.
 	roster []herdrapi.AgentInfo
+	// rosterMarksGram: the roster's herdr marks each federated agent's
+	// gram_reachable (capabilities.gram_reachable).
+	rosterMarksGram bool
 
 	inbox gramstore.Inbox
 	// pending are your posts not yet in a list; deleted are tombstones of
@@ -289,7 +292,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 		g.cancel()
 	}
 	old := g.composer
-	g.link, g.machine, g.roster = l, machine, nil
+	g.link, g.machine, g.roster, g.rosterMarksGram = l, machine, nil, false
 	g.ctx, g.cancel = context.WithCancel(context.Background())
 	g.epoch++
 	g.inbox = gramstore.Inbox{}
@@ -316,29 +319,34 @@ func (d *Desk) gramReset(l *link, machine string) {
 	}
 }
 
-// gramRoster gives Gram l's latest agent list, for the agents a message
-// can go to. It republishes only when that list changed. d.mu must not be
-// held.
-func (d *Desk) gramRoster(l *link, agents []herdrapi.AgentInfo) {
+// gramRoster gives Gram l's latest agent list and its herdr's capabilities,
+// for the agents a message can go to. It republishes only when that list
+// changed. d.mu must not be held.
+func (d *Desk) gramRoster(l *link, agents []herdrapi.AgentInfo, caps *herdrapi.ServerCapabilities) {
 	g := &d.gram
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link != l {
 		return
 	}
-	before := gramRecipients(g.roster, g.machine)
-	g.roster = agents
-	if !slices.Equal(before, gramRecipients(agents, g.machine)) {
+	marks := caps != nil && caps.GramReachable
+	before := gramRecipients(g.roster, g.machine, g.rosterMarksGram)
+	g.roster, g.rosterMarksGram = agents, marks
+	if !slices.Equal(before, gramRecipients(agents, g.machine, marks)) {
 		d.publishGramLocked()
 	}
 }
 
 // gramRecipients are the roster agents a gram.post to: names: every named,
 // unarchived agent here, and every named agent of a reachable federated
-// machine (herdr is_live_agent_name). Each is addressed by its agent name,
-// which for a federated agent is "<machine>/<name>" (gramstore.AgentForSender),
-// and shown with its bare name and machine, local ones on machine.
-func gramRecipients(roster []herdrapi.AgentInfo, machine string) []GramAgent {
+// machine (herdr is_live_agent_name) whose Gram relay this herdr allows.
+// That last part is known only when marks (capabilities.gram_reachable):
+// then an agent marked gram_reachable false is left out; an older herdr's
+// federated agents are all offered, and herdr refuses a post it can't relay.
+// Each is addressed by its agent name, which for a federated agent is
+// "<machine>/<name>" (gramstore.AgentForSender), and shown with its bare
+// name and machine, local ones on machine.
+func gramRecipients(roster []herdrapi.AgentInfo, machine string, marks bool) []GramAgent {
 	out := []GramAgent{}
 	for _, a := range roster {
 		if a.Name == nil || *a.Name == "" || a.Archived != nil {
@@ -347,6 +355,9 @@ func gramRecipients(roster []herdrapi.AgentInfo, machine string) []GramAgent {
 		agent := GramAgent{From: *a.Name, Name: gramstore.AgentName(*a.Name), Machine: machine}
 		if a.MachineID != nil {
 			if a.Reachability == nil || *a.Reachability != herdrapi.ReachabilityReachable {
+				continue
+			}
+			if marks && a.GramReachable != nil && !*a.GramReachable {
 				continue
 			}
 			agent.Machine = *a.MachineID
@@ -517,7 +528,7 @@ func (d *Desk) snapshotLocked() GramSnapshot {
 			s.Agents = append(s.Agents, GramAgent{From: m.From, Name: row.Name, Machine: row.Machine})
 		}
 	}
-	for _, a := range gramRecipients(g.roster, g.machine) {
+	for _, a := range gramRecipients(g.roster, g.machine, g.rosterMarksGram) {
 		if !seen[a.From] {
 			seen[a.From] = true
 			s.Agents = append(s.Agents, a)
