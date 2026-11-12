@@ -43,8 +43,9 @@ terminal is one click behind each agent.
 **Free, open source and private.** There is no account. Your agents, terminals and chats go
 straight between your computer and your own machine over SSH.
 
-> **Status: preview.** Releases are tagged `v0.1.0-preview.N`, and the app updates itself in place
-> when a newer one is out.
+> **Status: preview.** Releases are tagged `v0.1.0-preview.N`. Installed from the `.dmg`, the
+> Windows installer or `install.sh`, the app updates itself in place when a newer one is out. The
+> Debian package tells you, and you update it with apt; in kiosk mode the system updates it.
 
 ---
 
@@ -139,9 +140,12 @@ flowchart LR
 **1. On your machine**, install the herdr fork and start it:
 
 ```bash
-curl -fsSL https://herdrup.app/install.sh | sh   # prebuilt binary, checksum-verified
-herdr                                              # starts the server
+curl -fsSL https://herdrup.app/install.sh | sh   # prebuilt binary in ~/.local/bin, checksum-verified
+~/.local/bin/herdr                                 # starts the server
 ```
+
+The installer says so if `~/.local/bin` isn't on your `PATH`; add it there to type just `herdr`.
+Upstream herdr (`brew install herdr`) lacks the APIs Herdrup needs, so make sure the fork comes first.
 
 SSH must be enabled on that machine (on a Mac, turn on **Remote Login**), and reachable from your
 computer: over [Tailscale](https://tailscale.com) or your local network.
