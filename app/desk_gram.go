@@ -330,11 +330,44 @@ func (d *Desk) gramRoster(l *link, agents []herdrapi.AgentInfo, caps *herdrapi.S
 		return
 	}
 	marks := caps != nil && caps.GramReachable
-	before := gramRecipients(g.roster, g.machine, g.rosterMarksGram)
+	before := g.agentsLocked()
 	g.roster, g.rosterMarksGram = agents, marks
-	if !slices.Equal(before, gramRecipients(agents, g.machine, marks)) {
+	// The whole list, past senders included: a sender's eligibility can
+	// change while the roster's own recipients don't.
+	if !slices.Equal(before, g.agentsLocked()) {
 		d.publishGramLocked()
 	}
+}
+
+// agentsLocked are the agents a message can go to: the ones that wrote,
+// newest first, then every other agent herdr would deliver to
+// (gramRecipients). A sender herdr says it can't relay to keeps its messages
+// but is not offered. g.mu must be held.
+func (g *gramDesk) agentsLocked() []GramAgent {
+	agents := []GramAgent{}
+	seen := map[string]bool{}
+	for _, m := range g.visibleLocked() {
+		if m.Direction != herdrapi.GramDirectionAgentToOwner || seen[m.From] {
+			continue
+		}
+		seen[m.From] = true
+		a, ok := gramstore.AgentForSender(m.From, g.roster)
+		if ok && a.Name != nil {
+			seen[*a.Name] = true
+		}
+		if ok && gramRelayDenied(a, g.rosterMarksGram) {
+			continue
+		}
+		row := gramRow(m, g.machine, false, false)
+		agents = append(agents, GramAgent{From: m.From, Name: row.Name, Machine: row.Machine})
+	}
+	for _, a := range gramRecipients(g.roster, g.machine, g.rosterMarksGram) {
+		if !seen[a.From] {
+			seen[a.From] = true
+			agents = append(agents, a)
+		}
+	}
+	return agents
 }
 
 // gramRecipients are the roster agents a gram.post to: names: every named,
@@ -520,31 +553,10 @@ func (d *Desk) snapshotLocked() GramSnapshot {
 	for _, m := range g.pending {
 		pendingIDs[m.ID] = true
 	}
-	// The agents a message can go to: the ones that wrote, newest first, then
-	// every other agent herdr would deliver to (gramRecipients). A sender
-	// herdr says it can't relay to keeps its messages but is not offered.
-	seen := map[string]bool{}
 	for _, m := range g.visibleLocked() {
-		row := gramRow(m, g.machine, ids[m.ID], pendingIDs[m.ID])
-		s.Messages = append(s.Messages, row)
-		if row.FromAgent && !seen[m.From] {
-			seen[m.From] = true
-			a, ok := gramstore.AgentForSender(m.From, g.roster)
-			if ok && a.Name != nil {
-				seen[*a.Name] = true
-			}
-			if ok && gramRelayDenied(a, g.rosterMarksGram) {
-				continue
-			}
-			s.Agents = append(s.Agents, GramAgent{From: m.From, Name: row.Name, Machine: row.Machine})
-		}
+		s.Messages = append(s.Messages, gramRow(m, g.machine, ids[m.ID], pendingIDs[m.ID]))
 	}
-	for _, a := range gramRecipients(g.roster, g.machine, g.rosterMarksGram) {
-		if !seen[a.From] {
-			seen[a.From] = true
-			s.Agents = append(s.Agents, a)
-		}
-	}
+	s.Agents = g.agentsLocked()
 	if g.composer != nil {
 		st := g.composer.Snapshot()
 		s.Sending, s.DraftPosted = st.Sending, st.DraftPosted
