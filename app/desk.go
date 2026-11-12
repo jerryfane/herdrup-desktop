@@ -129,11 +129,11 @@ type Desk struct {
 
 	mu                 sync.Mutex
 	pendingGuestInvite string
-	// pendingPairingLink is a herdrup://pair# link the system opened
-	// (queuePairingLink), until the page takes it.
-	pendingPairingLink string
-	state              ConnState
-	board              *BoardUpdate
+	// pairingLink is a herdrup://pair# link the system opened, until it is
+	// paired or discarded (desk_pairing.go); its token never leaves Go.
+	pairingLink pairingLink
+	state       ConnState
+	board       *BoardUpdate
 	// peers are the federation peers of board's agents.
 	peers       []engine.PeerSummary
 	cancel      context.CancelFunc

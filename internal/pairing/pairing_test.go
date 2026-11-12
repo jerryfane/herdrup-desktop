@@ -76,6 +76,14 @@ func TestAppLinkCarriesTheSameCode(t *testing.T) {
 			t.Errorf("%s: %+v token %q fp %s", name, p, p.token, p.SSHFingerprint())
 		}
 	}
+	// The last character of an unpadded fragment carries padding bits; a
+	// spelling with one of them set decodes leniently to the same JSON.
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, raw[len(raw)-1])
+	paddingBit := raw[:len(raw)-1] + string(alphabet[last^1])
+	if lenient, err := base64.RawURLEncoding.DecodeString(paddingBit); err != nil || string(lenient) != json {
+		t.Fatalf("test setup: %q must decode leniently to the code (%v)", paddingBit, err)
+	}
 	for name, text := range map[string]string{
 		"not base64":    "herdrup://pair#***",
 		"not json":      "herdrup://pair#" + base64.RawURLEncoding.EncodeToString([]byte("hello")),
@@ -83,6 +91,8 @@ func TestAppLinkCarriesTheSameCode(t *testing.T) {
 		"guest invite":  "herdrup://guest-invite#" + raw,
 		"other scheme":  "https://pair#" + raw,
 		"missing token": "herdrup://pair#" + base64.RawURLEncoding.EncodeToString([]byte(strings.Replace(json, `"token":"tok>>>???",`, "", 1))),
+		"extra padding": "herdrup://pair#" + padded + "====",
+		"padding bits":  "herdrup://pair#" + paddingBit,
 	} {
 		if p, err := Parse(text); err == nil {
 			t.Errorf("%s: accepted as %v", name, p)

@@ -66,8 +66,10 @@ func AppLink(text string) (string, bool) {
 }
 
 // codeJSON is the pairing JSON in raw: the JSON itself (a scanned or pasted
-// code), or an app link's decoded fragment. The fragment may come padded, in
-// the standard base64 alphabet, or percent-encoded by the system's opener.
+// code), or an app link's decoded fragment. The fragment may be percent-
+// encoded by the system's opener and use the standard base64 alphabet; it is
+// either unpadded or correctly padded, and decoded strictly (no stray
+// padding, no set padding bits).
 func codeJSON(raw string) (string, error) {
 	link, ok := AppLink(raw)
 	if !ok {
@@ -77,8 +79,12 @@ func codeJSON(raw string) (string, error) {
 	if unescaped, err := url.PathUnescape(payload); err == nil {
 		payload = unescaped
 	}
-	payload = strings.NewReplacer("+", "-", "/", "_").Replace(strings.TrimRight(payload, "="))
-	data, err := base64.RawURLEncoding.DecodeString(payload)
+	payload = strings.NewReplacer("+", "-", "/", "_").Replace(payload)
+	encoding := base64.RawURLEncoding.Strict()
+	if strings.HasSuffix(payload, "=") {
+		encoding = base64.URLEncoding.Strict()
+	}
+	data, err := encoding.DecodeString(payload)
 	if err != nil {
 		return "", errors.New(invalidCode)
 	}

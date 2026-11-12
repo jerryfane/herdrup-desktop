@@ -214,12 +214,13 @@ and Windows/macOS camera acceptance are not verified.
 
 Without a camera, the pairing sheet's **Paste pairing code** takes herdr pair's JSON or a
 pairing link, `herdrup://pair#<base64url of that JSON>` (agreed with herdrup iOS and Deimos
-Forge; Windows' `herdrup://pair/#…`, padding, the standard alphabet and percent-encoding are
-read too). The system opens such a link with the app (`urlSchemes`, `Desk.queuePairingLink`).
-A pasted or opened code first shows what it names, the computer (`user@host`) and its
-SSH host key (`SHA256:…`), read in Go without contacting it (`InspectPairingCode`). Pairing
-starts only on Connect. An opened link is held in memory until the page takes it, and is never
-logged; the preview the page shows carries no token.
+Forge; Windows' `herdrup://pair/#…`, correct padding, the standard alphabet and
+percent-encoding are read too, strictly). The system opens such a link with the app
+(`urlSchemes`, `Desk.queuePairingLink`), and it stays in Go: the page gets only an offer, the
+computer (`user@host`), its SSH host key (`SHA256:…`) and an id (`TakePairingLink`), and
+Connect pairs it by that id (`PairOpenedLink`); Cancel forgets it. A pasted code shows the
+same confirmation (`InspectPairingCode`). Reading a code never contacts the computer, pairing
+starts only on Connect, and a link is never logged.
 
 Guest invitations accept `herdrup://guest-invite#…` links, matching HTTPS relay
 links, or pasted invitation text. A short link (`https://<relay>/i/<id><key>`, one

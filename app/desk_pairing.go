@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -40,27 +41,72 @@ func (d *Desk) InspectPairingCode(text string) (PairingPreview, error) {
 // the app; the page takes it with TakePairingLink and asks before pairing.
 var PairingLinkOpened = mygo.NewEvent[bool]("pairing-link:opened")
 
-// queuePairingLink keeps a pairing link the system opened for the page, in
-// memory only, never logged: it holds a single-use pairing token.
+// queuePairingLink keeps a pairing link the system opened, in Go memory only
+// and never logged: it holds a single-use pairing token, which never goes to
+// the page (TakePairingLink, PairOpenedLink).
 func (d *Desk) queuePairingLink(text string) bool {
 	link, ok := pairing.AppLink(text)
 	if !ok {
 		return false
 	}
 	d.mu.Lock()
-	d.pendingPairingLink = link
+	d.pairingLink = pairingLink{text: link}
 	d.mu.Unlock()
 	PairingLinkOpened.Broadcast(true)
 	return true
 }
 
-// TakePairingLink hands an opened pairing link to the page once.
-func (d *Desk) TakePairingLink() string {
+// pairingLink is an opened pairing link: its text (with the token), and once
+// the page has taken it, the id the page confirms it by.
+type pairingLink struct{ text, id string }
+
+// PairingOffer is an opened pairing link as the page sees it: what it names,
+// and the id Connect pairs it by. It carries no token.
+type PairingOffer struct {
+	ID      string         `json:"id"`
+	Preview PairingPreview `json:"preview"`
+}
+
+// TakePairingLink hands the page the link the system opened as an offer to
+// confirm; nil when there is none. Each take gets a new id, so only the sheet
+// that took it last (after a page reload, say) can pair it. A link that is no
+// pairing code is dropped, and its error shown.
+func (d *Desk) TakePairingLink() (*PairingOffer, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	text := d.pendingPairingLink
-	d.pendingPairingLink = ""
-	return text
+	if d.pairingLink.text == "" {
+		return nil, nil
+	}
+	preview, err := d.InspectPairingCode(d.pairingLink.text)
+	if err != nil {
+		d.pairingLink = pairingLink{}
+		return nil, err
+	}
+	d.pairingLink.id = rand.Text()
+	return &PairingOffer{ID: d.pairingLink.id, Preview: preview}, nil
+}
+
+// PairOpenedLink pairs the opened link the page confirmed (Connect), once.
+func (d *Desk) PairOpenedLink(ctx context.Context, id string) (PairedMachine, error) {
+	d.mu.Lock()
+	link := d.pairingLink
+	if id != "" && link.id == id {
+		d.pairingLink = pairingLink{}
+	}
+	d.mu.Unlock()
+	if id == "" || link.id != id {
+		return PairedMachine{}, errors.New("That pairing link is no longer open. Open it again.")
+	}
+	return d.PairMachine(ctx, link.text)
+}
+
+// DiscardPairingLink forgets the opened link the page shows as id (Cancel).
+func (d *Desk) DiscardPairingLink(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if id != "" && d.pairingLink.id == id {
+		d.pairingLink = pairingLink{}
+	}
 }
 
 var pairingHostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}

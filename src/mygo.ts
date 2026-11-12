@@ -626,6 +626,15 @@ export interface PairedMachine {
 }
 
 /**
+ * PairingOffer is an opened pairing link as the page sees it: what it names,
+ * and the id Connect pairs it by. It carries no token.
+ */
+export interface PairingOffer {
+  id: string;
+  preview: PairingPreview;
+}
+
+/**
  * PairingPreview is what a pairing code names, for the user to confirm before
  * anything is sent: the computer and its SSH host key. The token stays in Go.
  */
@@ -1159,6 +1168,10 @@ export const Desk = {
   creationKinds(token: string): Promise<string> {
     return call("Desk.CreationKinds", token);
   },
+  /** DiscardPairingLink forgets the opened link the page shows as id (Cancel). */
+  discardPairingLink(id: string): Promise<void> {
+    return call("Desk.DiscardPairingLink", id);
+  },
   /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");
@@ -1433,6 +1446,10 @@ export const Desk = {
   pairMachine(qrText: string): Promise<PairedMachine> {
     return call("Desk.PairMachine", qrText);
   },
+  /** PairOpenedLink pairs the opened link the page confirmed (Connect), once. */
+  pairOpenedLink(id: string): Promise<PairedMachine> {
+    return call("Desk.PairOpenedLink", id);
+  },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
     return call("Desk.PaneAttachFiles", token, paths);
@@ -1701,8 +1718,13 @@ export const Desk = {
   takeGuestInvitation(): Promise<string> {
     return call("Desk.TakeGuestInvitation");
   },
-  /** TakePairingLink hands an opened pairing link to the page once. */
-  takePairingLink(): Promise<string> {
+  /**
+   * TakePairingLink hands the page the link the system opened as an offer to
+   * confirm; nil when there is none. Each take gets a new id, so only the sheet
+   * that took it last (after a page reload, say) can pair it. A link that is no
+   * pairing code is dropped, and its error shown.
+   */
+  takePairingLink(): Promise<PairingOffer | null> {
     return call("Desk.TakePairingLink");
   },
   terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {

@@ -1,4 +1,4 @@
-import { Desk, type PairedMachine } from "./mygo";
+import { Desk, type PairedMachine, type PairingOffer, type PairingPreview } from "./mygo";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
 import { errorText } from "./errors";
@@ -8,9 +8,10 @@ function button(text: string, run: () => void) { const node = el("button", "", t
 let active: HTMLDialogElement | null = null;
 
 /** The pairing sheet: scan herdr pair's code with the camera, or paste the code or its
- *  herdrup://pair# link. `code` opens it on that code's confirmation instead (a link the
- *  system opened with the app): a pasted or opened code pairs only after Connect. */
-export function showPairing(saved: () => Promise<void>, open: (machine: PairedMachine) => Promise<void>, manual: () => void, code?: string) {
+ *  herdrup://pair# link. `offer` opens it on the confirmation of a link the system opened
+ *  (Desk.takePairingLink), whose token stays in Go: a pasted or opened code pairs only on
+ *  Connect. */
+export function showPairing(saved: () => Promise<void>, open: (machine: PairedMachine) => Promise<void>, manual: () => void, offer?: PairingOffer) {
   active?.close();
   let disposed = false, stopCamera: (() => void) | null = null, phase: "scan" | "paste" | "confirm" | "pair" | "result" = "scan";
   const sheet = el("dialog", "settings-sheet pairing-sheet"), header = el("header", "settings-sheet-header"), heading = el("h2", "", "Scan to connect");
@@ -25,10 +26,10 @@ export function showPairing(saved: () => Promise<void>, open: (machine: PairedMa
     content.replaceChildren(el("h3", "", title), el("p", "", message), button("Try again", start), pasteButton(), button("Add host manually", () => { sheet.close(); manual(); }));
   }
   const invalid = () => failure("Pairing didn't work", "That code isn't a herdr pairing code. On your computer, run herdr pair and scan the code it prints.");
-  async function pair(text: string) {
+  async function pair(redeem: () => Promise<PairedMachine>) {
     phase = "pair"; content.replaceChildren(el("p", "pairing-progress", "Connecting…"));
     try {
-      const machine = await Desk.pairMachine(text);
+      const machine = await redeem();
       await saved(); if (disposed) return;
       phase = "result";
       const openButton = button("Open it", () => {
@@ -53,18 +54,14 @@ export function showPairing(saved: () => Promise<void>, open: (machine: PairedMa
       const value = JSON.parse(text) as Record<string, unknown>;
       if (!value || typeof value !== "object" || !Number.isInteger(value.v) || !Number.isInteger(value.port) || [value.host, value.user, value.token, value.fp].some(field => typeof field !== "string")) throw new Error("not a pairing payload");
     } catch { invalid(); return; }
-    await pair(text);
+    await pair(() => Desk.pairMachine(text));
   }
-  /** A pasted or opened code: what it names (Go reads it, nothing is sent), then Connect. */
-  async function confirm(text: string) {
+  /** What a pasted or opened code names (Go reads it, nothing is sent), then Connect. */
+  function confirm(preview: PairingPreview, redeem: () => Promise<PairedMachine>) {
     if (disposed) return;
     stop(); phase = "confirm"; heading.textContent = "Pair with this computer?";
-    let preview;
-    try { preview = await Desk.inspectPairingCode(text); }
-    catch (error) { heading.textContent = "Scan to connect"; failure("Pairing didn't work", errorText(error)); return; }
-    if (disposed) return;
     const row = (label: string, value: string, cls = "") => { const node = el("div", "pairing-confirm-row"); node.append(el("span", "pairing-confirm-label", label), el("span", `pairing-confirm-value ${cls}`.trim(), value)); return node; };
-    const connect = button("Connect", () => { heading.textContent = "Scan to connect"; void pair(text); });
+    const connect = button("Connect", () => { heading.textContent = "Scan to connect"; void pair(redeem); });
     connect.className = "pairing-connect";
     content.replaceChildren(
       el("p", "", "Herdrup adds a key of its own to this computer's SSH login. Check that this is your computer, and that its host key matches the one herdr pair printed."),
@@ -72,12 +69,18 @@ export function showPairing(saved: () => Promise<void>, open: (machine: PairedMa
       connect, button("Cancel", () => sheet.close()));
     connect.focus();
   }
+  async function confirmPasted(text: string) {
+    let preview: PairingPreview;
+    try { preview = await Desk.inspectPairingCode(text); }
+    catch (error) { heading.textContent = "Scan to connect"; failure("Pairing didn't work", errorText(error)); return; }
+    confirm(preview, () => Desk.pairMachine(text));
+  }
   function paste() {
     if (disposed || phase === "pair") return;
     stop(); phase = "paste"; heading.textContent = "Paste pairing code";
     const field = el("textarea", "pairing-paste"); field.rows = 4; field.spellcheck = false; field.setAttribute("aria-label", "Pairing code");
     field.placeholder = "herdrup://pair#… or the code herdr pair prints";
-    const next = button("Continue", () => { const text = field.value.trim(); if (text) void confirm(text); });
+    const next = button("Continue", () => { const text = field.value.trim(); if (text) void confirmPasted(text); });
     next.disabled = true; field.oninput = () => { next.disabled = field.value.trim() === ""; };
     content.replaceChildren(el("p", "", "Paste the pairing link or code you were given, or the one herdr pair prints on your computer."), field, next, button("Use the camera", () => { heading.textContent = "Scan to connect"; start(); }));
     field.focus();
@@ -91,7 +94,8 @@ export function showPairing(saved: () => Promise<void>, open: (machine: PairedMa
     content.replaceChildren(camera, el("p", "", "On your computer, run herdr pair. Point the camera at the code it prints. Both devices must be on the same private network."), pasteButton());
     stopCamera = scanQR(video, text => { void found(text); }, message => failure("Can't use the camera", message));
   }
-  sheet.addEventListener("close", () => { disposed = true; stop(); if (active === sheet) active = null; sheet.remove(); }, { once: true });
+  // An opened link not paired here is forgotten in Go when the sheet goes.
+  sheet.addEventListener("close", () => { disposed = true; stop(); if (offer && phase !== "pair" && phase !== "result") void Desk.discardPairingLink(offer.id).catch(() => {}); if (active === sheet) active = null; sheet.remove(); }, { once: true });
   active = sheet; document.body.append(sheet); sheet.showModal();
-  if (code) void confirm(code); else start();
+  if (offer) confirm(offer.preview, () => Desk.pairOpenedLink(offer.id)); else start();
 }
