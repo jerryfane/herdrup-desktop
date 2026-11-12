@@ -626,6 +626,25 @@ export interface PairedMachine {
 }
 
 /**
+ * PairingOffer is an opened pairing link as the page sees it: what it names,
+ * and the id Connect pairs it by. It carries no token.
+ */
+export interface PairingOffer {
+  id: string;
+  preview: PairingPreview;
+}
+
+/**
+ * PairingPreview is what a pairing code names, for the user to confirm before
+ * anything is sent: the computer and its SSH host key. The token stays in Go.
+ */
+export interface PairingPreview {
+  host: string;
+  user: string;
+  fingerprint: string;
+}
+
+/**
  * PaneAction is an agent page ••• item the page carries out. Action is
  * copy-screen, copy-recent, copy-selection, text-increase, text-decrease,
  * text-reset, share, avatar, mute, unmute or close. mute and unmute are
@@ -1149,6 +1168,10 @@ export const Desk = {
   creationKinds(token: string): Promise<string> {
     return call("Desk.CreationKinds", token);
   },
+  /** DiscardPairingLink forgets the opened link the page shows as id (Cancel). */
+  discardPairingLink(id: string): Promise<void> {
+    return call("Desk.DiscardPairingLink", id);
+  },
   /** Disconnect closes the connection and forgets its board. */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");
@@ -1359,6 +1382,13 @@ export const Desk = {
     return call("Desk.InspectGuestInvitation", text);
   },
   /**
+   * InspectPairingCode reads a pairing code (herdr pair's JSON, or a
+   * herdrup://pair# link) without contacting the computer.
+   */
+  inspectPairingCode(text: string): Promise<PairingPreview> {
+    return call("Desk.InspectPairingCode", text);
+  },
+  /**
    * InstallAppUpdate installs the newer version that the last check found
    * and relaunches the app into it; AppUpdateChanged reports the progress.
    */
@@ -1415,6 +1445,10 @@ export const Desk = {
    */
   pairMachine(qrText: string): Promise<PairedMachine> {
     return call("Desk.PairMachine", qrText);
+  },
+  /** PairOpenedLink pairs the opened link the page confirmed (Connect), once. */
+  pairOpenedLink(id: string): Promise<PairedMachine> {
+    return call("Desk.PairOpenedLink", id);
   },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
@@ -1684,6 +1718,15 @@ export const Desk = {
   takeGuestInvitation(): Promise<string> {
     return call("Desk.TakeGuestInvitation");
   },
+  /**
+   * TakePairingLink hands the page the link the system opened as an offer to
+   * confirm; nil when there is none. Each take gets a new id, so only the sheet
+   * that took it last (after a page reload, say) can pair it. A link that is no
+   * pairing code is dropped, and its error shown.
+   */
+  takePairingLink(): Promise<PairingOffer | null> {
+    return call("Desk.TakePairingLink");
+  },
   terminalHistory(token: string, cursor: string): Promise<TerminalHistoryPage> {
     return call("Desk.TerminalHistory", token, cursor);
   },
@@ -1789,6 +1832,11 @@ export const events = {
   terminalChanged: event<TerminalEvent>("terminal:changed"),
   chatMenu: event<ChatMenuChoice>("chat:menu"),
   paneAttachments: event<PaneAttachments>("pane:attachments"),
+  /**
+   * PairingLinkOpened is sent when the system opens a herdrup://pair# link with
+   * the app; the page takes it with TakePairingLink and asks before pairing.
+   */
+  pairingLinkOpened: event<boolean>("pairing-link:opened"),
   /**
    * SessionsChanged is sent with the session pills: none while fewer than
    * two sessions run, as herdrup hides them then.

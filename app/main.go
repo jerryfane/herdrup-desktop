@@ -57,7 +57,7 @@ func main() {
 	installMenuBar()
 	var win *mygo.Window
 	mygo.App.OnOpenURL(func(url string) {
-		if desk.queueGuestInvitation(url) && win != nil {
+		if (desk.queueGuestInvitation(url) || desk.queuePairingLink(url)) && win != nil {
 			showWindow(win)
 		}
 	})

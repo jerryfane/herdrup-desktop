@@ -1,5 +1,5 @@
 import { Desk, events } from "./mygo";
-import type { Machine, SavedMachine } from "./mygo";
+import type { Machine, PairingOffer, SavedMachine } from "./mygo";
 import "./hosts.css";
 import { showPairing } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
@@ -59,7 +59,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  sheet.append(sheetHeader, form); document.body.append(sheet);
  const add = action("Add host", () => edit()); add.className = "host-add";
  void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
- const pair = action("Scan pairing code", () => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit())); pair.className = "host-pair";
+ const startPairing = (offer?: PairingOffer) => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit(), offer);
+ const pair = action("Scan pairing code", () => startPairing()); pair.className = "host-pair";
  const shared = element("section", "host-home-saved");
  const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
  const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite";
@@ -145,6 +146,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  }
  events.guestInvitationOpened.on(() => { void openPendingInvitation().catch(report); });
  void openPendingInvitation().catch(report);
+ // A herdrup://pair# link the system opened: its confirmation, Connect to pair (its token
+ // stays in Go).
+ async function openPendingPairing() {
+  const offer = await Desk.takePairingLink();
+  if (offer) startPairing(offer);
+ }
+ events.pairingLinkOpened.on(() => { void openPendingPairing().catch(report); });
+ void openPendingPairing().catch(report);
  let editing: SavedMachine | null = null;
  let saving = false;
  let connecting = false;

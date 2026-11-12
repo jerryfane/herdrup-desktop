@@ -256,16 +256,22 @@ func TestGramOffersEveryAgentHerdrDeliversTo(t *testing.T) {
 		{From: "docs", Name: "docs", Machine: "127.0.0.1"},
 		{From: "studio/docs", Name: "docs", Machine: "mac-studio"},
 	})
-	// An agent that never wrote is reached by its routing name.
+	// An agent that never wrote is reached by its routing name. Gram's own
+	// polls run alongside, so the post is looked for among the calls.
 	for _, to := range []string{"docs", "studio/docs"} {
 		if err := d.GramPost(ctx, "hello", []string{to}, nil); err != nil {
 			t.Fatal(err)
 		}
-		calls := g.Calls()
 		var p herdrapi.GramPostParams
-		_ = json.Unmarshal(calls[len(calls)-1].Params, &p)
-		if calls[len(calls)-1].Method != "gram.post" || p.To == nil || *p.To != to {
-			t.Fatalf("post to %s: %s %s", to, calls[len(calls)-1].Method, calls[len(calls)-1].Params)
+		calls := g.Calls()
+		for i := len(calls) - 1; i >= 0; i-- {
+			if calls[i].Method == "gram.post" {
+				_ = json.Unmarshal(calls[i].Params, &p)
+				break
+			}
+		}
+		if p.To == nil || *p.To != to {
+			t.Fatalf("post to %s: last gram.post %+v", to, p)
 		}
 	}
 }

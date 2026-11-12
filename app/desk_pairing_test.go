@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -239,5 +240,79 @@ func TestPairingUnconfirmedOrRefusedExchangeNeverRetriesOrSaves(t *testing.T) {
 				t.Fatalf("unconfirmed key was saved as usable: %v", err)
 			}
 		})
+	}
+}
+
+// herdr-app 462716: a herdrup://pair# link (as Windows hands it over too) is
+// held in Go. The page gets only an offer, what the link names and an id,
+// never its token; reading it contacts nothing; Connect (PairOpenedLink with
+// the latest id) pairs it once through the same redemption as a scanned code,
+// and Cancel (DiscardPairingLink) forgets it.
+func TestPairingLinkShowsTheComputerAndPairsOnlyOnConnect(t *testing.T) {
+	d := newDesk(t.TempDir())
+	raw, hostKey, calls, requests, outcome := pairingListener(t, d, `{"type":"pair.ok"}`)
+	link := "herdrup://pair/#" + base64.RawURLEncoding.EncodeToString([]byte(raw))
+	if d.queuePairingLink("herdrup://guest-invite#x") {
+		t.Fatal("a guest invitation was taken for a pairing link")
+	}
+	ctx := context.Background()
+	// Cancel forgets it.
+	d.queuePairingLink(link)
+	offer, err := d.TakePairingLink()
+	if err != nil || offer == nil {
+		t.Fatalf("offer %v %v", offer, err)
+	}
+	d.DiscardPairingLink(offer.ID)
+	if again, _ := d.TakePairingLink(); again != nil {
+		t.Fatalf("a discarded link was offered again: %+v", again)
+	}
+	if _, err := d.PairOpenedLink(ctx, offer.ID); err == nil {
+		t.Fatal("a discarded link was paired")
+	}
+	if !d.queuePairingLink(link) {
+		t.Fatal("pairing link not taken")
+	}
+	stale, _ := d.TakePairingLink()
+	offer, err = d.TakePairingLink()
+	if err != nil || offer == nil || offer.ID == stale.ID {
+		t.Fatalf("offer %+v %v (stale %+v)", offer, err, stale)
+	}
+	page, _ := json.Marshal(offer)
+	token := "single-use-fixture-token"
+	if strings.Contains(string(page), token) || strings.Contains(string(page), base64.RawURLEncoding.EncodeToString([]byte(raw))) {
+		t.Fatalf("the page's offer carries the token: %s", page)
+	}
+	if want := (PairingPreview{Host: "127.0.0.1", User: "pairing-user", Fingerprint: ssh.FingerprintSHA256(hostKey.PublicKey())}); offer.Preview != want {
+		t.Fatalf("preview %+v, want %+v", offer.Preview, want)
+	}
+	if hosts, _ := d.Machines(); calls.Load() != 0 || len(hosts) != 0 {
+		t.Fatalf("reading the link contacted the computer (%d) or saved a host (%d)", calls.Load(), len(hosts))
+	}
+	if _, err := d.PairOpenedLink(ctx, stale.ID); err == nil || calls.Load() != 0 {
+		t.Fatalf("a superseded offer paired (%v, %d calls)", err, calls.Load())
+	}
+	if _, err := d.PairOpenedLink(ctx, offer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-outcome; err != nil {
+		t.Fatal(err)
+	}
+	if r := <-requests; calls.Load() != 1 || r.Token != token {
+		t.Fatalf("redemption %d %+v", calls.Load(), r.Type)
+	}
+	if hosts, _ := d.Machines(); len(hosts) != 1 || !hosts[0].Paired {
+		t.Fatalf("hosts %+v", hosts)
+	}
+	// Single use: a second Connect is refused before any network contact.
+	if _, err := d.PairOpenedLink(ctx, offer.ID); err == nil || !strings.Contains(err.Error(), "no longer open") {
+		t.Fatalf("an opened link paired twice: %v", err)
+	}
+	// A bad link is dropped with its error.
+	d.queuePairingLink("herdrup://pair#***")
+	if bad, err := d.TakePairingLink(); bad != nil || err == nil {
+		t.Fatalf("bad link offered: %+v %v", bad, err)
+	}
+	if again, err := d.TakePairingLink(); again != nil || err != nil {
+		t.Fatalf("bad link kept: %+v %v", again, err)
 	}
 }

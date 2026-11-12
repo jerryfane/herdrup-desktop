@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -39,9 +40,65 @@ func (p Payload) String() string {
 }
 func (p Payload) GoString() string { return p.String() }
 
+// SSHFingerprint is the host-key fingerprint as herdr pair prints it and
+// ssh-keygen -l shows it, for the user to compare: SHA256:<base64>.
+func (p Payload) SSHFingerprint() string {
+	digest, _ := hex.DecodeString(p.Fingerprint)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(digest)
+}
+
+// AppLinkPrefix is the pairing app link agreed with herdrup iOS and Deimos
+// Forge: herdrup://pair#<base64url of the UTF-8 pairing JSON>. The pairing
+// code rides in the fragment, which a browser never sends anywhere.
+const AppLinkPrefix = "herdrup://pair#"
+
+// windowsAppLinkPrefix is the same link as Windows hands it to the app.
+const windowsAppLinkPrefix = "herdrup://pair/#"
+
+// AppLink reports whether text is a pairing app link, spelled as
+// AppLinkPrefix whichever way it came in.
+func AppLink(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if payload, ok := strings.CutPrefix(text, windowsAppLinkPrefix); ok {
+		return AppLinkPrefix + payload, true
+	}
+	return text, strings.HasPrefix(text, AppLinkPrefix)
+}
+
+// codeJSON is the pairing JSON in raw: the JSON itself (a scanned or pasted
+// code), or an app link's decoded fragment. The fragment may be percent-
+// encoded by the system's opener and use the standard base64 alphabet; it is
+// either unpadded or correctly padded, and decoded strictly (no stray
+// padding, no set padding bits).
+func codeJSON(raw string) (string, error) {
+	link, ok := AppLink(raw)
+	if !ok {
+		return raw, nil
+	}
+	payload := strings.TrimPrefix(link, AppLinkPrefix)
+	if unescaped, err := url.PathUnescape(payload); err == nil {
+		payload = unescaped
+	}
+	payload = strings.NewReplacer("+", "-", "/", "_").Replace(payload)
+	encoding := base64.RawURLEncoding.Strict()
+	if strings.HasSuffix(payload, "=") {
+		encoding = base64.URLEncoding.Strict()
+	}
+	data, err := encoding.DecodeString(payload)
+	if err != nil {
+		return "", errors.New(invalidCode)
+	}
+	return string(data), nil
+}
+
+// Parse reads a pairing code: herdr pair's JSON, or the app link holding it.
 func Parse(raw string) (Payload, error) {
 	if len(raw) > 8192 {
 		return Payload{}, errors.New(invalidCode)
+	}
+	raw, err := codeJSON(raw)
+	if err != nil {
+		return Payload{}, err
 	}
 	var wire struct {
 		Version     *int    `json:"v"`

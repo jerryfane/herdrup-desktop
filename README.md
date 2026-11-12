@@ -163,8 +163,9 @@ computer: over [Tailscale](https://tailscale.com) or your local network.
 Every release has `SHA256SUMS`: `sha256sum -c --ignore-missing SHA256SUMS` checks your download.
 Use the `arm64` files on a Raspberry Pi 4 or 5 with a 64-bit OS.
 
-**3. Connect.** Choose **Add host** and enter the machine's address, user and SSH key, or
-**Scan pairing code** with a camera and `herdr pair`. Your agents appear.
+**3. Connect.** Choose **Scan pairing code** and scan the code `herdr pair` prints, or, without a
+camera, **Paste pairing code** (the code itself or a `herdrup://pair#…` link). **Add host** takes
+the machine's address, user and SSH key instead. Your agents appear.
 
 ### Supported agents
 
