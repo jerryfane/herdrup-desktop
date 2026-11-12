@@ -242,45 +242,20 @@ func TestGramSavedCopies(t *testing.T) {
 func TestGramOffersEveryAgentHerdrDeliversTo(t *testing.T) {
 	g := fakeherdr.NewGram("store-1")
 	g.Add(agentMsg("a1", "done", false), nil)
-	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
-		inner := s.Handle
-		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
-			if res, err, ok := g.Handle(method, params); ok {
-				return res, err
-			}
-			if method == "agent.list" {
-				return map[string]any{"type": "agent_list", "agents": []any{
-					map[string]any{"pane_id": "w1:p1", "agent_status": "working", "name": "vetrina"},
-					map[string]any{"pane_id": "w1:p2", "agent_status": "idle", "name": "docs"},
-					map[string]any{"pane_id": "w1:p3", "agent_status": "idle"},
-					map[string]any{"pane_id": "w1:p4", "agent_status": "idle", "name": "old", "archived": map[string]any{"at": "2026-11-01T10:00:00Z", "by": "owner"}},
-					map[string]any{"pane_id": "studio/w1:p1", "agent_status": "idle", "name": "studio/docs", "machine_id": "studio", "machine_label": "mac-studio", "reachability": "reachable"},
-					map[string]any{"pane_id": "pi/w1:p1", "agent_status": "idle", "name": "pi/scout", "machine_id": "pi", "reachability": "degraded"},
-				}}, nil
-			}
-			return inner(method, params)
-		}
-		s.Duplex = g.Duplex
+	d := gramRosterDesk(t, g, false, []any{
+		map[string]any{"pane_id": "w1:p1", "agent_status": "working", "name": "vetrina"},
+		map[string]any{"pane_id": "w1:p2", "agent_status": "idle", "name": "docs"},
+		map[string]any{"pane_id": "w1:p3", "agent_status": "idle"},
+		map[string]any{"pane_id": "w1:p4", "agent_status": "idle", "name": "old", "archived": map[string]any{"at": "2026-11-01T10:00:00Z", "by": "owner"}},
+		map[string]any{"pane_id": "studio/w1:p1", "agent_status": "idle", "name": "studio/docs", "machine_id": "studio", "machine_label": "mac-studio", "reachability": "reachable"},
+		map[string]any{"pane_id": "pi/w1:p1", "agent_status": "idle", "name": "pi/scout", "machine_id": "pi", "reachability": "degraded"},
 	})
-	d.cacheDir = t.TempDir()
 	ctx := context.Background()
-	if err := d.GramRefresh(ctx); err != nil {
-		t.Fatal(err)
-	}
-	want := []GramAgent{
+	gramAgentsBecome(t, d, []GramAgent{
 		{From: "vetrina", Name: "vetrina", Machine: "127.0.0.1"},
 		{From: "docs", Name: "docs", Machine: "127.0.0.1"},
 		{From: "studio/docs", Name: "docs", Machine: "mac-studio"},
-	}
-	var got []GramAgent
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if got = d.GramState().Agents; slices.Equal(got, want) {
-			break
-		}
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("agents %+v, want %+v", got, want)
-	}
+	})
 	// An agent that never wrote is reached by its routing name.
 	for _, to := range []string{"docs", "studio/docs"} {
 		if err := d.GramPost(ctx, "hello", []string{to}, nil); err != nil {
@@ -293,6 +268,79 @@ func TestGramOffersEveryAgentHerdrDeliversTo(t *testing.T) {
 			t.Fatalf("post to %s: %s %s", to, calls[len(calls)-1].Method, calls[len(calls)-1].Params)
 		}
 	}
+}
+
+// herdr #403: a herdr advertising capabilities.gram_reachable marks each
+// federated agent whether its machine's Gram relay is allowed; one marked
+// false is not offered, even when it wrote before (its message stays).
+// Without the capability every reachable one is, as before (herdr refuses a
+// post it can't relay).
+func TestGramLeavesOutFederatedAgentsHerdrCannotRelayTo(t *testing.T) {
+	roster := []any{
+		map[string]any{"pane_id": "w1:p1", "agent_status": "idle", "name": "docs"},
+		map[string]any{"pane_id": "studio/w1:p1", "agent_status": "idle", "name": "studio/docs", "machine_id": "studio", "machine_label": "mac-studio", "reachability": "reachable", "gram_reachable": true},
+		map[string]any{"pane_id": "lab/w1:p1", "agent_status": "idle", "name": "lab/scout", "machine_id": "lab", "reachability": "reachable", "gram_reachable": false},
+	}
+	local := GramAgent{From: "docs", Name: "docs", Machine: "127.0.0.1"}
+	studio := GramAgent{From: "studio/docs", Name: "docs", Machine: "mac-studio"}
+	lab := GramAgent{From: "lab/scout", Name: "scout", Machine: "lab"}
+	for _, c := range []struct {
+		capability bool
+		want       []GramAgent
+	}{{true, []GramAgent{local, studio}}, {false, []GramAgent{lab, local, studio}}} {
+		g := fakeherdr.NewGram("store-1")
+		m := agentMsg("l1", "from the lab", false)
+		m.From = "lab/scout"
+		g.Add(m, nil)
+		d := gramRosterDesk(t, g, c.capability, roster)
+		gramAgentsBecome(t, d, c.want)
+		if ids := snapIDs(d.GramState()); !slices.Equal(ids, []string{"l1"}) {
+			t.Errorf("capability %v: messages %v, want the lab's kept", c.capability, ids)
+		}
+	}
+}
+
+// gramRosterDesk is a desk on a fake herdr serving g and agents, whose ping
+// advertises capabilities.gram_reachable when gramReachable, with Gram loaded.
+func gramRosterDesk(t *testing.T, g *fakeherdr.Gram, gramReachable bool, agents []any) *Desk {
+	t.Helper()
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		inner := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if res, err, ok := g.Handle(method, params); ok {
+				return res, err
+			}
+			switch method {
+			case "agent.list":
+				return map[string]any{"type": "agent_list", "agents": agents}, nil
+			case "ping":
+				res, err := inner(method, params)
+				if pong, ok := res.(map[string]any); ok && gramReachable {
+					pong["capabilities"].(map[string]bool)["gram_reachable"] = true
+				}
+				return res, err
+			}
+			return inner(method, params)
+		}
+		s.Duplex = g.Duplex
+	})
+	d.cacheDir = t.TempDir()
+	if err := d.GramRefresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// gramAgentsBecome waits for Gram to offer want.
+func gramAgentsBecome(t *testing.T, d *Desk, want []GramAgent) {
+	t.Helper()
+	var got []GramAgent
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if got = d.GramState().Agents; slices.Equal(got, want) {
+			return
+		}
+	}
+	t.Fatalf("agents %+v, want %+v", got, want)
 }
 
 func TestGramSenderAvatarFallsBackToTheInitialTile(t *testing.T) {
