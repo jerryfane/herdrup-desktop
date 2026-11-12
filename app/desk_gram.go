@@ -226,6 +226,9 @@ type gramDesk struct {
 	// epoch counts resets, so a download finishing late is not kept.
 	epoch   int
 	machine string // the connection's machine, for local senders
+	// roster is the connection's agent list (desk.go session, gramRoster),
+	// for the agents a message can go to beyond the ones that wrote.
+	roster []herdrapi.AgentInfo
 
 	inbox gramstore.Inbox
 	// pending are your posts not yet in a list; deleted are tombstones of
@@ -286,7 +289,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 		g.cancel()
 	}
 	old := g.composer
-	g.link, g.machine = l, machine
+	g.link, g.machine, g.roster = l, machine, nil
 	g.ctx, g.cancel = context.WithCancel(context.Background())
 	g.epoch++
 	g.inbox = gramstore.Inbox{}
@@ -311,6 +314,49 @@ func (d *Desk) gramReset(l *link, machine string) {
 	if old != nil {
 		old.Close()
 	}
+}
+
+// gramRoster gives Gram l's latest agent list, for the agents a message
+// can go to. It republishes only when that list changed. d.mu must not be
+// held.
+func (d *Desk) gramRoster(l *link, agents []herdrapi.AgentInfo) {
+	g := &d.gram
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.link != l {
+		return
+	}
+	before := gramRecipients(g.roster, g.machine)
+	g.roster = agents
+	if !slices.Equal(before, gramRecipients(agents, g.machine)) {
+		d.publishGramLocked()
+	}
+}
+
+// gramRecipients are the roster agents a gram.post to: names: every named,
+// unarchived agent here, and every named agent of a reachable federated
+// machine (herdr is_live_agent_name). Each is addressed by its agent name,
+// which for a federated agent is "<machine>/<name>" (gramstore.AgentForSender),
+// and shown with its bare name and machine, local ones on machine.
+func gramRecipients(roster []herdrapi.AgentInfo, machine string) []GramAgent {
+	out := []GramAgent{}
+	for _, a := range roster {
+		if a.Name == nil || *a.Name == "" || a.Archived != nil {
+			continue
+		}
+		agent := GramAgent{From: *a.Name, Name: gramstore.AgentName(*a.Name), Machine: machine}
+		if a.MachineID != nil {
+			if a.Reachability == nil || *a.Reachability != herdrapi.ReachabilityReachable {
+				continue
+			}
+			agent.Machine = *a.MachineID
+			if a.MachineLabel != nil && *a.MachineLabel != "" {
+				agent.Machine = *a.MachineLabel
+			}
+		}
+		out = append(out, agent)
+	}
+	return out
 }
 
 // gramEngine is an engine client on the current session of l.
@@ -457,13 +503,24 @@ func (d *Desk) snapshotLocked() GramSnapshot {
 	for _, m := range g.pending {
 		pendingIDs[m.ID] = true
 	}
+	// The agents a message can go to: the ones that wrote, newest first, then
+	// every other agent herdr would deliver to (gramRecipients).
 	seen := map[string]bool{}
 	for _, m := range g.visibleLocked() {
 		row := gramRow(m, g.machine, ids[m.ID], pendingIDs[m.ID])
 		s.Messages = append(s.Messages, row)
 		if row.FromAgent && !seen[m.From] {
 			seen[m.From] = true
+			if a, ok := gramstore.AgentForSender(m.From, g.roster); ok && a.Name != nil {
+				seen[*a.Name] = true
+			}
 			s.Agents = append(s.Agents, GramAgent{From: m.From, Name: row.Name, Machine: row.Machine})
+		}
+	}
+	for _, a := range gramRecipients(g.roster, g.machine) {
+		if !seen[a.From] {
+			seen[a.From] = true
+			s.Agents = append(s.Agents, a)
 		}
 	}
 	if g.composer != nil {

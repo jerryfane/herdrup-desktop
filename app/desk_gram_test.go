@@ -236,6 +236,65 @@ func TestGramSavedCopies(t *testing.T) {
 	}
 }
 
+// Owner bug 2026-11-12 (herdr-app 462142): Gram's agents were only the ones
+// that had written in the loaded page. Every agent herdr would deliver a
+// gram.post to is offered after them, once each, by its routing name.
+func TestGramOffersEveryAgentHerdrDeliversTo(t *testing.T) {
+	g := fakeherdr.NewGram("store-1")
+	g.Add(agentMsg("a1", "done", false), nil)
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		inner := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if res, err, ok := g.Handle(method, params); ok {
+				return res, err
+			}
+			if method == "agent.list" {
+				return map[string]any{"type": "agent_list", "agents": []any{
+					map[string]any{"pane_id": "w1:p1", "agent_status": "working", "name": "vetrina"},
+					map[string]any{"pane_id": "w1:p2", "agent_status": "idle", "name": "docs"},
+					map[string]any{"pane_id": "w1:p3", "agent_status": "idle"},
+					map[string]any{"pane_id": "w1:p4", "agent_status": "idle", "name": "old", "archived": map[string]any{"at": "2026-11-01T10:00:00Z", "by": "owner"}},
+					map[string]any{"pane_id": "studio/w1:p1", "agent_status": "idle", "name": "studio/docs", "machine_id": "studio", "machine_label": "mac-studio", "reachability": "reachable"},
+					map[string]any{"pane_id": "pi/w1:p1", "agent_status": "idle", "name": "pi/scout", "machine_id": "pi", "reachability": "degraded"},
+				}}, nil
+			}
+			return inner(method, params)
+		}
+		s.Duplex = g.Duplex
+	})
+	d.cacheDir = t.TempDir()
+	ctx := context.Background()
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []GramAgent{
+		{From: "vetrina", Name: "vetrina", Machine: "127.0.0.1"},
+		{From: "docs", Name: "docs", Machine: "127.0.0.1"},
+		{From: "studio/docs", Name: "docs", Machine: "mac-studio"},
+	}
+	var got []GramAgent
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if got = d.GramState().Agents; slices.Equal(got, want) {
+			break
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("agents %+v, want %+v", got, want)
+	}
+	// An agent that never wrote is reached by its routing name.
+	for _, to := range []string{"docs", "studio/docs"} {
+		if err := d.GramPost(ctx, "hello", []string{to}, nil); err != nil {
+			t.Fatal(err)
+		}
+		calls := g.Calls()
+		var p herdrapi.GramPostParams
+		_ = json.Unmarshal(calls[len(calls)-1].Params, &p)
+		if calls[len(calls)-1].Method != "gram.post" || p.To == nil || *p.To != to {
+			t.Fatalf("post to %s: %s %s", to, calls[len(calls)-1].Method, calls[len(calls)-1].Params)
+		}
+	}
+}
+
 func TestGramSenderAvatarFallsBackToTheInitialTile(t *testing.T) {
 	d := newDesk(t.TempDir())
 	f := d.GramSenderAvatar("8195/w1:p2/scout")
