@@ -357,7 +357,7 @@ func gramRecipients(roster []herdrapi.AgentInfo, machine string, marks bool) []G
 			if a.Reachability == nil || *a.Reachability != herdrapi.ReachabilityReachable {
 				continue
 			}
-			if marks && a.GramReachable != nil && !*a.GramReachable {
+			if gramRelayDenied(a, marks) {
 				continue
 			}
 			agent.Machine = *a.MachineID
@@ -368,6 +368,12 @@ func gramRecipients(roster []herdrapi.AgentInfo, machine string, marks bool) []G
 		out = append(out, agent)
 	}
 	return out
+}
+
+// gramRelayDenied: herdr, advertising capabilities.gram_reachable (marks),
+// says a gram.post can't name federated agent a (gram_reachable false).
+func gramRelayDenied(a herdrapi.AgentInfo, marks bool) bool {
+	return marks && a.MachineID != nil && a.GramReachable != nil && !*a.GramReachable
 }
 
 // gramEngine is an engine client on the current session of l.
@@ -515,15 +521,20 @@ func (d *Desk) snapshotLocked() GramSnapshot {
 		pendingIDs[m.ID] = true
 	}
 	// The agents a message can go to: the ones that wrote, newest first, then
-	// every other agent herdr would deliver to (gramRecipients).
+	// every other agent herdr would deliver to (gramRecipients). A sender
+	// herdr says it can't relay to keeps its messages but is not offered.
 	seen := map[string]bool{}
 	for _, m := range g.visibleLocked() {
 		row := gramRow(m, g.machine, ids[m.ID], pendingIDs[m.ID])
 		s.Messages = append(s.Messages, row)
 		if row.FromAgent && !seen[m.From] {
 			seen[m.From] = true
-			if a, ok := gramstore.AgentForSender(m.From, g.roster); ok && a.Name != nil {
+			a, ok := gramstore.AgentForSender(m.From, g.roster)
+			if ok && a.Name != nil {
 				seen[*a.Name] = true
+			}
+			if ok && gramRelayDenied(a, g.rosterMarksGram) {
+				continue
 			}
 			s.Agents = append(s.Agents, GramAgent{From: m.From, Name: row.Name, Machine: row.Machine})
 		}

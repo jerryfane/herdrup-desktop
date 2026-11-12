@@ -272,8 +272,9 @@ func TestGramOffersEveryAgentHerdrDeliversTo(t *testing.T) {
 
 // herdr #403: a herdr advertising capabilities.gram_reachable marks each
 // federated agent whether its machine's Gram relay is allowed; one marked
-// false is not offered. Without the capability every reachable one is, as
-// before (herdr refuses a post it can't relay).
+// false is not offered, even when it wrote before (its message stays).
+// Without the capability every reachable one is, as before (herdr refuses a
+// post it can't relay).
 func TestGramLeavesOutFederatedAgentsHerdrCannotRelayTo(t *testing.T) {
 	roster := []any{
 		map[string]any{"pane_id": "w1:p1", "agent_status": "idle", "name": "docs"},
@@ -286,9 +287,16 @@ func TestGramLeavesOutFederatedAgentsHerdrCannotRelayTo(t *testing.T) {
 	for _, c := range []struct {
 		capability bool
 		want       []GramAgent
-	}{{true, []GramAgent{local, studio}}, {false, []GramAgent{local, studio, lab}}} {
-		d := gramRosterDesk(t, fakeherdr.NewGram("store-1"), c.capability, roster)
+	}{{true, []GramAgent{local, studio}}, {false, []GramAgent{lab, local, studio}}} {
+		g := fakeherdr.NewGram("store-1")
+		m := agentMsg("l1", "from the lab", false)
+		m.From = "lab/scout"
+		g.Add(m, nil)
+		d := gramRosterDesk(t, g, c.capability, roster)
 		gramAgentsBecome(t, d, c.want)
+		if ids := snapIDs(d.GramState()); !slices.Equal(ids, []string{"l1"}) {
+			t.Errorf("capability %v: messages %v, want the lab's kept", c.capability, ids)
+		}
 	}
 }
 
