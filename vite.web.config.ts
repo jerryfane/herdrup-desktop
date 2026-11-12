@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
-import { uiTypography } from "./uiTypography.ts";
+import { uiTypography } from "./scripts/uiTypography.ts";
 
 // The browser guest build (`bun run build:guest-web`): web/index.html and src/web/main.ts, the
 // guest screens of src/ with the Go bridge replaced by src/web (mygo.ts, runtime.ts). Served by

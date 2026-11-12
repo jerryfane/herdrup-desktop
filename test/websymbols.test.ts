@@ -4,9 +4,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Symbols } from "../src/web/symbols";
 import { standIns, symbolWeights } from "../src/web/symbols.data";
-import golden from "../testdata/websymbols.golden.json";
+import golden from "../app/testdata/websymbols.golden.json";
 
-// symbols_web_test.go writes the golden from Go's Symbols.Image on Windows and Linux: every
+// app/symbols_web_test.go writes the golden from Go's Symbols.Image on Windows and Linux: every
 // stand-in at every size and weight the screens use, at 1, 2 and 3x, and refused calls' errors.
 type ImageRow = [string, number, string, number, number, number, number, string];
 type ErrorRow = [string, number, string, number, string];

@@ -1,7 +1,7 @@
 // Noise_IK_25519_ChaChaPoly_SHA256, the guest (initiator) half, as the Noise spec (revision 34)
 // §5 and §7 define it, on @noble primitives. herdr is the responder (/root/herdr
 // src/guest/link/noise.rs:12-22 at f0b7ae61) and Go's guest client the other initiator
-// (internal/guest/session.go:16-20,133, flynn/noise). testdata/noise_ik_vector.json pins all three.
+// (internal/guest/session.go:16-20,133, flynn/noise). internal/guest/testdata/noise_ik_vector.json pins all three.
 //
 // DH with the guest's static key is asynchronous: in a browser that key is a non-extractable
 // WebCrypto CryptoKey, usable only through crypto.subtle.deriveBits (identity.ts). The per-handshake

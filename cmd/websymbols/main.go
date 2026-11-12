@@ -74,10 +74,10 @@ type pathInk struct {
 	Ink [4]float64 `json:"ink"`
 }
 
-// generate reads symbols.go, symbols_other.go, symbols_sfmetrics.go and
+// generate reads app/symbols.go, app/symbols_other.go, app/symbols_sfmetrics.go and
 // third_party/phosphor under root and returns the TS module.
 func generate(root string) ([]byte, error) {
-	lits, err := parseVars(root, "symbols.go", "symbols_other.go", "symbols_sfmetrics.go")
+	lits, err := parseVars(root, "app/symbols.go", "app/symbols_other.go", "app/symbols_sfmetrics.go")
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,8 @@ func marshal(v any) ([]byte, error) {
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
 
-// phosphorFile is standIn.file (symbols_other.go:33-41) for Phosphor weight pw.
+// phosphorFile is app/symbols_other.go's standIn.file for Phosphor weight pw, from the
+// repository root (standIn.file's paths are inside third_party/phosphor).
 func phosphorFile(s standIn, pw string) string {
 	if s.Solid {
 		return "third_party/phosphor/fill/" + s.Icon + "-fill.svg"
@@ -326,7 +327,7 @@ func readMetrics(l *ast.CompositeLit) ([]sfMetric, error) {
 }
 
 // svgPath, pathBounds, arcPoints and pathScanner are symbols_other.go's
-// (98-325), which package main of the repository root keeps to itself:
+// (app/), which package main keeps to itself:
 // TestWebSymbolsGolden there holds src/web/symbols.ts, drawing from this
 // output, to the desktop's own drawing.
 

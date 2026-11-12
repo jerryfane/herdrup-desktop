@@ -16,7 +16,7 @@ import (
 // runs with openSession's configuration (session.go:133), the fixed keys in
 // place of fresh ones.
 func TestNoiseHandshakeMatchesHerdrVector(t *testing.T) {
-	raw, err := os.ReadFile("../../testdata/noise_ik_vector.json")
+	raw, err := os.ReadFile("testdata/noise_ik_vector.json")
 	if err != nil {
 		t.Fatal(err)
 	}

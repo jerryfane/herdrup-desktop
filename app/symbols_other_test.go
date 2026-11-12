@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jerryfane/herdrup-desktop/third_party/phosphor"
 )
 
 // The SF Symbols the page draws and their Phosphor stand-ins on Windows
@@ -94,7 +96,7 @@ func TestStandInsCoverThePage(t *testing.T) {
 	regular, _ := parseSymbolWeight("regular")
 	for i, want := range pageSymbols {
 		s := standIns[i]
-		if got := s.file(regular); s.symbol != want.symbol || got != "third_party/phosphor/"+want.file {
+		if got := s.file(regular); s.symbol != want.symbol || got != want.file {
 			t.Errorf("stand-in %d: %s drawn from %s, want %s from %s", i, s.symbol, got, want.symbol, want.file)
 		}
 		if m := sfMetrics[i].symbol; m != want.symbol {
@@ -132,7 +134,7 @@ func TestStandInImages(t *testing.T) {
 				t.Errorf("%s %s: want one white path: %s", s.symbol, wname, src)
 			}
 			file := s.file(symbolWeight(w))
-			raw, err := phosphor.ReadFile(file)
+			raw, err := phosphor.FS.ReadFile(file)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -174,16 +176,15 @@ func TestStandInWeights(t *testing.T) {
 		}
 		return out
 	}
-	const p = "third_party/phosphor/"
 	if got, want := files("chevron.right"), []string{
-		p + "thin/caret-right-thin.svg", p + "thin/caret-right-thin.svg", p + "light/caret-right-light.svg",
-		p + "regular/caret-right.svg", p + "regular/caret-right.svg", p + "bold/caret-right-bold.svg",
-		p + "bold/caret-right-bold.svg", p + "bold/caret-right-bold.svg", p + "bold/caret-right-bold.svg",
+		"thin/caret-right-thin.svg", "thin/caret-right-thin.svg", "light/caret-right-light.svg",
+		"regular/caret-right.svg", "regular/caret-right.svg", "bold/caret-right-bold.svg",
+		"bold/caret-right-bold.svg", "bold/caret-right-bold.svg", "bold/caret-right-bold.svg",
 	}; !slices.Equal(got, want) {
 		t.Errorf("chevron.right is drawn from %v, want %v", got, want)
 	}
 	for _, f := range files("star.fill") {
-		if f != p+"fill/star-fill.svg" {
+		if f != "fill/star-fill.svg" {
 			t.Errorf("star.fill is drawn from %s", f)
 		}
 	}
@@ -207,13 +208,13 @@ func TestUnknownSymbols(t *testing.T) {
 }
 
 func TestPhosphorFiles(t *testing.T) {
-	want := map[string]bool{"third_party/phosphor/LICENSE": true}
+	want := map[string]bool{"LICENSE": true}
 	for _, s := range standIns {
 		for w := range symbolWeights {
 			want[s.file(symbolWeight(w))] = true
 		}
 	}
-	err := fs.WalkDir(phosphor, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(phosphor.FS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -248,8 +249,8 @@ func TestPathBounds(t *testing.T) {
 		// takes the second curve's y to 7.5, not 4.44.
 		{"M0 0C0 -10 10 -10 10 0S20 10 20 0", [4]float64{0, -7.5, 20, 7.5}},
 		// Phosphor's squares-four fill: four rounded squares in 40-216.
-		{mustPhosphorPath(t, "third_party/phosphor/fill/squares-four-fill.svg"), [4]float64{40, 40, 216, 216}},
-		{mustPhosphorPath(t, "third_party/phosphor/bold/plus-bold.svg"), [4]float64{28, 28, 228, 228}},
+		{mustPhosphorPath(t, "fill/squares-four-fill.svg"), [4]float64{40, 40, 216, 216}},
+		{mustPhosphorPath(t, "bold/plus-bold.svg"), [4]float64{28, 28, 228, 228}},
 	} {
 		got, err := pathBounds(c.d)
 		if err != nil {
@@ -272,7 +273,7 @@ func TestPathBounds(t *testing.T) {
 
 func mustPhosphorPath(t *testing.T, file string) string {
 	t.Helper()
-	src, err := phosphor.ReadFile(file)
+	src, err := phosphor.FS.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
