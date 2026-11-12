@@ -423,3 +423,36 @@ func TestGramMarkAllReadReportsAnIncompleteList(t *testing.T) {
 		t.Fatalf("an unlisted unread message was reported read: badge %d, status %q", s.UnreadCount, s.Status)
 	}
 }
+
+// Review P3 on #197: when only a past sender's eligibility changes (its
+// machine's Gram relay is turned off while the peer is degraded, so no
+// roster recipient changes), the agent list is published again without it.
+func TestGramRepublishesWhenOnlyASendersEligibilityChanges(t *testing.T) {
+	lab := func(reachable bool) []any {
+		return []any{map[string]any{"pane_id": "lab/w1:p1", "agent_status": "idle", "name": "lab/scout", "machine_id": "lab", "reachability": "degraded", "gram_reachable": reachable}}
+	}
+	g := fakeherdr.NewGram("store-1")
+	m := agentMsg("l1", "from the lab", false)
+	m.From = "lab/scout"
+	g.Add(m, nil)
+	d := gramRosterDesk(t, g, true, lab(true))
+	gramAgentsBecome(t, d, []GramAgent{{From: "lab/scout", Name: "scout", Machine: "lab"}})
+	var published []GramAgent
+	d.gram.mu.Lock()
+	d.gram.onPublish = func(s GramSnapshot) { published = s.Agents }
+	l := d.gram.link
+	d.gram.mu.Unlock()
+	var roster []herdrapi.AgentInfo
+	raw, _ := json.Marshal(lab(false))
+	if err := json.Unmarshal(raw, &roster); err != nil {
+		t.Fatal(err)
+	}
+	d.gramRoster(l, roster, &herdrapi.ServerCapabilities{GramReachable: true})
+	d.gram.mu.Lock()
+	got := published
+	d.gram.onPublish = nil
+	d.gram.mu.Unlock()
+	if got == nil || len(got) != 0 {
+		t.Fatalf("published agents %+v, want a publish with none", got)
+	}
+}
