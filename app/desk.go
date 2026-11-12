@@ -749,6 +749,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				}
 			}
 			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session, MachineID: l.id})
+			d.gramRoster(l, u.Agents)
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil
 		restart()
