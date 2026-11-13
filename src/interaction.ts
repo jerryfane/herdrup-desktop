@@ -26,6 +26,7 @@ import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCr
 import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { forgetChats, recallChat, rememberChat } from "./chatMemory";
+import { forgetScreens, recallScreen, rememberScreen } from "./terminalMemory";
 import { drawnStart, pendingCardShown, revealedAbove, slidWindow, windowStarting } from "./chatWindow";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
@@ -84,6 +85,12 @@ function chatGlyph(sf: string, size: number, fallback?: string): HTMLElement {
  if (fallback && !appleSymbols()) { const mask = el("span", "chat-plan-fallback"); mask.style.setProperty("--plan-icon", `url("${fallback}")`); mask.style.width = mask.style.height = `${size}px`; slot.append(mask); }
  else void symbol(sf, size, "medium").then(icon => slot.replaceChildren(icon));
  return slot;
+}
+/** The terminal's visible rows as plain text. */
+function screenText(term: Terminal): string {
+ const buffer = term.buffer.active, lines: string[] = [];
+ for (let y = buffer.viewportY; y < buffer.viewportY + term.rows; y++) lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+ return lines.join("\n");
 }
 /** A transcript row's disclosures, itself first when it is one, in document order. */
 function disclosures(node: HTMLElement): HTMLDetailsElement[] {
@@ -147,9 +154,9 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
  events.paneActionChosen.on(event => { if (current?.view?.paneID === event.paneID && !current.disposed) current.choosePaneAction(event.action); });
 events.stateChanged.on(state => {
- // Chats remembered in memory end with the connection: a disconnect, a removed machine or a
- // left share (all "idle"). A reconnect keeps them; they are keyed by machine.
- if (state.phase === "idle") forgetChats();
+ // Chats and terminal screens remembered in memory end with the connection: a disconnect, a
+ // removed machine or a left share (all "idle"). A reconnect keeps them; they are keyed by machine.
+ if (state.phase === "idle") { forgetChats(); forgetScreens(); }
  const view = current?.view, access = state.guest?.access;
   if (!current || !view?.guest || !access || current.target.machineID !== `guest:${access.endpoint.hostID}/${access.guestID}`) return;
   view.guestGram = !!state.guest?.features.gram;
@@ -276,6 +283,10 @@ class Detail {
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
  chatSurface = el("div", "chat-surface");
  mounted = false;
+ // The remembered last screen shown until the first frame (terminalMemory.ts), and whether the
+ // stream has drawn a screen worth remembering.
+ lastScreen: HTMLElement | null = null;
+ terminalShown = false;
  // The terminal opens the first time it is shown, not under Chat (ensureTerminal).
  terminalOpened = false;
  terminalStartup: Promise<void> | null = null;
@@ -905,6 +916,7 @@ class Detail {
   this.fitTerminal = null;
   this.terminalReady = false;
   this.prediction?.dispose(); this.prediction = null;
+  if (this.terminal && this.terminalShown) rememberScreen(JSON.stringify(this.target), screenText(this.terminal));
   this.terminal?.dispose(); this.terminal = null; this.fit = null;
  }
  dispose() { this.disposed = true; this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
@@ -996,6 +1008,12 @@ class Detail {
   this.historyButton.className = "terminal-history-load"; this.historyButton.hidden = true;
   this.terminalJump.hidden = true;
   this.terminalSurface.append(canvas, this.historyButton, this.terminalJump);
+  // The screen as last seen, until the stream's first screen replaces it.
+  this.terminalShown = false;
+  this.lastScreen?.remove();
+  const remembered = recallScreen(JSON.stringify(this.target));
+  this.lastScreen = remembered ? el("pre", "terminal-last-screen", remembered) : null;
+  if (this.lastScreen) { this.lastScreen.setAttribute("aria-hidden", "true"); this.lastScreen.style.fontSize = `${textSize("terminal")}px`; canvas.append(this.lastScreen); }
   const styles = getComputedStyle(document.documentElement);
   loadTerminalSymbols();
   // SearchAddon decorations require xterm's proposed decoration API.
@@ -1057,6 +1075,7 @@ class Detail {
   if (!this.sequence.accept(f)) { this.prediction?.reset(); this.status.textContent = "Terminal stream changed. Reconnect to obtain a fresh screen."; this.terminalReady = false; this.updateHistoryPaging(true); return; }
   try {
    if (f.frame === "reset") {
+    this.lastScreen?.remove(); this.lastScreen = null; this.terminalShown = true;
     this.historyRequest++; this.historyLoading = false; this.historyArmed = false; this.historyRetryAt = 0;
     clearTimeout(this.historyTimer);
     this.prediction?.reset();
