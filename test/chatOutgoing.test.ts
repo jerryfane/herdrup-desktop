@@ -4,7 +4,8 @@ import { reconcileOutgoing, type Outgoing } from "../src/chatPoll";
 // Owner report 2026-11-03: sending in Chat did not feel responsive. A sent prompt shows at the
 // tail at once and stays until the transcript shows that prompt (motion spec §1,
 // TranscriptOutbox.reconcile: same author, same text).
-const sent = (text: string, more: Partial<Outgoing> = {}): Outgoing => ({ id: text, text, files: 0, guest: "", state: "submitted", until: 60_000, ...more });
+const sent = (text: string, more: Partial<Outgoing> = {}): Outgoing => ({ id: text, text, files: [], guest: "", state: "submitted", until: 60_000, ...more });
+const photo1 = [{ name: "photo.png", isImage: true }];
 const user = (id: string, text: string, author = "owner", author_name?: string) => ({ kind: "user", id, ts_ms: 1, text, author, author_name });
 const ids = (o: Outgoing[]) => o.map(m => m.id);
 
@@ -29,11 +30,11 @@ test("other authors keep the bubble", () => {
 test("a send with files matches only its files prompt", () => {
  // As paneAttachmentPrompt writes it: caption, blank line, reference; or the reference alone.
  const ref = "[Photo attached via Herdr Gram message g1. Download it with `herdr gram get-file g1 -o /tmp/herdr-photo-g1.png`, then inspect /tmp/herdr-photo-g1.png.]";
- const photo = sent("look at this", { files: 1 });
+ const photo = sent("look at this", { files: photo1 });
  expect(ids(reconcileOutgoing([photo], new Set(), [user("u1", "something else")], 0))).toEqual(["look at this"]);
  expect(ids(reconcileOutgoing([photo], new Set(), [user("u2", "look at this")], 0))).toEqual(["look at this"]);
  expect(ids(reconcileOutgoing([photo], new Set(), [user("u3", "look at this\n\n" + ref)], 0))).toEqual([]);
- const bare = sent("", { id: "bare", files: 1 });
+ const bare = sent("", { id: "bare", files: photo1 });
  expect(ids(reconcileOutgoing([bare], new Set(), [user("u4", "hi")], 0))).toEqual(["bare"]);
  expect(ids(reconcileOutgoing([bare], new Set(), [user("u5", ref)], 0))).toEqual([]);
 });
@@ -42,11 +43,11 @@ test("a files caption ending in whitespace still matches", () => {
  // The bubble keeps the trimmed caption; herdr records the one typed (#138).
  const ref = "[Photo attached via Herdr Gram message g1. Download it with `herdr gram get-file g1 -o /tmp/herdr-photo-g1.png`, then inspect /tmp/herdr-photo-g1.png.]";
  for (const typed of ["look ", "look\n", "look\t", "look\r\n", "  look"]) {
-  const out = sent(typed.trim(), { files: 1 });
+  const out = sent(typed.trim(), { files: photo1 });
   expect(ids(reconcileOutgoing([out], new Set(), [user("u1", typed + "\n\n" + ref)], 0))).toEqual([]);
  }
  // A longer word that starts with the caption is not it.
- expect(ids(reconcileOutgoing([sent("look", { files: 1 })], new Set(), [user("u2", "lookup\n\n" + ref)], 0))).toEqual(["look"]);
+ expect(ids(reconcileOutgoing([sent("look", { files: photo1 })], new Set(), [user("u2", "lookup\n\n" + ref)], 0))).toEqual(["look"]);
 });
 
 test("an accepted prompt still unseen after its minute says so; one still sending waits", () => {

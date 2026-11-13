@@ -57,9 +57,10 @@ export function sendShown(held: ReadonlySet<string>, page: readonly Entry[]): bo
 export type OutgoingState = "sending" | "submitted" | "unconfirmed" | "notSeen";
 /** `guest` is the sender's guest name, "" for the owner: herdr records a guest's prompt with
  *  author "guest" and that name (normalize.rs user_author), the owner's as "owner". */
-/** `names` are the attached files' names and kinds, shown folded under the bubble until the
- *  transcript's own prompt (with their Gram ids) replaces it (ChatView.outgoingBubble). */
-export interface Outgoing { id: string; text: string; files: number; names?: { name: string; isImage: boolean }[]; guest: string; state: OutgoingState; until: number }
+/** `files` are the attached files' names and kinds, empty for text alone; shown folded under the
+ *  bubble until the transcript's own prompt (with their Gram ids) replaces it
+ *  (ChatView.outgoingBubble). */
+export interface Outgoing { id: string; text: string; files: { name: string; isImage: boolean }[]; guest: string; state: OutgoingState; until: number }
 
 /** The line under an outgoing bubble (ChatView.outgoingBubble). */
 export function outgoingReceipt(state: OutgoingState): string {
@@ -81,7 +82,7 @@ function normalized(text: string): string {
  *  (paneAttachmentPrompt, desk_interaction_compose.go): "[… attached via Herdr Gram …]". */
 function sentAs(o: Outgoing, recorded: string): boolean {
  const caption = normalized(o.text);
- if (!o.files) return caption === recorded;
+ if (!o.files.length) return caption === recorded;
  // The caption goes out untrimmed (only the whole prompt is normalized here), so whatever
  // whitespace ended it sits before the blank line and the reference (#138).
  if (caption && !recorded.startsWith(caption)) return false;

@@ -84,8 +84,9 @@ function chatGlyph(sf: string, size: number, fallback?: string): HTMLElement {
  return slot;
 }
 /** ChatAttachmentBundle (App/ChatAttachments.swift): "N attachments", folded under a prompt's
- *  caption; each file opens through Gram (Desk.gramOpenFile: Gram's download cache and the
- *  system's app for it), and herdr decides whether this reader may fetch it. */
+ *  caption; each file opens by its Gram message id (Desk.gramOpenAttachment: Gram's download
+ *  cache and the system's app for it, whether or not Gram has loaded that message), and herdr
+ *  decides whether this reader may fetch it. */
 function attachmentBundle(files: PromptFile[]): HTMLElement {
  const bundle = el("details", "chat-attachments");
  const summary = el("summary", "chat-attachments-summary");
@@ -106,7 +107,7 @@ function attachmentBundle(files: PromptFile[]): HTMLElement {
    if (opening || !ready) return;
    opening = true; status.hidden = true; row.setAttribute("aria-busy", "true");
    for (const other of list.querySelectorAll("button")) other.disabled = true;
-   void Desk.gramOpenFile(file.messageID)
+   void Desk.gramOpenAttachment(file.messageID)
     .catch(error => { status.textContent = `Couldn't open the file: ${errorText(error)}`; status.hidden = false; })
     .finally(() => { opening = false; row.removeAttribute("aria-busy"); for (const other of list.querySelectorAll<HTMLButtonElement>("button")) other.disabled = other.dataset.ready !== "true"; });
   };
@@ -1308,7 +1309,7 @@ class Detail {
   *  with its receipt under it. It enters once (motion spec §1.3: from opacity 0, 14 px down and
   *  96 % scale, anchored bottom-trailing); a later receipt cross-fades in 150 ms (§1.5). */
  private renderOutgoing(message: Outgoing): HTMLElement {
-  const receipt = (message.files && !message.names?.length ? `${message.files} file${message.files === 1 ? "" : "s"} · ` : "") + outgoingReceipt(message.state);
+  const receipt = outgoingReceipt(message.state);
   const mode = motionMode();
   let node = this.outgoingNodes.get(message.id);
   if (node) {
@@ -1327,7 +1328,7 @@ class Detail {
   }
   // Its files, folded as they will be once sent; they open from the chat once the transcript
   // shows the prompt with their Gram ids.
-  if (message.names?.length) node.append(attachmentBundle(message.names.map(file => ({ ...file, messageID: "" }))));
+  if (message.files.length) node.append(attachmentBundle(message.files.map(file => ({ ...file, messageID: "" }))));
   const line = el("span", "chat-send-receipt", receipt);
   line.setAttribute("role", "status");
   node.append(line);
@@ -1854,7 +1855,7 @@ class Detail {
  async sendPrompt() {
   const text = this.input.value;
   if (this.guestPaused || this.sending || this.dictation.busy || this.inputFailed || (!text.trim() && !this.attachments.length)) return;
-  const hasAttachments = this.attachments.length > 0, files = this.attachments.length;
+  const hasAttachments = this.attachments.length > 0;
   // Motion spec §1, all in the tap's frame: the composer clearing (its height shrinking on the
   // bubble's curve), the press, the bubble entering and the chat gliding to it.
   const mode = motionMode();
@@ -1876,7 +1877,7 @@ class Detail {
   // Only against a loaded transcript (TranscriptStore.stageOutgoing's hasSnapshot): the first
   // page would otherwise count every old prompt as new and could take the bubble (#139).
   const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal && this.chat
-   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, names: this.attachments.map(a => ({ name: a.name, isImage: a.isImage })), guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
+   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files: this.attachments.map(a => ({ name: a.name, isImage: a.isImage })), guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
   const setOutgoing = (state: Outgoing["state"] | null) => {
    if (!outgoing || this.disposed) return;
    this.outgoing = state ? this.outgoing.map(o => o.id === outgoing.id ? { ...o, state } : o) : this.outgoing.filter(o => o.id !== outgoing.id);

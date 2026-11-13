@@ -206,6 +206,42 @@ func TestGramAttachmentUploadsPostsAndOpensFromTheCache(t *testing.T) {
 	}
 }
 
+// A Chat attachment names its file by Gram message id only: it opens even when Gram has not
+// loaded that message (Gram never opened, or the message is past its loaded pages), taking the
+// name from herdr's own chunks. Review of #201: it failed with "that message has no file".
+func TestChatAttachmentOpensAMessageGramHasNotLoaded(t *testing.T) {
+	g := fakeherdr.NewGram("store-1")
+	d := gramDeskFor(t, g)
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("plan "), 200_000) // 1 MB: two chunks
+	doc := agentMsg("c1", "", false)
+	doc.File = &herdrapi.GramFileInfo{Name: "plan.txt", Mime: "text/plain", Size: uint64(len(data))}
+	g.Add(doc, data)
+	exe := agentMsg("c2", "", false)
+	exe.File = &herdrapi.GramFileInfo{Name: "setup.exe", Mime: "application/octet-stream", Size: 2}
+	g.Add(exe, []byte("MZ"))
+	var opened string
+	d.openPath = func(p string) error { opened = p; return nil }
+	if err := d.GramOpenAttachment(ctx, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(opened); !bytes.Equal(got, data) || filepath.Base(opened) != "plan.txt" {
+		t.Fatalf("opened %q (%d bytes), want plan.txt with the posted bytes", opened, len(got))
+	}
+	// The program is downloaded to learn its name, and never handed to the opener.
+	opened = ""
+	if err := d.GramOpenAttachment(ctx, "c2"); err != errSaveOnly || opened != "" {
+		t.Fatalf("a program: %v, opened %q", err, opened)
+	}
+	// A message herdr does not have: herdr's refusal, nothing opened.
+	if err := d.GramOpenAttachment(ctx, "gram-missing"); err == nil || opened != "" {
+		t.Fatalf("a missing message: %v, opened %q", err, opened)
+	}
+	if s := d.GramState(); s.Status != "" {
+		t.Fatalf("Gram's banner shows a Chat error: %q", s.Status)
+	}
+}
+
 func TestGramStoreChangeDropsTheList(t *testing.T) {
 	g := fakeherdr.NewGram("store-1")
 	g.Add(agentMsg("a1", "first", true), nil)
