@@ -1,9 +1,9 @@
 import { COLUMN, displayedWidth, draggedWidth, isResizable, storedWidth, widthReadout } from "./gramModel";
 
 const key = "conversation.columnWidth";
-// Desktop's phone layout (style.css, `.desk` at 700 px or narrower) has one column and no
-// handles: the conversation shows whole there, as on a phone. The browser guest has none.
-const isPhoneLayout = () => document.documentElement.classList.contains("desk") && matchMedia("(max-width: 700px)").matches;
+// Desktop's phone layout has one column and no handles: the conversation shows whole there, as
+// on a phone. style.css owns that layout and says so with --phone-layout; the guest has none.
+const isPhoneLayout = () => getComputedStyle(document.documentElement).getPropertyValue("--phone-layout").trim() === "1";
 
 // ConversationColumn.swift: Chat and Gram share the saved width, edge drags,
 // Readable/Wide/Full snapping and double-click reset. Resizing never remounts text.

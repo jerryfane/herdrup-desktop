@@ -837,7 +837,8 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
    have no home indicator inset here (cage). ==== */
 .compact-back-button { display: none; }
 @media (max-width: 700px) {
-  :root.desk { --home-inset: 0px; --sidebar-width: 100vw; }
+  /* --phone-layout: read by ConversationColumn, so this rule alone decides the phone layout. */
+  :root.desk { --home-inset: 0px; --sidebar-width: 100vw; --phone-layout: 1; }
   .desk .sidebar { width: 100vw !important; }
   .desk .sidebar-resizer, .desk .select, .desk .field { display: none !important; }
   .desk .detail { left: 0; bottom: 0; z-index: 2; }
