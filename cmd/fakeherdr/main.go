@@ -42,6 +42,7 @@ func main() {
 	gramsFile := flag.String("grams", "", "seed the Gram store: \"sample\" for the built-in messages (grams.json), or a JSON array of gram messages with optional ago_seconds, file_base64 or file_text (default: empty)")
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	askForm := flag.String("ask-form", "", "with -interactions, the pending ask is an omp HTML form (herdr ask-form contract): answerable (ping advertises ask_form), readonly (form_answerable false), moved (agent.answer_form answers ask_form_moved) or old-host (no ask_form capability)")
+	transcriptDelay := flag.Duration("transcript-delay", 0, "with -interactions, answer agent.transcript after this delay, as a slow link does")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
@@ -142,6 +143,9 @@ func main() {
 		grow = x
 		s.Streams = map[string]fakeherdr.StreamFunc{"pane.stream": x.Stream}
 		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "agent.transcript" && *transcriptDelay > 0 {
+				time.Sleep(*transcriptDelay)
+			}
 			if value, err, handled := x.Handle(method, params); handled {
 				return value, err
 			}
