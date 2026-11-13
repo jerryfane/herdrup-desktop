@@ -53,6 +53,12 @@ const settingIcons: Record<string, string> = {
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize" | "typingLatency" | "appUpdates";
+/** The Settings of a device viewing a share (guest mode): the share's card and its page
+ *  (`details`, guestHome.ts) in place of the machine's, and a way to connect a machine of
+ *  its own. `key` changes when the page's content does. */
+export interface ShareSettings { key: string; agentName: string; ownerName: string; machineLabel: string; details(): HTMLElement; connectOwn(): void }
+/** The pages a share's Settings has: the share's ("machines"), and the app's own. */
+const shareLeaves = new Set<Page>(["machines", "textSize", "appUpdates"]);
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
@@ -74,7 +80,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   page.append(title, subtitle, message, body);
   let visible = false, selected: Page = "machines", generation = 0, identity = "", busy = "";
   let latencyTimer: number | undefined;
-  let state: ConnState | null = null, board: BoardUpdate | null = null, machine: Machine | null = null;
+  let state: ConnState | null = null, board: BoardUpdate | null = null, machine: Machine | null = null, share: ShareSettings | null = null;
   let statuses: SavedMachineStatus[] = [], peers: PeerSummary[] = [], federationError = "";
   let machineNameNodes: HTMLElement[] = [], connectionNodes: HTMLElement[] = [];
   let machineVersion = "";
@@ -210,12 +216,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   function renderSuggestions() {
     const appVersion = appUpdatesShown && appUpdateNewer(appUpdate) ? appUpdate!.version : "";
     const appSubtitle = appUpdate?.phase === "outdated" ? "Download it from its release page" : "A newer version of this app is ready";
-    const key = JSON.stringify([update, exhausted, appVersion, appSubtitle]);
+    // A share's Settings (show's share) has no machine of its own to update or accounts.
+    const key = JSON.stringify([share ? null : update, share ? [] : exhausted, appVersion, appSubtitle]);
     if (key === suggestionsKey) return;
     suggestionsKey = key;
     const rows: HTMLElement[] = [];
     const pill = (count: number, tone: string) => { const node = el("span", `count-pill t-count-pill ${tone}`, String(count)); node.setAttribute("aria-hidden", "true"); return node; };
-    if (update) {
+    if (update && !share) {
       const node = row(update.title, "arrow.down.circle", () => choose("machines"), update.subtitle, pill(1, "waiting"));
       node.id = "settings-suggestion-update"; rows.push(node);
     }
@@ -223,7 +230,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       const node = row(`Update herdrup to ${appVersion}`, "arrow.down.circle", () => choose("appUpdates"), appSubtitle, pill(1, "waiting"));
       node.id = "settings-suggestion-app-update"; rows.push(node);
     }
-    if (exhausted.length) {
+    if (exhausted.length && !share) {
       const node = row(exhausted.length === 1 ? exhausted[0]! : `${exhausted.length} accounts are exhausted`, "key.horizontal", () => choose("accounts"),
         exhausted.length === 1 ? "Exhausted. Its agents can move to another account." : "Their agents can move to another account.", pill(exhausted.length, "stopped"));
       node.id = "settings-suggestion-exhausted"; rows.push(node);
@@ -241,10 +248,18 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     versionNodes = [];
     const card = button("", () => choose("machines")); card.className = "settings-machine-card";
     card.setAttribute("aria-current", selected === "machines" ? "page" : "false");
-    const lines = el("span", "settings-machine-card-lines"), label = el("strong", "settings-machine-card-name", name());
-    machineNameNodes.push(label);
-    const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
-    lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines);
+    const lines = el("span", "settings-machine-card-lines");
+    if (share) {
+      // The share's card in place of the machine's: the agent, who shared it, its machine.
+      lines.append(el("strong", "settings-machine-card-name", share.agentName), el("span", "settings-machine-card-status", `Shared by ${share.ownerName}`), el("span", "settings-machine-version", share.machineLabel));
+      card.append(disc(60, share.agentName), lines);
+      card.setAttribute("aria-label", `Shared with you, ${share.agentName}, shared by ${share.ownerName}`);
+    } else {
+      const label = el("strong", "settings-machine-card-name", name());
+      machineNameNodes.push(label);
+      const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
+      lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines);
+    }
     const accountRow = row("Accounts", "key.horizontal", () => choose("accounts"), "", accountSummary);
     accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
     const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "", guestSummary);
@@ -284,8 +299,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const footer = el("div", "settings-version");
     footer.append(el("span", "", `herdrup ${version}`), el("span", "settings-version-stance", "dark only, on purpose"));
     suggestionsKey = ""; renderSuggestions();
-    index.replaceChildren(card, suggestions, group("YOUR HERD", [accountRow, sharedRow, notificationRow]), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
-      latencyRow,
+    // A share's Settings: the app's own settings; what needs a machine of your own (its
+    // accounts, sharing, notifications and typing measurements) waits for one.
+    const herd = share
+      ? group("YOUR OWN MACHINE", [row("Connect your own machine", "plus.circle", () => share?.connectOwn(), "Pair your computer or add an SSH host")])
+      : group("YOUR HERD", [accountRow, sharedRow, notificationRow]);
+    index.replaceChildren(card, suggestions, herd, group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
+      ...(share ? [] : [latencyRow]),
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
       link("Join the Discord", discordGlyph(), "https://discord.gg/pq7qj4dDqt"),
@@ -331,6 +351,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     showSubtitle();
     title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : selected === "appUpdates" ? "App updates" : "Text size";
     body.replaceChildren();
+    if (share && selected === "machines") { title.textContent = "Shared with you"; body.append(share.details()); return; }
     if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "sharedAccess") { body.append(guests.root); return; }
     if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }
@@ -461,7 +482,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   async function refresh() {
     const at = ++generation; busy = ""; federationError = "";
-    closeScope(); void openScope(at);
+    closeScope();
+    // A share's Settings reads nothing of a machine: there is none of this device's own.
+    if (share) { renderIndex(); renderPage(); return; }
+    void openScope(at);
     const [saved, machines, remotePeers] = await Promise.allSettled([Desk.machine(), Desk.machineStatuses(), Desk.peers()]);
     if (at !== generation || !visible) return;
     machine = saved.status === "fulfilled" ? saved.value : null;
@@ -473,13 +497,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     renderIndex(); renderPage();
   }
   events.machineStatusChanged.on(next => {
-    if (!visible) return;
+    if (!visible || share) return;
     statuses = next; federationError = ""; guests.setMachines(name(), statuses, peers);
     if (selected === "machines") renderPage();
   });
   let peerRead = 0;
   events.boardChanged.on(() => {
-    if (!visible || state?.phase !== "connected") return;
+    if (!visible || share || state?.phase !== "connected") return;
     const at = generation, request = ++peerRead;
     void Desk.peers().then(next => {
       if (at !== generation || request !== peerRead || JSON.stringify(next) === JSON.stringify(peers)) return;
@@ -499,10 +523,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   return {
     /** Shows one page of Settings (the update notification's and the tray's App updates). */
     openPage(next: Page) { choose(next); },
-    show(show: boolean, nextState: ConnState, nextBoard: BoardUpdate | null) {
-      const nextID = `${nextBoard?.machineID ?? ""}\0${nextBoard?.session ?? ""}`;
+    /** `nextShare`: the Settings of a device viewing a share (main.ts, guest mode), the app's
+     *  own settings with the share's card and page in place of the machine's. */
+    show(show: boolean, nextState: ConnState, nextBoard: BoardUpdate | null, nextShare: ShareSettings | null = null) {
+      const nextID = `${nextShare ? `share\0${nextShare.key}` : ""}\0${nextBoard?.machineID ?? ""}\0${nextBoard?.session ?? ""}`;
       const reload = show && (!visible || identity !== nextID || state?.phase !== nextState.phase);
-      state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show;
+      if (nextShare && !shareLeaves.has(selected)) selected = "machines";
+      state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show; share = nextShare;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();
       if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void usageCount.refresh(); void notifications.refresh(); }

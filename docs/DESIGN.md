@@ -242,8 +242,14 @@ A saved share opens a separate Agents/Settings home with only its granted agent,
 drawn as herdrup's GuestHomeView: the owner's top bar (Back to the machines) and
 glass tab bar, the machine and "Shared by <owner> · 1 agent", the agent as a roster
 row with its status badge, and a card for connecting, offline, access removed (with
-Remove share) and unreachable states. Settings is GuestSettingsView in the detail
-column.
+Remove share) and unreachable states. Its Settings are the app's own (`settings.ts`, `show`'s
+share; owner, 2026-11-13: a device holding only shares could not otherwise reach App updates):
+the share's card in place of the machine's, opening GuestSettingsView's content ("Shared with
+you", the device key, Leave share); only the app-update suggestion; "YOUR OWN MACHINE" with
+Connect your own machine; Preferences, Help (no Typing latency) and About as the owner's,
+App updates included. Accounts, Shared access and Notifications need a machine of your own
+and are left out. The update notification and the tray's update item open App updates there
+too. The browser guest page keeps GuestSettingsView alone (it has no app to update).
 Terminal, supported omp Chat and owner-enabled Gram go through authenticated relay
 sessions, and the relay allows a network 30 guest connects a minute. A host whose
 admission says `features.multi_request` (herdr #356) answers further requests on a

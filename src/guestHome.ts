@@ -1,10 +1,13 @@
 import { Desk, type AgentTarget, type BoardUpdate, type ConnState, type Row } from "./mygo";
+import type { ShareSettings } from "./settings";
 import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
+
+type GuestState = NonNullable<ConnState["guest"]>;
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the
  * roster's avatar with its status badge, the initial placement and the loading spinner. */
@@ -20,7 +23,7 @@ export interface GuestHomeDeps {
  * list under the bar, and Settings (App/GuestSettingsView.swift) in the detail column. */
 export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: GuestHomeDeps, callbacks: {
  hosts(): void; open(target: AgentTarget): void;
-}) {
+}, options: { settings: boolean } = { settings: true }) {
  const navigation = node("section", "guest-navigation"); navigation.hidden = true;
  const settings = node("section", "guest-settings settings-detail"); settings.hidden = true;
  // Where the owner's roster sits: between the top bar and the floating tab bar.
@@ -87,7 +90,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
  }
 
  function update(state: ConnState, latest: BoardUpdate | null, selected: "agents" | "settings", visible: boolean, openPane: string | null) {
-  navigation.hidden = !visible || selected !== "agents"; settings.hidden = !visible || selected !== "settings";
+  navigation.hidden = !visible || selected !== "agents"; settings.hidden = !options.settings || !visible || selected !== "settings";
   if (!visible || !state.guest) { last = ""; return; }
   const guest = state.guest, access = guest.access;
   const id = `${access.endpoint.hostID}/${access.guestID}`;
@@ -142,7 +145,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    }
    await deps.placeInitials(navigation);
   })();
-  if (selected !== "settings") return;
+  if (selected !== "settings" || !options.settings) return;
   // GuestSettingsView (App/GuestSettingsView.swift 19-89). sharedAgentCard (90-121) is the
   // owner Settings' machine card (settings.ts): the 60 pt disc, the name, who shared it and
   // the machine.
@@ -152,6 +155,15 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const lines = node("div", "settings-machine-card-lines");
   lines.append(node("span", "settings-machine-card-name", access.agentName), node("span", "settings-machine-card-status", `Shared by ${access.ownerName}`), node("span", "settings-machine-version", access.machineLabel));
   card.append(disc, lines);
+  const body = node("div", "settings-page-body");
+  body.append(card, ...shareDetails(guest));
+  settings.replaceChildren(node("h1", "settings-page-title", "Settings"), body);
+ }
+
+ /** The share's own settings (GuestSettingsView.swift 30-89): who shared what, this device's
+  *  key to compare, and Leave share. */
+ function shareDetails(guest: GuestState): HTMLElement[] {
+  const access = guest.access, id = `${access.endpoint.hostID}/${access.guestID}`;
   const keyValue = (key: string, value: string, mono = false) => {
    const item = node("div", "guest-key-value"); item.append(node("dt", "", key), node("dd", mono ? "mono" : "", value)); return item;
   };
@@ -162,11 +174,19 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   device.append(node("span", "", "Device key"), fingerprint);
   const leave = node("button", "guest-leave guest-destructive", "Leave share"); leave.type = "button"; leave.dataset.testid = "guest-leave";
   leave.onclick = () => confirmLeave(`Leave ${access.machineLabel}?`, `${access.agentName} disappears from this device.`, "Leave share", id);
-  const body = node("div", "settings-page-body");
-  body.append(card, node("h3", "guest-settings-section", "Shared with you"), shared, node("h3", "guest-settings-section", "This device"), device,
+  return [node("h3", "guest-settings-section", "Shared with you"), shared, node("h3", "guest-settings-section", "This device"), device,
    node("p", "guest-settings-note", `${access.ownerName} sees the same key next to your name, so you can compare them.`), leave,
-   node("p", "guest-settings-note guest-leave-note", `You stop seeing ${access.agentName}. To come back, ${access.ownerName} has to send a new invite.`));
-  settings.replaceChildren(node("h1", "settings-page-title", "Settings"), body);
+   node("p", "guest-settings-note guest-leave-note", `You stop seeing ${access.agentName}. To come back, ${access.ownerName} has to send a new invite.`)];
  }
- return { update };
+
+ /** The share's page for the app's own Settings (settings.ts, the desktop's guest mode). */
+ function shareSettings(guest: GuestState, connectOwn: () => void): ShareSettings {
+  const access = guest.access;
+  return {
+   key: JSON.stringify([access.endpoint.hostID, access.guestID, access.agentName, access.ownerName, access.machineLabel, access.guestName, guest.fingerprint]),
+   agentName: access.agentName, ownerName: access.ownerName, machineLabel: access.machineLabel, connectOwn,
+   details: () => { const wrap = node("div", "guest-settings guest-share-details"); wrap.append(...shareDetails(guest)); return wrap; },
+  };
+ }
+ return { update, shareSettings };
 }

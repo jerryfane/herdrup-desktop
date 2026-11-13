@@ -120,8 +120,8 @@ let guestGram = false;
 // replaces the terminal; null while the owner's bars show.
 let guestBar: { tab: "agents" | "settings"; gram: boolean } | null = null;
 const guestActions = {
-  agents: () => { guestTab = "agents"; guestGram = false; render(); },
-  settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; render(); },
+  agents: () => { guestTab = "agents"; guestGram = false; settingsPushed = false; render(); },
+  settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; settingsPushed = false; render(); },
   hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
   terminal: () => { guestGram = false; render(); },
   open: (target: AgentTarget) => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
@@ -523,11 +523,15 @@ function render() {
     field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
     $("roster").hidden = true;
     updateAsks(false);
-    settings?.show(false, state, board);
+    // The app's own Settings, with the share's card and page in place of the machine's.
+    const share = guestTab === "settings" && guestHome ? guestHome.shareSettings(state.guest!, guestActions.hosts) : null;
+    settings?.show(guestTab === "settings", state, board, share);
     showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
     showInteraction(guestTab === "agents" && !guestGram);
-    // The guest's Settings and Gram sit between the bars; the shared agent's page covers them.
-    placeDetail(guestTab === "settings" || guestGram ? "bars" : interactionVisible() ? "page" : "");
+    // Settings as the owner's (a page over its index, with back, on a phone); Gram sits
+    // between the bars; the shared agent's page covers them.
+    if (guestTab === "settings") placeDetail(settingsPushed ? "page" : "", settingsPushed);
+    else placeDetail(guestGram ? "bars" : interactionVisible() ? "page" : "");
     return;
   }
   const showsGram = tab === "gram" && !showConnect;
@@ -590,18 +594,23 @@ events.boardChanged.on((b) => {
 // Retain activation until the originating board has actually rendered. The
 // backend also retains it, so an event before this page exists is not lost.
 events.agentOpen.on((target) => openAgent(target));
-// The update notification and the tray's update item open Settings, App updates (the
-// guest's Settings has no app update). Go keeps the request until the page shows it, so a
-// click that launched the app, or came before Settings existed, is not lost.
+// The update notification and the tray's update item open Settings, App updates, also while
+// a share is open (its Settings are the app's too). Go keeps the request until the page shows
+// it, so a click that launched the app, or came before Settings existed, is not lost.
 function showAppUpdates() {
   if (!settings || !renderReady) return;
-  if (guestBar || !appUpdatesShown) { void Desk.appUpdatesShown(); return; }
-  tab = "settings";
-  choosingHost = false;
-  appUpdatesAsked = true;
-  settings.openPage("appUpdates");
-  void buildTabBar();
-  void buildTopBar();
+  if (!appUpdatesShown) { void Desk.appUpdatesShown(); return; }
+  if (guestBar) {
+    closeWriter(); guestTab = "settings"; guestGram = false;
+    settings.openPage("appUpdates");
+  } else {
+    tab = "settings";
+    choosingHost = false;
+    appUpdatesAsked = true;
+    settings.openPage("appUpdates");
+    void buildTabBar();
+    void buildTopBar();
+  }
   render();
   void Desk.appUpdatesShown();
 }
@@ -736,7 +745,8 @@ async function init() {
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
   appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
-  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
+  // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
+  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
     // The guest home's row shows the open agent selected, as the roster's does; the phone
@@ -745,7 +755,7 @@ async function init() {
   });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render());
   hostsHold = hosts.holdsHome;
-  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if (tab === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((guestBar ? guestTab === "settings" : tab === "settings") && compactQuery.matches) { settingsPushed = true; render(); } });
   await initGram(
     {
       el,
