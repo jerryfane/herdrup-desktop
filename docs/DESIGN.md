@@ -64,6 +64,12 @@ Unchanged transcript rows stay attached during refresh, preserving their focus
 and expanded state. A Linux native-window check reproduced focus loss before the
 fix, then passed Refresh, Enter/Space toggles, mode switches and text-size changes.
 Windows disclosure keyboard interaction and full visual parity remain unverified.
+Chat draws a window of transcript rows, not every row it has loaded (herdrup ChatView
+`drawWindow`, #672): the newest 40 at first, 40 more per Earlier messages (loaded rows
+first, then the older page), and, while the chat follows its tail, back to the newest 40
+once it draws more than 80. A reader who scrolled up keeps every drawn row. Find draws
+every loaded row so all of them stay searchable; expanded disclosures are remembered by
+row id. Loaded rows stay in memory; only drawing is bounded (`src/chatWindow.ts`).
 The detail header uses the native machine-font status label and rounded,
 minimum-bounded height when Settings text size changes. Linux native Settings
 checks covered 90% and 140%, combined Chat zoom, independent terminal zoom and reset.
