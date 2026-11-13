@@ -83,27 +83,6 @@ export function progressNote(reason: string, delivered: number, total: number): 
  return total <= 1 || delivered <= 0 ? reason : `Sent ${delivered} of ${total}. ${reason}`;
 }
 
-/** paneAttachmentPrompt (desk_interaction_compose.go:168-205): the prompt naming the posted files'
- *  Gram ids and where `herdr gram get-file` puts them. */
-export function paneAttachmentPrompt(text: string, files: Pick<Attachment, "name" | "isImage" | "messageID">[]): string {
- const paths = files.map(file => {
-  const dot = file.name.lastIndexOf(".");
-  const ext = (dot >= 0 ? file.name.slice(dot + 1) : "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-  const path = "/tmp/herdr-" + (file.isImage ? "photo" : "file") + "-" + file.messageID;
-  return ext ? path + "." + ext : path;
- });
- let reference: string;
- const file = files[0];
- if (files.length === 1 && file) {
-  const noun = file.isImage ? "Photo" : "File " + file.name;
-  reference = `[${noun} attached via Herdr Gram message ${file.messageID}. Download it with \`herdr gram get-file ${file.messageID} -o ${paths[0]}\`, then inspect ${paths[0]}.]`;
- } else {
-  const lines = files.map((file, i) => `\`herdr gram get-file ${file.messageID} -o ${paths[i]}\`  (${file.name})`);
-  reference = `[${files.length} files attached via Herdr Gram. Download them with:\n${lines.join("\n")}\nthen inspect ${paths.join(", ")}.]`;
- }
- return text.trim() === "" ? reference : text + "\n\n" + reference;
-}
-
 // ---- Base64 (Go's StdEncoding: padded, strict) ----
 
 export function toBase64(bytes: Uint8Array): string {

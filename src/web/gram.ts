@@ -10,11 +10,12 @@ import { fileForPath, forgetFile, pickFiles, registerFiles } from "./files";
 import { currentLink, onLinkChanged, type WebLink } from "./link";
 import { agentView, sharedAgents, type GuestView } from "./view";
 import {
- type Attachment, apiCode, Composer, displaySize, ERR_SENDING, MAX_FILE_BYTES, paneAttachmentPrompt, safeFileName, SendError, skipNote, sleep, toBase64, uploadBlob,
+ type Attachment, apiCode, Composer, displaySize, ERR_SENDING, MAX_FILE_BYTES, safeFileName, SendError, skipNote, sleep, toBase64, uploadBlob,
 } from "./gramCompose";
 import { BLOB_SAVE_MAX_BYTES, type FileChunk, FileTooLarge, imageMime, openPlan, PREVIEW_MAX_BYTES, readChunks, savePlan, TEXT_PREVIEW_MAX_BYTES } from "./gramFiles";
 import { AGENT_TO_OWNER, type GramInfo, GRAM_MAX_REFRESH_LIMIT, GRAM_PAGE_SIZE, guestGramPage, type GuestGramPage, Inbox, isUnread, projectGuestPage, type WireFile } from "./gramInbox";
 import { HerdrAPIError } from "../webguest/errors";
+import { paneAttachmentPrompt } from "../chatAttachments";
 
 /** desk_gram.go:31-39: every 6 s while Gram shows, 30 s after a failure, the badge every 15 s. */
 export const GRAM_POLL_VISIBLE_MS = 6_000;
