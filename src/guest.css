@@ -12,7 +12,8 @@
 
 /* ---- Guest home: herdrup's GuestHomeView (App/GuestHomeView.swift, f2df68b) in the
    sidebar, between the owner's top bar and glass tab bar, where the roster sits. ---- */
-.guest-mode #sidebar > :not(.topbar, .tabbar, .guest-navigation) { display: none !important; }
+/* A share's sidebar: its agent list, or on the desktop the app's Settings index (settings.ts). */
+.guest-mode #sidebar > :not(.topbar, .tabbar, .guest-navigation, .settings-index) { display: none !important; }
 .guest-navigation[hidden], .guest-settings[hidden] { display: none; }
 .guest-navigation {
   flex: 1;
