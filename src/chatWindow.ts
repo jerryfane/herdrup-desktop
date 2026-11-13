@@ -43,3 +43,9 @@ export function revealedAbove(rows: readonly WindowRow[], top: string | null): s
  const index = top === null ? -1 : rows.findIndex(row => row.id === top);
  return index < 0 ? null : windowStarting(rows, index - RENDER_WINDOW);
 }
+
+/** Whether the pending question shows as its own card: unless its transcript row is drawn (a row
+ *  above the window is not on the page, so its card would be missing). */
+export function pendingCardShown(rows: readonly WindowRow[], start: number, pendingID: string): boolean {
+ return !rows.slice(start).some(row => row.id === pendingID);
+}
