@@ -501,6 +501,10 @@ Pane attachments upload when picked, then post to the named agent on Send. One
 prompt references the whole batch. A rejected prompt retains the posted file IDs:
 retrying does not upload or post those files again. Saved prompts are device-local;
 selecting one sends it immediately, as in Swift.
+In the transcript, a prompt that is exactly herdr's Gram attachment envelope shows its caption
+and an "N attachments" bundle, as Swift's `ChatAttachmentBundle`; each file opens through
+Gram's cache by message ID. The parser ports `GramAttachmentPrompt.parse` and accepts only text
+that re-renders identically, so edited or lookalike text stays visible as typed.
 Native file-drop events share the picker/upload path in Chat and Gram. The vendored
 MyGo correction accepts real Linux GTK URI-list drops even when WebKit exposes no
 DOM File, and prevents an outside drop from navigating away. Only native-selected

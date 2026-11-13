@@ -43,6 +43,9 @@ import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill
 import stopCircleIcon from "../third_party/phosphor/web/stop-circle-bold.svg?url";
 import warningCircleIcon from "../third_party/phosphor/web/warning-circle-bold.svg?url";
 import { errorText } from "./errors";
+import { parseAttachmentPrompt, type PromptFile } from "./chatAttachments";
+import arrowCircleDownIcon from "../third_party/phosphor/web/arrow-circle-down.svg?url";
+import fileTextIcon from "../third_party/phosphor/web/file-text.svg?url";
 import { appleSymbols } from "./platform";
 
 const noteStyles: Record<string, { label: string; symbol: string; icon?: string }> = {
@@ -71,6 +74,46 @@ function jumpToLatestButton(className: string, label: string, action: () => void
   jump.replaceChildren(icon);
  }
  return jump;
+}
+/** A chat glyph: the SF Symbol on a Mac; elsewhere its Phosphor stand-in, or `fallback`
+ *  drawn as a mask where the desktop has none. */
+function chatGlyph(sf: string, size: number, fallback?: string): HTMLElement {
+ const slot = el("span", "chat-attachments-glyph"); slot.setAttribute("aria-hidden", "true");
+ if (fallback && !appleSymbols()) { const mask = el("span", "chat-plan-fallback"); mask.style.setProperty("--plan-icon", `url("${fallback}")`); mask.style.width = mask.style.height = `${size}px`; slot.append(mask); }
+ else void symbol(sf, size, "medium").then(icon => slot.replaceChildren(icon));
+ return slot;
+}
+/** ChatAttachmentBundle (App/ChatAttachments.swift): "N attachments", folded under a prompt's
+ *  caption; each file opens through Gram (Desk.gramOpenFile: Gram's download cache and the
+ *  system's app for it), and herdr decides whether this reader may fetch it. */
+function attachmentBundle(files: PromptFile[]): HTMLElement {
+ const bundle = el("details", "chat-attachments");
+ const summary = el("summary", "chat-attachments-summary");
+ summary.append(chatGlyph("paperclip", 14), el("span", "chat-attachments-count", `${files.length} attachment${files.length === 1 ? "" : "s"}`), chatGlyph("chevron.down", 11));
+ const status = el("p", "chat-attachments-status"); status.hidden = true; status.setAttribute("role", "status");
+ const list = el("div", "chat-attachments-files");
+ let opening = false;
+ for (const file of files) {
+  const row = el("button", "chat-attachment"); row.type = "button";
+  // A send still on its way has no Gram id yet: shown, not openable ("Upload not complete").
+  const ready = file.messageID !== "";
+  row.title = ready ? `Open ${file.name}` : "Upload not complete";
+  const trailing = ready ? [chatGlyph("arrow.down.circle", 16, arrowCircleDownIcon)] : [];
+  trailing[0]?.classList.add("chat-attachment-open");
+  row.append(file.isImage ? chatGlyph("photo", 20) : chatGlyph("doc", 20, fileTextIcon), el("span", "chat-attachment-name", file.name), ...trailing);
+  row.disabled = !ready; row.dataset.ready = String(ready);
+  row.onclick = () => {
+   if (opening || !ready) return;
+   opening = true; status.hidden = true; row.setAttribute("aria-busy", "true");
+   for (const other of list.querySelectorAll("button")) other.disabled = true;
+   void Desk.gramOpenFile(file.messageID)
+    .catch(error => { status.textContent = `Couldn't open the file: ${errorText(error)}`; status.hidden = false; })
+    .finally(() => { opening = false; row.removeAttribute("aria-busy"); for (const other of list.querySelectorAll<HTMLButtonElement>("button")) other.disabled = other.dataset.ready !== "true"; });
+  };
+  list.append(row);
+ }
+ bundle.append(summary, list, status);
+ return bundle;
 }
 let root: HTMLElement;
 let symbol: (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -1265,7 +1308,7 @@ class Detail {
   *  with its receipt under it. It enters once (motion spec §1.3: from opacity 0, 14 px down and
   *  96 % scale, anchored bottom-trailing); a later receipt cross-fades in 150 ms (§1.5). */
  private renderOutgoing(message: Outgoing): HTMLElement {
-  const receipt = (message.files ? `${message.files} file${message.files === 1 ? "" : "s"} · ` : "") + outgoingReceipt(message.state);
+  const receipt = (message.files && !message.names?.length ? `${message.files} file${message.files === 1 ? "" : "s"} · ` : "") + outgoingReceipt(message.state);
   const mode = motionMode();
   let node = this.outgoingNodes.get(message.id);
   if (node) {
@@ -1282,6 +1325,9 @@ class Detail {
    bubble.append(el("span", "chat-user-content", message.text)); node.append(bubble);
    this.promptLayoutDirty = true;
   }
+  // Its files, folded as they will be once sent; they open from the chat once the transcript
+  // shows the prompt with their Gram ids.
+  if (message.names?.length) node.append(attachmentBundle(message.names.map(file => ({ ...file, messageID: "" }))));
   const line = el("span", "chat-send-receipt", receipt);
   line.setAttribute("role", "status");
   node.append(line);
@@ -1779,16 +1825,24 @@ class Detail {
   }
   if (entry.kind === "user" || entry.kind === "reply") {
    const article = el("article", `chat-message ${entry.kind}`);
+   let copied = entry.text ?? "";
    if (entry.kind === "user") {
     // ChatView.promptBubble: whose prompt it was, above the bubble, when not the reader's own.
     const byline = promptByline(this.viewer(), entry.author, entry.author_name);
     if (byline) { article.classList.add("has-byline"); article.append(el("span", "chat-byline", byline)); }
-    const bubble = el("div", "chat-user-text");
-    bubble.append(el("span", "chat-user-content", entry.text ?? "")); article.append(bubble);
-    this.promptLayoutDirty = true;
+    // A prompt with Gram files (GramAttachmentPrompt): its caption, then the files folded
+    // under it, never herdr's download instructions.
+    const sent = parseAttachmentPrompt(entry.text ?? "");
+    const caption = sent ? sent.caption : entry.text ?? "";
+    if (!sent || caption) {
+     const bubble = el("div", "chat-user-text");
+     bubble.append(el("span", "chat-user-content", caption)); article.append(bubble);
+     this.promptLayoutDirty = true;
+    }
+    if (sent) { article.append(attachmentBundle(sent.files)); copied = caption; }
    }
    else article.append(markdown(entry.text ?? ""));
-   this.bindMessageMenu(article, entry.text ?? "", entry.kind === "reply", entry.kind === "reply");
+   this.bindMessageMenu(article, copied, entry.kind === "reply", entry.kind === "reply");
    return article;
   }
   const details = el("details", "chat-step");
@@ -1822,7 +1876,7 @@ class Detail {
   // Only against a loaded transcript (TranscriptStore.stageOutgoing's hasSnapshot): the first
   // page would otherwise count every old prompt as new and could take the bubble (#139).
   const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal && this.chat
-   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
+   ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files, names: this.attachments.map(a => ({ name: a.name, isImage: a.isImage })), guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
   const setOutgoing = (state: Outgoing["state"] | null) => {
    if (!outgoing || this.disposed) return;
    this.outgoing = state ? this.outgoing.map(o => o.id === outgoing.id ? { ...o, state } : o) : this.outgoing.filter(o => o.id !== outgoing.id);

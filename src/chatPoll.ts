@@ -57,7 +57,9 @@ export function sendShown(held: ReadonlySet<string>, page: readonly Entry[]): bo
 export type OutgoingState = "sending" | "submitted" | "unconfirmed" | "notSeen";
 /** `guest` is the sender's guest name, "" for the owner: herdr records a guest's prompt with
  *  author "guest" and that name (normalize.rs user_author), the owner's as "owner". */
-export interface Outgoing { id: string; text: string; files: number; guest: string; state: OutgoingState; until: number }
+/** `names` are the attached files' names and kinds, shown folded under the bubble until the
+ *  transcript's own prompt (with their Gram ids) replaces it (ChatView.outgoingBubble). */
+export interface Outgoing { id: string; text: string; files: number; names?: { name: string; isImage: boolean }[]; guest: string; state: OutgoingState; until: number }
 
 /** The line under an outgoing bubble (ChatView.outgoingBubble). */
 export function outgoingReceipt(state: OutgoingState): string {

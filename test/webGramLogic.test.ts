@@ -2,7 +2,8 @@
 // checks, the save-size decision, the agent prompt, list merging and the composer's send rules.
 import { expect, test } from "bun:test";
 import { HerdrAPIError, rateLimited } from "../src/webguest/errors";
-import { type Attachment, Composer, fromBase64, gramAttachment, paneAttachmentPrompt, SendError, skipNote, toBase64, Uploader, uploadBlob, uploadPieces, UPLOAD_CHUNK_BYTES } from "../src/web/gramCompose";
+import { paneAttachmentPrompt } from "../src/chatAttachments";
+import { type Attachment, Composer, fromBase64, gramAttachment, SendError, skipNote, toBase64, Uploader, uploadBlob, uploadPieces, UPLOAD_CHUNK_BYTES } from "../src/web/gramCompose";
 import { BLOB_SAVE_MAX_BYTES, DOWNLOAD_CHUNK_BYTES, FILE_DATA_ERROR, type FileChunk, openPlan, readChunks, savePlan } from "../src/web/gramFiles";
 import { type GramInfo, guestGramPage, Inbox, projectGuestPage } from "../src/web/gramInbox";
 

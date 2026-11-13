@@ -134,7 +134,7 @@
 .chat-message { font-size: calc(16px * var(--chat-text-scale, 1)); }
 .chat-message.user { display: flex; justify-content: flex-end; padding-left: 40px; }
 /* ChatView.promptBubble's byline: a trailing VStack, 4 pt apart; 12 pt medium, textFaint, 6 pt in. */
-.chat-message.user.has-byline, .chat-message.user.chat-outgoing { flex-direction: column; align-items: flex-end; gap: 4px; }
+.chat-message.user.has-byline, .chat-message.user.chat-outgoing, .chat-message.user:has(.chat-attachments) { flex-direction: column; align-items: flex-end; gap: 4px; }
 .chat-byline { padding-right: 6px; color: var(--color-text-faint); font: 500 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 /* ChatView.outgoingBubble: the receipt, 11 pt textFaint, 6 pt in; the bubble grows from its
    bottom-trailing corner (motion spec §1.3). */
@@ -142,6 +142,22 @@
 .chat-send-receipt { padding-right: 6px; color: var(--color-text-faint); font: 400 calc(11px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-user-text { max-width: 480px; padding: 8.5px 14px 9.5px; border-radius: 18px 18px 6px 18px; background: var(--color-surface-raised); font: 400 calc(16px * var(--chat-text-scale, 1))/calc(1em * var(--leading-app) + 1px) var(--font-app); white-space: pre-wrap; text-wrap: pretty; overflow-wrap: anywhere; overflow: clip; user-select: text; }
 .chat-user-content { display: block; }
+/* ChatAttachmentBundle (App/ChatAttachments.swift): a raised 15 pt card, 12 in, at the bubble's
+   width; "N attachments" in 14 medium with a paperclip and a chevron; each file a row of its
+   20 pt glyph, the name and an open arrow. Neutral: no colour per kind. */
+.chat-attachments { box-sizing: border-box; width: min(100%, 480px); padding: 12px; border-radius: 15px; background: var(--color-surface-raised); color: var(--color-text); font: 500 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.chat-attachments-summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.chat-attachments-summary::-webkit-details-marker { display: none; }
+.chat-attachments-count { flex: 1; }
+.chat-attachments-glyph { display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.chat-attachments[open] .chat-attachments-summary > .chat-attachments-glyph:last-child { transform: rotate(180deg); }
+.chat-attachments-files { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.chat-attachment { display: flex; align-items: center; gap: 9px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.chat-attachment:disabled { cursor: default; }
+.chat-attachment[data-ready="false"] { color: var(--color-text-faint); }
+.chat-attachment[aria-busy="true"] .chat-attachment-open { opacity: .4; }
+.chat-attachment-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-attachments-status { margin: 10px 0 0; color: var(--color-text-dim); font: 400 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-work { display: flex; flex-direction: column; gap: 10px; color: var(--color-text-dim); font: 400 calc(14px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-work summary { cursor: pointer; }
 .chat-work > details > summary { display:flex; align-items:center; gap:7px; min-height:round(up, calc(1em * var(--leading-app)), var(--pixel)); list-style:none; }
