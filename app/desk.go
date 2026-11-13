@@ -181,6 +181,9 @@ type Desk struct {
 	// usage is the anonymous daily usage count (usage_ping.go). It sends
 	// nothing until main gives it a URL.
 	usage *usagePing
+	// boards is the last listed board per machine and session, shown while
+	// connecting (desk_board_cache.go).
+	boards boardCache
 }
 
 // link is the connection to the active machine. Its fields are guarded by
@@ -236,6 +239,7 @@ func newDesk(dir string) *Desk {
 		appUpdates:     newAppUpdates(),
 		appUpdateNudge: make(chan struct{}, 1),
 		usage:          newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
+		boards:         boardCache{dir: filepath.Join(dir, "cache", "boards")},
 	}
 }
 
@@ -362,7 +366,14 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 			st.Active = id
 		}
 	}
-	return d.store(st)
+	if err := d.store(st); err != nil {
+		return err
+	}
+	if replacing != "" && replacing != id {
+		d.boards.forget(replacing)
+	}
+	d.boards.allow(id)
+	return nil
 }
 
 // SelectMachine makes a saved machine the active one and connects to it,
@@ -423,6 +434,11 @@ func (d *Desk) RemoveMachine(id string) error {
 		st.Active = ""
 	}
 	err = d.store(st)
+	if err == nil {
+		// Within storeMu, as the save paths' allow: the cache's eligibility ends as the saved
+		// machines do, whatever order a concurrent save and this removal run in.
+		d.boards.forget(id)
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
@@ -596,7 +612,11 @@ func (d *Desk) remember(m Machine) error {
 		st.Machines = append(st.Machines, m)
 	}
 	st.Active = id
-	return d.store(st)
+	if err := d.store(st); err != nil {
+		return err
+	}
+	d.boards.allow(id)
+	return nil
 }
 
 func (d *Desk) start(m Machine, password string) {
@@ -610,7 +630,13 @@ func (d *Desk) start(m Machine, password string) {
 	d.link = l
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
-	d.mu.Unlock()
+	// The machine's last listed board shows until its first list arrives
+	// (slow-network fix 4); unlisted, so the page knows it is not current.
+	if cached := d.boards.load(l.id, l.session); cached != nil {
+		d.publishLocked(*cached)
+	} else {
+		d.mu.Unlock()
+	}
 	// Gram belongs to the connection; its downloads to the machine.
 	d.gramReset(l, m.Host)
 	d.gramWipeCacheUnlessOwner(l.id)
@@ -751,7 +777,9 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 					}
 				}
 			}
-			d.publishLocked(BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session, MachineID: l.id})
+			b := BoardUpdate{Board: herdr.BuildBoard(u.Agents, groups.view()), ListedAt: u.Listed.Format(time.RFC3339), Session: l.session, MachineID: l.id}
+			d.publishLocked(b)
+			d.boards.store(b)
 			d.gramRoster(l, u.Agents, u.Pong.Capabilities)
 		})
 		switched := ctx.Err() == nil && wctx.Err() != nil

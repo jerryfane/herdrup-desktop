@@ -45,6 +45,7 @@ func main() {
 		// system may clear; smoke runs keep everything in their temp dir.
 		if cache, err := mygo.App.Path(mygo.PathCache); err == nil {
 			desk.cacheDir = cache
+			desk.boards.dir = filepath.Join(cache, "boards")
 		}
 	}
 	mygo.Bind(desk)

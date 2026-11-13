@@ -148,7 +148,8 @@ func TestServerUpdateFollowsLostReplyWithoutAdoptingPreviousAttempt(t *testing.T
 	if err := d.Connect(*machine, ""); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "reconnected board", func() bool { return d.Board() != nil })
+	// Reconnecting shows the cached board at once (desk_board_cache.go); wait for the list.
+	waitFor(t, "reconnected board", func() bool { return d.Board() != nil && d.Board().ListedAt != "" })
 	b := d.Board()
 	if err := d.OpenSettings(b.MachineID, b.Session, "updates"); err != nil {
 		t.Fatal(err)
