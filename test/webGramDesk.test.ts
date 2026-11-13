@@ -4,6 +4,7 @@ import { fileForPath, registerFiles } from "../src/web/files";
 import { gramDesk, panePromptAttachments } from "../src/web/gram";
 import { Composer } from "../src/web/gramCompose";
 import { toBase64 } from "../src/web/gramCompose";
+import { HerdrAPIError } from "../src/webguest/errors";
 import { DOWNLOAD_CHUNK_BYTES } from "../src/web/gramFiles";
 import { setLink, type WebLink } from "../src/web/link";
 import { setSharedAgents, setView } from "../src/web/view";
@@ -63,27 +64,45 @@ test("a preview of a file listed with an unknown size stops at the first chunk p
  await gramDesk.gramSetVisible!(false);
 });
 
-// Review of #201: a Chat attachment names its file by Gram message id only, so it must open
-// whether or not Gram has loaded that message; herdr's first chunk gives its name and size.
-// This host refuses gram.list, so Gram never holds the message.
-test("a Chat attachment opens a file whose message Gram never loaded", async () => {
+// Reviews of #201 and #203: a Chat attachment names its file by Gram message id only, so it must
+// open whether or not Gram has loaded that message; herdr's first chunk gives its name and size.
+// This host refuses gram.list, so Gram never holds the message. That chunk can outlast the click's
+// user activation, so a save never waits on a picker (Chromium refuses it then): the file
+// downloads in memory, reusing the chunk already read. A failure stays out of Gram's banner.
+test("a Chat attachment saves a file whose message Gram never loaded, without a picker", async () => {
  const pdf = new Uint8Array(DOWNLOAD_CHUNK_BYTES + 10).map((_, i) => i % 251);
+ const offsets: number[] = [];
+ let refuse = false;
  setLink(fakeLink((method, params) => {
   if (method !== "gram.get_file_chunk" || params.id !== "gram-doc") throw new Error("unexpected " + method);
+  if (refuse) throw new HerdrAPIError("guest_forbidden", "attachment no longer shared", null);
   const offset = params.offset as number;
+  offsets.push(offset);
   return { data_base64: toBase64(pdf.slice(offset, offset + DOWNLOAD_CHUNK_BYTES)), mime: "application/pdf", name: "report.pdf", offset, sha256: "", size: pdf.length };
  }));
- const written: number[] = [];
- let suggested = "";
- Reflect.set(globalThis, "showSaveFilePicker", async (o: { suggestedName: string }) => {
-  suggested = o.suggestedName;
-  return { createWritable: async () => ({ write: async (b: Uint8Array) => { written.push(...b); }, close: async () => {}, abort: async () => {} }) };
- });
+ // A picker now would be refused, as Chromium refuses one after activation has expired.
+ Reflect.set(globalThis, "showSaveFilePicker", async () => { throw new DOMException("Must be handling a user gesture to show a file picker.", "SecurityError"); });
+ const saved: { name: string; blob: Blob }[] = [];
+ const blobs = new Map<string, Blob>();
+ const createObjectURL = URL.createObjectURL, revokeObjectURL = URL.revokeObjectURL;
+ URL.createObjectURL = (blob: Blob) => { const url = "blob:test/" + blobs.size; blobs.set(url, blob); return url; };
+ URL.revokeObjectURL = () => {};
+ Reflect.set(globalThis, "document", { body: { append() {} }, createElement: () => {
+  const a = { href: "", download: "", rel: "", remove() {}, click() { saved.push({ name: a.download, blob: blobs.get(a.href)! }); } };
+  return a;
+ } });
  try {
   await gramDesk.gramOpenAttachment!("gram-doc");
- } finally { Reflect.deleteProperty(globalThis, "showSaveFilePicker"); }
- expect(suggested).toBe("report.pdf");
- expect(new Uint8Array(written)).toEqual(pdf);
+  expect(saved.map(s => s.name)).toEqual(["report.pdf"]);
+  expect(new Uint8Array(await saved[0]!.blob.arrayBuffer())).toEqual(pdf);
+  expect(offsets).toEqual([0, DOWNLOAD_CHUNK_BYTES]);
+  refuse = true;
+  await expect(gramDesk.gramOpenAttachment!("gram-doc")).rejects.toThrow("attachment no longer shared");
+  expect((await gramDesk.gramState!()).status ?? "").toBe("");
+ } finally {
+  Reflect.deleteProperty(globalThis, "showSaveFilePicker"); Reflect.deleteProperty(globalThis, "document");
+  URL.createObjectURL = createObjectURL; URL.revokeObjectURL = revokeObjectURL;
+ }
 });
 
 test("pane attachments release their browser Files once sent", async () => {

@@ -424,22 +424,15 @@ function fileMeta(id: string): WireFile {
  return f as WireFile;
 }
 
-/** A Chat attachment's file: Gram's copy of its message when loaded, else herdr's first chunk.
- *  Chat names files by message id only; herdr decides whether this reader may fetch it. */
-async function attachmentMeta(link: WebLink, id: string): Promise<WireFile> {
- try { return fileMeta(id); } catch { /* not in the loaded feed */ }
- const c = await chunkOf(link, id, g.life.signal)(0);
- return { name: c.name, mime: c.mime, size: c.size, sha256: c.sha256 };
-}
-
 /** The whole file in memory, with download events (gramDownload); a file over maxSize (a preview's
- *  cap) stops at the first chunk with FileTooLarge. */
-async function fetchBlob(link: WebLink, id: string, size: number, signal?: AbortSignal, maxSize?: number): Promise<Blob> {
+ *  cap) stops at the first chunk with FileTooLarge. `first`: offset 0, already read. */
+async function fetchBlob(link: WebLink, id: string, size: number, signal?: AbortSignal, maxSize?: number, first?: FileChunk): Promise<Blob> {
  const parts: Uint8Array<ArrayBuffer>[] = [];
  const progress = (done: number, state: string) => emit("gramDownload", { id, done, size, state, label: displaySize(Math.min(done, size)) + " of " + displaySize(size) });
+ const read = chunkOf(link, id, signal);
  progress(0, "downloading");
  try {
-  const { mime } = await readChunks(chunkOf(link, id, signal), size, p => { parts.push(p); }, done => progress(done, "downloading"), signal, maxSize);
+  const { mime } = await readChunks(offset => offset === 0 && first ? Promise.resolve(first) : read(offset), size, p => { parts.push(p); }, done => progress(done, "downloading"), signal, maxSize);
   progress(size, "done");
   return new Blob(parts, { type: mime });
  } catch (error) { progress(size, "failed"); throw error; }
@@ -464,30 +457,36 @@ function downloadBlob(blob: Blob, name: string) {
 type SaveFilePicker = (options: { suggestedName: string; startIn?: "downloads" }) => Promise<{ createWritable(): Promise<{ write(data: Uint8Array<ArrayBuffer>): Promise<void>; close(): Promise<void>; abort(): Promise<void> }> }>;
 
 /** gramSaveFile: streamed into a file the person picks where the browser can, else in memory up to
- *  BLOB_SAVE_MAX_BYTES (refused before anything downloads). */
-async function saveFile(id: string, known?: WireFile, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
- const link = gramLink();
+ *  BLOB_SAVE_MAX_BYTES (refused before anything downloads). Failures go to Gram's banner. */
+async function saveFile(id: string, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
  let f: WireFile;
- try { f = known ?? fileMeta(id); } catch (error) { note(fileError("save", error)); throw error; }
+ try { f = fileMeta(id); } catch (error) { note(fileError("save", error)); throw error; }
+ try { await writeFile(gramLink(), id, f, saveMaxBytes); }
+ catch (error) { note(error instanceof SaveRefused ? error.message : fileError("save", error)); throw error; }
+}
+
+/** A save the browser can't do (savePlan "too-large"); its message is the note. */
+class SaveRefused extends Error {}
+
+/** The save itself, reporting nothing: its callers say where a failure shows. */
+async function writeFile(link: WebLink, id: string, f: WireFile, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
  // File System Access is not in TypeScript's DOM library yet.
  const picker = Reflect.get(globalThis, "showSaveFilePicker") as SaveFilePicker | undefined;
  const plan = savePlan(f.size, !!picker, saveMaxBytes);
- if (plan.kind === "too-large") { note(plan.note); throw new Error(plan.note); }
+ if (plan.kind === "too-large") throw new SaveRefused(plan.note);
+ if (plan.kind === "blob") { downloadBlob(await fetchBlob(link, id, f.size, g.life.signal), f.name); return; }
+ let handle;
+ // The picker opens in Downloads, as the desktop's save dialog does.
+ try { handle = await picker!({ suggestedName: safeFileName(f.name), startIn: "downloads" }); }
+ catch (error) { if (error instanceof DOMException && error.name === "AbortError") return; throw error; }
+ const out = await handle.createWritable();
+ const progress = (done: number, state: string) => emit("gramDownload", { id, done, size: f.size, state, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });
  try {
-  if (plan.kind === "blob") { downloadBlob(await fetchBlob(link, id, f.size, g.life.signal), f.name); return; }
-  let handle;
-  // The picker opens in Downloads, as the desktop's save dialog does.
-  try { handle = await picker!({ suggestedName: safeFileName(f.name), startIn: "downloads" }); }
-  catch (error) { if (error instanceof DOMException && error.name === "AbortError") return; throw error; }
-  const out = await handle.createWritable();
-  const progress = (done: number, state: string) => emit("gramDownload", { id, done, size: f.size, state, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });
-  try {
-   progress(0, "downloading");
-   await readChunks(chunkOf(link, id, g.life.signal), f.size, p => out.write(p), done => progress(done, "downloading"), g.life.signal);
-   await out.close();
-   progress(f.size, "done");
-  } catch (error) { progress(f.size, "failed"); await out.abort().catch(() => undefined); throw error; }
- } catch (error) { note(fileError("save", error)); throw error; }
+  progress(0, "downloading");
+  await readChunks(chunkOf(link, id, g.life.signal), f.size, p => out.write(p), done => progress(done, "downloading"), g.life.signal);
+  await out.close();
+  progress(f.size, "done");
+ } catch (error) { progress(f.size, "failed"); await out.abort().catch(() => undefined); throw error; }
 }
 
 /** An in-page preview: a picture or plain text, never run; Escape or a click closes it. */
@@ -731,13 +730,25 @@ export const gramDesk: Partial<DeskFns> = {
  },
 
  /** GramOpenAttachment: a Chat attachment opened as gramOpenFile opens a Gram file, whether or not
-  *  Gram has loaded its message. Its errors go back to the chat. */
+  *  Gram has loaded its message. Its errors go back to the chat only, never Gram's banner. */
  async gramOpenAttachment(id: string) {
   const link = gramLink();
-  const f = await attachmentMeta(link, id);
+  let f: WireFile | null = null, first: FileChunk | undefined;
+  try { f = fileMeta(id); } catch { /* not in the loaded feed: herdr's first chunk says what it is */ }
+  if (!f) {
+   first = await chunkOf(link, id, g.life.signal)(0);
+   f = { name: first.name, mime: first.mime, size: first.size, sha256: first.sha256 };
+  }
   const kind = openPlan(f.name, f.mime, f.size);
-  if (kind === "save") { await saveFile(id, f); return; }
-  try { preview(await fetchBlob(link, id, f.size, g.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES), kind, f.name); }
+  if (kind === "save") {
+   if (!first) { await writeFile(link, id, f); return; }
+   // The click's user activation may have run out while that chunk came: a save picker would be
+   // refused, so the file downloads in memory instead, which needs none.
+   if (f.size > BLOB_SAVE_MAX_BYTES) throw new Error(`this browser can't save files over ${Math.round(BLOB_SAVE_MAX_BYTES / 1e6)} MB from Chat`);
+   downloadBlob(await fetchBlob(link, id, f.size, g.life.signal, undefined, first), f.name);
+   return;
+  }
+  try { preview(await fetchBlob(link, id, f.size, g.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES, first), kind, f.name); }
   catch (error) { throw error instanceof FileTooLarge ? new Error("it is too large to preview here") : error; }
  },
 
