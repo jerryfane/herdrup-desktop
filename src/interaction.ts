@@ -25,6 +25,7 @@ import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
 import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
+import { forgetChats, recallChat, rememberChat } from "./chatMemory";
 import { drawnStart, pendingCardShown, revealedAbove, slidWindow, windowStarting } from "./chatWindow";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
@@ -145,8 +146,11 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
  });
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
  events.paneActionChosen.on(event => { if (current?.view?.paneID === event.paneID && !current.disposed) current.choosePaneAction(event.action); });
- events.stateChanged.on(state => {
-  const view = current?.view, access = state.guest?.access;
+events.stateChanged.on(state => {
+ // Chats remembered in memory end with the connection: a disconnect, a removed machine or a
+ // left share (all "idle"). A reconnect keeps them; they are keyed by machine.
+ if (state.phase === "idle") forgetChats();
+ const view = current?.view, access = state.guest?.access;
   if (!current || !view?.guest || !access || current.target.machineID !== `guest:${access.endpoint.hostID}/${access.guestID}`) return;
   view.guestGram = !!state.guest?.features.gram;
   current.attach.hidden = !view.guestGram;
@@ -1196,6 +1200,12 @@ class Detail {
   this.chatResize = new ResizeObserver(() => this.followChat());
   this.chatResize.observe(this.transcript); this.chatResize.observe(this.chatScroll);
   this.body.append(composer);
+  // The chat as last read draws at once; the first read asks only for what came after it.
+  const remembered = recallChat(JSON.stringify(this.target));
+  if (remembered) {
+   this.chat = remembered.page; this.entries = remembered.entries; this.oldestCursor = remembered.oldestCursor;
+   if (this.mode === "chat") this.drawChat();
+  }
   if (this.mode === "chat") void this.refreshChat(generation);
  }
  // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
@@ -1226,6 +1236,7 @@ class Detail {
    this.outgoing = reconcileOutgoing(this.outgoing, held, page.entries ?? [], Date.now());
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
+   rememberChat(JSON.stringify(this.target), { page: this.chat, entries: this.entries, oldestCursor: this.oldestCursor });
   } catch(e) {
    if (!this.disposed && generation === this.generation && poll === this.chatPoll) {
     const message = errorText(e);
@@ -1270,6 +1281,7 @@ class Detail {
    const before = groupTranscript(this.entries, !!this.chat?.working);
    const top = windowStarting(before, drawnStart(before, this.drawFrom));
    this.entries = mergeTranscript(this.entries, page.entries, true); this.oldestCursor = page.before;
+   rememberChat(JSON.stringify(this.target), { page: this.chat!, entries: this.entries, oldestCursor: this.oldestCursor });
    this.drawFrom = revealedAbove(groupTranscript(this.entries, !!this.chat?.working), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
    return true;
