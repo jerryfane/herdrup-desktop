@@ -181,6 +181,8 @@ type Desk struct {
 	// usage is the anonymous daily usage count (usage_ping.go). It sends
 	// nothing until main gives it a URL.
 	usage *usagePing
+	// crash is the opt-in crash reports (crash_reports.go), under the same switch.
+	crash *crashReporter
 }
 
 // link is the connection to the active machine. Its fields are guarded by
@@ -222,7 +224,7 @@ type link struct {
 }
 
 func newDesk(dir string) *Desk {
-	return &Desk{
+	d := &Desk{
 		dir: dir, state: ConnState{Phase: "idle"},
 		openFolders: &openFolders{path: filepath.Join(dir, "open-folders.json")},
 		terminals:   &terminalStore{path: filepath.Join(dir, "terminals.json")},
@@ -237,6 +239,8 @@ func newDesk(dir string) *Desk {
 		appUpdateNudge: make(chan struct{}, 1),
 		usage:          newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
 	}
+	d.crash = newCrashReporter(filepath.Join(dir, "crash-reports"), d.usage, mygo.App.Version())
+	return d
 }
 
 func (d *Desk) machinesPath() string { return filepath.Join(d.dir, "machines.json") }

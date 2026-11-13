@@ -37,6 +37,10 @@ func main() {
 	}
 	desk := newDesk(dir)
 	desk.usage.url = usagePingURL()
+	// Earlier launches' crashes become reports; this launch's go to its crash
+	// file (crash_reports.go). Only while usage sharing is on.
+	desk.crash.url = crashReportURL()
+	desk.crash.start()
 	if err := prepareReferenceHosts(desk); err != nil {
 		log.Fatal("reference host metadata: ", err)
 	}
@@ -122,6 +126,8 @@ func main() {
 				log.Fatal(err)
 			}
 		}
+		// A web content process that dies is reported without a stack.
+		win.Page().OnRenderProcessGone(desk.crash.renderGone)
 		startPresence(desk, win)
 		// The anonymous usage count: on start and when the window comes back,
 		// at most once a UTC day (usage_ping.go).

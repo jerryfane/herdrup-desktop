@@ -1659,8 +1659,9 @@ export const Desk = {
     return call("Desk.SetPaneMuted", paneID, muted);
   },
   /**
-   * SetShareUsageCount turns the anonymous usage count on or off. Off deletes the
-   * install ID and stops pings at once; on makes a new ID.
+   * SetShareUsageCount turns the anonymous usage count and crash reports on or
+   * off. Off deletes the install ID and every crash file and report, and stops
+   * pings at once; on makes a new ID.
    */
   setShareUsageCount(on: boolean): Promise<void> {
     return call("Desk.SetShareUsageCount", on);

@@ -490,6 +490,24 @@ A Linux native-window check against a local stub saw one ping on start with the
 contract body, none on a same-day X focus change, `{"off":true}` and no ping after
 switching off, and a new ID pinged on the next day's focus after switching on.
 macOS and Windows pings are not verified.
+The same switch covers crash reports (`crash_reports.go`, herdrup #671's relay
+contract, `POST /v1/crash`). While it is on, each launch sends Go crashes to its own
+file in `crash-reports/` (`debug.SetCrashOutput`, traceback `system`, so each frame
+has its `pc=`). The next launch reads that file only for how the crash ended
+(`go panic`, `go fatal error`, `go signal SIGSEGV`, `go exception 0x…`) and every
+goroutine's program counters, then deletes it: never the panic's message. Frames are
+`[0, pc − image base]`, the base read at launch (`/proc/self/maps`, `GetModuleHandleW`,
+`_dyld_get_image_header`). Binary 0 is `herdrup`, with the first 16 bytes of the
+SHA-256 of the executable file as its uuid (`sha256sum` of a release binary finds
+it; computed once a launch, only while the switch is on). To symbolize, add the
+release binary's preferred base (ELF's first `PT_LOAD`, `0x400000` today; Mach-O
+`__TEXT` vmaddr; PE `ImageBase`) and pass the addresses to `go tool addr2line`;
+`.gopclntab` survives the release's stripped symbol table. A web content process
+that ends (mygo `OnRenderProcessGone`) is reported at once with no stack
+(`webview process crashed`, etc.). At most 5 reports go out a UTC day. 20 wait
+in `crash-reports/queue/` for a relay that answered 429 or 5xx, or none; another
+4xx drops a report. Off stops the crash file and deletes the directory. Smoke and
+reference runs send nothing unless `HERDRUP_CRASH_REPORT_URL` names a stub.
 This is not complete Settings parity: additional preferences, daemon updates,
 native invite sending and full reference comparison remain.
 
