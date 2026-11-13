@@ -108,3 +108,33 @@ func TestARemovedMachineTakesNoLateBoard(t *testing.T) {
 		t.Fatalf("saved again: %+v", got)
 	}
 }
+
+// Review of #210, round 2: the cache takes boards exactly while the machine is saved, and
+// replacing a machine with another host forgets the old one's boards. (The removal's forget now
+// runs inside storeMu, as the saves' allow do, so a concurrent remove and re-save end as the
+// saved machines do; that ordering is structural, not tested by timing.)
+func TestBoardCacheFollowsTheSavedMachine(t *testing.T) {
+	d := newDesk(t.TempDir())
+	m := Machine{Host: "h", Port: 22, User: "u", KeyPath: "/k"}
+	id := machineID(m)
+	b := BoardUpdate{MachineID: id, ListedAt: "2026-11-13T00:00:00Z"}
+	b.Board.Total = 1
+	stored := func() bool { d.boards.store(b); return d.boards.load(id, "") != nil }
+	for _, step := range []struct {
+		name  string
+		do    func() error
+		takes bool
+	}{
+		{"saved", func() error { return d.SaveMachine(m, "") }, true},
+		{"removed", func() error { return d.RemoveMachine(id) }, false},
+		{"saved again", func() error { return d.SaveMachine(m, "") }, true},
+		{"replaced by another host", func() error { return d.SaveMachine(Machine{Host: "h2", Port: 22, User: "u", KeyPath: "/k"}, id) }, false},
+	} {
+		if err := step.do(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if got := stored(); got != step.takes {
+			t.Fatalf("%s: the cache takes boards %v, want %v", step.name, got, step.takes)
+		}
+	}
+}

@@ -369,6 +369,9 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
+	if replacing != "" && replacing != id {
+		d.boards.forget(replacing)
+	}
 	d.boards.allow(id)
 	return nil
 }
@@ -431,11 +434,15 @@ func (d *Desk) RemoveMachine(id string) error {
 		st.Active = ""
 	}
 	err = d.store(st)
+	if err == nil {
+		// Within storeMu, as the save paths' allow: the cache's eligibility ends as the saved
+		// machines do, whatever order a concurrent save and this removal run in.
+		d.boards.forget(id)
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
 	}
-	d.boards.forget(id)
 	d.mu.Lock()
 	connected := d.link != nil && d.link.id == id
 	d.mu.Unlock()
