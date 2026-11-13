@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { drawnStart, FOLLOWED_WINDOW_CAP, RENDER_WINDOW, revealedAbove, slidWindow, windowStarting, type WindowRow } from "../src/chatWindow";
+import { drawnStart, FOLLOWED_WINDOW_CAP, pendingCardShown, RENDER_WINDOW, revealedAbove, slidWindow, windowStarting, type WindowRow } from "../src/chatWindow";
 
 // herdrup #672: a chat following an agent for hours kept every row it ever merged on the page.
 // Desktop now draws a window of rows (herdrup ChatView drawWindow / slideWindowToTail).
@@ -43,4 +43,14 @@ test("Earlier messages reveals one window above the row on top, also after older
  const merged = [...rows(100, -100), ...all];
  expect(revealedAbove(merged, "e0")).toBe(`e${-RENDER_WINDOW}`);
  expect(revealedAbove(merged, "gone")).toBeNull();
+});
+
+// Review of #205: an unanswered question whose row slid above the window lost its card.
+test("a pending question keeps its card while its row is outside the window", () => {
+ const all: WindowRow[] = [{ kind: "entry", id: "q1" }, ...rows(100)];
+ const start = drawnStart(all, slidWindow(all, null, true));
+ expect(start).toBeGreaterThan(0);
+ expect(pendingCardShown(all, start, "q1")).toBe(true);
+ expect(pendingCardShown(all, 0, "q1")).toBe(false);
+ expect(pendingCardShown(all, start, "q-not-in-transcript")).toBe(true);
 });

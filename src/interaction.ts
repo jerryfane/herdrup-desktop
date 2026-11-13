@@ -25,7 +25,7 @@ import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
 import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
-import { drawnStart, revealedAbove, slidWindow, windowStarting } from "./chatWindow";
+import { drawnStart, pendingCardShown, revealedAbove, slidWindow, windowStarting } from "./chatWindow";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } from "./motion";
@@ -83,6 +83,15 @@ function chatGlyph(sf: string, size: number, fallback?: string): HTMLElement {
  if (fallback && !appleSymbols()) { const mask = el("span", "chat-plan-fallback"); mask.style.setProperty("--plan-icon", `url("${fallback}")`); mask.style.width = mask.style.height = `${size}px`; slot.append(mask); }
  else void symbol(sf, size, "medium").then(icon => slot.replaceChildren(icon));
  return slot;
+}
+/** A transcript row's disclosures, itself first when it is one, in document order. */
+function disclosures(node: HTMLElement): HTMLDetailsElement[] {
+ const inner = [...node.querySelectorAll<HTMLDetailsElement>("details")];
+ return node instanceof HTMLDetailsElement ? [node, ...inner] : inner;
+}
+/** A disclosure's remembered identity: its own id, else its row and place in that row. */
+function disclosureKey(d: HTMLDetailsElement, rowID: string, index: number): string {
+ return d.dataset.id ?? `${rowID}#${index}`;
 }
 /** ChatAttachmentBundle (App/ChatAttachments.swift): "N attachments", folded under a prompt's
  *  caption; each file opens by its Gram message id (Desk.gramOpenAttachment: Gram's download
@@ -696,7 +705,7 @@ class Detail {
   this.findToggle?.setAttribute("aria-pressed", String(open));
   this.findToggle?.setAttribute("aria-label", open ? "Close search" : "Search");
   if (open) { this.findInput.focus(); if (this.chat && this.mode === "chat") this.drawChat(false); this.updateFind(true); }
-  else { this.findInput.value = ""; this.updateFind(true); if (this.mode === "terminal") this.terminal?.focus(); }
+  else { this.findInput.value = ""; this.pinWindowToView(); this.updateFind(true); if (this.mode === "terminal") this.terminal?.focus(); }
   this.updateChatJump();
  }
  /** `reveal`: bring the current match into view. Only the owner's own Find actions do; a redraw
@@ -1239,7 +1248,8 @@ class Detail {
   *  loaded one; either way the row on top stays where it was. True when rows were added. */
  async showEarlier(generation: number): Promise<boolean> {
   const rows = groupTranscript(this.entries, !!this.chat?.working);
-  const start = drawnStart(rows, this.drawFrom);
+  // Find draws every loaded row: only the older page adds any.
+  const start = this.findOpen ? 0 : drawnStart(rows, this.drawFrom);
   if (start === 0) return this.loadEarlier(generation);
   const oldHeight = this.chatScroll.scrollHeight;
   this.chatFollowing = false;
@@ -1265,9 +1275,27 @@ class Detail {
    return true;
   } catch(e) { this.status.textContent = errorText(e); return false; }
  }
+ /** Find closed: Find drew every loaded row, so the window now starts no lower than the row on
+  *  screen, which stays where it is. */
+ pinWindowToView() {
+  if (!this.chat || this.mode !== "chat") return;
+  const rows = groupTranscript(this.entries, !!this.chat.working);
+  const viewTop = this.chatScroll.getBoundingClientRect().top;
+  const anchor = [...this.transcript.children].find((node): node is HTMLElement =>
+   node instanceof HTMLElement && !!node.dataset.id && node.getBoundingClientRect().bottom > viewTop);
+  const index = anchor ? rows.findIndex(row => row.id === anchor.dataset.id) : -1;
+  if (!anchor || index < 0) return;
+  const top = anchor.getBoundingClientRect().top;
+  this.drawFrom = windowStarting(rows, Math.min(index, drawnStart(rows, this.drawFrom)));
+  this.drawChat(false);
+  this.chatScroll.scrollTop += anchor.getBoundingClientRect().top - top;
+ }
  drawChat(follow = true) {
-  for (const d of this.transcript.querySelectorAll<HTMLDetailsElement>("details[data-id]")) {
-   if (d.open) this.openRows.add(d.dataset.id!); else this.openRows.delete(d.dataset.id!);
+  // Disclosures by their row and place in it, so a row leaving the window and coming back keeps
+  // every one's state, whether or not its renderer named it.
+  for (const node of this.transcript.children) {
+   if (!(node instanceof HTMLElement) || !node.dataset.id) continue;
+   disclosures(node).forEach((d, i) => { const key = disclosureKey(d, node.dataset.id!, i); if (d.open) this.openRows.add(key); else this.openRows.delete(key); });
   }
   const opened = this.openRows;
   const rows = groupTranscript(this.entries, !!this.chat?.working);
@@ -1286,14 +1314,14 @@ class Detail {
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
    node.dataset.id = row.id; node.dataset.signature = signature;
-   for (const disclosure of node.querySelectorAll<HTMLDetailsElement>("details")) disclosure.open = opened.has(disclosure.dataset.id!);
-   if (node instanceof HTMLDetailsElement) node.open = opened.has(row.id);
+   disclosures(node).forEach((d, i) => { d.open = opened.has(disclosureKey(d, row.id, i)); });
    return node;
   });
   this.earlier.className = "chat-earlier"; this.earlier.hidden = start === 0 && !this.oldestCursor;
   nodes.unshift(this.earlier);
   const pending = this.chat?.pending_ask;
-  if (pending && !this.entries.some(entry => entry.kind === "ask" && entry.id === pending.id)) {
+  // The card shows unless its transcript row is drawn: a row above the window is not on the page.
+  if (pending && pendingCardShown(rows, start, pending.id)) {
    // Kept attached while unchanged, as entry rows are: a form's Other or text field keeps its
    // focus and caret across polls.
    const id = `pending-ask:${pending.id}`, signature = JSON.stringify(this.questionSignature(null, pending.id));
