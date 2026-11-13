@@ -462,3 +462,6 @@ button.ask-form-other-caption { cursor:pointer; }
 /* ChatView.sessionFooter's model line: machine 11.5 pt in textFaint, 4 pt leading and vertical
    padding, in the transcript's column. */
 .chat-model { box-sizing: border-box; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 4px 0 4px 4px; color: var(--color-text-faint); font: 400 calc(11.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); overflow-wrap: anywhere; }
+/* The terminal's last screen from memory (terminalMemory.ts), until the stream's first screen. */
+.terminal-canvas { position: relative; }
+.terminal-last-screen { position: absolute; inset: 0 8px; margin: 0; overflow: hidden; font-family: var(--font-machine); line-height: 1.2; color: var(--color-text-dim); white-space: pre; pointer-events: none; }

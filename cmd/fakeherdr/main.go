@@ -43,6 +43,7 @@ func main() {
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	askForm := flag.String("ask-form", "", "with -interactions, the pending ask is an omp HTML form (herdr ask-form contract): answerable (ping advertises ask_form), readonly (form_answerable false), moved (agent.answer_form answers ask_form_moved) or old-host (no ask_form capability)")
 	transcriptDelay := flag.Duration("transcript-delay", 0, "with -interactions, answer agent.transcript after this delay, as a slow link does")
+	streamDelay := flag.Duration("stream-delay", 0, "with -interactions, start pane.stream after this delay, as a slow link does")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
@@ -141,7 +142,16 @@ func main() {
 		x := fakeherdr.NewInteraction()
 		x.SetAskForm(*askForm)
 		grow = x
-		s.Streams = map[string]fakeherdr.StreamFunc{"pane.stream": x.Stream}
+		s.Streams = map[string]fakeherdr.StreamFunc{"pane.stream": func(ctx context.Context, id string, raw json.RawMessage, emit func([]byte) error) {
+			if *streamDelay > 0 {
+				select {
+				case <-time.After(*streamDelay):
+				case <-ctx.Done():
+					return
+				}
+			}
+			x.Stream(ctx, id, raw, emit)
+		}}
 		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 			if method == "agent.transcript" && *transcriptDelay > 0 {
 				time.Sleep(*transcriptDelay)
