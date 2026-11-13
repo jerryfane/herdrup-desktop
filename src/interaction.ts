@@ -262,6 +262,8 @@ class Detail {
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
  chatSurface = el("div", "chat-surface");
  mounted = false;
+ // The terminal opens the first time it is shown, not under Chat (ensureTerminal).
+ terminalOpened = false;
  terminalStartup: Promise<void> | null = null;
  terminalReconnect: Promise<void> | null = null;
  chatButton = button("Chat", () => { void this.chooseMode("chat"); });
@@ -911,17 +913,28 @@ class Detail {
    this.mounted = true;
    this.body.append(this.terminalSurface, this.chatSurface, ...this.column.handles, this.column.readout);
    this.openChat(generation);
-   if (this.guestPaused) await this.reconnectTerminal();
-   else { this.terminalStartup = this.openTerminal(generation); await this.terminalStartup; }
+   if (mode === "terminal") await this.ensureTerminal(generation);
   } else if (mode === "chat") {
    void this.refreshChat(generation);
+  } else if (!this.terminalOpened) {
+   await this.ensureTerminal(generation);
   } else {
    this.terminal?.focus();
   }
   this.input.dispatchEvent(new Event("input"));
  }
+ /** Opens the terminal the first time it is shown (herdrup slow-network fix 6): under Chat its
+  *  stream, backfill and input stream would compete with the chat's first page on the link. */
+ async ensureTerminal(generation: number) {
+  if (this.terminalOpened) return;
+  this.terminalOpened = true;
+  if (this.guestPaused) await this.reconnectTerminal();
+  else { this.terminalStartup = this.openTerminal(generation); await this.terminalStartup; }
+ }
  // One reconnect at a time: a refresh while one runs joins it rather than opening a second stream.
+ // A terminal not yet shown has nothing to reconnect: it opens fresh when shown.
  reconnectTerminal(): Promise<void> {
+  if (!this.terminalOpened) return Promise.resolve();
   this.terminalReconnect ??= this.replaceTerminal().finally(() => {
    this.terminalReconnect = null;
    // The share paused or resumed while this one ran: follow it.
