@@ -250,6 +250,13 @@ func (p *usagePing) send(ctx context.Context, install string) error {
 // defaults on.
 func (d *Desk) GetShareUsageCount() (bool, error) { return d.usage.enabled() }
 
-// SetShareUsageCount turns the anonymous usage count on or off. Off deletes the
-// install ID and stops pings at once; on makes a new ID.
-func (d *Desk) SetShareUsageCount(on bool) error { return d.usage.setEnabled(on) }
+// SetShareUsageCount turns the anonymous usage count and crash reports on or
+// off. Off deletes the install ID and every crash file and report, and stops
+// pings at once; on makes a new ID.
+func (d *Desk) SetShareUsageCount(on bool) error {
+	if err := d.usage.setEnabled(on); err != nil {
+		return err
+	}
+	d.crash.setEnabled(on)
+	return nil
+}
