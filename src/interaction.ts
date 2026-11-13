@@ -916,8 +916,7 @@ class Detail {
   this.fitTerminal = null;
   this.terminalReady = false;
   this.prediction?.dispose(); this.prediction = null;
-  if (this.terminal && this.terminalShown) rememberScreen(JSON.stringify(this.target), screenText(this.terminal));
-  this.terminal?.dispose(); this.terminal = null; this.fit = null;
+  this.disposeTerminal(); this.fit = null;
  }
  dispose() { this.disposed = true; this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
  async chooseMode(mode: "chat" | "terminal") {
@@ -974,6 +973,12 @@ class Detail {
   });
   return this.terminalReconnect;
  }
+ /** Ends the terminal, remembering its screen first (terminalMemory.ts) when the stream drew one:
+  *  every teardown goes through here, so the memory is the latest screen seen (review of #213). */
+ disposeTerminal() {
+  if (this.terminal && this.terminalShown) rememberScreen(JSON.stringify(this.target), screenText(this.terminal));
+  this.terminal?.dispose(); this.terminal = null;
+ }
  async replaceTerminal() {
   if (this.terminalStartup) await this.terminalStartup;
   if (this.disposed) return;
@@ -983,7 +988,7 @@ class Detail {
   this.resize?.disconnect(); this.resize = null;
   this.fitTerminal = null;
   this.prediction?.dispose(); this.prediction = null;
-  this.terminal?.dispose(); this.terminal = null;
+  this.disposeTerminal();
   await Desk.stopTerminal(this.token, this.terminalID);
   if (this.disposed) return;
   this.terminalSurface.replaceChildren();

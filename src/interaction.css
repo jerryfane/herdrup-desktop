@@ -464,4 +464,5 @@ button.ask-form-other-caption { cursor:pointer; }
 .chat-model { box-sizing: border-box; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 4px 0 4px 4px; color: var(--color-text-faint); font: 400 calc(11.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); overflow-wrap: anywhere; }
 /* The terminal's last screen from memory (terminalMemory.ts), until the stream's first screen. */
 .terminal-canvas { position: relative; }
-.terminal-last-screen { position: absolute; inset: 0 8px; margin: 0; overflow: hidden; font-family: var(--font-machine); line-height: 1.2; color: var(--color-text-dim); white-space: pre; pointer-events: none; }
+/* Its own layer over xterm, whose opaque canvas would otherwise paint over it (review of #213). */
+.terminal-last-screen { position: absolute; inset: 0; z-index: 1; margin: 0; padding: 0 8px; overflow: hidden; background: var(--color-ground-machine); font-family: var(--font-machine); line-height: 1.2; color: var(--color-text-dim); white-space: pre; pointer-events: none; }
