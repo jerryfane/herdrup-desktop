@@ -1268,6 +1268,17 @@ export const Desk = {
     return call("Desk.GramMenu", id, items);
   },
   /**
+   * GramOpenAttachment opens the file of a Chat attachment by its Gram message
+   * id, as GramOpenFile does, through the same download cache (herdrup
+   * ChatAttachmentBundle, GramFileCache.open). Its message need not be in the
+   * loaded Gram feed: herdr decides access, and the first chunk gives the name
+   * and size. Programs and scripts stay save-only. Errors go back to the chat,
+   * not to Gram's banner.
+   */
+  gramOpenAttachment(id: string): Promise<void> {
+    return call("Desk.GramOpenAttachment", id);
+  },
+  /**
    * GramOpenFile opens a received file with the system's default app for its
    * type, HTML in the default browser (owner, 2026-11-08); programs and scripts
    * remain save-only.

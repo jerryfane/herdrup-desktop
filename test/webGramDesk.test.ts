@@ -63,6 +63,29 @@ test("a preview of a file listed with an unknown size stops at the first chunk p
  await gramDesk.gramSetVisible!(false);
 });
 
+// Review of #201: a Chat attachment names its file by Gram message id only, so it must open
+// whether or not Gram has loaded that message; herdr's first chunk gives its name and size.
+// This host refuses gram.list, so Gram never holds the message.
+test("a Chat attachment opens a file whose message Gram never loaded", async () => {
+ const pdf = new Uint8Array(DOWNLOAD_CHUNK_BYTES + 10).map((_, i) => i % 251);
+ setLink(fakeLink((method, params) => {
+  if (method !== "gram.get_file_chunk" || params.id !== "gram-doc") throw new Error("unexpected " + method);
+  const offset = params.offset as number;
+  return { data_base64: toBase64(pdf.slice(offset, offset + DOWNLOAD_CHUNK_BYTES)), mime: "application/pdf", name: "report.pdf", offset, sha256: "", size: pdf.length };
+ }));
+ const written: number[] = [];
+ let suggested = "";
+ Reflect.set(globalThis, "showSaveFilePicker", async (o: { suggestedName: string }) => {
+  suggested = o.suggestedName;
+  return { createWritable: async () => ({ write: async (b: Uint8Array) => { written.push(...b); }, close: async () => {}, abort: async () => {} }) };
+ });
+ try {
+  await gramDesk.gramOpenAttachment!("gram-doc");
+ } finally { Reflect.deleteProperty(globalThis, "showSaveFilePicker"); }
+ expect(suggested).toBe("report.pdf");
+ expect(new Uint8Array(written)).toEqual(pdf);
+});
+
 test("pane attachments release their browser Files once sent", async () => {
  setSharedAgents([{ pane_id: "p1", name: "docs" }]);
  setLink(fakeLink(method => {

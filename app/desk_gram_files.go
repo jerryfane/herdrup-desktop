@@ -88,21 +88,24 @@ func (d *Desk) gramFileMeta(id string) (name, mime string, size uint64, err erro
 type gramFlight struct {
 	done chan struct{}
 	path string
+	name string
 	mime string
 	err  error
 }
 
-// gramFetch returns a local path holding the file of message id: the
-// cached copy, else one downloaded now (or already being downloaded).
-func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (path, mime string, err error) {
+// gramFetch returns a local path holding the file of message id, and the
+// file's name and type as herdr gave them: the cached copy, else one
+// downloaded now (or already being downloaded). size 0: the first chunk
+// tells it.
+func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (path, name, mime string, err error) {
 	if hit, ok := d.gramCache().Cached(id); ok {
-		return hit.Path, hit.Mime, nil
+		return hit.Path, hit.Name, hit.Mime, nil
 	}
 	g := &d.gram
 	g.mu.Lock()
 	if g.link != l {
 		g.mu.Unlock()
-		return "", "", errNotConnected
+		return "", "", "", errNotConnected
 	}
 	f := g.flights[id]
 	if f == nil {
@@ -113,9 +116,9 @@ func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (
 	g.mu.Unlock()
 	select {
 	case <-f.done:
-		return f.path, f.mime, f.err
+		return f.path, f.name, f.mime, f.err
 	case <-ctx.Done():
-		return "", "", ctx.Err()
+		return "", "", "", ctx.Err()
 	}
 }
 
@@ -189,7 +192,7 @@ func (d *Desk) gramDownload(ctx context.Context, l *link, epoch int, id string, 
 		return
 	}
 	if ok {
-		f.path, f.mime = hit.Path, hit.Mime
+		f.path, f.name, f.mime = hit.Path, hit.Name, hit.Mime
 		return
 	}
 	// Not cached (an empty file, or the cache could not commit it, which
@@ -200,7 +203,7 @@ func (d *Desk) gramDownload(ctx context.Context, l *link, epoch int, id string, 
 		return
 	}
 	keepTmp = true
-	f.path, f.mime = tmp.Name(), mime
+	f.path, f.name, f.mime = tmp.Name(), name, mime
 }
 
 // gramReadChunks downloads a file in gram.get_file_chunk pieces into w
@@ -283,7 +286,7 @@ func (d *Desk) GramOpenFile(ctx context.Context, id string) error {
 		d.gramNote(l, "Couldn't open the file: programs and scripts can only be saved.")
 		return err
 	}
-	path, _, err := d.gramFetch(ctx, l, id, size)
+	path, _, _, err := d.gramFetch(ctx, l, id, size)
 	if err == nil {
 		err = d.openPath(path)
 	}
@@ -293,6 +296,40 @@ func (d *Desk) GramOpenFile(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// GramOpenAttachment opens the file of a Chat attachment by its Gram message
+// id, as GramOpenFile does, through the same download cache (herdrup
+// ChatAttachmentBundle, GramFileCache.open). Its message need not be in the
+// loaded Gram feed: herdr decides access, and the first chunk gives the name
+// and size. Programs and scripts stay save-only. Errors go back to the chat,
+// not to Gram's banner.
+func (d *Desk) GramOpenAttachment(ctx context.Context, id string) error {
+	l, err := d.gramLink()
+	if err != nil {
+		return err
+	}
+	name, _, size, metaErr := d.gramFileMeta(id)
+	if metaErr == nil && !gramstore.Openable(name) {
+		return errSaveOnly
+	}
+	if metaErr != nil {
+		size = 0
+	}
+	path, name, _, err := d.gramFetch(ctx, l, id, size)
+	if err != nil {
+		var api *bridge.APIError
+		if errors.As(err, &api) {
+			return errors.New(api.Message)
+		}
+		return err
+	}
+	if !gramstore.Openable(name) {
+		return errSaveOnly
+	}
+	return d.openPath(path)
+}
+
+var errSaveOnly = errors.New("programs and scripts can only be saved")
 
 // GramSaveFile saves a message's file where the save dialog says, from the
 // cache when it was downloaded before.
@@ -310,7 +347,7 @@ func (d *Desk) GramSaveFile(ctx context.Context, id string) error {
 	if err != nil || dest == "" {
 		return err
 	}
-	src, _, err := d.gramFetch(ctx, l, id, size)
+	src, _, _, err := d.gramFetch(ctx, l, id, size)
 	if err == nil {
 		err = copyFileAtomic(src, dest)
 	}
@@ -371,7 +408,7 @@ func (d *Desk) GramImage(ctx context.Context, id string) (string, error) {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
-		path, cachedMime, err = d.gramFetch(ctx, l, id, size)
+		path, _, cachedMime, err = d.gramFetch(ctx, l, id, size)
 		<-g.slots
 		if err != nil {
 			return "", err

@@ -424,6 +424,14 @@ function fileMeta(id: string): WireFile {
  return f as WireFile;
 }
 
+/** A Chat attachment's file: Gram's copy of its message when loaded, else herdr's first chunk.
+ *  Chat names files by message id only; herdr decides whether this reader may fetch it. */
+async function attachmentMeta(link: WebLink, id: string): Promise<WireFile> {
+ try { return fileMeta(id); } catch { /* not in the loaded feed */ }
+ const c = await chunkOf(link, id, g.life.signal)(0);
+ return { name: c.name, mime: c.mime, size: c.size, sha256: c.sha256 };
+}
+
 /** The whole file in memory, with download events (gramDownload); a file over maxSize (a preview's
  *  cap) stops at the first chunk with FileTooLarge. */
 async function fetchBlob(link: WebLink, id: string, size: number, signal?: AbortSignal, maxSize?: number): Promise<Blob> {
@@ -457,10 +465,10 @@ type SaveFilePicker = (options: { suggestedName: string; startIn?: "downloads" }
 
 /** gramSaveFile: streamed into a file the person picks where the browser can, else in memory up to
  *  BLOB_SAVE_MAX_BYTES (refused before anything downloads). */
-async function saveFile(id: string, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
+async function saveFile(id: string, known?: WireFile, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
  const link = gramLink();
  let f: WireFile;
- try { f = fileMeta(id); } catch (error) { note(fileError("save", error)); throw error; }
+ try { f = known ?? fileMeta(id); } catch (error) { note(fileError("save", error)); throw error; }
  // File System Access is not in TypeScript's DOM library yet.
  const picker = Reflect.get(globalThis, "showSaveFilePicker") as SaveFilePicker | undefined;
  const plan = savePlan(f.size, !!picker, saveMaxBytes);
@@ -720,6 +728,17 @@ export const gramDesk: Partial<DeskFns> = {
    note(error instanceof FileTooLarge ? "Couldn't open the file: it is too large to preview here. Save it instead." : fileError("open", error));
    throw error;
   }
+ },
+
+ /** GramOpenAttachment: a Chat attachment opened as gramOpenFile opens a Gram file, whether or not
+  *  Gram has loaded its message. Its errors go back to the chat. */
+ async gramOpenAttachment(id: string) {
+  const link = gramLink();
+  const f = await attachmentMeta(link, id);
+  const kind = openPlan(f.name, f.mime, f.size);
+  if (kind === "save") { await saveFile(id, f); return; }
+  try { preview(await fetchBlob(link, id, f.size, g.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES), kind, f.name); }
+  catch (error) { throw error instanceof FileTooLarge ? new Error("it is too large to preview here") : error; }
  },
 
  async gramCopyText(text: string) { await navigator.clipboard.writeText(text); },
