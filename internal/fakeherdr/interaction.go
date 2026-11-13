@@ -41,6 +41,29 @@ func NewInteraction() *Interaction {
 		{"kind": "summary", "id": "c1", "ts_ms": 10, "text": "Earlier messages were summarised"},
 	}}
 }
+
+// GrowTranscript appends one agent turn (a prompt, a tool step and a reply with a code block)
+// every interval until ctx ends, as an agent working for hours writes its transcript. It
+// measures how a client's chat grows with a long session (herdrup #672).
+func (x *Interaction) GrowTranscript(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for turn := 1; ; turn++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		x.mu.Lock()
+		n := len(x.entries)
+		x.entries = append(x.entries,
+			map[string]any{"kind": "user", "id": fmt.Sprintf("gu%d", turn), "ts_ms": n + 10, "author": "owner", "text": fmt.Sprintf("Continue with step %d.", turn)},
+			map[string]any{"kind": "step", "id": fmt.Sprintf("gs%d", turn), "ts_ms": n + 11, "tool": "bash", "intent": "Running checks", "detail": fmt.Sprintf("go test ./... # step %d", turn), "status": "ok"},
+			map[string]any{"kind": "reply", "id": fmt.Sprintf("gr%d", turn), "ts_ms": n + 12, "final": true,
+				"text": fmt.Sprintf("## Step %d\n\nThe **checks passed**; next is the `workspace` review.\n\n| Check | Result |\n|---|---|\n| unit | ok |\n| build | ok |\n\n```go\nfmt.Println(\"step %d\")\n```", turn, turn)})
+		x.mu.Unlock()
+	}
+}
 func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError, bool) {
 	var p struct {
 		Pane     string `json:"pane_id"`

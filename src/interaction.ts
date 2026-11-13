@@ -25,6 +25,7 @@ import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
 import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
+import { drawnStart, revealedAbove, slidWindow, windowStarting } from "./chatWindow";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } from "./motion";
@@ -312,6 +313,12 @@ class Detail {
  formStates = new Map<string, AskFormState>();
  localFormAnswers = new Map<string, { answers: AskFormAnswer[]; sent: boolean }>();
  entries: Entry[] = [];
+ // The drawn window's top row (chatWindow.ts); null: the newest rows, until the first draw pins it.
+ drawFrom: string | null = null;
+ // The first drawn row's index, as of the last draw.
+ drawnIndex = 0;
+ // Disclosures the reader opened, kept for rows that leave the window and come back.
+ openRows = new Set<string>();
  transcript = el("div", "chat-transcript");
  chatScroll = el("div", "chat-scroll");
  chatFollowing = true;
@@ -338,7 +345,7 @@ class Detail {
  selectionSheet: HTMLDialogElement | null = null;
  messageMenu: { id: string; text: string; markdown: boolean } | null = null;
  refreshQuestion: (() => void) | null = null;
- earlier = button("Earlier messages", () => { void this.loadEarlier(this.generation); });
+ earlier = button("Earlier messages", () => { void this.showEarlier(this.generation); });
  input = el("textarea", "chat-input");
  editor: ComposerEditor | null = null;
  composerResize: ResizeObserver | null = null;
@@ -686,7 +693,7 @@ class Detail {
   this.findBar.hidden = !open; this.titleBlock.hidden = open;
   this.findToggle?.setAttribute("aria-pressed", String(open));
   this.findToggle?.setAttribute("aria-label", open ? "Close search" : "Search");
-  if (open) { this.findInput.focus(); this.updateFind(true); }
+  if (open) { this.findInput.focus(); if (this.chat && this.mode === "chat") this.drawChat(false); this.updateFind(true); }
   else { this.findInput.value = ""; this.updateFind(true); if (this.mode === "terminal") this.terminal?.focus(); }
   this.updateChatJump();
  }
@@ -749,7 +756,7 @@ class Detail {
   this.chatJump.hidden = !away || this.findOpen;
   const first = this.mineNodes(1)[0];
   const above = !!first && this.chatTop(first) < this.chatScroll.scrollTop - 1;
-  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || this.viewer().guest || !(above || this.oldestCursor || this.mineBusy);
+  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || this.viewer().guest || !(above || this.hasEarlier() || this.mineBusy);
   this.chatJumpMine.disabled = this.mineBusy;
   this.chatJumpMine.classList.toggle("busy", this.mineBusy);
   this.chatJumpMine.setAttribute("aria-busy", String(this.mineBusy));
@@ -786,9 +793,9 @@ class Detail {
      if (node) this.glideChatTo(this.chatTop(node) - 12);
      return;
     }
-    if (!this.oldestCursor) return;
+    if (!this.hasEarlier()) return;
     this.mineBusy = true; this.updateChatJump();
-    if (!(await this.loadEarlier(generation))) return;
+    if (!(await this.showEarlier(generation))) return;
    }
   } finally { this.mineBusy = false; this.updateChatJump(); }
  }
@@ -1096,7 +1103,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null; this.outgoing = [];
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null; this.outgoing = [];
   this.answerProblem = null; this.localAnswers.clear();
   this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
   const composer = el("div", "chat-composer");
@@ -1181,7 +1188,7 @@ class Detail {
    const held = new Set(this.entries.map(entry => entry.id));
    if (!this.chat || this.chat.session_id !== page.session_id) {
     if (this.chat) this.outgoing = [];
-    this.entries = []; this.oldestCursor = page.before;
+    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
    this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page; this.chatFailed = false;
@@ -1211,7 +1218,23 @@ class Detail {
    }
   }
  }
- /** Loads the page before the oldest one shown; true when it did. */
+ /** Rows above the drawn window, loaded or not (as of the last draw: this runs on every scroll). */
+ hasEarlier(): boolean {
+  return !!this.oldestCursor || this.drawnIndex > 0;
+ }
+ /** Earlier messages: the next window of rows already loaded, else the page before the oldest
+  *  loaded one; either way the row on top stays where it was. True when rows were added. */
+ async showEarlier(generation: number): Promise<boolean> {
+  const rows = groupTranscript(this.entries, !!this.chat?.working);
+  const start = drawnStart(rows, this.drawFrom);
+  if (start === 0) return this.loadEarlier(generation);
+  const oldHeight = this.chatScroll.scrollHeight;
+  this.chatFollowing = false;
+  this.drawFrom = revealedAbove(rows, windowStarting(rows, start));
+  this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
+  return true;
+ }
+ /** Loads the page before the oldest one shown and draws a window more of it; true when it did. */
  async loadEarlier(generation: number): Promise<boolean> {
   if (!this.chat || !this.oldestCursor) { this.status.textContent = "You are at the start of the retained conversation."; return false; }
   const session = this.chat.session_id;
@@ -1221,24 +1244,40 @@ class Detail {
    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session || this.chat?.session_id !== session) return false;
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
+   const before = groupTranscript(this.entries, !!this.chat?.working);
+   const top = windowStarting(before, drawnStart(before, this.drawFrom));
    this.entries = mergeTranscript(this.entries, page.entries, true); this.oldestCursor = page.before;
+   this.drawFrom = revealedAbove(groupTranscript(this.entries, !!this.chat?.working), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
    return true;
   } catch(e) { this.status.textContent = errorText(e); return false; }
  }
  drawChat(follow = true) {
-  const opened = new Set([...this.transcript.querySelectorAll<HTMLDetailsElement>("details[open]")].map(d => d.dataset.id));
-  const nodes = groupTranscript(this.entries, !!this.chat?.working).map(row => {
+  for (const d of this.transcript.querySelectorAll<HTMLDetailsElement>("details[data-id]")) {
+   if (d.open) this.openRows.add(d.dataset.id!); else this.openRows.delete(d.dataset.id!);
+  }
+  const opened = this.openRows;
+  const rows = groupTranscript(this.entries, !!this.chat?.working);
+  // The window (chatWindow.ts): Find draws every loaded row, so all of them stay searchable; a
+  // chat following its tail slides back to the newest rows; the first draw pins the top, so
+  // rows arriving at the tail never push out what the reader sees.
+  if (!this.findOpen) this.drawFrom = slidWindow(rows, this.drawFrom, follow && this.chatFollowing && !this.chatGlide);
+  const windowStart = drawnStart(rows, this.drawFrom);
+  // Pin the top (the first draw, or a top row that a merge above replaced) where it is drawn now.
+  if (rows.length && (this.drawFrom === null || !rows.some(row => row.id === this.drawFrom))) this.drawFrom = windowStarting(rows, windowStart);
+  const start = this.findOpen ? 0 : windowStart;
+  this.drawnIndex = start;
+  const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id) : row);
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
    node.dataset.id = row.id; node.dataset.signature = signature;
-   for (const disclosure of node.querySelectorAll<HTMLDetailsElement>("details")) disclosure.open = opened.has(disclosure.dataset.id);
+   for (const disclosure of node.querySelectorAll<HTMLDetailsElement>("details")) disclosure.open = opened.has(disclosure.dataset.id!);
    if (node instanceof HTMLDetailsElement) node.open = opened.has(row.id);
    return node;
   });
-  this.earlier.className = "chat-earlier"; this.earlier.hidden = !this.oldestCursor;
+  this.earlier.className = "chat-earlier"; this.earlier.hidden = start === 0 && !this.oldestCursor;
   nodes.unshift(this.earlier);
   const pending = this.chat?.pending_ask;
   if (pending && !this.entries.some(entry => entry.kind === "ask" && entry.id === pending.id)) {
