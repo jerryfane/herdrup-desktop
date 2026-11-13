@@ -366,7 +366,11 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 			st.Active = id
 		}
 	}
-	return d.store(st)
+	if err := d.store(st); err != nil {
+		return err
+	}
+	d.boards.allow(id)
+	return nil
 }
 
 // SelectMachine makes a saved machine the active one and connects to it,
@@ -601,7 +605,11 @@ func (d *Desk) remember(m Machine) error {
 		st.Machines = append(st.Machines, m)
 	}
 	st.Active = id
-	return d.store(st)
+	if err := d.store(st); err != nil {
+		return err
+	}
+	d.boards.allow(id)
+	return nil
 }
 
 func (d *Desk) start(m Machine, password string) {

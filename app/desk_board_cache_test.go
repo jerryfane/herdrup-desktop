@@ -89,3 +89,22 @@ func TestConnectShowsTheLastBoardUntilTheFirstList(t *testing.T) {
 		t.Fatalf("removing the machine kept %v", files)
 	}
 }
+
+// Review of #210: a list accepted before RemoveMachine must not write the
+// machine's board back after it; saving the machine again allows boards.
+func TestARemovedMachineTakesNoLateBoard(t *testing.T) {
+	c := boardCache{dir: t.TempDir()}
+	b := BoardUpdate{MachineID: "m1", Session: "", ListedAt: "2026-11-13T00:00:00Z"}
+	b.Board.Total = 1
+	c.store(b)
+	c.forget("m1")
+	c.store(b) // the late write of a list accepted before the removal
+	if got := c.load("m1", ""); got != nil {
+		t.Fatalf("a removed machine's board came back: %+v", got)
+	}
+	c.allow("m1")
+	c.store(b)
+	if got := c.load("m1", ""); got == nil || got.Board.Total != 1 || got.ListedAt != "" {
+		t.Fatalf("saved again: %+v", got)
+	}
+}

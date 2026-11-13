@@ -23,16 +23,13 @@ type boardCache struct {
 	// last is the JSON last written per file, so an unchanged board is not
 	// written again on every list.
 	last map[string][]byte
+	// removed machines take no more boards, so a list accepted before the
+	// removal cannot write one back after it; saving the machine again
+	// allows them (allow).
+	removed map[string]bool
 }
 
 const boardCacheMax = 16
-
-// boardCacheEntry is one cached board and who it belongs to.
-type boardCacheEntry struct {
-	MachineID string      `json:"machineID"`
-	Session   string      `json:"session"`
-	Board     BoardUpdate `json:"board"`
-}
 
 func (c *boardCache) path(machineID, session string) string {
 	sum := sha256.Sum256([]byte(machineID + "\x00" + sessionKey(session)))
@@ -49,13 +46,12 @@ func (c *boardCache) load(machineID, session string) *BoardUpdate {
 	if err != nil {
 		return nil
 	}
-	var e boardCacheEntry
-	if json.Unmarshal(data, &e) != nil || e.MachineID != machineID || sessionKey(e.Session) != sessionKey(session) {
+	var b BoardUpdate
+	if json.Unmarshal(data, &b) != nil || b.MachineID != machineID || sessionKey(b.Session) != sessionKey(session) {
 		return nil
 	}
-	b := e.Board
 	b.ListedAt = ""
-	b.MachineID, b.Session = machineID, session
+	b.Session = session
 	return &b
 }
 
@@ -67,13 +63,16 @@ func (c *boardCache) store(b BoardUpdate) {
 	// The listed time changes every list; the cache keeps the board.
 	keep := b
 	keep.ListedAt = ""
-	data, err := json.Marshal(boardCacheEntry{MachineID: b.MachineID, Session: b.Session, Board: keep})
+	data, err := json.Marshal(keep)
 	if err != nil {
 		return
 	}
 	path := c.path(b.MachineID, b.Session)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.removed[b.MachineID] {
+		return
+	}
 	if c.last == nil {
 		c.last = map[string][]byte{}
 	}
@@ -115,21 +114,33 @@ func (c *boardCache) pruneLocked() {
 	}
 }
 
-// forget deletes every cached board of machineID.
+// allow lets machineID, saved again, have boards.
+func (c *boardCache) allow(machineID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.removed, machineID)
+}
+
+// forget deletes every cached board of machineID and refuses its later ones
+// until it is saved again.
 func (c *boardCache) forget(machineID string) {
 	if c == nil || c.dir == "" {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.removed == nil {
+		c.removed = map[string]bool{}
+	}
+	c.removed[machineID] = true
 	files, _ := filepath.Glob(filepath.Join(c.dir, "board-*.json"))
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			continue
 		}
-		var e boardCacheEntry
-		if json.Unmarshal(data, &e) != nil || e.MachineID == machineID || strings.TrimSpace(e.MachineID) == "" {
+		var b BoardUpdate
+		if json.Unmarshal(data, &b) != nil || b.MachineID == machineID || strings.TrimSpace(b.MachineID) == "" {
 			_ = os.Remove(f)
 			delete(c.last, f)
 		}
