@@ -1,6 +1,9 @@
-import { COLUMN, displayedWidth, draggedWidth, storedWidth, widthReadout } from "./gramModel";
+import { COLUMN, displayedWidth, draggedWidth, isResizable, storedWidth, widthReadout } from "./gramModel";
 
 const key = "conversation.columnWidth";
+// Desktop's phone layout (style.css, `.desk` at 700 px or narrower) has one column and no
+// handles: the conversation shows whole there, as on a phone. The browser guest has none.
+const isPhoneLayout = () => document.documentElement.classList.contains("desk") && matchMedia("(max-width: 700px)").matches;
 
 // ConversationColumn.swift: Chat and Gram share the saved width, edge drags,
 // Readable/Wide/Full snapping and double-click reset. Resizing never remounts text.
@@ -8,6 +11,7 @@ export class ConversationColumn {
   readonly handles: HTMLElement[];
   readonly readout = document.createElement("div");
   private width = 0;
+  private shown = true;
   private timer: number | undefined;
   constructor(private readonly host: HTMLElement, private readonly changed: () => void) {
     this.readout.className = "gcol-readout";
@@ -46,13 +50,17 @@ export class ConversationColumn {
   update() {
     const saved = localStorage.getItem(key);
     const available = this.host.clientWidth;
-    this.width = displayedWidth(saved === null ? COLUMN.wide : Number(saved), available);
+    const phone = isPhoneLayout();
+    this.width = phone ? Math.max(0, available) : displayedWidth(saved === null ? COLUMN.wide : Number(saved), available);
     this.host.style.setProperty("--gram-column", `${this.width}px`);
     this.host.style.setProperty("--gram-reach", `${Math.max(0, Math.min(this.width, available - 20) / 2)}px`);
+    // ConversationColumnResizing: a conversation too narrow to resize shows whole, no handles.
+    const handles = this.shown && !phone && isResizable(available);
+    this.handles.forEach(handle => { handle.hidden = !handles; });
   }
   setVisible(visible: boolean) {
-    this.handles.forEach(handle => { handle.hidden = !visible; });
-    if (!visible) this.readout.hidden = true;
+    this.shown = visible;
+    if (!visible) { this.handles.forEach(handle => { handle.hidden = true; }); this.readout.hidden = true; }
     else this.update();
   }
   private showReadout() {

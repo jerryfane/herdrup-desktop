@@ -356,6 +356,7 @@ dialog.gsheet .gsheet-done { position: absolute; right: 0; background: none; col
 .gcol-handle { position: absolute; top: 0; bottom: 0; width: 20px; z-index: 1; cursor: col-resize; display: flex; align-items: center; justify-content: center; }
 .gcol-handle.leading { left: calc(50% - var(--gram-reach) - 10px); }
 .gcol-handle.trailing { left: calc(50% + var(--gram-reach) - 10px); }
+.gcol-handle[hidden] { display: none; }
 /* ConversationColumn.swift 213-214: the handles fade in on hover (.easeOut(duration: 0.12)). */
 .gcol-line { position: absolute; top: 0; bottom: 0; left: 9.5px; width: 1px; background: var(--color-hairline); opacity: 0; transition: opacity var(--motion-handle-duration) var(--motion-handle-ease); }
 .gcol-grip { width: 4px; height: 40px; border-radius: 2px; background: color-mix(in srgb, var(--color-text-dim) 60%, transparent); opacity: 0; transition: opacity var(--motion-handle-duration) var(--motion-handle-ease), background-color var(--motion-handle-duration) var(--motion-handle-ease); }

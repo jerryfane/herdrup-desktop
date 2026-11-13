@@ -179,7 +179,6 @@
 .chat-tool pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 400 calc(11.5px * var(--chat-text-scale, 1))/1.5 var(--font-machine); }
 .interaction-body[data-mode="chat"] > .chat-composer { width: min(calc(var(--gram-column, 720px) - 24px), calc(100% - 24px)); margin-left: auto; margin-right: auto; }
 .interaction-body { --gram-header: 0px; }
-.gcol-handle[hidden] { display: none; }
 .chat-message small { color: var(--color-text-dim); }
 .chat-markdown { --markdown-scale: calc(var(--chat-text-scale, 1) * var(--markdown-tone, 1)); display: flex; flex-direction: column; gap: 8px; font: 400 calc(16px * var(--markdown-scale))/var(--leading-app) var(--font-app); overflow-wrap: anywhere; user-select: text; }
 /* Swift adds leading only BETWEEN lines, not above the first or below the last. */
