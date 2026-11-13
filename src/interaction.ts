@@ -947,6 +947,9 @@ class Detail {
    this.openChat(generation);
    if (mode === "terminal") await this.ensureTerminal(generation);
   } else if (mode === "chat") {
+   // A chat restored from memory while Terminal showed (openChat draws only in Chat) draws now,
+   // at its tail, rather than after the read (review of #212).
+   if (this.chat && !this.transcript.querySelector("[data-id]")) this.drawChat();
    void this.refreshChat(generation);
   } else if (!this.terminalOpened) {
    await this.ensureTerminal(generation);
