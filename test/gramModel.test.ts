@@ -233,4 +233,29 @@ describe("column width", () => {
     expect(m.widthReadout(720, 2000)).toBe("720 pt · Readable");
     expect(m.widthReadout(800, 2000)).toBe("800 pt");
   });
+  // herdrup #658: a conversation narrower than 560 (a window 701-880 px wide beside the
+  // sidebar) snapped every drag back to the whole width. It can now be narrowed by 200.
+  test("a narrow conversation can still be narrowed by 200", () => {
+    expect(m.minimumWidth(1400)).toBe(560);
+    expect(m.minimumWidth(760)).toBe(560);
+    expect(m.minimumWidth(700)).toBe(500);
+    expect(m.minimumWidth(547)).toBe(347);
+    expect(m.draggedWidth(547, -60, "trailing", 547)).toBe(427);
+    expect(m.draggedWidth(547, 60, "leading", 547)).toBe(427);
+    expect(m.draggedWidth(547, -400, "trailing", 547)).toBe(347);
+    expect(m.draggedWidth(347, 400, "trailing", 547)).toBe(547);
+    expect(m.displayedWidth(450, 650)).toBe(450);
+    expect(m.displayedWidth(450, 1200)).toBe(560);
+    expect(m.displayedWidth(300, 650)).toBe(450);
+  });
+  test("under 520 the conversation shows whole, without handles, and keeps the stored width", () => {
+    expect(m.isResizable(520)).toBe(true);
+    expect(m.isResizable(519)).toBe(false);
+    const stored = m.storedWidth(m.draggedWidth(547, -100, "trailing", 547), 547);
+    expect(stored).toBe(347);
+    expect(m.displayedWidth(stored, 349)).toBe(349);
+    expect(m.displayedWidth(stored, 519)).toBe(519);
+    expect(m.displayedWidth(stored, 547)).toBe(347);
+    expect(m.displayedWidth(stored, 1400)).toBe(560);
+  });
 });

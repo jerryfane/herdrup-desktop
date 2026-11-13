@@ -848,8 +848,6 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
      its page, whose header has the Saved bookmark (GramView.swift headerTrailing). */
   .desk .topbar [aria-label="Minimise sidebar"], .desk .topbar .slot[title="Minimise sidebar"] { display: none; }
   .desk .gram-side { display: none; }
-  /* Gram's column-width handle shows on hover only, and a phone has one column. */
-  .desk .gcol-handle { display: none; }
   /* A Settings page's back to the index (main.ts compactBack): iOS's back, top leading. */
   .desk .compact-back-button:not([hidden]) {
     position: fixed; z-index: 3; top: 6px; left: 8px;

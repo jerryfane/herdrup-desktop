@@ -486,22 +486,39 @@ export function caretAfter(before: string, caret: number, after: string): number
 
 // MARK: - Column width (HerdrKit ConversationColumnWidth)
 
-export const COLUMN = { minimum: 560, readable: 720, wide: 1000, full: 100_000, snapDistance: 12 } as const;
+// minimum: the narrowest where the conversation has room for it. travel: how far a narrower
+// conversation can still be narrowed (#658: under 560 every drag snapped back to the whole
+// width). narrowest: the narrowest column there is; a conversation that cannot lose travel and
+// keep it shows whole, without handles, as on a phone.
+export const COLUMN = { minimum: 560, travel: 200, narrowest: 320, readable: 720, wide: 1000, full: 100_000, snapDistance: 12 } as const;
 
 type Snap = "Readable" | "Wide" | "Full";
 
 export function sanitizedWidth(stored: number): number {
   if (!Number.isFinite(stored) || stored <= 0) return COLUMN.wide;
-  return Math.min(COLUMN.full, Math.max(COLUMN.minimum, stored));
+  return Math.min(COLUMN.full, Math.max(COLUMN.narrowest, stored));
 }
 
-/** The width drawn: the chosen one, never more than the room there is. */
+/** The narrowest the column goes in a conversation `available` wide: 560, or `available`
+ * less 200 where that would leave less than 200 to narrow by. */
+export function minimumWidth(available: number): number {
+  return Math.max(0, Math.min(COLUMN.minimum, available - COLUMN.travel));
+}
+
+/** Whether a conversation `available` wide shows the resize handles: at least 520. */
+export function isResizable(available: number): boolean {
+  return available >= COLUMN.narrowest + COLUMN.travel;
+}
+
+/** The width drawn: the chosen one held to this conversation's minimum and room; all of the
+ * room where the conversation is too narrow to resize. Never written back. */
 export function displayedWidth(stored: number, available: number): number {
-  return Math.min(sanitizedWidth(stored), Math.max(0, available));
+  if (!isResizable(available)) return Math.max(0, available);
+  return clampedWidth(sanitizedWidth(stored), available);
 }
 
 function clampedWidth(width: number, available: number): number {
-  return Math.min(Math.max(0, available), Math.max(COLUMN.minimum, width));
+  return Math.min(Math.max(0, available), Math.max(minimumWidth(available), width));
 }
 
 function snapPoints(available: number): { width: number; snap: Snap }[] {
