@@ -485,18 +485,20 @@ func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte, g
 	return buf, nil
 }
 
-// gunzipReply is a gzipped reply's line, held to MaxReplyLineBytes.
+// gunzipReply is a gzipped reply's line, held to MaxReplyLineBytes. Its
+// errors never wrap io.EOF: an empty or cut gzip body is herdr sending a bad
+// reply, not the channel closing (review of #219).
 func gunzipReply(b []byte) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(b))
 	if err != nil {
-		return nil, fmt.Errorf("herdr api-bridge: bad gzip reply: %w", err)
+		return nil, fmt.Errorf("herdr api-bridge: bad gzip reply: %v", err)
 	}
 	line, err := io.ReadAll(io.LimitReader(zr, MaxReplyLineBytes+1))
 	if err == nil {
 		err = zr.Close()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("herdr api-bridge: bad gzip reply: %w", err)
+		return nil, fmt.Errorf("herdr api-bridge: bad gzip reply: %v", err)
 	}
 	if len(line) > MaxReplyLineBytes {
 		return nil, fmt.Errorf("herdr reply over %d bytes", MaxReplyLineBytes)

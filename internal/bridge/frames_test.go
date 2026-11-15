@@ -1,9 +1,13 @@
 package bridge_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -158,5 +162,23 @@ func TestGzippedFramesArriveWhole(t *testing.T) {
 		if got, want := m.srv.GzipReplies(), map[bool]int{true: 1, false: 0}[offered]; got != want {
 			t.Fatalf("offered %v: %d replies went gzipped, want %d (the big one only)", offered, got, want)
 		}
+	}
+}
+
+// Review of #219: an empty or cut gzip body is a bad reply, never mistaken for the channel
+// closing (which would wait on the SSH session instead of failing).
+func TestABadGzipReplyIsNotTheChannelClosing(t *testing.T) {
+	var full bytes.Buffer
+	zw := gzip.NewWriter(&full)
+	_, _ = zw.Write([]byte(`{"id":"x","result":{}}`))
+	_ = zw.Close()
+	for name, body := range map[string][]byte{"empty": nil, "cut": full.Bytes()[:full.Len()/2]} {
+		_, err := bridge.GunzipReply(body)
+		if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("%s gzip: got %v, want a protocol error that is not an EOF", name, err)
+		}
+	}
+	if line, err := bridge.GunzipReply(full.Bytes()); err != nil || string(line) != `{"id":"x","result":{}}` {
+		t.Fatalf("a whole gzip reply: %q, %v", line, err)
 	}
 }
