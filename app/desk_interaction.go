@@ -71,6 +71,16 @@ type TerminalEvent struct {
 	StreamID string                    `json:"streamID"`
 	Frame    *herdrapi.PaneStreamFrame `json:"frame,omitempty"`
 	Error    string                    `json:"error,omitempty"`
+	// Reconnect: herdr ended the stream on purpose (stream_stalled,
+	// stream_failed; herdr #410) and expects the app to open a new one.
+	Reconnect bool `json:"reconnect,omitempty"`
+}
+
+// streamEndedForReconnect reports whether herdr ended a pane stream on
+// purpose for a slow or failed reader, asking the app to reconnect (#410).
+func streamEndedForReconnect(err error) bool {
+	var api *bridge.APIError
+	return errors.As(err, &api) && (api.Code == "stream_stalled" || api.Code == "stream_failed")
 }
 
 var TerminalChanged = mygo.NewEvent[TerminalEvent]("terminal:changed")
@@ -215,7 +225,7 @@ func (d *Desk) StartTerminal(token, streamID string) error {
 				return
 			}
 			if err != nil {
-				TerminalChanged.Broadcast(TerminalEvent{Token: token, StreamID: streamID, Error: err.Error()})
+				TerminalChanged.Broadcast(TerminalEvent{Token: token, StreamID: streamID, Error: err.Error(), Reconnect: streamEndedForReconnect(err)})
 				return
 			}
 			TerminalChanged.Broadcast(TerminalEvent{Token: token, StreamID: streamID, Frame: frame})

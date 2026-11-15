@@ -997,6 +997,11 @@ export interface TerminalEvent {
   streamID: string;
   frame?: PaneStreamFrame;
   error?: string;
+  /**
+   * Reconnect: herdr ended the stream on purpose (stream_stalled,
+   * stream_failed; herdr #410) and expects the app to open a new one.
+   */
+  reconnect?: boolean;
 }
 
 /**

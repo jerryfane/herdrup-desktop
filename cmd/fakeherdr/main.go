@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
@@ -43,6 +44,7 @@ func main() {
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	askForm := flag.String("ask-form", "", "with -interactions, the pending ask is an omp HTML form (herdr ask-form contract): answerable (ping advertises ask_form), readonly (form_answerable false), moved (agent.answer_form answers ask_form_moved) or old-host (no ask_form capability)")
 	transcriptDelay := flag.Duration("transcript-delay", 0, "with -interactions, answer agent.transcript after this delay, as a slow link does")
+	streamStall := flag.Int("stream-stall", 0, "with -interactions, end the first N pane.streams after 3 s with herdr's stream_stalled error (herdr #410), as a reader too slow for herdr is")
 	streamDelay := flag.Duration("stream-delay", 0, "with -interactions, start pane.stream after this delay, as a slow link does")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
@@ -142,6 +144,7 @@ func main() {
 		x := fakeherdr.NewInteraction()
 		x.SetAskForm(*askForm)
 		grow = x
+		var stall atomic.Int64
 		s.Streams = map[string]fakeherdr.StreamFunc{"pane.stream": func(ctx context.Context, id string, raw json.RawMessage, emit func([]byte) error) {
 			if *streamDelay > 0 {
 				select {
@@ -149,6 +152,16 @@ func main() {
 				case <-ctx.Done():
 					return
 				}
+			}
+			if stall.Add(1) <= int64(*streamStall) {
+				sctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				x.Stream(sctx, id, raw, emit)
+				cancel()
+				if ctx.Err() == nil {
+					line, _ := json.Marshal(map[string]any{"id": id, "error": map[string]string{"code": "stream_stalled", "message": "pane.stream: reader made no progress"}})
+					_ = emit(line)
+				}
+				return
 			}
 			x.Stream(ctx, id, raw, emit)
 		}}
