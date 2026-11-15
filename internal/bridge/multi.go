@@ -392,21 +392,24 @@ func (m *multiChannel) readLoop(r *bufio.Reader) {
 			continue // a frame of a reply not complete yet
 		}
 		var head struct {
-			ID     string          `json:"id"`
-			Result json.RawMessage `json:"result"`
+			ID string `json:"id"`
 		}
 		if json.Unmarshal(line, &head) != nil || head.ID == "" {
 			continue // a line not tied to a request; nothing waits for it
 		}
 		if m.helloID != "" && head.ID == m.helloID {
 			// An older bridge forwards the hello to its server, which answers
-			// with an error: no frames, no cancel, keep reading lines.
-			var hello struct {
-				Frames     bool `json:"frames"`
-				FrameBytes int  `json:"frame_bytes"`
-				Cancel     bool `json:"cancel"`
+			// with an error: no frames, no cancel, keep reading lines. Only
+			// this reply's result is decoded (review of #217).
+			var r struct {
+				Result *struct {
+					Frames     bool `json:"frames"`
+					FrameBytes int  `json:"frame_bytes"`
+					Cancel     bool `json:"cancel"`
+				} `json:"result"`
 			}
-			if head.Result != nil && json.Unmarshal(head.Result, &hello) == nil {
+			if json.Unmarshal(line, &r) == nil && r.Result != nil {
+				hello := r.Result
 				m.cancelOK.Store(hello.Cancel)
 				if hello.Frames && hello.FrameBytes > 0 {
 					frameBytes = hello.FrameBytes
