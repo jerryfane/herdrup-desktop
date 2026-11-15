@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -26,6 +27,10 @@ const (
 	// failed to open sends every request per-request before trying again.
 	defaultOpenRetryAfter = 30 * time.Second
 )
+
+// cancelGrace is how long cancelled requests holding every slot may take to
+// come back cancelled before the channel is retired.
+const cancelGrace = 2 * time.Second
 
 // abandonGrace is how long a request whose caller gave up may hold its
 // --multi slot waiting for herdr's answer before the channel is retired;
@@ -77,7 +82,10 @@ type pool struct {
 
 type slot struct {
 	capability capability
-	probing    bool
+	// frames: herdr advertises api_bridge_frames, so a new channel asks for
+	// framed replies (bridge.hello). The hello's own reply decides.
+	frames  bool
+	probing bool
 	ch         *multiChannel
 	// opening is closed when the open in flight ends; nil when none is.
 	opening chan struct{}
@@ -161,7 +169,8 @@ func (c *Client) learnCapability(reply []byte) {
 	var r struct {
 		Result *struct {
 			Capabilities *struct {
-				APIBridgeMulti bool `json:"api_bridge_multi"`
+				APIBridgeMulti  bool `json:"api_bridge_multi"`
+				APIBridgeFrames bool `json:"api_bridge_frames"`
 			} `json:"capabilities"`
 		} `json:"result"`
 	}
@@ -173,6 +182,7 @@ func (c *Client) learnCapability(reply []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.slot(c.cfg.Session)
+	s.frames = supported && r.Result.Capabilities.APIBridgeFrames
 	if !supported {
 		s.capability = capUnsupported
 		if s.ch != nil {
@@ -197,8 +207,9 @@ func (c *Client) learnCapability(reply []byte) {
 func (c *Client) startOpen(s *slot) {
 	done := make(chan struct{})
 	s.opening = done
+	frames := s.frames
 	go func() {
-		m, err := openMulti(context.Background(), c)
+		m, err := openMulti(context.Background(), c, frames)
 		p := &c.pool
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -272,6 +283,13 @@ type multiChannel struct {
 	// abandonGrace is how long an abandoned request may hold its slot.
 	abandonGrace time.Duration
 
+	// helloID is the bridge.hello sent first on a channel that asked for
+	// frames; "" when none was. cancelOK: the hello's reply said the bridge
+	// takes bridge.cancel.
+	helloID  string
+	cancelOK atomic.Bool
+	cancelID func() string
+
 	mu      sync.Mutex
 	pending map[string]chan reply
 	// abandoned are requests whose caller gave up; their in-flight token
@@ -286,7 +304,7 @@ type reply struct {
 	err  error
 }
 
-func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
+func openMulti(ctx context.Context, c *Client, frames bool) (*multiChannel, error) {
 	cmd, err := remoteCommand(c.cfg.Session, "api-bridge", "--multi")
 	if err != nil {
 		return nil, err
@@ -310,11 +328,25 @@ func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
 		inFlight: make(chan struct{}, maxMultiInFlight), dead: make(chan struct{}),
 		retiredC: make(chan struct{}), abandonGrace: abandonGrace,
 		pending: map[string]chan reply{}, abandoned: map[string]bool{},
+		cancelID: func() string { return c.nextID("bridge.cancel") },
+	}
+	if frames {
+		m.helloID = c.nextID("bridge.hello")
 	}
 	sess.Stderr = m.stderr
 	if err := sess.Start(cmd); err != nil {
 		sess.Close()
 		return nil, err
+	}
+	if m.helloID != "" {
+		// The first line, so the switch to frames is exactly the end of its
+		// reply line (CONTRACT-net.md §1). Its reply is not waited for: the
+		// opening ping below follows it on the same channel.
+		hello, _ := EncodeRequest(m.helloID, "bridge.hello", map[string]bool{"frames": true})
+		if _, err := stdin.Write(append(hello, '\n')); err != nil {
+			sess.Close()
+			return nil, err
+		}
 	}
 	go m.readLoop(bufio.NewReaderSize(stdout, 64<<10))
 
@@ -332,8 +364,18 @@ func openMulti(ctx context.Context, c *Client) (*multiChannel, error) {
 }
 
 func (m *multiChannel) readLoop(r *bufio.Reader) {
+	// frameBytes > 0 once the bridge answered bridge.hello with frames: from
+	// the end of that line on, every reply comes as frames.
+	frameBytes := 0
+	parts := map[string][]byte{}
 	for {
-		line, err := readLine(r)
+		var line []byte
+		var err error
+		if frameBytes == 0 {
+			line, err = readLine(r)
+		} else {
+			line, err = readFramedReply(r, frameBytes, parts)
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				waitErr := m.sess.Wait()
@@ -346,28 +388,96 @@ func (m *multiChannel) readLoop(r *bufio.Reader) {
 			m.fail(err)
 			return
 		}
+		if line == nil {
+			continue // a frame of a reply not complete yet
+		}
 		var head struct {
-			ID string `json:"id"`
+			ID     string          `json:"id"`
+			Result json.RawMessage `json:"result"`
 		}
 		if json.Unmarshal(line, &head) != nil || head.ID == "" {
 			continue // a line not tied to a request; nothing waits for it
 		}
-		m.mu.Lock()
-		ch, ok := m.pending[head.ID]
-		delete(m.pending, head.ID)
-		abandoned := m.abandoned[head.ID]
-		delete(m.abandoned, head.ID)
-		drained := m.drainedLocked()
-		m.mu.Unlock()
-		if ok || abandoned {
-			<-m.inFlight
+		if m.helloID != "" && head.ID == m.helloID {
+			// An older bridge forwards the hello to its server, which answers
+			// with an error: no frames, no cancel, keep reading lines.
+			var hello struct {
+				Frames     bool `json:"frames"`
+				FrameBytes int  `json:"frame_bytes"`
+				Cancel     bool `json:"cancel"`
+			}
+			if head.Result != nil && json.Unmarshal(head.Result, &hello) == nil {
+				m.cancelOK.Store(hello.Cancel)
+				if hello.Frames && hello.FrameBytes > 0 {
+					frameBytes = hello.FrameBytes
+				}
+			}
+			continue
 		}
-		if ok {
-			ch <- reply{line: line}
+		m.deliver(head.ID, line)
+	}
+}
+
+// readFramedReply reads one frame and returns the reply it completes, or nil
+// when that reply has frames still to come (herdr's bridge, #407):
+// a JSON header line, then exactly len bytes of that reply's line.
+func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte) ([]byte, error) {
+	header, err := readLine(r)
+	if err != nil {
+		return nil, err
+	}
+	var h struct {
+		Frame *string `json:"frame"`
+		Len   int     `json:"len"`
+		Last  bool    `json:"last"`
+		Abort bool    `json:"abort"`
+	}
+	if json.Unmarshal(header, &h) != nil || h.Frame == nil || h.Len < 0 || h.Len > frameBytes {
+		return nil, fmt.Errorf("herdr api-bridge: bad frame header %.80q", header)
+	}
+	body := make([]byte, h.Len)
+	if _, err := io.ReadFull(r, body); err != nil {
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			err = io.EOF
 		}
-		if drained {
-			m.close()
-		}
+		return nil, err
+	}
+	id := *h.Frame
+	if h.Abort {
+		// A cancel stopped this reply part-way; its cancelled error follows.
+		delete(parts, id)
+		return nil, nil
+	}
+	buf := append(parts[id], body...)
+	if len(buf) > MaxReplyLineBytes {
+		return nil, fmt.Errorf("herdr reply over %d bytes", MaxReplyLineBytes)
+	}
+	if !h.Last {
+		parts[id] = buf
+		return nil, nil
+	}
+	delete(parts, id)
+	return buf, nil
+}
+
+// deliver hands a complete reply to the request waiting for it, and returns
+// its slot.
+func (m *multiChannel) deliver(id string, line []byte) {
+	m.mu.Lock()
+	ch, ok := m.pending[id]
+	delete(m.pending, id)
+	abandoned := m.abandoned[id]
+	delete(m.abandoned, id)
+	drained := m.drainedLocked()
+	m.mu.Unlock()
+	if ok || abandoned {
+		<-m.inFlight
+	}
+	if ok {
+		ch <- reply{line: line}
+	}
+	if drained {
+		m.close()
 	}
 }
 
@@ -460,9 +570,25 @@ func (m *multiChannel) abandon(id string) {
 		return
 	}
 	m.abandoned[id] = true
+	if m.cancelOK.Load() {
+		// herdr stops the work and answers it cancelled, which returns its
+		// slot at once rather than when the work would have finished.
+		go m.cancel(id)
+	}
 	if len(m.abandoned) >= maxMultiInFlight {
-		m.retireLocked()
-		return
+		if !m.cancelOK.Load() {
+			m.retireLocked()
+			return
+		}
+		// The cancels should return these slots at once; a bridge that does
+		// not answer them leaves every slot taken, so retire after all.
+		time.AfterFunc(cancelGrace, func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if len(m.abandoned) >= maxMultiInFlight {
+				m.retireLocked()
+			}
+		})
 	}
 	time.AfterFunc(m.abandonGrace, func() {
 		m.mu.Lock()
@@ -471,6 +597,15 @@ func (m *multiChannel) abandon(id string) {
 			m.retireLocked()
 		}
 	})
+}
+
+// cancel asks the bridge to stop request id (bridge.cancel). Its own reply
+// is not waited for; the cancelled request's reply returns the slot.
+func (m *multiChannel) cancel(id string) {
+	line, _ := EncodeRequest(m.cancelID(), "bridge.cancel", map[string]string{"id": id})
+	m.wmu.Lock()
+	defer m.wmu.Unlock()
+	_, _ = m.stdin.Write(append(line, '\n'))
 }
 
 // retireLocked stops the channel taking new requests, so the pool opens a
