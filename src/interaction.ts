@@ -229,6 +229,8 @@ export function savedTerminalChanged(target: AgentTarget, label: string | null) 
  current.title.textContent = label;
  if (current.view) { current.view.name = label; current.view.heading = label; }
 }
+/** How soon after herdr ended a stream another end shows as an error instead of reconnecting. */
+const STREAM_RECONNECT_MS = 30_000;
 class Detail {
  readonly token = crypto.randomUUID();
  view: AgentView | null = null;
@@ -283,6 +285,8 @@ class Detail {
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
  chatSurface = el("div", "chat-surface");
  mounted = false;
+ // When the terminal last reconnected because herdr ended its stream (frame()).
+ streamReconnectAt = 0;
  // The remembered last screen shown until the first frame (terminalMemory.ts), and whether the
  // stream has drawn a screen worth remembering.
  lastScreen: HTMLElement | null = null;
@@ -1075,9 +1079,16 @@ class Detail {
   try { await Desk.startTerminal(this.token, streamID); if (generation !== this.generation || streamID !== this.terminalID || this.disposed) return; this.terminalReady = true; fit(); if (this.mode === "terminal") term.focus(); }
   catch(e) { if (generation === this.generation && streamID === this.terminalID && !this.disposed) this.status.textContent = errorText(e); }
  }
- frame(event: { streamID: string; frame?: ByteFrame; error?: string }) {
+ frame(event: { streamID: string; frame?: ByteFrame; error?: string; reconnect?: boolean }) {
   if (!this.terminal || event.streamID !== this.terminalID) return;
   if (event.error && this.view?.guest && isGuestPaused(event.error)) { this.applyGuestAvailability("paused"); return; }
+  // herdr ended the stream for a slow or failed reader and asks for a new one (herdr #410): open
+  // it quietly, once per STREAM_RECONNECT_MS; a second end inside that shows the error below.
+  if (event.error && event.reconnect && Date.now() - this.streamReconnectAt > STREAM_RECONNECT_MS) {
+   this.streamReconnectAt = Date.now(); this.prediction?.reset(); this.terminalReady = false;
+   void this.reconnectTerminal();
+   return;
+  }
   if (event.error) { this.prediction?.reset(); this.status.textContent = "Terminal disconnected: " + event.error; this.terminalReady = false; this.updateHistoryPaging(true); return; }
   const f = event.frame; if (!f) return;
   if (!this.sequence.accept(f)) { this.prediction?.reset(); this.status.textContent = "Terminal stream changed. Reconnect to obtain a fresh screen."; this.terminalReady = false; this.updateHistoryPaging(true); return; }
