@@ -54,6 +54,8 @@ const (
 	CapabilityAgentSessionTransfer Capability = "agent_session_transfer"
 	// agent.answer_form and the `form` on asks (herdr ask-form contract, 2026-11-10).
 	CapabilityAskForm Capability = "ask_form"
+	// agent.transcript max_bytes: a size-budgeted newest or older page (herdr #409).
+	CapabilityTranscriptMaxBytes Capability = "transcript_max_bytes"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -89,6 +91,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentSessionTransfer
 	case CapabilityAskForm:
 		return caps.AskForm
+	case CapabilityTranscriptMaxBytes:
+		return caps.TranscriptMaxBytes
 	}
 	return false
 }
