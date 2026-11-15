@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, liveEntries, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -1263,10 +1263,9 @@ class Detail {
     this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
-   // Re-sent older history leaves the page before the merge and the send checks: an old prompt
-   // with the same words must not count as the send in flight.
-   const live = liveEntries(this.entries, page.entries ?? []);
-   this.entries = mergeTranscript(this.entries, live); this.chat = page; this.chatFailed = false;
+   // mergeTranscript drops re-sent older history from a live page (liveEntries), so the send
+   // checks below read the merged entries: an old prompt with the same words is not the send.
+   this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
@@ -1275,8 +1274,8 @@ class Detail {
     if (entry.answer) this.localAnswers.delete(entry.id);
     if (entry.form_answer || entry.form_status) { this.localFormAnswers.delete(entry.id); this.formStates.delete(entry.id); }
    }
-   if (this.sendFollow && sendShown(held, live)) this.sendFollow = null;
-   this.outgoing = reconcileOutgoing(this.outgoing, held, live, Date.now());
+   if (this.sendFollow && sendShown(held, this.entries)) this.sendFollow = null;
+   this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
    rememberChat(JSON.stringify(this.target), { page: this.chat, entries: this.entries, oldestCursor: this.oldestCursor });
