@@ -386,10 +386,11 @@ export function createGuestDesk(env: DeskEnv) {
 
   // ---- Chat (desk_interaction.go, desk_guest_answers.go) ----
 
-  async chatTranscript(token: string, after: string, before: string, subagent: string): Promise<string> {
+  async chatTranscript(token: string, after: string, before: string, subagent: string, heldFrom: string): Promise<string> {
    const v = viewOf(token);
    const params: Record<string, string> = { target: v.paneID };
-   if (after !== "") params.after = after;
+   // held_from goes with after (desk_interaction.go ChatTranscript, herdr #430).
+   if (after !== "") { params.after = after; params.held_from = heldFrom; }
    if (before !== "") params.before = before;
    if (subagent !== "") params.subagent = subagent;
    const page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v));

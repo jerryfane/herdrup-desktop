@@ -2208,6 +2208,13 @@
                 "null"
               ]
             },
+            "held_from": {
+              "description": "With `after`: the `before` cursor of the oldest page the client\nholds, or `\"\"` when it holds the session from its start, so origin\nmarks that changed are re-sent for the history it scrolled in too.\nOlder servers ignore it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "limit": {
               "format": "uint32",
               "minimum": 0,
@@ -18730,6 +18737,11 @@
               "description": "Serves `agent.transcript`: an omp agent's conversation as chat entries.",
               "type": "boolean"
             },
+            "api_bridge_frames": {
+              "default": false,
+              "description": "`api-bridge --multi` answers `bridge.hello {frames: true}` and then\nwrites replies as interleaved frames, and answers `bridge.cancel {id}`.\nThe bridge's own `bridge.hello` reply is authoritative; this flag only\nsays the daemon's binary ships that bridge.",
+              "type": "boolean"
+            },
             "api_bridge_multi": {
               "default": false,
               "description": "`herdr api-bridge --multi` forwards newline-delimited requests over one\nlong-lived bridge process instead of one process per request.",
@@ -18738,6 +18750,11 @@
             "ask_form": {
               "default": false,
               "description": "Parses omp HTML form asks (`form` on transcript asks and `pending_ask`)\nand serves `agent.answer_form`.",
+              "type": "boolean"
+            },
+            "compressed_replies": {
+              "default": false,
+              "description": "`api-bridge --multi` answers `bridge.hello {frames: true, compress:\n\"gzip\"}` with `compress: \"gzip\"` and then gzips large replies, each\nframe of one marked `\"enc\":\"gzip\"`. The hello reply is authoritative.",
               "type": "boolean"
             },
             "detached_server_daemon": {
@@ -18784,6 +18801,11 @@
             "pane_input_stream": {
               "default": false,
               "description": "The daemon serves the persistent `pane.input.stream` write channel\n(issue #62). Clients feature-detect this before using it and otherwise\nfall back to per-call `pane.send_text` / `pane.send_input`.",
+              "type": "boolean"
+            },
+            "pane_stream_resync": {
+              "default": false,
+              "description": "`pane.stream` waits out a slow reader (60 s without progress instead of\n5 s), sends a reader that falls behind a `lagged` keyframe instead of\nthe backlog, and ends with a `stream_stalled` or `stream_failed` error\nline instead of closing without a word.",
               "type": "boolean"
             },
             "rename_preconditions": {

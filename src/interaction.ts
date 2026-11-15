@@ -1253,7 +1253,8 @@ class Detail {
   const epoch = this.chatEpoch, poll = ++this.chatPoll;
   clearTimeout(this.refreshTimer);
   try {
-   const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", ""));
+   // held_from: the oldest page held, "" once nothing is older (herdr #430).
+   const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", "", this.oldestCursor ?? ""));
    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
    // What the page held before this read, older history included: only the live tail's new user
    // entries can be the send.
@@ -1316,7 +1317,7 @@ class Detail {
   const session = this.chat.session_id;
   const epoch = this.chatEpoch;
   try {
-   const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, ""));
+   const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, "", ""));
    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session || this.chat?.session_id !== session) return false;
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
@@ -1664,7 +1665,7 @@ class Detail {
    busy = true; earlier.disabled = true; clearTimeout(timer);
    const session = page?.session_id;
    try {
-    const next: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, older ? "" : page?.after ?? "", older ? before! : "", id));
+    const next: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, older ? "" : page?.after ?? "", older ? before! : "", id, older ? "" : before ?? ""));
     if (!open || this.disposed || (older && (next.session_id !== session || page?.session_id !== session))) return;
     const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 8, height = messages.scrollHeight;
     if (page?.session_id !== next.session_id) { entries = []; before = next.before; }
