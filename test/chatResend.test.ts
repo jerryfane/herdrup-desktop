@@ -34,7 +34,6 @@ const appended = [
 
 test("a live page re-sending older marked prompts does not append them after the newest turn", () => {
  const page = [...resent, ...appended];
- const live = liveEntries(newest, page);
  const merged = mergeTranscript(newest, page);
  expect(merged.map(e => e.id)).toEqual([
   "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
@@ -47,8 +46,9 @@ test("a live page re-sending older marked prompts does not append them after the
  // An old prompt of the same guest with the same words is not the send in flight.
  const outgoing: Outgoing = { id: "outgoing:1", text: "When will it be ready?", files: [], guest: "nike", state: "sending", until: Number.MAX_SAFE_INTEGER };
  const held = new Set(newest.map(e => e.id));
- expect(reconcileOutgoing([outgoing], held, live, 0).map(o => o.id)).toEqual(["outgoing:1"]);
- expect(sendShown(held, live.filter(e => e.id !== "b2f25ccb"))).toBe(false);
+ // refreshChat reads the merged entries against what it held before the read.
+ expect(reconcileOutgoing([outgoing], held, merged, 0).map(o => o.id)).toEqual(["outgoing:1"]);
+ expect(sendShown(held, merged.filter(e => e.id !== "b2f25ccb"))).toBe(false);
 });
 
 test("an older page still brings the history a live page skipped", () => {
