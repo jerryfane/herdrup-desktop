@@ -54,6 +54,15 @@ type Server struct {
 	NoMultiStderr string
 	// NoAPIBridge emulates a herdr with no api-bridge subcommand at all.
 	NoAPIBridge bool
+	// Frames emulates herdr's bridge from #407: `api-bridge --multi` answers
+	// bridge.hello itself, then writes every reply as frames of at most
+	// FrameBytes (16384 when 0), and honours bridge.cancel. FrameDelay, when
+	// set, is slept between a reply's frames, as a slow link drains them.
+	// Without Frames, bridge.hello and bridge.cancel go to Handle, as an older
+	// bridge forwards them to its server.
+	Frames     bool
+	FrameBytes int
+	FrameDelay time.Duration
 	// Handle answers a request. Whether a herdr advertises api_bridge_multi
 	// is up to the pong it returns for "ping"; see Pong.
 	Handle func(method string, params json.RawMessage) (any, *APIError)
@@ -128,6 +137,13 @@ type Request struct {
 func Pong(multi bool) map[string]any {
 	return map[string]any{"type": "pong", "version": "0.9.5", "protocol": 22,
 		"capabilities": map[string]bool{"api_bridge_multi": multi, "events_v2": true}}
+}
+
+// PongFrames is a ping result that also advertises api_bridge_frames.
+func PongFrames() map[string]any {
+	p := Pong(true)
+	p["capabilities"].(map[string]bool)["api_bridge_frames"] = true
+	return p
 }
 
 // Commands returns every exec command received, in order.
@@ -498,8 +514,14 @@ var multiStreamingMethods = map[string]bool{
 // stop reading at 16 requests in flight: it counts them (MultiInFlight),
 // so a test sees a client that sends more.
 func (s *Server) multi(ch ssh.Channel, session string) {
-	var mu sync.Mutex
 	var wg sync.WaitGroup
+	out := &bridgeOut{w: ch, frameBytes: s.FrameBytes, delay: s.FrameDelay}
+	if out.frameBytes <= 0 {
+		out.frameBytes = 16384
+	}
+	// cancels holds a channel per request a bridge.cancel can still stop.
+	var cmu sync.Mutex
+	cancels := map[string]chan struct{}{}
 	r := bufio.NewReader(ch)
 	for {
 		line, err := r.ReadBytes('\n')
@@ -512,13 +534,30 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				// parse it whole.
 				_ = json.Unmarshal(line, &req)
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
-				writeLine(ch, &mu, map[string]any{"id": req.ID, "error": APIError{Code: "invalid_request",
+				out.reply(req.ID, map[string]any{"id": req.ID, "error": APIError{Code: "invalid_request",
 					Message: fmt.Sprintf("api-bridge: request line exceeds %d bytes", multiMaxLineBytes)}})
 			case json.Unmarshal(line, &req) != nil:
-				writeLine(ch, &mu, map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "bad json"}})
+				out.reply("", map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "bad json"}})
+			case s.Frames && req.Method == "bridge.hello":
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
+				out.hello(req.ID)
+			case s.Frames && req.Method == "bridge.cancel":
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
+				var p struct {
+					ID string `json:"id"`
+				}
+				_ = json.Unmarshal(req.Params, &p)
+				cmu.Lock()
+				stop, ok := cancels[p.ID]
+				delete(cancels, p.ID)
+				cmu.Unlock()
+				if ok {
+					close(stop)
+				}
+				out.reply(req.ID, map[string]any{"id": req.ID, "result": map[string]any{"type": "bridge_cancel", "cancelled": ok}})
 			case multiStreamingMethods[req.Method]:
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
-				writeLine(ch, &mu, map[string]any{"id": req.ID, "error": APIError{Code: "unsupported_method",
+				out.reply(req.ID, map[string]any{"id": req.ID, "error": APIError{Code: "unsupported_method",
 					Message: "api-bridge --multi does not forward streaming method " + req.Method}})
 			default:
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
@@ -526,20 +565,86 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				s.inFlight++
 				s.maxInFlight = max(s.maxInFlight, s.inFlight)
 				s.mu.Unlock()
+				stop := make(chan struct{})
+				if s.Frames {
+					cmu.Lock()
+					cancels[req.ID] = stop
+					cmu.Unlock()
+				}
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					rep := s.reply(session, req)
+					done := make(chan map[string]any, 1)
+					go func() { done <- s.reply(session, req) }()
+					var rep map[string]any
+					select {
+					case rep = <-done:
+					case <-stop:
+						rep = map[string]any{"id": req.ID, "error": APIError{Code: "cancelled",
+							Message: "api-bridge: request cancelled by bridge.cancel"}}
+					}
+					cmu.Lock()
+					delete(cancels, req.ID)
+					cmu.Unlock()
 					s.mu.Lock()
 					s.inFlight--
 					s.mu.Unlock()
-					writeLine(ch, &mu, rep)
+					out.reply(req.ID, rep)
 				}()
 			}
 		}
 		if err != nil {
 			wg.Wait()
 			return
+		}
+	}
+}
+
+// bridgeOut writes a --multi channel's replies: whole lines, or after the
+// bridge.hello reply, frames that interleave across replies.
+type bridgeOut struct {
+	w          io.Writer
+	mu         sync.Mutex
+	framed     bool
+	frameBytes int
+	delay      time.Duration
+}
+
+func (o *bridgeOut) hello(id string) {
+	data, _ := json.Marshal(map[string]any{"id": id, "result": map[string]any{"type": "bridge_hello",
+		"frames": true, "frame_bytes": o.frameBytes, "cancel": true}})
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, _ = o.w.Write(append(data, '\n'))
+	o.framed = true
+}
+
+func (o *bridgeOut) reply(id string, v any) {
+	data, _ := json.Marshal(v)
+	o.mu.Lock()
+	framed := o.framed
+	if !framed {
+		_, _ = o.w.Write(append(data, '\n'))
+	}
+	o.mu.Unlock()
+	if !framed {
+		return
+	}
+	// One frame per lock: frames of replies written at once interleave.
+	for off := 0; ; {
+		n := min(o.frameBytes, len(data)-off)
+		last := off+n == len(data)
+		head, _ := json.Marshal(map[string]any{"frame": id, "len": n, "last": last})
+		o.mu.Lock()
+		_, _ = o.w.Write(append(head, '\n'))
+		_, _ = o.w.Write(data[off : off+n])
+		o.mu.Unlock()
+		off += n
+		if last {
+			return
+		}
+		if o.delay > 0 {
+			time.Sleep(o.delay)
 		}
 	}
 }
