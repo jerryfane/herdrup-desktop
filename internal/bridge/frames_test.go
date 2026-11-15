@@ -129,3 +129,34 @@ func TestCancelledRequestsFreeTheirSlotsOnTheSameChannel(t *testing.T) {
 		return count(onMulti, "bridge.cancel") == 16 && now == 0
 	})
 }
+
+// Slow-network fix 3 (herdr #414): the hello asks for gzip; a large reply comes back gzipped in
+// frames and arrives byte-identical, while a small one stays plain. A bridge that does not offer
+// gzip keeps sending plain frames.
+func TestGzippedFramesArriveWhole(t *testing.T) {
+	for _, offered := range []bool{true, false} {
+		m := startMachine(t, func(s *fakeherdr.Server) {
+			s.Handle = framesHandler(nil)
+			s.Frames, s.FrameBytes, s.Gzip = true, 4096, offered
+		})
+		c := m.dial(t)
+		ctx := context.Background()
+		if err := c.Call(ctx, "ping", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the --multi channel", func() bool { on, _ := routes(m); return slices.Contains(on, "ping") })
+		var big struct{ Blob string }
+		if err := c.Call(ctx, "big", nil, &big); err != nil {
+			t.Fatal(err)
+		}
+		if big.Blob != strings.Repeat("héllo ", 70_000) {
+			t.Fatalf("offered %v: the big reply came back changed (%d bytes)", offered, len(big.Blob))
+		}
+		if err := c.Call(ctx, "small", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := m.srv.GzipReplies(), map[bool]int{true: 1, false: 0}[offered]; got != want {
+			t.Fatalf("offered %v: %d replies went gzipped, want %d (the big one only)", offered, got, want)
+		}
+	}
+}

@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,7 +88,7 @@ type slot struct {
 	// framed replies (bridge.hello). The hello's own reply decides.
 	frames  bool
 	probing bool
-	ch         *multiChannel
+	ch      *multiChannel
 	// opening is closed when the open in flight ends; nil when none is.
 	opening chan struct{}
 	retryAt time.Time
@@ -342,7 +344,10 @@ func openMulti(ctx context.Context, c *Client, frames bool) (*multiChannel, erro
 		// The first line, so the switch to frames is exactly the end of its
 		// reply line (CONTRACT-net.md §1). Its reply is not waited for: the
 		// opening ping below follows it on the same channel.
-		hello, _ := EncodeRequest(m.helloID, "bridge.hello", map[string]bool{"frames": true})
+		// gzip rides on frames: a bridge that takes it compresses large
+		// replies (herdr #414, capability compressed_replies); one that
+		// does not ignores it.
+		hello, _ := EncodeRequest(m.helloID, "bridge.hello", map[string]any{"frames": true, "compress": "gzip"})
 		if _, err := stdin.Write(append(hello, '\n')); err != nil {
 			sess.Close()
 			return nil, err
@@ -368,13 +373,15 @@ func (m *multiChannel) readLoop(r *bufio.Reader) {
 	// the end of that line on, every reply comes as frames.
 	frameBytes := 0
 	parts := map[string][]byte{}
+	// gzipped: the ids of replies whose frames are gzip (enc), until delivered.
+	gzipped := map[string]bool{}
 	for {
 		var line []byte
 		var err error
 		if frameBytes == 0 {
 			line, err = readLine(r)
 		} else {
-			line, err = readFramedReply(r, frameBytes, parts)
+			line, err = readFramedReply(r, frameBytes, parts, gzipped)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -423,8 +430,10 @@ func (m *multiChannel) readLoop(r *bufio.Reader) {
 
 // readFramedReply reads one frame and returns the reply it completes, or nil
 // when that reply has frames still to come (herdr's bridge, #407):
-// a JSON header line, then exactly len bytes of that reply's line.
-func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte) ([]byte, error) {
+// a JSON header line, then exactly len bytes of that reply's line. Frames
+// with "enc":"gzip" carry the gzip of the line (#414): every frame of such a
+// reply says so, and the whole is gunzipped when it ends.
+func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte, gzipped map[string]bool) ([]byte, error) {
 	header, err := readLine(r)
 	if err != nil {
 		return nil, err
@@ -434,6 +443,7 @@ func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte) (
 		Len   int     `json:"len"`
 		Last  bool    `json:"last"`
 		Abort bool    `json:"abort"`
+		Enc   string  `json:"enc"`
 	}
 	if json.Unmarshal(header, &h) != nil || h.Frame == nil || h.Len < 0 || h.Len > frameBytes {
 		return nil, fmt.Errorf("herdr api-bridge: bad frame header %.80q", header)
@@ -449,7 +459,15 @@ func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte) (
 	if h.Abort {
 		// A cancel stopped this reply part-way; its cancelled error follows.
 		delete(parts, id)
+		delete(gzipped, id)
 		return nil, nil
+	}
+	switch h.Enc {
+	case "":
+	case "gzip":
+		gzipped[id] = true
+	default:
+		return nil, fmt.Errorf("herdr api-bridge: unknown frame encoding %q", h.Enc)
 	}
 	buf := append(parts[id], body...)
 	if len(buf) > MaxReplyLineBytes {
@@ -460,7 +478,30 @@ func readFramedReply(r *bufio.Reader, frameBytes int, parts map[string][]byte) (
 		return nil, nil
 	}
 	delete(parts, id)
+	if gzipped[id] {
+		delete(gzipped, id)
+		return gunzipReply(buf)
+	}
 	return buf, nil
+}
+
+// gunzipReply is a gzipped reply's line, held to MaxReplyLineBytes.
+func gunzipReply(b []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("herdr api-bridge: bad gzip reply: %w", err)
+	}
+	line, err := io.ReadAll(io.LimitReader(zr, MaxReplyLineBytes+1))
+	if err == nil {
+		err = zr.Close()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("herdr api-bridge: bad gzip reply: %w", err)
+	}
+	if len(line) > MaxReplyLineBytes {
+		return nil, fmt.Errorf("herdr reply over %d bytes", MaxReplyLineBytes)
+	}
+	return line, nil
 }
 
 // deliver hands a complete reply to the request waiting for it, and returns

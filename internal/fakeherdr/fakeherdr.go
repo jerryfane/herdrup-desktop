@@ -6,6 +6,7 @@ package fakeherdr
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -63,6 +64,9 @@ type Server struct {
 	Frames     bool
 	FrameBytes int
 	FrameDelay time.Duration
+	// Gzip: with Frames, a hello asking compress:"gzip" gets it, and replies
+	// of 1024 bytes or more are framed gzipped (herdr #414).
+	Gzip bool
 	// Handle answers a request. Whether a herdr advertises api_bridge_multi
 	// is up to the pong it returns for "ping"; see Pong.
 	Handle func(method string, params json.RawMessage) (any, *APIError)
@@ -104,6 +108,7 @@ type Server struct {
 	machineCalls []MachineCall
 	inFlight     int // --multi requests being answered now
 	maxInFlight  int
+	gzipReplies  int // replies sent gzipped (Gzip)
 	conns        int
 	live         map[*ssh.ServerConn]bool // logged-in connections still open
 	ln           net.Listener
@@ -170,6 +175,13 @@ func (s *Server) MultiInFlight() (now, max int) {
 }
 
 // Conns returns how many SSH connections have logged in.
+// GzipReplies is how many replies went out gzipped (Gzip).
+func (s *Server) GzipReplies() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gzipReplies
+}
+
 func (s *Server) Conns() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -516,6 +528,7 @@ var multiStreamingMethods = map[string]bool{
 func (s *Server) multi(ch ssh.Channel, session string) {
 	var wg sync.WaitGroup
 	out := &bridgeOut{w: ch, frameBytes: s.FrameBytes, delay: s.FrameDelay}
+	out.onGzip = func() { s.mu.Lock(); s.gzipReplies++; s.mu.Unlock() }
 	if out.frameBytes <= 0 {
 		out.frameBytes = 16384
 	}
@@ -540,7 +553,11 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				out.reply("", map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "bad json"}})
 			case s.Frames && req.Method == "bridge.hello":
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
-				out.hello(req.ID)
+				var p struct {
+					Compress string `json:"compress"`
+				}
+				_ = json.Unmarshal(req.Params, &p)
+				out.hello(req.ID, s.Gzip && p.Compress == "gzip")
 			case s.Frames && req.Method == "bridge.cancel":
 				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				var p struct {
@@ -606,23 +623,42 @@ type bridgeOut struct {
 	w          io.Writer
 	mu         sync.Mutex
 	framed     bool
+	gzip       bool
 	frameBytes int
 	delay      time.Duration
+	// onGzip is called for each reply sent gzipped.
+	onGzip func()
 }
 
-func (o *bridgeOut) hello(id string) {
-	data, _ := json.Marshal(map[string]any{"id": id, "result": map[string]any{"type": "bridge_hello",
-		"frames": true, "frame_bytes": o.frameBytes, "cancel": true}})
+func (o *bridgeOut) hello(id string, gzip bool) {
+	result := map[string]any{"type": "bridge_hello", "frames": true, "frame_bytes": o.frameBytes, "cancel": true}
+	if gzip {
+		result["compress"] = "gzip"
+	}
+	data, _ := json.Marshal(map[string]any{"id": id, "result": result})
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	_, _ = o.w.Write(append(data, '\n'))
-	o.framed = true
+	o.framed, o.gzip = true, gzip
 }
 
 func (o *bridgeOut) reply(id string, v any) {
 	data, _ := json.Marshal(v)
 	o.mu.Lock()
 	framed := o.framed
+	enc := ""
+	if framed && o.gzip && len(data) >= 1024 {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		_, _ = zw.Write(data)
+		_ = zw.Close()
+		if buf.Len() < len(data) {
+			data, enc = buf.Bytes(), "gzip"
+			if o.onGzip != nil {
+				o.onGzip()
+			}
+		}
+	}
 	if !framed {
 		_, _ = o.w.Write(append(data, '\n'))
 	}
@@ -634,7 +670,11 @@ func (o *bridgeOut) reply(id string, v any) {
 	for off := 0; ; {
 		n := min(o.frameBytes, len(data)-off)
 		last := off+n == len(data)
-		head, _ := json.Marshal(map[string]any{"frame": id, "len": n, "last": last})
+		header := map[string]any{"frame": id, "len": n, "last": last}
+		if enc != "" {
+			header["enc"] = enc
+		}
+		head, _ := json.Marshal(header)
 		o.mu.Lock()
 		_, _ = o.w.Write(append(head, '\n'))
 		_, _ = o.w.Write(data[off : off+n])
