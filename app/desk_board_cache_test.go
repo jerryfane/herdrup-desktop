@@ -64,7 +64,12 @@ func TestConnectShowsTheLastBoardUntilTheFirstList(t *testing.T) {
 	if err := d.Connect(m, ""); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the first list", func() bool { b := d.Board(); return b != nil && b.ListedAt != "" && b.Board.Total == 1 })
+	// The list is shown before it is written to disk (desk.go: publishLocked, then
+	// boards.store), so wait for the file too, or a loaded host relaunches first.
+	waitFor(t, "the first list, shown and cached", func() bool {
+		b := d.Board()
+		return b != nil && b.ListedAt != "" && b.Board.Total == 1 && d.boards.load(machineID(m), "") != nil
+	})
 	d.Disconnect()
 
 	// The next launch, on a link whose agent.list does not come back yet.
