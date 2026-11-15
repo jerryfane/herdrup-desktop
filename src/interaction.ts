@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, liveEntries, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -431,7 +431,7 @@ class Detail {
   return text === " " ? "\0" : text === "?" ? "\x7f" : code >= 64 && code <= 95 ? String.fromCharCode(code & 31) : null;
  }
  queueTerminalInput(text: string) {
-  if (!this.terminalReady || this.inputFailed || this.disposed) return;
+  if (!this.terminalReady || this.inputFailed || this.disposed || this.view?.guest) return;
   const generation = this.generation, streamID = this.terminalID, prediction = this.prediction;
   const batch = text ? prediction?.userBytes(text) : undefined;
   this.inputQueue = this.inputQueue.then(async () => {
@@ -1028,8 +1028,10 @@ class Detail {
   if (this.lastScreen) { this.lastScreen.setAttribute("aria-hidden", "true"); this.lastScreen.style.fontSize = `${textSize("terminal")}px`; canvas.append(this.lastScreen); }
   const styles = getComputedStyle(document.documentElement);
   loadTerminalSymbols();
+  // A guest never types into the terminal: herdr's guest gate refuses pane.send_text, so xterm's
+  // input and its own replies (focus reports, DA/DSR) stay off (iOS guests send no terminal input).
   // SearchAddon decorations require xterm's proposed decoration API.
-  const term = new Terminal({ fontFamily: terminalFontFamily(styles.getPropertyValue("--font-machine")), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme });
+  const term = new Terminal({ fontFamily: terminalFontFamily(styles.getPropertyValue("--font-machine")), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme, disableStdin: !!this.view?.guest });
   this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false; this.streamGrid = null;
   term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = errorText(e); }); } };
   term.loadAddon(this.fit); term.loadAddon(this.search);
@@ -1261,7 +1263,10 @@ class Detail {
     this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
-   this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page; this.chatFailed = false;
+   // Re-sent older history leaves the page before the merge and the send checks: an old prompt
+   // with the same words must not count as the send in flight.
+   const live = liveEntries(this.entries, page.entries ?? []);
+   this.entries = mergeTranscript(this.entries, live); this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
@@ -1270,8 +1275,8 @@ class Detail {
     if (entry.answer) this.localAnswers.delete(entry.id);
     if (entry.form_answer || entry.form_status) { this.localFormAnswers.delete(entry.id); this.formStates.delete(entry.id); }
    }
-   if (this.sendFollow && sendShown(held, page.entries ?? [])) this.sendFollow = null;
-   this.outgoing = reconcileOutgoing(this.outgoing, held, page.entries ?? [], Date.now());
+   if (this.sendFollow && sendShown(held, live)) this.sendFollow = null;
+   this.outgoing = reconcileOutgoing(this.outgoing, held, live, Date.now());
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
    rememberChat(JSON.stringify(this.target), { page: this.chat, entries: this.entries, oldestCursor: this.oldestCursor });
@@ -1984,7 +1989,9 @@ class Detail {
  }
  async sendPrompt() {
   const text = this.input.value;
-  if (this.guestPaused || this.sending || this.dictation.busy || this.inputFailed || (!text.trim() && !this.attachments.length)) return;
+  if (this.guestPaused || this.sending || this.dictation.busy || (!text.trim() && !this.attachments.length)) return;
+  // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather than doing nothing.
+  if (this.inputFailed) { this.status.textContent = "An earlier key send failed. Reconnect before sending again."; return; }
   const hasAttachments = this.attachments.length > 0;
   // Motion spec §1, all in the tap's frame: the composer clearing (its height shrinking on the
   // bubble's curve), the press, the bubble entering and the chat gliding to it.

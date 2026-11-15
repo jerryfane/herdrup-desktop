@@ -76,7 +76,19 @@ export function modelLine(model: TranscriptModel): { label: string; accessibilit
   accessibilityLabel: `Model: ${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
  };
 }
+/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684).
+ *  When the pane's remembered non-owner prompts change, herdr re-sends every earlier user entry
+ *  now marked origin "other", back to the start of the session (resend_origins). One the chat
+ *  does not hold and that is older than the oldest it holds is history not loaded yet, which an
+ *  older page brings in place: it is dropped, not appended after the newest turn. */
+export function liveEntries(current: readonly Entry[], page: Entry[]): Entry[] {
+ const oldest = current[0]?.ts_ms;
+ if (oldest === undefined) return page;
+ const held = new Set(current.map(e => e.id));
+ return page.filter(e => held.has(e.id) || e.ts_ms >= oldest);
+}
 export function mergeTranscript(current: Entry[], page: Entry[], older = false): Entry[] {
+ if (!older) page = liveEntries(current, page);
  const updates = new Map(page.map(e => [e.id, e]));
  const oldIDs = new Set(current.map(e => e.id));
  const merged = current.map(e => updates.get(e.id) ?? e);
