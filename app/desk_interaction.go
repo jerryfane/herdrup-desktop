@@ -62,6 +62,8 @@ type interaction struct {
 	recipient      string
 	sendMu         sync.Mutex
 	guestShare     guestShareRoute
+	// pageBudget: herdr takes agent.transcript max_bytes (read with the view's link, under d.mu).
+	pageBudget bool
 }
 
 type TerminalEvent struct {
@@ -128,6 +130,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),
+		pageBudget: l.guest == nil && herdrapi.CapabilityTranscriptMaxBytes.Supported(l.caps),
 	}
 	if agent.Name != nil {
 		v.recipient = strings.TrimSpace(*agent.Name)
@@ -319,6 +322,10 @@ func (d *Desk) TerminalHistory(ctx context.Context, token, cursor string) (Termi
 	return TerminalHistoryPage{Page: &page}, nil
 }
 
+// transcriptPageBytes is the budget for a newest or older transcript page where herdr supports it
+// (CONTRACT-net.md §3's suggested first page). The newest turn is always sent whole.
+const transcriptPageBytes = 32 * 1024
+
 // ChatTranscript returns protocol JSON so unknown transcript variants survive the
 // binding generator; the frontend renders them as explicit unsupported entries.
 func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagent string) (string, error) {
@@ -337,6 +344,13 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 	}
 	if subagent != "" {
 		p.Subagent = &subagent
+	}
+	// A newest or older page is held to transcriptPageBytes where herdr can (slow-network fix 5,
+	// herdr #409): one turn can be 130 KB, and the first page on a slow link waits for all of it.
+	// A tail read (after) ignores it, so it is not sent there.
+	if after == "" && v.pageBudget {
+		budget := uint32(transcriptPageBytes)
+		p.MaxBytes = &budget
 	}
 	page, err := v.client.AgentTranscript(ctx, p)
 	if err != nil {
