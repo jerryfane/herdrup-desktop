@@ -107,7 +107,7 @@ func (p *guestPage) settle() {
 // readChat reads the transcript and schedules the next read.
 func (p *guestPage) readChat() {
 	wait := pageChatPollIdle
-	raw, err := p.d.ChatTranscript(context.Background(), p.view.Token, "", "", "")
+	raw, err := p.d.ChatTranscript(context.Background(), p.view.Token, "", "", "", "")
 	if err == nil && strings.Contains(raw, `"working"`) {
 		wait = pageChatPollWorking
 	}
@@ -199,7 +199,7 @@ func TestGuestBacksOffWhileTheRelayRateLimits(t *testing.T) {
 	}
 	// The page's requests during the backoff fail without connecting.
 	before := len(page.relay.Connects())
-	if _, err := page.d.ChatTranscript(context.Background(), page.view.Token, "", "", ""); !errors.Is(err, guest.ErrRateLimited) {
+	if _, err := page.d.ChatTranscript(context.Background(), page.view.Token, "", "", "", ""); !errors.Is(err, guest.ErrRateLimited) {
 		t.Fatalf("chat during the backoff: %v", err)
 	}
 	if n := len(page.relay.Connects()) - before; n != 0 {

@@ -1111,9 +1111,12 @@ export const Desk = {
   /**
    * ChatTranscript returns protocol JSON so unknown transcript variants survive the
    * binding generator; the frontend renders them as explicit unsupported entries.
+   * heldFrom goes with after: the before cursor of the oldest page the chat holds, "" when it holds
+   * the session from its start, so herdr re-sends changed origin marks for the history the reader
+   * scrolled in too (herdr #430). Older servers ignore it.
    */
-  chatTranscript(token: string, after: string, before: string, subagent: string): Promise<string> {
-    return call("Desk.ChatTranscript", token, after, before, subagent);
+  chatTranscript(token: string, after: string, before: string, subagent: string, heldFrom: string): Promise<string> {
+    return call("Desk.ChatTranscript", token, after, before, subagent, heldFrom);
   },
   /** CheckAppUpdate checks for a newer version of the app now. */
   checkAppUpdate(): Promise<AppUpdateState> {

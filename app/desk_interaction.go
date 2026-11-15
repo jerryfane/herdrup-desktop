@@ -338,7 +338,10 @@ const transcriptPageBytes = 32 * 1024
 
 // ChatTranscript returns protocol JSON so unknown transcript variants survive the
 // binding generator; the frontend renders them as explicit unsupported entries.
-func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagent string) (string, error) {
+// heldFrom goes with after: the before cursor of the oldest page the chat holds, "" when it holds
+// the session from its start, so herdr re-sends changed origin marks for the history the reader
+// scrolled in too (herdr #430). Older servers ignore it.
+func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagent, heldFrom string) (string, error) {
 	v, err := d.agentView(token)
 	if err != nil {
 		return "", err
@@ -348,6 +351,7 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 	p := herdrapi.AgentTranscriptParams{Target: v.PaneID}
 	if after != "" {
 		p.After = &after
+		p.HeldFrom = &heldFrom
 	}
 	if before != "" {
 		p.Before = &before

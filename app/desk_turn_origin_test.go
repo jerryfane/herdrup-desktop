@@ -129,7 +129,7 @@ func TestTranscriptKeepsTheOriginOfAnotherPrompt(t *testing.T) {
 	if _, err := d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: "w1:p1"}, "view"); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := d.ChatTranscript(context.Background(), "view", "", "", "")
+	raw, err := d.ChatTranscript(context.Background(), "view", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

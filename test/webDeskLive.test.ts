@@ -75,13 +75,16 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const view = await desk.openAgentView({ machineID: board.machineID, session: "", paneID: row.id }, "view-1");
  expect(view).toMatchObject({ guest: true, guestOwner: "Fixture Owner", name: "docs" });
  expect(await desk.guestChatAvailable("view-1")).toBe(true);
- const before = JSON.parse(await desk.chatTranscript("view-1", "", "", ""));
+ const before = JSON.parse(await desk.chatTranscript("view-1", "", "", "", ""));
  expect(Array.isArray(before.entries)).toBe(true);
  expect(before.type).toBeUndefined();
  const receipt = JSON.parse(await desk.chatPrompt("view-1", "hello from the browser"));
  expect(["submitted", "written_to_pty", "delivered"]).toContain(receipt.delivery);
- const after = await desk.chatTranscript("view-1", "", "", "");
+ const after = await desk.chatTranscript("view-1", "", "", "", "");
  expect(after).toContain("hello from the browser");
+ // A tail read carries held_from through the guest gate (herdr #430).
+ const tail = JSON.parse(await desk.chatTranscript("view-1", JSON.parse(after).after, "", "", ""));
+ expect(Array.isArray(tail.entries)).toBe(true);
 
  const frame = next<TerminalEvent>((f) => events.terminalChanged.on(f), (e) => e.frame?.frame === "reset");
  await desk.startTerminal("view-1", "s1");
@@ -104,5 +107,5 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  await desk.forgetGuestConnection(id);
  await idle;
  expect(grants.access).toBeUndefined();
- await expect(desk.chatTranscript("view-1", "", "", "")).rejects.toThrow("agent view changed; request was not sent");
+ await expect(desk.chatTranscript("view-1", "", "", "", "")).rejects.toThrow("agent view changed; request was not sent");
 }, 120_000);
