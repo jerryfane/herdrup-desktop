@@ -1,9 +1,13 @@
 package bridge_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -128,4 +132,53 @@ func TestCancelledRequestsFreeTheirSlotsOnTheSameChannel(t *testing.T) {
 		now, _ := m.srv.MultiInFlight()
 		return count(onMulti, "bridge.cancel") == 16 && now == 0
 	})
+}
+
+// Slow-network fix 3 (herdr #414): the hello asks for gzip; a large reply comes back gzipped in
+// frames and arrives byte-identical, while a small one stays plain. A bridge that does not offer
+// gzip keeps sending plain frames.
+func TestGzippedFramesArriveWhole(t *testing.T) {
+	for _, offered := range []bool{true, false} {
+		m := startMachine(t, func(s *fakeherdr.Server) {
+			s.Handle = framesHandler(nil)
+			s.Frames, s.FrameBytes, s.Gzip = true, 4096, offered
+		})
+		c := m.dial(t)
+		ctx := context.Background()
+		if err := c.Call(ctx, "ping", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the --multi channel", func() bool { on, _ := routes(m); return slices.Contains(on, "ping") })
+		var big struct{ Blob string }
+		if err := c.Call(ctx, "big", nil, &big); err != nil {
+			t.Fatal(err)
+		}
+		if big.Blob != strings.Repeat("héllo ", 70_000) {
+			t.Fatalf("offered %v: the big reply came back changed (%d bytes)", offered, len(big.Blob))
+		}
+		if err := c.Call(ctx, "small", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := m.srv.GzipReplies(), map[bool]int{true: 1, false: 0}[offered]; got != want {
+			t.Fatalf("offered %v: %d replies went gzipped, want %d (the big one only)", offered, got, want)
+		}
+	}
+}
+
+// Review of #219: an empty or cut gzip body is a bad reply, never mistaken for the channel
+// closing (which would wait on the SSH session instead of failing).
+func TestABadGzipReplyIsNotTheChannelClosing(t *testing.T) {
+	var full bytes.Buffer
+	zw := gzip.NewWriter(&full)
+	_, _ = zw.Write([]byte(`{"id":"x","result":{}}`))
+	_ = zw.Close()
+	for name, body := range map[string][]byte{"empty": nil, "cut": full.Bytes()[:full.Len()/2]} {
+		_, err := bridge.GunzipReply(body)
+		if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("%s gzip: got %v, want a protocol error that is not an EOF", name, err)
+		}
+	}
+	if line, err := bridge.GunzipReply(full.Bytes()); err != nil || string(line) != `{"id":"x","result":{}}` {
+		t.Fatalf("a whole gzip reply: %q, %v", line, err)
+	}
 }
