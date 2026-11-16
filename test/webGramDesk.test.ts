@@ -1,7 +1,8 @@
 // gramDesk over a scripted WebLink: the review's regressions on the browser Gram (PR #118 L3 review).
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
+import { events } from "../src/web/events";
 import { fileForPath, registerFiles } from "../src/web/files";
-import { gramDesk, panePromptAttachments } from "../src/web/gram";
+import { GRAM_POLL_BADGE_MS, gramDesk, guestGramDesk, panePromptAttachments } from "../src/web/gram";
 import { Composer } from "../src/web/gramCompose";
 import { toBase64 } from "../src/web/gramCompose";
 import { HerdrAPIError } from "../src/webguest/errors";
@@ -125,4 +126,32 @@ test("pane attachments release their browser Files once sent", async () => {
  expect(fileForPath(empty!)).toBeUndefined();
  life.abort();
  expect(fileForPath(left!)).toBeUndefined();
+});
+
+// #230: the guest Gram's availability is published when the link's sharing changes, not only with
+// the unread count: before admission the page saw Gram unshared, and a hidden badge read of an
+// empty inbox publishes nothing, so the Gram tab would never appear.
+test("Gram sharing that arrives after the page rendered is published while hidden, with nothing unread", async () => {
+ jest.useFakeTimers();
+ try {
+  let gram = false;
+  const link = fakeLink(method => {
+   if (method === "gram.list") return { messages: [], has_more: false };
+   throw new Error("unexpected " + method);
+  });
+  link.features = () => ({ gram, push: false });
+  const seen: boolean[] = [];
+  const off = events.guestGramChanged.on(s => seen.push(s.grants[0]?.grant.gram ?? false));
+  setLink(link);
+  expect((await guestGramDesk.guestGramState!()).grants[0]?.grant.gram).toBe(false);
+  gram = true; // the admission's hello
+  for (let i = 0; i < 3; i++) {
+   jest.advanceTimersByTime(GRAM_POLL_BADGE_MS + 1);
+   for (let j = 0; j < 20; j++) await Promise.resolve();
+  }
+  off();
+  expect(seen).toContain(true);
+ } finally {
+  jest.useRealTimers();
+ }
 });

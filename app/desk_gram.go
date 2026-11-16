@@ -661,10 +661,15 @@ func (d *Desk) gramSetVisibleOn(g *gramDesk, visible bool) {
 	}
 }
 
-// watchGram polls Gram for connection ctx of l until it ends.
+// watchGram polls Gram for connection ctx of l until it ends, or, for a
+// shared agent in the combined guest Gram, until its owner stops sharing
+// Gram (the hub then asks again: guestGramHub.run).
 func (d *Desk) watchGram(ctx context.Context, l *link) {
 	g := d.gramFor(l)
 	for {
+		if l.gram != nil && !l.guest.Features().Gram {
+			return
+		}
 		g.mu.Lock()
 		if g.link != l {
 			g.mu.Unlock()
@@ -690,6 +695,10 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 				continue
 			}
 			wait = pollBadge
+		}
+		// The poll's admission may have said the owner stopped sharing Gram.
+		if l.gram != nil && !l.guest.Features().Gram {
+			return
 		}
 		// A shared agent without session reuse polls no sooner than its next
 		// relay request turn (pacedLister); a wake (the guest acting) goes at once.
@@ -1166,7 +1175,7 @@ func (d *Desk) GramDelete(ctx context.Context, id string) error {
 	g.deleted[id] = true
 	g.inbox.Remove(id)
 	g.pending = slices.DeleteFunc(g.pending, func(m herdrapi.GramMessageInfo) bool { return m.ID == id })
-	d.gramCache().Remove(id)
+	d.gramCache().Remove(g.prefix + id)
 	d.publishGramLocked(g)
 	return nil
 }

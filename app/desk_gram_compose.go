@@ -61,15 +61,18 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 			return
 		}
 		defer a.ReleaseSource()
+		// Kept as downloads are cached (gramFetch): a shared agent's under
+		// its "<grant>\x1f<id>".
+		key := g.prefix + a.MessageID
 		cache := d.gramCache()
-		if _, ok := cache.StoreCopy(a.Path, a.MessageID, a.Name, a.Mime, m.File.SHA256); !ok {
+		if _, ok := cache.StoreCopy(a.Path, key, a.Name, a.Mime, m.File.SHA256); !ok {
 			return
 		}
 		g.mu.Lock()
 		stale := g.epoch != epoch
 		g.mu.Unlock()
 		if stale {
-			cache.Remove(a.MessageID)
+			cache.Remove(key)
 		}
 	}
 	return c

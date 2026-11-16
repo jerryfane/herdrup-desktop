@@ -274,8 +274,11 @@ async function badge(state: State, link: WebLink) {
 }
 
 /** watchGram: polls while the link shares Gram; stops (checking only the features the link's other
- *  calls refresh) while it does not, so a share-gram switch turned off costs no connects. */
+ *  calls refresh) while it does not, so a share-gram switch turned off costs no connects. A change
+ *  in sharing publishes on its own (the Gram tab comes and goes with it), whatever the unread count:
+ *  an empty inbox's badge read publishes nothing. */
 async function watch(state: State, link: WebLink) {
+ let sharing = false;
  while (g === state && !state.life.signal.aborted) {
   let wait = GRAM_POLL_BADGE_MS;
   if (link.features().gram) {
@@ -286,6 +289,10 @@ async function watch(state: State, link: WebLink) {
   } else if (state.phase !== "idle") {
    state.phase = "idle"; state.unavailable = "";
    state.composer?.pause();
+   publish();
+  }
+  if (g === state && link.features().gram !== sharing) {
+   sharing = link.features().gram;
    publish();
   }
   const { promise, resolve } = Promise.withResolvers<void>();
