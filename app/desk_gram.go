@@ -277,11 +277,12 @@ type gramDesk struct {
 	prefix string
 	// pollVisible and pollBadge override gramPollVisible and gramPollBadge
 	// (a shared agent's, guestGramPolls); zero keeps them. requestCost is
-	// the wait one relay request buys on a host without session reuse, so a
-	// poll that walked lastRequests pages waits that much longer.
+	// the spacing of relay requests on a host without session reuse (each is
+	// a connect); nextRequest is the next one's turn (pacedLister), so a walk
+	// of many pages spreads out rather than bursting.
 	pollVisible, pollBadge time.Duration
 	requestCost            time.Duration
-	lastRequests           int
+	nextRequest            time.Time
 
 	// onPublish observes snapshots, for tests.
 	onPublish func(GramSnapshot)
@@ -685,13 +686,10 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 			d.gramBadge(ctx, l)
 			wait = pollBadge
 		}
-		// A shared agent without session reuse pays for every relay request
-		// its poll made (a hidden badge walks every page): the combined guest
-		// Gram's hosts stay within their share of the relay's connects.
+		// A shared agent without session reuse polls no sooner than its next
+		// relay request turn (pacedLister); a wake (the guest acting) goes at once.
 		g.mu.Lock()
-		if g.requestCost > 0 {
-			wait = max(wait, time.Duration(g.lastRequests)*g.requestCost)
-		}
+		wait = max(wait, time.Until(g.nextRequest))
 		g.mu.Unlock()
 		select {
 		case <-ctx.Done():

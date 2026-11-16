@@ -6,8 +6,9 @@ import type { GramMessage, GramSnapshot, GuestGramSnapshot, GuestGramState } fro
 
 export const GRANT_SEP = "\u001f";
 
-/** A feed row with what the merge reads of it. */
-export interface Row extends GuestGramMessage { row: GramMessage }
+/** A feed row with what the merge reads of it; the row names its shared agent (source), so the
+ *  feed groups by agent without reading ids. */
+export interface Row extends GuestGramMessage { row: GramMessage & { source: string } }
 
 export interface GuestGramView {
  /** What gram.ts draws: the merged feed, newest first, and the scope's counts and state. */
@@ -39,7 +40,7 @@ function lane(state: GuestGramState, label: string): GuestGramLane<Row> & { info
  // The sender line reads "agent · owner" (3B), not the host's machine; a label that already
  // names the owner (same-named agents) stands alone.
  const name = label, machine = label.includes(` · ${g.owner} · `) ? "" : g.owner;
- const messages = state.gram.messages.map(m => ({ id: rawID(m.id), createdUnixMs: m.createdUnixMs, unread: m.unread, fromAgent: m.fromAgent, row: m.fromAgent ? { ...m, name, machine } : m }));
+ const messages = state.gram.messages.map(m => ({ id: rawID(m.id), createdUnixMs: m.createdUnixMs, unread: m.unread, fromAgent: m.fromAgent, row: m.fromAgent ? { ...m, name, machine, source: g.id } : { ...m, source: g.id } }));
  // Its first answer or failure is in: herdr's list came back, or Gram reported unavailable.
  const loaded = g.ready && state.gram.phase !== "loading";
  return { grant: g.id, info: { id: g.id, agent: g.agent, owner: g.owner, machine: g.machine, terminal: g.terminal, label }, messages, hasMore: state.gram.hasMore, loaded };

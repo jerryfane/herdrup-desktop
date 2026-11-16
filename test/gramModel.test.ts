@@ -261,10 +261,10 @@ describe("column width", () => {
 });
 
 // #227 review: in the guest's one Gram two shared agents with the same name are two senders: a run
-// breaks where the grant (the id's "<grant>\x1f" prefix) changes, so each keeps its sender line.
-test("same-named agents of two shared agents start their own groups", () => {
-  const msg = (id: string, ms: number) => ({ id, fromAgent: true, from: "enyo-ui", createdUnixMs: ms });
-  const entries = m.feedEntries([msg("g1\u001fa", 1000), msg("g2\u001fb", 1001), msg("g2\u001fc", 1002)], null, () => true);
+// breaks where the message's source (its shared agent) changes, so each keeps its sender line.
+test("same-named agents of two sources start their own groups", () => {
+  const msg = (id: string, ms: number, source?: string) => ({ id, fromAgent: true, from: "enyo-ui", createdUnixMs: ms, source });
+  const entries = m.feedEntries([msg("a", 1000, "g1"), msg("b", 1001, "g2"), msg("c", 1002, "g2")], null, () => true);
   expect(entries.map(e => [e.startsGroup, e.endsGroup])).toEqual([[true, true], [true, false], [false, true]]);
   expect(m.sameRun(msg("a", 1), msg("b", 2))).toBe(true);
 });

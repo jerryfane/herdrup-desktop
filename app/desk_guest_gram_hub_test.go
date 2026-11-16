@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/guest"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
@@ -17,7 +19,14 @@ import (
 // Alex's, the last without Gram) and connects the first, as a guest does.
 func guestGramFixture(t *testing.T) (*Desk, *fakeherdr.GuestShares, string) {
 	t.Helper()
-	shares, err := fakeherdr.ParseGuestShares("market|Jerry|Mac Studio|gram;legal|Jerry|Mac Studio|gram,multi;ledger|Alex|lab-box|gram;quiet|Alex|lab-box|")
+	return guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram;legal|Jerry|Mac Studio|gram,multi;ledger|Alex|lab-box|gram;quiet|Alex|lab-box|")
+}
+
+// guestGramFixtureOf accepts every share of spec (fakeherdr -guest-shares)
+// and connects the one of agent "market".
+func guestGramFixtureOf(t *testing.T, spec string) (*Desk, *fakeherdr.GuestShares, string) {
+	t.Helper()
+	shares, err := fakeherdr.ParseGuestShares(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,4 +288,91 @@ func TestGuestGramSavedFileExpiresWithItsHost(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// #227 review: on a host without session reuse every relay request is a
+// connect; a read that walks many pages (a hidden badge) spaces its requests
+// by the agent's request cost rather than bursting through the relay's
+// connect limit and paying for it afterwards.
+func TestGuestGramWalkSpacesItsRelayRequests(t *testing.T) {
+	d, fx, connected := guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram")
+	h := d.guestGram.Load()
+	var l *link
+	waitFor(t, "market's Gram polling set up", func() bool {
+		h.mu.Lock()
+		l = h.links[connected]
+		h.mu.Unlock()
+		if l == nil || l.gram == nil {
+			return false
+		}
+		l.gram.mu.Lock()
+		defer l.gram.mu.Unlock()
+		return l.gram.requestCost > 0
+	})
+	const cost = 80 * time.Millisecond
+	l.gram.mu.Lock()
+	l.gram.requestCost, l.gram.nextRequest = cost, time.Time{}
+	l.gram.mu.Unlock()
+	market := fx.Grants[0]
+	now := time.Now().UnixMilli()
+	for i := range 3 * gramPageSize {
+		market.Gram.Add(herdrapi.GramMessageInfo{ID: fmt.Sprintf("old-%03d", i), CreatedUnixMs: uint64(now - int64(10_000+i)),
+			Direction: herdrapi.GramDirectionAgentToOwner, From: market.Agent, Text: "history"}, nil)
+	}
+	// The fixture's own poll may overlap (a read's first request goes at
+	// once): count this walk's requests and time it.
+	l.gram.mu.Lock()
+	l.gram.nextRequest = time.Time{}
+	l.gram.mu.Unlock()
+	counted := &countLister{guestGramLister: l.guest}
+	lister := &pacedLister{guestGramLister: counted, g: l.gram}
+	start := time.Now()
+	if _, err := guestGramPage(context.Background(), lister, gramPageSize, herdrapi.GramListParams{UnreadOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	if counted.n < 4 {
+		t.Fatalf("the walk made %d requests, want every page's (4)", counted.n)
+	}
+	if want := time.Duration(counted.n-1) * cost * 3 / 4; took < want {
+		t.Fatalf("a %d-request walk took %v, want at least %v: its requests burst", counted.n, took, want)
+	}
+}
+
+// #227 review: a shared agent's Chat attachment outside the loaded feed never
+// takes the owner's saved copy of the same raw id for its file's name and size.
+func TestGuestChatAttachmentIgnoresTheOwnersSavedCopyOfTheSameID(t *testing.T) {
+	d, fx, _ := guestGramFixture(t)
+	opened := ""
+	d.openPath = func(p string) error { opened = p; return nil }
+	market := fx.Grants[0]
+	data := []byte("the shared agent's notes")
+	market.Gram.Add(herdrapi.GramMessageInfo{ID: "same-id", CreatedUnixMs: uint64(time.Now().UnixMilli()),
+		Direction: herdrapi.GramDirectionAgentToOwner, From: market.Agent, Text: "notes",
+		File: &herdrapi.GramFileInfo{Name: "notes.txt", Mime: "text/plain", Size: uint64(len(data))}}, data)
+	if _, err := d.savedGrams().Save(herdrapi.GramMessageInfo{ID: "same-id", CreatedUnixMs: 1,
+		Direction: herdrapi.GramDirectionAgentToOwner, From: "owner-agent", Text: "owner's",
+		File: &herdrapi.GramFileInfo{Name: "owner.txt", Mime: "text/plain", Size: 99_999}}, "owner-agent"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "market's Gram", func() bool {
+		g, _ := grantState(d.GuestGramState(), "market")
+		return g.Grant.Gram
+	})
+	if err := d.GramOpenAttachment(context.Background(), "same-id"); err != nil {
+		t.Fatalf("open the shared agent's attachment: %v", err)
+	}
+	if got, err := os.ReadFile(opened); err != nil || string(got) != string(data) {
+		t.Fatalf("opened %q holding %q (%v), want the shared agent's notes", opened, got, err)
+	}
+}
+
+type countLister struct {
+	guestGramLister
+	n int
+}
+
+func (c *countLister) GramList(ctx context.Context, limit uint64, before *string) (guest.GramPage, error) {
+	c.n++
+	return c.guestGramLister.GramList(ctx, limit, before)
 }

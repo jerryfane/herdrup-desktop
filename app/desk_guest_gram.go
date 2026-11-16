@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/guest"
@@ -41,16 +42,53 @@ func guestGramPage(ctx context.Context, lister guestGramLister, limit uint64, pa
 	return page, nil
 }
 
-// countingLister counts the relay requests a read made, so a shared agent's
-// next poll in the combined guest Gram waits by its cost (watchGram).
-type countingLister struct {
+// pacedLister spaces a shared agent's relay requests on a host without
+// session reuse (gramDesk.requestCost): every list takes a turn, and the
+// pages after a read's first wait for theirs, so a walk of every page (a
+// hidden badge, Mark all read) stays within the agent's share of the relay's
+// connects instead of bursting through them. A read's first request goes at
+// once (a Refresh, Earlier); polls wait for the next turn (watchGram).
+type pacedLister struct {
 	guestGramLister
-	n int
+	g     *gramDesk
+	asked bool
 }
 
-func (c *countingLister) GramList(ctx context.Context, limit uint64, before *string) (guest.GramPage, error) {
-	c.n++
-	return c.guestGramLister.GramList(ctx, limit, before)
+func (p *pacedLister) GramList(ctx context.Context, limit uint64, before *string) (guest.GramPage, error) {
+	if err := p.g.takeTurn(ctx, p.asked); err != nil {
+		return guest.GramPage{}, err
+	}
+	p.asked = true
+	return p.guestGramLister.GramList(ctx, limit, before)
+}
+
+// takeTurn takes this shared agent's next relay request turn, waiting for it
+// when wait says so; no turns without a requestCost (the owner's Gram, a
+// multi_request host).
+func (g *gramDesk) takeTurn(ctx context.Context, wait bool) error {
+	g.mu.Lock()
+	now := time.Now()
+	next := now
+	if g.nextRequest.After(now) {
+		next = g.nextRequest
+	}
+	turn := now
+	if wait {
+		turn = next
+	}
+	if g.requestCost > 0 {
+		g.nextRequest = next.Add(g.requestCost)
+	}
+	g.mu.Unlock()
+	if !turn.After(now) {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(turn.Sub(now)):
+		return nil
+	}
 }
 
 // gramAnswer keeps the guest wire contract separate from owner API results.
@@ -71,13 +109,11 @@ func (d *Desk) gramAnswer(ctx context.Context, l *link, params herdrapi.GramList
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	counted := &countingLister{guestGramLister: l.guest}
-	page, listErr := guestGramPage(ctx, counted, limit, params)
-	if g := l.gram; g != nil {
-		g.mu.Lock()
-		g.lastRequests = counted.n
-		g.mu.Unlock()
+	var lister guestGramLister = l.guest
+	if l.gram != nil {
+		lister = &pacedLister{guestGramLister: l.guest, g: l.gram}
 	}
+	page, listErr := guestGramPage(ctx, lister, limit, params)
 	if listErr != nil && len(page.Messages) == 0 {
 		return gramstore.Answer{}, listErr
 	}

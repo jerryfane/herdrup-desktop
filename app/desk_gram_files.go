@@ -310,7 +310,9 @@ func (d *Desk) GramOpenAttachment(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	name, _, size, metaErr := d.gramFileMeta(l, id, id)
+	// A saved copy is keyed as the page knows the message: a shared agent's
+	// carries its grant prefix, so it never matches the owner's same raw id.
+	name, _, size, metaErr := d.gramFileMeta(l, id, d.gramFor(l).prefix+id)
 	if metaErr == nil && !gramstore.Openable(name) {
 		return errSaveOnly
 	}

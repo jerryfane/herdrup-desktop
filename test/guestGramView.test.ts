@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { GRANT_SEP, guestGramView } from "../src/guestGramView";
+import { feedEntries } from "../src/gramModel";
 import type { GramMessage, GramSnapshot, GuestGramSnapshot, GuestGramState } from "../src/mygo";
 
 const msg = (grant: string, id: string, ms: number, o: Partial<GramMessage> = {}): GramMessage => ({
@@ -94,4 +95,12 @@ test("the counts are each shared agent's own, not the messages loaded", () => {
  expect(v.all.unread).toBe(4);
  expect(v.groups.flatMap(g => g.rows.map(r => [r.grant.id, r.unread]))).toEqual([["ledger", 1], ["market", 3]]);
  expect(guestGramView(hidden, "market").snapshot.unreadCount).toBe(3);
+});
+
+// #227 review: the merged feed's rows name their shared agent, so two same-named agents of two
+// grants draw as two senders.
+test("same-named agents of two grants are two sender groups in the merged feed", () => {
+ const two: GuestGramSnapshot = { ...s, grants: [grant("g1", "Jerry", [msg("g1", "x", 1000, { from: "enyo-ui" })]), grant("g2", "Alex", [msg("g2", "y", 1001, { from: "enyo-ui" })])] };
+ const rows = [...guestGramView(two, null).snapshot.messages].reverse();
+ expect(feedEntries(rows, null, () => true).map(e => e.startsGroup)).toEqual([true, true]);
 });
