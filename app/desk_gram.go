@@ -683,7 +683,12 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 			}
 			g.mu.Unlock()
 		} else {
-			d.gramBadge(ctx, l)
+			// A wake (Gram opening, the guest acting) interrupts the badge's
+			// read: a paced walk of every page can take minutes, and the
+			// visible head load goes first.
+			if d.gramBadgeUntilWake(ctx, l, wake) {
+				continue
+			}
 			wait = pollBadge
 		}
 		// A shared agent without session reuse polls no sooner than its next
@@ -698,6 +703,25 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// gramBadgeUntilWake reads the badge until done or woken; true when a wake
+// came (it is consumed: the caller polls again at once).
+func (d *Desk) gramBadgeUntilWake(ctx context.Context, l *link, wake <-chan struct{}) bool {
+	bctx, cancel := context.WithCancel(ctx)
+	woke := make(chan bool, 1)
+	go func() {
+		select {
+		case <-wake:
+			cancel()
+			woke <- true
+		case <-bctx.Done():
+			woke <- false
+		}
+	}()
+	d.gramBadge(bctx, l)
+	cancel()
+	return <-woke
 }
 
 // gramBadge reads the unread count while Gram does not show: an

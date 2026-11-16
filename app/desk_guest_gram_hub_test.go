@@ -367,6 +367,50 @@ func TestGuestChatAttachmentIgnoresTheOwnersSavedCopyOfTheSameID(t *testing.T) {
 	}
 }
 
+// #227 review: opening Gram interrupts a paced hidden walk; the head load
+// does not wait for every older page.
+func TestGuestGramOpeningInterruptsAHiddenWalk(t *testing.T) {
+	d, fx, connected := guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram")
+	h := d.guestGram.Load()
+	var l *link
+	waitFor(t, "market's hidden badge poll", func() bool {
+		l = h.link(connected)
+		if l == nil || l.gram == nil {
+			return false
+		}
+		l.gram.mu.Lock()
+		defer l.gram.mu.Unlock()
+		return l.gram.requestCost > 0 && l.gram.wake != nil
+	})
+	market := fx.Grants[0]
+	now := time.Now().UnixMilli()
+	for i := range 4 * gramPageSize {
+		market.Gram.Add(herdrapi.GramMessageInfo{ID: fmt.Sprintf("old-%03d", i), CreatedUnixMs: uint64(now - int64(10_000+i)),
+			Direction: herdrapi.GramDirectionAgentToOwner, From: market.Agent, Text: "history"}, nil)
+	}
+	l.gram.mu.Lock()
+	l.gram.requestCost, l.gram.nextRequest = time.Second, time.Time{}
+	l.gram.mu.Unlock()
+	// Start a hidden badge walk: about a second a page.
+	select {
+	case l.gram.wake <- struct{}{}:
+	default:
+	}
+	time.Sleep(300 * time.Millisecond)
+	opened := time.Now()
+	d.GuestGramSetVisible(true)
+	for {
+		g, _ := grantState(d.GuestGramState(), "market")
+		if g.Gram.Phase == "loaded" && len(g.Gram.Messages) > 0 {
+			break
+		}
+		if time.Since(opened) > 1500*time.Millisecond {
+			t.Fatalf("Gram still %q with %d messages %v after opening: the hidden walk held the head load", g.Gram.Phase, len(g.Gram.Messages), time.Since(opened))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 type countLister struct {
 	guestGramLister
 	n int
