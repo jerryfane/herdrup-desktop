@@ -50,3 +50,9 @@ test("duplicate or non-identifier ids never become open buttons", () => {
  // A name with a control character is not shown as a file.
  expect(parseAttachmentPrompt(paneAttachmentPrompt("", [{ name: "a\u202Etxt.exe", isImage: false, messageID: "gram-x" }]))).toBeNull();
 });
+
+// herdrup#683 post-merge review P3: a file name holding the envelope's own words still reads back.
+test("a file name containing the envelope marker still reads back", () => {
+ const files = [{ name: "report attached via Herdr Gram message draft.txt", isImage: false, messageID: "gram-r1" }];
+ expect(parseAttachmentPrompt(paneAttachmentPrompt("see", files))).toEqual({ caption: "see", files });
+});

@@ -41,7 +41,8 @@ export function parseAttachmentPrompt(prompt: string): ParsedPrompt | null {
  else return null;
  const files: PromptFile[] = [];
  if (reference.startsWith("[Photo attached via Herdr Gram message ") || reference.startsWith("[File ")) {
-  const marker = reference.indexOf(" attached via Herdr Gram message "), commandStart = reference.indexOf(". Download it with `");
+  // The marker is the one just before the download command: a file name may contain it too.
+  const commandStart = reference.indexOf(". Download it with `"), marker = commandStart < 0 ? -1 : reference.lastIndexOf(" attached via Herdr Gram message ", commandStart);
   if (marker < 0 || commandStart < 0) return null;
   const commandEnd = reference.indexOf("`", commandStart + ". Download it with `".length);
   if (commandEnd < 0) return null;

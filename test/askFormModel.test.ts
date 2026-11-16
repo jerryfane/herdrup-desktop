@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chooseOption, chooseOther, fieldAnswer, fieldProblem, fieldQuestion, firstProblem, formDraft, formValues, type AskForm, type AskFormField, type FieldDraft } from "../src/askFormModel";
+import { chooseOption, chooseOther, dropEmptyOther, fieldAnswer, fieldProblem, fieldQuestion, firstProblem, formDraft, formValues, type AskForm, type AskFormField, type FieldDraft } from "../src/askFormModel";
 
 const choice = (name: string, fields: Partial<AskFormField> = {}): AskFormField => ({
  name, kind: "choice", title: name, description: null, multi: false, select: false, other: true, required: false,
@@ -120,4 +120,52 @@ test("a field's question falls back from title to description to a lone option t
  expect(fieldQuestion(choice("x", { title: null, description: "\nWhich database?\n\nMore" }))).toBe("Which database?");
  expect(fieldQuestion(choice("x", { title: null, options: [{ value: "y", label: "Send me a Gram", checked: false }] }))).toBe("Send me a Gram");
  expect(fieldQuestion(text("notes", { title: null }))).toBe("notes");
+});
+
+// herdrup#688 (AskFormTests testDisabledOptionsAreNotSent): a checked, disabled option stays
+// ticked and counts toward a required field, and is never sent.
+test("a checked disabled option is part of the answer but never sent", () => {
+ const deps = choice("deps", { multi: true, required: true, other: false, options: [
+  { value: "fixed", label: "Fixed", checked: true, disabled: true }, { value: "new", label: "New", checked: false }] });
+ const f = form(deps);
+ const initial = formDraft(f).deps!;
+ expect(initial.options).toEqual(["fixed"]);
+ expect(firstProblem(f, formDraft(f))).toBe(-1);
+ expect(formValues(f, formDraft(f))).toEqual({});
+ const draft = chooseOption(deps, initial, "new");
+ expect(draft.options).toEqual(["fixed", "new"]);
+ expect(fieldAnswer(deps, draft)).toBe("Fixed, New");
+ expect(formValues(f, { deps: draft })).toEqual({ deps: { options: ["new"] } });
+});
+
+// herdrup#689 (AskFormTests 342-369): an optional radio without a default may go back to
+// unanswered after an empty Other; a required radio or one with a default may not.
+test("an optional radio without a default can leave an empty Other unanswered", () => {
+ const where = choice("where", { options: [{ value: "a", label: "A", checked: false }] });
+ const f = form(where);
+ let draft = chooseOther(where, formDraft(f).where!);
+ draft = { ...draft, other: "x" };
+ draft = { ...draft, other: "" };
+ expect(problem(where, draft)).toBeNull();
+ expect(formValues(f, { where: draft })).toEqual({});
+ draft = dropEmptyOther(where, draft);
+ expect(draft.other).toBeNull();
+ expect(fieldAnswer(where, draft)).toBe("");
+
+ const required = choice("env", { required: true, options: [{ value: "a", label: "A", checked: false }] });
+ const recommended = choice("via", { options: [{ value: "a", label: "A", checked: true }] });
+ for (const field of [required, recommended]) {
+  const open = chooseOther(field, formDraft(form(field))[field.name]!);
+  expect(problem(field, open)).toBe("Type your answer, or pick an option");
+  expect(dropEmptyOther(field, open).other).toBe("");
+ }
+});
+
+// herdrup#690: a multi-choice field lists everything chosen whatever its option count, so the
+// review shows what is sent.
+test("a lone checkbox with Other summarises both", () => {
+ const consent = choice("consent", { multi: true, options: [{ value: "yes", label: "Send me a Gram", checked: false }] });
+ const draft = { ...chooseOther(consent, chooseOption(consent, formDraft(form(consent)).consent!, "yes")), other: "and email" };
+ expect(formValues(form(consent), { consent: draft })).toEqual({ consent: { options: ["yes"], other: "and email" } });
+ expect(fieldAnswer(consent, draft)).toBe("Send me a Gram, Other: and email");
 });
