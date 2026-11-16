@@ -116,6 +116,7 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Ac
 	if err := d.guestStore.Save(access); err != nil {
 		return guest.Access{}, fmt.Errorf("Access was accepted but could not be saved: %w. Keep this device's guest identity and ask the owner for a new invitation", err)
 	}
+	d.syncGuestGram()
 	return access, nil
 }
 func (d *Desk) ConnectGuest(id string) error {
@@ -150,7 +151,9 @@ func (d *Desk) ConnectGuest(id string) error {
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
 	d.mu.Unlock()
-	d.gramReset(l, access.MachineLabel)
+	// A guest's Gram is every shared agent's at once (desk_guest_gram_hub.go).
+	d.gramReset(nil, "")
+	d.startGuestGram()
 	d.gramWipeCacheUnlessOwner(l.id)
 	go func() {
 		defer cancel()
@@ -174,8 +177,10 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 		d.presence.show(nil, "", "")
 	}
 	d.mu.Unlock()
+	d.syncGuestGram()
 	if active {
 		d.gramReset(nil, "")
+		d.stopGuestGram()
 		d.gramWipeCacheUnlessOwner("")
 		d.setState(context.Background(), ConnState{Phase: "idle"})
 	}
@@ -225,7 +230,7 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 		d.setState(ctx, ConnState{Phase: phase, Machine: label, Message: message, Guest: &GuestConnection{Access: access, Features: l.guest.Features(), Fingerprint: fingerprint, Availability: availability}})
 	}
 	publishState("connecting", "", "")
-	gramStarted, listed := false, false
+	listed := false
 	for ctx.Err() == nil {
 		wait := guestStatusPoll
 		result, running, err := client.GuestAgentList(ctx)
@@ -260,10 +265,6 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 					}
 					break
 				}
-			}
-			if !gramStarted && l.guest.Features().Gram {
-				gramStarted = true
-				go d.watchGram(ctx, l)
 			}
 			publishState("connected", "", availability)
 			d.mu.Lock()

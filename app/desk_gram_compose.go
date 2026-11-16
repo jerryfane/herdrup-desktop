@@ -38,7 +38,7 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 		if err != nil {
 			return
 		}
-		g := &d.gram
+		g := d.gramFor(l)
 		g.mu.Lock()
 		ctx := g.ctx
 		g.mu.Unlock()
@@ -46,7 +46,7 @@ func (d *Desk) newGramComposer(l *link) *gramstore.Composer {
 	}
 	c := gramstore.NewComposer(upload, discard, func(path string) { d.gramComposerChanged(l, path) })
 	c.RetryDelay = gramPostRetryDelay
-	g := &d.gram
+	g := d.gramFor(l)
 	epoch := g.epoch // built under g.mu by the reset that set it
 	c.Keep = func(a gramstore.Attachment) {
 		// Only the bytes herdr holds: the file may have changed since it
@@ -106,14 +106,14 @@ var gramPostRetryDelay = gramstore.DefaultRetryDelay
 // moved ("" for the whole composer). The upload event goes out at most
 // once a percent; the snapshot only when a chip's state changes.
 func (d *Desk) gramComposerChanged(l *link, path string) {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link != l || g.composer == nil {
 		return
 	}
 	if path == "" {
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 		return
 	}
 	ev := GramUploadProgress{Path: path, State: "removed"}
@@ -132,7 +132,7 @@ func (d *Desk) gramComposerChanged(l *link, path string) {
 	}
 	GramUploadChanged.Broadcast(ev)
 	if !seen || last.State != ev.State {
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 	}
 }
 
@@ -173,8 +173,14 @@ func (d *Desk) gramStage(c *gramstore.Composer, paths []string) (staged []string
 	return staged, gramstore.SkipNote(bad, capped)
 }
 
+// gramComposer is the composer a post goes through and its connection: the
+// chosen shared agent's in the combined guest Gram, else the owner's.
 func (d *Desk) gramComposer() (*link, *gramstore.Composer, error) {
-	g := &d.gram
+	l, err := d.gramComposerLink()
+	if err != nil {
+		return nil, nil, err
+	}
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link == nil || g.composer == nil {
@@ -258,11 +264,11 @@ func (d *Desk) GramPost(ctx context.Context, text string, to []string, attachmen
 	if text == "" && len(staged) == 0 {
 		return nil
 	}
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	if g.link == l {
 		g.sendError = ""
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 	}
 	g.mu.Unlock()
 	post := func(ctx context.Context, body string, a *gramstore.Attachment) (string, error) {
@@ -272,8 +278,15 @@ func (d *Desk) GramPost(ctx context.Context, text string, to []string, attachmen
 		}
 		d.mu.Lock()
 		if l.guest != nil {
+			// The guest gate posts to the shared agent whatever to says;
+			// a combined guest Gram's link has no agent list of its own.
 			recipient = nil
-			for _, agent := range l.agents {
+			agents := l.agents
+			if l.gram != nil {
+				name := l.access.AgentName
+				agents = []herdrapi.AgentInfo{{Name: &name}}
+			}
+			for _, agent := range agents {
 				if agent.Name != nil && strings.TrimSpace(*agent.Name) != "" {
 					name := *agent.Name
 					recipient = &name
@@ -305,7 +318,7 @@ func (d *Desk) GramPost(ctx context.Context, text string, to []string, attachmen
 		if g.link == l {
 			id := res.Message.ID
 			g.pending = append([]herdrapi.GramMessageInfo{res.Message}, deleteByID(g.pending, id)...)
-			d.publishGramLocked()
+			d.publishGramLocked(g)
 		}
 		g.mu.Unlock()
 		return res.Message.ID, nil

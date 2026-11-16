@@ -320,8 +320,7 @@ func (d *Desk) PaneMuted(paneID string) bool {
 // Only newly created messages advance this connection's notification cursor;
 // retain IDs at the boundary because multiple messages may share a millisecond.
 // g.mu is held. Native delivery runs outside that lock.
-func (d *Desk) gramNotificationsLocked(messages []herdrapi.GramMessageInfo) {
-	g := &d.gram
+func (d *Desk) gramNotificationsLocked(g *gramDesk, messages []herdrapi.GramMessageInfo) {
 	newest := g.notificationNewest
 	for _, m := range messages {
 		newest = max(newest, m.CreatedUnixMs)
@@ -333,7 +332,7 @@ func (d *Desk) gramNotificationsLocked(messages []herdrapi.GramMessageInfo) {
 	for _, m := range messages {
 		fresh := m.CreatedUnixMs > g.notificationNewest || (m.CreatedUnixMs == g.notificationNewest && !g.notificationIDs[m.ID])
 		if g.notificationBaseline && !g.visible && fresh && gramstore.IsUnread(m) && m.Direction == herdrapi.GramDirectionAgentToOwner {
-			options := mygo.NotificationOptions{ID: "gram:" + g.machine + ":" + m.ID, Title: gramstore.SenderName(m), Body: m.Text}
+			options := mygo.NotificationOptions{ID: "gram:" + g.machine + ":" + g.prefix + m.ID, Title: gramstore.SenderName(m), Body: m.Text}
 			go func() {
 				if err := d.deliverNotification("gram", options); err != nil {
 					log.Printf("Gram notification: %v", err)

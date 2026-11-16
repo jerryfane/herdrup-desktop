@@ -274,7 +274,11 @@ the relay's 429 rate_limited no request connects for 15 s, then
 over; meanwhile the page stays open and reads "Reconnecting…", not "Can't reach".
 `fakeherdr -guest-relay … -guest-connect-limit N` logs every connect and refuses
 past N a minute; `-guest-multi-request` serves requests in turn on one session as
-herdr #356 does and logs each session's end. Guest Gram uses its own read marks and reply schema; it never decodes
+herdr #356 does and logs each session's end. `-guest-shares 'agent|owner|machine|gram,multi,pages;…'`
+serves several grants on the one relay address (same owner and machine: one host), logs
+`invite <agent> <link>` for each, seeds each grant's own Gram with times interleaved across
+grants (`pages`: 120, so gram.list pages), and `-guest-gram-inject <file>` turns each
+`agent|text` line of that file into a new unread Gram from agent. Guest Gram uses its own read marks and reply schema; it never decodes
 owner claim/read metadata. Agent renames retain the grant and update Gram routing.
 Leave share forgets local access without deleting this device's identity.
 The Linux native smoke exercised invalid input, cancellation before redemption,

@@ -60,6 +60,8 @@ func main() {
 	guestPauseFile := flag.String("guest-pause-file", "", "with -guest-relay, pause the share while this file exists (agent.list shows the agent with guest_running false and its methods refuse guest_paused), as herdr does when the agent leaves its pane's foreground; checked every 500 ms")
 	guestGram := flag.Bool("guest-gram", false, "with -guest-relay, share Gram with the guest: features.gram is on and the gate serves the guest Gram methods on the fake Gram store")
 	guestMultiRequest := flag.Bool("guest-multi-request", false, "with -guest-relay, serve requests in turn on one guest session and advertise features.multi_request, as herdr does since jerryfane/herdr#356; each session's end is logged")
+	guestShares := flag.String("guest-shares", "", "with -guest-relay, serve these guest grants instead of the docs one, all on the one relay address: semicolon-separated agent|owner|machine|options, options a comma-separated set of gram (features.gram), multi (features.multi_request) and pages (120 seeded Grams, so gram.list pages); grants with the same owner and machine are one host. Each gets its own invitation, logged as \"invite <agent> <link>\", and its own Gram store seeded with messages whose times interleave across grants. -guest-web-origin applies; the other -guest-* flags do not")
+	guestGramInject := flag.String("guest-gram-inject", "", "with -guest-shares, whenever this file appears, append each of its agent|text lines as a new unread message from agent to that grant's Gram, then remove the file; checked every 300 ms")
 	flag.Parse()
 
 	agents := defaultAgents
@@ -245,7 +247,12 @@ func main() {
 	if *current {
 		serveCurrent(s)
 	}
-	if *guestRelay != "" {
+	switch {
+	case *guestRelay != "" && *guestShares != "":
+		if err := serveGuestShares(s, *guestRelay, *guestShares, *guestGramInject, *guestWebOrigin); err != nil {
+			log.Fatal(err)
+		}
+	case *guestRelay != "":
 		if err := serveGuestRelay(s, *guestRelay, *guestOwnerAnswers, *guestGram, *guestMultiRequest, *guestConnectLimit, *guestPauseFile, *guestWebOrigin); err != nil {
 			log.Fatal(err)
 		}

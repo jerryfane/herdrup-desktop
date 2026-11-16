@@ -586,7 +586,10 @@ class Detail {
     this.guestPaused = guestPausedPage((await Desk.state().catch(() => null))?.guest?.availability, view.name);
     if (this.disposed) return;
     this.guestChat = chatAvailable; this.guestModes = modes;
-    const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram")));
+    // The guest's one Gram with this shared agent selected (#697); the grant is Access.ID().
+    const share = (await Desk.state().catch(() => null))?.guest?.access;
+    const grant = share ? `${share.endpoint.hostID}/${share.guestID}` : null;
+    const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram", { detail: grant })));
     gram.hidden = !view.guestGram; this.guestGramButton = gram;
     modes.replaceChildren(...(chatAvailable ? [this.chatButton] : []), this.terminalButton, gram);
    }

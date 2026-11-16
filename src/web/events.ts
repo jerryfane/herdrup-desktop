@@ -51,6 +51,7 @@ export const events: { [K in EventName]: GoEvent<Payload<K>> } = {
  appUpdateOpen: event("appUpdateOpen"),
  dictationChanged: event("dictationChanged"),
  agentOpen: event("agentOpen"),
+ guestGramChanged: event("guestGramChanged"),
 };
 
 /** Sends payload to every listener of name, in subscription order, as Broadcast does. A listener

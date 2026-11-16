@@ -4,7 +4,7 @@
 // the poll keeps Go's cadence (desk_guest.go guestStatusPoll: the list, the chat and Gram share the
 // relay's 30 connects a minute).
 
-import type { Desk as GoDesk, GramAgent, GramFile, GramMessage, GramSnapshot, SavedGram } from "../mygo";
+import type { Desk as GoDesk, GramAgent, GramFile, GramMessage, GramSnapshot, GuestGramSnapshot, SavedGram } from "../mygo";
 import { emit } from "./events";
 import { fileForPath, forgetFile, pickFiles, registerFiles } from "./files";
 import { currentLink, onLinkChanged, type WebLink } from "./link";
@@ -154,7 +154,51 @@ function snapshot(): GramSnapshot {
  return s;
 }
 
-function publish() { emit("gramChanged", snapshot()); }
+function publish() {
+ const s = snapshot();
+ emit("gramChanged", s);
+ emit("guestGramChanged", guestSnapshot(s));
+}
+
+// ---- The guest's one Gram (#697, desk_guest_gram_hub.go) over this browser's one grant ----
+
+const SEP = "\u001f";
+/** This browser's grant id, as Go's Access.ID(): "<host id>/<guest id>". */
+function grantID(link: WebLink): string { return `${link.access.endpoint.hostID}/${link.access.guestID}`; }
+/** A message id the page knows ("<grant>\x1f<id>") as this grant's own. */
+function own(id: string): string { return id.includes(SEP) ? id.slice(id.indexOf(SEP) + 1) : id; }
+/** A message's id as the page knows it in the guest's Gram ("<grant>\x1f<id>"). */
+function shownID(id: string): string { return g.link ? grantID(g.link) + SEP + id : id; }
+
+function guestSnapshot(s: GramSnapshot = snapshot()): GuestGramSnapshot {
+ const link = g.link;
+ if (!link) return { active: false, grants: [], recipient: "", saved: savedList() };
+ const id = grantID(link), prefix = id + SEP;
+ const gram = link.features().gram;
+ const access = link.access;
+ return {
+  active: true, recipient: gram ? id : "", saved: savedList(),
+  grants: [{
+   grant: { id, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, terminal: access.agentTarget, gram, ready: true },
+   gram: { ...s, messages: s.messages.map(m => ({ ...m, id: prefix + m.id })) },
+  }],
+ };
+}
+
+/** The Desk calls the guest's one Gram makes (desk_guest_gram_hub.go). One grant: they act on it. */
+export const guestGramDesk: Partial<DeskFns> = {
+ guestGramState: async () => guestSnapshot(),
+ async guestGramSetVisible(shown: boolean) { await gramDesk.gramSetVisible!(shown); },
+ async guestGramSetRecipient(grant: string) {
+  if (!g.link || grant !== grantID(g.link)) throw new Error("This shared agent doesn't share Gram");
+ },
+ async guestGramLoadOlder(grants: string[]) {
+  if (!g.link || !grants.includes(grantID(g.link))) return false;
+  return gramDesk.gramLoadOlder!();
+ },
+ async guestGramRefresh() { await gramDesk.gramRefresh!(); },
+ async guestGramMarkAllRead() { await gramDesk.gramMarkAllRead!(); },
+};
 
 function note(text: string) { g.sendError = text; publish(); }
 
@@ -428,7 +472,7 @@ function fileMeta(id: string): WireFile {
  *  cap) stops at the first chunk with FileTooLarge. `first`: offset 0, already read. */
 async function fetchBlob(link: WebLink, id: string, size: number, signal?: AbortSignal, maxSize?: number, first?: FileChunk): Promise<Blob> {
  const parts: Uint8Array<ArrayBuffer>[] = [];
- const progress = (done: number, state: string) => emit("gramDownload", { id, done, size, state, label: displaySize(Math.min(done, size)) + " of " + displaySize(size) });
+ const progress = (done: number, state: string) => emit("gramDownload", { id: shownID(id), done, size, state, label: displaySize(Math.min(done, size)) + " of " + displaySize(size) });
  const read = chunkOf(link, id, signal);
  progress(0, "downloading");
  try {
@@ -480,7 +524,7 @@ async function writeFile(link: WebLink, id: string, f: WireFile, saveMaxBytes = 
  try { handle = await picker!({ suggestedName: safeFileName(f.name), startIn: "downloads" }); }
  catch (error) { if (error instanceof DOMException && error.name === "AbortError") return; throw error; }
  const out = await handle.createWritable();
- const progress = (done: number, state: string) => emit("gramDownload", { id, done, size: f.size, state, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });
+ const progress = (done: number, state: string) => emit("gramDownload", { id: shownID(id), done, size: f.size, state, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });
  try {
   progress(0, "downloading");
   await readChunks(chunkOf(link, id, g.life.signal), f.size, p => out.write(p), done => progress(done, "downloading"), g.life.signal);
@@ -574,7 +618,8 @@ export const gramDesk: Partial<DeskFns> = {
  },
 
  /** GramMarkRead: the local copy flips only after herdr confirms. */
- async gramMarkRead(id: string) {
+ async gramMarkRead(key: string) {
+  const id = own(key);
   const link = gramLink(), state = g;
   const m = visible().find(v => v.id === id);
   if (!m || !isUnread(m) || state.markingRead.has(id)) return;
@@ -689,7 +734,8 @@ export const gramDesk: Partial<DeskFns> = {
  },
 
  /** GramImage: a picture of at most 8 MiB as a data: URL, two fetched at a time. */
- async gramImage(id: string) {
+ async gramImage(key: string) {
+  const id = own(key);
   const link = gramLink(), state = g;
   const f = fileMeta(id);
   if (!f.mime.toLowerCase().startsWith("image/") || f.size > PREVIEW_MAX_BYTES) throw new Error(`${f.name} has no preview`);
@@ -713,10 +759,11 @@ export const gramDesk: Partial<DeskFns> = {
   return image;
  },
 
- async gramSaveFile(id: string) { await saveFile(id); },
+ async gramSaveFile(id: string) { await saveFile(own(id)); },
 
  /** GramOpenFile: a picture or plain text previews in the page; anything else is saved. */
- async gramOpenFile(id: string) {
+ async gramOpenFile(key: string) {
+  const id = own(key);
   const link = gramLink();
   let f: WireFile;
   try { f = fileMeta(id); } catch (error) { note(fileError("open", error)); throw error; }
@@ -731,7 +778,8 @@ export const gramDesk: Partial<DeskFns> = {
 
  /** GramOpenAttachment: a Chat attachment opened as gramOpenFile opens a Gram file, whether or not
   *  Gram has loaded its message. Its errors go back to the chat only, never Gram's banner. */
- async gramOpenAttachment(id: string) {
+ async gramOpenAttachment(key: string) {
+  const id = own(key);
   const link = gramLink();
   let f: WireFile | null = null, first: FileChunk | undefined;
   try { f = fileMeta(id); } catch { /* not in the loaded feed: herdr's first chunk says what it is */ }
@@ -756,7 +804,8 @@ export const gramDesk: Partial<DeskFns> = {
 
  async gramSaved() { return savedList(); },
 
- async gramSetSaved(id: string, saved: boolean) {
+ async gramSetSaved(key: string, saved: boolean) {
+  const id = own(key);
   const list = savedList().filter(s => s.id !== id);
   if (saved) {
    const m = visible().find(v => v.id === id);

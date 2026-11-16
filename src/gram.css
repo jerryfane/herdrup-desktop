@@ -65,6 +65,14 @@
 .gconv.selected .gconv-title { color: var(--color-on-accent); }
 .gconv.selected .gconv-time, .gconv.selected .gconv-preview { color: color-mix(in srgb, var(--color-on-accent) calc(var(--color-on-accent-dim-opacity) * 100%), transparent); }
 .gconv-dot { position: absolute; left: 7px; top: 32px; width: 10px; height: 10px; border-radius: 50%; background: var(--status-waiting); }
+/* The guest's one Gram (3B): an owner group's label, and each row's unread count. */
+.gconv-group { padding: 16px 30px 6px; font-size: 12px; font-weight: 600; color: var(--color-text-faint); }
+.gconv-count {
+  align-self: center; flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; color: var(--color-text); background: var(--color-surface-raised);
+}
+.gconv.selected .gconv-count { color: var(--color-on-accent); background: color-mix(in srgb, var(--color-on-accent) 20%, transparent); }
 .gsymavatar {
   width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   background: var(--color-surface-raised); color: var(--color-brand);
@@ -272,6 +280,14 @@
 /* ---- Composer ---- */
 .gram-composer { position: relative; padding: 0 0 0; background: var(--color-ground); }
 .ghint { padding: 6px 16px 0; font-size: 12px; font-weight: 600; color: var(--status-waiting); }
+/* The guest composer's "to": who the message goes to, a picker while no file is attached. */
+.ghint:has(.gto-chip) { color: inherit; }
+.gto-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 4px; border-radius: 15px;
+  border: 1px solid var(--color-hairline); background: var(--color-surface); color: var(--color-text);
+  font: 600 13px var(--font-app); cursor: pointer;
+}
+.gto-chip:disabled { cursor: default; }
 .gcard { --gram-card-edge: var(--color-hairline); position: relative; margin: 4px 12px 8px; padding: 6px; display: flex; align-items: flex-end; gap: 4px; }
 .gcard.focused { --gram-card-edge: var(--color-text-faint); }
 .gcard.expanded { flex-direction: column; align-items: stretch; gap: 8px; padding-top: 11px; }

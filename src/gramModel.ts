@@ -15,6 +15,9 @@ export type FeedMessage = {
   from: string;
   to?: string;
   createdUnixMs: number;
+  /** The feed the message came from: in the guest's one Gram, its shared agent (guestGramView);
+   *  two sources are two senders even with the same name (#697). Absent: the owner's one feed. */
+  source?: string;
 };
 
 /** One feed row and what draws above it (herdrup `GramFeedEntry`). */
@@ -34,10 +37,10 @@ export type UnreadRule = { messageID: string; count: number };
 /** How many of the newest messages the feed draws; each arrival at the top shows this many more. */
 export const RENDER_WINDOW = 80;
 
-/** Whether two messages (oldest first) belong to one group: the same side, and the same agent
- * (theirs) or the same recipient (yours). */
+/** Whether two messages (oldest first) belong to one group: the same side and source, and the
+ * same agent (theirs) or the same recipient (yours). */
 export function sameRun(a: FeedMessage, b: FeedMessage): boolean {
-  if (a.fromAgent !== b.fromAgent) return false;
+  if (a.fromAgent !== b.fromAgent || (a.source ?? "") !== (b.source ?? "")) return false;
   return a.fromAgent ? a.from === b.from : (a.to ?? null) === (b.to ?? null);
 }
 

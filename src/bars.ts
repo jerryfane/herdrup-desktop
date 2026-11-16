@@ -22,18 +22,6 @@ export async function barSlot(name: string, label: string): Promise<HTMLElement>
   return s;
 }
 
-/** GuestHomeView.header (App/GuestHomeView.swift 164-178): SectionTopBar(title: "Agents") with no
- *  actions. While Gram replaces the terminal, the right capsule carries the way back to it (the
- *  pane's Terminal tab, GuestPaneView.swift 233). */
-export async function guestBarActions(gram: boolean, terminal: () => void): Promise<HTMLElement[]> {
-  if (!gram) return [];
-  const back = await barSlot("terminal", "Back to Terminal");
-  back.tabIndex = 0; back.setAttribute("role", "button"); back.setAttribute("aria-label", "Back to Terminal");
-  back.onclick = terminal;
-  back.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); terminal(); } };
-  return [back];
-}
-
 /** Puts one complete bar in place. SectionTopBar(title: "Settings") passes no leading slot
  *  (HerdrApp.swift 2388): leadingShown is false there. */
 export function commitTopBar(leadingShown: boolean, back: HTMLElement | null, titleNodes: Node[], actionNodes: HTMLElement[]) {

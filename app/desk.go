@@ -167,6 +167,9 @@ type Desk struct {
 	sessions sessionWatch // desk_sessions.go
 
 	gram gramDesk // desk_gram.go
+	// guestGram is the combined guest Gram while a shared agent shows
+	// (desk_guest_gram_hub.go), nil otherwise.
+	guestGram atomic.Pointer[guestGramHub]
 	// saved is this device's saved Gram messages, read on first use.
 	saved     *gramstore.Saved
 	savedOnce sync.Once
@@ -222,6 +225,11 @@ type link struct {
 	// the first list: the agent menus' agent_avatar and
 	// agent_session_transfer (desk_agent_actions.go).
 	caps *herdrapi.ServerCapabilities
+	// gram is the Gram state of a shared agent in the combined guest Gram
+	// (guestGramHub); nil for the connection Desk.gram follows. cancelGram
+	// ends that shared agent's reads.
+	gram       *gramDesk
+	cancelGram context.CancelFunc
 }
 
 func newDesk(dir string) *Desk {
@@ -592,6 +600,7 @@ func (d *Desk) Disconnect() {
 	d.presence.show(nil, "", "")
 	d.mu.Unlock()
 	d.gramReset(nil, "")
+	d.stopGuestGram()
 	d.gramWipeCacheUnlessOwner("")
 	d.setState(context.Background(), ConnState{Phase: "idle"})
 }
@@ -638,6 +647,7 @@ func (d *Desk) start(m Machine, password string) {
 		d.mu.Unlock()
 	}
 	// Gram belongs to the connection; its downloads to the machine.
+	d.stopGuestGram()
 	d.gramReset(l, m.Host)
 	d.gramWipeCacheUnlessOwner(l.id)
 	go d.run(ctx, l, m, password)
