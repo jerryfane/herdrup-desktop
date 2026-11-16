@@ -65,11 +65,11 @@ func (d *Desk) gramWipeCacheUnlessOwner(owner string) {
 	}
 }
 
-// gramFileMeta is what a download needs of a message's file: from the
-// held messages, else a saved copy (which can open while the original
-// still exists).
-func (d *Desk) gramFileMeta(id string) (name, mime string, size uint64, err error) {
-	g := &d.gram
+// gramFileMeta is what a download needs of a message's file: from l's held
+// messages (id there), else a saved copy (key, the id the page knows, which
+// can open while the original still exists).
+func (d *Desk) gramFileMeta(l *link, id, key string) (name, mime string, size uint64, err error) {
+	g := d.gramFor(l)
 	g.mu.Lock()
 	m, ok := g.findLocked(id)
 	g.mu.Unlock()
@@ -79,7 +79,7 @@ func (d *Desk) gramFileMeta(id string) (name, mime string, size uint64, err erro
 		}
 		return m.File.Name, m.File.Mime, m.File.Size, nil
 	}
-	if s, ok := d.savedGrams().Get(id); ok && s.File != nil {
+	if s, ok := d.savedGrams().Get(key); ok && s.File != nil {
 		return s.File.Name, s.File.Mime, s.File.Size, nil
 	}
 	return "", "", 0, errors.New("that message has no file")
@@ -93,25 +93,27 @@ type gramFlight struct {
 	err  error
 }
 
-// gramFetch returns a local path holding the file of message id, and the
+// gramFetch returns a local path holding the file of l's message id, and the
 // file's name and type as herdr gave them: the cached copy, else one
 // downloaded now (or already being downloaded). size 0: the first chunk
-// tells it.
+// tells it. The cache, the flight and the progress events use the id the
+// page knows (a shared agent's "<grant>\x1f<id>").
 func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (path, name, mime string, err error) {
-	if hit, ok := d.gramCache().Cached(id); ok {
+	g := d.gramFor(l)
+	key := g.prefix + id
+	if hit, ok := d.gramCache().Cached(key); ok {
 		return hit.Path, hit.Name, hit.Mime, nil
 	}
-	g := &d.gram
 	g.mu.Lock()
 	if g.link != l {
 		g.mu.Unlock()
 		return "", "", "", errNotConnected
 	}
-	f := g.flights[id]
+	f := g.flights[key]
 	if f == nil {
 		f = &gramFlight{done: make(chan struct{})}
-		g.flights[id] = f
-		go d.gramDownload(g.ctx, l, g.epoch, id, size, f)
+		g.flights[key] = f
+		go d.gramDownload(g.ctx, l, g.epoch, id, key, size, f)
 	}
 	g.mu.Unlock()
 	select {
@@ -124,16 +126,16 @@ func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (
 
 var errGramFileData = errors.New("the server returned file data that could not be decoded")
 
-func (d *Desk) gramDownload(ctx context.Context, l *link, epoch int, id string, size uint64, f *gramFlight) {
+func (d *Desk) gramDownload(ctx context.Context, l *link, epoch int, id, key string, size uint64, f *gramFlight) {
 	progress := func(done uint64, state string) {
-		GramDownloadChanged.Broadcast(GramDownloadProgress{ID: id, Done: done, Size: size, State: state,
+		GramDownloadChanged.Broadcast(GramDownloadProgress{ID: key, Done: done, Size: size, State: state,
 			Label: gramstore.DownloadedLabel(done, size)})
 	}
 	finish := func() {
-		g := &d.gram
+		g := d.gramFor(l)
 		g.mu.Lock()
-		if g.flights[id] == f {
-			delete(g.flights, id)
+		if g.flights[key] == f {
+			delete(g.flights, key)
 		}
 		g.mu.Unlock()
 		close(f.done)
@@ -180,14 +182,14 @@ func (d *Desk) gramDownload(ctx context.Context, l *link, epoch int, id string, 
 		f.err = err
 		return
 	}
-	g := &d.gram
+	g := d.gramFor(l)
 	cache := d.gramCache()
-	hit, ok := cache.StoreMoving(tmp.Name(), id, name, mime)
+	hit, ok := cache.StoreMoving(tmp.Name(), key, name, mime)
 	g.mu.Lock()
 	stale := g.epoch != epoch
 	g.mu.Unlock()
 	if stale {
-		cache.Remove(id)
+		cache.Remove(key)
 		f.err = errNotConnected
 		return
 	}
@@ -259,24 +261,24 @@ func gramFileError(verb string, err error) string {
 }
 
 func (d *Desk) gramNote(l *link, text string) {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link == l {
 		g.sendError = text
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 	}
 }
 
 // GramOpenFile opens a received file with the system's default app for its
 // type, HTML in the default browser (owner, 2026-11-08); programs and scripts
 // remain save-only.
-func (d *Desk) GramOpenFile(ctx context.Context, id string) error {
-	l, err := d.gramLink()
+func (d *Desk) GramOpenFile(ctx context.Context, key string) error {
+	l, id, err := d.gramLinkFor(key)
 	if err != nil {
 		return err
 	}
-	name, _, size, err := d.gramFileMeta(id)
+	name, _, size, err := d.gramFileMeta(l, id, key)
 	if err != nil {
 		d.gramNote(l, gramFileError("open", err))
 		return err
@@ -308,7 +310,7 @@ func (d *Desk) GramOpenAttachment(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	name, _, size, metaErr := d.gramFileMeta(id)
+	name, _, size, metaErr := d.gramFileMeta(l, id, id)
 	if metaErr == nil && !gramstore.Openable(name) {
 		return errSaveOnly
 	}
@@ -333,12 +335,12 @@ var errSaveOnly = errors.New("programs and scripts can only be saved")
 
 // GramSaveFile saves a message's file where the save dialog says, from the
 // cache when it was downloaded before.
-func (d *Desk) GramSaveFile(ctx context.Context, id string) error {
-	l, err := d.gramLink()
+func (d *Desk) GramSaveFile(ctx context.Context, key string) error {
+	l, id, err := d.gramLinkFor(key)
 	if err != nil {
 		return err
 	}
-	name, _, size, err := d.gramFileMeta(id)
+	name, _, size, err := d.gramFileMeta(l, id, key)
 	if err != nil {
 		d.gramNote(l, gramFileError("save", err))
 		return err
@@ -385,12 +387,12 @@ func copyFileAtomic(src, dest string) error {
 // GramImage returns a picture attachment as a data: URL for the feed's
 // card: only an image of at most 8 MiB, fetched at most two at a time.
 // The page decides when a card has shown long enough to ask.
-func (d *Desk) GramImage(ctx context.Context, id string) (string, error) {
-	l, err := d.gramLink()
+func (d *Desk) GramImage(ctx context.Context, key string) (string, error) {
+	l, id, err := d.gramLinkFor(key)
 	if err != nil {
 		return "", err
 	}
-	name, mime, size, err := d.gramFileMeta(id)
+	name, mime, size, err := d.gramFileMeta(l, id, key)
 	if err != nil {
 		return "", err
 	}
@@ -398,11 +400,11 @@ func (d *Desk) GramImage(ctx context.Context, id string) (string, error) {
 		return "", fmt.Errorf("%s has no preview", name)
 	}
 	path, cachedMime, ok := "", "", false
-	if hit, hitOK := d.gramCache().Cached(id); hitOK {
+	if hit, hitOK := d.gramCache().Cached(key); hitOK {
 		path, cachedMime, ok = hit.Path, hit.Mime, true
 	}
 	if !ok {
-		g := &d.gram
+		g := d.gramFor(l)
 		select {
 		case g.slots <- struct{}{}:
 		case <-ctx.Done():

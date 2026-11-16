@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -269,6 +270,15 @@ type gramDesk struct {
 	ecClient  *bridge.Client
 	ecSession string
 
+	// hub is the combined guest Gram this shared agent's state belongs to;
+	// nil for Desk.gram. prefix ("<grant>\x1f") goes before its message ids
+	// in snapshots and the saved list, so the calls that take one find it.
+	hub    *guestGramHub
+	prefix string
+	// pollVisible and pollBadge override gramPollVisible and gramPollBadge
+	// (a shared agent's, guestGramPolls); zero keeps them.
+	pollVisible, pollBadge time.Duration
+
 	// onPublish observes snapshots, for tests.
 	onPublish func(GramSnapshot)
 }
@@ -285,7 +295,7 @@ func (g *gramDesk) init() {
 // The held list, the composer and the downloads in flight belong to the
 // previous connection and are dropped.
 func (d *Desk) gramReset(l *link, machine string) {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	g.init()
 	if g.cancel != nil {
@@ -312,7 +322,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 	} else {
 		g.phase = "idle"
 	}
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	g.mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -323,7 +333,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 // for the agents a message can go to. It republishes only when that list
 // changed. d.mu must not be held.
 func (d *Desk) gramRoster(l *link, agents []herdrapi.AgentInfo, caps *herdrapi.ServerCapabilities) {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link != l {
@@ -335,7 +345,7 @@ func (d *Desk) gramRoster(l *link, agents []herdrapi.AgentInfo, caps *herdrapi.S
 	// The whole list, past senders included: a sender's eligibility can
 	// change while the roster's own recipients don't.
 	if !slices.Equal(before, g.agentsLocked()) {
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 	}
 }
 
@@ -409,10 +419,12 @@ func gramRelayDenied(a herdrapi.AgentInfo, marks bool) bool {
 	return marks && a.MachineID != nil && a.GramReachable != nil && !*a.GramReachable
 }
 
-// gramEngine is an engine client on the current session of l.
+// gramEngine is an engine client on the current session of l. A shared
+// agent's link (the agent page's, or one of the combined guest Gram's) has
+// its own guest client.
 func (d *Desk) gramEngine(l *link) (*engine.Client, error) {
 	d.mu.Lock()
-	if d.link == l && l != nil && l.guest != nil {
+	if l != nil && l.guest != nil && (d.link == l || l.gram != nil) {
 		if !l.guest.Features().Gram {
 			d.mu.Unlock()
 			return nil, errors.New("Gram is not enabled for this shared agent")
@@ -430,7 +442,7 @@ func (d *Desk) gramEngine(l *link) (*engine.Client, error) {
 	if c == nil {
 		return nil, errNotConnected
 	}
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link == l && g.ec != nil && g.ecClient == c && g.ecSession == session {
@@ -447,7 +459,8 @@ func (d *Desk) gramEngine(l *link) (*engine.Client, error) {
 	return ec, nil
 }
 
-// gramLink is the connection Gram's state belongs to, or errNotConnected.
+// gramLink is the connection the owner's Gram state belongs to, or
+// errNotConnected.
 func (d *Desk) gramLink() (*link, error) {
 	g := &d.gram
 	g.mu.Lock()
@@ -529,9 +542,8 @@ func gramRow(m herdrapi.GramMessageInfo, local string, saved, pending bool) Gram
 	return r
 }
 
-// snapshotLocked builds the snapshot. g.mu must be held.
-func (d *Desk) snapshotLocked() GramSnapshot {
-	g := &d.gram
+// snapshotLocked builds g's snapshot. g.mu must be held.
+func (d *Desk) snapshotLocked(g *gramDesk) GramSnapshot {
 	saved := d.savedGrams()
 	ids := saved.IDs()
 	s := GramSnapshot{
@@ -554,7 +566,9 @@ func (d *Desk) snapshotLocked() GramSnapshot {
 		pendingIDs[m.ID] = true
 	}
 	for _, m := range g.visibleLocked() {
-		s.Messages = append(s.Messages, gramRow(m, g.machine, ids[m.ID], pendingIDs[m.ID]))
+		row := gramRow(m, g.machine, ids[g.prefix+m.ID], pendingIDs[m.ID])
+		row.ID = g.prefix + row.ID
+		s.Messages = append(s.Messages, row)
 	}
 	s.Agents = g.agentsLocked()
 	if g.composer != nil {
@@ -577,41 +591,53 @@ func gramChip(c gramstore.Chip) GramAttachment {
 	}
 }
 
-// publishGramLocked sends the snapshot. g.mu must be held, so a later
-// change cannot be overtaken by an earlier one.
-func (d *Desk) publishGramLocked() {
-	s := d.snapshotLocked()
+// publishGramLocked sends g's snapshot: Desk.gram's to the page as
+// GramChanged, a shared agent's to the combined guest Gram (guestGramHub),
+// which sends every shared agent's. g.mu must be held, so a later change
+// cannot be overtaken by an earlier one.
+func (d *Desk) publishGramLocked(g *gramDesk) {
+	s := d.snapshotLocked(g)
+	if g.hub != nil {
+		g.hub.update(g, s)
+		return
+	}
 	GramChanged.Broadcast(s)
-	if d.gram.onPublish != nil {
-		d.gram.onPublish(s)
+	if g.onPublish != nil {
+		g.onPublish(s)
 	}
 }
 
-func (d *Desk) publishGram() {
-	d.gram.mu.Lock()
-	defer d.gram.mu.Unlock()
-	d.publishGramLocked()
+// gramFor is the Gram state l's requests belong to: a shared agent's in the
+// combined guest Gram, else Desk.gram.
+func (d *Desk) gramFor(l *link) *gramDesk {
+	if l != nil && l.gram != nil {
+		return l.gram
+	}
+	return &d.gram
 }
 
-// GramState returns Gram as the page draws it.
+// GramState returns the owner's Gram as the page draws it (GuestGramState
+// has the shared agents').
 func (d *Desk) GramState() GramSnapshot {
-	d.gram.mu.Lock()
-	defer d.gram.mu.Unlock()
-	return d.snapshotLocked()
+	g := &d.gram
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return d.snapshotLocked(g)
 }
 
-// GramSetVisible tells Gram whether its page shows. While it shows the
-// inbox is polled every 6 s (30 s after a failure); while it does not, the
-// unread badge every 15 s, and staged uploads nothing waits on pause.
-func (d *Desk) GramSetVisible(visible bool) {
-	g := &d.gram
+// GramSetVisible tells the owner's Gram whether its page shows. While it
+// shows the inbox is polled every 6 s (30 s after a failure); while it does
+// not, the unread badge every 15 s, and staged uploads nothing waits on pause.
+func (d *Desk) GramSetVisible(visible bool) { d.gramSetVisibleOn(&d.gram, visible) }
+
+func (d *Desk) gramSetVisibleOn(g *gramDesk, visible bool) {
 	g.mu.Lock()
 	g.init()
 	was := g.visible
 	g.visible = visible
 	c := g.composer
 	if was != visible {
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 	}
 	g.mu.Unlock()
 	if was == visible {
@@ -632,7 +658,7 @@ func (d *Desk) GramSetVisible(visible bool) {
 
 // watchGram polls Gram for connection ctx of l until it ends.
 func (d *Desk) watchGram(ctx context.Context, l *link) {
-	g := &d.gram
+	g := d.gramFor(l)
 	for {
 		g.mu.Lock()
 		if g.link != l {
@@ -640,19 +666,20 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 			return
 		}
 		visible, wake := g.visible, g.wake
+		pollVisible, pollBadge := cmp.Or(g.pollVisible, gramPollVisible), cmp.Or(g.pollBadge, gramPollBadge)
 		g.mu.Unlock()
 		var wait time.Duration
 		if visible {
 			d.gramLoad(ctx, l)
 			g.mu.Lock()
-			wait = gramPollVisible
+			wait = pollVisible
 			if g.failures > 0 {
-				wait = gramPollFailing
+				wait = max(pollVisible, gramPollFailing)
 			}
 			g.mu.Unlock()
 		} else {
 			d.gramBadge(ctx, l)
-			wait = gramPollBadge
+			wait = pollBadge
 		}
 		select {
 		case <-ctx.Done():
@@ -671,18 +698,18 @@ func (d *Desk) gramBadge(ctx context.Context, l *link) {
 		return
 	}
 	n, ok := answer.BadgeCount()
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !ok || g.link != l {
 		return
 	}
-	d.gramNotificationsLocked(answer.Messages)
+	d.gramNotificationsLocked(g, answer.Messages)
 	if g.badge == n {
 		return
 	}
 	g.badge = n
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 }
 
 type gramOutcome int
@@ -695,7 +722,7 @@ const (
 
 // gramLoad is one head load, unless one is already running.
 func (d *Desk) gramLoad(ctx context.Context, l *link) gramOutcome {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	if g.link != l || g.loading {
 		g.mu.Unlock()
@@ -709,7 +736,7 @@ func (d *Desk) gramLoad(ctx context.Context, l *link) gramOutcome {
 // g.mu held; it returns with g.mu released. The list asked for covers what
 // is held (a changed answer replaces it), conditional on the held digest.
 func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome) {
-	g := &d.gram
+	g := d.gramFor(l)
 	if g.inbox.HasLoaded() && g.phase == "loading" {
 		g.phase = "loaded"
 	}
@@ -721,7 +748,7 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 	if digest := g.inbox.ConditionalDigest(); digest != "" {
 		params.IfUnchangedDigest = new(digest)
 	}
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	g.mu.Unlock()
 
 	answer, err := d.gramAnswer(ctx, l, params)
@@ -758,16 +785,16 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 		default:
 			g.refreshNote = gramRefreshFailed
 		}
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 		return gramFailed
 	}
 	if !answer.Unchanged {
-		d.gramNotificationsLocked(answer.Messages)
+		d.gramNotificationsLocked(g, answer.Messages)
 	}
 	changed := g.inbox.Apply(answer, asked)
 	g.phase, g.unavailable, g.refreshNote, g.failures = "loaded", "", "", 0
 	if !changed && answer.Unchanged {
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 		return gramUnchanged
 	}
 	g.badge = g.inbox.UnreadCount()
@@ -781,14 +808,14 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 			delete(g.deleted, id)
 		}
 	}
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	return gramUpdated
 }
 
 // ack shows a refresh acknowledgement, cleared after 3 s unless it is
 // replaced first or does not expire. g.mu must be held.
 func (d *Desk) ackLocked(l *link, text string, expiring bool) {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.refreshAck = text
 	if text == "" || !expiring {
 		return
@@ -800,7 +827,7 @@ func (d *Desk) ackLocked(l *link, text string, expiring bool) {
 		defer g.mu.Unlock()
 		if g.link == l && g.ackToken == token && g.refreshAck == text {
 			g.refreshAck = ""
-			d.publishGramLocked()
+			d.publishGramLocked(g)
 		}
 	})
 }
@@ -818,7 +845,7 @@ func (d *Desk) GramRefresh(ctx context.Context) error {
 }
 
 func (d *Desk) gramRefresh(ctx context.Context, l *link) {
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	if g.link != l {
 		g.mu.Unlock()
@@ -827,7 +854,7 @@ func (d *Desk) gramRefresh(ctx context.Context, l *link) {
 	if g.loading {
 		g.refreshQueued = true
 		d.ackLocked(l, "Refreshing…", false)
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 		g.mu.Unlock()
 		return
 	}
@@ -847,7 +874,7 @@ func (d *Desk) gramRefresh(ctx context.Context, l *link) {
 	default:
 		d.ackLocked(l, "", true)
 	}
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 }
 
 // GramLoadOlder fetches the page older than everything held, as the feed's
@@ -858,7 +885,11 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	g := &d.gram
+	return d.gramLoadOlder(ctx, l)
+}
+
+func (d *Desk) gramLoadOlder(ctx context.Context, l *link) (bool, error) {
+	g := d.gramFor(l)
 	select {
 	case g.pageSlot <- struct{}{}:
 	case <-ctx.Done():
@@ -867,13 +898,13 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 	defer func() { <-g.pageSlot }()
 	g.mu.Lock()
 	g.loadingOlder, g.olderError = true, ""
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	g.mu.Unlock()
 	defer func() {
 		g.mu.Lock()
 		if g.link == l {
 			g.loadingOlder = false
-			d.publishGramLocked()
+			d.publishGramLocked(g)
 		}
 		g.mu.Unlock()
 	}()
@@ -929,11 +960,11 @@ func (d *Desk) GramLoadOlder(ctx context.Context) (bool, error) {
 // GramMarkRead marks an unread message read once it shows; the local copy
 // flips only after herdr confirms.
 func (d *Desk) GramMarkRead(ctx context.Context, id string) error {
-	l, err := d.gramLink()
+	l, id, err := d.gramLinkFor(id)
 	if err != nil {
 		return err
 	}
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	m, ok := g.findLocked(id)
 	if !ok || !gramstore.IsUnread(m) || g.markingRead[id] {
@@ -954,7 +985,7 @@ func (d *Desk) GramMarkRead(ctx context.Context, id string) error {
 	}
 	g.inbox.MarkRead(id)
 	g.badge = g.inbox.UnreadCount()
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	return nil
 }
 
@@ -970,20 +1001,24 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	g := &d.gram
+	return d.gramMarkAllRead(ctx, l)
+}
+
+func (d *Desk) gramMarkAllRead(ctx context.Context, l *link) error {
+	g := d.gramFor(l)
 	g.mu.Lock()
 	if g.markingAll {
 		g.mu.Unlock()
 		return nil
 	}
 	g.markingAll, g.markAllNote = true, ""
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	g.mu.Unlock()
 	defer func() {
 		g.mu.Lock()
 		if g.link == l {
 			g.markingAll = false
-			d.publishGramLocked()
+			d.publishGramLocked(g)
 		}
 		g.mu.Unlock()
 	}()
@@ -1065,7 +1100,7 @@ func (d *Desk) GramMarkAllRead(ctx context.Context) error {
 // GramDelete deletes a message for good. The row goes at once and stays
 // gone until a list agrees; its downloaded file goes with it.
 func (d *Desk) GramDelete(ctx context.Context, id string) error {
-	l, err := d.gramLink()
+	l, id, err := d.gramLinkFor(id)
 	if err != nil {
 		return err
 	}
@@ -1073,7 +1108,7 @@ func (d *Desk) GramDelete(ctx context.Context, id string) error {
 	if err == nil {
 		err = ec.GramDelete(ctx, herdrapi.GramDeleteParams{ID: id})
 	}
-	g := &d.gram
+	g := d.gramFor(l)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.link != l {
@@ -1086,14 +1121,14 @@ func (d *Desk) GramDelete(ctx context.Context, id string) error {
 		} else {
 			g.sendError = "Couldn't delete. Try again."
 		}
-		d.publishGramLocked()
+		d.publishGramLocked(g)
 		return err
 	}
 	g.deleted[id] = true
 	g.inbox.Remove(id)
 	g.pending = slices.DeleteFunc(g.pending, func(m herdrapi.GramMessageInfo) bool { return m.ID == id })
 	d.gramCache().Remove(id)
-	d.publishGramLocked()
+	d.publishGramLocked(g)
 	return nil
 }
 
@@ -1111,26 +1146,49 @@ func (d *Desk) alertSaved(err error) {
 	}
 }
 
-// GramSetSaved saves a copy of a message on this device, or forgets it.
+// GramSetSaved saves a copy of a message on this device, or forgets it. A
+// shared agent's is saved under its "<grant>\x1f<id>", as its snapshot names it.
 func (d *Desk) GramSetSaved(id string, saved bool) error {
-	g := &d.gram
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	var err error
-	if saved {
-		m, ok := g.findLocked(id)
-		if !ok {
-			return fmt.Errorf("no gram message %q", id)
+	if !saved {
+		if _, err := d.savedGrams().Remove(id); err != nil {
+			return err
 		}
-		_, err = d.savedGrams().Save(m, gramstore.SenderName(m))
-	} else {
-		_, err = d.savedGrams().Remove(id)
+		d.republishSaved(id)
+		return nil
+	}
+	l, raw, err := d.gramLinkFor(id)
+	if err != nil && !strings.Contains(id, guestGramSep) {
+		l, raw, err = nil, id, nil // the owner's Gram, also while disconnected
 	}
 	if err != nil {
 		return err
 	}
-	d.publishGramLocked()
+	g := d.gramFor(l)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	m, ok := g.findLocked(raw)
+	if !ok {
+		return fmt.Errorf("no gram message %q", id)
+	}
+	m.ID = g.prefix + m.ID
+	if _, err := d.savedGrams().Save(m, gramstore.SenderName(m)); err != nil {
+		return err
+	}
+	d.publishGramLocked(g)
 	return nil
+}
+
+// republishSaved shows a saved list change on the Gram the id belongs to.
+func (d *Desk) republishSaved(id string) {
+	var g *gramDesk
+	if l, _, err := d.gramLinkFor(id); err == nil {
+		g = d.gramFor(l)
+	} else {
+		g = &d.gram
+	}
+	g.mu.Lock()
+	d.publishGramLocked(g)
+	g.mu.Unlock()
 }
 
 // GramSaved returns this device's saved messages, newest first.
