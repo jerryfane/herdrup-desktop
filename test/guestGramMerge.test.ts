@@ -177,17 +177,41 @@ test("a grant still loading withholds the combined range", () => {
  expect(later.grantsToPage).toEqual(["slow"]);
 });
 
+// A share's id is Access.ID(), "<host id>/<guest id>": the last two label parts come from it.
+const share = (guest: string, agent: string, owner: string, machine: string, host: string, terminal: string) => ({ id: `${host}/${guest}`, agent, owner, machine, terminal });
+
 test("recipient labels tell same-named agents apart", () => {
- const share = (id: string, agent: string, owner: string, machine: string, terminal: string) => ({ id, agent, owner, machine, terminal });
  const shares = [
-  share("g1", "llm-opt", "Jerry", "Studio", "w1"),
-  share("g2", "enyo-ui", "Jerry", "Studio", "w2-4"),
-  share("g3", "enyo-ui", "Jerry", "Studio", "w2-9"),
-  share("g4", "docs", "Jerry", "Studio", "w3"),
-  share("g5", "docs", "Ana", "Laptop", "w3"),
+  share("g1", "llm-opt", "Jerry", "Studio", "h1", "w1"),
+  share("g2", "enyo-ui", "Jerry", "Studio", "h1", "w2-4"),
+  share("g3", "enyo-ui", "Jerry", "Studio", "h1", "w2-9"),
+  share("g4", "docs", "Jerry", "Studio", "h1", "w3"),
+  share("g5", "docs", "Ana", "Laptop", "h2", "w3"),
  ];
  const labels = recipientLabels(shares);
- expect(shares.map(s => labels.get(s.id))).toEqual(["llm-opt", "enyo-ui · w2-4", "enyo-ui · w2-9", "docs · Jerry · Studio", "docs · Ana · Laptop"]);
+ expect(shares.map(s => labels.get(s.id))).toEqual([
+  "llm-opt", "enyo-ui · Jerry · Studio · w2-4", "enyo-ui · Jerry · Studio · w2-9", "docs · Jerry · Studio", "docs · Ana · Laptop",
+ ]);
+ expect(new Set(labels.values()).size).toBe(shares.length);
+});
+
+// Review 2 (#702): terminals are host-local, so two machines each holding two enyo-ui at the same
+// terminals keep their owner and machine as well as the terminal.
+test("recipient labels stay unique across machines with duplicates", () => {
+ const shares = [
+  share("g1", "enyo-ui", "Jerry", "Studio", "h1", "w1-3"),
+  share("g2", "enyo-ui", "Jerry", "Studio", "h1", "w2-4"),
+  share("g3", "enyo-ui", "Ana", "Laptop", "h2", "w1-3"),
+  share("g4", "enyo-ui", "Ana", "Laptop", "h2", "w2-4"),
+  // Same owner and machine label on another host, same terminal: the host tells it apart.
+  share("g5", "enyo-ui", "Ana", "Laptop", "h3-abcdef", "w1-3"),
+ ];
+ const labels = recipientLabels(shares);
+ expect(shares.map(s => labels.get(s.id))).toEqual([
+  "enyo-ui · Jerry · Studio · w1-3", "enyo-ui · Jerry · Studio · w2-4",
+  "enyo-ui · Ana · Laptop · w1-3 · h2", "enyo-ui · Ana · Laptop · w2-4",
+  "enyo-ui · Ana · Laptop · w1-3 · h3-abc",
+ ]);
  expect(new Set(labels.values()).size).toBe(shares.length);
 });
 

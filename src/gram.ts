@@ -637,6 +637,17 @@ function renderContent() {
     showsSetupCard: setup,
     hasMore: snap.hasMore,
   });
+  // The guest's floor hides every row while older pages remain (#702 @fd1d1a5e): loading while
+  // Earlier runs by itself, a Retry when an older page failed (its own error, not the banner's).
+  if (guest && view.kind === "empty" && snap.hasMore) {
+    if (snap.olderError) {
+      showState(stateView({
+        icon: "exclamationmark.triangle", title: snap.olderError, titleClass: "gstate-message", spacing: 12,
+        extra: capsuleButton("Retry", () => void loadOlder().then(grew => { if (grew && guest) onGuestSnapshot(guest.raw); })),
+      }));
+    } else showState(stateView({ extra: centeredSpinner() }));
+    return;
+  }
   switch (view.kind) {
     case "loading":
       showState(stateView({ extra: centeredSpinner() }));

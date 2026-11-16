@@ -123,16 +123,32 @@ export function replyTarget(merge: GuestGramMerge, itemID: string): string | nul
 /** A shared agent as the list shows it. */
 export interface GuestGramGrantInfo { id: string; agent: string; owner: string; machine: string; terminal: string; label: string }
 
-/** What the guest's Gram calls each share's agent (HerdrKit GuestAccess.recipientLabels): its name,
- *  told apart where two shares carry the same one: "name · owner · machine" across owners or
- *  machines, "name · terminal" on one machine. */
+/** What the guest's Gram calls each share's agent, unique across all of them (HerdrKit
+ *  GuestAccess.recipientLabels, #702 @fd1d1a5e). A name held once stays bare. Within a group
+ *  sharing a name, a label that still collides gains one more part at a time: owner and machine
+ *  ("enyo-ui · Jerry · Studio"), then the terminal (host-local, so never without the machine), then
+ *  the host id's first 6 characters, then the guest id. A share's id is Access.ID(), "<host>/<guest>". */
 export function recipientLabels(shares: readonly { id: string; agent: string; owner: string; machine: string; terminal: string }[]): Map<string, string> {
+ const label = (share: (typeof shares)[number], level: number) => {
+  const slash = share.id.indexOf("/");
+  const host = slash < 0 ? share.id : share.id.slice(0, slash), guestID = slash < 0 ? "" : share.id.slice(slash + 1);
+  const parts = [share.agent, share.owner, share.machine, share.terminal, [...host].slice(0, 6).join(""), guestID];
+  return parts.slice(0, [1, 3, 4, 5, 6][Math.min(level, 4)]).join(" · ");
+ };
  const labels = new Map<string, string>();
- for (const share of shares) {
-  const named = shares.filter(other => other.agent === share.agent);
-  if (named.length === 1) { labels.set(share.id, share.agent); continue; }
-  const sameContext = named.filter(other => other.owner === share.owner && other.machine === share.machine).length > 1;
-  labels.set(share.id, sameContext ? `${share.agent} · ${share.terminal}` : `${share.agent} · ${share.owner} · ${share.machine}`);
+ const groups = new Map<string, (typeof shares)[number][]>();
+ for (const share of shares) groups.set(share.agent, [...groups.get(share.agent) ?? [], share]);
+ for (const group of groups.values()) {
+  const levels = new Map(group.map(share => [share.id, 0]));
+  for (let round = 0; round < 5; round++) {
+   const current = group.map(share => [share, label(share, levels.get(share.id)!)] as const);
+   const counts = new Map<string, number>();
+   for (const [, text] of current) counts.set(text, (counts.get(text) ?? 0) + 1);
+   const colliding = current.filter(([, text]) => counts.get(text)! > 1);
+   if (colliding.length === 0) break;
+   for (const [share] of colliding) levels.set(share.id, levels.get(share.id)! + 1);
+  }
+  for (const share of group) labels.set(share.id, label(share, levels.get(share.id)!));
  }
  return labels;
 }
