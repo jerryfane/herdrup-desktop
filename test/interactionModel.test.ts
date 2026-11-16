@@ -6,10 +6,10 @@ test("incremental transcript replaces changed entries without duplicating older 
  const update = [{ kind: "reply", id: "r", ts_ms: 2, text: "Complete" }, { kind: "step", id: "s", ts_ms: 3, status: "done" }];
  const merged = mergeTranscript(initial, update);
  const earlier = [{ kind: "user", id: "u", ts_ms: 1, text: "Prompt" }, update[0]!];
- const paged = mergeTranscript(merged, earlier, true);
+ const paged = mergeTranscript(merged, earlier, { older: true });
  expect(paged.map(e => e.id)).toEqual(["u", "r", "s"]);
  expect(paged[1]?.text).toBe("Complete");
- expect(mergeTranscript(paged, earlier, true)).toEqual(paged);
+ expect(mergeTranscript(paged, earlier, { older: true })).toEqual(paged);
 });
 
 test("prompt acknowledgement clears only the submitted draft", () => {

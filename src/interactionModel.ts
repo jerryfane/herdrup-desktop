@@ -76,19 +76,26 @@ export function modelLine(model: TranscriptModel): { label: string; accessibilit
   accessibilityLabel: `Model: ${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
  };
 }
-/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684).
- *  When the pane's remembered non-owner prompts change, herdr re-sends every earlier user entry
- *  now marked origin "other", back to the start of the session (resend_origins). One the chat
- *  does not hold and that is older than the oldest it holds is history not loaded yet, which an
- *  older page brings in place: it is dropped, not appended after the newest turn. */
-export function liveEntries(current: readonly Entry[], page: Entry[]): Entry[] {
+/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684, as
+ *  narrowed by #691). When the pane's remembered non-owner prompts change, herdr re-sends every
+ *  earlier user entry now marked origin "other", back to the start of the session (resend_origins).
+ *  Only such a replay is dropped: an entry the chat does not hold that is a user prompt marked
+ *  origin "other", with a nonzero timestamp older than the oldest held, while older history is
+ *  still unloaded (hasOlder). An older page brings it in place. Every other unknown entry is new and
+ *  kept whatever its timestamp: one without ts_ms (0) or behind the window through clock skew must
+ *  not be lost, since the after cursor moves past it. With the whole session held, herdr re-sends
+ *  only entries already held, so nothing unknown is a replay. */
+export function liveEntries(current: readonly Entry[], page: Entry[], hasOlder: boolean): Entry[] {
  const oldest = current[0]?.ts_ms;
- if (oldest === undefined) return page;
+ if (!hasOlder || oldest === undefined) return page;
  const held = new Set(current.map(e => e.id));
- return page.filter(e => held.has(e.id) || e.ts_ms >= oldest);
+ return page.filter(e => held.has(e.id) || !(e.kind === "user" && e.origin === "other" && e.ts_ms > 0 && e.ts_ms < oldest));
 }
-export function mergeTranscript(current: Entry[], page: Entry[], older = false): Entry[] {
- if (!older) page = liveEntries(current, page);
+/** Merges a transcript page into the held entries: an older page before them, a live page after
+ *  (liveEntries; hasOlder says older history is still unloaded). */
+export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?: boolean; hasOlder?: boolean } = {}): Entry[] {
+ const older = opts.older ?? false;
+ if (!older) page = liveEntries(current, page, opts.hasOlder ?? false);
  const updates = new Map(page.map(e => [e.id, e]));
  const oldIDs = new Set(current.map(e => e.id));
  const merged = current.map(e => updates.get(e.id) ?? e);
