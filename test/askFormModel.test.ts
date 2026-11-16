@@ -169,3 +169,17 @@ test("a lone checkbox with Other summarises both", () => {
  expect(formValues(form(consent), { consent: draft })).toEqual({ consent: { options: ["yes"], other: "and email" } });
  expect(fieldAnswer(consent, draft)).toBe("Send me a Gram, Other: and email");
 });
+
+// herdrup #674 review: field names are omp's, any string. Keyed by name in plain objects, a field
+// named "__proto__" set the prototype and its answer was dropped, and "toString" read
+// Object.prototype's. Every name is an ordinary key, in the draft and in the values sent.
+test("fields named __proto__, constructor and toString keep their answers", () => {
+ const f = form(text("__proto__", { value: "a" }), choice("constructor"), text("toString"));
+ const draft = formDraft(f);
+ expect(Object.keys(draft)).toEqual(["__proto__", "constructor", "toString"]);
+ draft["__proto__"] = { ...draft["__proto__"]!, text: "changed" };
+ draft["constructor"] = chooseOption(f.fields[1]!, draft["constructor"]!, "b");
+ draft["toString"] = { ...draft["toString"]!, text: "typed" };
+ expect(JSON.parse(JSON.stringify(formValues(f, draft)))).toEqual(JSON.parse('{"__proto__":{"text":"changed"},"constructor":{"options":["b"]},"toString":{"text":"typed"}}'));
+ expect(firstProblem(f, draft)).toBe(-1);
+});

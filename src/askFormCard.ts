@@ -3,7 +3,7 @@
 // preselected and marked, an Other row that opens a text field, Back / Next, and a review step
 // whose Submit sends agent.answer_form. Answered, the card lists the answers one per line; a
 // reader who can't answer sees the first field read-only.
-import { chooseOption, chooseOther, dropEmptyOther, fieldAnswer, fieldChanged, fieldProblem, fieldQuestion, firstProblem, formDraft, formValues, optionsOf, type AskForm, type AskFormAnswer, type AskFormField, type AskFormStatus, type FieldValue, type FormDraft } from "./askFormModel";
+import { chooseOption, chooseOther, dropEmptyOther, fieldAnswer, fieldChanged, fieldProblem, fieldQuestion, firstProblem, fieldMap, formDraft, formValues, optionsOf, type AskForm, type AskFormAnswer, type AskFormField, type AskFormStatus, type FieldValue, type FormDraft } from "./askFormModel";
 import { symbolNow } from "./symbol";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
@@ -128,7 +128,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
 
  const field = form.fields[step]!;
  const draft = draftOf(field);
- const set = (next: typeof draft) => { state.draft = { ...state.draft, [field.name]: next }; };
+ const set = (next: typeof draft) => { state.draft = fieldMap({ ...state.draft, [field.name]: next }); };
  nodes.push(header(`${step + 1} of ${count}`, count, step));
  if (step === 0 && form.intro) nodes.push(el("p", "ask-form-intro", form.intro));
  if (field.title) nodes.push(el("p", "ask-form-title", field.title));
