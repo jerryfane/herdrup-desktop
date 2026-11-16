@@ -92,7 +92,7 @@ func guestGramPolls(multi bool, singles int) (visible, badge, cost time.Duration
 // guestGramRediscover is how often a shared agent whose owner doesn't share
 // Gram is asked again, so turning sharing on later offers its Gram (one
 // connect each time).
-const guestGramRediscover = 2 * time.Minute
+var guestGramRediscover = 2 * time.Minute
 
 // startGuestGram starts the combined guest Gram, or brings a running one up
 // to date with the saved shared agents.
@@ -190,8 +190,11 @@ func (h *guestGramHub) sync() {
 	h.publish()
 }
 
-// run reads one shared agent: its first agent list says whether its owner
-// shares Gram; then its Gram is polled until the grant is dropped.
+// run reads one shared agent: an agent list says whether its owner shares
+// Gram (each admission's hello reads it anew), asked again every
+// guestGramRediscover while not; while shared, its Gram is polled, and when
+// the owner stops sharing it (watchGram returns) run asks again, until the
+// grant is dropped.
 func (h *guestGramHub) run(l *link) {
 	d := h.d
 	ctx := l.ctx
@@ -200,15 +203,39 @@ func (h *guestGramHub) run(l *link) {
 	defer stop()
 	id := l.access.ID()
 	for ctx.Err() == nil {
-		_, _, err := l.guestClient.GuestAgentList(ctx)
+		if !h.discoverGram(ctx, l, id) {
+			return
+		}
+		d.gramReset(l, l.access.MachineLabel)
+		h.mu.Lock()
+		visible := h.visible
+		h.mu.Unlock()
+		h.repoll()
+		if visible {
+			d.gramSetVisibleOn(l.gram, true)
+		}
+		d.watchGram(ctx, l)
 		if ctx.Err() != nil {
 			return
+		}
+		h.setGrant(id, func(g *GuestGramGrant) { g.Gram = false })
+	}
+}
+
+// discoverGram lists the shared agent's agents until its owner shares Gram
+// (true), or the grant ends (false).
+func (h *guestGramHub) discoverGram(ctx context.Context, l *link, id string) bool {
+	d := h.d
+	for ctx.Err() == nil {
+		_, _, err := l.guestClient.GuestAgentList(ctx)
+		if ctx.Err() != nil {
+			return false
 		}
 		wait := guestGramRediscover
 		if err != nil {
 			h.setGrant(id, func(g *GuestGramGrant) { g.Error = err.Error() })
 			if errors.Is(err, guest.ErrRevoked) {
-				return
+				return false
 			}
 			wait = 30 * time.Second
 			if errors.Is(err, guest.ErrRateLimited) {
@@ -220,27 +247,16 @@ func (h *guestGramHub) run(l *link) {
 			features := l.guest.Features()
 			h.setGrant(id, func(g *GuestGramGrant) { g.Ready, g.Gram, g.Error = true, features.Gram, "" })
 			if features.Gram {
-				break
+				return true
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-time.After(wait):
 		}
 	}
-	if ctx.Err() != nil {
-		return
-	}
-	d.gramReset(l, l.access.MachineLabel)
-	h.mu.Lock()
-	visible := h.visible
-	h.mu.Unlock()
-	h.repoll()
-	if visible {
-		d.gramSetVisibleOn(l.gram, true)
-	}
-	d.watchGram(ctx, l)
+	return false
 }
 
 // repoll spaces the shared agents' polls by how many share a host without

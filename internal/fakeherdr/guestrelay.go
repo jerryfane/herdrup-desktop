@@ -548,7 +548,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	}
 	agent, found := r.granted()
 	r.mu.Lock()
-	paused := r.paused
+	paused, gram := r.paused, r.Gram
 	r.mu.Unlock()
 	live := found && !paused
 	pane, _ := agent["pane_id"].(string)
@@ -557,7 +557,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	}
 	switch req.Method {
 	case "gram.list", "gram.mark_read", "gram.post", "gram.upload_chunk", "gram.upload.discard", "gram.get_file_chunk":
-		if !r.Gram {
+		if !gram {
 			refuse("guest_forbidden")
 			return
 		}
@@ -751,6 +751,14 @@ func (r *GuestRelay) granted() (map[string]any, bool) {
 func (r *GuestRelay) Pause(paused bool) {
 	r.mu.Lock()
 	r.paused = paused
+	r.mu.Unlock()
+}
+
+// SetGram flips the share-gram switch while guests are connected: the gate
+// refuses the Gram methods at once, and the next admission's hello says so.
+func (r *GuestRelay) SetGram(on bool) {
+	r.mu.Lock()
+	r.Gram = on
 	r.mu.Unlock()
 }
 

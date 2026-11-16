@@ -59,17 +59,22 @@ function guestRecipient(): GuestGramGrantInfo | null {
   return guest?.view.recipient ?? null;
 }
 
-/** Switches Gram between the owner's and the guest's (#697). */
+/** Switches Gram between the owner's and the guest's (#697). While Gram shows, the outgoing
+ *  backend is hidden first and the incoming one shown, so a later showGram(false) hides the one
+ *  that is visible: the other's polling and staged uploads never run on behind another page. */
 export function setGuestGram(on: boolean) {
   if (on === (guest !== null)) return;
+  if (shown) void (guest ? Desk.guestGramSetVisible(false) : Desk.gramSetVisible(false));
   if (!on) {
     guest = null;
     guestPicked = null;
+    if (shown) void Desk.gramSetVisible(true);
     void Desk.gramState().then(onSnapshot);
     return;
   }
   const none: GuestGramSnapshot = { active: false, grants: [], recipient: "", saved: [] };
   guest = { raw: none, selected: guestSelected, view: guestGramView(none, guestSelected, guestPicked) };
+  if (shown) void Desk.guestGramSetVisible(true);
   void Desk.guestGramState().then(onGuestSnapshot);
 }
 

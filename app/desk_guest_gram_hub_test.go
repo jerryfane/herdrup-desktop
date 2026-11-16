@@ -420,3 +420,68 @@ func (c *countLister) GramList(ctx context.Context, limit uint64, before *string
 	c.n++
 	return c.guestGramLister.GramList(ctx, limit, before)
 }
+
+// #228: a shared agent whose owner stops sharing Gram, then shares it again,
+// is offered again: its watcher hands back to discovery, which reconnects.
+func TestGuestGramComesBackWhenSharingIsTurnedBackOn(t *testing.T) {
+	defer func(was time.Duration) { guestGramRediscover = was }(guestGramRediscover)
+	guestGramRediscover = 50 * time.Millisecond
+	d, fx, _ := guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram")
+	d.GuestGramSetVisible(true)
+	shared := func(want bool) func() bool {
+		return func() bool {
+			g, _ := grantState(d.GuestGramState(), "market")
+			return g.Grant.Gram == want && (!want || g.Gram.Phase == "loaded")
+		}
+	}
+	waitFor(t, "market's Gram", shared(true))
+	relay := fx.Grants[0].Relay
+	relay.SetGram(false)
+	// Wake the watcher (Gram hidden, shown) rather than wait out its poll.
+	d.GuestGramSetVisible(false)
+	d.GuestGramSetVisible(true)
+	waitFor(t, "market's Gram withdrawn", shared(false))
+	relay.SetGram(true)
+	waitFor(t, "market's Gram offered again", shared(true))
+}
+
+// #229: a file the guest posts is kept on this device under the key its
+// download looks for (gramFetch: "<grant>\x1f<id>"), so it opens even when
+// the host is gone.
+func TestGuestGramPostedFileIsKeptUnderItsGrantKey(t *testing.T) {
+	d, _, _ := guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram")
+	d.GuestGramSetVisible(true)
+	waitFor(t, "market's Gram", func() bool {
+		g, _ := grantState(d.GuestGramState(), "market")
+		return g.Grant.Gram && g.Gram.Phase == "loaded"
+	})
+	market, _ := grantState(d.GuestGramState(), "market")
+	if err := d.GuestGramSetRecipient(market.Grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "kept.txt")
+	if err := os.WriteFile(file, []byte("kept bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GramAttachFiles([]string{file}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.GramPost(context.Background(), "", nil, []string{file}); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	waitFor(t, "the posted file kept on this device", func() bool {
+		g, _ := grantState(d.GuestGramState(), "market")
+		for _, m := range g.Gram.Messages {
+			if m.File != nil && m.File.Name == "kept.txt" {
+				id = m.ID
+				_, ok := d.gramCache().Cached(id)
+				return ok
+			}
+		}
+		return false
+	})
+	if !strings.Contains(id, guestGramSep) {
+		t.Fatalf("message id %q has no grant prefix", id)
+	}
+}
