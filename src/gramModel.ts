@@ -35,11 +35,14 @@ export type UnreadRule = { messageID: string; count: number };
 export const RENDER_WINDOW = 80;
 
 /** Whether two messages (oldest first) belong to one group: the same side, and the same agent
- * (theirs) or the same recipient (yours). */
+ * (theirs) or the same recipient (yours). In the guest's one Gram an id is "<grant>\x1f<id>":
+ * two shared agents are two senders even with the same name (#697). */
 export function sameRun(a: FeedMessage, b: FeedMessage): boolean {
-  if (a.fromAgent !== b.fromAgent) return false;
+  if (a.fromAgent !== b.fromAgent || grantKey(a.id) !== grantKey(b.id)) return false;
   return a.fromAgent ? a.from === b.from : (a.to ?? null) === (b.to ?? null);
 }
+
+const grantKey = (id: string) => { const i = id.indexOf("\u001f"); return i < 0 ? "" : id.slice(0, i); };
 
 function localSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();

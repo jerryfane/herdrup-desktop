@@ -276,8 +276,12 @@ type gramDesk struct {
 	hub    *guestGramHub
 	prefix string
 	// pollVisible and pollBadge override gramPollVisible and gramPollBadge
-	// (a shared agent's, guestGramPolls); zero keeps them.
+	// (a shared agent's, guestGramPolls); zero keeps them. requestCost is
+	// the wait one relay request buys on a host without session reuse, so a
+	// poll that walked lastRequests pages waits that much longer.
 	pollVisible, pollBadge time.Duration
+	requestCost            time.Duration
+	lastRequests           int
 
 	// onPublish observes snapshots, for tests.
 	onPublish func(GramSnapshot)
@@ -681,6 +685,14 @@ func (d *Desk) watchGram(ctx context.Context, l *link) {
 			d.gramBadge(ctx, l)
 			wait = pollBadge
 		}
+		// A shared agent without session reuse pays for every relay request
+		// its poll made (a hidden badge walks every page): the combined guest
+		// Gram's hosts stay within their share of the relay's connects.
+		g.mu.Lock()
+		if g.requestCost > 0 {
+			wait = max(wait, time.Duration(g.lastRequests)*g.requestCost)
+		}
+		g.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return
@@ -753,7 +765,7 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 
 	answer, err := d.gramAnswer(ctx, l, params)
 	if err == nil {
-		if _, xerr := d.savedGrams().ExpireFiles(answer.Messages); xerr != nil {
+		if _, xerr := d.savedGrams().ExpireFiles(savedIDs(g.prefix, answer.Messages)); xerr != nil {
 			d.alertSaved(xerr)
 		}
 	}
@@ -793,6 +805,11 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 	}
 	changed := g.inbox.Apply(answer, asked)
 	g.phase, g.unavailable, g.refreshNote, g.failures = "loaded", "", "", 0
+	if changed {
+		// A head load that replaced the list ends an older page's failure: its
+		// Retry no longer applies (herdrup#702 @bb941f79, one paging error a feed).
+		g.olderError = ""
+	}
 	if !changed && answer.Unchanged {
 		d.publishGramLocked(g)
 		return gramUnchanged
@@ -945,7 +962,7 @@ func (d *Desk) gramLoadOlder(ctx context.Context, l *link) (bool, error) {
 		stale := g.inbox.Generation() != generation
 		g.mu.Unlock()
 		if grew {
-			if _, err := d.savedGrams().ExpireFiles(answer.Messages); err != nil {
+			if _, err := d.savedGrams().ExpireFiles(savedIDs(g.prefix, answer.Messages)); err != nil {
 				d.alertSaved(err)
 			}
 			return true, nil
@@ -1242,4 +1259,18 @@ func (d *Desk) GramMenu(ctx context.Context, id string, items []string) bool {
 	}
 	mygo.NewMenu(entries).Popup(mygo.CallerWindow(ctx))
 	return true
+}
+
+// savedIDs are messages as the saved list names them: a shared agent's under
+// its "<grant>\x1f<id>" (GramSetSaved), the owner's as they are.
+func savedIDs(prefix string, ms []herdrapi.GramMessageInfo) []herdrapi.GramMessageInfo {
+	if prefix == "" {
+		return ms
+	}
+	out := make([]herdrapi.GramMessageInfo, len(ms))
+	for i, m := range ms {
+		m.ID = prefix + m.ID
+		out[i] = m
+	}
+	return out
 }

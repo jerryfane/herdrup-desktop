@@ -16,7 +16,7 @@ const grant = (id: string, owner: string, messages: GramMessage[], o: { gram?: b
 });
 
 const s: GuestGramSnapshot = {
- active: true, recipient: "",
+ active: true, recipient: "", saved: [],
  grants: [
   grant("market", "Jerry", [msg("market", "m2", 300, { unread: true }), msg("market", "m1", 100)]),
   grant("ledger", "Alex", [msg("ledger", "l1", 200, { unread: true }), msg("ledger", "mine", 250, { fromAgent: false })], { status: "Couldn't send" }),
@@ -48,9 +48,9 @@ test("one agent selected shows its messages only, and the composer writes to it"
  expect(v.badge).toBe(2);
 });
 
-test("a chosen recipient wins over the default, and the safe floor holds the feed back", () => {
- const paged: GuestGramSnapshot = { ...s, recipient: "ledger", grants: [grant("market", "Jerry", [msg("market", "m2", 300)], { hasMore: true }), s.grants[1]!] };
- const v = guestGramView(paged, null);
+test("an explicit pick wins over the default, and the safe floor holds the feed back", () => {
+ const paged: GuestGramSnapshot = { ...s, grants: [grant("market", "Jerry", [msg("market", "m2", 300)], { hasMore: true }), s.grants[1]!] };
+ const v = guestGramView(paged, null, "ledger");
  expect(v.recipient?.id).toBe("ledger");
  // market may still hold messages older than 300, and others of its 300 millisecond: nothing
  // shows yet (strict floor, #702 @1a8e0bbb); Earlier pages market.
@@ -59,8 +59,27 @@ test("a chosen recipient wins over the default, and the safe floor holds the fee
  expect(v.merge.grantsToPage).toEqual(["market"]);
 });
 
+// #227 review: a post routes Go to the "to" shown (its recipient); that route must not become a
+// choice, or the default stops following the feed.
+test("Go's routing pin is not a choice: the default keeps following the newest incoming message", () => {
+ const routed: GuestGramSnapshot = { ...s, recipient: "market" };
+ expect(guestGramView(routed, null).recipient?.id).toBe("market");
+ const newer: GuestGramSnapshot = { ...routed, grants: [s.grants[0]!, grant("ledger", "Alex", [msg("ledger", "l9", 900, { unread: true })])] };
+ expect(guestGramView(newer, null).recipient?.id).toBe("ledger");
+});
+
+// #227 review: files attached have uploaded to the pinned host and go with it, so "to" holds there
+// over a pick or the default until they are sent or removed.
+test("attached files hold the to on the agent they uploaded to", () => {
+ const market = grant("market", "Jerry", [msg("market", "m2", 300)]);
+ market.gram.attachments = [{ path: "/a.pdf", name: "a.pdf", mime: "application/pdf", isImage: false, size: 1, state: "uploaded", label: "", fraction: 1, determinate: true, indeterminate: false, failed: false }];
+ const attached: GuestGramSnapshot = { ...s, recipient: "market", grants: [market, grant("ledger", "Alex", [msg("ledger", "l9", 900)])] };
+ expect(guestGramView(attached, null, "ledger").recipient?.id).toBe("market");
+ expect(guestGramView(attached, null, "ledger").snapshot.attachments.length).toBe(1);
+});
+
 test("no shared agent with Gram offers no Gram tab", () => {
- const v = guestGramView({ active: true, recipient: "", grants: [s.grants[2]!] }, null);
+ const v = guestGramView({ active: true, recipient: "", saved: [], grants: [s.grants[2]!] }, null);
  expect(v.offered).toBe(false);
  expect(v.recipient).toBeNull();
  expect(v.snapshot.phase).toBe("idle");

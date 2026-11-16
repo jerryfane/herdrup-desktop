@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,9 @@ func guestGramFixture(t *testing.T) (*Desk, *fakeherdr.GuestShares, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := func(string, json.RawMessage) (any, *fakeherdr.APIError) { return nil, &fakeherdr.APIError{Code: "unknown_method"} }
+	owner := func(string, json.RawMessage) (any, *fakeherdr.APIError) {
+		return nil, &fakeherdr.APIError{Code: "unknown_method"}
+	}
 	fx, err := fakeherdr.NewGuestShares(shares, owner, "w1:p2", time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -187,4 +191,92 @@ func TestGuestGramFollowsTheSavedSharesAndEndsForTheOwner(t *testing.T) {
 	if d.GuestGramState().Active {
 		t.Fatal("the guest's Gram runs after its connection was forgotten")
 	}
+}
+
+// #227 review: the agent page's Chat attachments download through the shared
+// agent's combined guest Gram link: the owner's Gram is idle while a guest.
+func TestGuestChatAttachmentsUseTheSharedAgentsGramLink(t *testing.T) {
+	d, _, connected := guestGramFixture(t)
+	d.GuestGramSetVisible(true)
+	waitFor(t, "market's Gram", func() bool {
+		g, _ := grantState(d.GuestGramState(), "market")
+		return g.Grant.Gram && g.Gram.Phase == "loaded"
+	})
+	l, err := d.attachmentLink()
+	if err != nil {
+		t.Fatalf("attachment link: %v", err)
+	}
+	if l.access.ID() != connected || l.gram == nil {
+		t.Fatalf("attachment link is %q, want the connected share's Gram link %q", l.access.ID(), connected)
+	}
+}
+
+// #227 review: files attached have uploaded to the recipient's host, so the
+// recipient holds until they are sent or removed, whoever asks to change it.
+func TestGuestGramRecipientHoldsWhileFilesAreAttached(t *testing.T) {
+	d, _, _ := guestGramFixture(t)
+	d.GuestGramSetVisible(true)
+	waitFor(t, "two shared agents with Gram", func() bool {
+		s := d.GuestGramState()
+		a, _ := grantState(s, "market")
+		b, _ := grantState(s, "legal")
+		return a.Grant.Gram && b.Grant.Gram && a.Gram.Phase == "loaded" && b.Gram.Phase == "loaded"
+	})
+	s := d.GuestGramState()
+	market, _ := grantState(s, "market")
+	legal, _ := grantState(s, "legal")
+	if err := d.GuestGramSetRecipient(market.Grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GramAttachFiles([]string{file}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.GuestGramSetRecipient(legal.Grant.ID); err == nil {
+		t.Fatal("the recipient moved while a file was attached to another host")
+	}
+	if err := d.GramCancelAttachment(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.GuestGramSetRecipient(legal.Grant.ID); err != nil {
+		t.Fatalf("the recipient stayed locked after the file was removed: %v", err)
+	}
+}
+
+// #227 review: a shared agent's saved message is kept under its
+// "<grant>\x1f<id>"; when its host expires the file, the saved copy follows.
+func TestGuestGramSavedFileExpiresWithItsHost(t *testing.T) {
+	d, fx, _ := guestGramFixture(t)
+	market := fx.Grants[0]
+	market.Gram.Add(herdrapi.GramMessageInfo{ID: "with-file", CreatedUnixMs: uint64(time.Now().UnixMilli()),
+		Direction: herdrapi.GramDirectionAgentToOwner, From: market.Agent, Text: "the report",
+		File: &herdrapi.GramFileInfo{Name: "report.pdf", Mime: "application/pdf"}}, []byte("pdf"))
+	d.GuestGramSetVisible(true)
+	var id string
+	waitFor(t, "the message with a file", func() bool {
+		g, _ := grantState(d.GuestGramState(), "market")
+		for _, m := range g.Gram.Messages {
+			if strings.HasSuffix(m.ID, guestGramSep+"with-file") {
+				id = m.ID
+				return true
+			}
+		}
+		return false
+	})
+	if err := d.GramSetSaved(id, true); err != nil {
+		t.Fatal(err)
+	}
+	market.Gram.Update("with-file", func(m *herdrapi.GramMessageInfo) { m.ExpiredFile, m.File = m.File, nil })
+	waitFor(t, "the saved copy's file to expire", func() bool {
+		d.GuestGramRefresh(context.Background(), nil)
+		for _, s := range d.GuestGramState().Saved {
+			if s.ID == id {
+				return s.File == nil && s.ExpiredFile != nil
+			}
+		}
+		return false
+	})
 }

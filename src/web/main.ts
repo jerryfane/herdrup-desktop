@@ -88,7 +88,7 @@ async function buildBars(view: { tab: GuestTab; gram: boolean }) {
   ...(view.gram ? [["gram", "bubble.left.and.bubble.right.fill", "Gram"] as [GuestTab, string, string]] : []),
   ["settings", "gearshape.fill", "Settings"],
  ];
- const actions = view.tab === "gram" ? await barActions(() => {}) : [];
+ const actions = view.tab === "gram" ? await barActions(null) : [];
  const tabs = await Promise.all(items.map(([key, icon, label]) =>
   tabNode(key, icon, label, key === view.tab, key === "gram", key === "settings" ? guestActions.settings : key === "gram" ? () => guestActions.gram() : guestActions.agents)));
  if (generation !== barGeneration) return;

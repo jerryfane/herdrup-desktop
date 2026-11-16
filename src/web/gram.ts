@@ -172,12 +172,12 @@ function shownID(id: string): string { return g.link ? grantID(g.link) + SEP + i
 
 function guestSnapshot(s: GramSnapshot = snapshot()): GuestGramSnapshot {
  const link = g.link;
- if (!link) return { active: false, grants: [], recipient: "" };
+ if (!link) return { active: false, grants: [], recipient: "", saved: savedList() };
  const id = grantID(link), prefix = id + SEP;
  const gram = link.features().gram;
  const access = link.access;
  return {
-  active: true, recipient: gram ? id : "",
+  active: true, recipient: gram ? id : "", saved: savedList(),
   grants: [{
    grant: { id, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, terminal: access.agentTarget, gram, ready: true },
    gram: { ...s, messages: s.messages.map(m => ({ ...m, id: prefix + m.id })) },

@@ -41,6 +41,18 @@ func guestGramPage(ctx context.Context, lister guestGramLister, limit uint64, pa
 	return page, nil
 }
 
+// countingLister counts the relay requests a read made, so a shared agent's
+// next poll in the combined guest Gram waits by its cost (watchGram).
+type countingLister struct {
+	guestGramLister
+	n int
+}
+
+func (c *countingLister) GramList(ctx context.Context, limit uint64, before *string) (guest.GramPage, error) {
+	c.n++
+	return c.guestGramLister.GramList(ctx, limit, before)
+}
+
 // gramAnswer keeps the guest wire contract separate from owner API results.
 // Like Swift GuestGramMessage.gramMessage(agent:), it projects the guest's
 // read mark into the common feed model; it never receives owner read/claim data.
@@ -59,7 +71,13 @@ func (d *Desk) gramAnswer(ctx context.Context, l *link, params herdrapi.GramList
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	page, listErr := guestGramPage(ctx, l.guest, limit, params)
+	counted := &countingLister{guestGramLister: l.guest}
+	page, listErr := guestGramPage(ctx, counted, limit, params)
+	if g := l.gram; g != nil {
+		g.mu.Lock()
+		g.lastRequests = counted.n
+		g.mu.Unlock()
+	}
 	if listErr != nil && len(page.Messages) == 0 {
 		return gramstore.Answer{}, listErr
 	}

@@ -46,7 +46,7 @@ function lane(state: GuestGramState, label: string): GuestGramLane<Row> & { info
 }
 
 /** The view of `s` for the selected grant (null: All agents) and an explicit recipient pick. */
-export function guestGramView(s: GuestGramSnapshot, selected: string | null): GuestGramView {
+export function guestGramView(s: GuestGramSnapshot, selected: string | null, picked: string | null = null): GuestGramView {
  // A shared agent whose first agent list hasn't come back may yet share Gram: it holds the feed
  // back (pending) until it is known; one without Gram, or failing, does not.
  const shared = s.grants.filter(g => g.grant.gram || (!g.grant.ready && !g.grant.error));
@@ -65,7 +65,11 @@ export function guestGramView(s: GuestGramSnapshot, selected: string | null): Gu
  const listed = guestGramGroups(gram);
  const groups = listed.groups.map(group => ({ ...group, rows: group.rows.map(row => ({ ...row, unread: unread.get(row.grant.id) ?? 0 })) }));
  const labelled = listed.labelled;
- const recipientID = (s.recipient && grants.has(s.recipient) ? s.recipient : null) ?? (selected !== null && grants.has(selected) ? selected : merge.defaultTarget);
+ // The "to" (#697): while files are attached, the agent they uploaded to (Go's routing pin, which
+ // holds then); else the user's explicit pick, the selected agent, or the newest incoming one.
+ const attachedTo = s.grants.find(g => g.grant.id === s.recipient && g.gram.attachments.length > 0)?.grant.id ?? null;
+ const want = attachedTo ?? (picked && grants.has(picked) ? picked : null) ?? (selected !== null && grants.has(selected) ? selected : merge.defaultTarget);
+ const recipientID = want && grants.has(want) ? want : null;
  const recipient = recipientID ? grants.get(recipientID) ?? null : null;
  const posting = shared.find(g => g.grant.id === recipientID)?.gram;
  const snaps = scope.filter(g => g.grant.gram).map(g => g.gram);
@@ -83,7 +87,7 @@ export function guestGramView(s: GuestGramSnapshot, selected: string | null): Gu
   status: posting?.status || snaps.find(g => g.status)?.status,
   refreshing: snaps.some(g => g.refreshing),
   markingAllRead: snaps.some(g => g.markingAllRead),
-  saved: shared[0]?.gram.saved ?? [],
+  saved: s.saved ?? [],
   visible: snaps.some(g => g.visible),
   attachments: posting?.attachments ?? [],
   sending: posting?.sending ?? false,

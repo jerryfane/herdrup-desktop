@@ -306,7 +306,7 @@ func (d *Desk) GramOpenFile(ctx context.Context, key string) error {
 // and size. Programs and scripts stay save-only. Errors go back to the chat,
 // not to Gram's banner.
 func (d *Desk) GramOpenAttachment(ctx context.Context, id string) error {
-	l, err := d.gramLink()
+	l, err := d.attachmentLink()
 	if err != nil {
 		return err
 	}

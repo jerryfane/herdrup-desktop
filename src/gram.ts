@@ -50,6 +50,10 @@ import { errorText } from "./errors";
  *  agent its sidebar selects (null: All agents); null while the owner's Gram shows. */
 let guest: { raw: GuestGramSnapshot; selected: string | null; view: GuestGramView } | null = null;
 let guestSelected: string | null = null;
+/** The agent the guest chose in "Write to", until another is chosen or Gram closes; null follows
+ *  the default (the selected agent, else the newest incoming message's). Go's recipient is only
+ *  where the next file or post routes (fixRecipient), so a default it was routed to stays a default. */
+let guestPicked: string | null = null;
 /** Who the guest's composer posts to, as the page shows it. */
 function guestRecipient(): GuestGramGrantInfo | null {
   return guest?.view.recipient ?? null;
@@ -60,11 +64,12 @@ export function setGuestGram(on: boolean) {
   if (on === (guest !== null)) return;
   if (!on) {
     guest = null;
+    guestPicked = null;
     void Desk.gramState().then(onSnapshot);
     return;
   }
-  const none: GuestGramSnapshot = { active: false, grants: [], recipient: "" };
-  guest = { raw: none, selected: guestSelected, view: guestGramView(none, guestSelected) };
+  const none: GuestGramSnapshot = { active: false, grants: [], recipient: "", saved: [] };
+  guest = { raw: none, selected: guestSelected, view: guestGramView(none, guestSelected, guestPicked) };
   void Desk.guestGramState().then(onGuestSnapshot);
 }
 
@@ -86,13 +91,14 @@ let autoPaging = false;
 function onGuestSnapshot(s: GuestGramSnapshot) {
   if (!guest) return;
   if (guestSelected !== null && !s.grants.some(g => g.grant.id === guestSelected && g.grant.gram)) guestSelected = null;
-  guest = { raw: s, selected: guestSelected, view: guestGramView(s, guestSelected) };
+  guest = { raw: s, selected: guestSelected, view: guestGramView(s, guestSelected, guestPicked) };
   applySnapshot(guest.view.snapshot);
   deps.guestGramChanged();
   // Nothing showable above the safe floor, but older pages remain: load them (#702 @1a8e0bbb),
-  // one round at a time, while Gram shows.
+  // one round at a time, while Gram shows. A page error stops it (one error a feed, @bb941f79):
+  // the feed offers Retry, and a page that lands, a refresh or Retry clears it.
   const merge = guest.view.merge;
-  if (shown && !autoPaging && !merge.pending && merge.items.length === 0 && merge.hasMore) {
+  if (shown && !autoPaging && !merge.pending && merge.items.length === 0 && merge.hasMore && !guest.view.snapshot.olderError) {
     autoPaging = true;
     // Only while pages grow: a failed or empty round stops here (Earlier still offers it).
     void loadOlder().then(grew => { autoPaging = false; if (grew && guest) onGuestSnapshot(guest.raw); }, () => { autoPaging = false; });
@@ -114,7 +120,7 @@ async function loadOlder(): Promise<boolean> {
   const grew = await Desk.guestGramLoadOlder(guest.view.merge.grantsToPage).catch(() => false);
   const raw = await Desk.guestGramState();
   if (guest) {
-    guest = { raw, selected: guestSelected, view: guestGramView(raw, guestSelected) };
+    guest = { raw, selected: guestSelected, view: guestGramView(raw, guestSelected, guestPicked) };
     snap = guest.view.snapshot;
   }
   return grew;
@@ -170,7 +176,10 @@ let setupCopied = false;
 let draft = "";
 let caret = 0;
 let pickedAgent: GramAgent | null = null;
-let draftPosted: number | null = null;
+/** Each composer's draft acknowledgement counter as last seen: the owner's (""), or each shared
+ *  agent's (its grant id), since each counts its own. A post acknowledged by the composer it went
+ *  to clears the draft even if the "to" shown has moved on since (a newer incoming message). */
+const draftPosted = new Map<string, number>();
 let draftRevision = 0;
 let submittedDraftRevision: number | null = null;
 let posting = false;
@@ -287,9 +296,9 @@ function symbolAvatar(name: string): HTMLElement {
 
 // ---- Sidebar (gramSidebar) ----
 
-/** The Gram section bar's actions: hide-sidebar, then Read all while the inbox shows with
- * something unread, then Refresh. */
-export async function barActions(minimize: () => void): Promise<HTMLElement[]> {
+/** The Gram section bar's actions: hide-sidebar (where there is a sidebar rail to minimise), then
+ * Read all while the inbox shows with something unread, then Refresh. */
+export async function barActions(minimize: (() => void) | null): Promise<HTMLElement[]> {
   const slot = async (name: string, label: string, action?: () => void) => {
     const s = el("div", "slot");
     s.title = label;
@@ -302,7 +311,7 @@ export async function barActions(minimize: () => void): Promise<HTMLElement[]> {
     }
     return s;
   };
-  const out = [await slot("sidebar.leading", "Minimise sidebar", minimize)];
+  const out = minimize ? [await slot("sidebar.leading", "Minimise sidebar", minimize)] : [];
   if (!showingSaved && (snap?.unreadCount ?? 0) > 0) {
     out.push(await slot("envelope.open", "Read all", () => void markAllRead()));
   }
@@ -1729,7 +1738,8 @@ function pick(agent: GramAgent) {
 }
 
 /** The guest's composer posts and uploads through one shared agent's host: before a file or a post
- *  leaves, its "to" (the default follows the newest agent message) is fixed in Go. */
+ *  leaves, Go routes it to the "to" the page shows. A route, not a choice: the default keeps
+ *  following the feed. */
 async function fixRecipient() {
   const to = guestRecipient();
   if (guest && to && guest.raw.recipient !== to.id) await Desk.guestGramSetRecipient(to.id);
@@ -1797,13 +1807,18 @@ function openAgentsSheet() {
       // The guest's composer writes to one shared agent (#697): its "to", grouped by owner.
       const sections: HTMLElement[] = [];
       const to = guestRecipient()?.id ?? null;
+      // Files attached have uploaded to "to"'s host and go with it: the choice holds until they are
+      // sent or removed (the header's picker as the chip).
+      const locked = (snap?.attachments.length ?? 0) > 0;
       for (const group of guest.view.groups) {
         const list = el("div", "gsheet-group");
         for (const r of group.rows) {
           const row = sheetRow(null, r.grant.label, `${r.grant.owner} · ${r.grant.machine}`, () => {
-            void Desk.guestGramSetRecipient(r.grant.id).catch(() => undefined);
+            guestPicked = r.grant.id;
+            if (guest) onGuestSnapshot(guest.raw);
             d.close();
           });
+          row.toggleAttribute("disabled", locked && r.grant.id !== to);
           row.prepend(gramAvatar(r.grant.agent, 32));
           if (r.grant.id === to) row.append(icon("checkmark", 17, "semibold", "brand"));
           list.append(row);
@@ -1882,17 +1897,24 @@ function onSnapshot(s: GramSnapshot) {
 function applySnapshot(s: GramSnapshot) {
   const prevUnread = snap?.unreadCount ?? 0;
   snap = s;
-  if (draftPosted !== null && s.draftPosted > draftPosted) {
+  let posted = false, reset = false;
+  const counters: [string, number][] = guest ? guest.raw.grants.map(g => [g.grant.id, g.gram.draftPosted]) : [["", s.draftPosted]];
+  for (const [composer, n] of counters) {
+    const seen = draftPosted.get(composer);
+    if (seen !== undefined && n > seen) posted = true;
+    else if (seen !== undefined && n < seen) reset = true;
+    draftPosted.set(composer, n);
+  }
+  if (posted) {
     if (submittedDraftRevision === draftRevision) {
       pickedAgent = null;
       setDraft("", 0);
     }
     submittedDraftRevision = null;
-  } else if (draftPosted !== null && s.draftPosted < draftPosted) {
+  } else if (reset) {
     // Reconnecting replaces the backend composer and resets its counter.
     submittedDraftRevision = null;
   }
-  draftPosted = s.draftPosted;
   for (const [path, ev] of uploads) {
     const c = s.attachments.find((a) => a.path === path);
     if (!c || c.state !== ev.state) uploads.delete(path);

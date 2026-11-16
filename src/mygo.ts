@@ -562,6 +562,11 @@ export interface GuestGramSnapshot {
   active: boolean;
   grants: GuestGramState[];
   recipient: string;
+  /**
+   * Saved is this device's saved messages, newest first (one list for
+   * every shared agent; a shared agent's under its "<grant>\x1f<id>").
+   */
+  saved: SavedGram[];
 }
 
 /** GuestGramState is one shared agent's Gram for the combined guest Gram. */
@@ -1432,9 +1437,9 @@ export const Desk = {
     return call("Desk.GuestGramRefresh", grants);
   },
   /**
-   * GuestGramSetRecipient chooses the shared agent the composer posts to; its
-   * files upload to that agent's host, so the page changes it only while no
-   * file is attached.
+   * GuestGramSetRecipient chooses the shared agent the composer posts to. Files
+   * already attached have uploaded to the current one's host and go with it, so
+   * the recipient holds until they are sent or removed.
    */
   guestGramSetRecipient(grant: string): Promise<void> {
     return call("Desk.GuestGramSetRecipient", grant);

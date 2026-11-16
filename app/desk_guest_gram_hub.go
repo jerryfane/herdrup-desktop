@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
+	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/guest"
 )
 
@@ -52,6 +53,9 @@ type GuestGramSnapshot struct {
 	Active    bool             `json:"active"`
 	Grants    []GuestGramState `json:"grants"`
 	Recipient string           `json:"recipient"`
+	// Saved is this device's saved messages, newest first (one list for
+	// every shared agent; a shared agent's under its "<grant>\x1f<id>").
+	Saved []gramstore.SavedGram `json:"saved"`
 }
 
 var GuestGramChanged = mygo.NewEvent[GuestGramSnapshot]("guest-gram:changed")
@@ -73,15 +77,22 @@ type guestGramHub struct {
 }
 
 // Polling for N shared agents: a host with multi_request reuses its session,
-// so each polls as the owner's Gram does; every other poll is a relay connect,
-// and the relay allows a network 30 a minute for everything a guest does, so
-// those hosts share about 12 a minute between them.
-func guestGramPolls(multi bool, singles int) (visible, badge time.Duration) {
-	if multi || singles <= 1 {
-		return gramPollVisible, max(gramPollBadge, 30*time.Second)
+// so each polls as the owner's Gram does (its badge every 30 s). On every
+// other host each relay request is a connect, and the relay allows a network
+// 30 a minute for everything a guest does: those hosts share about 12 a
+// minute between them, so each request costs singles × 5 s of wait (a hidden
+// badge walks every page; watchGram waits by the requests it made).
+func guestGramPolls(multi bool, singles int) (visible, badge, cost time.Duration) {
+	if multi {
+		return gramPollVisible, max(gramPollBadge, 30*time.Second), 0
 	}
-	return max(gramPollVisible, time.Duration(singles)*5*time.Second), max(30*time.Second, time.Duration(singles)*10*time.Second)
+	return gramPollVisible, max(gramPollBadge, 30*time.Second), time.Duration(max(singles, 1)) * 5 * time.Second
 }
+
+// guestGramRediscover is how often a shared agent whose owner doesn't share
+// Gram is asked again, so turning sharing on later offers its Gram (one
+// connect each time).
+const guestGramRediscover = 2 * time.Minute
 
 // startGuestGram starts the combined guest Gram, or brings a running one up
 // to date with the saved shared agents.
@@ -193,16 +204,24 @@ func (h *guestGramHub) run(l *link) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err == nil {
-			break
-		}
-		h.setGrant(id, func(g *GuestGramGrant) { g.Error = err.Error() })
-		if errors.Is(err, guest.ErrRevoked) {
-			return
-		}
-		wait := 30 * time.Second
-		if errors.Is(err, guest.ErrRateLimited) {
-			wait = max(wait, l.guest.RateLimitedUntil().Sub(d.guestClock.Now()))
+		wait := guestGramRediscover
+		if err != nil {
+			h.setGrant(id, func(g *GuestGramGrant) { g.Error = err.Error() })
+			if errors.Is(err, guest.ErrRevoked) {
+				return
+			}
+			wait = 30 * time.Second
+			if errors.Is(err, guest.ErrRateLimited) {
+				wait = max(wait, l.guest.RateLimitedUntil().Sub(d.guestClock.Now()))
+			}
+		} else {
+			// Each admission reads the owner's sharing anew (the hello's
+			// features): ask again later while Gram is off.
+			features := l.guest.Features()
+			h.setGrant(id, func(g *GuestGramGrant) { g.Ready, g.Gram, g.Error = true, features.Gram, "" })
+			if features.Gram {
+				break
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -210,9 +229,7 @@ func (h *guestGramHub) run(l *link) {
 		case <-time.After(wait):
 		}
 	}
-	features := l.guest.Features()
-	h.setGrant(id, func(g *GuestGramGrant) { g.Ready, g.Gram, g.Error = true, features.Gram, "" })
-	if !features.Gram {
+	if ctx.Err() != nil {
 		return
 	}
 	d.gramReset(l, l.access.MachineLabel)
@@ -240,10 +257,10 @@ func (h *guestGramHub) repoll() {
 	}
 	h.mu.Unlock()
 	for _, l := range links {
-		visible, badge := guestGramPolls(l.guest.Features().MultiRequest, singles)
+		visible, badge, cost := guestGramPolls(l.guest.Features().MultiRequest, singles)
 		g := l.gram
 		g.mu.Lock()
-		g.pollVisible, g.pollBadge = visible, badge
+		g.pollVisible, g.pollBadge, g.requestCost = visible, badge, cost
 		g.mu.Unlock()
 	}
 }
@@ -292,7 +309,7 @@ func (h *guestGramHub) update(g *gramDesk, s GramSnapshot) {
 func (h *guestGramHub) snapshot() GuestGramSnapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	s := GuestGramSnapshot{Active: true, Grants: make([]GuestGramState, 0, len(h.order)), Recipient: h.recipient}
+	s := GuestGramSnapshot{Active: true, Grants: make([]GuestGramState, 0, len(h.order)), Recipient: h.recipient, Saved: h.d.savedGrams().List()}
 	for _, id := range h.order {
 		grant, ok := h.grants[id]
 		if !ok {
@@ -348,9 +365,9 @@ func (d *Desk) GuestGramSetVisible(visible bool) {
 	}
 }
 
-// GuestGramSetRecipient chooses the shared agent the composer posts to; its
-// files upload to that agent's host, so the page changes it only while no
-// file is attached.
+// GuestGramSetRecipient chooses the shared agent the composer posts to. Files
+// already attached have uploaded to the current one's host and go with it, so
+// the recipient holds until they are sent or removed.
 func (d *Desk) GuestGramSetRecipient(grant string) error {
 	h := d.guestGram.Load()
 	if h == nil {
@@ -358,6 +375,18 @@ func (d *Desk) GuestGramSetRecipient(grant string) error {
 	}
 	if l := h.link(grant); l == nil || l.gram == nil {
 		return errors.New("This shared agent doesn't share Gram")
+	}
+	h.mu.Lock()
+	current := h.links[h.recipient]
+	h.mu.Unlock()
+	if current != nil && current.access.ID() != grant {
+		g := current.gram
+		g.mu.Lock()
+		attached := g.composer != nil && len(g.composer.Snapshot().Chips) > 0
+		g.mu.Unlock()
+		if attached {
+			return errors.New("Send or remove the attached files before writing to another agent")
+		}
 	}
 	h.mu.Lock()
 	h.recipient = grant
@@ -455,8 +484,10 @@ func (d *Desk) gramLinkFor(id string) (*link, string, error) {
 	return l, id, err
 }
 
-// gramComposerLink is the connection the composer posts through: the chosen
-// shared agent's while the combined guest Gram runs, else Desk.gram's.
+// gramComposerLink is the connection a composer call goes through: in the
+// combined guest Gram the shared agent the page routed it to (h.recipient,
+// which the page sets to the "to" it shows before a file or a post leaves,
+// and which holds while files are attached), else Desk.gram's.
 func (d *Desk) gramComposerLink() (*link, error) {
 	if h := d.guestGram.Load(); h != nil {
 		h.mu.Lock()
@@ -466,6 +497,24 @@ func (d *Desk) gramComposerLink() (*link, error) {
 			return nil, errors.New("Choose who the message goes to")
 		}
 		return l, nil
+	}
+	return d.gramLink()
+}
+
+// attachmentLink is the connection a Chat attachment downloads through: the
+// shared agent the page shows, by its combined guest Gram link (the agent
+// page's own has no Gram state), else the owner's Gram connection.
+func (d *Desk) attachmentLink() (*link, error) {
+	d.mu.Lock()
+	active := d.link
+	d.mu.Unlock()
+	if active != nil && active.guest != nil {
+		if h := d.guestGram.Load(); h != nil {
+			if l := h.link(active.access.ID()); l != nil && l.gram != nil {
+				return l, nil
+			}
+		}
+		return nil, errors.New("Gram is not enabled for this shared agent")
 	}
 	return d.gramLink()
 }
