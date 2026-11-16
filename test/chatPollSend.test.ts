@@ -16,8 +16,8 @@ function read(entries: Entry[], page: Entry[]) {
 test("older history loaded after a send does not acknowledge it", () => {
  let entries = [user("u5", 5), reply("r5", 6)];
  // The send; then the user loads earlier messages, with two older prompts.
- entries = mergeTranscript(entries, [user("u3", 3), reply("r3", 4)], true);
- entries = mergeTranscript(entries, [user("u1", 1), reply("r1", 2)], true);
+ entries = mergeTranscript(entries, [user("u3", 3), reply("r3", 4)], { older: true });
+ entries = mergeTranscript(entries, [user("u1", 1), reply("r1", 2)], { older: true });
  // The live tail brings only an updated reply: the prompt is still unseen.
  const tail = read(entries, [{ ...reply("r5", 6), text: "edited" }]);
  expect(tail.shown).toBe(false);

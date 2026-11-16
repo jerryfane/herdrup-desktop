@@ -1269,7 +1269,7 @@ class Detail {
    }
    // mergeTranscript drops re-sent older history from a live page (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
-   this.entries = mergeTranscript(this.entries, page.entries ?? []); this.chat = page; this.chatFailed = false;
+   this.entries = mergeTranscript(this.entries, page.entries ?? [], { hasOlder: !!this.oldestCursor }); this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
@@ -1326,7 +1326,7 @@ class Detail {
    this.chatFollowing = false;
    const before = groupTranscript(this.entries, !!this.chat?.working);
    const top = windowStarting(before, drawnStart(before, this.drawFrom));
-   this.entries = mergeTranscript(this.entries, page.entries, true); this.oldestCursor = page.before;
+   this.entries = mergeTranscript(this.entries, page.entries, { older: true }); this.oldestCursor = page.before;
    rememberChat(JSON.stringify(this.target), { page: this.chat!, entries: this.entries, oldestCursor: this.oldestCursor });
    this.drawFrom = revealedAbove(groupTranscript(this.entries, !!this.chat?.working), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
@@ -1672,7 +1672,7 @@ class Detail {
     if (!open || this.disposed || (older && (next.session_id !== session || page?.session_id !== session))) return;
     const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 8, height = messages.scrollHeight;
     if (page?.session_id !== next.session_id) { entries = []; before = next.before; }
-    entries = mergeTranscript(entries, next.entries, older);
+    entries = mergeTranscript(entries, next.entries, { older, hasOlder: !!before });
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
     const nodes = groupTranscript(entries, !!page?.working).map(row => {

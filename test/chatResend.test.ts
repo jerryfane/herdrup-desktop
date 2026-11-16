@@ -34,7 +34,7 @@ const appended = [
 
 test("a live page re-sending older marked prompts does not append them after the newest turn", () => {
  const page = [...resent, ...appended];
- const merged = mergeTranscript(newest, page);
+ const merged = mergeTranscript(newest, page, { hasOlder: true });
  expect(merged.map(e => e.id)).toEqual([
   "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
   "b2f25ccb", "2db84f2f:thinking", "2db84f2f:toolu_015EWurddNboHwrfLZKfJmEh", "63568b78:reply", "63568b78:end",
@@ -52,10 +52,28 @@ test("a live page re-sending older marked prompts does not append them after the
 });
 
 test("an older page still brings the history a live page skipped", () => {
- const merged = mergeTranscript(mergeTranscript(newest, [...resent, ...appended]), resent.slice(0, 3), true);
+ const merged = mergeTranscript(mergeTranscript(newest, [...resent, ...appended], { hasOlder: true }), resent.slice(0, 3), { older: true });
  expect(merged.slice(0, 4).map(e => e.id)).toEqual(["abe83412", "f505eb3c", "23cbfb00", "a7902a04"]);
 });
 
 test("a first page or a new session is taken whole", () => {
- expect(liveEntries([], resent)).toEqual(resent);
+ expect(liveEntries([], resent, true)).toEqual(resent);
+});
+
+// herdrup #707 (web counterpart of #686/#691): the after cursor moves past every entry of a live
+// page, so one dropped is lost until a reload. Only an unloaded origin-marked prompt replay goes.
+const at = (id: string, ts_ms: number | undefined, kind = "reply", extra: Partial<Entry> = {}): Entry => ({ id, kind, text: "x", ...(ts_ms === undefined ? {} : { ts_ms }), ...extra }) as Entry;
+const held = [at("u", 2000, "user", { author: "owner" })];
+
+test("with the whole session held, new entries behind the window or without ts_ms are kept", () => {
+ expect(mergeTranscript(held, [at("r1", 1999), at("r2", 0), at("r3", undefined)], { hasOlder: false }).map(e => e.id)).toEqual(["u", "r1", "r2", "r3"]);
+});
+
+test("with older history unloaded, only origin-marked prompts older than the window are dropped", () => {
+ const page = [
+  at("r", 1999), at("e", 1500, "turn_end"), at("p", 1000, "user", { author: "owner" }), at("n", undefined),
+  at("z", 0, "user", { author: "guest", origin: "other" }),
+  at("old", 1999, "user", { author: "guest", origin: "other" }), at("new", 2001, "user", { author: "guest", origin: "other" }),
+ ];
+ expect(mergeTranscript(held, page, { hasOlder: true }).map(e => e.id)).toEqual(["u", "r", "e", "p", "n", "z", "new"]);
 });
