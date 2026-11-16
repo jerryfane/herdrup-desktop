@@ -540,6 +540,11 @@ export interface GuestGramGrant {
   owner: string;
   machine: string;
   /**
+   * Terminal is the shared agent's terminal, which tells two same-named
+   * agents on one machine apart.
+   */
+  terminal: string;
+  /**
    * Gram: the owner shares Gram with this agent's guests. Known once the
    * grant's first request was answered (Ready).
    */

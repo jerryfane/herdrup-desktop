@@ -29,6 +29,9 @@ type GuestGramGrant struct {
 	Agent   string `json:"agent"`
 	Owner   string `json:"owner"`
 	Machine string `json:"machine"`
+	// Terminal is the shared agent's terminal, which tells two same-named
+	// agents on one machine apart.
+	Terminal string `json:"terminal"`
 	// Gram: the owner shares Gram with this agent's guests. Known once the
 	// grant's first request was answered (Ready).
 	Gram  bool `json:"gram"`
@@ -152,7 +155,7 @@ func (h *guestGramHub) sync() {
 		l := &link{id: "guest-gram:" + id, guest: transport, guestClient: engine.New(transport), access: &access, ctx: ctx, cancelGram: cancel}
 		l.gram = &gramDesk{hub: h, prefix: id + guestGramSep}
 		h.links[id] = l
-		h.grants[id] = GuestGramGrant{ID: id, Agent: access.AgentName, Owner: access.OwnerName, Machine: access.MachineLabel}
+		h.grants[id] = GuestGramGrant{ID: id, Agent: access.AgentName, Owner: access.OwnerName, Machine: access.MachineLabel, Terminal: access.AgentTarget}
 		started = append(started, l)
 	}
 	for id, l := range h.links {

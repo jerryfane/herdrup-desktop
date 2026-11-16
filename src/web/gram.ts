@@ -179,7 +179,7 @@ function guestSnapshot(s: GramSnapshot = snapshot()): GuestGramSnapshot {
  return {
   active: true, recipient: gram ? id : "",
   grants: [{
-   grant: { id, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, gram, ready: true },
+   grant: { id, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, terminal: access.agentTarget, gram, ready: true },
    gram: { ...s, messages: s.messages.map(m => ({ ...m, id: prefix + m.id })) },
   }],
  };

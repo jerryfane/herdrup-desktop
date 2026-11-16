@@ -1,22 +1,27 @@
 // One Gram for a guest (themartianapp/herdrup#697, design 3B): every shared agent's Gram merged
-// into one feed on the client. A port of HerdrKit GuestGramMerge.swift (herdrup#702), so iOS, the
-// desktop app and the browser guest show the same feed:
+// into one feed on the client. A port of HerdrKit GuestGramMerge.swift (herdrup#702 @1a8e0bbb), so
+// iOS, the desktop app and the browser guest show the same feed:
 //  1. Order: created time ascending, ties by message id (byte-wise), then by grant.
 //  2. Identity: (grant, id); ids are not unique across hosts.
-//  3. Paging: a cursor per grant. Only messages at or after the SAFE FLOOR show: the newest of
-//     the oldest-held times among grants that still have older pages (a paging grant holding
-//     nothing hides everything until its first page lands). Earlier pages the grants whose oldest
-//     held message is at the floor or newer; when all are exhausted, everything shows.
-//  4. Unread: the sum of the per-grant counts; reading the feed marks, per grant, only that grant's
-//     shown messages.
-//  5. A reply goes to its message's grant; a new message defaults to the grant of the newest
+//  3. Paging: a cursor per grant (its last held message in the host's order). The SAFE FLOOR is
+//     the newest of the oldest-held times among loaded grants that still have older pages, and
+//     only messages STRICTLY NEWER than it show: herdr orders equal times by its store, not by
+//     id, so a page ending inside one millisecond may still miss messages of it with any id.
+//     Earlier pages the grants whose oldest held time is at the floor or newer; a grant with no
+//     more pages stops counting; when all are exhausted, everything shows.
+//  4. A grant whose first answer hasn't landed is unknown, not exhausted: nothing shows (or is
+//     marked read, or paged) until every grant's first answer or failure is in.
+//  5. Unread: the sum of the per-grant counts; reading the feed marks, per grant, only that
+//     grant's shown messages.
+//  6. A reply goes to its message's grant; a new message defaults to the grant of the newest
 //     incoming message, else the first grant.
 
 /** What the merge reads of a message: its id on its own host, time, read state and direction. */
 export interface GuestGramMessage { id: string; createdUnixMs: number; unread: boolean; fromAgent: boolean }
 
-/** One grant's held Gram: what its feed has fetched (any order) and whether older pages remain. */
-export interface GuestGramLane<M extends GuestGramMessage = GuestGramMessage> { grant: string; messages: readonly M[]; hasMore: boolean }
+/** One grant's held Gram: its messages newest first in the host's order, whether older pages
+ *  remain, and whether its first answer (or failure) has landed. */
+export interface GuestGramLane<M extends GuestGramMessage = GuestGramMessage> { grant: string; messages: readonly M[]; hasMore: boolean; loaded: boolean }
 
 /** One message in the merged feed. `id` ("grant/id") is unique across grants. */
 export interface GuestGramMergedItem<M extends GuestGramMessage = GuestGramMessage> { grant: string; message: M; id: string }
@@ -40,11 +45,9 @@ export function oldestUnixMs(lane: GuestGramLane): number | null {
  for (const m of lane.messages) if (oldest === null || m.createdUnixMs < oldest) oldest = m.createdUnixMs;
  return oldest;
 }
-/** The grant's cursor: its oldest held message, gram.list's before_id. */
+/** The grant's cursor, gram.list's before_id: its last held message in the host's order. */
 export function laneCursor(lane: GuestGramLane): string | null {
- let best: GuestGramMessage | null = null;
- for (const m of lane.messages) if (best === null || compareKeys(keyOf(lane.grant, m), keyOf(lane.grant, best)) < 0) best = m;
- return best?.id ?? null;
+ return lane.messages.at(-1)?.id ?? null;
 }
 /** The newest held message, for the inbox row's preview and time. */
 export function laneNewest<M extends GuestGramMessage>(lane: GuestGramLane<M>): M | null {
@@ -57,8 +60,11 @@ export const laneUnread = (lane: GuestGramLane) => lane.messages.filter(m => m.u
 export interface GuestGramMerge<M extends GuestGramMessage = GuestGramMessage> {
  /** Shown messages, oldest first (newest last). */
  items: GuestGramMergedItem<M>[];
- /** The safe floor; null when no grant has older pages (everything shows). */
+ /** The safe floor: only messages strictly newer show. null when no loaded grant has older pages
+  *  (everything shows, unless pending). */
  floorUnixMs: number | null;
+ /** A grant's first answer hasn't landed: nothing shows yet. */
+ pending: boolean;
  /** The grants Earlier should page next; empty when the feed is complete. */
  grantsToPage: string[];
  /** Older messages remain to show (Earlier). */
@@ -77,7 +83,9 @@ export interface GuestGramMerge<M extends GuestGramMessage = GuestGramMessage> {
 }
 
 export function mergeGuestGram<M extends GuestGramMessage>(lanes: readonly GuestGramLane<M>[]): GuestGramMerge<M> {
- const paging = lanes.filter(lane => lane.hasMore);
+ const pending = lanes.some(lane => !lane.loaded);
+ // A paging grant holding nothing hides everything until it holds something.
+ const paging = lanes.filter(lane => lane.loaded && lane.hasMore);
  const floor = paging.length === 0 ? null : Math.max(...paging.map(lane => oldestUnixMs(lane) ?? Number.MAX_SAFE_INTEGER));
  const all: GuestGramMergedItem<M>[] = [];
  const seen = new Set<string>();
@@ -90,8 +98,8 @@ export function mergeGuestGram<M extends GuestGramMessage>(lanes: readonly Guest
   }
  }
  all.sort((a, b) => compareKeys(keyOf(a.grant, a.message), keyOf(b.grant, b.message)));
- const items = floor === null ? all : all.filter(item => item.message.createdUnixMs >= floor);
- const grantsToPage = floor === null ? [] : paging.filter(lane => (oldestUnixMs(lane) ?? Number.MAX_SAFE_INTEGER) >= floor).map(lane => lane.grant);
+ const items = pending ? [] : floor === null ? all : all.filter(item => item.message.createdUnixMs > floor);
+ const grantsToPage = pending || floor === null ? [] : paging.filter(lane => (oldestUnixMs(lane) ?? Number.MAX_SAFE_INTEGER) >= floor).map(lane => lane.grant);
  const unreadByGrant = new Map<string, number>();
  for (const lane of lanes) unreadByGrant.set(lane.grant, (unreadByGrant.get(lane.grant) ?? 0) + laneUnread(lane));
  const shownUnreadByGrant = new Map<string, string[]>();
@@ -100,7 +108,7 @@ export function mergeGuestGram<M extends GuestGramMessage>(lanes: readonly Guest
  let defaultTarget: string | null = grants[0] ?? null;
  for (let i = items.length - 1; i >= 0; i--) if (items[i]!.message.fromAgent) { defaultTarget = items[i]!.grant; break; }
  return {
-  items, floorUnixMs: floor, grantsToPage, hasMore: grantsToPage.length > 0, hiddenCount: all.length - items.length, grants,
+  items, floorUnixMs: floor, pending, grantsToPage, hasMore: grantsToPage.length > 0, hiddenCount: all.length - items.length, grants,
   unreadCount: [...unreadByGrant.values()].reduce((sum, n) => sum + n, 0), unreadByGrant, shownUnreadByGrant, defaultTarget,
  };
 }
@@ -113,7 +121,21 @@ export function replyTarget(merge: GuestGramMerge, itemID: string): string | nul
 // ---- The inbox list (design 3B), desktop and web only ----
 
 /** A shared agent as the list shows it. */
-export interface GuestGramGrantInfo { id: string; agent: string; owner: string; machine: string }
+export interface GuestGramGrantInfo { id: string; agent: string; owner: string; machine: string; terminal: string; label: string }
+
+/** What the guest's Gram calls each share's agent (HerdrKit GuestAccess.recipientLabels): its name,
+ *  told apart where two shares carry the same one: "name · owner · machine" across owners or
+ *  machines, "name · terminal" on one machine. */
+export function recipientLabels(shares: readonly { id: string; agent: string; owner: string; machine: string; terminal: string }[]): Map<string, string> {
+ const labels = new Map<string, string>();
+ for (const share of shares) {
+  const named = shares.filter(other => other.agent === share.agent);
+  if (named.length === 1) { labels.set(share.id, share.agent); continue; }
+  const sameContext = named.filter(other => other.owner === share.owner && other.machine === share.machine).length > 1;
+  labels.set(share.id, sameContext ? `${share.agent} · ${share.terminal}` : `${share.agent} · ${share.owner} · ${share.machine}`);
+ }
+ return labels;
+}
 export interface GuestGramRow<M extends GuestGramMessage = GuestGramMessage> { grant: GuestGramGrantInfo; newest: M | null; unread: number }
 export interface GuestGramGroup<M extends GuestGramMessage = GuestGramMessage> { label: string; rows: GuestGramRow<M>[] }
 
@@ -122,7 +144,7 @@ export interface GuestGramGroup<M extends GuestGramMessage = GuestGramMessage> {
 export function guestGramGroups<M extends GuestGramMessage>(lanes: readonly (GuestGramLane<M> & { info: GuestGramGrantInfo })[]): { groups: GuestGramGroup<M>[]; labelled: boolean } {
  const rows = lanes.map(lane => ({ grant: lane.info, newest: laneNewest(lane), unread: laneUnread(lane) }));
  const time = (row: GuestGramRow<M>) => row.newest?.createdUnixMs ?? -Infinity;
- const byActivity = (a: GuestGramRow<M>, b: GuestGramRow<M>) => time(b) - time(a) || a.grant.agent.localeCompare(b.grant.agent);
+ const byActivity = (a: GuestGramRow<M>, b: GuestGramRow<M>) => time(b) - time(a) || a.grant.label.localeCompare(b.grant.label);
  const groups = new Map<string, GuestGramRow<M>[]>();
  for (const row of rows) {
   const label = `${row.grant.owner} · ${row.grant.machine}`;

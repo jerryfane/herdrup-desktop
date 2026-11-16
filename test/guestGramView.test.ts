@@ -10,7 +10,7 @@ const snap = (messages: GramMessage[], o: Partial<GramSnapshot> = {}): GramSnaps
  localMachine: "", attachments: [], sending: false, sendProgress: 0, sendProgressShown: false, draftPosted: 0, visible: true, ...o,
 });
 const grant = (id: string, owner: string, messages: GramMessage[], o: { gram?: boolean; hasMore?: boolean; status?: string; unread?: number } = {}): GuestGramState => ({
- grant: { id, agent: id, owner, machine: owner === "Jerry" ? "Mac Studio" : "lab-box", gram: o.gram ?? true, ready: true },
+ grant: { id, agent: id, owner, machine: owner === "Jerry" ? "Mac Studio" : "lab-box", terminal: "w1", gram: o.gram ?? true, ready: true },
  // A shared agent's own count: its inbox's, or its unread-only walk while Gram is hidden.
  gram: snap(messages, { hasMore: o.hasMore ?? false, unreadCount: o.unread ?? messages.filter(m => m.unread).length, ...(o.status ? { status: o.status } : {}) }),
 });
@@ -52,8 +52,9 @@ test("a chosen recipient wins over the default, and the safe floor holds the fee
  const paged: GuestGramSnapshot = { ...s, recipient: "ledger", grants: [grant("market", "Jerry", [msg("market", "m2", 300)], { hasMore: true }), s.grants[1]!] };
  const v = guestGramView(paged, null);
  expect(v.recipient?.id).toBe("ledger");
- // market may still hold messages older than 300: ledger's 200 and 250 wait.
- expect(v.snapshot.messages.map(m => m.id)).toEqual(["market\u001fm2"]);
+ // market may still hold messages older than 300, and others of its 300 millisecond: nothing
+ // shows yet (strict floor, #702 @1a8e0bbb); Earlier pages market.
+ expect(v.snapshot.messages.map(m => m.id)).toEqual([]);
  expect(v.snapshot.hasMore).toBe(true);
  expect(v.merge.grantsToPage).toEqual(["market"]);
 });

@@ -82,12 +82,21 @@ export function guestGramOffer(): { offered: boolean; badge: number } {
   return { offered: guest?.view.offered ?? false, badge: guest?.view.badge ?? 0 };
 }
 
+let autoPaging = false;
 function onGuestSnapshot(s: GuestGramSnapshot) {
   if (!guest) return;
   if (guestSelected !== null && !s.grants.some(g => g.grant.id === guestSelected && g.grant.gram)) guestSelected = null;
   guest = { raw: s, selected: guestSelected, view: guestGramView(s, guestSelected) };
   applySnapshot(guest.view.snapshot);
   deps.guestGramChanged();
+  // Nothing showable above the safe floor, but older pages remain: load them (#702 @1a8e0bbb),
+  // one round at a time, while Gram shows.
+  const merge = guest.view.merge;
+  if (shown && !autoPaging && !merge.pending && merge.items.length === 0 && merge.hasMore) {
+    autoPaging = true;
+    // Only while pages grow: a failed or empty round stops here (Earlier still offers it).
+    void loadOlder().then(grew => { autoPaging = false; if (grew && guest) onGuestSnapshot(guest.raw); }, () => { autoPaging = false; });
+  }
 }
 
 // The calls that act on a whole Gram: the owner's, or the guest's shared agents in scope (the
@@ -417,7 +426,7 @@ function renderGuestSidebar(view: GuestGramView) {
     if (view.labelled) nodes.push(el("div", "gconv-group", group.label));
     for (const r of group.rows) {
       const row = conversationRow({
-        title: r.grant.agent,
+        title: r.grant.label,
         avatars: [r.grant.agent],
         symbol: null,
         preview: previewOf(r.newest?.row ?? null),
@@ -540,7 +549,7 @@ function renderHeader() {
   const identity = el("button", "gidentity");
   identity.type = "button";
   // The guest's pill names what the feed shows (3B: "All agents ›", or the agent).
-  const title = guest ? (guest.selected ? guest.view.grants.get(guest.selected)?.agent ?? "Gram" : "All agents") : "Gram";
+  const title = guest ? (guest.selected ? guest.view.grants.get(guest.selected)?.label ?? "Gram" : "All agents") : "Gram";
   identity.setAttribute("aria-label", title);
   const cluster = el("div", "gcluster");
   for (const p of model.clusterPlaces((snap?.messages ?? []).filter((m) => m.fromAgent).map((m) => m.from))) {
@@ -731,7 +740,8 @@ function observeFeed() {
 }
 
 function rowSeen(id: string) {
-  if (showingSaved) return;
+  // Only a row on screen while Gram shows is read: never while the tab is hidden (#702).
+  if (showingSaved || !shown) return;
   const m = snap?.messages.find((x) => x.id === id);
   if (!m) return;
   if (!ruleCaptured) captureRule();
@@ -1628,8 +1638,8 @@ function renderComposer() {
     const chip = el("button", "gto-chip");
     chip.type = "button";
     chip.disabled = locked || !to;
-    chip.setAttribute("aria-label", to ? `To ${to.agent}${locked ? "" : ", change"}` : "No shared agent takes Gram");
-    if (to) chip.append(gramAvatar(to.agent, 22), el("span", "", to.agent));
+    chip.setAttribute("aria-label", to ? `To ${to.label}${locked ? "" : ", change"}` : "No shared agent takes Gram");
+    if (to) chip.append(gramAvatar(to.agent, 22), el("span", "", to.label));
     if (!locked && to) chip.append(icon("chevron.up.chevron.down", 13, "medium", "faint"));
     chip.addEventListener("click", openAgentsSheet);
     hintEl.hidden = false;
@@ -1777,7 +1787,7 @@ function openAgentsSheet() {
       for (const group of guest.view.groups) {
         const list = el("div", "gsheet-group");
         for (const r of group.rows) {
-          const row = sheetRow(null, r.grant.agent, `${r.grant.owner} · ${r.grant.machine}`, () => {
+          const row = sheetRow(null, r.grant.label, `${r.grant.owner} · ${r.grant.machine}`, () => {
             void Desk.guestGramSetRecipient(r.grant.id).catch(() => undefined);
             d.close();
           });
