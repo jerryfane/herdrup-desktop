@@ -30,6 +30,8 @@ import {
 } from "./gramMention";
 import * as model from "./gramModel";
 import { agentName, foldToggleLabel, gramTextFolds, rowPreview, savedPreview, segments, type GramTextSegment } from "./gramText";
+import { guestGramView, type GuestGramView } from "./guestGramView";
+import type { GuestGramGrantInfo } from "./guestGramMerge";
 import {
   Desk,
   events,
@@ -39,16 +41,74 @@ import {
   type GramMessage,
   type GramSnapshot,
   type GramUploadProgress,
+  type GuestGramSnapshot,
   type SavedGram,
 } from "./mygo";
 import { errorText } from "./errors";
 
-let guestRecipient: string | null = null;
-export function setGuestGramRecipient(name: string | null) {
-  if (name === guestRecipient) return;
-  guestRecipient = name;
-  renderComposer();
-  if (header) renderHeader();
+/** The guest's one Gram (#697): every shared agent's Gram merged (guestGramView.ts), with the
+ *  agent its sidebar selects (null: All agents); null while the owner's Gram shows. */
+let guest: { raw: GuestGramSnapshot; selected: string | null; view: GuestGramView } | null = null;
+let guestSelected: string | null = null;
+/** Who the guest's composer posts to, as the page shows it. */
+function guestRecipient(): GuestGramGrantInfo | null {
+  return guest?.view.recipient ?? null;
+}
+
+/** Switches Gram between the owner's and the guest's (#697). */
+export function setGuestGram(on: boolean) {
+  if (on === (guest !== null)) return;
+  if (!on) {
+    guest = null;
+    void Desk.gramState().then(onSnapshot);
+    return;
+  }
+  const none: GuestGramSnapshot = { active: false, grants: [], recipient: "" };
+  guest = { raw: none, selected: guestSelected, view: guestGramView(none, guestSelected) };
+  void Desk.guestGramState().then(onGuestSnapshot);
+}
+
+/** Shows one shared agent's messages (its grant id), or All agents (null). */
+export function selectGuestGram(grant: string | null) {
+  guestSelected = grant;
+  if (!guest) return;
+  landed = false;
+  renderLimit = model.RENDER_WINDOW;
+  onGuestSnapshot(guest.raw);
+}
+
+/** The guest's Gram tab: whether any shared agent shares Gram, and its unread badge. */
+export function guestGramOffer(): { offered: boolean; badge: number } {
+  return { offered: guest?.view.offered ?? false, badge: guest?.view.badge ?? 0 };
+}
+
+function onGuestSnapshot(s: GuestGramSnapshot) {
+  if (!guest) return;
+  if (guestSelected !== null && !s.grants.some(g => g.grant.id === guestSelected && g.grant.gram)) guestSelected = null;
+  guest = { raw: s, selected: guestSelected, view: guestGramView(s, guestSelected) };
+  applySnapshot(guest.view.snapshot);
+  deps.guestGramChanged();
+}
+
+// The calls that act on a whole Gram: the owner's, or the guest's shared agents in scope (the
+// selected one, else all). Message calls (mark read, files, save) take an id that names its own.
+const scope = () => (guest?.selected ? [guest.selected] : []);
+const markAllRead = () => (guest ? Desk.guestGramMarkAllRead(scope()) : Desk.gramMarkAllRead()).catch(() => undefined);
+const refresh = () => (guest ? Desk.guestGramRefresh(scope()) : Desk.gramRefresh()).catch(() => undefined);
+/** Earlier: the guest's pages the grants the merge names (its safe floor), together. */
+async function loadOlder(): Promise<boolean> {
+  if (!guest) {
+    const grew = await Desk.gramLoadOlder().catch(() => false);
+    snap = await Desk.gramState();
+    return grew;
+  }
+  const grew = await Desk.guestGramLoadOlder(guest.view.merge.grantsToPage).catch(() => false);
+  const raw = await Desk.guestGramState();
+  if (guest) {
+    guest = { raw, selected: guestSelected, view: guestGramView(raw, guestSelected) };
+    snap = guest.view.snapshot;
+  }
+  return grew;
 }
 
 export type GramDeps = {
@@ -60,6 +120,8 @@ export type GramDeps = {
   spinner: string;
   /** The sidebar's top bar changed (title, count or actions): re-place and re-paint it. */
   barChanged: (unread: number) => void;
+  /** The guest's Gram changed: its tab and badge may have. */
+  guestGramChanged: () => void;
 };
 
 let deps: GramDeps;
@@ -233,9 +295,9 @@ export async function barActions(minimize: () => void): Promise<HTMLElement[]> {
   };
   const out = [await slot("sidebar.leading", "Minimise sidebar", minimize)];
   if (!showingSaved && (snap?.unreadCount ?? 0) > 0) {
-    out.push(await slot("envelope.open", "Read all", () => void Desk.gramMarkAllRead().catch(() => undefined)));
+    out.push(await slot("envelope.open", "Read all", () => void markAllRead()));
   }
-  out.push(await slot("arrow.clockwise", "Refresh", () => void Desk.gramRefresh().catch(() => undefined)));
+  out.push(await slot("arrow.clockwise", "Refresh", () => void refresh()));
   return out;
 }
 
@@ -325,8 +387,58 @@ function conversationRow(o: {
   return row;
 }
 
+/** A row's preview runs for one message. */
+function previewOf(m: GramMessage | null): HTMLElement {
+  const box = el("div");
+  if (!m) return box;
+  for (const run of rowPreview({ fromAgent: m.fromAgent, senderName: m.name, to: m.to ?? null, text: m.text, fileName: m.attachmentPreview ?? null })) {
+    box.append(run.strong ? el("strong", "", run.text) : document.createTextNode(run.text));
+  }
+  return box;
+}
+
+/** The guest's sidebar (3B): All agents, then one row per shared agent under "owner · machine"
+ *  when several owners or machines share, each with its count. */
+function renderGuestSidebar(view: GuestGramView) {
+  const count = (n: number) => { const c = el("span", "gconv-count", n > 99 ? "99+" : String(n)); c.hidden = n === 0; return c; };
+  const all = conversationRow({
+    title: "All agents",
+    avatars: view.all.agents,
+    symbol: view.all.agents.length === 0 ? "bubble.left.and.bubble.right.fill" : null,
+    preview: previewOf(view.all.newest),
+    time: view.all.newest?.createdUnixMs ?? null,
+    unread: view.all.unread > 0,
+    selected: guest?.selected === null && !showingSaved,
+    select: () => { setSaved(false); selectGuestGram(null); },
+  });
+  all.append(count(view.all.unread));
+  const nodes: HTMLElement[] = [all];
+  for (const group of view.groups) {
+    if (view.labelled) nodes.push(el("div", "gconv-group", group.label));
+    for (const r of group.rows) {
+      const row = conversationRow({
+        title: r.grant.agent,
+        avatars: [r.grant.agent],
+        symbol: null,
+        preview: previewOf(r.newest?.row ?? null),
+        time: r.newest?.createdUnixMs ?? null,
+        unread: r.unread > 0,
+        selected: guest?.selected === r.grant.id && !showingSaved,
+        select: () => { setSaved(false); selectGuestGram(r.grant.id); },
+      });
+      row.append(count(r.unread));
+      nodes.push(row);
+    }
+  }
+  conversations.replaceChildren(...nodes);
+}
+
 function renderSidebar() {
   if (!snap) return;
+  if (guest) {
+    renderGuestSidebar(guest.view);
+    return;
+  }
   const messages = snap.messages;
   const senders = model.recentAgentSenders(messages);
   const newest = messages[0];
@@ -427,8 +539,9 @@ function renderHeader() {
   // headerIdentity: the cluster over the "Gram ›" pill, which opens the agents sheet.
   const identity = el("button", "gidentity");
   identity.type = "button";
-  identity.disabled = guestRecipient !== null;
-  identity.setAttribute("aria-label", "Gram");
+  // The guest's pill names what the feed shows (3B: "All agents ›", or the agent).
+  const title = guest ? (guest.selected ? guest.view.grants.get(guest.selected)?.agent ?? "Gram" : "All agents") : "Gram";
+  identity.setAttribute("aria-label", title);
   const cluster = el("div", "gcluster");
   for (const p of model.clusterPlaces((snap?.messages ?? []).filter((m) => m.fromAgent).map((m) => m.from))) {
     const a = gramAvatar(p.name, p.size, "ringed");
@@ -437,8 +550,8 @@ function renderHeader() {
     cluster.append(a);
   }
   const pill = el("span", "gpill glass");
-  pill.append(el("span", "", "Gram"));
-  if (!guestRecipient) pill.append(icon("chevron.right", 9, "bold", "faint"));
+  pill.append(el("span", "", title));
+  pill.append(icon("chevron.right", 9, "bold", "faint"));
   identity.append(cluster, pill);
   identity.addEventListener("click", openAgentsSheet);
   // headerTrailing: Saved alone, since the sidebar owns search here.
@@ -505,7 +618,7 @@ function renderContent() {
   }
   const messages = snap.messages;
   const visible = visibleMessages();
-  const setup = !guestRecipient && model.showsSetupCard(localStorage.getItem(SETUP_DISMISSED) === "1", messages);
+  const setup = !guest && model.showsSetupCard(localStorage.getItem(SETUP_DISMISSED) === "1", messages);
   const view = model.inboxView({
     phase: snap.phase,
     unavailable: snap.unavailable,
@@ -526,7 +639,7 @@ function renderContent() {
           title: view.text,
           titleClass: "gstate-message",
           spacing: 12,
-          extra: capsuleButton("Retry", () => void Desk.gramRefresh().catch(() => undefined)),
+          extra: capsuleButton("Retry", () => void refresh()),
         }),
       );
       return;
@@ -811,8 +924,7 @@ async function requestOlder(tapped: boolean) {
     renderLimit += model.RENDER_WINDOW;
     grew = true;
   } else if (search === "") {
-    grew = await Desk.gramLoadOlder().catch(() => false);
-    snap = await Desk.gramState();
+    grew = await loadOlder();
     if (grew) renderLimit = Math.max(renderLimit, visibleMessages().length);
   } else {
     grew = await loadOlderMatches();
@@ -830,8 +942,7 @@ async function loadOlderMatches(): Promise<boolean> {
   renderContent();
   let found = false;
   for (let i = 0; i < model.SEARCH_PAGES_PER_ARRIVAL && snap?.hasMore; i++) {
-    const grew = await Desk.gramLoadOlder().catch(() => false);
-    snap = await Desk.gramState();
+    const grew = await loadOlder();
     if (!grew) break;
     if (visibleMessages().length > before) {
       found = true;
@@ -960,7 +1071,7 @@ function messageRow(m: GramMessage, startsGroup: boolean, endsGroup: boolean): H
   const imageFile = m.file?.isImage ? m.file : undefined;
   const hasCard = (!!m.file && !m.file.isImage) || !!m.expiredFile;
   const hasText = segs.length > 0 || hasCard;
-  const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false }).filter(item => !guestRecipient || item !== "Delete");
+  const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false }).filter(item => !guest || item !== "Delete");
   const menu = (part: HTMLElement) =>
     part.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1355,7 +1466,7 @@ function agents(): GramAgent[] {
 }
 
 function address(): DraftAddress {
-  if (guestRecipient) return { route: { kind: "queue" }, body: draft, leading: false, accent: null };
+  if (guest) return { route: { kind: "queue" }, body: draft, leading: false, accent: null };
   return draftAddress(draft, agents(), pickedAgent);
 }
 
@@ -1507,11 +1618,27 @@ function actionIcon(cls: string, label: string, action: () => void): HTMLButtonE
 function renderComposer() {
   if (!card) return;
   const a = address();
-  const list = guestRecipient ? null : activeQuery(draft, caret);
+  const list = guest ? null : activeQuery(draft, caret);
   const matches = list ? model.mentionMatches(agents(), list.query) : [];
-  const hint = guestRecipient ? `To ${guestRecipient}` : model.shownHint(draftHint(a.route), matches.length > 0);
-  hintEl.hidden = hint === null;
-  hintEl.textContent = hint ?? "";
+  if (guest) {
+    // The guest's "to" (3B): the agent the message goes to, a picker while no file is attached
+    // (attached files have uploaded to that agent's host).
+    const to = guestRecipient();
+    const locked = (snap?.attachments.length ?? 0) > 0;
+    const chip = el("button", "gto-chip");
+    chip.type = "button";
+    chip.disabled = locked || !to;
+    chip.setAttribute("aria-label", to ? `To ${to.agent}${locked ? "" : ", change"}` : "No shared agent takes Gram");
+    if (to) chip.append(gramAvatar(to.agent, 22), el("span", "", to.agent));
+    if (!locked && to) chip.append(icon("chevron.up.chevron.down", 13, "medium", "faint"));
+    chip.addEventListener("click", openAgentsSheet);
+    hintEl.hidden = false;
+    hintEl.replaceChildren(chip);
+  } else {
+    const hint = model.shownHint(draftHint(a.route), matches.length > 0);
+    hintEl.hidden = hint === null;
+    hintEl.textContent = hint ?? "";
+  }
   renderMirror(a);
   renderMentions(matches);
 
@@ -1615,7 +1742,6 @@ async function send() {
 // ---- Agents sheet (the "Gram ›" pill) ----
 
 function openAgentsSheet() {
-  if (guestRecipient) return;
   const d = el("dialog", "gsheet");
   const draw = () => {
     const a = address();
@@ -1625,16 +1751,37 @@ function openAgentsSheet() {
     done.textContent = "Done";
     head.append(done);
     const first = el("div", "gsheet-group");
-    const readAll = sheetRow("envelope.open", "Read all", null, () => void Desk.gramMarkAllRead().catch(() => undefined));
+    const readAll = sheetRow("envelope.open", "Read all", null, () => void markAllRead());
     readAll.toggleAttribute("disabled", (snap?.markingAllRead ?? false) || (snap?.unreadCount ?? 0) === 0);
-    const refresh = sheetRow("arrow.clockwise", "Refresh", null, () => void Desk.gramRefresh().catch(() => undefined));
+    const refreshRow = sheetRow("arrow.clockwise", "Refresh", null, () => void refresh());
     if (snap?.refreshing) {
       const s = el("span", "gsheet-spin");
       s.innerHTML = deps.spinner;
-      refresh.append(s);
-      refresh.toggleAttribute("disabled", true);
+      refreshRow.append(s);
+      refreshRow.toggleAttribute("disabled", true);
     }
-    first.append(readAll, refresh);
+    first.append(readAll, refreshRow);
+    if (guest) {
+      // The guest's composer writes to one shared agent (#697): its "to", grouped by owner.
+      const sections: HTMLElement[] = [];
+      const to = guestRecipient()?.id ?? null;
+      for (const group of guest.view.groups) {
+        const list = el("div", "gsheet-group");
+        for (const r of group.rows) {
+          const row = sheetRow(null, r.grant.agent, `${r.grant.owner} · ${r.grant.machine}`, () => {
+            void Desk.guestGramSetRecipient(r.grant.id).catch(() => undefined);
+            d.close();
+          });
+          row.prepend(gramAvatar(r.grant.agent, 32));
+          if (r.grant.id === to) row.append(icon("checkmark", 17, "semibold", "brand"));
+          list.append(row);
+        }
+        sections.push(list);
+      }
+      d.replaceChildren(head, first, el("div", "gsheet-section", "Write to"), ...sections);
+      void deps.placeInitials(d);
+      return;
+    }
     const write = el("div", "gsheet-group");
     const shared = sharedNames(agents());
     for (const agent of agents()) {
@@ -1662,7 +1809,7 @@ function openAgentsSheet() {
     void deps.placeInitials(d);
   };
   draw();
-  const off = events.gramChanged.on(() => queueMicrotask(draw));
+  const off = guest ? events.guestGramChanged.on(() => queueMicrotask(draw)) : events.gramChanged.on(() => queueMicrotask(draw));
   d.addEventListener("close", () => {
     off();
     d.remove();
@@ -1695,7 +1842,12 @@ function sheetRow(symbolName: string | null, title: string, subtitle: string | n
 
 // ---- Wiring ----
 
+/** The owner's Gram changed; ignored while the guest's shows. */
 function onSnapshot(s: GramSnapshot) {
+  if (!guest) applySnapshot(s);
+}
+
+function applySnapshot(s: GramSnapshot) {
   const prevUnread = snap?.unreadCount ?? 0;
   snap = s;
   if (draftPosted !== null && s.draftPosted > draftPosted) {
@@ -1749,6 +1901,7 @@ export async function initGram(d: GramDeps, detail: HTMLElement, sidebar: HTMLEl
   side.hidden = true;
   sideClear.hidden = true;
   events.gramChanged.on(onSnapshot);
+  events.guestGramChanged.on(onGuestSnapshot);
   events.gramUpload.on((ev) => {
     if (ev.state === "removed") uploads.delete(ev.path);
     else uploads.set(ev.path, ev);
@@ -1770,7 +1923,7 @@ export function showGram(on: boolean) {
   if (!on) dictation?.stop();
   page.hidden = !on;
   side.hidden = !on;
-  void Desk.gramSetVisible(on);
+  void (guest ? Desk.guestGramSetVisible(on) : Desk.gramSetVisible(on));
   if (on) {
     landed = false;
     pageArmed = search === "";

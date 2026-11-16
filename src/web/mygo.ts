@@ -4,7 +4,7 @@
 
 import type { Desk as GoDesk, Dictation as GoDictation } from "../mygo";
 import { browserEnv, createGuestDesk } from "./desk";
-import { gramDesk } from "./gram";
+import { gramDesk, guestGramDesk } from "./gram";
 
 export type * from "../mygo";
 export { events } from "./events";
@@ -13,7 +13,7 @@ export { Symbols } from "./symbols";
 type DeskFns = typeof GoDesk;
 
 const notAvailable = () => Promise.reject(new Error("Not available in the browser"));
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...createGuestDesk(browserEnv()) };
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...createGuestDesk(browserEnv()) };
 
 /** Every Desk method: the guest's, else one that rejects. Its shape is the generated client's. */
 export const Desk = new Proxy(implemented, {

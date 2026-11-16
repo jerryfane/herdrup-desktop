@@ -8,7 +8,7 @@ import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star
 import { initAgentActions } from "./agentActions";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
-import { barActions, barCount, focusGramSearch, gramShowing, initGram, showGram, setGuestGramRecipient } from "./gram";
+import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
 import { initSettings } from "./settings";
@@ -25,7 +25,7 @@ import { initAppUpdateAsk } from "./appUpdateAsk";
 import { errorText } from "./errors";
 import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
-import { barSlot, commitTabBar, commitTopBar, guestBarActions, placeTitle, tabNode } from "./bars";
+import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "./bars";
 import { enableLongPress } from "./longPress";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -114,17 +114,17 @@ let pageReady = false;
 // Connection events retain state immediately; drawing waits for every view's dependencies.
 let renderReady = false;
 let guestHome: ReturnType<typeof initGuestHome> | null = null;
-let guestTab: "agents" | "settings" = "agents";
-let guestGram = false;
-// The guest home's top and tab bars as last built (render): its tab, and whether Gram
-// replaces the terminal; null while the owner's bars show.
-let guestBar: { tab: "agents" | "settings"; gram: boolean } | null = null;
+let guestTab: "agents" | "gram" | "settings" = "agents";
+// The guest home's top and tab bars as last built (render): its tab and whether its Gram tab is
+// offered; null while the owner's bars show.
+let guestBar: { tab: "agents" | "gram" | "settings"; gram: boolean } | null = null;
 const guestActions = {
-  agents: () => { guestTab = "agents"; guestGram = false; settingsPushed = false; render(); },
-  settings: () => { closeWriter(); guestTab = "settings"; guestGram = false; settingsPushed = false; render(); },
+  agents: () => { guestTab = "agents"; settingsPushed = false; render(); },
+  settings: () => { closeWriter(); guestTab = "settings"; settingsPushed = false; render(); },
+  // The guest's one Gram (#697): every shared agent's, with one selected or All agents.
+  gram: (grant: string | null = null) => { closeWriter(); selectGuestGram(grant); guestTab = "gram"; settingsPushed = false; render(); },
   hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
-  terminal: () => { guestGram = false; render(); },
-  open: (target: AgentTarget) => { guestTab = "agents"; guestGram = false; void selectInteraction(target).then(render); },
+  open: (target: AgentTarget) => { guestTab = "agents"; void selectInteraction(target).then(render); },
 };
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
@@ -155,9 +155,14 @@ async function buildTopBar() {
   const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; appUpdatesAsked = false; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
-  if (guestView) {
+  if (guestView && selectedTab === "gram") {
+    // The guest's Gram: as the owner's, its count, Read all and Refresh (3B).
+    const count = barCount();
+    titleNodes = [document.createTextNode("Gram"), ...(count ? [count] : [])];
+    actionNodes = await barActions(() => rail?.minimize());
+  } else if (guestView) {
     titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
-    actionNodes = await guestBarActions(guestView.gram, guestActions.terminal);
+    actionNodes = [];
   } else if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
@@ -207,11 +212,12 @@ document.documentElement.style.setProperty("--system-red", "#ff453a");
 /** sidebarTabItem's tabBadge (HerdrApp.swift 2871-2881): the count on the Gram icon's
  *  top-trailing corner, "99+" past 99, hidden at zero; white on system red. */
 function setTabBadge() {
+  const unread = guestBar ? guestGramOffer().badge : gramUnread;
   const badge = document.querySelector<HTMLElement>('#tabbar .tab-badge[data-tab="gram"]');
   if (badge) {
-    badge.hidden = gramUnread === 0;
-    badge.textContent = gramUnread > 99 ? "99+" : String(gramUnread);
-    badge.closest(".tab")?.setAttribute("aria-label", gramUnread ? `Gram, ${gramUnread} unread` : "Gram");
+    badge.hidden = unread === 0;
+    badge.textContent = unread > 99 ? "99+" : String(unread);
+    badge.closest(".tab")?.setAttribute("aria-label", unread ? `Gram, ${unread} unread` : "Gram");
   }
   // The same badge on Settings while a newer Herdrup waits (Settings' suggestion of it).
   const settings = document.querySelector<HTMLElement>('#tabbar .tab-badge[data-tab="settings"]');
@@ -223,11 +229,10 @@ function setTabBadge() {
 }
 async function buildTabBar() {
   const generation = ++tabBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
-  // A guest's TabView holds Agents and Settings only; the shared agent's Gram is a tab of
-  // its own screen (App/GuestHomeView.swift 29-31, 96-105).
+  // A guest's TabView: Agents, Gram while a shared agent shares it (#697), and Settings.
   const items: Array<[typeof tab, string, string]> = [
     ["agents", "square.grid.2x2.fill", "Agents"],
-    ...(guestView ? [] : [["gram", "bubble.left.and.bubble.right.fill", "Gram"] as [typeof tab, string, string]]),
+    ...(!guestView || guestView.gram ? [["gram", "bubble.left.and.bubble.right.fill", "Gram"] as [typeof tab, string, string]] : []),
     ["settings", "gearshape.fill", "Settings"],
   ];
   const nodes = await Promise.all(
@@ -235,7 +240,7 @@ async function buildTabBar() {
       // The guest's Settings is its own page, without the app update.
       tabNode(key, icon, label, key === selectedTab, key === "gram" || key === "settings" && !guestView && appUpdatesShown, () => {
         if (guestView) {
-          if (key === "settings") guestActions.settings(); else guestActions.agents();
+          if (key === "settings") guestActions.settings(); else if (key === "gram") guestActions.gram(); else guestActions.agents();
           return;
         }
         selectTab(key);
@@ -506,32 +511,34 @@ function render() {
   if (!renderReady) return;
   const showConnect = !(appUpdatesAsked && tab === "settings") && (choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected"));
   const guestVisible = !!state.guest && !showConnect;
-  if (state.guest && !state.guest.features.gram) guestGram = false;
-  setGuestGramRecipient(guestVisible ? state.guest!.access.agentName : null);
+  // The guest's Gram is every shared agent's (#697); its tab shows while one shares Gram.
+  setGuestGram(guestVisible);
+  const gramOffered = guestVisible && guestGramOffer().offered;
+  if (guestTab === "gram" && !gramOffered) guestTab = "agents";
   document.body.classList.toggle("guest-mode", guestVisible);
   // The owner's top and tab bars frame the guest home too; rebuild them as it changes.
-  const nextBar = guestVisible ? { tab: guestTab, gram: guestTab === "agents" && guestGram } : null;
+  const nextBar = guestVisible ? { tab: guestTab, gram: gramOffered } : null;
   if (nextBar?.tab !== guestBar?.tab || nextBar?.gram !== guestBar?.gram) {
     guestBar = nextBar;
     void buildTopBar();
     void buildTabBar();
   }
-  guestHome?.update(state, board, guestTab, guestVisible, interactionVisible() ? selectedAgent?.paneID ?? null : null);
+  guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null);
   if (guestVisible) {
     connectView.hidden = true; document.body.classList.remove("host-home-visible");
     rail?.update("agents", null, false);
-    field.hidden = true; select.hidden = guestTab === "settings" || guestGram || interactionVisible();
+    field.hidden = true; select.hidden = guestTab !== "agents" || interactionVisible();
     $("roster").hidden = true;
     updateAsks(false);
     // The app's own Settings, with the share's card and page in place of the machine's.
     const share = guestTab === "settings" && guestHome ? guestHome.shareSettings(state.guest!, guestActions.hosts) : null;
     settings?.show(guestTab === "settings", state, board, share);
-    showGram(guestTab === "agents" && guestGram && !!state.guest?.features.gram);
-    showInteraction(guestTab === "agents" && !guestGram);
+    showGram(guestTab === "gram");
+    showInteraction(guestTab === "agents");
     // Settings as the owner's (a page over its index, with back, on a phone); Gram sits
-    // between the bars; the shared agent's page covers them.
+    // between the bars as the owner's does; the shared agent's page covers them.
     if (guestTab === "settings") placeDetail(settingsPushed ? "page" : "", settingsPushed);
-    else placeDetail(guestGram ? "bars" : interactionVisible() ? "page" : "");
+    else placeDetail(guestTab === "gram" ? "bars" : interactionVisible() ? "page" : "");
     return;
   }
   const showsGram = tab === "gram" && !showConnect;
@@ -567,14 +574,14 @@ function render() {
 searchInput.addEventListener("input", () => void renderRows());
 
 
-window.addEventListener("guest-gram", () => {
-  if (!state.guest?.features.gram) return;
-  guestTab = "agents"; guestGram = true; render();
+// The shared agent page's Gram button: the guest's Gram with that agent selected (#697).
+window.addEventListener("guest-gram", event => {
+  guestActions.gram((event as CustomEvent<string | null>).detail ?? null);
 });
 
 events.stateChanged.on((s) => {
   if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
-    guestTab = "agents"; guestGram = false;
+    guestTab = "agents";
   }
   state = s;
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
@@ -601,7 +608,7 @@ function showAppUpdates() {
   if (!settings || !renderReady) return;
   if (!appUpdatesShown) { void Desk.appUpdatesShown(); return; }
   if (guestBar) {
-    closeWriter(); guestTab = "settings"; guestGram = false;
+    closeWriter(); guestTab = "settings";
     settings.openPage("appUpdates");
   } else {
     tab = "settings";
@@ -763,11 +770,17 @@ async function init() {
       placeInitials,
       spinner: spinnerSVG,
       barChanged: unread => {
+        if (guestBar) {
+          if (guestTab === "gram") void buildTopBar();
+          return;
+        }
         rail?.unread(unread);
         gramUnread = unread;
         setTabBadge();
         if (tab === "gram") void buildTopBar();
       },
+      // The guest's Gram tab comes and goes with the shares that take Gram; its badge follows.
+      guestGramChanged: () => { setTabBadge(); if (guestBar && guestBar.gram !== guestGramOffer().offered) render(); },
     },
     $("detail"),
     $("sidebar"),

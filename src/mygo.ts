@@ -533,6 +533,38 @@ export interface GuestConnection {
   availability?: string;
 }
 
+/** GuestGramGrant is one shared agent of the combined guest Gram. */
+export interface GuestGramGrant {
+  id: string;
+  agent: string;
+  owner: string;
+  machine: string;
+  /**
+   * Gram: the owner shares Gram with this agent's guests. Known once the
+   * grant's first request was answered (Ready).
+   */
+  gram: boolean;
+  ready: boolean;
+  /** Error is why the grant can't be read, "" while it can. */
+  error?: string;
+}
+
+/**
+ * GuestGramSnapshot is the combined guest Gram: every saved shared agent, in
+ * the order saved, and the agent the composer posts to.
+ */
+export interface GuestGramSnapshot {
+  active: boolean;
+  grants: GuestGramState[];
+  recipient: string;
+}
+
+/** GuestGramState is one shared agent's Gram for the combined guest Gram. */
+export interface GuestGramState {
+  grant: GuestGramGrant;
+  gram: GramSnapshot;
+}
+
 /** GuestInvitation contains display information, not the invitation bearer. */
 export interface GuestInvitation {
   machineLabel: string;
@@ -1237,8 +1269,8 @@ export const Desk = {
    * card: only an image of at most 8 MiB, fetched at most two at a time.
    * The page decides when a card has shown long enough to ask.
    */
-  gramImage(id: string): Promise<string> {
-    return call("Desk.GramImage", id);
+  gramImage(key: string): Promise<string> {
+    return call("Desk.GramImage", key);
   },
   /**
    * GramLoadOlder fetches the page older than everything held, as the feed's
@@ -1291,8 +1323,8 @@ export const Desk = {
    * type, HTML in the default browser (owner, 2026-11-08); programs and scripts
    * remain save-only.
    */
-  gramOpenFile(id: string): Promise<void> {
-    return call("Desk.GramOpenFile", id);
+  gramOpenFile(key: string): Promise<void> {
+    return call("Desk.GramOpenFile", key);
   },
   gramPasteClipboard(): Promise<boolean> {
     return call("Desk.GramPasteClipboard");
@@ -1334,8 +1366,8 @@ export const Desk = {
    * GramSaveFile saves a message's file where the save dialog says, from the
    * cache when it was downloaded before.
    */
-  gramSaveFile(id: string): Promise<void> {
-    return call("Desk.GramSaveFile", id);
+  gramSaveFile(key: string): Promise<void> {
+    return call("Desk.GramSaveFile", key);
   },
   /** GramSaved returns this device's saved messages, newest first. */
   gramSaved(): Promise<SavedGram[]> {
@@ -1349,25 +1381,69 @@ export const Desk = {
   gramSenderAvatar(name: string): Promise<AvatarFace> {
     return call("Desk.GramSenderAvatar", name);
   },
-  /** GramSetSaved saves a copy of a message on this device, or forgets it. */
+  /**
+   * GramSetSaved saves a copy of a message on this device, or forgets it. A
+   * shared agent's is saved under its "<grant>\x1f<id>", as its snapshot names it.
+   */
   gramSetSaved(id: string, saved: boolean): Promise<void> {
     return call("Desk.GramSetSaved", id, saved);
   },
   /**
-   * GramSetVisible tells Gram whether its page shows. While it shows the
-   * inbox is polled every 6 s (30 s after a failure); while it does not, the
-   * unread badge every 15 s, and staged uploads nothing waits on pause.
+   * GramSetVisible tells the owner's Gram whether its page shows. While it
+   * shows the inbox is polled every 6 s (30 s after a failure); while it does
+   * not, the unread badge every 15 s, and staged uploads nothing waits on pause.
    */
   gramSetVisible(visible: boolean): Promise<void> {
     return call("Desk.GramSetVisible", visible);
   },
-  /** GramState returns Gram as the page draws it. */
+  /**
+   * GramState returns the owner's Gram as the page draws it (GuestGramState
+   * has the shared agents').
+   */
   gramState(): Promise<GramSnapshot> {
     return call("Desk.GramState");
   },
   /** GuestChatAvailable follows the authenticated host's transcript capability. */
   guestChatAvailable(token: string): Promise<boolean> {
     return call("Desk.GuestChatAvailable", token);
+  },
+  /**
+   * GuestGramLoadOlder pages the shared agents the page names (the merge's
+   * plan: those at or above the safe floor), together, and reports whether any
+   * list grew.
+   */
+  guestGramLoadOlder(grants: string[]): Promise<boolean> {
+    return call("Desk.GuestGramLoadOlder", grants);
+  },
+  /**
+   * GuestGramMarkAllRead marks the named shared agents' messages read (every
+   * one when none).
+   */
+  guestGramMarkAllRead(grants: string[]): Promise<void> {
+    return call("Desk.GuestGramMarkAllRead", grants);
+  },
+  /** GuestGramRefresh refreshes the named shared agents (every one when none). */
+  guestGramRefresh(grants: string[]): Promise<void> {
+    return call("Desk.GuestGramRefresh", grants);
+  },
+  /**
+   * GuestGramSetRecipient chooses the shared agent the composer posts to; its
+   * files upload to that agent's host, so the page changes it only while no
+   * file is attached.
+   */
+  guestGramSetRecipient(grant: string): Promise<void> {
+    return call("Desk.GuestGramSetRecipient", grant);
+  },
+  /**
+   * GuestGramSetVisible tells every shared agent's Gram whether the Gram tab
+   * shows (GramSetVisible).
+   */
+  guestGramSetVisible(visible: boolean): Promise<void> {
+    return call("Desk.GuestGramSetVisible", visible);
+  },
+  /** GuestGramState returns the combined guest Gram (Active false while none runs). */
+  guestGramState(): Promise<GuestGramSnapshot> {
+    return call("Desk.GuestGramState");
   },
   /**
    * GuestMenuKey presses one of the bar's menu keys in a guest's shared pane,
@@ -1848,6 +1924,7 @@ export const events = {
    */
   folderNamingRequested: event<FolderNaming>("folder-naming:requested"),
   guestInvitationOpened: event<boolean>("guest-invitation:opened"),
+  guestGramChanged: event<GuestGramSnapshot>("guest-gram:changed"),
   terminalChanged: event<TerminalEvent>("terminal:changed"),
   chatMenu: event<ChatMenuChoice>("chat:menu"),
   paneAttachments: event<PaneAttachments>("pane:attachments"),
