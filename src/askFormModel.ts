@@ -39,17 +39,33 @@ export interface FieldValue { options?: string[]; other?: string; text?: string 
 export function optionsOf(field: AskFormField): AskFormOption[] {
  return field.options ?? [];
 }
-/** The agent's recommendation: every field as omp preselected it. */
+/** The agent's recommendation: every field as omp preselected it. A checked, disabled option is
+ *  part of it: it stays ticked and counts as an answer, and only formValues leaves it out, since
+ *  herdr refuses a disabled option and keeps its state itself (AskFormSelections.defaultState). */
 export function formDraft(form: AskForm): FormDraft {
  const draft: FormDraft = {};
  for (const field of form.fields) {
   draft[field.name] = {
-   options: field.kind === "choice" ? optionsOf(field).filter(option => option.checked && !option.disabled).map(option => option.value) : [],
+   options: field.kind === "choice" ? optionsOf(field).filter(option => option.checked).map(option => option.value) : [],
    other: null,
    text: field.kind === "text" ? field.value ?? "" : "",
   };
  }
  return draft;
+}
+
+/** A radio that may be left without an answer: optional, and omp checked none of it
+ *  (AskFormSelections.mayBeUnanswered). */
+function mayBeUnanswered(field: AskFormField): boolean {
+ return !field.multi && !field.required && !optionsOf(field).some(option => option.checked);
+}
+
+/** Leaving a step closes an Other left empty where the field may go without it: a list's, and
+ *  an optional radio's without a default, which is unanswered again (dropEmptyOther). Any other
+ *  radio's stays open: its step can't be left until it has text or an option. */
+export function dropEmptyOther(field: AskFormField, draft: FieldDraft): FieldDraft {
+ if (draft.other === null || draft.other.trim() !== "" || !(field.multi || mayBeUnanswered(field))) return draft;
+ return { ...draft, other: null };
 }
 
 /** A checkbox group or multi-select of two or more options answers with a list (omp isArrayChoice). */
@@ -101,16 +117,18 @@ function hasControlChars(text: string, multiline: boolean): boolean {
 }
 
 /** What omp will report for the field (omp answerText): option labels, comma-joined, "Other: …"
- *  for typed text, the text of a text field; "" when nothing is chosen. */
+ *  for typed text, the text of a text field; "" when nothing is chosen. A multi-choice field lists
+ *  everything chosen whatever its option count: the controls let a lone checkbox and Other both be
+ *  chosen, and both are sent. */
 export function fieldAnswer(field: AskFormField, draft: FieldDraft): string {
  if (field.kind === "text") return submittedText(field, draft.text);
- const labels = optionsOf(field).filter(option => draft.options.includes(option.value) && !option.disabled).map(option => oneLine(option.label) || option.value);
+ const labels = optionsOf(field).filter(option => draft.options.includes(option.value)).map(option => oneLine(option.label) || option.value);
  const typed = field.other ? draft.other?.trim() : "";
  if (typed) {
-  if (!isListChoice(field)) return `Other: ${typed}`;
+  if (!field.multi) return `Other: ${typed}`;
   labels.push(`Other: ${typed}`);
  }
- return isListChoice(field) ? labels.join(", ") : labels[0] ?? "";
+ return field.multi ? labels.join(", ") : labels[0] ?? "";
 }
 
 /** The field differs from the agent's recommendation. */
@@ -126,7 +144,7 @@ export function fieldChanged(field: AskFormField, draft: FieldDraft, initial: Fi
 export function fieldProblem(field: AskFormField, draft: FieldDraft, initial: FieldDraft): string | null {
  if (field.kind === "choice") {
   const other = field.other ? draft.other?.trim() ?? "" : "";
-  if (draft.other !== null && !other && !field.multi) return "Type your answer, or pick an option";
+  if (draft.other !== null && !other && !field.multi && !mayBeUnanswered(field)) return "Type your answer, or pick an option";
   // herdr types the trimmed text (formValues), so only control characters inside it matter.
   if (other && hasControlChars(other, false)) return "Keep your answer on one line";
   if (!field.required || draft.options.length > 0 || other) return null;
@@ -156,15 +174,18 @@ export function fieldProblem(field: AskFormField, draft: FieldDraft, initial: Fi
 }
 
 /** agent.answer_form's values: only the fields that differ from the recommendation, since a field
- *  left out keeps its default (`{}` accepts every recommendation). */
+ *  left out keeps its default (`{}` accepts every recommendation). A disabled option is never
+ *  sent: herdr refuses it and keeps its state itself. */
 export function formValues(form: AskForm, draft: FormDraft): Record<string, FieldValue> {
  const initial = formDraft(form), values: Record<string, FieldValue> = {};
  for (const field of form.fields) {
   const now = draft[field.name] ?? initial[field.name]!;
   if (!fieldChanged(field, now, initial[field.name]!)) continue;
   if (field.kind === "text") { values[field.name] = { text: now.text }; continue; }
+  const disabled = new Set(optionsOf(field).filter(option => option.disabled).map(option => option.value));
+  const options = now.options.filter(value => !disabled.has(value));
   const typed = field.other ? now.other?.trim() ?? "" : "";
-  values[field.name] = typed ? { options: field.multi ? now.options : [], other: typed } : { options: now.options };
+  values[field.name] = typed ? { options: field.multi ? options : [], other: typed } : { options };
  }
  return values;
 }

@@ -3,7 +3,7 @@
 // preselected and marked, an Other row that opens a text field, Back / Next, and a review step
 // whose Submit sends agent.answer_form. Answered, the card lists the answers one per line; a
 // reader who can't answer sees the first field read-only.
-import { chooseOption, chooseOther, fieldAnswer, fieldChanged, fieldProblem, fieldQuestion, firstProblem, formDraft, formValues, optionsOf, type AskForm, type AskFormAnswer, type AskFormField, type AskFormStatus, type FieldValue, type FormDraft } from "./askFormModel";
+import { chooseOption, chooseOther, dropEmptyOther, fieldAnswer, fieldChanged, fieldProblem, fieldQuestion, firstProblem, formDraft, formValues, optionsOf, type AskForm, type AskFormAnswer, type AskFormField, type AskFormStatus, type FieldValue, type FormDraft } from "./askFormModel";
 import { symbolNow } from "./symbol";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
@@ -139,6 +139,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  const next = () => {
   const problem = fieldProblem(field, draftOf(field), initial[field.name]!);
   if (problem) { state.shownProblem = field.name; state.version++; input.changed(); return; }
+  set(dropEmptyOther(field, draftOf(field)));
   advance();
  };
 
