@@ -32,6 +32,11 @@ export type AskFormStatus = "answered" | "timed_out" | "cancelled";
  *  chosen; then it is the typed text (empty while still blank). */
 export interface FieldDraft { options: string[]; other: string | null; text: string }
 export type FormDraft = Record<string, FieldDraft>;
+/** A map keyed by field name. Field names are omp's, so any string: a null prototype keeps
+ *  "__proto__", "constructor" or "toString" an ordinary key (herdrup #674 review). */
+export function fieldMap<T>(entries?: Record<string, T>): Record<string, T> {
+ return Object.assign(Object.create(null) as Record<string, T>, entries);
+}
 /** agent.answer_form's value for one field. */
 export interface FieldValue { options?: string[]; other?: string; text?: string }
 
@@ -43,7 +48,7 @@ export function optionsOf(field: AskFormField): AskFormOption[] {
  *  part of it: it stays ticked and counts as an answer, and only formValues leaves it out, since
  *  herdr refuses a disabled option and keeps its state itself (AskFormSelections.defaultState). */
 export function formDraft(form: AskForm): FormDraft {
- const draft: FormDraft = {};
+ const draft: FormDraft = fieldMap();
  for (const field of form.fields) {
   draft[field.name] = {
    options: field.kind === "choice" ? optionsOf(field).filter(option => option.checked).map(option => option.value) : [],
@@ -177,7 +182,7 @@ export function fieldProblem(field: AskFormField, draft: FieldDraft, initial: Fi
  *  left out keeps its default (`{}` accepts every recommendation). A disabled option is never
  *  sent: herdr refuses it and keeps its state itself. */
 export function formValues(form: AskForm, draft: FormDraft): Record<string, FieldValue> {
- const initial = formDraft(form), values: Record<string, FieldValue> = {};
+ const initial = formDraft(form), values: Record<string, FieldValue> = fieldMap();
  for (const field of form.fields) {
   const now = draft[field.name] ?? initial[field.name]!;
   if (!fieldChanged(field, now, initial[field.name]!)) continue;
