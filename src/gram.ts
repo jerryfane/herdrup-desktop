@@ -1628,6 +1628,8 @@ function actionIcon(cls: string, label: string, action: () => void): HTMLButtonE
 function renderComposer() {
   if (!card) return;
   const a = address();
+  // The guest writes to the agent its "to" names (3B: "Message"); the owner to the queue or an @agent.
+  input.placeholder = guest ? "Message" : "Queue, or @ an agent…";
   const list = guest ? null : activeQuery(draft, caret);
   const matches = list ? model.mentionMatches(agents(), list.query) : [];
   if (guest) {
