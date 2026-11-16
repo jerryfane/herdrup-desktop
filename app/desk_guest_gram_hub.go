@@ -103,6 +103,16 @@ func (d *Desk) stopGuestGram() {
 		return
 	}
 	h.cancel()
+	h.mu.Lock()
+	links := make([]*link, 0, len(h.links))
+	for _, l := range h.links {
+		links = append(links, l)
+	}
+	h.mu.Unlock()
+	// After h.mu: closing takes each grant's g.mu (lock order).
+	for _, l := range links {
+		closeLink(l)
+	}
 	GuestGramChanged.Broadcast(GuestGramSnapshot{Grants: []GuestGramState{}})
 }
 
@@ -126,7 +136,7 @@ func (h *guestGramHub) sync() {
 		return
 	}
 	saved := map[string]bool{}
-	var started []*link
+	var started, dropped []*link
 	h.mu.Lock()
 	h.order = h.order[:0]
 	for _, access := range list {
@@ -147,7 +157,7 @@ func (h *guestGramHub) sync() {
 	}
 	for id, l := range h.links {
 		if !saved[id] {
-			l.cancelGram()
+			dropped = append(dropped, l)
 			delete(h.links, id)
 			delete(h.grants, id)
 			delete(h.snaps, id)
@@ -157,6 +167,9 @@ func (h *guestGramHub) sync() {
 		h.recipient = ""
 	}
 	h.mu.Unlock()
+	for _, l := range dropped {
+		closeLink(l)
+	}
 	for _, l := range started {
 		go h.run(l)
 	}
@@ -242,6 +255,23 @@ func (h *guestGramHub) setGrant(id string, change func(*GuestGramGrant)) {
 	h.mu.Unlock()
 	if ok {
 		h.publish()
+	}
+}
+
+// closeLink ends a shared agent's reads and its composer (uploads in flight
+// are discarded), as gramReset does for the owner's.
+func closeLink(l *link) {
+	l.cancelGram()
+	g := l.gram
+	g.mu.Lock()
+	old := g.composer
+	g.composer = nil
+	if g.cancel != nil {
+		g.cancel()
+	}
+	g.mu.Unlock()
+	if old != nil {
+		old.Close()
 	}
 }
 
