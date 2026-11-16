@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,6 +116,69 @@ func serveGuestRelay(s *fakeherdr.Server, addr string, ownerOnly, gram, multiReq
 					paused = now
 					relay.Pause(paused)
 					log.Printf("fakeherdr guest relay: paused %v", paused)
+				}
+			}
+		}()
+	}
+	return nil
+}
+
+// guestSharePane is the docs agent's pane in agents.json: every -guest-shares
+// grant's agent stands on it, so a guest's transcript and pane streams
+// through any grant are docs'.
+const guestSharePane = "w1:p2"
+
+// serveGuestShares serves the grants spec names (fakeherdr.ParseGuestShares)
+// on one relay listener in front of s and logs each one's invitation. While
+// injectFile exists, each of its `agent|text` lines becomes a new unread
+// message from agent in its grant's Gram, and the file is removed; checked
+// every 300 ms.
+func serveGuestShares(s *fakeherdr.Server, addr, spec, injectFile, webOrigin string) error {
+	grants, err := fakeherdr.ParseGuestShares(spec)
+	if err != nil {
+		return err
+	}
+	shares, err := fakeherdr.NewGuestShares(grants, func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+		return s.Handle(method, params)
+	}, guestSharePane, time.Now())
+	if err != nil {
+		return err
+	}
+	for _, grant := range shares.Grants {
+		agent, relay := grant.Agent, grant.Relay
+		if webOrigin != "" {
+			relay.WebOrigins = []string{webOrigin}
+		}
+		relay.Streams = s.Streams
+		relay.OnRequest = func(method string) { log.Printf("fakeherdr guest relay: %s request %s", agent, method) }
+		relay.OnSessionEnd = func(index int, c fakeherdr.GuestConnect) {
+			log.Printf("fakeherdr guest relay: %s session %d ended (%s) after %d requests", agent, index+1, c.End, c.Requests)
+		}
+	}
+	base, err := shares.Listen(addr)
+	if err != nil {
+		return err
+	}
+	log.Printf("fakeherdr guest relay on %s; %d guest shares", base, len(shares.Grants))
+	expires := time.Now().Add(24 * time.Hour)
+	for _, grant := range shares.Grants {
+		link := grant.Relay.InviteLink(base, expires)
+		log.Printf("fakeherdr guest relay: invite %s %s", grant.Agent, link)
+		if webOrigin != "" {
+			// The web guest's own form: its page with the payload as fragment.
+			_, payload, _ := strings.Cut(link, "#")
+			log.Printf("fakeherdr guest relay: web invite %s http://%s/web/#%s", grant.Agent, webOrigin, payload)
+		}
+	}
+	if injectFile != "" {
+		go func() {
+			for range time.Tick(300 * time.Millisecond) {
+				injected, err := shares.InjectFile(injectFile)
+				for _, line := range injected {
+					log.Printf("fakeherdr guest relay: injected %s", line)
+				}
+				if err != nil {
+					log.Printf("fakeherdr guest relay: inject: %v", err)
 				}
 			}
 		}()

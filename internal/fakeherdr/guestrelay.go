@@ -2,6 +2,7 @@ package fakeherdr
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -79,7 +80,10 @@ type GuestRelay struct {
 	host     noise.DHKey
 	inviteID string
 	secret   string
-	srv      *http.Server
+	// issues is the guest id redeeming the invitation issues; empty is
+	// fake-guest-1.
+	issues string
+	srv    *http.Server
 
 	mu       sync.Mutex
 	guestID  string
@@ -279,44 +283,61 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 	served, overlapped, ended := r.session(index, stop)
 	why := "guest"
 	defer func() { ended(why) }()
-	socket, err := websocket.Accept(w, req, &websocket.AcceptOptions{OriginPatterns: r.WebOrigins})
-	if err != nil {
+	socket, handshake, hello, ok := acceptGuest(w, req, r.hostID, r.host, r.WebOrigins)
+	if !ok {
 		return
 	}
 	defer socket.CloseNow()
+	why = r.converse(req.Context(), end, socket, handshake, hello, served, overlapped)
+}
+
+// guestHello is a guest's handshake payload: the invitation it redeems, or
+// the guest id it returns as.
+type guestHello struct {
+	InviteID string `json:"invite_id"`
+	Secret   string `json:"secret"`
+	GuestID  string `json:"guest_id"`
+}
+
+// acceptGuest accepts a guest's WebSocket to the host hostID, keyed key, and
+// reads the guest's first Noise IK message: its hello. ok is false when the
+// socket failed, and is closed.
+func acceptGuest(w http.ResponseWriter, req *http.Request, hostID string, key noise.DHKey, origins []string) (socket *websocket.Conn, handshake *noise.HandshakeState, hello guestHello, ok bool) {
+	socket, err := websocket.Accept(w, req, &websocket.AcceptOptions{OriginPatterns: origins})
+	if err != nil {
+		return nil, nil, hello, false
+	}
 	socket.SetReadLimit(65535)
-	ctx := req.Context()
-	handshake, err := noise.NewHandshakeState(noise.Config{
+	handshake, err = noise.NewHandshakeState(noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256),
-		Pattern:     noise.HandshakeIK, Prologue: []byte("herdr-guest/1:" + r.hostID), StaticKeypair: r.host,
+		Pattern:     noise.HandshakeIK, Prologue: []byte("herdr-guest/1:" + hostID), StaticKeypair: key,
 	})
-	if err != nil {
-		return
+	if err == nil {
+		var message, plain []byte
+		if _, message, err = socket.Read(req.Context()); err == nil {
+			if plain, _, _, err = handshake.ReadMessage(nil, message); err == nil {
+				_ = json.Unmarshal(plain, &hello)
+				return socket, handshake, hello, true
+			}
+		}
 	}
-	_, message, err := socket.Read(ctx)
-	if err != nil {
-		return
-	}
-	plain, _, _, err := handshake.ReadMessage(nil, message)
-	if err != nil {
-		return
-	}
-	var hello struct {
-		InviteID string `json:"invite_id"`
-		Secret   string `json:"secret"`
-		GuestID  string `json:"guest_id"`
-	}
-	_ = json.Unmarshal(plain, &hello)
+	socket.CloseNow()
+	return nil, nil, hello, false
+}
+
+// converse answers the guest's hello and then serves its session's requests
+// until it ends, and says why it ended (GuestConnect.End).
+func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, handshake *noise.HandshakeState, hello guestHello, served, overlapped func()) string {
 	reply, request := r.hello(hello.InviteID, hello.Secret, hello.GuestID, handshake.PeerStatic())
 	answer, receive, send, err := handshake.WriteMessage(nil, reply)
 	if err != nil || socket.Write(ctx, websocket.MessageBinary, answer) != nil {
-		return
+		return "guest"
 	}
 	if !request {
-		why = "handshake"
 		_ = socket.Close(websocket.StatusNormalClosure, "")
-		return
+		return "handshake"
 	}
+	why := "guest"
 	// The guest's frames, decrypted in order, until it leaves.
 	chunks := make(chan []byte)
 	go func() {
@@ -377,7 +398,7 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 			case chunk, open := <-chunks:
 				if !open {
 					timer.Stop()
-					return
+					return why
 				}
 				buffer = append(buffer, chunk...)
 			case <-timer.C:
@@ -395,7 +416,7 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		buffer = buffer[at+1:]
 		served()
 		if why = r.request(ctx, line, emit); why == "dropped" {
-			return
+			return why
 		}
 		if why == "" && !r.MultiRequest {
 			why = "reply"
@@ -406,6 +427,17 @@ func (r *GuestRelay) serve(w http.ResponseWriter, req *http.Request) {
 		why = "guest"
 	}
 	_ = socket.Close(websocket.StatusNormalClosure, "")
+	return why
+}
+
+// claims says the hello is for this grant: its invitation, or its guest.
+func (r *GuestRelay) claims(hello guestHello) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if hello.InviteID != "" {
+		return hello.InviteID == r.inviteID
+	}
+	return hello.GuestID != "" && hello.GuestID == r.guestID
 }
 
 // hello answers the guest's handshake payload: an invitation redeemed once,
@@ -426,7 +458,7 @@ func (r *GuestRelay) hello(inviteID, secret, guestID string, key []byte) ([]byte
 		if r.guestID != "" {
 			return refuse("invite_used")
 		}
-		r.guestID, r.guestKey = "fake-guest-1", slices.Clone(key)
+		r.guestID, r.guestKey = cmp.Or(r.issues, "fake-guest-1"), slices.Clone(key)
 	case guestID == "" || guestID != r.guestID || !bytes.Equal(key, r.guestKey):
 		return refuse("unknown")
 	}
