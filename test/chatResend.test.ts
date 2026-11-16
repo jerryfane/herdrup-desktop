@@ -77,3 +77,24 @@ test("with older history unloaded, only origin-marked prompts older than the win
  ];
  expect(mergeTranscript(held, page, { hasOlder: true }).map(e => e.id)).toEqual(["u", "r", "e", "p", "n", "z", "new"]);
 });
+
+// herdr #452 / herdrup #710: an after page that lists its re-sent entries says exactly which are
+// replays. Listed and not held: dropped (an older page brings them). Listed and held: updated in
+// place. Unlisted: new and appended, whatever the timestamp or origin.
+test("with resent listed, only listed entries the chat doesn't hold are dropped", () => {
+ const page = [
+  at("u", 2000, "user", { author: "owner", origin: "other" }),
+  at("old", 1999, "user", { author: "guest", origin: "other" }),
+  at("marked", 1500, "user", { author: "guest", origin: "other" }),
+  at("r", 0),
+ ];
+ const merged = mergeTranscript(held, page, { hasOlder: true, resent: ["u", "old"] });
+ expect(merged.map(e => e.id)).toEqual(["u", "marked", "r"]);
+ expect(merged[0]!.origin).toBe("other");
+});
+
+test("an empty resent list keeps every entry, even ones the fallback would drop", () => {
+ const page = [at("old", 1999, "user", { author: "guest", origin: "other" })];
+ expect(mergeTranscript(held, page, { hasOlder: true, resent: [] }).map(e => e.id)).toEqual(["u", "old"]);
+ expect(mergeTranscript(held, page, { hasOlder: true }).map(e => e.id)).toEqual(["u"]);
+});

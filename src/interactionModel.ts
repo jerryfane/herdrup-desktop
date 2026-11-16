@@ -13,6 +13,9 @@ export interface Entry {
 }
 export interface TranscriptPage {
  after: string; before?: string; session_id: string; entries: Entry[];
+ /** On an after page from herdr with #452: the ids of the entries re-sent from before the cursor
+  *  (origin-mark replays, changed steps), `[]` when none. Absent on older servers. */
+ resent?: string[];
  plan?: PlanItem[] | null;
  pending_ask?: { id: string; answerable: boolean; questions: Question[]; form?: AskForm | null; form_answerable?: boolean };
  working?: { intent?: string; [key: string]: unknown };
@@ -76,26 +79,30 @@ export function modelLine(model: TranscriptModel): { label: string; accessibilit
   accessibilityLabel: `Model: ${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
  };
 }
-/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684, as
- *  narrowed by #691). When the pane's remembered non-owner prompts change, herdr re-sends every
- *  earlier user entry now marked origin "other", back to the start of the session (resend_origins).
- *  Only such a replay is dropped: an entry the chat does not hold that is a user prompt marked
+/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684, #691,
+ *  #710). When the pane's remembered non-owner prompts change, herdr re-sends earlier entries
+ *  before the cursor. A page that lists them (`resent`, herdr #452) says exactly which: a listed
+ *  entry the chat holds is updated in place, one it does not hold is history not loaded yet (an
+ *  older page brings it) and is dropped, and every unlisted entry is new and appended, whatever
+ *  its timestamp or origin. Without the list (older servers) only an unknown user prompt marked
  *  origin "other", with a nonzero timestamp older than the oldest held, while older history is
- *  still unloaded (hasOlder). An older page brings it in place. Every other unknown entry is new and
- *  kept whatever its timestamp: one without ts_ms (0) or behind the window through clock skew must
- *  not be lost, since the after cursor moves past it. With the whole session held, herdr re-sends
- *  only entries already held, so nothing unknown is a replay. */
-export function liveEntries(current: readonly Entry[], page: Entry[], hasOlder: boolean): Entry[] {
+ *  still unloaded, is taken for a replay; every other unknown entry is kept, since the after
+ *  cursor moves past it. With the whole session held, herdr re-sends only entries already held. */
+export function liveEntries(current: readonly Entry[], page: Entry[], hasOlder: boolean, resent?: readonly string[]): Entry[] {
+ const held = new Set(current.map(e => e.id));
+ if (resent) {
+  const listed = new Set(resent);
+  return page.filter(e => held.has(e.id) || !listed.has(e.id));
+ }
  const oldest = current[0]?.ts_ms;
  if (!hasOlder || oldest === undefined) return page;
- const held = new Set(current.map(e => e.id));
  return page.filter(e => held.has(e.id) || !(e.kind === "user" && e.origin === "other" && e.ts_ms > 0 && e.ts_ms < oldest));
 }
 /** Merges a transcript page into the held entries: an older page before them, a live page after
- *  (liveEntries; hasOlder says older history is still unloaded). */
-export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?: boolean; hasOlder?: boolean } = {}): Entry[] {
+ *  (liveEntries; hasOlder says older history is still unloaded, resent is the page's list). */
+export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?: boolean; hasOlder?: boolean; resent?: readonly string[] } = {}): Entry[] {
  const older = opts.older ?? false;
- if (!older) page = liveEntries(current, page, opts.hasOlder ?? false);
+ if (!older) page = liveEntries(current, page, opts.hasOlder ?? false, opts.resent);
  const updates = new Map(page.map(e => [e.id, e]));
  const oldIDs = new Set(current.map(e => e.id));
  const merged = current.map(e => updates.get(e.id) ?? e);
