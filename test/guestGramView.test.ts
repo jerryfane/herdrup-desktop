@@ -9,9 +9,10 @@ const snap = (messages: GramMessage[], o: Partial<GramSnapshot> = {}): GramSnaps
  phase: "loaded", messages, unreadCount: 0, hasMore: false, loadingOlder: false, refreshing: false, markingAllRead: false, agents: [], saved: [],
  localMachine: "", attachments: [], sending: false, sendProgress: 0, sendProgressShown: false, draftPosted: 0, visible: true, ...o,
 });
-const grant = (id: string, owner: string, messages: GramMessage[], o: { gram?: boolean; hasMore?: boolean; status?: string } = {}): GuestGramState => ({
+const grant = (id: string, owner: string, messages: GramMessage[], o: { gram?: boolean; hasMore?: boolean; status?: string; unread?: number } = {}): GuestGramState => ({
  grant: { id, agent: id, owner, machine: owner === "Jerry" ? "Mac Studio" : "lab-box", gram: o.gram ?? true, ready: true },
- gram: snap(messages, { hasMore: o.hasMore ?? false, ...(o.status ? { status: o.status } : {}) }),
+ // A shared agent's own count: its inbox's, or its unread-only walk while Gram is hidden.
+ gram: snap(messages, { hasMore: o.hasMore ?? false, unreadCount: o.unread ?? messages.filter(m => m.unread).length, ...(o.status ? { status: o.status } : {}) }),
 });
 
 const s: GuestGramSnapshot = {
@@ -62,4 +63,15 @@ test("no shared agent with Gram offers no Gram tab", () => {
  expect(v.offered).toBe(false);
  expect(v.recipient).toBeNull();
  expect(v.snapshot.phase).toBe("idle");
+});
+
+// The real app's probe: with Gram hidden, a shared agent's new message raises its count (the
+// unread-only walk) before any list loads it; the tab, All agents and its row still show it.
+test("the counts are each shared agent's own, not the messages loaded", () => {
+ const hidden: GuestGramSnapshot = { ...s, grants: [grant("market", "Jerry", [msg("market", "m1", 100)], { unread: 3 }), s.grants[1]!] };
+ const v = guestGramView(hidden, null);
+ expect(v.badge).toBe(4);
+ expect(v.all.unread).toBe(4);
+ expect(v.groups.flatMap(g => g.rows.map(r => [r.grant.id, r.unread]))).toEqual([["ledger", 1], ["market", 3]]);
+ expect(guestGramView(hidden, "market").snapshot.unreadCount).toBe(3);
 });

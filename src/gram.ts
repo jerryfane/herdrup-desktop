@@ -1494,7 +1494,7 @@ function buildComposer(): HTMLElement {
   stopClipboardPaste?.();
   stopClipboardPaste = composerClipboardPaste(input, () => {
     if (picking || posting || snap?.sending || !shown) return Promise.reject(new Error("Wait for the current attachment operation to finish."));
-    return Desk.gramPasteClipboard();
+    return fixRecipient().then(() => Desk.gramPasteClipboard());
   }, error => { banner.hidden = false; banner.textContent = errorText(error); });
   mentionHost = el("div", "gmentions");
   mentionHost.hidden = true;
@@ -1705,11 +1705,19 @@ function pick(agent: GramAgent) {
   input.focus();
 }
 
+/** The guest's composer posts and uploads through one shared agent's host: before a file or a post
+ *  leaves, its "to" (the default follows the newest agent message) is fixed in Go. */
+async function fixRecipient() {
+  const to = guestRecipient();
+  if (guest && to && guest.raw.recipient !== to.id) await Desk.guestGramSetRecipient(to.id);
+}
+
 async function pickFiles(paths?: string[]) {
   if (picking || posting || snap?.sending || !shown) return;
   picking = true;
   renderComposer();
   try {
+    await fixRecipient();
     if (paths) await Desk.gramAttachFiles(paths); else await Desk.gramPickFiles();
   } catch {
     // The banner names what was skipped.
@@ -1731,6 +1739,7 @@ async function send() {
   submittedDraftRevision = revision;
   posting = true;
   try {
+    await fixRecipient();
     await Desk.gramPost(a.body, to ? [to] : [], attachments.map((x) => x.path));
   } catch {
     // The backend's banner reports failure; leave unsent text intact.

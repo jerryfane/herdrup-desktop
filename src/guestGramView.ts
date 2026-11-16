@@ -50,7 +50,13 @@ export function guestGramView(s: GuestGramSnapshot, selected: string | null): Gu
  const scoped = lanes.filter(l => scope.some(g => g.grant.id === l.grant));
  const merge = mergeGuestGram(scoped);
  const whole = mergeGuestGram(lanes);
- const { groups, labelled } = guestGramGroups(lanes);
+ // Unread counts are each shared agent's own (its unread-only walk while Gram is hidden, its
+ // inbox while it shows), as the owner's badge is: the loaded messages miss a hidden Gram's new ones.
+ const unread = new Map(shared.map(g => [g.grant.id, g.gram.unreadCount]));
+ const sum = (ids: Iterable<string>) => [...ids].reduce((n, id) => n + (unread.get(id) ?? 0), 0);
+ const listed = guestGramGroups(lanes);
+ const groups = listed.groups.map(group => ({ ...group, rows: group.rows.map(row => ({ ...row, unread: unread.get(row.grant.id) ?? 0 })) }));
+ const labelled = listed.labelled;
  const recipientID = (s.recipient && grants.has(s.recipient) ? s.recipient : null) ?? (selected !== null && grants.has(selected) ? selected : merge.defaultTarget);
  const recipient = recipientID ? grants.get(recipientID) ?? null : null;
  const posting = shared.find(g => g.grant.id === recipientID)?.gram;
@@ -61,7 +67,7 @@ export function guestGramView(s: GuestGramSnapshot, selected: string | null): Gu
    : snaps.some(g => g.phase === "loaded") ? "loaded" : snaps.every(g => g.phase === "unavailable") ? "unavailable" : "loading",
   unavailable: snaps.find(g => g.unavailable)?.unavailable,
   messages: merge.items.map(item => item.message.row).reverse(),
-  unreadCount: merge.unreadCount,
+  unreadCount: sum(scope.map(g => g.grant.id)),
   hasMore: merge.hasMore,
   loadingOlder: snaps.some(g => g.loadingOlder),
   olderError: snaps.find(g => g.olderError)?.olderError,
@@ -82,8 +88,8 @@ export function guestGramView(s: GuestGramSnapshot, selected: string | null): Gu
   if (!agents.includes(agent)) agents.push(agent);
  }
  return {
-  snapshot, merge, all: { newest: whole.items.at(-1)?.message.row ?? null, agents, unread: whole.unreadCount }, groups, labelled,
-  grants, recipient, badge: whole.unreadCount, offered: shared.length > 0,
+  snapshot, merge, all: { newest: whole.items.at(-1)?.message.row ?? null, agents, unread: sum(unread.keys()) }, groups, labelled,
+  grants, recipient, badge: sum(unread.keys()), offered: shared.length > 0,
  };
 }
 
