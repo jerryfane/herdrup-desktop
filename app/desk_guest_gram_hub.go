@@ -218,8 +218,22 @@ func (h *guestGramHub) run(l *link) {
 		if ctx.Err() != nil {
 			return
 		}
-		h.setGrant(id, func(g *GuestGramGrant) { g.Gram = false })
+		h.withdrawn(l, id)
 	}
+}
+
+// withdrawn is a shared agent whose owner stopped sharing Gram: its files
+// attached can no longer be posted (its host refuses Gram), so its Gram is
+// reset (the composer and its uploads go), and it stops being the recipient,
+// so "to" falls back to an agent that shares Gram.
+func (h *guestGramHub) withdrawn(l *link, id string) {
+	h.d.gramReset(l, l.access.MachineLabel)
+	h.mu.Lock()
+	if h.recipient == id {
+		h.recipient = ""
+	}
+	h.mu.Unlock()
+	h.setGrant(id, func(g *GuestGramGrant) { g.Gram = false })
 }
 
 // discoverGram lists the shared agent's agents until its owner shares Gram

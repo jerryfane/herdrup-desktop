@@ -445,6 +445,51 @@ func TestGuestGramComesBackWhenSharingIsTurnedBackOn(t *testing.T) {
 	waitFor(t, "market's Gram offered again", shared(true))
 }
 
+// #233 review: when the recipient's owner stops sharing Gram, its attached
+// files (uploaded to a host that now refuses Gram) are dropped and it stops
+// being the recipient, so the guest can write to another agent.
+func TestGuestGramWithdrawnRecipientReleasesItsAttachments(t *testing.T) {
+	d, fx, _ := guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram;legal|Jerry|Mac Studio|gram")
+	d.GuestGramSetVisible(true)
+	waitFor(t, "both shared agents' Gram", func() bool {
+		s := d.GuestGramState()
+		a, _ := grantState(s, "market")
+		b, _ := grantState(s, "legal")
+		return a.Grant.Gram && b.Grant.Gram && a.Gram.Phase == "loaded" && b.Gram.Phase == "loaded"
+	})
+	s := d.GuestGramState()
+	market, _ := grantState(s, "market")
+	legal, _ := grantState(s, "legal")
+	if err := d.GuestGramSetRecipient(market.Grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GramAttachFiles([]string{file}); err != nil {
+		t.Fatal(err)
+	}
+	fx.Grants[0].Relay.SetGram(false)
+	d.GuestGramSetVisible(false)
+	d.GuestGramSetVisible(true)
+	waitFor(t, "market's Gram withdrawn", func() bool {
+		s := d.GuestGramState()
+		g, _ := grantState(s, "market")
+		return !g.Grant.Gram
+	})
+	s = d.GuestGramState()
+	if s.Recipient == market.Grant.ID {
+		t.Fatal("the withdrawn agent is still the recipient")
+	}
+	if g, _ := grantState(s, "market"); len(g.Gram.Attachments) != 0 {
+		t.Fatalf("the withdrawn agent still holds %d attached files", len(g.Gram.Attachments))
+	}
+	if err := d.GuestGramSetRecipient(legal.Grant.ID); err != nil {
+		t.Fatalf("writing to an agent that shares Gram: %v", err)
+	}
+}
+
 // #229: a file the guest posts is kept on this device under the key its
 // download looks for (gramFetch: "<grant>\x1f<id>"), so it opens even when
 // the host is gone.
