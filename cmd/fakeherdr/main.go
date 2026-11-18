@@ -43,6 +43,7 @@ func main() {
 	gramsFile := flag.String("grams", "", "seed the Gram store: \"sample\" for the built-in messages (grams.json), or a JSON array of gram messages with optional ago_seconds, file_base64 or file_text (default: empty)")
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	askForm := flag.String("ask-form", "", "with -interactions, the pending ask is an omp HTML form (herdr ask-form contract): answerable (ping advertises ask_form), readonly (form_answerable false), moved (agent.answer_form answers ask_form_moved) or old-host (no ask_form capability)")
+	transcriptOlderPages := flag.Int("transcript-older-pages", 1, "with -interactions, how many older agent.transcript pages sit before the newest one, one owner prompt each")
 	transcriptDelay := flag.Duration("transcript-delay", 0, "with -interactions, answer agent.transcript after this delay, as a slow link does")
 	transcriptOlderFail := flag.Int("transcript-older-fail", 0, "with -interactions, refuse the first N agent.transcript before pages (older history), as a flaky link does; the page after that answers")
 	streamStall := flag.Int("stream-stall", 0, "with -interactions, end the first N pane.streams after 3 s with herdr's stream_stalled error (herdr #410), as a reader too slow for herdr is")
@@ -146,6 +147,7 @@ func main() {
 	if *interactions {
 		x := fakeherdr.NewInteraction()
 		x.SetAskForm(*askForm)
+		x.OlderPages = *transcriptOlderPages
 		grow = x
 		var stall, olderFails atomic.Int64
 		s.Streams = map[string]fakeherdr.StreamFunc{"pane.stream": func(ctx context.Context, id string, raw json.RawMessage, emit func([]byte) error) {

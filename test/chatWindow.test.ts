@@ -78,7 +78,11 @@ test("one load at a time, a failure waits for Retry, and the start of the histor
  expect(at({ load: "loading" })).toBe("none");
  expect(at({ load: "failed" })).toBe("none");
  expect(at({ olderPage: false })).toBe("none");
- // A page that left the top in view reveals only, until the reader arrives at the top again.
- expect(at({ fetches: false })).toBe("none");
+ // A page that left the top in view reveals only, and offers the next page to tap: rows that
+ // don't fill the view never scroll again, and a touch has no wheel (herdrup-desktop #239).
+ expect(at({ fetches: false })).toBe("offer");
+ expect(at({ fetches: false, scrollHeight: 800 })).toBe("offer");
+ expect(at({ fetches: false, olderPage: false })).toBe("none");
+ expect(at({ fetches: false, load: "loading" })).toBe("none");
  expect(at({ fetches: false, drawnStart: 40 })).toBe("reveal");
 });

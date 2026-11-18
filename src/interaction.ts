@@ -1322,7 +1322,9 @@ class Detail {
  /** Reaching the top of the chat (ChatView showOlder): the next window of rows already loaded,
   *  else the next older page. A fetch goes when the reader arrives at the top (or wheels up
   *  there): a page that still leaves the top in view reveals only, as on iPhone, so one arrival
-  *  never walks the whole history. `force`: the reader asked again (a wheel up at the top). */
+  *  never walks the whole history. Then the top offers "Earlier messages" to tap (herdrup-desktop
+  *  #239): rows that do not fill the view never scroll, and a touch has no wheel. `force`: the
+  *  reader asked again (a wheel up at the top). */
  checkTop(force = false) {
   if (this.disposed || this.mode !== "chat" || !this.chat) return;
   const s = this.chatScroll;
@@ -1331,10 +1333,13 @@ class Detail {
   const arrived = reached && (force || !this.topReached);
   this.topReached = reached;
   const action = topAction({ ...at, drawnStart: this.drawnIndex, olderPage: !!this.oldestCursor, load: this.olderLoad, fetches: arrived });
+  this.earlierOffered = action === "offer";
+  this.renderEarlier();
   if (action === "reveal") this.revealEarlier();
   else if (action === "fetch") void this.loadEarlier(this.generation);
  }
  private topReached = false;
+ private earlierOffered = false;
  /** The next window of loaded rows above the drawn ones; the row on top stays where it was. */
  revealEarlier() {
   const rows = groupTranscript(this.entries, !!this.chat?.working);
@@ -1375,23 +1380,30 @@ class Detail {
    rememberChat(JSON.stringify(this.target), { page: this.chat!, entries: this.entries, oldestCursor: this.oldestCursor });
    this.drawFrom = revealedAbove(groupTranscript(this.entries, !!this.chat?.working), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
+   // A page that leaves the top in view offers the next one (checkTop never fetches it itself).
+   requestAnimationFrame(() => this.checkTop());
    return true;
   } catch {
    if (epoch === this.chatEpoch) { this.olderLoad = current() ? "failed" : "idle"; this.renderEarlier(); }
    return false;
   }
  }
- /** The top of the chat as olderLoad says: nothing while idle, the loading line, or the Retry. */
+ /** The top of the chat as olderLoad says: nothing while idle, the loading line, or the Retry;
+  *  idle at the top with older pages left that no scroll will reach, "Earlier messages". */
  renderEarlier() {
   const e = this.earlier;
-  e.hidden = this.olderLoad === "idle";
-  if (e.dataset.state === this.olderLoad) return;
-  e.dataset.state = this.olderLoad;
-  if (this.olderLoad === "loading") {
+  const state = this.olderLoad === "idle" && this.earlierOffered && this.oldestCursor ? "offer" : this.olderLoad;
+  e.hidden = state === "idle";
+  if (e.dataset.state === state) return;
+  e.dataset.state = state;
+  if (state === "loading") {
    e.replaceChildren(el("span", "chat-earlier-spinner"), el("span", "", "Loading earlier messages"));
    e.setAttribute("role", "status");
-  } else if (this.olderLoad === "failed") {
+  } else if (state === "failed") {
    e.replaceChildren(button("Couldn't load earlier messages · Retry", () => { this.olderLoad = "idle"; void this.loadEarlier(this.generation); }));
+   e.removeAttribute("role");
+  } else if (state === "offer") {
+   e.replaceChildren(button("Earlier messages", () => { void this.loadEarlier(this.generation); }));
    e.removeAttribute("role");
   } else e.replaceChildren();
  }
