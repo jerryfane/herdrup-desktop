@@ -17,14 +17,18 @@ import (
 
 // guestGramFixture saves three shared agents (two on Jerry's host, one on
 // Alex's, the last without Gram) and connects the first, as a guest does.
+// guestGramSpec: three shared agents with Gram on two hosts (one with session
+// reuse), and one without.
+const guestGramSpec = "market|Jerry|Mac Studio|gram;legal|Jerry|Mac Studio|gram,multi;ledger|Alex|lab-box|gram;quiet|Alex|lab-box|"
+
 func guestGramFixture(t *testing.T) (*Desk, *fakeherdr.GuestShares, string) {
 	t.Helper()
-	return guestGramFixtureOf(t, "market|Jerry|Mac Studio|gram;legal|Jerry|Mac Studio|gram,multi;ledger|Alex|lab-box|gram;quiet|Alex|lab-box|")
+	return guestGramFixtureOf(t, guestGramSpec)
 }
 
 // guestGramFixtureOf accepts every share of spec (fakeherdr -guest-shares)
 // and connects the one of agent "market".
-func guestGramFixtureOf(t *testing.T, spec string) (*Desk, *fakeherdr.GuestShares, string) {
+func guestGramFixtureOf(t *testing.T, spec string, setup ...func(*Desk)) (*Desk, *fakeherdr.GuestShares, string) {
 	t.Helper()
 	shares, err := fakeherdr.ParseGuestShares(spec)
 	if err != nil {
@@ -44,6 +48,9 @@ func guestGramFixtureOf(t *testing.T, spec string) (*Desk, *fakeherdr.GuestShare
 	t.Cleanup(func() { _ = fx.Close() })
 	d := newDesk(t.TempDir())
 	t.Cleanup(d.Disconnect)
+	for _, f := range setup {
+		f(d)
+	}
 	ids := map[string]string{}
 	for _, g := range fx.Grants {
 		access, err := d.AcceptGuestInvitation(context.Background(), g.Relay.InviteLink(base, time.Now().Add(time.Hour)))
@@ -541,9 +548,16 @@ func TestGuestGramPostedFileIsKeptUnderItsGrantKey(t *testing.T) {
 // herdrup-desktop#243: a post to it failed with "not connected").
 func TestGuestGramIsOfferedOnlyOnceItCanPost(t *testing.T) {
 	held, release := make(chan string, 8), make(chan struct{})
-	defer func(was func(string)) { guestGramSettingUp = was }(guestGramSettingUp)
-	guestGramSettingUp = func(grant string) { held <- grant; <-release }
-	d, _, _ := guestGramFixture(t)
+	// The hook belongs to this test's Desk: other workers of the fixture read it until they end.
+	d, _, _ := guestGramFixtureOf(t, guestGramSpec, func(d *Desk) {
+		d.guestGramSettingUp = func(grant string) {
+			select {
+			case held <- grant:
+			default:
+			}
+			<-release
+		}
+	})
 	defer close(release)
 	var grant string
 	select {

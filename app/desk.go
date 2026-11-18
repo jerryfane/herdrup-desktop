@@ -170,6 +170,10 @@ type Desk struct {
 	// guestGram is the combined guest Gram while a shared agent shows
 	// (desk_guest_gram_hub.go), nil otherwise.
 	guestGram atomic.Pointer[guestGramHub]
+	// guestGramSettingUp, when set before the first guest connects, runs as a
+	// shared agent found to share Gram is set up, before its Gram exists; tests
+	// hold that moment open. Never changed once a hub runs.
+	guestGramSettingUp func(grant string)
 	// saved is this device's saved Gram messages, read on first use.
 	saved     *gramstore.Saved
 	savedOnce sync.Once
