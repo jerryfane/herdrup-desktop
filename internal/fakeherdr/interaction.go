@@ -22,6 +22,9 @@ type Interaction struct {
 	launchMs int64
 	// form is the ask-form mode (askform.go); "" serves the plain question.
 	form string
+	// OlderPages is how many older transcript pages sit before the newest one
+	// (0: one). Each holds one owner prompt; the oldest is "older".
+	OlderPages int
 }
 
 var interactionQuestionOptions = []string{"Run focused checks", "Inspect the diff", "Use Terminal"}
@@ -118,10 +121,27 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		}
 		if p.Before == "" {
 			page["before"] = "older"
+			if x.OlderPages > 1 {
+				page["before"] = fmt.Sprintf("older-%d", x.OlderPages)
+			}
 			// omp's recap of the last finished turn (herdr TranscriptRecap).
 			page["recap"] = map[string]any{"turn_id": "r1", "text": "Reviewed the **workspace**: the terminal and `agent.transcript` paths are ready; see [the plan](https://example.com/plan)."}
 		} else {
-			page["entries"] = []any{map[string]any{"kind": "user", "id": "older", "ts_ms": 0, "author": "owner", "text": "Earlier conversation page."}}
+			// Older pages count down to "older", the start of the history:
+			// before "older-<n>" brings "older-<n>" and points at n-1.
+			n := 1
+			if p.Before != "older" {
+				_, _ = fmt.Sscanf(p.Before, "older-%d", &n)
+			}
+			id := "older"
+			if n > 1 {
+				id = fmt.Sprintf("older-%d", n)
+				page["before"] = "older"
+				if n > 2 {
+					page["before"] = fmt.Sprintf("older-%d", n-1)
+				}
+			}
+			page["entries"] = []any{map[string]any{"kind": "user", "id": id, "ts_ms": 0, "author": "owner", "text": "Earlier conversation page " + id + "."}}
 		}
 		if !x.answered && x.form != "" {
 			page["pending_ask"] = map[string]any{"id": "q1", "answerable": false, "questions": askFormQuestions(),

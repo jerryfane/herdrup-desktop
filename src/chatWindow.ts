@@ -59,13 +59,16 @@ export type OlderLoad = "idle" | "loading" | "failed";
  *  window of rows already loaded ("reveal"), else the next older page ("fetch"), else nothing.
  *  Not while Find holds the chat, and not before the chat landed on its newest rows: rows that
  *  overflow while it still follows the tail put the top on screen only until it lands. A failed
- *  load waits for Retry; `fetches` false (a reveal that still shows the top) reveals only. */
+ *  load waits for Retry; `fetches` false (a page that still shows the top) reveals only, and
+ *  offers the next page to tap instead ("offer"): a view the rows don't fill never scrolls again,
+ *  and a touch has no wheel (herdrup-desktop #239). */
 export function topAction(v: {
  scrollTop: number; scrollHeight: number; clientHeight: number; following: boolean; finding: boolean;
  drawnStart: number; olderPage: boolean; load: OlderLoad; fetches: boolean;
-}): "none" | "reveal" | "fetch" {
+}): "none" | "reveal" | "fetch" | "offer" {
  if (v.finding || v.scrollTop > TOP_SLOP) return "none";
  if (v.following && v.scrollHeight - v.clientHeight > TOP_SLOP) return "none";
  if (v.drawnStart > 0) return "reveal";
- return v.fetches && v.olderPage && v.load === "idle" ? "fetch" : "none";
+ if (!v.olderPage || v.load !== "idle") return "none";
+ return v.fetches ? "fetch" : "offer";
 }
