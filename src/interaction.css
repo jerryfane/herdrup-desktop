@@ -279,7 +279,15 @@
 .host-row button { margin-right: 6px; }
 .host-password label { display: flex; flex-direction: column; gap: 8px; }
 .host-password form { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-.agent-detail .chat-earlier, .subagent-sheet .chat-earlier { display: block; margin: 0 auto 12px; padding: 4px 8px; border: 0; background: none; color: var(--color-text-faint); font: 400 13px var(--font-app); }
+.subagent-sheet .chat-earlier { display: block; margin: 0 auto 12px; padding: 4px 8px; border: 0; background: none; color: var(--color-text-faint); font: 400 13px var(--font-app); }
+/* ChatView.topSentinel: "Loading earlier messages" with a small spinner, or the Retry, in the dim
+ * text colour at 13 pt × the chat's text size. */
+.agent-detail .chat-earlier { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 20px; margin: 0 0 12px; color: var(--color-text-dim); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.agent-detail .chat-earlier[hidden] { display: none; }
+.agent-detail .chat-earlier button { padding: 4px 8px; border: 0; background: none; color: inherit; font: 500 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); cursor: pointer; }
+.chat-earlier-spinner { width: 12px; height: 12px; box-sizing: border-box; border: 2px solid var(--color-hairline); border-top-color: currentColor; border-radius: 50%; animation: chat-earlier-spin .8s linear infinite; }
+@keyframes chat-earlier-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .chat-earlier-spinner { animation: none; } }
 /* ChatView.subagentsCard: the plan card's surface, padding and heading; rows as ChatSubagentRow. */
 .chat-subagents { box-sizing:border-box; display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:0; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:14px; background:var(--color-surface); }
 .agent-detail .chat-plan-heading.chat-subagents-finished, .subagent-sheet .chat-plan-heading.chat-subagents-finished { font:600 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); letter-spacing:0; }
