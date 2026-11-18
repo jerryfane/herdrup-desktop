@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeNewest, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, replayUnknown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -1265,19 +1265,27 @@ class Detail {
   clearTimeout(this.refreshTimer);
   try {
    // held_from: the oldest page held, "" once nothing is older (herdr #430).
-   const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", "", this.oldestCursor ?? ""));
+   let page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", "", this.oldestCursor ?? ""));
    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
+   // A server without `resent` may have re-sent a prompt the chat has not loaded, or sent a new
+   // one: read the newest page instead, which holds only the tail (mergeNewest, herdrup #736).
+   const reread = !!this.chat && this.chat.session_id === page.session_id && replayUnknown(this.entries, page, !!this.oldestCursor);
+   if (reread) {
+    page = JSON.parse(await Desk.chatTranscript(this.token, "", "", "", ""));
+    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
+   }
    // What the page held before this read, older history included: only the live tail's new user
    // entries can be the send.
    const held = new Set(this.entries.map(entry => entry.id));
-   if (!this.chat || this.chat.session_id !== page.session_id) {
-    if (this.chat) this.outgoing = [];
+   const newest = reread && this.chat?.session_id === page.session_id ? mergeNewest(this.entries, page.entries ?? []) : undefined;
+   if (!this.chat || this.chat.session_id !== page.session_id || newest === null) {
+    if (this.chat && this.chat.session_id !== page.session_id) this.outgoing = [];
     this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
-   // mergeTranscript drops re-sent older history from a live page (liveEntries), so the send
+   // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
-   this.entries = mergeTranscript(this.entries, page.entries ?? [], { hasOlder: !!this.oldestCursor, resent: page.resent }); this.chat = page; this.chatFailed = false;
+   this.entries = newest ?? mergeTranscript(this.entries, page.entries ?? [], { resent: page.resent }); this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
@@ -1726,7 +1734,7 @@ class Detail {
     if (!open || this.disposed || (older && (next.session_id !== session || page?.session_id !== session))) return;
     const follow = messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 8, height = messages.scrollHeight;
     if (page?.session_id !== next.session_id) { entries = []; before = next.before; }
-    entries = mergeTranscript(entries, next.entries, { older, hasOlder: !!before, resent: next.resent });
+    entries = mergeTranscript(entries, next.entries, { older, resent: next.resent });
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
     const nodes = groupTranscript(entries, !!page?.working).map(row => {

@@ -79,30 +79,45 @@ export function modelLine(model: TranscriptModel): { label: string; accessibilit
   accessibilityLabel: `Model: ${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
  };
 }
-/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684, #691,
- *  #710). When the pane's remembered non-owner prompts change, herdr re-sends earlier entries
+/** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684, #710,
+ *  #736). When the pane's remembered non-owner prompts change, herdr re-sends earlier entries
  *  before the cursor. A page that lists them (`resent`, herdr #452) says exactly which: a listed
  *  entry the chat holds is updated in place, one it does not hold is history not loaded yet (an
  *  older page brings it) and is dropped, and every unlisted entry is new and appended, whatever
- *  its timestamp or origin. Without the list (older servers) only an unknown user prompt marked
- *  origin "other", with a nonzero timestamp older than the oldest held, while older history is
- *  still unloaded, is taken for a replay; every other unknown entry is kept, since the after
- *  cursor moves past it. With the whole session held, herdr re-sends only entries already held. */
-export function liveEntries(current: readonly Entry[], page: Entry[], hasOlder: boolean, resent?: readonly string[]): Entry[] {
+ *  its timestamp or origin. Without the list (servers before herdr #454) every entry is kept: the
+ *  after cursor moves past it, so a dropped one is lost. The one page that might hold an unloaded
+ *  replay (replayUnknown) is read again as the newest page first (refreshChat), never guessed at. */
+export function liveEntries(current: readonly Entry[], page: Entry[], resent?: readonly string[]): Entry[] {
+ if (!resent) return page;
  const held = new Set(current.map(e => e.id));
- if (resent) {
-  const listed = new Set(resent);
-  return page.filter(e => held.has(e.id) || !listed.has(e.id));
- }
+ const listed = new Set(resent);
+ return page.filter(e => held.has(e.id) || !listed.has(e.id));
+}
+/** An after page without `resent` that may re-send history the chat has not loaded: a prompt it
+ *  does not hold, marked origin "other", older than the oldest it holds, while older history is
+ *  unloaded. A new guest prompt (clock skew) looks the same, so neither is guessed: the chat reads
+ *  the newest page instead, which holds only the conversation's tail (herdrup #736). */
+export function replayUnknown(current: readonly Entry[], page: TranscriptPage, hasOlder: boolean): boolean {
  const oldest = current[0]?.ts_ms;
- if (!hasOlder || oldest === undefined) return page;
- return page.filter(e => held.has(e.id) || !(e.kind === "user" && e.origin === "other" && e.ts_ms > 0 && e.ts_ms < oldest));
+ if (page.resent || !hasOlder || !oldest) return false;
+ const held = new Set(current.map(e => e.id));
+ return (page.entries ?? []).some(e => !held.has(e.id) && e.kind === "user" && e.origin === "other" && e.ts_ms > 0 && e.ts_ms < oldest);
+}
+/** The newest page read in place of an ambiguous after page (replayUnknown), merged by position:
+ *  herdr renders it in conversation order, so entries before the first one the chat holds are
+ *  older history (they go above, as an older page's do) and every other one it does not hold is
+ *  new. A page sharing nothing with the chat leaves a gap: null, and the chat starts over from it. */
+export function mergeNewest(current: Entry[], page: Entry[]): Entry[] | null {
+ const held = new Set(current.map(e => e.id));
+ const first = page.findIndex(e => held.has(e.id));
+ if (first < 0) return current.length ? null : page;
+ return mergeTranscript(mergeTranscript(current, page.slice(0, first), { older: true }), page.slice(first), { resent: [] });
 }
 /** Merges a transcript page into the held entries: an older page before them, a live page after
- *  (liveEntries; hasOlder says older history is still unloaded, resent is the page's list). */
-export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?: boolean; hasOlder?: boolean; resent?: readonly string[] } = {}): Entry[] {
+ *  (liveEntries; resent is the page's list). */
+export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?: boolean; resent?: readonly string[] } = {}): Entry[] {
  const older = opts.older ?? false;
- if (!older) page = liveEntries(current, page, opts.hasOlder ?? false, opts.resent);
+ if (!older) page = liveEntries(current, page, opts.resent);
  const updates = new Map(page.map(e => [e.id, e]));
  const oldIDs = new Set(current.map(e => e.id));
  const merged = current.map(e => updates.get(e.id) ?? e);
