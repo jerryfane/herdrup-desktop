@@ -27,7 +27,7 @@ import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { forgetChats, recallChat, rememberChat } from "./chatMemory";
 import { forgetScreens, recallScreen, rememberScreen } from "./terminalMemory";
-import { drawnStart, pendingCardShown, revealedAbove, slidWindow, windowStarting } from "./chatWindow";
+import { drawnStart, pendingCardShown, revealedAbove, slidWindow, topAction, windowStarting, type OlderLoad } from "./chatWindow";
 import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } from "./motion";
@@ -375,7 +375,10 @@ class Detail {
  selectionSheet: HTMLDialogElement | null = null;
  messageMenu: { id: string; text: string; markdown: boolean } | null = null;
  refreshQuestion: (() => void) | null = null;
- earlier = button("Earlier messages", () => { void this.showEarlier(this.generation); });
+ /** The top of the chat (ChatView topSentinel): empty while idle, "Loading earlier messages" while
+  *  the older page loads, a Retry after it failed. Reaching it loads earlier rows (checkTop). */
+ earlier = el("div", "chat-earlier");
+ olderLoad: OlderLoad = "idle";
  input = el("textarea", "chat-input");
  editor: ComposerEditor | null = null;
  composerResize: ResizeObserver | null = null;
@@ -1172,7 +1175,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null; this.outgoing = [];
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
   this.answerProblem = null; this.localAnswers.clear();
   this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
   const composer = el("div", "chat-composer");
@@ -1234,11 +1237,16 @@ class Detail {
   // The up arrow sits in the body, over the composer's column (placement C), not in the chat.
   this.chatScroll.append(this.transcript); this.chatSurface.append(this.chatScroll, this.chatJump); this.body.append(this.chatJumpMine);
   // The glide owns the offset until it lands; it counts as at the tail from the tap.
-  this.chatScroll.onscroll = () => { if (!this.chatGlide) this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); };
-  // The reader's own wheel or drag ends a glide still running, rather than fighting it.
-  this.chatScroll.onwheel = this.chatScroll.onpointerdown = () => {
+  this.chatScroll.onscroll = () => { if (!this.chatGlide) this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); this.checkTop(); };
+  // The reader's own wheel or drag ends a glide still running, rather than fighting it. A wheel up
+  // at the top asks for earlier messages again (a page that left the top in view reveals only).
+  this.chatScroll.onpointerdown = () => {
    if (!this.chatGlide) return;
    this.stopChatGlide(); this.chatFollowing = this.chatAtBottom(); this.updateChatJump();
+  };
+  this.chatScroll.onwheel = (e: WheelEvent) => {
+   if (this.chatGlide) { this.stopChatGlide(); this.chatFollowing = this.chatAtBottom(); this.updateChatJump(); }
+   if (e.deltaY < 0) this.checkTop(true);
   };
   this.chatResize = new ResizeObserver(() => this.followChat());
   this.chatResize.observe(this.transcript); this.chatResize.observe(this.chatScroll);
@@ -1282,6 +1290,8 @@ class Detail {
    this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
    this.drawChat();
+   // A chat whose rows do not fill the view never scrolls: its top is in view as it lands.
+   requestAnimationFrame(() => this.checkTop());
    rememberChat(JSON.stringify(this.target), { page: this.chat, entries: this.entries, oldestCursor: this.oldestCursor });
   } catch(e) {
    if (!this.disposed && generation === this.generation && poll === this.chatPoll) {
@@ -1301,27 +1311,54 @@ class Detail {
  hasEarlier(): boolean {
   return !!this.oldestCursor || this.drawnIndex > 0;
  }
- /** Earlier messages: the next window of rows already loaded, else the page before the oldest
-  *  loaded one; either way the row on top stays where it was. True when rows were added. */
+ /** Reaching the top of the chat (ChatView showOlder): the next window of rows already loaded,
+  *  else the next older page. A fetch goes when the reader arrives at the top (or wheels up
+  *  there): a page that still leaves the top in view reveals only, as on iPhone, so one arrival
+  *  never walks the whole history. `force`: the reader asked again (a wheel up at the top). */
+ checkTop(force = false) {
+  if (this.disposed || this.mode !== "chat" || !this.chat) return;
+  const s = this.chatScroll;
+  const at = { scrollTop: s.scrollTop, scrollHeight: s.scrollHeight, clientHeight: s.clientHeight, following: this.chatFollowing, finding: this.findOpen };
+  const reached = topAction({ ...at, drawnStart: 0, olderPage: true, load: "idle", fetches: true }) === "fetch";
+  const arrived = reached && (force || !this.topReached);
+  this.topReached = reached;
+  const action = topAction({ ...at, drawnStart: this.drawnIndex, olderPage: !!this.oldestCursor, load: this.olderLoad, fetches: arrived });
+  if (action === "reveal") this.revealEarlier();
+  else if (action === "fetch") void this.loadEarlier(this.generation);
+ }
+ private topReached = false;
+ /** The next window of loaded rows above the drawn ones; the row on top stays where it was. */
+ revealEarlier() {
+  const rows = groupTranscript(this.entries, !!this.chat?.working);
+  const start = drawnStart(rows, this.drawFrom);
+  if (start === 0) return;
+  const oldHeight = this.chatScroll.scrollHeight;
+  this.chatFollowing = false;
+  this.drawFrom = revealedAbove(rows, windowStarting(rows, start));
+  this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
+ }
+ /** The next window of rows already loaded, else the page before the oldest loaded one (the up
+  *  arrow's walk); either way the row on top stays where it was. True when rows were added. */
  async showEarlier(generation: number): Promise<boolean> {
   const rows = groupTranscript(this.entries, !!this.chat?.working);
   // Find draws every loaded row: only the older page adds any.
   const start = this.findOpen ? 0 : drawnStart(rows, this.drawFrom);
   if (start === 0) return this.loadEarlier(generation);
-  const oldHeight = this.chatScroll.scrollHeight;
-  this.chatFollowing = false;
-  this.drawFrom = revealedAbove(rows, windowStarting(rows, start));
-  this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
+  this.revealEarlier();
   return true;
  }
- /** Loads the page before the oldest one shown and draws a window more of it; true when it did. */
+ /** Loads the page before the oldest one shown and draws a window more of it; true when it did.
+  *  The top shows "Loading earlier messages" meanwhile, and a Retry when it failed. */
  async loadEarlier(generation: number): Promise<boolean> {
-  if (!this.chat || !this.oldestCursor) { this.status.textContent = "You are at the start of the retained conversation."; return false; }
+  if (!this.chat || !this.oldestCursor || this.olderLoad === "loading") return false;
   const session = this.chat.session_id;
   const epoch = this.chatEpoch;
+  const current = () => !this.disposed && generation === this.generation && epoch === this.chatEpoch && this.chat?.session_id === session;
+  this.olderLoad = "loading"; this.renderEarlier();
   try {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, "", ""));
-   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || page.session_id !== session || this.chat?.session_id !== session) return false;
+   if (!current() || page.session_id !== session) { if (epoch === this.chatEpoch) { this.olderLoad = "idle"; this.renderEarlier(); } return false; }
+   this.olderLoad = "idle";
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
    const before = groupTranscript(this.entries, !!this.chat?.working);
@@ -1331,7 +1368,24 @@ class Detail {
    this.drawFrom = revealedAbove(groupTranscript(this.entries, !!this.chat?.working), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
    return true;
-  } catch(e) { this.status.textContent = errorText(e); return false; }
+  } catch {
+   if (epoch === this.chatEpoch) { this.olderLoad = current() ? "failed" : "idle"; this.renderEarlier(); }
+   return false;
+  }
+ }
+ /** The top of the chat as olderLoad says: nothing while idle, the loading line, or the Retry. */
+ renderEarlier() {
+  const e = this.earlier;
+  e.hidden = this.olderLoad === "idle";
+  if (e.dataset.state === this.olderLoad) return;
+  e.dataset.state = this.olderLoad;
+  if (this.olderLoad === "loading") {
+   e.replaceChildren(el("span", "chat-earlier-spinner"), el("span", "", "Loading earlier messages"));
+   e.setAttribute("role", "status");
+  } else if (this.olderLoad === "failed") {
+   e.replaceChildren(button("Couldn't load earlier messages · Retry", () => { this.olderLoad = "idle"; void this.loadEarlier(this.generation); }));
+   e.removeAttribute("role");
+  } else e.replaceChildren();
  }
  /** Find closed: Find drew every loaded row, so the window now starts no lower than the row on
   *  screen, which stays where it is. */
@@ -1375,7 +1429,7 @@ class Detail {
    disclosures(node).forEach((d, i) => { d.open = opened.has(disclosureKey(d, row.id, i)); });
    return node;
   });
-  this.earlier.className = "chat-earlier"; this.earlier.hidden = start === 0 && !this.oldestCursor;
+  this.renderEarlier();
   nodes.unshift(this.earlier);
   const pending = this.chat?.pending_ask;
   // The card shows unless its transcript row is drawn: a row above the window is not on the page.

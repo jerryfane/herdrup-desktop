@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { drawnStart, FOLLOWED_WINDOW_CAP, pendingCardShown, RENDER_WINDOW, revealedAbove, slidWindow, windowStarting, type WindowRow } from "../src/chatWindow";
+import { drawnStart, FOLLOWED_WINDOW_CAP, pendingCardShown, RENDER_WINDOW, revealedAbove, slidWindow, topAction, windowStarting, type WindowRow } from "../src/chatWindow";
 
 // herdrup #672: a chat following an agent for hours kept every row it ever merged on the page.
 // Desktop now draws a window of rows (herdrup ChatView drawWindow / slideWindowToTail).
@@ -53,4 +53,32 @@ test("a pending question keeps its card while its row is outside the window", ()
  expect(pendingCardShown(all, start, "q1")).toBe(true);
  expect(pendingCardShown(all, 0, "q1")).toBe(false);
  expect(pendingCardShown(all, start, "q-not-in-transcript")).toBe(true);
+});
+
+// Scrolling to the top of the chat loads earlier messages, as on iPhone (ChatView topSentinel /
+// showOlder / loadOlder); before, only a tap on "Earlier messages" did.
+const at = (o: Partial<Parameters<typeof topAction>[0]> = {}) => topAction({ scrollTop: 0, scrollHeight: 3000, clientHeight: 800, following: false, finding: false, drawnStart: 0, olderPage: true, load: "idle", fetches: true, ...o });
+
+test("at the top, loaded rows above the window are revealed before any page is fetched", () => {
+ expect(at({ drawnStart: 40 })).toBe("reveal");
+ expect(at()).toBe("fetch");
+ expect(at({ scrollTop: 40 })).toBe("fetch");
+ expect(at({ scrollTop: 41 })).toBe("none");
+});
+
+test("nothing loads before the chat lands on its newest rows, or while Find holds it", () => {
+ // The first draw shows the top for a moment while it still follows the tail.
+ expect(at({ following: true })).toBe("none");
+ // Rows that fit the view never scroll: their top is in view as the chat lands.
+ expect(at({ following: true, scrollHeight: 800 })).toBe("fetch");
+ expect(at({ finding: true, drawnStart: 40 })).toBe("none");
+});
+
+test("one load at a time, a failure waits for Retry, and the start of the history stops it", () => {
+ expect(at({ load: "loading" })).toBe("none");
+ expect(at({ load: "failed" })).toBe("none");
+ expect(at({ olderPage: false })).toBe("none");
+ // A page that left the top in view reveals only, until the reader arrives at the top again.
+ expect(at({ fetches: false })).toBe("none");
+ expect(at({ fetches: false, drawnStart: 40 })).toBe("reveal");
 });
