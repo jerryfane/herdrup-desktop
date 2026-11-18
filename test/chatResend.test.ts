@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { reconcileOutgoing, sendShown, type Outgoing } from "../src/chatPoll";
-import { groupTranscript, liveEntries, mergeTranscript, type Entry } from "../src/interactionModel";
+import { groupTranscript, liveEntries, mergeNewest, mergeTranscript, replayUnknown, type Entry, type TranscriptPage } from "../src/interactionModel";
 
 // Captured 2026-11-15 from a live host (herdr 0.9.5) for enyo, shared with a guest; ids and
 // timestamps are real, text replaced (herdrup #684's fixture). When the pane's remembered
@@ -34,7 +34,8 @@ const appended = [
 
 test("a live page re-sending older marked prompts does not append them after the newest turn", () => {
  const page = [...resent, ...appended];
- const merged = mergeTranscript(newest, page, { hasOlder: true });
+ // herdr #454 lists the entries it re-sent before the cursor.
+ const merged = mergeTranscript(newest, page, { resent: resent.map(e => e.id) });
  expect(merged.map(e => e.id)).toEqual([
   "a7902a04", "c2592b34:reply", "c2592b34:end", "bcf1ae30", "b46a7d09:reply", "b46a7d09:end",
   "b2f25ccb", "2db84f2f:thinking", "2db84f2f:toolu_015EWurddNboHwrfLZKfJmEh", "63568b78:reply", "63568b78:end",
@@ -52,30 +53,59 @@ test("a live page re-sending older marked prompts does not append them after the
 });
 
 test("an older page still brings the history a live page skipped", () => {
- const merged = mergeTranscript(mergeTranscript(newest, [...resent, ...appended], { hasOlder: true }), resent.slice(0, 3), { older: true });
+ const merged = mergeTranscript(mergeTranscript(newest, [...resent, ...appended], { resent: resent.map(e => e.id) }), resent.slice(0, 3), { older: true });
  expect(merged.slice(0, 4).map(e => e.id)).toEqual(["abe83412", "f505eb3c", "23cbfb00", "a7902a04"]);
 });
 
 test("a first page or a new session is taken whole", () => {
- expect(liveEntries([], resent, true)).toEqual(resent);
+ expect(liveEntries([], resent)).toEqual(resent);
+});
+
+// The same page from a server before herdr #454 (no `resent`) can't tell those replays from new
+// prompts, so the chat reads the newest page instead, and merges it by position: the wall stays out
+// and nothing new is lost.
+test("without resent, the page that may re-send unloaded prompts is read again as the newest page", () => {
+ const live: TranscriptPage = { after: "a2", session_id: "s", entries: [...resent, ...appended] };
+ expect(replayUnknown(newest, live, true)).toBe(true);
+ expect(mergeNewest(newest, [...newest, ...appended])!.map(e => e.id)).toEqual([...newest, ...appended].map(e => e.id));
 });
 
 // herdrup #707 (web counterpart of #686/#691): the after cursor moves past every entry of a live
-// page, so one dropped is lost until a reload. Only an unloaded origin-marked prompt replay goes.
+// page, so one dropped is lost until a reload. herdrup #736: without `resent` nothing is dropped.
 const at = (id: string, ts_ms: number | undefined, kind = "reply", extra: Partial<Entry> = {}): Entry => ({ id, kind, text: "x", ...(ts_ms === undefined ? {} : { ts_ms }), ...extra }) as Entry;
 const held = [at("u", 2000, "user", { author: "owner" })];
 
-test("with the whole session held, new entries behind the window or without ts_ms are kept", () => {
- expect(mergeTranscript(held, [at("r1", 1999), at("r2", 0), at("r3", undefined)], { hasOlder: false }).map(e => e.id)).toEqual(["u", "r1", "r2", "r3"]);
+test("without resent, new entries behind the window or without ts_ms are kept", () => {
+ expect(mergeTranscript(held, [at("r1", 1999), at("r2", 0), at("r3", undefined)]).map(e => e.id)).toEqual(["u", "r1", "r2", "r3"]);
 });
 
-test("with older history unloaded, only origin-marked prompts older than the window are dropped", () => {
- const page = [
-  at("r", 1999), at("e", 1500, "turn_end"), at("p", 1000, "user", { author: "owner" }), at("n", undefined),
-  at("z", 0, "user", { author: "guest", origin: "other" }),
-  at("old", 1999, "user", { author: "guest", origin: "other" }), at("new", 2001, "user", { author: "guest", origin: "other" }),
- ];
- expect(mergeTranscript(held, page, { hasOlder: true }).map(e => e.id)).toEqual(["u", "r", "e", "p", "n", "z", "new"]);
+// herdrup #736, the reviewer's shape: held owner prompt u@2000 with older history unloaded, then a
+// new guest prompt g@1999 (clock skew) and its reply r@2001, from a server without `resent`. The
+// old timestamp guess dropped g and the cursor moved past it: r hung under u.
+test("without resent, a new guest prompt behind the window is not lost", () => {
+ const g = at("g", 1999, "user", { author: "guest", origin: "other" }), r = at("r", 2001);
+ const live: TranscriptPage = { after: "a2", session_id: "s", entries: [g, r] };
+ expect(replayUnknown(held, live, true)).toBe(true);
+ expect(mergeTranscript(held, live.entries).map(e => e.id)).toEqual(["u", "g", "r"]);
+ // The newest page the chat reads instead holds the tail in conversation order.
+ expect(mergeNewest(held, [held[0]!, g, r])!.map(e => e.id)).toEqual(["u", "g", "r"]);
+});
+
+test("only an unknown older origin-marked prompt with history unloaded asks for the newest page", () => {
+ const page = (entries: Entry[], resent?: string[]): TranscriptPage => ({ after: "a2", session_id: "s", entries, ...(resent ? { resent } : {}) });
+ const old = at("old", 1999, "user", { author: "guest", origin: "other" });
+ expect(replayUnknown(held, page([old]), false)).toBe(false);
+ expect(replayUnknown(held, page([old], []), true)).toBe(false);
+ expect(replayUnknown(held, page([at("r", 1999), at("p", 1000, "user", { author: "owner" }), at("z", 0, "user", { origin: "other" })]), true)).toBe(false);
+ expect(replayUnknown(held, page([at("new", 2001, "user", { origin: "other" })]), true)).toBe(false);
+ expect(replayUnknown([at("u", 2000, "user"), old], page([old]), true)).toBe(false);
+});
+
+test("the newest page merges by position: older entries above, new ones below; no overlap starts over", () => {
+ const older = at("o", 1000, "user", { author: "owner" }), g = at("g", 1999, "user", { origin: "other" });
+ expect(mergeNewest(held, [older, held[0]!, g])!.map(e => e.id)).toEqual(["o", "u", "g"]);
+ expect(mergeNewest(held, [at("x", 5000), at("y", 5001)])).toBeNull();
+ expect(mergeNewest([], [g])!.map(e => e.id)).toEqual(["g"]);
 });
 
 // herdr #452 / herdrup #710: an after page that lists its re-sent entries says exactly which are
@@ -88,13 +118,12 @@ test("with resent listed, only listed entries the chat doesn't hold are dropped"
   at("marked", 1500, "user", { author: "guest", origin: "other" }),
   at("r", 0),
  ];
- const merged = mergeTranscript(held, page, { hasOlder: true, resent: ["u", "old"] });
+ const merged = mergeTranscript(held, page, { resent: ["u", "old"] });
  expect(merged.map(e => e.id)).toEqual(["u", "marked", "r"]);
  expect(merged[0]!.origin).toBe("other");
 });
 
-test("an empty resent list keeps every entry, even ones the fallback would drop", () => {
+test("an empty resent list keeps every entry", () => {
  const page = [at("old", 1999, "user", { author: "guest", origin: "other" })];
- expect(mergeTranscript(held, page, { hasOlder: true, resent: [] }).map(e => e.id)).toEqual(["u", "old"]);
- expect(mergeTranscript(held, page, { hasOlder: true }).map(e => e.id)).toEqual(["u"]);
+ expect(mergeTranscript(held, page, { resent: [] }).map(e => e.id)).toEqual(["u", "old"]);
 });
