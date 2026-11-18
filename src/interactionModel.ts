@@ -103,6 +103,14 @@ export function replayUnknown(current: readonly Entry[], page: TranscriptPage, h
  const held = new Set(current.map(e => e.id));
  return (page.entries ?? []).some(e => !held.has(e.id) && e.kind === "user" && e.origin === "other" && e.ts_ms > 0 && e.ts_ms < oldest);
 }
+/** The ambiguous after page (replayUnknown) replaced by the newest page read after it: first the
+ *  ambiguous page's updates to entries the chat holds (a prompt newly marked, a changed step; no
+ *  later poll sends them again, herdrup-desktop #242), then the newest page by position
+ *  (mergeNewest); null when the newest page shares nothing with the chat. */
+export function rereadMerge(current: Entry[], ambiguous: readonly Entry[], newest: Entry[]): Entry[] | null {
+ const held = new Set(current.map(e => e.id));
+ return mergeNewest(mergeTranscript(current, ambiguous.filter(e => held.has(e.id))), newest);
+}
 /** The newest page read in place of an ambiguous after page (replayUnknown), merged by position:
  *  herdr renders it in conversation order, so entries before the first one the chat holds are
  *  older history (they go above, as an older page's do) and every other one it does not hold is
