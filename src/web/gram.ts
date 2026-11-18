@@ -132,7 +132,7 @@ function snapshot(): GramSnapshot {
  const local = g.link?.access.machineLabel ?? "";
  const s: GramSnapshot = {
   phase: g.phase || "idle", messages: [], unreadCount: g.badge, hasMore: g.inbox.hasMore, loadingOlder: g.loadingOlder,
-  refreshing: g.refreshing, markingAllRead: g.markingAll, agents: [], saved: savedList(), localMachine: local,
+  refreshing: g.refreshing, markingAllRead: g.markingAll, agents: [], saved: shownSaved(), localMachine: local,
   attachments: [], sending: false, sendProgress: 0, sendProgressShown: false, draftPosted: 0, visible: g.visible,
  };
  if (g.unavailable) s.unavailable = g.unavailable;
@@ -172,12 +172,12 @@ function shownID(id: string): string { return g.link ? grantID(g.link) + SEP + i
 
 function guestSnapshot(s: GramSnapshot = snapshot()): GuestGramSnapshot {
  const link = g.link;
- if (!link) return { active: false, grants: [], recipient: "", saved: savedList() };
+ if (!link) return { active: false, grants: [], recipient: "", saved: shownSaved() };
  const id = grantID(link), prefix = id + SEP;
  const gram = link.features().gram;
  const access = link.access;
  return {
-  active: true, recipient: gram ? id : "", saved: savedList(),
+  active: true, recipient: gram ? id : "", saved: shownSaved(),
   grants: [{
    grant: { id, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, terminal: access.agentTarget, gram, ready: true },
    gram: { ...s, messages: s.messages.map(m => ({ ...m, id: prefix + m.id })) },
@@ -571,6 +571,12 @@ function savedList(): SavedGram[] {
  if (!g.link || typeof localStorage === "undefined") return [];
  try { return JSON.parse(localStorage.getItem(savedKey()) ?? "[]") as SavedGram[]; } catch { return []; }
 }
+/** The saved list as the page knows it: ids as its messages' and download events' ("<grant>\x1f<id>",
+ *  shownID), so a Saved row's transfer state is the one its downloads report (herdrup #723). The
+ *  browser keeps them by the grant's own ids; the calls that take one read it back with own(). */
+function shownSaved(): SavedGram[] {
+ return savedList().map(s => ({ ...s, id: shownID(s.id) }));
+}
 
 // ---- Desk ----
 
@@ -809,7 +815,7 @@ export const gramDesk: Partial<DeskFns> = {
 
  async gramCopyText(text: string) { await navigator.clipboard.writeText(text); },
 
- async gramSaved() { return savedList(); },
+ async gramSaved() { return shownSaved(); },
 
  async gramSetSaved(key: string, saved: boolean) {
   const id = own(key);
