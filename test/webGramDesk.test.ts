@@ -155,3 +155,37 @@ test("Gram sharing that arrives after the page rendered is published while hidde
   jest.useRealTimers();
  }
 });
+
+// herdrup #723: the page keys a file's transfer state by the id its downloads report
+// ("<grant>\x1f<id>"). A Saved row must carry that same id, or the Saved file shows no progress
+// and a second click while the first download runs starts another one.
+test("a saved file's row carries the id its downloads report, and opens by it", async () => {
+ const store = new Map<string, string>();
+ (globalThis as { localStorage?: unknown }).localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+ try {
+  const text = new TextEncoder().encode("report");
+  setLink(fakeLink((method, params) => {
+   if (method === "gram.list") return { messages: [{ id: "gram-file", direction: "agent_to_owner", from: "docs", text: "", created_unix_ms: 1, read: true, file: { name: "report.txt", mime: "text/plain", size: text.length, sha256: "" } }], has_more: false };
+   if (method === "gram.get_file_chunk") return { data_base64: toBase64(text), mime: "text/plain", name: "report.txt", offset: params.offset as number, sha256: "", size: text.length };
+   throw new Error("unexpected " + method);
+  }));
+  await gramDesk.gramSetVisible!(true);
+  await gramDesk.gramRefresh!();
+  const shown = (await guestGramDesk.guestGramState!()).grants[0]!.gram.messages[0]!.id;
+  await gramDesk.gramSetSaved!(shown, true);
+  const saved = (await guestGramDesk.guestGramState!()).saved;
+  expect(saved.map(s => s.id)).toEqual([shown]);
+  expect((await gramDesk.gramSaved!()).map(s => s.id)).toEqual([shown]);
+  const reported: string[] = [];
+  const off = events.gramDownload.on(ev => reported.push(ev.id));
+  await gramDesk.gramOpenFile!(saved[0]!.id).catch(() => {});
+  off();
+  expect(reported.length).toBeGreaterThan(0);
+  expect(new Set(reported)).toEqual(new Set([saved[0]!.id]));
+  await gramDesk.gramSetSaved!(saved[0]!.id, false);
+  expect((await guestGramDesk.guestGramState!()).saved).toEqual([]);
+  await gramDesk.gramSetVisible!(false);
+ } finally {
+  delete (globalThis as { localStorage?: unknown }).localStorage;
+ }
+});
