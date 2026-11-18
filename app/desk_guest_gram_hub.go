@@ -94,6 +94,10 @@ func guestGramPolls(multi bool, singles int) (visible, badge, cost time.Duration
 // connect each time).
 var guestGramRediscover = 2 * time.Minute
 
+// guestGramSettingUp runs as a shared agent found to share Gram is set up,
+// before its Gram exists; tests hold that moment open.
+var guestGramSettingUp = func(grant string) {}
+
 // startGuestGram starts the combined guest Gram, or brings a running one up
 // to date with the saved shared agents.
 func (d *Desk) startGuestGram() {
@@ -206,7 +210,12 @@ func (h *guestGramHub) run(l *link) {
 		if !h.discoverGram(ctx, l, id) {
 			return
 		}
+		// Its Gram (composer, held list) exists before the page is told it
+		// shares Gram: a post or a pick of it as recipient never meets
+		// "not connected".
+		guestGramSettingUp(id)
 		d.gramReset(l, l.access.MachineLabel)
+		h.setGrant(id, func(g *GuestGramGrant) { g.Gram = true })
 		h.mu.Lock()
 		visible := h.visible
 		h.mu.Unlock()
@@ -257,9 +266,10 @@ func (h *guestGramHub) discoverGram(ctx context.Context, l *link, id string) boo
 			}
 		} else {
 			// Each admission reads the owner's sharing anew (the hello's
-			// features): ask again later while Gram is off.
+			// features): ask again later while Gram is off. Gram on is
+			// published by run, once the shared agent's Gram is set up.
 			features := l.guest.Features()
-			h.setGrant(id, func(g *GuestGramGrant) { g.Ready, g.Gram, g.Error = true, features.Gram, "" })
+			h.setGrant(id, func(g *GuestGramGrant) { g.Ready, g.Error = true, ""; g.Gram = g.Gram && features.Gram })
 			if features.Gram {
 				return true
 			}

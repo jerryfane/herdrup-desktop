@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { reconcileOutgoing, sendShown, type Outgoing } from "../src/chatPoll";
-import { groupTranscript, liveEntries, mergeNewest, mergeTranscript, replayUnknown, type Entry, type TranscriptPage } from "../src/interactionModel";
+import { groupTranscript, liveEntries, mergeNewest, mergeTranscript, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
 
 // Captured 2026-11-15 from a live host (herdr 0.9.5) for enyo, shared with a guest; ids and
 // timestamps are real, text replaced (herdrup #684's fixture). When the pane's remembered
@@ -126,4 +126,17 @@ test("with resent listed, only listed entries the chat doesn't hold are dropped"
 test("an empty resent list keeps every entry", () => {
  const page = [at("old", 1999, "user", { author: "guest", origin: "other" })];
  expect(mergeTranscript(held, page, { resent: [] }).map(e => e.id)).toEqual(["u", "old"]);
+});
+
+// herdrup-desktop #242: the page read again keeps the ambiguous page's updates to held entries. A
+// held prompt newly marked origin "other" arrives only once, on that page: the newest page may not
+// reach it, and the cursor moves past it.
+test("the re-read keeps the ambiguous page's updates to held entries", () => {
+ const prompt = at("p", 1500, "user", { author: "owner" }), u = at("u", 2000, "user", { author: "owner" });
+ const marked = at("p", 1500, "user", { author: "guest", origin: "other" }), replay = at("old", 900, "user", { author: "guest", origin: "other" });
+ const merged = rereadMerge([prompt, u], [replay, marked], [u, at("r", 2100)])!;
+ expect(merged.map(e => e.id)).toEqual(["p", "u", "r"]);
+ expect(merged[0]!.origin).toBe("other");
+ // A newest page that shares nothing starts the chat over, as mergeNewest does.
+ expect(rereadMerge([prompt, u], [marked], [at("x", 5000)])).toBeNull();
 });

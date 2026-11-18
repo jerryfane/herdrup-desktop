@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeNewest, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, replayUnknown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, replayUnknown, rereadMerge, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -379,6 +379,9 @@ class Detail {
   *  the older page loads, a Retry after it failed. Reaching it loads earlier rows (checkTop). */
  earlier = el("div", "chat-earlier");
  olderLoad: OlderLoad = "idle";
+ /** Counts each time the chat starts its held history over (a new session, a newest page that
+  *  shares nothing with it): an older page asked for before belongs to the history it replaced. */
+ private historyEpoch = 0;
  input = el("textarea", "chat-input");
  editor: ComposerEditor | null = null;
  composerResize: ResizeObserver | null = null;
@@ -1175,7 +1178,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
   this.answerProblem = null; this.localAnswers.clear();
   this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
   const composer = el("div", "chat-composer");
@@ -1270,6 +1273,7 @@ class Detail {
    // A server without `resent` may have re-sent a prompt the chat has not loaded, or sent a new
    // one: read the newest page instead, which holds only the tail (mergeNewest, herdrup #736).
    const reread = !!this.chat && this.chat.session_id === page.session_id && replayUnknown(this.entries, page, !!this.oldestCursor);
+   const ambiguous = page.entries ?? [];
    if (reread) {
     page = JSON.parse(await Desk.chatTranscript(this.token, "", "", "", ""));
     if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
@@ -1277,10 +1281,10 @@ class Detail {
    // What the page held before this read, older history included: only the live tail's new user
    // entries can be the send.
    const held = new Set(this.entries.map(entry => entry.id));
-   const newest = reread && this.chat?.session_id === page.session_id ? mergeNewest(this.entries, page.entries ?? []) : undefined;
+   const newest = reread && this.chat?.session_id === page.session_id ? rereadMerge(this.entries, ambiguous, page.entries ?? []) : undefined;
    if (!this.chat || this.chat.session_id !== page.session_id || newest === null) {
     if (this.chat && this.chat.session_id !== page.session_id) this.outgoing = [];
-    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before;
+    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
@@ -1361,12 +1365,14 @@ class Detail {
   return true;
  }
  /** Loads the page before the oldest one shown and draws a window more of it; true when it did.
-  *  The top shows "Loading earlier messages" meanwhile, and a Retry when it failed. */
+  *  The top shows "Loading earlier messages" meanwhile, and a Retry when it failed. A page that
+  *  lands after the chat started its history over (historyEpoch) belongs to history it no longer
+  *  holds, and is dropped (#241). */
  async loadEarlier(generation: number): Promise<boolean> {
   if (!this.chat || !this.oldestCursor || this.olderLoad === "loading") return false;
   const session = this.chat.session_id;
-  const epoch = this.chatEpoch;
-  const current = () => !this.disposed && generation === this.generation && epoch === this.chatEpoch && this.chat?.session_id === session;
+  const epoch = this.chatEpoch, history = this.historyEpoch;
+  const current = () => !this.disposed && generation === this.generation && epoch === this.chatEpoch && history === this.historyEpoch && this.chat?.session_id === session;
   this.olderLoad = "loading"; this.renderEarlier();
   try {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, "", ""));

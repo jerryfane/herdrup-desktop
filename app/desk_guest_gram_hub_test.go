@@ -150,7 +150,12 @@ func TestGuestGramRoutesReadsAndPostsByGrant(t *testing.T) {
 		t.Fatalf("ledger's %s was not marked read on its host", raw)
 	}
 
-	legal, _ := grantState(s, "legal")
+	// The page offers legal as a recipient once its Gram shares: from then on a post reaches it.
+	waitFor(t, "legal's Gram", func() bool {
+		g, _ := grantState(d.GuestGramState(), "legal")
+		return g.Grant.Gram
+	})
+	legal, _ := grantState(d.GuestGramState(), "legal")
 	if err := d.GuestGramSetRecipient(legal.Grant.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -528,5 +533,28 @@ func TestGuestGramPostedFileIsKeptUnderItsGrantKey(t *testing.T) {
 	})
 	if !strings.Contains(id, guestGramSep) {
 		t.Fatalf("message id %q has no grant prefix", id)
+	}
+}
+
+// A shared agent is offered as sharing Gram only once its Gram can post: the
+// page never sees Gram on while its composer is not set up (CI flake on
+// herdrup-desktop#243: a post to it failed with "not connected").
+func TestGuestGramIsOfferedOnlyOnceItCanPost(t *testing.T) {
+	held, release := make(chan string, 8), make(chan struct{})
+	defer func(was func(string)) { guestGramSettingUp = was }(guestGramSettingUp)
+	guestGramSettingUp = func(grant string) { held <- grant; <-release }
+	d, _, _ := guestGramFixture(t)
+	defer close(release)
+	var grant string
+	select {
+	case grant = <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no shared agent was set up")
+	}
+	// Discovery found it shares Gram; its Gram is not set up yet.
+	for _, g := range d.GuestGramState().Grants {
+		if g.Grant.ID == grant && g.Grant.Gram {
+			t.Fatalf("%s offered as sharing Gram before its Gram exists", g.Grant.Agent)
+		}
 	}
 }
