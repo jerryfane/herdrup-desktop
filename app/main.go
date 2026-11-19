@@ -37,6 +37,7 @@ func main() {
 	}
 	desk := newDesk(dir)
 	desk.usage.url = usagePingURL()
+	desk.crash.url = crashReportURL()
 	if err := prepareReferenceHosts(desk); err != nil {
 		log.Fatal("reference host metadata: ", err)
 	}
@@ -79,6 +80,11 @@ func main() {
 			}
 		})
 	}
+	// Earlier launches' crashes become reports; this launch's go to its crash
+	// file (crash_reports.go). Only while usage sharing is on, and only in
+	// the instance that holds the lock: a second launch exits above, before
+	// it could take the running instance's crash file for an old one.
+	desk.crash.start()
 	// Follows preview releases; the checks never run in smoke builds.
 	desk.startAppUpdateChecks()
 	onNotificationClick(desk, &win)
@@ -123,6 +129,8 @@ func main() {
 				log.Fatal(err)
 			}
 		}
+		// A web content process that dies is reported without a stack.
+		win.Page().OnRenderProcessGone(desk.crash.renderGone)
 		startPresence(desk, win)
 		// The anonymous usage count: on start and when the window comes back,
 		// at most once a UTC day (usage_ping.go).

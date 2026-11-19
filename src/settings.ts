@@ -107,7 +107,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   // usageCountRow (HerdrApp.swift): on by default; Go keeps the install ID and deletes it when off.
   const usageCount = new SavedSwitch(glyph("chart.bar", 18), {
     title: "Share anonymous usage count", fallback: true,
-    subtitle: () => "Once a day: a random ID, the app version and the platform. Nothing about your agents or machines.",
+    subtitle: () => "Once a day: a random ID, the app version and the platform. After a crash: where in the app it happened. Nothing about your agents or machines.",
     load: () => Desk.getShareUsageCount(), save: on => Desk.setShareUsageCount(on),
   });
   usageCount.root.id = "settings-usage-count";
