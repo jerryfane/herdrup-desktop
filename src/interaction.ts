@@ -34,7 +34,7 @@ import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } 
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane } from "./topicsView";
-import { resolvedMode } from "./topicsModel";
+import { nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -256,8 +256,7 @@ class Detail {
  /** An omp agent on a server with agent_topics; the page offers Topics once the agent answers
   *  its list (offered) or its session file holds topics (herdrup #745 topicsAvailable). */
  topicsCapable = false;
- topicsOffered = false;
- topicsLoaded = false;
+ topicsOffer: TopicsOffer = { offered: false, refused: false };
  topics: TopicsPane | null = null;
  generation = 0;
  title = el("strong");
@@ -967,7 +966,7 @@ class Detail {
  dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
  /** Topics' text follows the chat's size. */
  textSurface(): TextSurface { return this.mode === "terminal" ? "terminal" : "chat"; }
- topicsAvailable(): boolean { return this.topicsCapable && (this.topicsOffered || (!this.topicsLoaded && !!this.view?.topicSessions)); }
+ topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions); }
  resolvedMode(): ChatMode { return resolvedMode(this.asked, this.chatAvailable, this.topicsAvailable()); }
  mountTopics(view: AgentView) {
   const pane = new TopicsPane({
@@ -985,7 +984,7 @@ class Detail {
  applyTopics(update: TopicsUpdate) {
   if (!this.topics) return;
   const offered = this.topicsAvailable();
-  this.topicsOffered = update.offered; this.topicsLoaded ||= update.loaded;
+  this.topicsOffer = nextTopicsOffer(this.topicsOffer, update);
   this.topics.apply(update);
   this.topicsButton.hidden = !this.topicsAvailable();
   if (offered !== this.topicsAvailable() && this.resolvedMode() !== this.mode) void this.switchMode(this.resolvedMode());

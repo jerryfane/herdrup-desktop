@@ -1084,11 +1084,17 @@ export interface TerminalHistoryPage {
 }
 
 /**
- * TopicSendReply says how the agent took a topic message: "queued" waits
- * for the topic's current turn to end.
+ * TopicSendReply is how a topic message went. Delivery is "sent" (Mode says
+ * how the agent took it: "queued" waits for the topic's current turn to
+ * end), "refused" (the agent or this app turned it down: safe to send again)
+ * or "unconfirmed" (it may have reached the agent: no one-tap resend).
+ * Problem is the app's words for a refused or unconfirmed send. The page
+ * decides from Delivery, never from Problem's wording.
  */
 export interface TopicSendReply {
   mode: string;
+  delivery: string;
+  problem?: string;
 }
 
 /**
