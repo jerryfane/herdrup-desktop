@@ -121,6 +121,12 @@ type crashReporter struct {
 	id      string // this launch's files
 	armed   bool
 	sending bool
+	// on is the switch as the reporter last followed it (start, setEnabled).
+	// Every write checks it under mu, so a report arriving as the switch
+	// turns off never brings back what wipe deleted.
+	on bool
+	// cancel ends the upload in flight; wipe calls it.
+	cancel context.CancelFunc
 }
 
 func newCrashReporter(dir string, usage *usagePing, version string) *crashReporter {
@@ -181,38 +187,53 @@ func (r *crashReporter) start() {
 	}
 	on, err := r.usage.enabled()
 	if err != nil || !on {
-		r.wipe()
+		_ = r.wipe()
 		return
 	}
+	r.mu.Lock()
+	r.on = true
+	r.mu.Unlock()
 	r.collect()
 	r.arm()
 	go r.send()
 }
 
-// setEnabled follows the switch: off stops this launch's crash file and
-// deletes every crash file and report; on starts one.
-func (r *crashReporter) setEnabled(on bool) {
+// setEnabled follows the switch: off stops this launch's crash file, cancels
+// an upload in flight and deletes every crash file and report, returning
+// what it could not delete; on starts one.
+func (r *crashReporter) setEnabled(on bool) error {
 	if r.url == "" {
-		return
+		return nil
 	}
 	if !on {
-		r.wipe()
-		return
+		return r.wipe()
 	}
+	r.mu.Lock()
+	r.on = true
+	r.mu.Unlock()
 	r.arm()
+	return nil
 }
 
 func (r *crashReporter) queueDir() string { return filepath.Join(r.dir, "queue") }
 
-// wipe stops this launch's crash output and deletes all crash data.
-func (r *crashReporter) wipe() {
+// wipe turns the reporter off: it stops this launch's crash output, cancels
+// the upload in flight and deletes all crash data.
+func (r *crashReporter) wipe() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.on = false
+	if r.cancel != nil {
+		r.cancel()
+	}
 	if r.armed {
 		_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
 		r.armed = false
 	}
-	_ = os.RemoveAll(r.dir)
+	if err := os.RemoveAll(r.dir); err != nil {
+		return fmt.Errorf("couldn't delete the crash reports: %w", err)
+	}
+	return nil
 }
 
 // arm sends this launch's crashes to its crash file, with every frame's
@@ -220,7 +241,7 @@ func (r *crashReporter) wipe() {
 func (r *crashReporter) arm() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.armed {
+	if r.armed || !r.on {
 		return
 	}
 	if err := os.MkdirAll(r.dir, 0o700); err != nil {
@@ -275,16 +296,17 @@ func (r *crashReporter) renderGone(reason string) {
 	if r.url == "" {
 		return
 	}
-	if on, err := r.usage.enabled(); err != nil || !on {
-		return
-	}
 	l := r.thisLaunch()
 	r.mu.Lock()
-	r.enqueueLocked(crashReport{V: 1, Kind: "crash", Version: l.Version, Build: l.Build,
+	// Checked under mu, as wipe turns it off: a report racing the switch
+	// never recreates what wipe deleted.
+	queued := r.on && r.enqueueLocked(crashReport{V: 1, Kind: "crash", Version: l.Version, Build: l.Build,
 		OS: l.OS, Device: l.Device, Termination: renderTermination(reason),
 		Binaries: []crashBinary{}, Stacks: []crashStack{}})
 	r.mu.Unlock()
-	go r.send()
+	if queued {
+		go r.send()
+	}
 }
 
 // renderTermination is "webview process <reason>" for mygo's known reasons.
@@ -296,17 +318,22 @@ func renderTermination(reason string) string {
 	return "webview process exited"
 }
 
-func (r *crashReporter) enqueueLocked(report crashReport) {
+// enqueueLocked writes a report to the queue, while the reporter is on; true
+// when it did.
+func (r *crashReporter) enqueueLocked(report crashReport) bool {
+	if !r.on {
+		return false
+	}
 	q := r.queueDir()
 	if err := os.MkdirAll(q, 0o700); err != nil {
-		return
+		return false
 	}
 	if queued, _ := os.ReadDir(q); len(queued) >= crashMaxQueued {
-		return
+		return false
 	}
 	body := fitCrashReport(report)
 	name := strconv.FormatInt(r.now().UnixNano(), 36) + "-" + randomToken(6) + ".json"
-	_ = os.WriteFile(filepath.Join(q, name), body, 0o600)
+	return os.WriteFile(filepath.Join(q, name), body, 0o600) == nil
 }
 
 type crashSent struct {
@@ -316,16 +343,23 @@ type crashSent struct {
 
 // send posts queued reports, oldest first, at most crashMaxPerDay a UTC day.
 // A report the relay refuses (4xx other than 429) is dropped; one it could not
-// take now (429, 5xx, no answer) waits for the next launch or report.
+// take now (429, 5xx, no answer) waits for the next launch or report. Turning
+// the switch off cancels the upload in flight (wipe) and ends the run.
 func (r *crashReporter) send() {
 	r.mu.Lock()
-	if r.sending || r.url == "" {
+	if r.sending || r.url == "" || !r.on {
 		r.mu.Unlock()
 		return
 	}
-	r.sending = true
+	ctx, cancel := context.WithCancel(context.Background())
+	r.sending, r.cancel = true, cancel
 	r.mu.Unlock()
-	defer func() { r.mu.Lock(); r.sending = false; r.mu.Unlock() }()
+	defer func() {
+		cancel()
+		r.mu.Lock()
+		r.sending, r.cancel = false, nil
+		r.mu.Unlock()
+	}()
 	queued, _ := os.ReadDir(r.queueDir())
 	slices.SortFunc(queued, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	sentPath := filepath.Join(r.dir, "sent.json")
@@ -338,32 +372,36 @@ func (r *crashReporter) send() {
 		sent = crashSent{Day: today}
 	}
 	for _, q := range queued {
-		if sent.Count >= crashMaxPerDay {
+		if sent.Count >= crashMaxPerDay || ctx.Err() != nil {
 			break
-		}
-		if on, err := r.usage.enabled(); err != nil || !on {
-			return
 		}
 		path := filepath.Join(r.queueDir(), q.Name())
 		body, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		status := r.post(body)
+		status := r.post(ctx, body)
 		if status == 0 || status == http.StatusTooManyRequests || status >= 500 {
 			break
 		}
-		_ = os.Remove(path)
-		sent.Count++
-		if data, err := json.Marshal(sent); err == nil {
-			_ = os.WriteFile(sentPath, data, 0o600)
+		// What the relay took or refused leaves the queue, and counts, unless
+		// the switch turned off meanwhile: wipe deleted it all already.
+		r.mu.Lock()
+		if r.on {
+			_ = os.Remove(path)
+			sent.Count++
+			if data, err := json.Marshal(sent); err == nil {
+				_ = os.WriteFile(sentPath, data, 0o600)
+			}
 		}
+		r.mu.Unlock()
 	}
 }
 
-// post sends one report and returns the relay's status; 0 when none came.
-func (r *crashReporter) post(body []byte) int {
-	ctx, cancel := context.WithTimeout(context.Background(), crashTimeout)
+// post sends one report and returns the relay's status; 0 when none came, or
+// when ctx ended it (the switch turned off).
+func (r *crashReporter) post(ctx context.Context, body []byte) int {
+	ctx, cancel := context.WithTimeout(ctx, crashTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
 	if err != nil {

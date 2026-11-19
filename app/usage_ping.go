@@ -257,6 +257,7 @@ func (d *Desk) SetShareUsageCount(on bool) error {
 	if err := d.usage.setEnabled(on); err != nil {
 		return err
 	}
-	d.crash.setEnabled(on)
-	return nil
+	// Off stays off even when a crash file could not be deleted; the page
+	// shows the error, so the promise to delete is never broken silently.
+	return d.crash.setEnabled(on)
 }

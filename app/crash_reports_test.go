@@ -22,6 +22,7 @@ func newTestCrashReporter(t *testing.T, dir, url string) *crashReporter {
 	usage := newUsagePing(filepath.Join(dir, "usage-ping.json"), "desktop-linux", "0.1.0-test")
 	r := newCrashReporter(filepath.Join(dir, "crash-reports"), usage, "0.1.0-test")
 	r.url = url
+	r.on = true // the switch is on, as start() finds it
 	return r
 }
 
@@ -133,7 +134,9 @@ func TestCrashReportsFollowTheUsageSwitch(t *testing.T) {
 	if err := r.usage.setEnabled(false); err != nil {
 		t.Fatal(err)
 	}
-	r.setEnabled(false)
+	if err := r.setEnabled(false); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(r.dir); !os.IsNotExist(err) {
 		t.Fatalf("off kept %s: %v", r.dir, err)
 	}
@@ -206,5 +209,70 @@ func TestABigCrashFitsTheRelayLimit(t *testing.T) {
 	}
 	if len(body) > crashMaxBytes || !fitted.Truncated || !fitted.Stacks[0].Attributed || len(fitted.Stacks[0].Frames) != 100 {
 		t.Fatalf("%d bytes, truncated %v, %d stacks", len(body), fitted.Truncated, len(fitted.Stacks))
+	}
+}
+
+// #207 review: turning sharing off ends an upload already on the wire, and
+// what it was sending is not kept: wipe deleted it.
+func TestTurningSharingOffCancelsAnUploadInFlight(t *testing.T) {
+	arrived, released := make(chan struct{}, 1), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		arrived <- struct{}{}
+		select {
+		case <-released:
+		case <-req.Context().Done():
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	defer close(released)
+	r := newTestCrashReporter(t, t.TempDir(), srv.URL)
+	r.renderGone("crashed")
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the report was never sent")
+	}
+	if err := r.setEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the upload to end", func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.sending })
+	if _, err := os.Stat(r.dir); !os.IsNotExist(err) {
+		t.Fatalf("the upload left %s behind after off: %v", r.dir, err)
+	}
+}
+
+// #207 review: a dying web view reported as the switch turns off never brings
+// back the queue that off deleted, whichever goes first.
+func TestAWebViewReportRacingTheSwitchStaysDeleted(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		r := newTestCrashReporter(t, t.TempDir(), "http://127.0.0.1:1/")
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); r.renderGone("crashed") }()
+		go func() { defer wg.Done(); _ = r.setEnabled(false) }()
+		wg.Wait()
+		waitFor(t, "sending to stop", func() bool { r.mu.Lock(); defer r.mu.Unlock(); return !r.sending })
+		if got := queuedReports(t, r); len(got) != 0 {
+			t.Fatalf("run %d: %d reports queued after off", i, len(got))
+		}
+	}
+}
+
+// #207 review: a report decided before off but written after it (the old
+// order: consent read, then the lock) is refused under the lock.
+func TestAReportAdmittedBeforeOffIsNotWrittenAfterIt(t *testing.T) {
+	r := newTestCrashReporter(t, t.TempDir(), "http://127.0.0.1:1/")
+	if err := r.setEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	wrote := r.enqueueLocked(crashReport{V: 1, Kind: "crash", Binaries: []crashBinary{}, Stacks: []crashStack{}})
+	r.mu.Unlock()
+	if wrote {
+		t.Fatal("a report was queued while sharing is off")
+	}
+	if _, err := os.Stat(r.dir); !os.IsNotExist(err) {
+		t.Fatalf("off: %s came back: %v", r.dir, err)
 	}
 }
