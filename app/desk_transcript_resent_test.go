@@ -41,3 +41,27 @@ func TestTranscriptPageKeepsResentPresence(t *testing.T) {
 		}
 	}
 }
+
+// herdr #464: an omp form's context comes as Markdown too (intro_markdown,
+// description_markdown). ChatTranscript decodes and re-encodes the page, so
+// the fields must survive it, or the chat falls back to herdr's flattened
+// plain text (tables as " · " rows).
+func TestTranscriptPageKeepsTheFormsMarkdownContext(t *testing.T) {
+	raw := `{"after":"c","agent":"omp","pane_id":"w1:p1","session_id":"s","entries":[],
+	  "pending_ask":{"id":"q1","answerable":false,"questions":[],"form_answerable":true,
+	    "form":{"intro":"# · Fact","intro_markdown":"| # | Fact |\n| --- | --- |\n| 1 | GSE |",
+	      "fields":[{"name":"f","kind":"choice","title":"Which?","description":"a · b","description_markdown":"**a** b","multi":false,"select":false,"other":false,"required":false,"options":[]}]}}}`
+	var page herdrapi.ResponseResultAgentTranscript
+	if err := json.Unmarshal([]byte(raw), &page); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"intro_markdown":"| # | Fact |`, `"description_markdown":"**a** b"`} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("re-encoded page lost %s: %s", want, out)
+		}
+	}
+}

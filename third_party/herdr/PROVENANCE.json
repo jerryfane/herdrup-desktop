@@ -1,8 +1,8 @@
 {
   "repo": "jerryfane/herdr",
-  "commit": "4bf4bbb08c5aa377d92bc8f292a317f1ac6734b7",
+  "commit": "fe6dc600f5d2111aa60471944287ab3ff79d11ca",
   "path": "docs/next/api/herdr-api.schema.json",
-  "sha256": "bbb821f2daa0be78e15acab72515bb9c34b4403f09f477d01704a7658339c1c4",
+  "sha256": "c4260e15a0bc03725dc4b3e92f06e05d4042cc17c63f8a70c7d368ba78cfbf80",
   "protocol": 22,
   "schema_version": 1
 }
