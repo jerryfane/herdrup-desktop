@@ -207,7 +207,17 @@ export function closeInteraction(animated = false) {
  } else if (root) { root.inert = false; root.replaceChildren(); root.hidden = true; }
  selectionChanged?.(null);
 }
+/** The newest board, for what a page reads from it when it opens (the Inbox row's line). */
+let lastBoard: BoardUpdate | null = null;
+function boardActivity(board: BoardUpdate | null, paneID: string): string {
+ for (const section of board?.board.sections ?? []) {
+  const row = section.rows.find(row => row.id === paneID);
+  if (row) return row.activity ?? "";
+ }
+ return "";
+}
 export function interactionBoard(board: BoardUpdate | null) {
+ lastBoard = board;
  if (current && (!board || board.machineID !== current.target.machineID || (board.session === "default" ? "" : board.session) !== current.target.session)) closeInteraction();
  if (current?.view && board) {
   for (const section of board.board.sections) {
@@ -967,6 +977,7 @@ class Detail {
    symbol: (name, size, weight) => symbol(name, size, weight),
   });
   pane.root.hidden = true;
+  pane.setInboxPreview(boardActivity(lastBoard, this.target.paneID));
   this.topics = pane; this.body.append(pane.root);
  }
  /** The agent's topics changed (Go's TopicsChanged): the list, and whether the page offers them;

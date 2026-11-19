@@ -61,7 +61,7 @@
 .agent-detail .topic-send { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: var(--color-text); color: var(--color-ground-machine); }
 .agent-detail .topic-send:disabled { opacity: 0.35; }
 
-.topics-sheet { height: auto; }
+dialog.subagent-sheet.topics-sheet { height: auto; max-height: calc(100vh - 32px); }
 .topics-sheet > header { justify-content: space-between; }
 .topics-sheet > header button { position: static; }
 .topics-sheet-body { display: flex; flex-direction: column; gap: 14px; padding: 0 16px 16px; }

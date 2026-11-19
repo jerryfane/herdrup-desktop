@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +105,7 @@ func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 	if method == "agent.topics.list" {
 		list := make([]any, 0, len(a.order))
 		for _, id := range a.order {
-			list = append(list, a.topics[id].info)
+			list = append(list, maps.Clone(a.topics[id].info))
 		}
 		return reply("agent_topics", map[string]any{"topics": list}), nil, true
 	}
@@ -141,7 +143,7 @@ func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 			entries = nil
 		}
 		page := map[string]any{"type": "agent_transcript", "agent": "omp", "pane_id": p.Target, "session_id": "topic-" + id,
-			"entries": append([]map[string]any{}, entries...), "after": fmt.Sprintf("a%d", len(topic.entries))}
+			"entries": cloneEntries(entries), "after": fmt.Sprintf("a%d", len(topic.entries))}
 		if state := topic.info["state"]; state == "running" || state == "starting" {
 			page["working"] = map[string]any{"since_ms": topic.info["last_activity_unix_ms"], "intent": topic.info["last_activity"], "tool": ""}
 		}
@@ -188,7 +190,7 @@ func (t *Topics) startTurnLocked(target, id, message string) {
 		defer t.mu.Unlock()
 		now := t.now().UnixMilli()
 		topic.entries = append(topic.entries, map[string]any{"kind": "reply", "id": fmt.Sprintf("%sr%d", id, len(topic.entries)), "ts_ms": now, "final": true,
-			"text": "Done: **" + firstLine(message) + "**."})
+			"text": "Done: **" + strings.TrimRight(firstLine(message), ".") + "**."})
 		topic.info["turns"] = topic.info["turns"].(uint64) + 1
 		topic.info["state"], topic.info["last_activity_unix_ms"], topic.info["last_activity"] = "idle", now, "Answered: "+firstLine(message)
 		if len(topic.queued) > 0 {
@@ -200,6 +202,16 @@ func (t *Topics) startTurnLocked(target, id, message string) {
 		}
 		t.changedLocked(target, id, "turn_ended")
 	})
+}
+
+// cloneEntries copies a page's entries: the reply is encoded after the lock
+// is released, while a turn's timer may append to the topic.
+func cloneEntries(entries []map[string]any) []map[string]any {
+	out := make([]map[string]any, len(entries))
+	for i, e := range entries {
+		out[i] = maps.Clone(e)
+	}
+	return out
 }
 
 func firstLine(s string) string {
@@ -239,7 +251,8 @@ func (t *Topics) Events(ctx context.Context, emit func([]byte) error) {
 		case <-ctx.Done():
 			return
 		case line := <-c:
-			if emit(line) != nil {
+			// Clipped: the writer appends a newline, and every stream gets the same line.
+			if emit(slices.Clip(line)) != nil {
 				return
 			}
 		}
