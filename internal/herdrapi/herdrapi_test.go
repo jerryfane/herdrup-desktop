@@ -458,7 +458,8 @@ func TestCapabilitySupported(t *testing.T) {
 	all := []Capability{
 		CapabilityEventsV2, CapabilityPaneHistory, CapabilityAgentTranscript, CapabilityAgentAnswer,
 		CapabilityAgentAvatar, CapabilityAgentGroups, CapabilityGramUploadStream, CapabilityAPIBridgeMulti,
-		CapabilityServerUpdate, CapabilityAgentSessionTransfer,
+		CapabilityServerUpdate, CapabilityAgentSessionTransfer, CapabilityAskForm, CapabilityTranscriptMaxBytes,
+		CapabilityAgentTopics, CapabilityAgentTranscriptTopic,
 	}
 	for _, c := range all {
 		i := capabilityField(c)

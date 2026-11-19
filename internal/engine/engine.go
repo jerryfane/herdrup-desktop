@@ -223,6 +223,12 @@ func (c *Client) supports(ctx context.Context, capability herdrapi.Capability) (
 	return capability.Supported(pong.Capabilities), true
 }
 
+// Supports reports whether the server advertises capability (from the
+// cached ping, probing once); known is false when that probe failed.
+func (c *Client) Supports(ctx context.Context, capability herdrapi.Capability) (ok, known bool) {
+	return c.supports(ctx, capability)
+}
+
 // gate refuses m when its capability is known to be missing.
 func (c *Client) gate(ctx context.Context, m herdrapi.Method) error {
 	if m.Capability == herdrapi.CapabilityNone {

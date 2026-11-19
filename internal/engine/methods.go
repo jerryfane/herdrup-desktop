@@ -332,3 +332,35 @@ func (c *Client) GuestUpdate(ctx context.Context, p herdrapi.GuestUpdateParams) 
 func (c *Client) GuestAudit(ctx context.Context, p herdrapi.GuestAuditParams) (herdrapi.ResponseResultGuestAudit, error) {
 	return call[herdrapi.ResponseResultGuestAudit](ctx, c, "guest.audit", p)
 }
+
+// AgentTopicsList reads an omp agent's topics, live from the agent (herdr
+// #475). An agent that cannot be reached answers topics_unreachable.
+func (c *Client) AgentTopicsList(ctx context.Context, target string) (herdrapi.ResponseResultAgentTopics, error) {
+	return call[herdrapi.ResponseResultAgentTopics](ctx, c, "agent.topics.list", herdrapi.AgentTarget{Target: target})
+}
+
+// AgentTopicsNew starts a topic with its title and first message.
+func (c *Client) AgentTopicsNew(ctx context.Context, p herdrapi.AgentTopicsNewParams) (herdrapi.ResponseResultAgentTopicCreated, error) {
+	return call[herdrapi.ResponseResultAgentTopicCreated](ctx, c, "agent.topics.new", p)
+}
+
+// AgentTopicsSend sends a message to one topic; Mode says how it was taken.
+func (c *Client) AgentTopicsSend(ctx context.Context, p herdrapi.AgentTopicsSendParams) (herdrapi.ResponseResultAgentTopicSent, error) {
+	return call[herdrapi.ResponseResultAgentTopicSent](ctx, c, "agent.topics.send", p)
+}
+
+// AgentTopicsClose, AgentTopicsReopen and AgentTopicsRename change one topic.
+func (c *Client) AgentTopicsClose(ctx context.Context, p herdrapi.AgentTopicTarget) error {
+	_, err := call[herdrapi.ResponseResultAgentTopicUpdated](ctx, c, "agent.topics.close", p)
+	return err
+}
+
+func (c *Client) AgentTopicsReopen(ctx context.Context, p herdrapi.AgentTopicTarget) error {
+	_, err := call[herdrapi.ResponseResultAgentTopicUpdated](ctx, c, "agent.topics.reopen", p)
+	return err
+}
+
+func (c *Client) AgentTopicsRename(ctx context.Context, p herdrapi.AgentTopicsRenameParams) error {
+	_, err := call[herdrapi.ResponseResultAgentTopicUpdated](ctx, c, "agent.topics.rename", p)
+	return err
+}

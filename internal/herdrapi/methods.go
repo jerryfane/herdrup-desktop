@@ -56,6 +56,11 @@ const (
 	CapabilityAskForm Capability = "ask_form"
 	// agent.transcript max_bytes: a size-budgeted newest or older page (herdr #409).
 	CapabilityTranscriptMaxBytes Capability = "transcript_max_bytes"
+	// agent.topics.*, the agent.topics.changed event and topic_sessions (herdr #475).
+	CapabilityAgentTopics Capability = "agent_topics"
+	// agent.transcript honours topic (herdr #475); a server without it pages
+	// the agent's main conversation, so topic is never sent there.
+	CapabilityAgentTranscriptTopic Capability = "agent_transcript_topic"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -93,6 +98,10 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AskForm
 	case CapabilityTranscriptMaxBytes:
 		return caps.TranscriptMaxBytes
+	case CapabilityAgentTopics:
+		return caps.AgentTopics
+	case CapabilityAgentTranscriptTopic:
+		return caps.AgentTranscriptTopic
 	}
 	return false
 }
@@ -191,6 +200,13 @@ var Methods = []Method{
 	{Name: "agent.answer", Params: typeOf[AgentAnswerParams](), Results: []Result{result[ResponseResultAgentAnswer]("agent_answer")}, Capability: CapabilityAgentAnswer},
 	// Answers an omp HTML-form ask (herdr ask-form contract).
 	{Name: "agent.answer_form", Params: typeOf[AgentAnswerFormParams](), Results: []Result{result[ResponseResultAskFormAnswered]("ask_form_answered")}, Capability: CapabilityAskForm},
+	// herdr #475 (src/api/schema/topics.rs): an omp agent's topics.
+	{Name: "agent.topics.list", Params: typeOf[AgentTarget](), Results: []Result{result[ResponseResultAgentTopics]("agent_topics")}, Capability: CapabilityAgentTopics},
+	{Name: "agent.topics.new", Params: typeOf[AgentTopicsNewParams](), Results: []Result{result[ResponseResultAgentTopicCreated]("agent_topic_created")}, Capability: CapabilityAgentTopics},
+	{Name: "agent.topics.send", Params: typeOf[AgentTopicsSendParams](), Results: []Result{result[ResponseResultAgentTopicSent]("agent_topic_sent")}, Capability: CapabilityAgentTopics},
+	{Name: "agent.topics.close", Params: typeOf[AgentTopicTarget](), Results: []Result{result[ResponseResultAgentTopicUpdated]("agent_topic_updated")}, Capability: CapabilityAgentTopics},
+	{Name: "agent.topics.reopen", Params: typeOf[AgentTopicTarget](), Results: []Result{result[ResponseResultAgentTopicUpdated]("agent_topic_updated")}, Capability: CapabilityAgentTopics},
+	{Name: "agent.topics.rename", Params: typeOf[AgentTopicsRenameParams](), Results: []Result{result[ResponseResultAgentTopicUpdated]("agent_topic_updated")}, Capability: CapabilityAgentTopics},
 	// schema.rs:192; src/app/api/panes.rs:1905.
 	{Name: "pane.history", Params: typeOf[PaneHistoryParams](), Results: []Result{result[ResponseResultPaneHistory]("pane_history")}, Capability: CapabilityPaneHistory},
 	// schema.rs:194; acknowledged at src/api/server/pane_output_stream.rs:249,

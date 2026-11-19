@@ -6,7 +6,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
  Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
- GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage,
+ GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
@@ -20,6 +20,7 @@ import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, type GrantStore, type OwnerHint } from "./storage";
 import { panePromptAttachments } from "./gram";
+import { messageTooLong, orderedTopics, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
 
 type DeskFns = typeof GoDesk;
@@ -33,6 +34,9 @@ const GUEST_FORBIDDEN = "guest_forbidden"; // desk_guest_answers.go guestForbidd
 // desk_guest_answers.go guestMenuKeys
 const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab", "Enter"];
 // desk_interaction_compose.go promptWait
+/** A guest's Topics poll while it shows (TopicsModel.pollSeconds): the gate has no event stream. */
+export const TOPICS_GUEST_POLL_MS = 15_000;
+const TOPIC_TOO_LONG = "Messages are limited to 32 KB. Send it in parts.";
 export const PROMPT_WAIT = { timeout_ms: 6000, until: ["working", "idle", "blocked", "done", "unknown"] };
 const UNCONFIRMED_CODES = ["timeout", "agent_prompt_unverifiable", "agent_prompt_stalled", "agent_status_unobserved_after_submit", "agent_prompt_unsubmitted"];
 
@@ -164,6 +168,8 @@ interface Active {
 }
 
 interface MountedView extends GuestView {
+ /** The agent's Topics (desk_topics.go topicsState): the last list and the poll while shown. */
+ topics: { last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean };
  active: Active;
  view: AgentView;
  share: { details: GuestShareDetails };
@@ -211,10 +217,47 @@ export function createGuestDesk(env: DeskEnv) {
   return signal ? AbortSignal.any([v.life.signal, signal]) : v.life.signal;
  }
 
+ /** One agent.topics.* call; a refusal comes back in the app's words (topicsProblem). */
+ async function topicsCall<R>(v: MountedView, method: string, params: Record<string, string>, tag: string): Promise<R> {
+  try {
+   return untagged(await v.active.client.call(method, params, tag, "", within(v))) as R;
+  } catch (error) {
+   if (error instanceof HerdrAPIError) throw new Error(topicsProblem(error.code, error.apiMessage));
+   if (error instanceof ErrUnsupported) throw new Error(topicsProblem("topics_unsupported"));
+   throw error;
+  }
+ }
+
+ /** desk_topics.go topicsRead: one list read at a time, one more after it when asked meanwhile. */
+ function readTopics(v: MountedView) {
+  const t = v.topics;
+  if (t.reading) { t.again = true; return; }
+  t.reading = (async () => {
+   do {
+    t.again = false;
+    const u: TopicsUpdate = { ...t.last, token: v.token, loaded: true };
+    delete u.changed;
+    try {
+     const list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as { topics?: TopicsUpdate["topics"] };
+     u.topics = orderedTopics(list.topics ?? []); u.offered = true; delete u.problem;
+    } catch (error) {
+     if (v.life.signal.aborted) return;
+     const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
+     if (topicsNotOffered(code)) { u.topics = []; u.offered = false; delete u.problem; }
+     else u.problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
+    }
+    if (v.life.signal.aborted) return;
+    t.last = u;
+    emit("topicsChanged", u);
+   } while (t.again);
+  })().finally(() => { t.reading = null; });
+ }
+
  function unmount() {
   const v = mounted;
   if (!v) return;
   mounted = null;
+  if (v.topics.poll) clearInterval(v.topics.poll);
   v.life.abort(new Error("agent view changed; request was not sent"));
   setView(null);
  }
@@ -365,7 +408,8 @@ export function createGuestDesk(env: DeskEnv) {
    };
    unmount();
    const life = new AbortController();
-   const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null };
+   const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null,
+    topics: { last: { token, topics: [], offered: false, loaded: false }, poll: null, reading: null, again: false } };
    l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
    mounted = v;
    setView(v);
@@ -396,6 +440,80 @@ export function createGuestDesk(env: DeskEnv) {
    const page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v));
    viewOf(token);
    return JSON.stringify(untagged(page));
+  },
+
+  // ---- Topics (desk_topics.go, herdr #475): a guest polls; the gate has no event stream ----
+
+  async topicsAvailable(token: string): Promise<boolean> {
+   const v = viewOf(token);
+   if (!/^omp(?:$| |-)/i.test(v.view.harness)) return false;
+   const pong = await v.active.client.ping(within(v));
+   return pong.capabilities?.agent_topics === true;
+  },
+
+  async topicsRefresh(token: string): Promise<void> {
+   readTopics(viewOf(token));
+  },
+
+  async topicsFollow(token: string, shown: boolean): Promise<void> {
+   const v = viewOf(token);
+   if (v.topics.poll) { clearInterval(v.topics.poll); v.topics.poll = null; }
+   if (!shown) return;
+   readTopics(v);
+   v.topics.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(v.topics.poll!); return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
+  },
+
+  async topicTranscript(token: string, topic: string, after: string, before: string, heldFrom: string): Promise<string> {
+   const v = viewOf(token);
+   if (topic === "") throw new Error("no topic");
+   const pong = await v.active.client.ping(within(v));
+   if (pong.capabilities?.agent_transcript_topic !== true) throw new Error("This server can't show a topic's conversation.");
+   const params: Record<string, string> = { target: v.paneID, topic };
+   if (after !== "") { params.after = after; params.held_from = heldFrom; }
+   if (before !== "") params.before = before;
+   const page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v));
+   viewOf(token);
+   return JSON.stringify(untagged(page));
+  },
+
+  async topicsNew(token: string, title: string, message: string): Promise<string> {
+   const v = viewOf(token);
+   title = title.trim(); message = message.trim();
+   if (title === "" || message === "") throw new Error("A topic needs a title and a first message.");
+   if (messageTooLong(message)) throw new Error(TOPIC_TOO_LONG);
+   const created = await topicsCall<{ topic_id: string }>(v, "agent.topics.new", { target: v.paneID, title, message }, "agent_topic_created");
+   readTopics(v);
+   return created.topic_id;
+  },
+
+  async topicsSend(token: string, topicID: string, text: string): Promise<TopicSendReply> {
+   const v = viewOf(token);
+   text = text.trim();
+   if (text === "") throw new Error("prompt is empty");
+   if (messageTooLong(text)) throw new Error(TOPIC_TOO_LONG);
+   const sent = await topicsCall<{ mode: string }>(v, "agent.topics.send", { target: v.paneID, topic_id: topicID, message: text }, "agent_topic_sent");
+   readTopics(v);
+   return { mode: sent.mode };
+  },
+
+  async topicsClose(token: string, topicID: string): Promise<void> {
+   const v = viewOf(token);
+   await topicsCall(v, "agent.topics.close", { target: v.paneID, topic_id: topicID }, "agent_topic_updated");
+   readTopics(v);
+  },
+
+  async topicsReopen(token: string, topicID: string): Promise<void> {
+   const v = viewOf(token);
+   await topicsCall(v, "agent.topics.reopen", { target: v.paneID, topic_id: topicID }, "agent_topic_updated");
+   readTopics(v);
+  },
+
+  async topicsRename(token: string, topicID: string, title: string): Promise<void> {
+   const v = viewOf(token);
+   title = title.trim();
+   if (title === "") throw new Error("A topic needs a title.");
+   await topicsCall(v, "agent.topics.rename", { target: v.paneID, topic_id: topicID, title }, "agent_topic_updated");
+   readTopics(v);
   },
 
   async chatPrompt(token: string, text: string): Promise<string> {

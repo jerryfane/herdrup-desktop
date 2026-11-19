@@ -64,6 +64,8 @@ type interaction struct {
 	guestShare     guestShareRoute
 	// pageBudget: herdr takes agent.transcript max_bytes (read with the view's link, under d.mu).
 	pageBudget bool
+	// topics is the agent's Topics watch (desk_topics.go).
+	topics topicsState
 }
 
 type TerminalEvent struct {
@@ -342,6 +344,21 @@ const transcriptPageBytes = 32 * 1024
 // the session from its start, so herdr re-sends changed origin marks for the history the reader
 // scrolled in too (herdr #430). Older servers ignore it.
 func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagent, heldFrom string) (string, error) {
+	return d.transcript(ctx, token, after, before, subagent, heldFrom, "")
+}
+
+// TopicTranscript is ChatTranscript for one of an omp agent's topics (herdr
+// #475 agent.transcript topic). A server without agent_transcript_topic
+// would page the agent's main conversation instead, so topic is refused
+// here rather than sent.
+func (d *Desk) TopicTranscript(ctx context.Context, token, topic, after, before, heldFrom string) (string, error) {
+	if topic == "" {
+		return "", errors.New("no topic")
+	}
+	return d.transcript(ctx, token, after, before, "", heldFrom, topic)
+}
+
+func (d *Desk) transcript(ctx context.Context, token, after, before, subagent, heldFrom, topic string) (string, error) {
 	v, err := d.agentView(token)
 	if err != nil {
 		return "", err
@@ -358,6 +375,12 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 	}
 	if subagent != "" {
 		p.Subagent = &subagent
+	}
+	if topic != "" {
+		if ok, _ := v.client.Supports(ctx, herdrapi.CapabilityAgentTranscriptTopic); !ok {
+			return "", errors.New("This server can't show a topic's conversation.")
+		}
+		p.Topic = &topic
 	}
 	// A newest or older page is held to transcriptPageBytes where herdr can (slow-network fix 5,
 	// herdr #409): one turn can be 130 KB, and the first page on a slow link waits for all of it.
