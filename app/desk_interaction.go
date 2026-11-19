@@ -352,14 +352,14 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 	return d.transcript(ctx, token, after, before, subagent, heldFrom, "")
 }
 
-// TopicTranscript is ChatTranscript for one of an omp agent's topics (herdr
-// #475 agent.transcript topic). A server without agent_transcript_topic
-// would page the agent's main conversation instead, so topic is refused
-// here rather than sent.
 // topicGone is herdrup #745's words for a topic transcript herdr can't find
 // (ChatModel topicNotFound).
 const topicGone = "This topic's conversation can't be found."
 
+// TopicTranscript is ChatTranscript for one of an omp agent's topics (herdr
+// #475 agent.transcript topic). A server without agent_transcript_topic
+// would page the agent's main conversation instead, so topic is refused
+// here rather than sent.
 func (d *Desk) TopicTranscript(ctx context.Context, token, topic, after, before, heldFrom string) (string, error) {
 	if topic == "" {
 		return "", errors.New("no topic")
