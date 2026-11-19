@@ -106,12 +106,12 @@ type crashLaunch struct {
 type crashReporter struct {
 	// dir holds launch-<id>.txt (a launch's crash output) with its .json
 	// (crashLaunch), queue/ (reports waiting) and sent.json.
-	dir    string
-	url    string
+	dir     string
+	url     string
 	usage   *usagePing
 	version string
 	client  *http.Client
-	now    func() time.Time
+	now     func() time.Time
 
 	// launch describes this launch (thisLaunch), read once when first needed.
 	launch     crashLaunch
