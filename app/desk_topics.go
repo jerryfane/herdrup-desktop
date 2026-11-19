@@ -350,10 +350,38 @@ func (d *Desk) TopicsNew(ctx context.Context, token, title, message string) (str
 
 var errTopicTooLong = errors.New("Messages are limited to 32 KB. Send it in parts.")
 
-// TopicSendReply says how the agent took a topic message: "queued" waits
-// for the topic's current turn to end.
+// TopicSendReply is how a topic message went. Delivery is "sent" (Mode says
+// how the agent took it: "queued" waits for the topic's current turn to
+// end), "refused" (the agent or this app turned it down: safe to send again)
+// or "unconfirmed" (it may have reached the agent: no one-tap resend).
+// Problem is the app's words for a refused or unconfirmed send. The page
+// decides from Delivery, never from Problem's wording.
 type TopicSendReply struct {
-	Mode string `json:"mode"`
+	Mode     string `json:"mode"`
+	Delivery string `json:"delivery"`
+	Problem  string `json:"problem,omitempty"`
+}
+
+// topicSendUnconfirmed is the note for a send whose link broke (iOS: any
+// error that is not the agent's answer).
+const topicSendUnconfirmed = "Couldn't confirm delivery. Check the topic before sending again."
+
+// topicSendDelivery classifies a failed agent.topics.send as iOS does
+// (TopicsModel.deliver): herdr's refusals were not delivered; a timeout, an
+// unknown code or a broken link may have been.
+func topicSendDelivery(err error) string {
+	if unsupported := (*engine.ErrUnsupported)(nil); errors.As(err, &unsupported) {
+		return "refused"
+	}
+	var api *bridge.APIError
+	if !errors.As(err, &api) {
+		return "unconfirmed"
+	}
+	switch api.Code {
+	case "topics_unreachable", "topic_rejected", "topic_not_found", "agent_not_found", "topics_unsupported", "invalid_params":
+		return "refused"
+	}
+	return "unconfirmed"
 }
 
 // TopicsSend sends a message to one topic (agent.topics.send).
@@ -367,16 +395,20 @@ func (d *Desk) TopicsSend(ctx context.Context, token, topicID, text string) (Top
 		return TopicSendReply{}, errors.New("prompt is empty")
 	}
 	if len(text) > topicMessageBytes {
-		return TopicSendReply{}, errTopicTooLong
+		return TopicSendReply{Delivery: "refused", Problem: errTopicTooLong.Error()}, nil
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
 	sent, err := v.client.AgentTopicsSend(ctx, herdrapi.AgentTopicsSendParams{Target: v.PaneID, TopicID: topicID, Message: text})
-	if err != nil {
-		return TopicSendReply{}, topicsError(err)
-	}
 	d.topicsRead(v)
-	return TopicSendReply{Mode: string(sent.Mode)}, nil
+	if err != nil {
+		problem := topicsProblem(err)
+		if api := (*bridge.APIError)(nil); !errors.As(err, &api) && topicSendDelivery(err) == "unconfirmed" {
+			problem = topicSendUnconfirmed
+		}
+		return TopicSendReply{Delivery: topicSendDelivery(err), Problem: problem}, nil
+	}
+	return TopicSendReply{Mode: string(sent.Mode), Delivery: "sent"}, nil
 }
 
 // TopicsClose, TopicsReopen and TopicsRename change one topic, then read

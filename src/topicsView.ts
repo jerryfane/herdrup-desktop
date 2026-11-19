@@ -392,15 +392,13 @@ class TopicChat {
   };
   try {
    const reply = await Desk.topicsSend(this.host.token, this.topic.topic_id, text);
-   settle("submitted");
-   this.showNote(sendNote(reply.mode));
+   // Desk classifies the send (TopicSendReply.delivery); its problem text is only shown.
+   if (reply.delivery === "sent") { settle("submitted"); this.showNote(sendNote(reply.mode)); }
+   else if (reply.delivery === "refused") { settle(null); if (this.input.value === "") this.input.value = text; this.showNote(reply.problem ?? null); }
+   else { settle("unconfirmed"); this.showNote(reply.problem ?? UNCONFIRMED); }
   } catch (error) {
-   const words = errorText(error);
-   // A refusal the agent answered (gone, refused, unreachable) leaves the words back in the
-   // composer to send again; anything else may have reached it: no one-tap duplicate.
-   const refused = words === TOO_LONG || words.startsWith("The agent refused") || words === "This topic is gone." || words === "This agent is gone." || words === "Agent not reachable" || words === "This agent has no topics.";
-   if (refused) { settle(null); if (this.input.value === "") this.input.value = text; this.showNote(words); }
-   else { settle("unconfirmed"); this.showNote(words === "The agent didn't answer in time." ? words : UNCONFIRMED); }
+   // The page itself failed (the view closed, the link went): it may have been sent.
+   settle("unconfirmed"); this.showNote(errorText(error) || UNCONFIRMED);
   } finally {
    this.sending = false;
    if (!this.disposed) { this.updateComposer(); this.draw(false); void this.load(false); }

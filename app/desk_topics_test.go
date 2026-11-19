@@ -158,7 +158,7 @@ func TestOwnerTopicsListStartSendAndFollow(t *testing.T) {
 		return len(u.Topics) == 4 && u.Topics[0].TopicID == id && u.Topics[0].Title == "Launch plan"
 	})
 	reply, err := d.TopicsSend(ctx, "view", id, "Add a timeline.")
-	if err != nil || reply.Mode != "queued" {
+	if err != nil || reply.Mode != "queued" || reply.Delivery != "sent" {
 		t.Fatalf("send while the topic works: %+v, %v; want queued", reply, err)
 	}
 	waitFor(t, "an event naming the new topic", func() bool {
@@ -175,8 +175,10 @@ func TestOwnerTopicsListStartSendAndFollow(t *testing.T) {
 	if _, err := d.TopicTranscript(ctx, "view", "t99", "", "", ""); err == nil || err.Error() != "This topic's conversation can't be found." {
 		t.Fatalf("missing topic: %v", err)
 	}
-	if _, err := d.TopicsSend(ctx, "view", "t3", "hello"); err == nil || err.Error() != "The agent refused: the topic is closed" {
-		t.Fatalf("send to a closed topic: %v", err)
+	// A refusal is a reply the page can resend from, classified by herdr's
+	// code, not an error whose wording the page would have to parse (#248 P3).
+	if reply, err := d.TopicsSend(ctx, "view", "t3", "hello"); err != nil || reply.Delivery != "refused" || reply.Problem != "The agent refused: the topic is closed" {
+		t.Fatalf("send to a closed topic: %+v, %v; want refused with the agent's words", reply, err)
 	}
 }
 
@@ -202,5 +204,26 @@ func TestTopicsWithoutTheCapabilityStayOff(t *testing.T) {
 	}
 	if _, err := d.TopicTranscript(ctx, "view", "t1", "", "", ""); err == nil || err.Error() != "This server can't show a topic's conversation." {
 		t.Fatalf("topic transcript without agent_transcript_topic: %v", err)
+	}
+}
+
+// A send that may have reached the agent (a timeout, an unknown code, a
+// broken link) is unconfirmed: no one-tap resend. herdr's refusals are not.
+func TestTopicSendDeliveryFollowsHerdrsCode(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{&bridge.APIError{Code: "topic_rejected"}, "refused"},
+		{&bridge.APIError{Code: "topics_unreachable"}, "refused"},
+		{&bridge.APIError{Code: "topic_not_found"}, "refused"},
+		{&engine.ErrUnsupported{Method: "agent.topics.send", Capability: herdrapi.CapabilityAgentTopics}, "refused"},
+		{&bridge.APIError{Code: "topics_timeout"}, "unconfirmed"},
+		{&bridge.APIError{Code: "something_new"}, "unconfirmed"},
+		{errors.New("ssh: connection lost"), "unconfirmed"},
+	} {
+		if got := topicSendDelivery(c.err); got != c.want {
+			t.Errorf("%v: %s, want %s", c.err, got, c.want)
+		}
 	}
 }

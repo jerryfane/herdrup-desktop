@@ -113,3 +113,28 @@ export function topicsProblem(code: string, message = ""): string {
 export function topicsNotOffered(code: string): boolean {
  return code === "topics_unsupported" || code === "agent_not_found" || code === "unsupported";
 }
+
+/** How a failed agent.topics.send went, by herdr's code (desk_topics.go topicSendDelivery, iOS
+ *  TopicsModel.deliver): its refusals were not delivered; a timeout, an unknown code or a broken
+ *  link ("") may have been. */
+export function topicSendDelivery(code: string): "refused" | "unconfirmed" {
+ switch (code) {
+  case "topics_unreachable": case "topic_rejected": case "topic_not_found": case "agent_not_found":
+  case "topics_unsupported": case "invalid_params": case "unsupported":
+   return "refused";
+ }
+ return "unconfirmed";
+}
+
+/** What the page knows about an agent's topics offer (#745 topicsAvailable). `refused`: the agent
+ *  answered it has none (not offered, no problem). A failed read carries a problem and is not that
+ *  answer, so a session-backed offer and its polling survive it (#250). */
+export interface TopicsOffer { offered: boolean; refused: boolean }
+export function nextTopicsOffer(prev: TopicsOffer, u: Pick<TopicsUpdate, "offered" | "loaded" | "problem">): TopicsOffer {
+ return { offered: u.offered, refused: u.loaded && !u.problem ? !u.offered : prev.refused };
+}
+/** The page shows Topics: a server with agent_topics, and the agent answered its list or its
+ *  session file holds topics, unless it answered it has none. */
+export function topicsShown(capable: boolean, offer: TopicsOffer, topicSessions: boolean): boolean {
+ return capable && (offer.offered || (!offer.refused && topicSessions));
+}

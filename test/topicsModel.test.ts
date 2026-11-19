@@ -1,7 +1,7 @@
 // The Topics view's decisions (src/topicsModel.ts), against herdrup #745: TopicsView.swift
 // (sections, pill, search), HerdrKit AgentTopics.swift (ordering) and ChatPreference.swift.
 import { expect, test } from "bun:test";
-import { orderedTopics, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
+import { nextTopicsOffer, orderedTopics, topicSendDelivery, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
 
 const topic = (id: string, over: Partial<TopicInfo> = {}): TopicInfo => ({
  topic_id: id, title: id, state: "idle", turns: 1, queued: 0, created_unix_ms: 0, last_activity_unix_ms: 0, ...over,
@@ -67,4 +67,24 @@ test("refusals in the app's words; only a queued send leaves a note", () => {
  expect([topicsNotOffered("topics_unsupported"), topicsNotOffered("agent_not_found"), topicsNotOffered("topics_unreachable")]).toEqual([true, true, false]);
  expect(sendNote("queued")).toBe("Queued: the topic reads it when its current turn ends.");
  expect([sendNote("turn"), sendNote("steered")]).toEqual([null, null]);
+});
+
+test("a send herdr refused can be sent again; a timeout, an unknown code or a broken link may have arrived", () => {
+ expect(["topic_rejected", "topics_unreachable", "topic_not_found", "agent_not_found", "topics_unsupported", "unsupported"].map(topicSendDelivery)).toEqual(Array(6).fill("refused"));
+ expect(["topics_timeout", "something_new", ""].map(topicSendDelivery)).toEqual(["unconfirmed", "unconfirmed", "unconfirmed"]);
+});
+
+test("a failed list read keeps Topics for an agent whose session holds topics; only its answer removes it (#250)", () => {
+ let offer = { offered: false, refused: false };
+ expect(topicsShown(true, offer, true)).toBe(true);
+ offer = nextTopicsOffer(offer, { offered: false, loaded: true, problem: "Agent not reachable" });
+ expect(topicsShown(true, offer, true)).toBe(true);
+ offer = nextTopicsOffer(offer, { offered: true, loaded: true });
+ expect(topicsShown(true, offer, false)).toBe(true);
+ offer = nextTopicsOffer(offer, { offered: false, loaded: true });
+ expect([topicsShown(true, offer, true), topicsShown(true, offer, false)]).toEqual([false, false]);
+ // After a refusal, a later failed read does not bring it back.
+ offer = nextTopicsOffer(offer, { offered: false, loaded: true, problem: "Couldn't reach the agent." });
+ expect(topicsShown(true, offer, true)).toBe(false);
+ expect(topicsShown(false, { offered: true, refused: false }, true)).toBe(false);
 });

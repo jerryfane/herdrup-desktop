@@ -98,11 +98,11 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const started = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.topics[0]?.title === "Guest topic");
  const topic = await desk.topicsNew("view-1", "Guest topic", "From the browser");
  expect((await started).topics[0]!.topic_id).toBe(topic);
- expect(await desk.topicsSend("view-1", topic, "And one more")).toEqual({ mode: "queued" });
+ expect(await desk.topicsSend("view-1", topic, "And one more")).toEqual({ mode: "queued", delivery: "sent" });
  const conversation = await desk.topicTranscript("view-1", topic, "", "", "");
  expect(conversation).toContain("visitor (via HerdrUp): From the browser");
  expect(conversation).not.toContain("September minutes");
- await expect(desk.topicsSend("view-1", "t3", "hi")).rejects.toThrow("The agent refused: the topic is closed");
+ expect(await desk.topicsSend("view-1", "t3", "hi")).toEqual({ mode: "", delivery: "refused", problem: "The agent refused: the topic is closed" });
  await expect(desk.topicTranscript("view-1", "t99", "", "", "")).rejects.toThrow("This topic's conversation can't be found.");
  await desk.topicsFollow("view-1", false);
 

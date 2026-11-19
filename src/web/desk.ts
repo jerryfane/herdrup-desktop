@@ -20,7 +20,7 @@ import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, type GrantStore, type OwnerHint } from "./storage";
 import { panePromptAttachments } from "./gram";
-import { messageTooLong, orderedTopics, topicsNotOffered, topicsProblem } from "../topicsModel";
+import { messageTooLong, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
 
 type DeskFns = typeof GoDesk;
@@ -494,10 +494,18 @@ export function createGuestDesk(env: DeskEnv) {
    const v = viewOf(token);
    text = text.trim();
    if (text === "") throw new Error("prompt is empty");
-   if (messageTooLong(text)) throw new Error(TOPIC_TOO_LONG);
-   const sent = await topicsCall<{ mode: string }>(v, "agent.topics.send", { target: v.paneID, topic_id: topicID, message: text }, "agent_topic_sent");
-   readTopics(v);
-   return { mode: sent.mode };
+   if (messageTooLong(text)) return { mode: "", delivery: "refused", problem: TOPIC_TOO_LONG };
+   try {
+    const sent = untagged(await v.active.client.call("agent.topics.send", { target: v.paneID, topic_id: topicID, message: text }, "agent_topic_sent", "", within(v))) as { mode: string };
+    return { mode: sent.mode, delivery: "sent" };
+   } catch (error) {
+    if (v.life.signal.aborted) throw error;
+    const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
+    const delivery = topicSendDelivery(code);
+    // The agent's words when it answered; a broken link only says it may have arrived (iOS).
+    const problem = code === "" ? "Couldn't confirm delivery. Check the topic before sending again." : topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
+    return { mode: "", delivery, problem };
+   } finally { readTopics(v); }
   },
 
   async topicsClose(token: string, topicID: string): Promise<void> {
