@@ -404,6 +404,7 @@ export function createGuestDesk(env: DeskEnv) {
     guest: true, guestGram: l.transport.features.gram, ...(l.access.ownerName !== "" ? { guestOwner: l.access.ownerName } : {}),
     // desk_interaction.go AskForm: a guest's gate advertises no capabilities; form_answerable decides.
     askForm: true,
+    topicSessions: (agent.topic_sessions ?? []).some(t => !!t.topic_id),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
    unmount();
@@ -466,12 +467,15 @@ export function createGuestDesk(env: DeskEnv) {
   async topicTranscript(token: string, topic: string, after: string, before: string, heldFrom: string): Promise<string> {
    const v = viewOf(token);
    if (topic === "") throw new Error("no topic");
-   const pong = await v.active.client.ping(within(v));
-   if (pong.capabilities?.agent_transcript_topic !== true) throw new Error("This server can't show a topic's conversation.");
+   // The cached pong (engine gate), not a ping per read: each guest read is a relay connect.
+   try { await v.active.client.gate("agent.transcript", "agent_transcript_topic", within(v)); }
+   catch (error) { throw error instanceof ErrUnsupported ? new Error("This server can't show a topic's conversation.") : error; }
    const params: Record<string, string> = { target: v.paneID, topic };
    if (after !== "") { params.after = after; params.held_from = heldFrom; }
    if (before !== "") params.before = before;
-   const page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v));
+   let page: unknown;
+   try { page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v)); }
+   catch (error) { throw error instanceof HerdrAPIError && error.code === "topic_not_found" ? new Error("This topic's conversation can't be found.") : error; }
    viewOf(token);
    return JSON.stringify(untagged(page));
   },

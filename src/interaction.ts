@@ -10,7 +10,7 @@ import { openAvatarSheet } from "./agentActions";
 import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
-import type { AgentTarget, AgentView, BoardUpdate, GramAttachment } from "./mygo";
+import type { AgentTarget, AgentView, BoardUpdate, GramAttachment, TopicsUpdate } from "./mygo";
 import { closeWriter, ComposerEditor, composerEnterSends, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
@@ -32,7 +32,9 @@ import { recordOwnerSend } from "./starPrompt";
 import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
-import { defaultChatMode } from "./chatPreference";
+import { defaultChatMode, type ChatMode } from "./chatPreference";
+import { TopicsPane } from "./topicsView";
+import { resolvedMode } from "./topicsModel";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -136,7 +138,7 @@ function attachmentBundle(files: PromptFile[]): HTMLElement {
 }
 let root: HTMLElement;
 let symbol: (name: string, size: number, weight: string) => Promise<HTMLElement>;
-const modeChoices = new Map<string, "chat" | "terminal">();
+const modeChoices = new Map<string, ChatMode>();
 let current: Detail | null = null;
 let opening: Promise<void> = Promise.resolve();
 let selectionChanged: ((target: AgentTarget | null) => void) | undefined;
@@ -152,6 +154,7 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
   if (event.note) current.status.textContent = event.note;
  });
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
+ events.topicsChanged.on(update => { if (current?.token === update.token && !current.disposed) current.applyTopics(update); });
  events.paneActionChosen.on(event => { if (current?.view?.paneID === event.paneID && !current.disposed) current.choosePaneAction(event.action); });
 events.stateChanged.on(state => {
  // Chats and terminal screens remembered in memory end with the connection: a disconnect, a
@@ -209,7 +212,7 @@ export function interactionBoard(board: BoardUpdate | null) {
  if (current?.view && board) {
   for (const section of board.board.sections) {
    const row = section.rows.find(row => row.id === current!.target.paneID);
-   if (row) current.updateStatus(section.key, section.label, row.statusSinceUnixMs);
+   if (row) { current.updateStatus(section.key, section.label, row.statusSinceUnixMs); current.topics?.setInboxPreview(row.activity ?? ""); }
   }
  }
 }
@@ -235,7 +238,17 @@ class Detail {
  readonly token = crypto.randomUUID();
  view: AgentView | null = null;
  disposed = false;
- mode: "chat" | "terminal" = "terminal";
+ mode: ChatMode = "terminal";
+ /** The switch position asked for (modeChoices, else the Settings default); `mode` is what it
+  *  resolves to on this agent (topicsModel.ts resolvedMode). */
+ asked: ChatMode = "terminal";
+ chatAvailable = false;
+ /** An omp agent on a server with agent_topics; the page offers Topics once the agent answers
+  *  its list (offered) or its session file holds topics (herdrup #745 topicsAvailable). */
+ topicsCapable = false;
+ topicsOffered = false;
+ topicsLoaded = false;
+ topics: TopicsPane | null = null;
  generation = 0;
  title = el("strong");
  titleBlock = el("div", "pane-title-block");
@@ -295,6 +308,7 @@ class Detail {
  terminalOpened = false;
  terminalStartup: Promise<void> | null = null;
  terminalReconnect: Promise<void> | null = null;
+ topicsButton = button("Topics", () => { void this.chooseMode("topics"); });
  chatButton = button("Chat", () => { void this.chooseMode("chat"); });
  terminalButton = button("Terminal", () => { void this.chooseMode("terminal"); });
  terminal: Terminal | null = null;
@@ -544,6 +558,7 @@ class Detail {
   const capsule = el("div", "pane-header-capsule");
   const refresh = button("", () => {
    if (this.mode === "terminal") void this.reconnectTerminal();
+   else if (this.mode === "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
    else void this.refreshChat(this.generation);
   });
   refresh.setAttribute("aria-label", "Refresh");
@@ -572,8 +587,8 @@ class Detail {
   this.titleBlock.append(this.title, this.stateLine);
   bar.append(back, this.titleBlock, this.findBar, capsule);
   const modes = el("div", "chat-terminal-switch");
-  modes.append(this.chatButton, this.terminalButton);
-  modes.hidden = true;
+  modes.append(this.topicsButton, this.chatButton, this.terminalButton);
+  modes.hidden = true; this.topicsButton.hidden = true;
   if (this.disposed) return;
   // The note sits above the key row and composer, as herdrup's actionNote (HerdrApp.swift 5849-5855).
   root.replaceChildren(bar, modes, this.body);
@@ -586,6 +601,10 @@ class Detail {
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
    const chatAvailable = /^omp(?:$| |-)/i.test(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
    if (this.disposed) return;
+   this.chatAvailable = chatAvailable;
+   this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
+   if (this.disposed) return;
+   if (this.topicsCapable) this.mountTopics(view);
    this.attach.hidden = view.guest && !view.guestGram;
    modes.hidden = !chatAvailable && !view.guestGram;
    if (view.guest) {
@@ -597,9 +616,13 @@ class Detail {
     const grant = share ? `${share.endpoint.hostID}/${share.guestID}` : null;
     const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram", { detail: grant })));
     gram.hidden = !view.guestGram; this.guestGramButton = gram;
-    modes.replaceChildren(...(chatAvailable ? [this.chatButton] : []), this.terminalButton, gram);
+    modes.replaceChildren(...(chatAvailable ? [this.topicsButton, this.chatButton] : []), this.terminalButton, gram);
    }
-   await this.switchMode(chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal");
+   this.asked = chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal";
+   this.topicsButton.hidden = !this.topicsAvailable();
+   await this.switchMode(this.resolvedMode());
+   // Ask the agent once whether it has topics (#745 .task): the answer may add the Topics button.
+   if (this.topicsCapable && this.mode !== "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
    if (view.guest) this.showGuestPaused();
   } catch (e) { if (!this.disposed) this.status.textContent = errorText(e); }
  }
@@ -661,9 +684,9 @@ class Detail {
     break;
    case "copy-selection": void Desk.gramCopyText(this.terminal?.getSelection() ?? ""); break;
    // Section "Text size" (PaneHeaderControls.swift 105-119).
-   case "text-increase": this.changeTextSize(this.mode, 1); break;
-   case "text-decrease": this.changeTextSize(this.mode, -1); break;
-   case "text-reset": this.changeTextSize(this.mode, "reset"); break;
+   case "text-increase": this.changeTextSize(this.textSurface(), 1); break;
+   case "text-decrease": this.changeTextSize(this.textSurface(), -1); break;
+   case "text-reset": this.changeTextSize(this.textSurface(), "reset"); break;
    case "share":
     if (view.guest) return;
     this.guestShareSheet?.close();
@@ -931,16 +954,46 @@ class Detail {
   this.prediction?.dispose(); this.prediction = null;
   this.disposeTerminal(); this.fit = null;
  }
- dispose() { this.disposed = true; this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
- async chooseMode(mode: "chat" | "terminal") {
-  modeChoices.set(JSON.stringify(this.target), mode);
-  await this.switchMode(mode);
+ dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
+ /** Topics' text follows the chat's size. */
+ textSurface(): TextSurface { return this.mode === "terminal" ? "terminal" : "chat"; }
+ topicsAvailable(): boolean { return this.topicsCapable && (this.topicsOffered || (!this.topicsLoaded && !!this.view?.topicSessions)); }
+ resolvedMode(): ChatMode { return resolvedMode(this.asked, this.chatAvailable, this.topicsAvailable()); }
+ mountTopics(view: AgentView) {
+  const pane = new TopicsPane({
+   token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "",
+   renderRow: row => this.renderRow(row),
+   openInbox: () => { void this.chooseMode("chat"); },
+   symbol: (name, size, weight) => symbol(name, size, weight),
+  });
+  pane.root.hidden = true;
+  this.topics = pane; this.body.append(pane.root);
  }
- async switchMode(mode: "chat" | "terminal") {
+ /** The agent's topics changed (Go's TopicsChanged): the list, and whether the page offers them;
+  *  an agent that stops offering them goes back to Chat (#745 onChange(of: showsTopics)). */
+ applyTopics(update: TopicsUpdate) {
+  if (!this.topics) return;
+  const offered = this.topicsAvailable();
+  this.topicsOffered = update.offered; this.topicsLoaded ||= update.loaded;
+  this.topics.apply(update);
+  this.topicsButton.hidden = !this.topicsAvailable();
+  if (offered !== this.topicsAvailable() && this.resolvedMode() !== this.mode) void this.switchMode(this.resolvedMode());
+ }
+ async chooseMode(mode: ChatMode) {
+  modeChoices.set(JSON.stringify(this.target), mode);
+  this.asked = mode;
+  await this.switchMode(this.resolvedMode());
+ }
+ async switchMode(mode: ChatMode) {
   const generation = this.generation;
   this.prediction?.reset();
   this.mode = mode; this.status.textContent = "";
-  if (mode === "terminal") this.dismissChatSheets();
+  if (mode !== "chat") this.dismissChatSheets();
+  // The Topics list has its own search (#745: no Find over Topics).
+  if (mode === "topics" && this.findOpen) this.toggleFind(false);
+  if (this.findToggle) this.findToggle.hidden = mode === "topics";
+  this.topicsButton.setAttribute("aria-pressed", String(mode === "topics"));
+  if (this.topics) { this.topics.root.hidden = mode !== "topics"; this.topics.show(mode === "topics"); }
   this.body.dataset.mode = mode;
   this.updateGuestQuestion();
   this.setCtrl(false);
@@ -949,9 +1002,9 @@ class Detail {
   this.terminalButton.setAttribute("aria-pressed", String(mode === "terminal"));
   this.chatSurface.hidden = mode !== "chat";
   this.updateChatJump();
-  this.terminalSurface.inert = mode === "chat";
-  this.terminalSurface.setAttribute("aria-hidden", String(mode === "chat"));
-  this.terminalSurface.classList.toggle("covered", mode === "chat");
+  this.terminalSurface.inert = mode !== "terminal";
+  this.terminalSurface.setAttribute("aria-hidden", String(mode !== "terminal"));
+  this.terminalSurface.classList.toggle("covered", mode !== "terminal");
   clearTimeout(this.refreshTimer);
   if (!this.mounted) {
    this.mounted = true;
@@ -963,6 +1016,8 @@ class Detail {
    // at its tail, rather than after the read (review of #212).
    if (this.chat && !this.transcript.querySelector("[data-id]")) this.drawChat();
    void this.refreshChat(generation);
+  } else if (mode === "topics") {
+   // Topics draws from Go's list (TopicsChanged); nothing to read here.
   } else if (!this.terminalOpened) {
    await this.ensureTerminal(generation);
   } else {
@@ -1986,7 +2041,7 @@ class Detail {
  }
  async chooseMessageAction(id: string, item: string) {
   const message = this.messageMenu;
-  if (!message || message.id !== id || this.disposed || this.mode !== "chat" || root.hidden) return;
+  if (!message || message.id !== id || this.disposed || this.mode === "terminal" || root.hidden) return;
   this.messageMenu = null;
   if (item === "Copy as Markdown") { await Desk.gramCopyText(message.text); return; }
   const content = message.markdown ? readableMarkdown(message.text) : el("div", "chat-readable-text", message.text);

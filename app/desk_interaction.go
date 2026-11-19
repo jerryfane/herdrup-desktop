@@ -44,6 +44,10 @@ type AgentView struct {
 	// A guest's gate advertises no capabilities, so for a guest herdr's
 	// form_answerable on the pending ask decides alone.
 	AskForm bool `json:"askForm"`
+	// TopicSessions: the agent's session file already holds topics
+	// (topic_sessions), so the page offers Topics before or without a list
+	// answer (herdrup #745 topicsAvailable).
+	TopicSessions bool `json:"topicSessions"`
 }
 
 type interaction struct {
@@ -138,7 +142,8 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
 			GuestOwner: guestOwner(l), GuestSelf: guestSelf(l),
-			AskForm: l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
+			AskForm:       l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
+			TopicSessions: slices.ContainsFunc(agent.TopicSessions, func(t herdrapi.AgentTopicSession) bool { return t.TopicID != "" }),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),
@@ -351,6 +356,10 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 // #475 agent.transcript topic). A server without agent_transcript_topic
 // would page the agent's main conversation instead, so topic is refused
 // here rather than sent.
+// topicGone is herdrup #745's words for a topic transcript herdr can't find
+// (ChatModel topicNotFound).
+const topicGone = "This topic's conversation can't be found."
+
 func (d *Desk) TopicTranscript(ctx context.Context, token, topic, after, before, heldFrom string) (string, error) {
 	if topic == "" {
 		return "", errors.New("no topic")
@@ -390,6 +399,9 @@ func (d *Desk) transcript(ctx context.Context, token, after, before, subagent, h
 		p.MaxBytes = &budget
 	}
 	page, err := v.client.AgentTranscript(ctx, p)
+	if apiErr := (*bridge.APIError)(nil); topic != "" && errors.As(err, &apiErr) && apiErr.Code == "topic_not_found" {
+		return "", errors.New(topicGone)
+	}
 	if err != nil {
 		return "", err
 	}

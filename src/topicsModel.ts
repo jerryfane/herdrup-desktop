@@ -2,16 +2,14 @@
 // HerdrKit AgentTopics.swift, ChatPreference.swift; herdr #475).
 
 import type { AgentTopicInfo, TopicsUpdate } from "./mygo";
+import type { ChatMode } from "./chatPreference";
 
 export type TopicInfo = AgentTopicInfo;
 export type { TopicsUpdate };
 
-/** The page's three views; Topics only where the agent offers topics (ChatPreference.Mode). */
-export type PageMode = "topics" | "chat" | "terminal";
-
 /** The mode a page shows for the one asked for (ChatPreference.resolved): Topics only where the
  *  agent has them; a Topics or Chat default without Chat opens the terminal. */
-export function resolvedMode(mode: PageMode, chatAvailable: boolean, topicsAvailable: boolean): PageMode {
+export function resolvedMode(mode: ChatMode, chatAvailable: boolean, topicsAvailable: boolean): ChatMode {
  if (mode === "topics" && topicsAvailable) return "topics";
  if (mode === "terminal") return "terminal";
  return chatAvailable ? "chat" : "terminal";

@@ -48,6 +48,15 @@ type TopicsUpdate struct {
 
 var TopicsChanged = mygo.NewEvent[TopicsUpdate]("topics:changed")
 
+// publishTopics sends one update to the page; the list is never null, which
+// the page reads as a list.
+var publishTopics = func(u TopicsUpdate) {
+	if u.Topics == nil {
+		u.Topics = []herdrapi.AgentTopicInfo{}
+	}
+	TopicsChanged.Broadcast(u)
+}
+
 // topicsState is one view's topics watch: the last list and the follower
 // that keeps it current while Topics shows.
 type topicsState struct {
@@ -188,7 +197,7 @@ func (d *Desk) topicsChangedTopic(v *interaction, topicID string) {
 	u := t.last
 	t.mu.Unlock()
 	u.Token, u.Changed = v.Token, topicID
-	TopicsChanged.Broadcast(u)
+	publishTopics(u)
 }
 
 // topicsRead reads the list once (or once more after the read in flight)
@@ -240,7 +249,7 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	}
 	t.last = u
 	t.mu.Unlock()
-	TopicsChanged.Broadcast(u)
+	publishTopics(u)
 }
 
 // orderedTopics is the Topics view's order (AgentTopicList.ordered): open

@@ -138,6 +138,12 @@ export interface AgentView {
    * form_answerable on the pending ask decides alone.
    */
   askForm: boolean;
+  /**
+   * TopicSessions: the agent's session file already holds topics
+   * (topic_sessions), so the page offers Topics before or without a list
+   * answer (herdrup #745 topicsAvailable).
+   */
+  topicSessions: boolean;
 }
 
 /** AppUpdateState is what Settings shows about updating Herdrup itself. */

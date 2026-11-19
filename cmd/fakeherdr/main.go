@@ -48,6 +48,7 @@ func main() {
 	transcriptOlderFail := flag.Int("transcript-older-fail", 0, "with -interactions, refuse the first N agent.transcript before pages (older history), as a flaky link does; the page after that answers")
 	streamStall := flag.Int("stream-stall", 0, "with -interactions, end the first N pane.streams after 3 s with herdr's stream_stalled error (herdr #410), as a reader too slow for herdr is")
 	streamDelay := flag.Duration("stream-delay", 0, "with -interactions, start pane.stream after this delay, as a slow link does")
+	topics := flag.Bool("topics", false, "serve herdr #475 agent topics: agent.topics.*, agent.transcript with topic and agent_topics_changed events (ping advertises agent_topics and agent_transcript_topic); every agent has three sample topics")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
@@ -246,6 +247,29 @@ func main() {
 				return value, err
 			}
 			return previous(method, params)
+		}
+	}
+	if *topics {
+		fixture := fakeherdr.NewTopics()
+		previous, events := s.Handle, s.Events
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if value, err, handled := fixture.Handle(method, params); handled {
+				return value, err
+			}
+			value, err := previous(method, params)
+			if method == "ping" && err == nil {
+				caps := value.(map[string]any)["capabilities"].(map[string]bool)
+				for _, name := range fixture.Capabilities() {
+					caps[name] = true
+				}
+			}
+			return value, err
+		}
+		s.Events = func(ctx context.Context, emit func([]byte) error) {
+			if events != nil {
+				go events(ctx, emit)
+			}
+			fixture.Events(ctx, emit)
 		}
 	}
 	if *responsesFile != "" {
