@@ -40,6 +40,7 @@ type GetParams struct {
 	LocalOnly bool     `json:"local_only,omitempty"`
 	Tags      []string `json:"tags,omitzero"`
 	Target    string   `json:"target"`
+	Token     *Token   `json:"token,omitempty"`
 	Wait      *Wait    `json:"wait,omitempty"`
 }
 
@@ -198,6 +199,9 @@ type SuccessResponse struct {
 	Result ResponseResult `json:"result"`
 	Size   Size           `json:"size,omitzero"`
 }
+
+// A secret: a named string, as herdr's AgentControlToken.
+type Token string
 
 type Wait struct {
 	Seconds uint64 `json:"seconds"`
