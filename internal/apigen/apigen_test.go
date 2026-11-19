@@ -173,11 +173,11 @@ func TestDecode(t *testing.T) {
 	}
 
 	var req Request
-	if err := json.Unmarshal([]byte(` + "`" + `{"id":"2","method":"thing.get","params":{"target":"t","wait":{"seconds":3}}}` + "`" + `), &req); err != nil {
+	if err := json.Unmarshal([]byte(` + "`" + `{"id":"2","method":"thing.get","params":{"target":"t","wait":{"seconds":3},"token":"s3"}}` + "`" + `), &req); err != nil {
 		t.Fatal(err)
 	}
 	p, ok := req.Params.(GetParams)
-	if !ok || p.Target != "t" || p.Wait == nil || p.Wait.Seconds != 3 || p.Limit != nil {
+	if !ok || p.Target != "t" || p.Wait == nil || p.Wait.Seconds != 3 || p.Limit != nil || p.Token == nil || *p.Token != Token("s3") {
 		t.Fatalf("params %#v", req.Params)
 	}
 	out, _ = json.Marshal(GetParams{Target: "t", Tags: []string{}})

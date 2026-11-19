@@ -4,7 +4,7 @@ import { changeTextSize, changeUIFontScale, onTextSizeChanged, textSize, uiFontS
 import { predictionMode, changePredictionMode } from "./typingPreference";
 import type { PredictionMode } from "./predictiveEcho";
 import { typingLatency, latencyLines } from "./typingLatency";
-import { defaultChatMode, changeDefaultChatMode } from "./chatPreference";
+import { chatModeOf, defaultChatMode, changeDefaultChatMode } from "./chatPreference";
 import { AccountSettings } from "./settingsAccounts";
 import accountIcon from "../third_party/phosphor/web/key.svg?url";
 import { GuestSettings } from "./settingsGuests";
@@ -270,12 +270,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     notificationRow.setAttribute("aria-current", selected === "notifications" ? "page" : "false");
     const chatChoice = el("select", "settings-choice");
     chatChoice.setAttribute("aria-label", "omp agents open in");
-    for (const [value, label] of [["chat", "Chat"], ["terminal", "Terminal"]] as const) {
+    for (const [value, label] of [["topics", "Topics"], ["chat", "Chat"], ["terminal", "Terminal"]] as const) {
       const option = el("option", "", label); option.value = value; chatChoice.append(option);
     }
     chatChoice.value = defaultChatMode();
     chatChoice.onchange = () => {
-      try { changeDefaultChatMode(chatChoice.value === "terminal" ? "terminal" : "chat"); }
+      try { changeDefaultChatMode(chatModeOf(chatChoice.value)); }
       catch (error) { chatChoice.value = defaultChatMode(); report(error); }
     };
     const chatPreferenceRow = el("label", "settings-row"), chatPreferenceLines = el("span", "settings-row-lines");

@@ -44,6 +44,10 @@ type AgentView struct {
 	// A guest's gate advertises no capabilities, so for a guest herdr's
 	// form_answerable on the pending ask decides alone.
 	AskForm bool `json:"askForm"`
+	// TopicSessions: the agent's session file already holds topics
+	// (topic_sessions), so the page offers Topics before or without a list
+	// answer (herdrup #745 topicsAvailable).
+	TopicSessions bool `json:"topicSessions"`
 }
 
 type interaction struct {
@@ -64,6 +68,8 @@ type interaction struct {
 	guestShare     guestShareRoute
 	// pageBudget: herdr takes agent.transcript max_bytes (read with the view's link, under d.mu).
 	pageBudget bool
+	// topics is the agent's Topics watch (desk_topics.go).
+	topics topicsState
 }
 
 type TerminalEvent struct {
@@ -136,7 +142,8 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
 			GuestOwner: guestOwner(l), GuestSelf: guestSelf(l),
-			AskForm: l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
+			AskForm:       l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
+			TopicSessions: slices.ContainsFunc(agent.TopicSessions, func(t herdrapi.AgentTopicSession) bool { return t.TopicID != "" }),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		guestShare: shareRoute(agent, name, d.state.Machine),
@@ -342,6 +349,25 @@ const transcriptPageBytes = 32 * 1024
 // the session from its start, so herdr re-sends changed origin marks for the history the reader
 // scrolled in too (herdr #430). Older servers ignore it.
 func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagent, heldFrom string) (string, error) {
+	return d.transcript(ctx, token, after, before, subagent, heldFrom, "")
+}
+
+// topicGone is herdrup #745's words for a topic transcript herdr can't find
+// (ChatModel topicNotFound).
+const topicGone = "This topic's conversation can't be found."
+
+// TopicTranscript is ChatTranscript for one of an omp agent's topics (herdr
+// #475 agent.transcript topic). A server without agent_transcript_topic
+// would page the agent's main conversation instead, so topic is refused
+// here rather than sent.
+func (d *Desk) TopicTranscript(ctx context.Context, token, topic, after, before, heldFrom string) (string, error) {
+	if topic == "" {
+		return "", errors.New("no topic")
+	}
+	return d.transcript(ctx, token, after, before, "", heldFrom, topic)
+}
+
+func (d *Desk) transcript(ctx context.Context, token, after, before, subagent, heldFrom, topic string) (string, error) {
 	v, err := d.agentView(token)
 	if err != nil {
 		return "", err
@@ -359,6 +385,12 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 	if subagent != "" {
 		p.Subagent = &subagent
 	}
+	if topic != "" {
+		if ok, _ := v.client.Supports(ctx, herdrapi.CapabilityAgentTranscriptTopic); !ok {
+			return "", errors.New("This server can't show a topic's conversation.")
+		}
+		p.Topic = &topic
+	}
 	// A newest or older page is held to transcriptPageBytes where herdr can (slow-network fix 5,
 	// herdr #409): one turn can be 130 KB, and the first page on a slow link waits for all of it.
 	// A tail read (after) ignores it, so it is not sent there.
@@ -367,6 +399,9 @@ func (d *Desk) ChatTranscript(ctx context.Context, token, after, before, subagen
 		p.MaxBytes = &budget
 	}
 	page, err := v.client.AgentTranscript(ctx, p)
+	if apiErr := (*bridge.APIError)(nil); topic != "" && errors.As(err, &apiErr) && apiErr.Code == "topic_not_found" {
+		return "", errors.New(topicGone)
+	}
 	if err != nil {
 		return "", err
 	}

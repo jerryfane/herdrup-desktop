@@ -64,6 +64,9 @@ func (m *Model) Go(commit string) ([]byte, error) {
 			w.line("// Its payload is one of %s, flattened; properties they type", strings.Join(t.Alternatives, ", "))
 			w.line("// differently are kept as a string or raw JSON.")
 			w.structType(t.Name, t.Fields)
+		case KindScalar:
+			w.doc(t.Doc)
+			w.line("type %s %s", t.Name, t.Scalar)
 		}
 	}
 	src := body.String()

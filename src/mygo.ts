@@ -83,6 +83,28 @@ export interface AgentTarget {
   paneID: string;
 }
 
+/** One topic as `agent.topics.list` reports it, live from the agent. */
+export interface AgentTopicInfo {
+  created_unix_ms: number;
+  /** The topic's newest step, in the agent's words. */
+  last_activity?: string;
+  last_activity_unix_ms: number;
+  /** Messages waiting for the topic's current turn to end. */
+  queued: number;
+  state: AgentTopicState;
+  title: string;
+  topic_id: string;
+  /** Turns the topic has run. */
+  turns: number;
+}
+
+/**
+ * Where a topic's worker is.
+ *
+ * AgentTopicState values a newer herdr adds decode as they are; see Known.
+ */
+export type AgentTopicState = "starting" | "running" | "idle" | "dead" | "closed" | "unknown";
+
 /**
  * AgentView identifies one mounted detail view, not just a pane name. All writes
  * require its token, and its lifetime ends on any connection/session change.
@@ -116,6 +138,12 @@ export interface AgentView {
    * form_answerable on the pending ask decides alone.
    */
   askForm: boolean;
+  /**
+   * TopicSessions: the agent's session file already holds topics
+   * (topic_sessions), so the page offers Topics before or without a list
+   * answer (herdrup #745 topicsAvailable).
+   */
+  topicSessions: boolean;
 }
 
 /** AppUpdateState is what Settings shows about updating Herdrup itself. */
@@ -1055,6 +1083,31 @@ export interface TerminalHistoryPage {
   unavailable?: string;
 }
 
+/**
+ * TopicSendReply says how the agent took a topic message: "queued" waits
+ * for the topic's current turn to end.
+ */
+export interface TopicSendReply {
+  mode: string;
+}
+
+/**
+ * TopicsUpdate is the page's Topics state for one view: the list, ordered
+ * as the Topics view lists it, or why the newest read failed (the last list
+ * stays on screen: topics_unreachable keeps it). Offered says the agent
+ * answered agent.topics.list this session, so the page offers Topics;
+ * Changed names a topic whose conversation changed (an owner's event), so
+ * an open topic chat reads its tail.
+ */
+export interface TopicsUpdate {
+  token: string;
+  topics: AgentTopicInfo[];
+  offered: boolean;
+  loaded: boolean;
+  problem?: string;
+  changed?: string;
+}
+
 // ---- Services ----
 
 /**
@@ -1846,6 +1899,60 @@ export const Desk = {
     return call("Desk.TestNotification");
   },
   /**
+   * TopicTranscript is ChatTranscript for one of an omp agent's topics (herdr
+   * #475 agent.transcript topic). A server without agent_transcript_topic
+   * would page the agent's main conversation instead, so topic is refused
+   * here rather than sent.
+   */
+  topicTranscript(token: string, topic: string, after: string, before: string, heldFrom: string): Promise<string> {
+    return call("Desk.TopicTranscript", token, topic, after, before, heldFrom);
+  },
+  /**
+   * TopicsAvailable reports whether the view's server serves an omp agent's
+   * topics (agent_topics): the page asks the agent then (TopicsRefresh).
+   */
+  topicsAvailable(token: string): Promise<boolean> {
+    return call("Desk.TopicsAvailable", token);
+  },
+  /**
+   * TopicsClose, TopicsReopen and TopicsRename change one topic, then read
+   * the list again.
+   */
+  topicsClose(token: string, topicID: string): Promise<void> {
+    return call("Desk.TopicsClose", token, topicID);
+  },
+  /**
+   * TopicsFollow keeps the list current while the page's Topics shows, and
+   * stops when shown goes false or the view closes.
+   */
+  topicsFollow(token: string, shown: boolean): Promise<void> {
+    return call("Desk.TopicsFollow", token, shown);
+  },
+  /**
+   * TopicsNew starts a topic with its title and first message; the page
+   * opens it by the returned id.
+   */
+  topicsNew(token: string, title: string, message: string): Promise<string> {
+    return call("Desk.TopicsNew", token, title, message);
+  },
+  /**
+   * TopicsRefresh reads the agent's topics now and publishes them
+   * (TopicsChanged); concurrent calls coalesce into one more round.
+   */
+  topicsRefresh(token: string): Promise<void> {
+    return call("Desk.TopicsRefresh", token);
+  },
+  topicsRename(token: string, topicID: string, title: string): Promise<void> {
+    return call("Desk.TopicsRename", token, topicID, title);
+  },
+  topicsReopen(token: string, topicID: string): Promise<void> {
+    return call("Desk.TopicsReopen", token, topicID);
+  },
+  /** TopicsSend sends a message to one topic (agent.topics.send). */
+  topicsSend(token: string, topicID: string, text: string): Promise<TopicSendReply> {
+    return call("Desk.TopicsSend", token, topicID, text);
+  },
+  /**
    * TransferAccounts returns accounts.list as JSON, {"accounts": […]}, for
    * the review sheet's account picker.
    */
@@ -1955,6 +2062,7 @@ export const events = {
    */
   accountsChanged: event<Record<string, string>>("accounts:changed"),
   settingsAccountMenu: event<AccountMenuChoice>("settings:account-menu"),
+  topicsChanged: event<TopicsUpdate>("topics:changed"),
   /**
    * AppUpdateChanged is sent whenever the state of the app's own update
    * changes: a check starts or ends, the download progresses, it installs.

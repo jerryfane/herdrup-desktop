@@ -27,6 +27,7 @@ export interface AgentInfo {
  status_since_unix_ms?: number | null;
  machine_id?: string | null;
  machine_label?: string | null;
+ topic_sessions?: { topic_id?: string }[] | null;
 }
 
 interface ArchivedInfo { at?: string; by?: string; reason?: string | null }

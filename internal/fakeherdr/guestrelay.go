@@ -502,6 +502,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		PaneID   string   `json:"pane_id"`
 		Subagent *string  `json:"subagent"`
 		Text     string   `json:"text"`
+		Message  *string  `json:"message"`
 		Keys     []string `json:"keys"`
 	}
 	_ = json.Unmarshal(req.Params, &p)
@@ -605,7 +606,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	case "ping":
 		// project_pong (guest_gate.rs:421-435): only what the gate serves.
 		write(map[string]any{"type": "pong", "version": "fake", "protocol": 22,
-			"capabilities": map[string]bool{"agent_transcript": true, "agent_avatar": true}}, nil)
+			"capabilities": map[string]bool{"agent_transcript": true, "agent_avatar": true, "agent_topics": true, "agent_transcript_topic": true}}, nil)
 	case "agent.list":
 		agents := []any{}
 		if live {
@@ -651,6 +652,27 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		}
 		m := params()
 		m["target"], m["text"] = pane, r.GuestName+" (via HerdrUp): "+p.Text
+		write(forward(m))
+	case "agent.topics.list", "agent.topics.new", "agent.topics.send", "agent.topics.close", "agent.topics.reopen", "agent.topics.rename":
+		// guest_gate.rs (herdr #475): the granted agent's topics, with the
+		// owner's access; a message is capped and labelled as a prompt is.
+		if p.Message != nil && len(*p.Message) > 32*1024 {
+			write(nil, &APIError{Code: "invalid_params", Message: "guest messages are limited to 32 KiB"})
+			return
+		}
+		if !names(p.Target) {
+			refuse("guest_forbidden")
+			return
+		}
+		if !live {
+			refuse("guest_paused")
+			return
+		}
+		m := params()
+		m["target"] = pane
+		if p.Message != nil {
+			m["message"] = r.GuestName + " (via HerdrUp): " + *p.Message
+		}
 		write(forward(m))
 	case "agent.answer", "agent.answer_form":
 		// guest_gate.rs:972-991; refused before herdr #352. agent.answer_form

@@ -10,7 +10,7 @@ import { MemoryIdentityStore } from "../src/webguest/identity";
 import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
-import type { BoardUpdate, ConnState, TerminalEvent } from "../src/mygo";
+import type { BoardUpdate, ConnState, TerminalEvent, TopicsUpdate } from "../src/mygo";
 
 const go = Bun.which("go");
 const repo = join(import.meta.dir, "..");
@@ -24,7 +24,7 @@ beforeAll(async () => {
  const binary = join(dir, "fakeherdr");
  const build = Bun.spawnSync([go, "build", "-o", binary, "./cmd/fakeherdr"], { cwd: repo, env: { ...process.env, CGO_ENABLED: "0" }, stderr: "pipe" });
  if (build.exitCode !== 0) throw new Error("go build ./cmd/fakeherdr: " + build.stderr.toString());
- fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-guest-relay", "127.0.0.1:0", "-guest-pause-file", join(dir, "paused")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+ fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-guest-relay", "127.0.0.1:0", "-guest-pause-file", join(dir, "paused")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
  const found = Promise.withResolvers<string>();
  void (async () => {
   let log = "";
@@ -85,6 +85,26 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  // A tail read carries held_from through the guest gate (herdr #430).
  const tail = JSON.parse(await desk.chatTranscript("view-1", JSON.parse(after).after, "", "", ""));
  expect(Array.isArray(tail.entries)).toBe(true);
+
+ // Topics through the gate (herdr #475): the list a guest polls, a start and a send labelled with
+ // the guest's name, and the topic's own conversation.
+ expect(await desk.topicsAvailable("view-1")).toBe(true);
+ const listed1 = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.token === "view-1" && u.loaded);
+ await desk.topicsFollow("view-1", true);
+ const first = await listed1;
+ expect(first).toMatchObject({ offered: true });
+ expect(first.problem).toBeUndefined();
+ expect(first.topics.map((t) => t.topic_id)).toEqual(["t1", "t2", "t3"]);
+ const started = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.topics[0]?.title === "Guest topic");
+ const topic = await desk.topicsNew("view-1", "Guest topic", "From the browser");
+ expect((await started).topics[0]!.topic_id).toBe(topic);
+ expect(await desk.topicsSend("view-1", topic, "And one more")).toEqual({ mode: "queued" });
+ const conversation = await desk.topicTranscript("view-1", topic, "", "", "");
+ expect(conversation).toContain("visitor (via HerdrUp): From the browser");
+ expect(conversation).not.toContain("September minutes");
+ await expect(desk.topicsSend("view-1", "t3", "hi")).rejects.toThrow("The agent refused: the topic is closed");
+ await expect(desk.topicTranscript("view-1", "t99", "", "", "")).rejects.toThrow("This topic's conversation can't be found.");
+ await desk.topicsFollow("view-1", false);
 
  const frame = next<TerminalEvent>((f) => events.terminalChanged.on(f), (e) => e.frame?.frame === "reset");
  await desk.startTerminal("view-1", "s1");

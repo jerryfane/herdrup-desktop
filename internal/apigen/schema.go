@@ -98,6 +98,9 @@ const (
 	// KindFlat is an object whose payload is one of several flattened
 	// objects: their properties merged into one struct.
 	KindFlat
+	// KindScalar is a named string, integer, number or boolean (herdr's
+	// newtypes, e.g. AgentControlToken): a Go type over it.
+	KindScalar
 )
 
 // Model is the schema reduced to the Go types it generates.
@@ -126,6 +129,8 @@ type Type struct {
 	Alternatives []string
 	// Methods of the request envelope, in schema order.
 	Methods []RequestMethod
+	// Scalar is the Go type a KindScalar names (string, bool, int64, …).
+	Scalar string
 }
 
 // Field is one struct field.
@@ -450,6 +455,9 @@ func (b *builder) kindOf(n *node) (Kind, error) {
 		return KindEnum, nil
 	}
 	if n.alternatives() == nil {
+		if _, err := scalarExpr(n); err == nil {
+			return KindScalar, nil
+		}
 		return 0, fmt.Errorf("unsupported shape %s", shape(n))
 	}
 	if len(n.Type) > 0 || n.Properties != nil {
@@ -523,6 +531,8 @@ func (b *builder) build(name string, n *node) (*Type, error) {
 			ref, _ := b.refName(a.Ref)
 			t.Alternatives = append(t.Alternatives, ref)
 		}
+	case KindScalar:
+		t.Scalar, _ = scalarExpr(n)
 	}
 	return t, nil
 }
@@ -683,7 +693,7 @@ func (b *builder) typeOf(n *node) (goType, error) {
 			return goType{}, err
 		}
 		switch b.kinds[name] {
-		case KindEnum:
+		case KindEnum, KindScalar:
 			return goType{expr: name}, nil
 		case KindRaw:
 			return goType{expr: name, nilable: true}, nil
@@ -758,6 +768,26 @@ func (b *builder) typeOf(n *node) (goType, error) {
 		return goType{}, fmt.Errorf("type %q is not supported", types[0])
 	}
 	return out, nil
+}
+
+// scalarExpr is the Go type of a named scalar: exactly one of string,
+// boolean, integer or number, not nullable, with no enum or const (those
+// are KindEnum).
+func scalarExpr(n *node) (string, error) {
+	if n.Any || n.Ref != "" || n.Const != nil || n.Enum != nil || n.Properties != nil || len(n.Type) != 1 {
+		return "", errors.New("not a named scalar")
+	}
+	switch n.Type[0] {
+	case "string", "boolean", "integer", "number":
+	default:
+		return "", errors.New("not a named scalar")
+	}
+	b := &builder{}
+	t, err := b.typeOf(n)
+	if err != nil {
+		return "", err
+	}
+	return t.expr, nil
 }
 
 // held is the Go type of an array element or map value: a pointer when
