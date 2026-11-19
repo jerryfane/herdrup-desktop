@@ -389,6 +389,9 @@
 .ask-form-answered-intro { margin-bottom:6px; font-weight:500; }
 .ask-form-title { margin:0; color:var(--color-text); font:600 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .ask-form-description { margin:4px 0 0; color:var(--color-text-dim); font:400 calc(13.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); white-space:pre-wrap; }
+/* ChatAskFormCard.context: herdr's Markdown in ChatMarkdownTone.context, the 14 pt dim ink of a
+ * thought; tables and lists as the chat draws them. */
+.chat-markdown.ask-form-context { --markdown-tone: .875; color:var(--color-text-dim); white-space:normal; font-weight:400; }
 .ask-form-options { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
 .chat-question .ask-form-option { display:flex; flex-direction:column; align-items:stretch; width:100%; min-height:40px; padding:10px 14px; border:0; border-radius:12px; background:var(--color-surface-raised); color:var(--color-text); text-align:left; text-decoration:none; font:500 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); cursor:pointer; }
 /* Filled, as iPhone's selected row; not the generic pressed-button underline. */

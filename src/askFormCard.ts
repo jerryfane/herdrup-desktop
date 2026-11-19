@@ -4,6 +4,7 @@
 // whose Submit sends agent.answer_form. Answered, the card lists the answers one per line; a
 // reader who can't answer sees the first field read-only.
 import { chooseOption, chooseOther, dropEmptyOther, fieldAnswer, fieldChanged, fieldProblem, fieldQuestion, firstProblem, fieldMap, formDraft, formValues, optionsOf, type AskForm, type AskFormAnswer, type AskFormField, type AskFormStatus, type FieldValue, type FormDraft } from "./askFormModel";
+import { markdown } from "./chatMarkdown";
 import { symbolNow } from "./symbol";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
@@ -82,7 +83,8 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  const step = Math.max(0, Math.min(state.step, readOnly ? count - 1 : count));
  // A form of hidden inputs only lists no fields: nothing to show but the way to answer it.
  if (readOnly && count === 0) {
-  if (form.intro) nodes.push(el("p", "ask-form-intro", form.intro));
+  const intro = formContext(form.intro_markdown, form.intro, "ask-form-intro");
+  if (intro) nodes.push(intro);
   nodes.push(button("chat-question-terminal", input.terminal, "Answer in Terminal"));
   return nodes;
  }
@@ -130,9 +132,11 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  const draft = draftOf(field);
  const set = (next: typeof draft) => { state.draft = fieldMap({ ...state.draft, [field.name]: next }); };
  nodes.push(header(`${step + 1} of ${count}`, count, step));
- if (step === 0 && form.intro) nodes.push(el("p", "ask-form-intro", form.intro));
+ const intro = step === 0 ? formContext(form.intro_markdown, form.intro, "ask-form-intro") : null;
+ if (intro) nodes.push(intro);
  if (field.title) nodes.push(el("p", "ask-form-title", field.title));
- if (field.description) nodes.push(el("p", "ask-form-description", field.description));
+ const description = formContext(field.description_markdown, field.description, "ask-form-description");
+ if (description) nodes.push(description);
 
  // After a choice that finishes the field: the next field, or back to the review.
  const advance = () => go(state.fromReview ? count : step + 1);
@@ -259,6 +263,17 @@ export function draftAnswers(form: AskForm, draft: FormDraft): AskFormAnswer[] {
  return form.fields.map(field => ({ name: field.name, question: fieldQuestion(field), answer: fieldAnswer(field, draft[field.name] ?? initial[field.name]!) }));
 }
 
+/** The form's context (ChatAskFormCard.context): herdr's Markdown when it sends it, so a table
+ *  stays a table and a bold label stays bold, drawn in the form's dim context tone; else the plain
+ *  text older servers send. */
+function formContext(md: string | null | undefined, plain: string | null | undefined, cls: string): HTMLElement | null {
+ if (md) {
+  const node = markdown(md);
+  node.classList.add(cls, "ask-form-context");
+  return node;
+ }
+ return plain ? el("p", cls, plain) : null;
+}
 /** The answered form: the intro, "You answered 6 of 6" and one line per answer (iPhone B-done).
  *  `sent`: herdr typed the answers but hasn't seen omp's result yet ("Sent"). */
 export function askFormAnswered(form: AskForm | null, answers: AskFormAnswer[], status: AskFormStatus | null, credit: AnswerCredit, sent = false): HTMLElement[] {

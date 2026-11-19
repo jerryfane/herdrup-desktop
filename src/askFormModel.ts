@@ -13,6 +13,9 @@ export interface AskFormField {
  title?: string | null;
  /** The section's context before the field, as plain text; null if none. */
  description?: string | null;
+ /** The same context as Markdown (herdr #464): a table stays a table. Present exactly when
+  *  `description` is, on servers that send it. */
+ description_markdown?: string | null;
  multi?: boolean;
  /** From a <select>: never has Other. */
  select?: boolean;
@@ -24,7 +27,8 @@ export interface AskFormField {
  input_type?: string | null; placeholder?: string | null; value?: string | null;
  min?: number | null; max?: number | null; minlength?: number | null; maxlength?: number | null; pattern?: string | null;
 }
-export interface AskForm { intro?: string | null; fields: AskFormField[] }
+/** omp's form. `intro_markdown` (herdr #464) is `intro` as Markdown; older servers send `intro` only. */
+export interface AskForm { intro?: string | null; intro_markdown?: string | null; fields: AskFormField[] }
 export interface AskFormAnswer { name: string; question: string; answer: string }
 export type AskFormStatus = "answered" | "timed_out" | "cancelled";
 

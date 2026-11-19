@@ -50,7 +50,11 @@ type formField struct {
 	InputType, Placeholder         string
 }
 
-const askFormIntro = "Before enyo-ui starts building from iteration 5, a few choices. My recommendation is preselected."
+const askFormIntro = "Before enyo-ui starts building from iteration 5, a few choices. My recommendation is preselected.\n\n# · Site · Audience · Status\n1 · lenscale.ai · public · live\n2 · preview.lenscale.ai · team only · behind Zero Trust"
+
+// askFormIntroMarkdown is askFormIntro as Markdown (herdr #464
+// intro_markdown): the table herdr flattens into " · " rows for intro.
+const askFormIntroMarkdown = "Before enyo-ui starts building from iteration 5, a few choices. My recommendation is **preselected**.\n\n| # | Site | Audience | Status |\n| --- | --- | --- | --- |\n| 1 | lenscale.ai | public | live |\n| 2 | preview.lenscale.ai | team only | behind Zero Trust |"
 
 // askFormFields is the lenscale example the owner picked the stepper from
 // (herdrup-ask-form-proposals.html, section B), adapted to every control kind.
@@ -92,6 +96,9 @@ func askFormJSON(readOnly bool) map[string]any {
 			"other": f.Other, "required": f.Required, "options": options}
 		if f.Description != "" {
 			field["description"] = f.Description
+			// herdr #464: the same context as Markdown, present exactly when
+			// description is.
+			field["description_markdown"] = strings.Replace(f.Description, "Cloudflare Zero Trust", "**Cloudflare Zero Trust**", 1)
 		}
 		if f.Kind == "text" {
 			field["input_type"], field["placeholder"], field["value"] = f.InputType, f.Placeholder, ""
@@ -101,7 +108,7 @@ func askFormJSON(readOnly bool) map[string]any {
 		}
 		fields[i] = field
 	}
-	return map[string]any{"intro": askFormIntro, "fields": fields}
+	return map[string]any{"intro": askFormIntro, "intro_markdown": askFormIntroMarkdown, "fields": fields}
 }
 
 // askFormQuestions is the old-app fallback: one AskQuestion per choice field.
