@@ -43,7 +43,7 @@ func TestFirstSignInAdoptsTheAccountsIDsBeforePushing(t *testing.T) {
 		{ID: idA, Rev: 3, Body: HostBody{Username: "root", Host: "pi.local."}},
 		{ID: idB, Rev: 4, Body: HostBody{Username: "root", Host: "studio"}},
 	}
-	plan, err := PlanHosts(local, mirror)
+	plan, err := PlanHosts(local, mirror, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +53,8 @@ func TestFirstSignInAdoptsTheAccountsIDsBeforePushing(t *testing.T) {
 	if len(plan.Push) != 1 || !uuidV4.MatchString(plan.Push[1]) {
 		t.Fatalf("push %v; want one new lowercase v4 for the second machine", plan.Push)
 	}
-	if len(plan.New) != 1 || plan.New[0].ID != idB || len(plan.Delete) != 0 || len(plan.Gone) != 0 {
-		t.Fatalf("new %v delete %v gone %v", plan.New, plan.Delete, plan.Gone)
+	if len(plan.Delete) != 0 || len(plan.Gone) != 0 {
+		t.Fatalf("delete %v gone %v", plan.Delete, plan.Gone)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestFirstSignInAdoptsTheAccountsIDsBeforePushing(t *testing.T) {
 // device's own, and nothing is pushed for the old one.
 func TestTheAccountsIDWinsOverADifferentLocalOne(t *testing.T) {
 	plan, _ := PlanHosts([]LocalHost{{SyncID: idC, Body: HostBody{Username: "root", Host: "pi"}}},
-		[]RemoteHost{{ID: idA, Rev: 1, Body: HostBody{Username: "root", Host: "pi"}}})
+		[]RemoteHost{{ID: idA, Rev: 1, Body: HostBody{Username: "root", Host: "pi"}}}, map[string]bool{idC: false})
 	if plan.Adopt[0] != idA || len(plan.Push) != 0 || len(plan.Gone) != 0 {
 		t.Fatalf("%+v", plan)
 	}
@@ -74,8 +74,8 @@ func TestAForkKeepsTheLowerRev(t *testing.T) {
 	plan, _ := PlanHosts([]LocalHost{{SyncID: idB, Body: HostBody{Username: "root", Host: "pi"}}}, []RemoteHost{
 		{ID: idB, Rev: 9, Body: HostBody{Username: "root", Host: "PI"}},
 		{ID: idA, Rev: 2, Body: HostBody{Username: "root", Host: "pi", Port: 22}},
-	})
-	if !slices.Equal(plan.Delete, []string{idB}) || plan.Adopt[0] != idA || len(plan.New) != 0 {
+	}, nil)
+	if !slices.Equal(plan.Delete, []string{idB}) || plan.Adopt[0] != idA {
 		t.Fatalf("%+v", plan)
 	}
 }
@@ -88,12 +88,32 @@ func TestDeletedElsewhereIsGoneAndTheMirrorFollowsPulls(t *testing.T) {
 	if m.Rev != 3 || len(m.Hosts) != 1 || m.Hosts[0].Body.Host != "b" {
 		t.Fatalf("mirror %+v", m)
 	}
-	plan, _ := PlanHosts([]LocalHost{{SyncID: hostItem(1, "a", false).ID, Body: HostBody{Username: "root", Host: "a"}}}, m.Hosts)
+	gone := hostItem(1, "a", false).ID
+	plan, _ := PlanHosts([]LocalHost{{SyncID: gone, Body: HostBody{Username: "root", Host: "a"}}}, m.Hosts, map[string]bool{gone: true})
 	if !slices.Equal(plan.Gone, []int{0}) || len(plan.Push) != 0 {
 		t.Fatalf("%+v", plan)
 	}
 	full := m.Apply(Pull{Rev: 7, Full: true, Items: []Item{hostItem(5, "e", false)}})
 	if len(full.Hosts) != 1 || full.Hosts[0].Body.Host != "e" {
 		t.Fatalf("a full pull replaces the mirror: %+v", full)
+	}
+}
+
+// #257 review: a rename keeps the machine (matched by id, not identity); an
+// id the account never acknowledged (a push that failed) is pushed again,
+// never read as deleted elsewhere.
+func TestRenamesKeepTheMachineAndUnacknowledgedIDsArePushedAgain(t *testing.T) {
+	mirror := []RemoteHost{{ID: idA, Rev: 3, Body: HostBody{Username: "root", Host: "old-name"}}}
+	plan, _ := PlanHosts([]LocalHost{{SyncID: idA, Body: HostBody{Username: "root", Host: "new-name"}}}, mirror, map[string]bool{idA: true})
+	if len(plan.Gone) != 0 || len(plan.Push) != 0 || len(plan.Adopt) != 0 {
+		t.Fatalf("a renamed machine: %+v; want it kept as idA", plan)
+	}
+	plan, _ = PlanHosts([]LocalHost{{SyncID: idC, Body: HostBody{Username: "root", Host: "x"}}}, nil, map[string]bool{})
+	if len(plan.Gone) != 0 || plan.Push[0] != idC {
+		t.Fatalf("an unacknowledged id: %+v; want it pushed again under idC", plan)
+	}
+	plan, _ = PlanHosts([]LocalHost{{SyncID: idC, Body: HostBody{Username: "root", Host: "x"}}}, nil, map[string]bool{idC: true})
+	if !slices.Equal(plan.Gone, []int{0}) {
+		t.Fatalf("an id the account deleted: %+v; want gone", plan)
 	}
 }

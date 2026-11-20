@@ -44,68 +44,85 @@ type RemoteHost struct {
 type HostsPlan struct {
 	// Adopt maps a local machine (by index) to the account's id for it.
 	Adopt map[int]string
-	// Push are local machines the account doesn't have yet, with a new id.
+	// Push are local machines to write to the account, with their id: new
+	// ones, and ones whose earlier push was never acknowledged.
 	Push map[int]string
 	// Delete are account items that fork a machine another item already
 	// holds (the higher rev of two with one identity): tombstone them.
 	Delete []string
-	// Gone are local machines whose id the account no longer has: deleted
-	// on another device.
+	// Gone are local machines the account deleted: their id was in the
+	// account (known) and no longer is.
 	Gone []int
-	// New are account hosts no local machine matches: shown to pair.
-	New []RemoteHost
 }
 
 // PlanHosts merges the account's hosts (the whole mirror) into the local
-// machines (design #698 §5.5, the same rule as iOS):
+// machines (design #698 §5.5, the same rule as iOS). known are the ids the
+// account is known to have held: the mirror before this pull, and ids it
+// sent tombstones for.
 //   - forks: of two account items with one identity, the lower rev is kept
-//     and the other deleted;
-//   - a local machine whose identity matches an account item takes its id,
-//     the account's id winning over a different local one;
-//   - a local machine with an id the account doesn't have was deleted
-//     elsewhere; one with no id and no match gets a new id to push;
-//   - account items no local machine matches are new.
-func PlanHosts(local []LocalHost, mirror []RemoteHost) (HostsPlan, error) {
+//     and the other deleted; a machine on the deleted one moves to the kept;
+//   - a machine whose id the account holds is that item, whatever its host
+//     or user now (a rename on either side is an edit, not a delete);
+//   - a machine otherwise matching an item's identity takes its id, the
+//     account's id winning over a different local one;
+//   - a machine whose id the account held and doesn't now was deleted
+//     elsewhere; one whose id it never acknowledged is pushed again; one
+//     without an id gets a new one to push.
+func PlanHosts(local []LocalHost, mirror []RemoteHost, known map[string]bool) (HostsPlan, error) {
 	plan := HostsPlan{Adopt: map[int]string{}, Push: map[int]string{}}
 	sorted := append([]RemoteHost(nil), mirror...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Rev < sorted[j].Rev })
-	byIdentity := map[HostIdentity]RemoteHost{}
+	byIdentity := map[HostIdentity]string{}
+	kept := map[string]bool{}
+	forkOf := map[string]string{} // deleted fork member -> kept item
 	for _, r := range sorted {
 		id := IdentityOf(r.Body)
-		if _, ok := byIdentity[id]; ok {
+		if keep, ok := byIdentity[id]; ok {
 			plan.Delete = append(plan.Delete, r.ID)
+			forkOf[r.ID] = keep
 			continue
 		}
-		byIdentity[id] = r
-	}
-	kept := map[string]bool{}
-	for _, r := range byIdentity {
+		byIdentity[id] = r.ID
 		kept[r.ID] = true
 	}
-	matched := map[string]bool{}
+	claimed := map[string]bool{}
+	matched := make([]bool, len(local))
+	// By id first: the account's item is this machine even after a rename.
 	for i, l := range local {
-		if r, ok := byIdentity[IdentityOf(l.Body)]; ok {
-			matched[r.ID] = true
-			if l.SyncID != r.ID {
-				plan.Adopt[i] = r.ID
+		target := l.SyncID
+		if keep, ok := forkOf[target]; ok {
+			target = keep
+		}
+		if target == "" || !kept[target] || claimed[target] {
+			continue
+		}
+		claimed[target], matched[i] = true, true
+		if target != l.SyncID {
+			plan.Adopt[i] = target
+		}
+	}
+	for i, l := range local {
+		if matched[i] {
+			continue
+		}
+		if id, ok := byIdentity[IdentityOf(l.Body)]; ok && !claimed[id] {
+			claimed[id] = true
+			if id != l.SyncID {
+				plan.Adopt[i] = id
 			}
 			continue
 		}
-		if l.SyncID != "" {
-			// Deleted elsewhere, or a fork the account just dropped: the
-			// machine's identity has no item any more.
+		switch {
+		case l.SyncID != "" && known[l.SyncID]:
 			plan.Gone = append(plan.Gone, i)
-			continue
-		}
-		id, err := NewHostID()
-		if err != nil {
-			return HostsPlan{}, err
-		}
-		plan.Push[i] = id
-	}
-	for _, r := range sorted {
-		if kept[r.ID] && !matched[r.ID] {
-			plan.New = append(plan.New, r)
+		case l.SyncID != "":
+			plan.Push[i] = l.SyncID
+		default:
+			id, err := NewHostID()
+			if err != nil {
+				return HostsPlan{}, err
+			}
+			plan.Push[i] = id
 		}
 	}
 	return plan, nil

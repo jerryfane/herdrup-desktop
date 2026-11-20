@@ -657,6 +657,8 @@ func (d *Desk) remember(m Machine) error {
 	}
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
+		// The page doesn't hold the sync id: a reconnect keeps the machine's.
+		m.SyncID = st.Machines[i].SyncID
 		st.Machines[i] = m
 	} else {
 		st.Machines = append(st.Machines, m)
@@ -666,6 +668,7 @@ func (d *Desk) remember(m Machine) error {
 		return err
 	}
 	d.boards.allow(id)
+	d.syncMachinesSoon()
 	return nil
 }
 

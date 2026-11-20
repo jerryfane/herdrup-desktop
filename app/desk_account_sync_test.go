@@ -20,10 +20,25 @@ import (
 // keeps it: one revision per write, last write wins, tombstones for deletes,
 // and the hosts allowlist (any other field is a 400).
 type syncWorker struct {
-	mu    sync.Mutex
-	rev   int64
-	items map[string]account.Item
-	n     int
+	mu      sync.Mutex
+	rev     int64
+	items   map[string]account.Item
+	n       int
+	account string // "acct" when empty
+	// failPush answers the next pushes 503 (the service down mid-sync).
+	failPush bool
+}
+
+func (w *syncWorker) live() map[string]account.Item {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := map[string]account.Item{}
+	for id, it := range w.items {
+		if !it.Deleted {
+			out[id] = it
+		}
+	}
+	return out
 }
 
 func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
@@ -37,7 +52,11 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/v1/auth/refresh":
 		w.n++
-		reply(200, map[string]any{"account_id": "acct", "access_token": fmt.Sprintf("a1.%022d.%043d", 1, w.n), "access_expires_in": 3600,
+		acct := w.account
+		if acct == "" {
+			acct = "acct"
+		}
+		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", 1, w.n), "access_expires_in": 3600,
 			"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, w.n), "refresh_expires_in": 1})
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet:
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
@@ -58,6 +77,19 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if w.failPush {
+			reply(503, map[string]string{"error": "unavailable"})
+			return
+		}
+		ids := map[string]bool{}
+		for _, c := range body.Changes {
+			// sync.ts: one change per collection and id in a push.
+			if ids[c.Collection+"/"+c.ID] {
+				reply(400, map[string]string{"error": "invalid_item"})
+				return
+			}
+			ids[c.Collection+"/"+c.ID] = true
+		}
 		for _, c := range body.Changes {
 			if c.Body != nil {
 				var fields map[string]any
@@ -94,10 +126,21 @@ func (s *signedInStore) Delete() error        { s.raw = nil; return nil }
 func device(t *testing.T, srv *httptest.Server) *Desk {
 	t.Helper()
 	d := newDesk(t.TempDir())
-	raw, _ := json.Marshal(map[string]string{"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, 0), "account_id": "acct"})
-	d.account = account.New(srv.URL, "linux", &signedInStore{raw: raw}, srv.Client())
+	signInTo(d, srv, "acct")
 	d.accountStore = account.NewSecretsStore(noSecrets{}, errors.New("not found"))
 	return d
+}
+
+// signInTo points d at the account srv serves.
+func signInTo(d *Desk, srv *httptest.Server, acct string) {
+	raw, _ := json.Marshal(map[string]string{"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, 0), "account_id": acct})
+	d.account = account.New(srv.URL, "linux", &signedInStore{raw: raw}, srv.Client())
+}
+
+func quietSync(t *testing.T) {
+	previous, background := publishSyncedMachines, backgroundMachineSync
+	publishSyncedMachines, backgroundMachineSync = func([]SyncedMachine) {}, false
+	t.Cleanup(func() { publishSyncedMachines, backgroundMachineSync = previous, background })
 }
 
 func syncIDs(t *testing.T, d *Desk) map[string]string {
@@ -122,9 +165,7 @@ func TestMachinesSyncAcrossTwoDevices(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(w.serve))
 	defer srv.Close()
 	ctx := context.Background()
-	previous, background := publishSyncedMachines, backgroundMachineSync
-	publishSyncedMachines, backgroundMachineSync = func([]SyncedMachine) {}, false
-	t.Cleanup(func() { publishSyncedMachines, backgroundMachineSync = previous, background })
+	quietSync(t)
 
 	mac, linux := device(t, srv), device(t, srv)
 	// SaveMachine syncs in the background; this test syncs by hand, after.
@@ -197,5 +238,169 @@ func TestMachinesSyncAcrossTwoDevices(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(linux.syncStatePath()); strings.Contains(string(raw), `"deletes"`) {
 		t.Fatalf("the pushed delete is still pending: %s", raw)
+	}
+}
+
+func newWorker(t *testing.T, acct string) (*syncWorker, *httptest.Server) {
+	w := &syncWorker{items: map[string]account.Item{}, account: acct}
+	srv := httptest.NewServer(http.HandlerFunc(w.serve))
+	t.Cleanup(srv.Close)
+	return w, srv
+}
+
+// #257 review P1: a first push the service refused keeps the machines, and
+// the next sync pushes them under the same ids.
+func TestARefusedFirstPushLosesNoMachine(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a refused push reported success")
+	}
+	first := syncIDs(t, mac)["root@pi:22"]
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ids := syncIDs(t, mac)
+	if ids["root@pi:22"] == "" || ids["root@pi:22"] != first {
+		t.Fatalf("after the retry: %v (first id %q); want the machine kept under its id", ids, first)
+	}
+	if live := w.live(); len(live) != 1 || live[first].ID != first {
+		t.Fatalf("account holds %v; want the machine once under %s", live, first)
+	}
+}
+
+// #257 review P2: changing a machine's host or user on either device is an
+// edit of the same item, not a delete and a new machine.
+func TestIdentityChangingRenamesFollowTheItem(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	ctx := context.Background()
+	mac, linux := device(t, srv), device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []*Desk{mac, linux} {
+		if err := d.SyncMachines(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := linux.SaveMachine(Machine{Host: "10.0.0.5", User: "root", KeyPath: "/k2"}, ""); err != nil { // to pair: saves it
+		t.Fatal(err)
+	}
+	if err := linux.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := syncIDs(t, mac)["root@pi:22"]
+	// The Mac renames pi's host.
+	if err := mac.SaveMachine(Machine{Host: "pi.lan", User: "root", KeyPath: "/k"}, "root@pi:22"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := syncIDs(t, mac)["root@pi.lan:22"]; got != id {
+		t.Fatalf("mac lost the machine on rename: %v", syncIDs(t, mac))
+	}
+	live := w.live()
+	if body := string(live[id].Body); !strings.Contains(body, `"pi.lan"`) {
+		t.Fatalf("account item %s after the rename: %s", id, body)
+	}
+	if len(live) != 2 {
+		t.Fatalf("account has %d items; want 2 (pi renamed, 10.0.0.5)", len(live))
+	}
+}
+
+// #257 review P2: the sync state belongs to one account. Signing in to
+// another doesn't read the first one's machines as deleted, and shows none
+// of them.
+func TestAnotherAccountStartsOverWithoutDeletingMachines(t *testing.T) {
+	quietSync(t)
+	_, srvA := newWorker(t, "acct-a")
+	wB, srvB := newWorker(t, "acct-b")
+	ctx := context.Background()
+	mac := device(t, srvA)
+	signInTo(mac, srvA, "acct-a")
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	signInTo(mac, srvB, "acct-b")
+	if got, _ := mac.SyncedMachines(); len(got) != 0 {
+		t.Fatalf("account B shows account A's machines: %+v", got)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ids := syncIDs(t, mac)
+	if ids["root@pi:22"] == "" {
+		t.Fatalf("machines after switching accounts: %v; want pi kept and synced to B", ids)
+	}
+	if live := wB.live(); len(live) != 1 || live[ids["root@pi:22"]].ID == "" {
+		t.Fatalf("account B holds %v; want pi", live)
+	}
+}
+
+// #257 review P2: a reconnect through Connect (Save & Connect) keeps the
+// machine's sync id, so removing it later reaches the account.
+func TestConnectKeepsTheSyncIDSoARemovalReachesTheAccount(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	ctx := context.Background()
+	mac := device(t, srv)
+	m := Machine{Host: "127.0.0.1", Port: 1, User: "root", KeyPath: "/k"}
+	if err := mac.SaveMachine(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := syncIDs(t, mac)["root@127.0.0.1:1"]
+	m.Nickname = "box"
+	if err := mac.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	mac.Disconnect()
+	if got := syncIDs(t, mac)["root@127.0.0.1:1"]; got != id {
+		t.Fatalf("Connect dropped the sync id: %q, want %q", got, id)
+	}
+	if err := mac.RemoveMachine("root@127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if live := w.live(); len(live) != 0 {
+		t.Fatalf("the removed machine is still in the account: %v", live)
+	}
+}
+
+// #257 review P2: a fork's higher member also pending delete here makes one
+// change, not two (the service refuses a push naming an id twice).
+func TestOneChangePerID(t *testing.T) {
+	hostA := account.RemoteHost{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Rev: 1, Body: account.HostBody{Host: "pi", Username: "root"}}
+	hostB := account.RemoteHost{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Rev: 2, Body: account.HostBody{Host: "PI", Username: "root"}}
+	mirror := account.Mirror{Rev: 2, Hosts: []account.RemoteHost{hostA, hostB}}
+	st := machineStore{Machines: []Machine{{Host: "pi", User: "root", Port: 22, KeyPath: "/k", SyncID: hostA.ID}}}
+	changes, _, _ := mergeMachines(&st, mirror, mirror, map[string]bool{hostA.ID: true, hostB.ID: true}, []string{hostB.ID})
+	n := 0
+	for _, c := range changes {
+		if c.ID == hostB.ID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d changes for %s: %+v", n, hostB.ID, changes)
 	}
 }

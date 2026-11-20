@@ -25,8 +25,11 @@ import (
 // syncState is account-sync.json: the account's hosts as last synced (what
 // a local edit is measured against), and the deletes not yet pushed.
 type syncState struct {
-	Mirror  account.Mirror `json:"mirror"`
-	Deletes []string       `json:"deletes,omitempty"`
+	// AccountID is the account this state and the machines' sync ids belong
+	// to: another account starts over (a full pull, adopt, then push).
+	AccountID string         `json:"accountId"`
+	Mirror    account.Mirror `json:"mirror"`
+	Deletes   []string       `json:"deletes,omitempty"`
 }
 
 func (d *Desk) syncStatePath() string { return filepath.Join(d.dir, "account-sync.json") }
@@ -95,7 +98,8 @@ type accountSync struct{ mu sync.Mutex }
 // SyncedMachines is the account's machines this device hasn't saved, as
 // last synced (no network).
 func (d *Desk) SyncedMachines() ([]SyncedMachine, error) {
-	if s, _ := d.account.Current(); s == nil {
+	cur, _ := d.account.Current()
+	if cur == nil {
 		return []SyncedMachine{}, nil
 	}
 	d.storeMu.Lock()
@@ -104,6 +108,10 @@ func (d *Desk) SyncedMachines() ([]SyncedMachine, error) {
 	d.storeMu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if state.AccountID != cur.AccountID {
+		// Another account's machines: nothing until this one has synced.
+		return []SyncedMachine{}, nil
 	}
 	return unsavedHosts(st.Machines, state.Mirror.Hosts), nil
 }
@@ -142,28 +150,59 @@ func (d *Desk) SyncMachines(ctx context.Context) error {
 }
 
 func (d *Desk) syncMachinesOnce(ctx context.Context) error {
-	if cur, err := d.account.Current(); err != nil || cur == nil {
+	cur, err := d.account.Current()
+	if err != nil || cur == nil {
 		return err
 	}
+	acct := cur.AccountID
+	// still is false once the session is another account's (or gone): a
+	// result for the old one is dropped.
+	still := func() bool { c, _ := d.account.Current(); return c != nil && c.AccountID == acct }
 	d.storeMu.Lock()
 	state := d.loadSyncState()
 	d.storeMu.Unlock()
-	// A device that never synced pulls everything first (since 0) and
-	// adopts the account's ids before it pushes anything.
+	switched := state.AccountID != acct
+	if switched {
+		// Another account (or the first sync): pull everything first and
+		// adopt its ids before this device pushes anything.
+		state = syncState{AccountID: acct}
+	}
 	pull, err := d.account.PullSince(ctx, state.Mirror.Rev)
 	if err != nil {
 		return err
 	}
 	old := state.Mirror
 	mirror := old.Apply(pull)
+	// The ids the account is known to have held: a machine with one of
+	// these that the account no longer lists was deleted elsewhere; any
+	// other id it doesn't list was never acknowledged, and is pushed again.
+	known := map[string]bool{}
+	for _, h := range old.Hosts {
+		known[h.ID] = true
+	}
+	_, tombstoned := account.RemoteHosts(pull.Items)
+	for _, id := range tombstoned {
+		known[id] = true
+	}
 
 	d.storeMu.Lock()
+	if !still() {
+		d.storeMu.Unlock()
+		return nil
+	}
 	st, err := d.load()
 	if err != nil {
 		d.storeMu.Unlock()
 		return err
 	}
-	changes, deletes, renamed := mergeMachines(&st, old, mirror, d.loadSyncState().Deletes)
+	pending := d.loadSyncState().Deletes
+	if switched {
+		pending = nil
+		for i := range st.Machines {
+			st.Machines[i].SyncID = ""
+		}
+	}
+	changes, deletes, renamed := mergeMachines(&st, old, mirror, known, pending)
 	if err := d.store(st); err != nil {
 		d.storeMu.Unlock()
 		return err
@@ -173,7 +212,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		d.boards.forget(from)
 		d.boards.allow(to)
 	}
-	state = syncState{Mirror: mirror, Deletes: deletes}
+	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes}
 	if err := d.storeSyncState(state); err != nil {
 		d.storeMu.Unlock()
 		return err
@@ -183,19 +222,22 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	for start := 0; start < len(changes); start += 100 {
 		batch := changes[start:min(start+100, len(changes))]
 		if _, err := d.account.Push(ctx, batch); err != nil {
+			// Nothing is lost: an unacknowledged id is pushed again next
+			// time, and pending deletes stay pending.
 			return err
 		}
 	}
 	if len(changes) > 0 {
 		// Read our own writes back, so the mirror holds what the account holds.
-		d.storeMu.Lock()
-		state = d.loadSyncState()
-		d.storeMu.Unlock()
-		pull, err := d.account.PullSince(ctx, state.Mirror.Rev)
+		pull, err := d.account.PullSince(ctx, mirror.Rev)
 		if err != nil {
 			return err
 		}
 		d.storeMu.Lock()
+		if !still() {
+			d.storeMu.Unlock()
+			return nil
+		}
 		state = d.loadSyncState()
 		pushed := map[string]bool{}
 		for _, c := range changes {
@@ -216,9 +258,10 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 }
 
 // mergeMachines applies the account's hosts (mirror; old is the copy last
-// synced) to the saved machines and returns the changes to push. deletes
-// are machines removed here and not yet pushed; it returns those left.
-func mergeMachines(st *machineStore, old, mirror account.Mirror, deletes []string) (changes []account.Change, left []string, renamed map[string]string) {
+// synced, known the ids the account is known to have held) to the saved
+// machines and returns the changes to push, one per id. deletes are
+// machines removed here and not yet pushed; it returns those left.
+func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[string]bool, deletes []string) (changes []account.Change, left []string, renamed map[string]string) {
 	renamed = map[string]string{}
 	before := map[string]account.HostBody{}
 	for _, h := range old.Hosts {
@@ -240,20 +283,25 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, deletes []strin
 	for i, m := range st.Machines {
 		local[i] = account.LocalHost{SyncID: m.SyncID, Body: hostBody(m, account.HostBody{})}
 	}
-	plan, err := account.PlanHosts(local, mirror.Hosts)
+	plan, err := account.PlanHosts(local, mirror.Hosts, known)
 	if err != nil {
 		log.Printf("account sync: %v", err)
 		return nil, deletes, renamed
 	}
-	for _, id := range plan.Delete {
-		changes = append(changes, account.Change{Collection: "hosts", ID: id, Deleted: true})
+	// One change per id: the service refuses a push naming an id twice.
+	seen := map[string]bool{}
+	add := func(c account.Change) {
+		if !seen[c.ID] {
+			seen[c.ID] = true
+			changes = append(changes, c)
+		}
 	}
 	for i, id := range plan.Adopt {
 		st.Machines[i].SyncID = id
 	}
 	for i, id := range plan.Push {
 		st.Machines[i].SyncID = id
-		changes = append(changes, account.Change{Collection: "hosts", ID: id, Body: hostBody(st.Machines[i], account.HostBody{})})
+		add(account.Change{Collection: "hosts", ID: id, Body: hostBody(st.Machines[i], account.HostBody{})})
 	}
 	for i, m := range st.Machines {
 		body, ok := now[m.SyncID]
@@ -262,7 +310,7 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, deletes []strin
 		}
 		switch {
 		case edited[i] && !sameHost(m, body):
-			changes = append(changes, account.Change{Collection: "hosts", ID: m.SyncID, Body: hostBody(m, body)})
+			add(account.Change{Collection: "hosts", ID: m.SyncID, Body: hostBody(m, body)})
 		case !edited[i] && !sameHost(m, body):
 			// Changed on another device: take its fields. The machine's key
 			// path and session stay this device's. Its saved id
@@ -305,9 +353,19 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, deletes []strin
 		}
 		st.Machines = kept
 	}
+	// A machine still saved here (removed, then added again) keeps its item.
+	inUse := map[string]bool{}
+	for _, m := range st.Machines {
+		inUse[m.SyncID] = true
+	}
+	for _, id := range plan.Delete {
+		if !inUse[id] {
+			add(account.Change{Collection: "hosts", ID: id, Deleted: true})
+		}
+	}
 	for _, id := range deletes {
-		if _, ok := now[id]; ok {
-			changes = append(changes, account.Change{Collection: "hosts", ID: id, Deleted: true})
+		if _, ok := now[id]; ok && !inUse[id] {
+			add(account.Change{Collection: "hosts", ID: id, Deleted: true})
 			left = append(left, id)
 		}
 	}
