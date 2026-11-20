@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -43,9 +44,22 @@ func accountPlatform(goos string) string {
 	return "linux"
 }
 
+// accountServiceURL is the account service. HERDRUP_ACCOUNT_URL replaces
+// it (a local service in tests and probes); smoke and reference runs, which
+// must not reach the network, get an unroutable one.
+func accountServiceURL() string {
+	if url := os.Getenv("HERDRUP_ACCOUNT_URL"); url != "" {
+		return url
+	}
+	if smokeEnabled() || refEnabled() {
+		return "http://127.0.0.1:1"
+	}
+	return account.DefaultService
+}
+
 func newAccountClient(goos string) (*account.Client, *account.SecretsStore) {
 	store := account.NewSecretsStore(mygo.Secrets, mygo.ErrSecretNotFound)
-	return account.New("", accountPlatform(goos), store, nil), store
+	return account.New(accountServiceURL(), accountPlatform(goos), store, nil), store
 }
 
 func (d *Desk) accountState(problem string) AccountState {
@@ -61,6 +75,16 @@ func (d *Desk) accountState(problem string) AccountState {
 		s.SignedIn, s.DisplayHint = true, current.DisplayHint
 	}
 	return s
+}
+
+// AccountAvailable reports whether the HerdrUp account service offers
+// sign-in yet (its /v1/health lists web_sign_in): the page shows no account
+// row or first-launch sign-in before it does. Offline counts as no.
+func (d *Desk) AccountAvailable(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	live, _ := d.account.WebSignInLive(ctx)
+	return live
 }
 
 // AccountState is the account as the app holds it. It does not ask the
@@ -113,7 +137,10 @@ func (d *Desk) queueAccountLink(link string) bool {
 	go func() {
 		code, ok := account.CodeFromLink(link)
 		problem := ""
-		if !ok {
+		if failed, isError := account.ErrorFromLink(link); isError {
+			d.account.AbandonSignIn()
+			problem = signInEndedProblem(failed)
+		} else if !ok {
 			problem = "This sign-in link is not complete. Sign in again."
 		} else {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -126,6 +153,23 @@ func (d *Desk) queueAccountLink(link string) bool {
 		publishAccount(d.accountState(problem))
 	}()
 	return true
+}
+
+// signInEndedProblem is the service's reason a sign-in ended without a
+// session (web.ts back()), in the app's words; "" for a cancel, which needs
+// none. The web guest says the same (src/web/account.ts).
+func signInEndedProblem(code string) string {
+	switch code {
+	case "cancelled":
+		return ""
+	case "flow_expired":
+		return "The sign-in took too long. Sign in again."
+	case "browser_mismatch":
+		return "The sign-in finished in a different browser than it started in. Sign in again."
+	case "provider_not_configured":
+		return "This way of signing in isn't available yet."
+	}
+	return "The sign-in didn't go through. Sign in again."
 }
 
 // accountProblem is an account error in the app's words.

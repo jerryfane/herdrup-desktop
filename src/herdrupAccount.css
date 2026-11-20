@@ -1,0 +1,24 @@
+/* The HerdrUp account sign-in (herdrupAccount.ts). Neutral surfaces; the provider buttons follow
+   Apple's white and Google's dark outline (1B mockup), with their marks as content. */
+.account-panel { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
+.account-lead, .account-welcome-lead { margin: 0; color: var(--color-text-dim); font: 400 15px var(--font-app); }
+.account-providers, .account-welcome-actions { display: flex; flex-direction: column; gap: 10px; width: min(360px, 100%); }
+.account-provider { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 46px; padding: 0 18px; border-radius: 99px; font: 600 16px var(--font-app); cursor: pointer; }
+.account-provider-apple { border: 1px solid var(--color-text); background: var(--color-text); color: var(--color-ground); }
+.account-provider-google { border: 1px solid var(--color-hairline); background: var(--color-surface); color: var(--color-text); font-weight: 500; }
+.account-provider:disabled { opacity: 0.5; }
+.account-note { margin: 0; color: var(--color-text-faint); font: 400 13px var(--font-app); }
+.account-problem { color: var(--color-text-dim); }
+.account-who { display: flex; flex-direction: column; gap: 2px; }
+.account-who strong { font: 600 15px var(--font-app); color: var(--color-text); }
+.account-hint { color: var(--color-text-dim); font: 400 13px var(--font-app); }
+.account-sign-out { align-self: flex-start; height: 36px; padding: 0 16px; border: 1px solid var(--color-hairline); border-radius: 99px; background: var(--color-surface); color: var(--color-text); font: 600 14px var(--font-app); }
+
+.account-welcome { display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 28px; min-height: 100%; padding: 64px 24px 32px; box-sizing: border-box; text-align: center; }
+.account-welcome[hidden] { display: none; }
+.account-welcome-top { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 6vh; }
+.account-welcome-mark { width: 88px; height: 88px; border-radius: 20px; }
+.account-welcome-top h1 { margin: 0; color: var(--color-text); font: 700 30px var(--font-app); }
+.account-welcome-actions { align-items: stretch; }
+.account-welcome-skip { margin-top: 8px; border: 0; background: none; color: var(--color-text-dim); font: 600 15px var(--font-app); cursor: pointer; }
+.account-welcome-foot { max-width: 360px; margin: 0; color: var(--color-text-faint); font: 400 12.5px var(--font-app); }

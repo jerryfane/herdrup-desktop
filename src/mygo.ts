@@ -30,6 +30,26 @@ export interface AccountMenuChoice {
 }
 
 /**
+ * AccountState is what Settings shows about the HerdrUp account (design
+ * #698 §2.3, §2.5).
+ */
+export interface AccountState {
+  signedIn: boolean;
+  /**
+   * DisplayHint is the Google address the service sent at sign-in, ""
+   * for Apple or after a relaunch the hint was not kept for.
+   */
+  displayHint?: string;
+  /**
+   * Persistent is false where the system has no credential store: the
+   * session ends when the app quits.
+   */
+  persistent: boolean;
+  /** Problem is why the newest sign-in or session check failed, "" if none. */
+  problem?: string;
+}
+
+/**
  * AgentAction is an agent row menu item. The page shows its dialog for
  * Kind rename, avatar, restart, swap or transfer, then calls the Desk
  * method; stop and archive are carried out here and never sent.
@@ -1124,6 +1144,40 @@ export const Desk = {
   acceptGuestInvitation(text: string): Promise<Access> {
     return call("Desk.AcceptGuestInvitation", text);
   },
+  /**
+   * AccountAvailable reports whether the HerdrUp account service offers
+   * sign-in yet (its /v1/health lists web_sign_in): the page shows no account
+   * row or first-launch sign-in before it does. Offline counts as no.
+   */
+  accountAvailable(): Promise<boolean> {
+    return call("Desk.AccountAvailable");
+  },
+  /**
+   * AccountCheck asks the service whether the session still works (a refresh
+   * when the access token is old), so a removed device shows signed out.
+   */
+  accountCheck(): Promise<AccountState> {
+    return call("Desk.AccountCheck");
+  },
+  /**
+   * AccountSignIn opens the sign-in for provider ("apple" or "google") in
+   * the system browser. The browser comes back on herdrup://account#…
+   * (queueAccountLink).
+   */
+  accountSignIn(provider: string): Promise<void> {
+    return call("Desk.AccountSignIn", provider);
+  },
+  /** AccountSignOut ends the session. */
+  accountSignOut(): Promise<AccountState> {
+    return call("Desk.AccountSignOut");
+  },
+  /**
+   * AccountState is the account as the app holds it. It does not ask the
+   * service: AccountCheck does.
+   */
+  accountState(): Promise<AccountState> {
+    return call("Desk.AccountState");
+  },
   /** Accounts returns the credential accounts' labels by id. */
   accounts(): Promise<Record<string, string>> {
     return call("Desk.Accounts");
@@ -2023,6 +2077,11 @@ export const events = {
    * SetMachineFederation has re-read them.
    */
   machineStatusChanged: event<SavedMachineStatus[]>("machine-status:changed"),
+  /**
+   * AccountChanged tells the page the account state changed (a finished
+   * sign-in, a refused session, sign-out).
+   */
+  accountChanged: event<AccountState>("account:changed"),
   /** AgentActionRequested asks the page for a row menu item's dialog. */
   agentActionRequested: event<AgentAction>("agentActionRequested"),
   /** PaneActionChosen is a ••• item the page carries out. */

@@ -22,13 +22,37 @@ export function webSignInURL(provider: Provider, service = ACCOUNT_SERVICE): str
  return `${service}/v1/auth/web/start?${q}`;
 }
 
-/** The page the service came back to, without its `account=1` marker, or null when this load is
- *  not the end of a sign-in. */
-export function returnedFromSignIn(href: string): string | null {
+/** How this page load ended a sign-in, or null when it did not: the service comes back with
+ *  `account=1` (a session in the cookie) or `account_error=<code>` (AccountService web.ts back()).
+ *  `clean` is the page's URL without the marker, for history.replaceState. */
+export function returnedFromSignIn(href: string): { clean: string; error: string | null } | null {
  const url = new URL(href);
- if (url.searchParams.get("account") !== "1") return null;
- url.searchParams.delete("account");
- return url.toString();
+ const ok = url.searchParams.get("account") === "1", error = url.searchParams.get("account_error");
+ if (!ok && error === null) return null;
+ url.searchParams.delete("account"); url.searchParams.delete("account_error");
+ return { clean: url.toString(), error: ok ? null : (error ?? "").slice(0, 64) };
+}
+
+/** The service's reason a sign-in ended without a session, in the app's words (desk_account.go
+ *  signInEndedProblem); "" for a cancel. */
+export function signInEndedProblem(code: string): string {
+ switch (code) {
+  case "cancelled": return "";
+  case "flow_expired": return "The sign-in took too long. Sign in again.";
+  case "browser_mismatch": return "The sign-in finished in a different browser than it started in. Sign in again.";
+  case "provider_not_configured": return "This way of signing in isn't available yet.";
+ }
+ return "The sign-in didn't go through. Sign in again.";
+}
+
+/** Whether the service lists web sign-in (/v1/health features, as desktop's WebSignInLive). */
+export async function webSignInLive(fetcher: typeof fetch, service = ACCOUNT_SERVICE): Promise<boolean> {
+ try {
+  const response = await fetcher(`${service}/v1/health`, { cache: "no-store" });
+  if (!response.ok) return false;
+  const health = await response.json() as { features?: unknown };
+  return Array.isArray(health.features) && health.features.includes("web_sign_in");
+ } catch { return false; }
 }
 
 export class SignedOutError extends Error {
@@ -62,6 +86,12 @@ export class WebAccount {
   return this.flight;
  }
 
+ /** The session the cookie holds now, or null when there is none: a refresh. Other errors throw. */
+ async check(): Promise<WebSession | null> {
+  try { await this.accessToken(); return this.session; }
+  catch (error) { if (error instanceof SignedOutError) return null; throw error; }
+ }
+
  private async refresh(): Promise<string> {
   const response = await this.fetcher(`${this.service}/v1/auth/refresh`, { method: "POST", credentials: "include", mode: "cors", cache: "no-store" });
   if (response.status === 401) { this.forget(); throw new SignedOutError(); }
@@ -77,14 +107,12 @@ export class WebAccount {
   return this.access;
  }
 
- /** Ends the session on the service (which clears the cookie) and here. */
+ /** Ends the session by its cookie, which the service clears; it answers 204 even with no
+  *  session, so this works after the access token expired. */
  async signOut(): Promise<void> {
-  let token = "";
-  try { token = await this.accessToken(); } catch (error) { if (!(error instanceof SignedOutError)) { this.forget(); throw error; } }
   this.forget();
-  if (!token) return;
-  const response = await this.fetcher(`${this.service}/v1/auth/signout`, { method: "POST", credentials: "include", mode: "cors", headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok && response.status !== 401) throw new AccountServiceError(response.status, await errorCode(response));
+  const response = await this.fetcher(`${this.service}/v1/auth/signout`, { method: "POST", credentials: "include", mode: "cors" });
+  if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
  }
 
  private forget() { this.access = ""; this.accessUntil = 0; this.session = null; }

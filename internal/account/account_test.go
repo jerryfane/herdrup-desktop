@@ -31,6 +31,7 @@ type fakeService struct {
 	signouts  []string
 	n         int
 	down      bool
+	features  []string
 }
 
 func newFake(t *testing.T) (*fakeService, *httptest.Server) {
@@ -67,6 +68,12 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	switch r.URL.Path {
 	case "/v1/auth/handoff":
+		// Exactly {code, handoff_verifier}: any other field is a 400
+		// (herdr-app 523079, Worker branch accounts-web-698).
+		if len(body) != 2 {
+			reply(400, map[string]string{"error": "bad_request"})
+			return
+		}
 		if body["code"] != f.code || challenge(body["handoff_verifier"]) != f.challenge {
 			reply(400, map[string]string{"error": "handoff_invalid"})
 			return
@@ -88,6 +95,8 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 			f.spent[t] = true
 			reply(200, f.pair())
 		}
+	case "/v1/health":
+		reply(200, map[string]any{"ok": true, "version": "0.5.0", "features": f.features})
 	case "/v1/auth/signout":
 		f.signouts = append(f.signouts, r.Header.Get("Authorization"))
 		f.current = ""
@@ -106,7 +115,7 @@ func (f *fakeService) start(t *testing.T, startURL string) string {
 		t.Fatal(err)
 	}
 	q := u.Query()
-	if u.Path != "/v1/auth/web/start" || q.Get("client") != "app" || q.Get("handoff_challenge") == "" {
+	if u.Path != "/v1/auth/web/start" || q.Get("client") != "app" || q.Get("platform") != "linux" || q.Get("handoff_challenge") == "" || len(q) != 4 {
 		t.Fatalf("start URL %s", startURL)
 	}
 	f.mu.Lock()
@@ -271,6 +280,15 @@ func TestSignOutEndsTheSessionOnTheServiceAndForgetsIt(t *testing.T) {
 	}
 }
 
+func TestErrorFromLink(t *testing.T) {
+	if code, ok := ErrorFromLink(LinkPrefix + "error=cancelled"); !ok || code != "cancelled" {
+		t.Fatalf("%q %v", code, ok)
+	}
+	if _, ok := ErrorFromLink(LinkPrefix + "code=" + strings.Repeat("c", 43)); ok {
+		t.Fatal("a code link read as an error")
+	}
+}
+
 func TestCodeFromLink(t *testing.T) {
 	code := strings.Repeat("A", 43)
 	for link, want := range map[string]bool{
@@ -346,5 +364,28 @@ func TestSecretsStoreFallsBackToMemoryWithoutACredentialStore(t *testing.T) {
 	broken := NewSecretsStore(&fakeSecrets{err: errors.New("locked")}, errNotFound)
 	if _, err := broken.Get(); err == nil || !broken.Persistent() {
 		t.Fatalf("a failing store is an error, not a fallback: %v", err)
+	}
+}
+
+// The app offers sign-in only once the service lists web_sign_in; a yes is
+// kept, a no is asked again.
+func TestWebSignInIsOfferedOnlyOnceTheServiceListsIt(t *testing.T) {
+	f, srv := newFake(t)
+	c := New(srv.URL, "linux", &memStore{}, srv.Client())
+	ctx := context.Background()
+	if live, err := c.WebSignInLive(ctx); live || err != nil {
+		t.Fatalf("before: %v, %v", live, err)
+	}
+	f.mu.Lock()
+	f.features = []string{"sync", WebSignInFeature}
+	f.mu.Unlock()
+	if live, _ := c.WebSignInLive(ctx); !live {
+		t.Fatal("listed but not live")
+	}
+	f.mu.Lock()
+	f.features, f.down = nil, true
+	f.mu.Unlock()
+	if live, _ := c.WebSignInLive(ctx); !live {
+		t.Fatal("a later outage withdrew sign-in from a running app")
 	}
 }

@@ -3,7 +3,7 @@
 // so every call is credentialed and carries no token in its body, and refreshes are single-flight
 // because a rotated-away cookie revokes the session.
 import { expect, test } from "bun:test";
-import { returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInURL } from "../src/web/account";
+import { returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInLive, webSignInURL } from "../src/web/account";
 
 const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0")}`;
 
@@ -32,7 +32,8 @@ function service() {
 test("sign-in is a top-level navigation offered only on guest.herdrup.app", () => {
  expect(webSignInURL("google")).toBe("https://accounts.herdrup.app/v1/auth/web/start?provider=google&client=web");
  expect([webSignInAvailable("https://guest.herdrup.app"), webSignInAvailable("https://guest.herdrup.themartian.app")]).toEqual([true, false]);
- expect(returnedFromSignIn("https://guest.herdrup.app/web/?account=1#x")).toBe("https://guest.herdrup.app/web/#x");
+ expect(returnedFromSignIn("https://guest.herdrup.app/web/?account=1#x")).toEqual({ clean: "https://guest.herdrup.app/web/#x", error: null });
+ expect(returnedFromSignIn("https://guest.herdrup.app/web/?account_error=flow_expired")).toEqual({ clean: "https://guest.herdrup.app/web/", error: "flow_expired" });
  expect(returnedFromSignIn("https://guest.herdrup.app/web/")).toBeNull();
 });
 
@@ -59,14 +60,26 @@ test("an expired access token refreshes once more; the display hint is kept", as
  expect(account.current?.displayHint).toBe("jerry@example.com");
 });
 
-test("a refused cookie signs out; sign-out ends the session with the bearer token", async () => {
+test("sign-out goes by the cookie, even with the access token expired; a refused cookie is signed out", async () => {
+ let now = 1_000_000;
  const s = service();
- const account = new WebAccount(s.fetcher);
- await account.accessToken();
+ const account = new WebAccount(s.fetcher, undefined, () => now);
+ expect(await account.check()).toEqual({ accountID: "acct-1", displayHint: "jerry@example.com" });
+ now += 3_600_000;
  await account.signOut();
  const signout = s.calls.find(c => c.url.endsWith("/v1/auth/signout"))!;
  expect(signout.init).toMatchObject({ method: "POST", credentials: "include" });
- expect((signout.init.headers as Record<string, string>).Authorization).toBe(`Bearer ${access(1)}`);
+ expect(signout.cookie).not.toBe("");
+ expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(1);
  expect(account.current).toBeNull();
+ expect(await account.check()).toBeNull();
  await expect(account.accessToken()).rejects.toBeInstanceOf(SignedOutError);
+});
+
+test("sign-in shows only once the service lists web_sign_in", async () => {
+ const health = (body: unknown, status = 200) => (async () => Response.json(body, { status })) as unknown as typeof fetch;
+ expect(await webSignInLive(health({ ok: true, version: "0.4.0" }))).toBe(false);
+ expect(await webSignInLive(health({ ok: true, features: ["web_sign_in"] }))).toBe(true);
+ expect(await webSignInLive(health({}, 503))).toBe(false);
+ expect(await webSignInLive((async () => { throw new TypeError("offline"); }) as unknown as typeof fetch)).toBe(false);
 });

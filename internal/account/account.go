@@ -118,6 +118,7 @@ type Client struct {
 	now      func() time.Time
 
 	mu       sync.Mutex
+	live     bool   // the service said it offers web sign-in (kept once seen)
 	pending  string // the newest sign-in's handoff verifier
 	saved    *stored
 	loaded   bool
@@ -144,6 +145,46 @@ func New(service, platform string, store Store, client *http.Client) *Client {
 	return &Client{service: strings.TrimRight(service, "/"), platform: platform, http: client, store: store, now: time.Now}
 }
 
+// WebSignInFeature is what /v1/health lists once the service offers the
+// web sign-in this package uses.
+const WebSignInFeature = "web_sign_in"
+
+// WebSignInLive reports whether the service offers web sign-in, so the app
+// shows no sign-in a deployed service can't finish. A yes is kept for the
+// life of the client; a no is asked again on the next call.
+func (c *Client) WebSignInLive(ctx context.Context) (bool, error) {
+	c.mu.Lock()
+	live := c.live
+	c.mu.Unlock()
+	if live {
+		return true, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.service+"/v1/health", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	var health struct {
+		Features []string `json:"features"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&health) != nil {
+		return false, nil
+	}
+	for _, f := range health.Features {
+		if f == WebSignInFeature {
+			c.mu.Lock()
+			c.live = true
+			c.mu.Unlock()
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // StartSignIn returns the URL to open in the system browser. A sign-in
 // started before it can no longer finish.
 func (c *Client) StartSignIn(provider Provider) (string, error) {
@@ -157,7 +198,9 @@ func (c *Client) StartSignIn(provider Provider) (string, error) {
 	c.mu.Lock()
 	c.pending = verifier
 	c.mu.Unlock()
-	q := url.Values{"provider": {string(provider)}, "client": {"app"}, "handoff_challenge": {challenge(verifier)}}
+	// The session opens with the platform named here when the code is
+	// redeemed; the handoff itself carries only the code and verifier.
+	q := url.Values{"provider": {string(provider)}, "client": {"app"}, "platform": {c.platform}, "handoff_challenge": {challenge(verifier)}}
 	return c.service + "/v1/auth/web/start?" + q.Encode(), nil
 }
 
@@ -181,6 +224,31 @@ func CodeFromLink(link string) (string, bool) {
 	return code, handoffCode.MatchString(code)
 }
 
+// ErrorFromLink returns the code of a herdrup://account#error=… link: the
+// service's word for a sign-in that ended without a session (cancelled,
+// flow_expired, browser_mismatch, provider_not_configured, token_invalid,
+// provider_error, exchange_failed).
+func ErrorFromLink(link string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(link), LinkPrefix)
+	if !ok {
+		return "", false
+	}
+	q, err := url.ParseQuery(rest)
+	if err != nil {
+		return "", false
+	}
+	code := q.Get("error")
+	return code, code != "" && len(code) <= 64
+}
+
+// AbandonSignIn forgets the newest sign-in's verifier: the service said it
+// ended without a session.
+func (c *Client) AbandonSignIn() {
+	c.mu.Lock()
+	c.pending = ""
+	c.mu.Unlock()
+}
+
 // FinishSignIn redeems the code of the link the service sent back, with
 // the verifier of the newest sign-in this app started, and keeps the
 // session. Each verifier is redeemed at most once.
@@ -196,7 +264,7 @@ func (c *Client) FinishSignIn(ctx context.Context, code string) (Session, error)
 		return Session{}, ErrNoSignIn
 	}
 	var pair tokenPair
-	if err := c.post(ctx, "/v1/auth/handoff", "", map[string]string{"code": code, "handoff_verifier": verifier, "platform": c.platform}, &pair); err != nil {
+	if err := c.post(ctx, "/v1/auth/handoff", "", map[string]string{"code": code, "handoff_verifier": verifier}, &pair); err != nil {
 		return Session{}, err
 	}
 	if !pair.valid() {
