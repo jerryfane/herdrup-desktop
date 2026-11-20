@@ -472,9 +472,37 @@ func (c *Client) expiry(seconds int64) time.Time {
 	return c.now().Add(time.Duration(seconds)*time.Second - time.Minute)
 }
 
+// authed makes an account request with the access token. A 401 means the
+// access token stopped working before its time (the session was refreshed
+// elsewhere in this process, or revoked): it is dropped and the request
+// retried once with a fresh one.
+func (c *Client) authed(ctx context.Context, method, path string, body, out any) error {
+	for attempt := 0; ; attempt++ {
+		token, err := c.AccessToken(ctx)
+		if err != nil {
+			return err
+		}
+		err = c.send(ctx, method, path, token, body, out)
+		var api *APIError
+		if attempt == 0 && errors.As(err, &api) && api.Status == http.StatusUnauthorized {
+			c.mu.Lock()
+			if c.access == token {
+				c.access = ""
+			}
+			c.mu.Unlock()
+			continue
+		}
+		return err
+	}
+}
+
 // post sends body as JSON (none when nil) and decodes a 2xx answer into
 // out (when not nil); any other answer is an *APIError.
 func (c *Client) post(ctx context.Context, path, bearer string, body any, out any) error {
+	return c.send(ctx, http.MethodPost, path, bearer, body, out)
+}
+
+func (c *Client) send(ctx context.Context, method, path, bearer string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -483,7 +511,7 @@ func (c *Client) post(ctx context.Context, path, bearer string, body any, out an
 		}
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.service+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.service+path, reader)
 	if err != nil {
 		return err
 	}
