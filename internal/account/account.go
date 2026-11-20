@@ -1,0 +1,418 @@
+// Package account signs the desktop app in to the HerdrUp account service
+// (accounts.herdrup.app, design #698 §2.3 and §2.5).
+//
+// Sign-in is the web flow through the service: the app makes a random
+// handoff verifier, opens /v1/auth/web/start in the system browser with its
+// S256 challenge, and the service sends the browser back to
+// herdrup://account#code=…. The app redeems that code with the verifier
+// (POST /v1/auth/handoff), so another app that catches the custom-scheme
+// link cannot use it.
+//
+// A session is a 1-hour access token kept in memory and a 90-day refresh
+// token that rotates on every use. The service treats a refresh token
+// presented after it rotated as theft and revokes the whole session, so
+// refreshes are single-flight: one in flight per process, the others wait
+// for its result.
+package account
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+// DefaultService is the account service the app signs in to.
+const DefaultService = "https://accounts.herdrup.app"
+
+// Provider is how a person signs in.
+type Provider string
+
+const (
+	Apple  Provider = "apple"
+	Google Provider = "google"
+)
+
+// LinkPrefix starts the link the service sends a finished sign-in back to.
+const LinkPrefix = "herdrup://account#"
+
+var (
+	// ErrSignedOut means there is no session: the person signs in again.
+	// It is returned once the service refused the refresh token, which is
+	// then forgotten.
+	ErrSignedOut = errors.New("account: signed out")
+	// ErrNoSignIn means a sign-in link arrived that this app did not start
+	// (or started before the newest one): it is not redeemed.
+	ErrNoSignIn = errors.New("account: no sign-in is waiting for this link")
+)
+
+// APIError is the service's answer {"error": code} with its HTTP status.
+type APIError struct {
+	Status int
+	Code   string
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("account service: %d %s", e.Status, e.Code) }
+
+// Session is what the app shows about the signed-in account.
+type Session struct {
+	AccountID string `json:"account_id"`
+	// DisplayHint is the Google address the service passes once at sign-in
+	// ("Signed in as …"); "" for Apple, which sends none.
+	DisplayHint string `json:"display_hint,omitempty"`
+}
+
+// tokenPair is the service's TokenPair (AccountService/src/sessions.ts),
+// with the sign-in fields that come with it.
+type tokenPair struct {
+	AccountID        string `json:"account_id"`
+	AccessToken      string `json:"access_token"`
+	AccessExpiresIn  int64  `json:"access_expires_in"`
+	RefreshToken     string `json:"refresh_token"`
+	RefreshExpiresIn int64  `json:"refresh_expires_in"`
+	DisplayHint      string `json:"display_hint,omitempty"`
+}
+
+var (
+	accessToken  = regexp.MustCompile(`^a1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$`)
+	refreshToken = regexp.MustCompile(`^r1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$`)
+	handoffCode  = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+)
+
+func (p tokenPair) valid() bool {
+	return p.AccountID != "" && accessToken.MatchString(p.AccessToken) && refreshToken.MatchString(p.RefreshToken) && p.AccessExpiresIn > 0
+}
+
+// stored is what Store keeps under its key: the refresh token and what the
+// app shows about the account.
+type stored struct {
+	RefreshToken string `json:"refresh_token"`
+	Session
+}
+
+// Store keeps the session's refresh token. Get returns (nil, nil) when it
+// holds none.
+type Store interface {
+	Get() ([]byte, error)
+	Set([]byte) error
+	Delete() error
+}
+
+// Client is one app's account session.
+type Client struct {
+	service  string
+	platform string
+	http     *http.Client
+	store    Store
+	now      func() time.Time
+
+	mu       sync.Mutex
+	pending  string // the newest sign-in's handoff verifier
+	saved    *stored
+	loaded   bool
+	access   string
+	accessAt time.Time // when the access token stops working
+	flight   *refresh
+}
+
+// refresh is one refresh in flight; done closes when it has an answer.
+type refresh struct {
+	done chan struct{}
+	err  error
+}
+
+// New returns a client for service (DefaultService when ""). platform is
+// the service's platform name: macos, windows or linux.
+func New(service, platform string, store Store, client *http.Client) *Client {
+	if service == "" {
+		service = DefaultService
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	return &Client{service: strings.TrimRight(service, "/"), platform: platform, http: client, store: store, now: time.Now}
+}
+
+// StartSignIn returns the URL to open in the system browser. A sign-in
+// started before it can no longer finish.
+func (c *Client) StartSignIn(provider Provider) (string, error) {
+	if provider != Apple && provider != Google {
+		return "", fmt.Errorf("account: unknown provider %q", provider)
+	}
+	verifier, err := randomB64(32)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.pending = verifier
+	c.mu.Unlock()
+	q := url.Values{"provider": {string(provider)}, "client": {"app"}, "handoff_challenge": {challenge(verifier)}}
+	return c.service + "/v1/auth/web/start?" + q.Encode(), nil
+}
+
+// challenge is S256(verifier): base64url of its SHA-256, without padding.
+func challenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// CodeFromLink returns the handoff code of a herdrup://account#code=… link.
+func CodeFromLink(link string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(link), LinkPrefix)
+	if !ok {
+		return "", false
+	}
+	q, err := url.ParseQuery(rest)
+	if err != nil {
+		return "", false
+	}
+	code := q.Get("code")
+	return code, handoffCode.MatchString(code)
+}
+
+// FinishSignIn redeems the code of the link the service sent back, with
+// the verifier of the newest sign-in this app started, and keeps the
+// session. Each verifier is redeemed at most once.
+func (c *Client) FinishSignIn(ctx context.Context, code string) (Session, error) {
+	if !handoffCode.MatchString(code) {
+		return Session{}, errors.New("account: malformed sign-in link")
+	}
+	c.mu.Lock()
+	verifier := c.pending
+	c.pending = ""
+	c.mu.Unlock()
+	if verifier == "" {
+		return Session{}, ErrNoSignIn
+	}
+	var pair tokenPair
+	if err := c.post(ctx, "/v1/auth/handoff", "", map[string]string{"code": code, "handoff_verifier": verifier, "platform": c.platform}, &pair); err != nil {
+		return Session{}, err
+	}
+	if !pair.valid() {
+		return Session{}, errors.New("account service: malformed session")
+	}
+	s := &stored{RefreshToken: pair.RefreshToken, Session: Session{AccountID: pair.AccountID, DisplayHint: pair.DisplayHint}}
+	c.mu.Lock()
+	c.saved, c.loaded = s, true
+	c.access, c.accessAt = pair.AccessToken, c.expiry(pair.AccessExpiresIn)
+	c.mu.Unlock()
+	return s.Session, c.persist(s)
+}
+
+// Current is the signed-in account, or nil. It reads the store once.
+func (c *Client) Current() (*Session, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.loadLocked(); err != nil {
+		return nil, err
+	}
+	if c.saved == nil {
+		return nil, nil
+	}
+	s := c.saved.Session
+	return &s, nil
+}
+
+func (c *Client) loadLocked() error {
+	if c.loaded {
+		return nil
+	}
+	raw, err := c.store.Get()
+	if err != nil {
+		return err
+	}
+	c.loaded = true
+	if raw == nil {
+		return nil
+	}
+	var s stored
+	if json.Unmarshal(raw, &s) != nil || !refreshToken.MatchString(s.RefreshToken) || s.AccountID == "" {
+		// Not a session this app wrote: forget it rather than send it.
+		_ = c.store.Delete()
+		return nil
+	}
+	c.saved = &s
+	return nil
+}
+
+// AccessToken returns a current access token, refreshing the session when
+// the one held is missing or about to expire. Concurrent callers share one
+// refresh.
+func (c *Client) AccessToken(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	if err := c.loadLocked(); err != nil {
+		c.mu.Unlock()
+		return "", err
+	}
+	if c.access != "" && c.now().Before(c.accessAt) {
+		token := c.access
+		c.mu.Unlock()
+		return token, nil
+	}
+	if c.saved == nil {
+		c.mu.Unlock()
+		return "", ErrSignedOut
+	}
+	f := c.flight
+	if f == nil {
+		f = &refresh{done: make(chan struct{})}
+		c.flight = f
+		token := c.saved.RefreshToken
+		go c.refresh(f, token)
+	}
+	c.mu.Unlock()
+	select {
+	case <-f.done:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if f.err != nil {
+		return "", f.err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.access == "" {
+		return "", ErrSignedOut
+	}
+	return c.access, nil
+}
+
+// refresh rotates the session once. It runs on its own context, so a
+// caller that gives up does not abandon a rotation the service already made:
+// its new refresh token is kept either way.
+func (c *Client) refresh(f *refresh, token string) {
+	defer close(f.done)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var pair tokenPair
+	err := c.post(ctx, "/v1/auth/refresh", "", map[string]string{"refresh_token": token}, &pair)
+	c.mu.Lock()
+	c.flight = nil
+	var api *APIError
+	switch {
+	case errors.As(err, &api) && api.Status == http.StatusUnauthorized:
+		// invalid_token or session_revoked: this token never works again.
+		c.saved, c.access = nil, ""
+		c.mu.Unlock()
+		_ = c.store.Delete()
+		f.err = ErrSignedOut
+		return
+	case err != nil:
+		// Offline or the service failed: the token was not rotated, so it
+		// stays for the next try.
+		c.mu.Unlock()
+		f.err = err
+		return
+	case !pair.valid():
+		c.mu.Unlock()
+		f.err = errors.New("account service: malformed session")
+		return
+	}
+	s := &stored{RefreshToken: pair.RefreshToken, Session: c.saved.Session}
+	if pair.AccountID != "" {
+		s.AccountID = pair.AccountID
+	}
+	c.saved = s
+	c.access, c.accessAt = pair.AccessToken, c.expiry(pair.AccessExpiresIn)
+	c.mu.Unlock()
+	// The old token is spent now: presenting it again would revoke the
+	// session, so the new one replaces it in the store. If the store fails,
+	// the session lives on in memory until the app quits; the access token
+	// is good either way.
+	_ = c.persist(s)
+}
+
+// SignOut ends the session on the service when it can and forgets it here
+// either way.
+func (c *Client) SignOut(ctx context.Context) error {
+	token, err := c.AccessToken(ctx)
+	c.mu.Lock()
+	c.saved, c.access, c.pending, c.loaded = nil, "", "", true
+	c.mu.Unlock()
+	deleted := c.store.Delete()
+	if err == nil {
+		var api *APIError
+		if err := c.post(ctx, "/v1/auth/signout", token, nil, nil); err != nil && !(errors.As(err, &api) && api.Status == http.StatusUnauthorized) {
+			// Forgotten here; the service drops the session when its
+			// refresh token expires.
+			return errors.Join(deleted, err)
+		}
+	}
+	return deleted
+}
+
+func (c *Client) persist(s *stored) error {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return c.store.Set(raw)
+}
+
+// expiry is when an access token issued now stops being used: a minute
+// before the service's expiry, so a request does not race it.
+func (c *Client) expiry(seconds int64) time.Time {
+	return c.now().Add(time.Duration(seconds)*time.Second - time.Minute)
+}
+
+// post sends body as JSON (none when nil) and decodes a 2xx answer into
+// out (when not nil); any other answer is an *APIError.
+func (c *Client) post(ctx context.Context, path, bearer string, body any, out any) error {
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.service+path, reader)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		var answer struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &answer)
+		return &APIError{Status: resp.StatusCode, Code: answer.Error}
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
+}
+
+func randomB64(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
