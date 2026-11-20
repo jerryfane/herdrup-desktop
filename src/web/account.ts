@@ -45,14 +45,16 @@ export function signInEndedProblem(code: string): string {
  return "The sign-in didn't go through. Sign in again.";
 }
 
-/** Whether the service lists web sign-in (/v1/health features, as desktop's WebSignInLive). */
-export async function webSignInLive(fetcher: typeof fetch, service = ACCOUNT_SERVICE): Promise<boolean> {
+/** The providers the service can sign in with on the web now, Apple first: its /v1/health
+ *  web_sign_in_apple / web_sign_in_google flags (desktop's WebSignInProviders). */
+export async function webSignInProviders(fetcher: typeof fetch, service = ACCOUNT_SERVICE): Promise<Provider[]> {
  try {
   const response = await fetcher(`${service}/v1/health`, { cache: "no-store" });
-  if (!response.ok) return false;
+  if (!response.ok) return [];
   const health = await response.json() as { features?: unknown };
-  return Array.isArray(health.features) && health.features.includes("web_sign_in");
- } catch { return false; }
+  const features = Array.isArray(health.features) ? health.features : [];
+  return (["apple", "google"] as const).filter(p => features.includes(`web_sign_in_${p}`));
+ } catch { return []; }
 }
 
 export class SignedOutError extends Error {

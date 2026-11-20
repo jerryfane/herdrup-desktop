@@ -118,8 +118,8 @@ type Client struct {
 	now      func() time.Time
 
 	mu       sync.Mutex
-	live     bool   // the service said it offers web sign-in (kept once seen)
-	pending  string // the newest sign-in's handoff verifier
+	live     map[Provider]bool // providers the service said it offers (kept once seen)
+	pending  string            // the newest sign-in's handoff verifier
 	saved    *stored
 	loaded   bool
 	access   string
@@ -145,44 +145,56 @@ func New(service, platform string, store Store, client *http.Client) *Client {
 	return &Client{service: strings.TrimRight(service, "/"), platform: platform, http: client, store: store, now: time.Now}
 }
 
-// WebSignInFeature is what /v1/health lists once the service offers the
-// web sign-in this package uses.
-const WebSignInFeature = "web_sign_in"
+// webSignInFeature is the /v1/health feature that says the service can
+// finish a web sign-in with provider (its Apple Services ID, or its Google
+// web client id and secret, is set).
+func webSignInFeature(p Provider) string { return "web_sign_in_" + string(p) }
 
-// WebSignInLive reports whether the service offers web sign-in, so the app
-// shows no sign-in a deployed service can't finish. A yes is kept for the
-// life of the client; a no is asked again on the next call.
-func (c *Client) WebSignInLive(ctx context.Context) (bool, error) {
+// WebSignInProviders returns the providers the service can sign in with on
+// the web, Apple first, so the app shows only buttons a deployed service
+// can finish. A provider seen once stays for the life of the client; the
+// rest are asked again on the next call.
+func (c *Client) WebSignInProviders(ctx context.Context) ([]Provider, error) {
 	c.mu.Lock()
-	live := c.live
+	all := c.live[Apple] && c.live[Google]
 	c.mu.Unlock()
-	if live {
-		return true, nil
+	if all {
+		return []Provider{Apple, Google}, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.service+"/v1/health", nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	var health struct {
 		Features []string `json:"features"`
 	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&health) != nil {
-		return false, nil
+	ok := resp.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&health) == nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.live == nil {
+		c.live = map[Provider]bool{}
 	}
-	for _, f := range health.Features {
-		if f == WebSignInFeature {
-			c.mu.Lock()
-			c.live = true
-			c.mu.Unlock()
-			return true, nil
+	if ok {
+		for _, f := range health.Features {
+			for _, p := range []Provider{Apple, Google} {
+				if f == webSignInFeature(p) {
+					c.live[p] = true
+				}
+			}
 		}
 	}
-	return false, nil
+	var out []Provider
+	for _, p := range []Provider{Apple, Google} {
+		if c.live[p] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // StartSignIn returns the URL to open in the system browser. A sign-in

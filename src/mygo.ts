@@ -1145,19 +1145,20 @@ export const Desk = {
     return call("Desk.AcceptGuestInvitation", text);
   },
   /**
-   * AccountAvailable reports whether the HerdrUp account service offers
-   * sign-in yet (its /v1/health lists web_sign_in): the page shows no account
-   * row or first-launch sign-in before it does. Offline counts as no.
-   */
-  accountAvailable(): Promise<boolean> {
-    return call("Desk.AccountAvailable");
-  },
-  /**
    * AccountCheck asks the service whether the session still works (a refresh
    * when the access token is old), so a removed device shows signed out.
    */
   accountCheck(): Promise<AccountState> {
     return call("Desk.AccountCheck");
+  },
+  /**
+   * AccountProviders are the ways the HerdrUp account service can sign in
+   * on the web now ("apple", "google"; its /v1/health web_sign_in_* flags):
+   * the page shows a button for each, and no account row or first-launch
+   * sign-in when there are none. Offline counts as none.
+   */
+  accountProviders(): Promise<string[]> {
+    return call("Desk.AccountProviders");
   },
   /**
    * AccountSignIn opens the sign-in for provider ("apple" or "google") in

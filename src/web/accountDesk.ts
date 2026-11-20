@@ -2,7 +2,7 @@
 // lives in the account service's cookie, so it outlives the page (persistent) but only on
 // guest.herdrup.app, the one origin its CORS serves.
 import type { AccountState } from "../mygo";
-import { AccountServiceError, returnedFromSignIn, signInEndedProblem, WebAccount, webSignInAvailable, webSignInLive, webSignInURL, type Provider } from "./account";
+import { AccountServiceError, returnedFromSignIn, signInEndedProblem, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL, type Provider } from "./account";
 import { emit } from "./events";
 
 export interface AccountPage { origin: string; href: string; fetch: typeof fetch; navigate(url: string): void; replaceURL(url: string): void }
@@ -19,7 +19,7 @@ const problemOf = (error: unknown) => error instanceof AccountServiceError && er
 
 export function createAccountDesk(page: AccountPage) {
  const account = new WebAccount(page.fetch);
- let live: Promise<boolean> | null = null;
+ let live: Promise<Provider[]> | null = null;
  // A load that ends a sign-in: drop the marker from the address now, and say how it went once
  // the page asks (the error is shown once).
  const returned = returnedFromSignIn(page.href);
@@ -34,9 +34,9 @@ export function createAccountDesk(page: AccountPage) {
  };
  const takeProblem = () => { const p = pendingProblem; pendingProblem = ""; return p; };
  return {
-  async accountAvailable(): Promise<boolean> {
-   if (!webSignInAvailable(page.origin)) return false;
-   live ??= webSignInLive(page.fetch).then(yes => { if (!yes) live = null; return yes; });
+  async accountProviders(): Promise<string[]> {
+   if (!webSignInAvailable(page.origin)) return [];
+   live ??= webSignInProviders(page.fetch).then(list => { if (list.length < 2) live = null; return list; });
    return live;
   },
   async accountState(): Promise<AccountState> { return state(takeProblem()); },

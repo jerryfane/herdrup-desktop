@@ -77,14 +77,19 @@ func (d *Desk) accountState(problem string) AccountState {
 	return s
 }
 
-// AccountAvailable reports whether the HerdrUp account service offers
-// sign-in yet (its /v1/health lists web_sign_in): the page shows no account
-// row or first-launch sign-in before it does. Offline counts as no.
-func (d *Desk) AccountAvailable(ctx context.Context) bool {
+// AccountProviders are the ways the HerdrUp account service can sign in
+// on the web now ("apple", "google"; its /v1/health web_sign_in_* flags):
+// the page shows a button for each, and no account row or first-launch
+// sign-in when there are none. Offline counts as none.
+func (d *Desk) AccountProviders(ctx context.Context) []string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	live, _ := d.account.WebSignInLive(ctx)
-	return live
+	live, _ := d.account.WebSignInProviders(ctx)
+	out := make([]string, 0, len(live))
+	for _, p := range live {
+		out = append(out, string(p))
+	}
+	return out
 }
 
 // AccountState is the account as the app holds it. It does not ask the

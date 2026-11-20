@@ -3,7 +3,7 @@
 // so every call is credentialed and carries no token in its body, and refreshes are single-flight
 // because a rotated-away cookie revokes the session.
 import { expect, test } from "bun:test";
-import { returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInLive, webSignInURL } from "../src/web/account";
+import { returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
 
 const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0")}`;
 
@@ -76,10 +76,11 @@ test("sign-out goes by the cookie, even with the access token expired; a refused
  await expect(account.accessToken()).rejects.toBeInstanceOf(SignedOutError);
 });
 
-test("sign-in shows only once the service lists web_sign_in", async () => {
+test("each provider's button shows only once the service lists its web_sign_in_* flag", async () => {
  const health = (body: unknown, status = 200) => (async () => Response.json(body, { status })) as unknown as typeof fetch;
- expect(await webSignInLive(health({ ok: true, version: "0.4.0" }))).toBe(false);
- expect(await webSignInLive(health({ ok: true, features: ["web_sign_in"] }))).toBe(true);
- expect(await webSignInLive(health({}, 503))).toBe(false);
- expect(await webSignInLive((async () => { throw new TypeError("offline"); }) as unknown as typeof fetch)).toBe(false);
+ expect(await webSignInProviders(health({ ok: true, version: "0.4.0" }))).toEqual([]);
+ expect(await webSignInProviders(health({ ok: true, features: ["native_sign_in", "web_sign_in_google"] }))).toEqual(["google"]);
+ expect(await webSignInProviders(health({ ok: true, features: ["web_sign_in_google", "web_sign_in_apple"] }))).toEqual(["apple", "google"]);
+ expect(await webSignInProviders(health({}, 503))).toEqual([]);
+ expect(await webSignInProviders((async () => { throw new TypeError("offline"); }) as unknown as typeof fetch)).toEqual([]);
 });

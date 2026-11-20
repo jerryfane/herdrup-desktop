@@ -367,25 +367,31 @@ func TestSecretsStoreFallsBackToMemoryWithoutACredentialStore(t *testing.T) {
 	}
 }
 
-// The app offers sign-in only once the service lists web_sign_in; a yes is
-// kept, a no is asked again.
-func TestWebSignInIsOfferedOnlyOnceTheServiceListsIt(t *testing.T) {
+// Each provider's button shows only once the service lists its
+// web_sign_in_* flag; a provider seen stays.
+func TestSignInIsOfferedPerProviderOnceTheServiceListsIt(t *testing.T) {
 	f, srv := newFake(t)
 	c := New(srv.URL, "linux", &memStore{}, srv.Client())
 	ctx := context.Background()
-	if live, err := c.WebSignInLive(ctx); live || err != nil {
-		t.Fatalf("before: %v, %v", live, err)
+	if got, err := c.WebSignInProviders(ctx); len(got) != 0 || err != nil {
+		t.Fatalf("before: %v, %v", got, err)
 	}
 	f.mu.Lock()
-	f.features = []string{"sync", WebSignInFeature}
+	f.features = []string{"native_sign_in", "sync", "web_sign_in_google"}
 	f.mu.Unlock()
-	if live, _ := c.WebSignInLive(ctx); !live {
-		t.Fatal("listed but not live")
+	if got, _ := c.WebSignInProviders(ctx); len(got) != 1 || got[0] != Google {
+		t.Fatalf("google only: %v", got)
 	}
 	f.mu.Lock()
-	f.features, f.down = nil, true
+	f.features = []string{"web_sign_in_apple"}
 	f.mu.Unlock()
-	if live, _ := c.WebSignInLive(ctx); !live {
-		t.Fatal("a later outage withdrew sign-in from a running app")
+	if got, _ := c.WebSignInProviders(ctx); len(got) != 2 || got[0] != Apple || got[1] != Google {
+		t.Fatalf("both, Apple first: %v", got)
+	}
+	f.mu.Lock()
+	f.down = true
+	f.mu.Unlock()
+	if got, _ := c.WebSignInProviders(ctx); len(got) != 2 {
+		t.Fatalf("a later outage withdrew sign-in from a running app: %v", got)
 	}
 }
