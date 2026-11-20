@@ -14,7 +14,10 @@ export { Symbols } from "./symbols";
 type DeskFns = typeof GoDesk;
 
 const notAvailable = () => Promise.reject(new Error("Not available in the browser"));
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...createGuestDesk(browserEnv()), ...createAccountDesk(browserAccountPage()) };
+const account = createAccountDesk(browserAccountPage());
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...createGuestDesk(browserEnv()), ...account.desk };
+/** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
+export const signInReturned = account.signInReturned;
 
 /** Every Desk method: the guest's, else one that rejects. Its shape is the generated client's. */
 export const Desk = new Proxy(implemented, {

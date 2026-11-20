@@ -22,7 +22,7 @@ import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type Welcome } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
-import { returnedFromSignIn } from "./account";
+import { signInReturned } from "./mygo";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -47,9 +47,8 @@ let ready = false;
 const account = new HerdrUpAccountPanel(() => { if (shownWelcome) showWelcome(shownWelcome); else render(); });
 const accountRoot = () => account.available ? account.root : null;
 // Back from the account service (?account=1 or ?account_error=): the guest lands on Settings,
-// where the result shows. accountDesk.ts has already taken the marker out of the address, so this
-// reads the URL the page was loaded with.
-let landOnSettings = returnedFromSignIn((performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.name ?? location.href) !== null;
+// where the result shows.
+let landOnSettings = signInReturned;
 
 // main.ts guestActions; "hosts" is Leave share or Remove share: this browser holds no other.
 const guestActions = {
