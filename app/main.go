@@ -87,6 +87,9 @@ func main() {
 	desk.crash.start()
 	// Follows preview releases; the checks never run in smoke builds.
 	desk.startAppUpdateChecks()
+	if !smokeEnabled() && !refEnabled() {
+		desk.startMachineSync()
+	}
 	onNotificationClick(desk, &win)
 	mygo.App.WhenReady(func() {
 		// Early WebKit features apply only to a page started after they are on,
