@@ -121,6 +121,26 @@ export function mergeNewest(current: Entry[], page: Entry[]): Entry[] | null {
  if (first < 0) return current.length ? null : page;
  return mergeTranscript(mergeTranscript(current, page.slice(0, first), { older: true }), page.slice(first), { resent: [] });
 }
+/** One live read of a chat's tail, the agent's or a topic's (herdrup #736 / #749 review F2).
+ *  `read(after)` fetches a page after that cursor ("" for the newest page) and returns null once
+ *  the reply is stale. An after page that may re-send unloaded history (replayUnknown) is replaced
+ *  by the newest page, merged by position (rereadMerge). `reset`: the chat starts over from
+ *  `page` (a new session, a first read, or a newest page sharing nothing with it). */
+export interface LiveRead { page: TranscriptPage; entries: Entry[]; reset: boolean }
+export async function readLive(entries: Entry[], held: TranscriptPage | null, hasOlder: boolean, read: (after: string) => Promise<TranscriptPage | null>): Promise<LiveRead | null> {
+ let page = await read(held?.after ?? "");
+ if (!page) return null;
+ const reread = !!held && held.session_id === page.session_id && replayUnknown(entries, page, hasOlder);
+ const ambiguous = page.entries ?? [];
+ if (reread) {
+  const newest = await read("");
+  if (!newest) return null;
+  page = newest;
+ }
+ const merged = reread && held?.session_id === page.session_id ? rereadMerge(entries, ambiguous, page.entries ?? []) : undefined;
+ const reset = !held || held.session_id !== page.session_id || merged === null;
+ return { page, reset, entries: merged ?? mergeTranscript(reset ? [] : entries, page.entries ?? [], { resent: page.resent }) };
+}
 /** Merges a transcript page into the held entries: an older page before them, a live page after
  *  (liveEntries; resent is the page's list). */
 export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?: boolean; resent?: readonly string[] } = {}): Entry[] {
