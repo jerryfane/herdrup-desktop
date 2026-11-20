@@ -3,6 +3,7 @@ import type { ShareSettings } from "./settings";
 import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
+import { ACCOUNT_TITLE } from "./herdrupAccount";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
@@ -23,7 +24,7 @@ export interface GuestHomeDeps {
  * list under the bar, and Settings (App/GuestSettingsView.swift) in the detail column. */
 export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: GuestHomeDeps, callbacks: {
  hosts(): void; open(target: AgentTarget): void;
-}, options: { settings: boolean } = { settings: true }) {
+}, options: { settings: boolean; account?: () => HTMLElement | null } = { settings: true }) {
  const navigation = node("section", "guest-navigation"); navigation.hidden = true;
  const settings = node("section", "guest-settings settings-detail"); settings.hidden = true;
  // Where the owner's roster sits: between the top bar and the floating tab bar.
@@ -100,7 +101,8 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const section = board?.board.sections.find(s => s.rows.length > 0);
   const row = section?.rows[0] ?? board?.board.archived[0];
   const rowState = section ? section.label : row?.archivedNote;
-  const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, rowState, selected, openPane === row?.id]);
+  // The account panel's presence too: the service's answer can come after Settings was drawn.
+  const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, rowState, selected, openPane === row?.id, !!options.account?.()]);
   if (signature === last) return; last = signature;
   const version = ++generation;
   void (async () => {
@@ -156,7 +158,15 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   lines.append(node("span", "settings-machine-card-name", access.agentName), node("span", "settings-machine-card-status", `Shared by ${access.ownerName}`), node("span", "settings-machine-version", access.machineLabel));
   card.append(disc, lines);
   const body = node("div", "settings-page-body");
-  body.append(card, ...shareDetails(guest));
+  // The HerdrUp account (herdrupAccount.ts HerdrUpAccountPanel), in the browser guest only, once
+  // the account service offers web sign-in here: the desktop's guest mode has it in its own Settings.
+  const account = options.account?.() ?? null;
+  const accountPart: HTMLElement[] = [];
+  if (account) {
+   const accountCard = node("div", "guest-card guest-settings-card guest-account"); accountCard.append(account);
+   accountPart.push(node("h3", "guest-settings-section", ACCOUNT_TITLE), accountCard);
+  }
+  body.append(card, ...accountPart, ...shareDetails(guest));
   settings.replaceChildren(node("h1", "settings-page-title", "Settings"), body);
  }
 

@@ -17,6 +17,8 @@ export function browserAccountPage(): AccountPage {
 const problemOf = (error: unknown) => error instanceof AccountServiceError && error.status >= 500
  ? "The account service is unavailable. Try again later." : "Couldn't reach the account service.";
 
+/** The account Desk methods, and whether this load ended a sign-in (`signInReturned`, the marker
+ *  this call takes out of the address) for the page to open where the result shows. */
 export function createAccountDesk(page: AccountPage) {
  const account = new WebAccount(page.fetch);
  let live: Promise<Provider[]> | null = null;
@@ -33,7 +35,7 @@ export function createAccountDesk(page: AccountPage) {
   return s;
  };
  const takeProblem = () => { const p = pendingProblem; pendingProblem = ""; return p; };
- return {
+ const desk = {
   async accountProviders(): Promise<string[]> {
    if (!webSignInAvailable(page.origin)) return [];
    live ??= webSignInProviders(page.fetch).then(list => { if (list.length < 2) live = null; return list; });
@@ -56,4 +58,5 @@ export function createAccountDesk(page: AccountPage) {
    return s;
   },
  };
+ return { desk, signInReturned: returned !== null };
 }
