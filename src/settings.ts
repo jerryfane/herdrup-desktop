@@ -6,9 +6,11 @@ import type { PredictionMode } from "./predictiveEcho";
 import { typingLatency, latencyLines } from "./typingLatency";
 import { chatModeOf, defaultChatMode, changeDefaultChatMode } from "./chatPreference";
 import { AccountSettings } from "./settingsAccounts";
+import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "./herdrupAccount";
 import accountIcon from "../third_party/phosphor/web/key.svg?url";
 import { GuestSettings } from "./settingsGuests";
 import guestsIcon from "../third_party/phosphor/web/users.svg?url";
+import herdrupAccountIcon from "../third_party/phosphor/web/user-circle.svg?url";
 import { NotificationsSettings } from "./settingsNotifications";
 import { SavedSwitch } from "./settingsSwitch";
 import { ServerUpdateSettings, type UpdateSuggestion } from "./settingsUpdates";
@@ -41,6 +43,7 @@ const settingIcons: Record<string, string> = {
   "chevron.left.forwardslash.chevron.right": codeIcon, "plus.circle": addIcon,
   "key.horizontal": accountIcon,
   "person.2": guestsIcon,
+  "person.crop.circle": herdrupAccountIcon,
   "bell": notificationIcon,
   "keyboard": keyboardIcon,
   "arrow.down.circle": updateIcon,
@@ -52,7 +55,7 @@ const settingIcons: Record<string, string> = {
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
-type Page = "machines" | "accounts" | "sharedAccess" | "notifications" | "textSize" | "typingLatency" | "appUpdates";
+type Page = "machines" | "herdrupAccount" | "accounts" | "sharedAccess" | "notifications" | "textSize" | "typingLatency" | "appUpdates";
 /** The Settings of a device viewing a share (guest mode): the share's card and its page
  *  (`details`, guestHome.ts) in place of the machine's, and a way to connect a machine of
  *  its own. `key` changes when the page's content does. */
@@ -100,6 +103,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     accountSummary.textContent = summary.value; setHeader("accounts", summary.header, summary.warn);
     exhausted = summary.exhausted; renderSuggestions();
   });
+  // The HerdrUp account (herdrupAccount.ts), not the agents' accounts above: its row shows once
+  // the account service offers sign-in.
+  const herdrupAccount = new HerdrUpAccountPanel(() => { herdrupAccountSummary.textContent = herdrupAccount.summary(); if (herdrupAccountShown !== herdrupAccount.available) { herdrupAccountShown = herdrupAccount.available; renderIndex(); } });
+  const herdrupAccountSummary = el("span", "settings-row-value");
+  let herdrupAccountShown = false;
+  void herdrupAccount.refresh();
   const guests = new GuestSettings(report, (value, header) => { guestSummary.textContent = value; setHeader("sharedAccess", header); });
   const notifications = new NotificationsSettings(report, (value, header, warn) => {
     notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
@@ -260,6 +269,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       const connection = el("span", "settings-machine-card-status"); connectionNodes.push(connection);
       lines.append(label, connection, versionLine()); card.append(disc(60, name()), lines);
     }
+    herdrupAccountSummary.textContent = herdrupAccount.summary();
+    const herdrupAccountRow = row(ACCOUNT_TITLE, "person.crop.circle", () => choose("herdrupAccount"), "", herdrupAccountSummary);
+    herdrupAccountRow.setAttribute("aria-current", selected === "herdrupAccount" ? "page" : "false");
     const accountRow = row("Accounts", "key.horizontal", () => choose("accounts"), "", accountSummary);
     accountRow.setAttribute("aria-current", selected === "accounts" ? "page" : "false");
     const sharedRow = row("Shared access", "person.2", () => choose("sharedAccess"), "", guestSummary);
@@ -304,7 +316,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     const herd = share
       ? group("YOUR OWN MACHINE", [row("Connect your own machine", "plus.circle", () => share?.connectOwn(), "Pair your computer or add an SSH host")])
       : group("YOUR HERD", [accountRow, sharedRow, notificationRow]);
-    index.replaceChildren(card, suggestions, herd, group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
+    index.replaceChildren(card, suggestions, ...(herdrupAccountShown ? [group(ACCOUNT_TITLE.toUpperCase(), [herdrupAccountRow])] : []), herd, group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
       ...(share ? [] : [latencyRow]),
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
@@ -349,9 +361,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     connectionNodes = connectionNodes.filter(node => index.contains(node));
     versionNodes = versionNodes.filter(node => index.contains(node));
     showSubtitle();
-    title.textContent = selected === "machines" ? "Machines" : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : selected === "appUpdates" ? "App updates" : "Text size";
+    title.textContent = selected === "machines" ? "Machines" : selected === "herdrupAccount" ? ACCOUNT_TITLE : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : selected === "appUpdates" ? "App updates" : "Text size";
     body.replaceChildren();
     if (share && selected === "machines") { title.textContent = "Shared with you"; body.append(share.details()); return; }
+    if (selected === "herdrupAccount") { body.append(herdrupAccount.root); void herdrupAccount.refresh(true); return; }
     if (selected === "accounts") { body.append(accounts.root); return; }
     if (selected === "sharedAccess") { body.append(guests.root); return; }
     if (selected === "notifications") { body.append(notifications.root); void notifications.refresh(); return; }

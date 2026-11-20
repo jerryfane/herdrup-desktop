@@ -1,3 +1,5 @@
+import { webGuest } from "./platform";
+import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
 import type { Machine, PairingOffer, SavedMachine } from "./mygo";
 import "./hosts.css";
@@ -139,7 +141,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
- home.append(header, section, shared, empty, pair, add, inviteActions, message); container.replaceChildren(home);
+ home.append(header, section, shared, empty, pair, add, inviteActions, message);
+ // The first-launch sign-in (1B) stands in front of the host home until it is answered; the web
+ // guest's sign-in lives in Settings only.
+ const welcome = new AccountWelcome(() => { home.hidden = false; });
+ container.replaceChildren(...(webGuest ? [home] : [welcome.root, home]));
  async function openPendingInvitation() {
   const text = await Desk.takeGuestInvitation();
   if (text) showGuestAccept(refresh, showAgents, text);
@@ -238,6 +244,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   void refreshPaste();
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
+   if (!webGuest) home.hidden = await welcome.update(machines.length === 0 && shares.length === 0);
+   if (generation !== version) return;
    shared.hidden = shares.length === 0;
    placeOwnerSetup(shares.length > 0);
    // Without shares the instructions show only while nothing is saved; inside the

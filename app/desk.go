@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/jerryfane/herdrup-desktop/internal/account"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
@@ -126,6 +127,12 @@ type Desk struct {
 	// (desk_guest.go); replaced in tests.
 	guestClock guest.Clock
 	pins       *bridge.FilePinStore
+	// account is the HerdrUp account session (desk_account.go); its
+	// refresh token lives in accountStore, the system credential store.
+	account      *account.Client
+	accountStore *account.SecretsStore
+	// openBrowser opens a URL in the system browser; replaced in tests.
+	openBrowser func(string) error
 
 	mu                 sync.Mutex
 	pendingGuestInvite string
@@ -255,6 +262,8 @@ func newDesk(dir string) *Desk {
 		usage:          newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
 		boards:         boardCache{dir: filepath.Join(dir, "cache", "boards")},
 	}
+	d.account, d.accountStore = newAccountClient(runtime.GOOS)
+	d.openBrowser = mygo.Shell.OpenExternal
 	d.crash = newCrashReporter(filepath.Join(dir, "crash-reports"), d.usage, mygo.App.Version())
 	return d
 }
