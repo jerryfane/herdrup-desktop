@@ -1,7 +1,7 @@
 import { webGuest } from "./platform";
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
-import type { Machine, PairingOffer, SavedMachine } from "./mygo";
+import type { Machine, PairingOffer, SavedMachine, SyncedMachine } from "./mygo";
 import "./hosts.css";
 import { showPairing } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
@@ -63,6 +63,45 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
  const startPairing = (offer?: PairingOffer) => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit(), offer);
  const pair = action("Scan pairing code", () => startPairing()); pair.className = "host-pair";
+ // 1B-dk "Welcome back": the account's machines this device hasn't saved, each to pair here.
+ // Rows are the saved rows' neutral style (no colour per machine).
+ const synced = element("section", "host-home-saved host-home-synced"); synced.hidden = true;
+ const syncedRows = element("div", "host-home-rows");
+ synced.append(element("h2", "", "FROM YOUR ACCOUNT"), syncedRows);
+ let syncedMachines: SyncedMachine[] = [];
+ let accountHint: string | null = null; // null: signed out
+ const pairSynced = (m: SyncedMachine) => {
+  // A key machine pairs with `herdr pair` (its key is made here); a password one is added with
+  // its fields filled, and the password typed here.
+  if (m.key) startPairing();
+  else edit(undefined, { nickname: m.nickname ?? "", host: m.host, port: m.port, user: m.user, keyPath: "", session: "" });
+ };
+ const drawSynced = () => {
+  synced.hidden = accountHint === null || syncedMachines.length === 0;
+  syncedRows.replaceChildren(...syncedMachines.map(m => {
+   const row = element("div", "host-home-row host-home-synced-row");
+   const lines = element("span", "host-home-lines");
+   lines.append(element("span", "host-home-name", m.nickname?.trim() || m.host), element("span", "host-home-address", `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`));
+   const pairButton = action("Pair this device", () => pairSynced(m)); pairButton.className = "host-home-pair-synced";
+   row.append(lines, pairButton);
+   return row;
+  }));
+  if (accountHint !== null && syncedMachines.length) {
+   header.querySelector("h1")!.textContent = "Welcome back";
+   subtitle.textContent = accountHint ? `Signed in · ${accountHint}` : "Signed in";
+  }
+ };
+ const refreshAccount = async () => {
+  const state = await Desk.accountState().catch(() => null);
+  accountHint = state?.signedIn ? state.displayHint ?? "" : null;
+  syncedMachines = accountHint === null ? [] : await Desk.syncedMachines().catch(() => []);
+  drawSynced();
+ };
+ if (!webGuest) {
+  events.syncedMachinesChanged.on(list => { syncedMachines = list; drawSynced(); });
+  events.accountChanged.on(() => { void refreshAccount(); });
+  void refreshAccount();
+ }
  const shared = element("section", "host-home-saved");
  const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
  const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite";
@@ -137,11 +176,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const ownerBody = element("div", "host-owner-setup-body");
  ownerSetup.append(ownerSummary, ownerBody);
  const placeOwnerSetup = (hasShared: boolean) => {
-  subtitle.textContent = hasShared ? "your shared agents" : "connect to your machine";
+  if (!(accountHint !== null && syncedMachines.length)) subtitle.textContent = hasShared ? "your shared agents" : "connect to your machine";
   if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
- home.append(header, section, shared, empty, pair, add, inviteActions, message);
+ home.append(header, section, synced, shared, empty, pair, add, inviteActions, message);
  // The first-launch sign-in (1B) stands in front of the host home until it is answered; the web
  // guest's sign-in lives in Settings only.
  const welcome = new AccountWelcome(() => { home.hidden = false; });
@@ -190,11 +229,13 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  document.addEventListener("click", closeMenu);
  document.addEventListener("keydown", event => { if (event.key === "Escape") closeMenu(); });
  sheet.addEventListener("close", () => { (form.elements.namedItem("password") as HTMLInputElement).value = ""; });
- function edit(machine?: SavedMachine) {
+ /** `prefill`: a new host's fields, as an account machine to pair (1B) brings them. */
+ function edit(machine?: SavedMachine, prefill?: Partial<Machine>) {
   editing = machine ?? null; error.hidden = true;
+  const from: Partial<Machine> = machine ?? prefill ?? {};
   for (const key of ["nickname", "host", "port", "user", "keyPath", "session", "password"]) {
    const input = form.elements.namedItem(key);
-   if (input instanceof HTMLInputElement) input.value = key === "port" ? String(machine?.port ?? 22) : String(machine?.[key as keyof Machine] ?? "");
+   if (input instanceof HTMLInputElement) input.value = key === "port" ? String(from.port ?? 22) : String(from[key as keyof Machine] ?? "");
   }
   title.textContent = machine ? "Edit host" : "Add host";
   submit.textContent = machine ? "Save" : "Save & Connect"; saveOnly.hidden = !!machine;
@@ -244,6 +285,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   void refreshPaste();
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
+   if (!webGuest && accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
    if (!webGuest) home.hidden = await welcome.update(machines.length === 0 && shares.length === 0);
    if (generation !== version) return;
    shared.hidden = shares.length === 0;
