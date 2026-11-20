@@ -127,3 +127,17 @@ test("a refresh that answers after sign-out does not bring the session back", as
  // Sign-out waited for the refresh, so it sent the rotated cookie.
  expect(s.calls.find(c => c.url.endsWith("/v1/auth/signout"))!.cookie).toBe("c1");
 });
+
+test("a refresh queued behind the lock when sign-out starts does not sign back in", async () => {
+ const s = service(), shared = locks();
+ let release!: () => void;
+ const held = shared.request("herdrup-account-refresh", () => new Promise<void>(r => { release = r; })); // another tab
+ await new Promise(r => setTimeout(r, 0)); // the other tab holds the lock
+ const account = new WebAccount(s.fetcher, undefined, Date.now, shared);
+ const pending = account.accessToken(); // queued behind the other tab
+ const signedOut = account.signOut();   // queued behind the refresh
+ release(); await held;
+ await expect(pending).rejects.toBeInstanceOf(SignedOutError);
+ await signedOut;
+ expect(account.current).toBeNull();
+});

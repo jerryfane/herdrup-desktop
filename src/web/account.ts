@@ -97,7 +97,10 @@ export class WebAccount {
  accessToken(): Promise<string> {
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
   if (!this.flight) {
-   const flight: Promise<string> = this.exclusive(() => this.refresh(this.epoch)).finally(() => { if (this.flight === flight) this.flight = null; });
+   // The epoch now, not when the lock is granted: a sign-out while this waits for the lock
+   // (another tab's refresh, or the sign-out itself) makes its answer stale.
+   const epoch = this.epoch;
+   const flight: Promise<string> = this.exclusive(() => this.refresh(epoch)).finally(() => { if (this.flight === flight) this.flight = null; });
    this.flight = flight;
   }
   return this.flight;
