@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,9 @@ type Machine struct {
 	// Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
 	// rather than an unrelated ECDSA key or certificate served by the same sshd.
 	Paired bool `json:"paired,omitempty"`
+	// SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
+	// UUID), "" until it first synced (desk_account_sync.go).
+	SyncID string `json:"syncId,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -131,6 +135,7 @@ type Desk struct {
 	// refresh token lives in accountStore, the system credential store.
 	account      *account.Client
 	accountStore *account.SecretsStore
+	accountSync  accountSync
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 
@@ -386,6 +391,8 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if index < 0 {
 		st.Machines = append(st.Machines, m)
 	} else {
+		// The page doesn't hold the sync id: an edit keeps the machine's.
+		m.SyncID = st.Machines[index].SyncID
 		st.Machines[index] = m
 		if st.Active == replacing {
 			st.Active = id
@@ -398,6 +405,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		d.boards.forget(replacing)
 	}
 	d.boards.allow(id)
+	d.syncMachinesSoon()
 	return nil
 }
 
@@ -453,6 +461,24 @@ func (d *Desk) RemoveMachine(id string) error {
 		d.storeMu.Unlock()
 		return nil
 	}
+	syncID := st.Machines[i].SyncID
+	if syncID != "" {
+		// Pushed as a tombstone on the next sync, so the account's other
+		// devices drop it too. Kept before the machine goes: a removal the
+		// account would never hear of is refused instead.
+		state, err := d.loadSyncState()
+		if err != nil {
+			d.storeMu.Unlock()
+			return err
+		}
+		if !slices.Contains(state.Deletes, syncID) {
+			state.Deletes = append(state.Deletes, syncID)
+			if err := d.storeSyncState(state); err != nil {
+				d.storeMu.Unlock()
+				return err
+			}
+		}
+	}
 	st.Machines = append(st.Machines[:i], st.Machines[i+1:]...)
 	wasActive := st.Active == id
 	if wasActive {
@@ -473,6 +499,9 @@ func (d *Desk) RemoveMachine(id string) error {
 	d.mu.Unlock()
 	if wasActive || connected {
 		d.Disconnect()
+	}
+	if syncID != "" {
+		d.syncMachinesSoon()
 	}
 	return nil
 }
@@ -633,6 +662,8 @@ func (d *Desk) remember(m Machine) error {
 	}
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
+		// The page doesn't hold the sync id: a reconnect keeps the machine's.
+		m.SyncID = st.Machines[i].SyncID
 		st.Machines[i] = m
 	} else {
 		st.Machines = append(st.Machines, m)
@@ -642,6 +673,7 @@ func (d *Desk) remember(m Machine) error {
 		return err
 	}
 	d.boards.allow(id)
+	d.syncMachinesSoon()
 	return nil
 }
 

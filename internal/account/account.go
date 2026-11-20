@@ -472,9 +472,57 @@ func (c *Client) expiry(seconds int64) time.Time {
 	return c.now().Add(time.Duration(seconds)*time.Second - time.Minute)
 }
 
+// ErrAccountChanged means the signed-in account is no longer the one a
+// request was made for: its work is stale and is not sent.
+var ErrAccountChanged = errors.New("account: the signed-in account changed")
+
+// accessTokenFor is AccessToken, for account acct only: a token is returned
+// only while acct's session is the current one, so work planned for one
+// account never reaches another.
+func (c *Client) accessTokenFor(ctx context.Context, acct string) (string, error) {
+	token, err := c.AccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.saved == nil || c.saved.AccountID != acct || c.access != token {
+		return "", ErrAccountChanged
+	}
+	return token, nil
+}
+
+// authed makes a request for account acct with its access token. A 401
+// means the access token stopped working before its time (the session was
+// refreshed elsewhere in this process, or revoked): it is dropped and the
+// request retried once with a fresh one, still for acct only.
+func (c *Client) authed(ctx context.Context, acct, method, path string, body, out any) error {
+	for attempt := 0; ; attempt++ {
+		token, err := c.accessTokenFor(ctx, acct)
+		if err != nil {
+			return err
+		}
+		err = c.send(ctx, method, path, token, body, out)
+		var api *APIError
+		if attempt == 0 && errors.As(err, &api) && api.Status == http.StatusUnauthorized {
+			c.mu.Lock()
+			if c.access == token {
+				c.access = ""
+			}
+			c.mu.Unlock()
+			continue
+		}
+		return err
+	}
+}
+
 // post sends body as JSON (none when nil) and decodes a 2xx answer into
 // out (when not nil); any other answer is an *APIError.
 func (c *Client) post(ctx context.Context, path, bearer string, body any, out any) error {
+	return c.send(ctx, http.MethodPost, path, bearer, body, out)
+}
+
+func (c *Client) send(ctx context.Context, method, path, bearer string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -483,7 +531,7 @@ func (c *Client) post(ctx context.Context, path, bearer string, body any, out an
 		}
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.service+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.service+path, reader)
 	if err != nil {
 		return err
 	}

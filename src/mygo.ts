@@ -677,6 +677,11 @@ export interface Machine {
    * rather than an unrelated ECDSA key or certificate served by the same sshd.
    */
   paired?: boolean;
+  /**
+   * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
+   * UUID), "" until it first synced (desk_account_sync.go).
+   */
+  syncId?: string;
 }
 
 /**
@@ -947,6 +952,11 @@ export interface SavedMachine {
    * rather than an unrelated ECDSA key or certificate served by the same sshd.
    */
   paired?: boolean;
+  /**
+   * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
+   * UUID), "" until it first synced (desk_account_sync.go).
+   */
+  syncId?: string;
   /** Active marks the machine the desk connects to. */
   active: boolean;
 }
@@ -1074,6 +1084,20 @@ export interface SymbolImage {
    * an inline element puts it there.
    */
   baseline: number;
+}
+
+/**
+ * SyncedMachine is an account machine this device hasn't saved: the
+ * "Welcome back" list offers to pair it (1B).
+ */
+export interface SyncedMachine {
+  id: string;
+  nickname?: string;
+  host: string;
+  port: number;
+  user: string;
+  /** Key says the machine signs in with a key, so pairing asks for one. */
+  key: boolean;
 }
 
 export interface TerminalCreationResult {
@@ -1934,6 +1958,20 @@ export const Desk = {
   swapSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.SwapSettingsAccount", token, id);
   },
+  /**
+   * SyncMachines pulls the account's machines, merges them into the saved
+   * ones and pushes this device's changes. Without a session it does nothing.
+   */
+  syncMachines(): Promise<void> {
+    return call("Desk.SyncMachines");
+  },
+  /**
+   * SyncedMachines is the account's machines this device hasn't saved, as
+   * last synced (no network).
+   */
+  syncedMachines(): Promise<SyncedMachine[]> {
+    return call("Desk.SyncedMachines");
+  },
   /** TakeGuestInvitation hands a launch URL to the page once, without persisting it. */
   takeGuestInvitation(): Promise<string> {
     return call("Desk.TakeGuestInvitation");
@@ -2083,6 +2121,8 @@ export const events = {
    * sign-in, a refused session, sign-out).
    */
   accountChanged: event<AccountState>("account:changed"),
+  /** SyncedMachinesChanged tells the page the account's machines changed. */
+  syncedMachinesChanged: event<SyncedMachine[]>("syncedMachines:changed"),
   /** AgentActionRequested asks the page for a row menu item's dialog. */
   agentActionRequested: event<AgentAction>("agentActionRequested"),
   /** PaneActionChosen is a ••• item the page carries out. */

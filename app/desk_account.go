@@ -153,6 +153,9 @@ func (d *Desk) queueAccountLink(link string) bool {
 			cancel()
 			if err != nil {
 				problem = accountProblem(err)
+			} else {
+				// The account's machines arrive right after sign-in (1B).
+				d.syncMachinesSoon()
 			}
 		}
 		publishAccount(d.accountState(problem))
