@@ -150,7 +150,7 @@ test("a live read re-reads the newest page when an after page may replay unloade
   a1: { after: "a2", session_id: "s", entries: [...resent, ...appended] },
   "": { after: "a2", session_id: "s", entries: [...newest, ...appended] },
  };
- const live = await readLive(newest, { after: "a1", session_id: "s", entries: [] }, true, async after => { reads.push(after); return pages[after]!; });
+ const live = await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async after => { reads.push(after); return pages[after]!; });
  expect(reads).toEqual(["a1", ""]);
  expect(live!.reset).toBe(false);
  expect(live!.entries.map(e => e.id)).toEqual([...newest, ...appended].map(e => e.id));
@@ -158,7 +158,21 @@ test("a live read re-reads the newest page when an after page may replay unloade
 
 test("a live read takes a new session whole, and stops on a stale reply", async () => {
  const fresh: TranscriptPage = { after: "b1", session_id: "t", entries: appended };
- const live = await readLive(newest, { after: "a1", session_id: "s", entries: [] }, true, async () => fresh);
+ const live = await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async () => fresh);
  expect([live!.reset, live!.entries.map(e => e.id)]).toEqual([true, appended.map(e => e.id)]);
- expect(await readLive(newest, { after: "a1", session_id: "s", entries: [] }, true, async () => null)).toBeNull();
+ expect(await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async () => null)).toBeNull();
+});
+
+// #253: history loaded while a live read waits on the network is the chat's entries when the reply
+// is applied; the merge starts from them, not from what the chat held when the read began.
+test("a live read merges into the entries held when its reply arrives, keeping history loaded meanwhile", async () => {
+ const history: Entry[] = [{ kind: "user", id: "h1", ts_ms: 1, text: "older" }];
+ const tail: Entry[] = [{ kind: "reply", id: "t1", ts_ms: 2, text: "tail" }];
+ const fresh: Entry[] = [{ kind: "reply", id: "n1", ts_ms: 3, text: "new" }];
+ let entries = tail;
+ const live = await readLive({ after: "a1", session_id: "s", entries: tail }, () => ({ entries, hasOlder: false }), async () => {
+  entries = [...history, ...tail]; // "Earlier messages" finished during the request
+  return { after: "a2", session_id: "s", entries: fresh, resent: [] };
+ });
+ expect(live!.entries.map(e => e.id)).toEqual(["h1", "t1", "n1"]);
 });

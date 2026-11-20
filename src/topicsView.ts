@@ -412,21 +412,25 @@ class TopicChat {
   const session = this.page?.session_id;
   try {
    const held = new Set(this.entries.map(entry => entry.id));
-   const height = this.messages.scrollHeight;
-   const follow = this.messages.scrollHeight - this.messages.scrollTop - this.messages.clientHeight <= 8;
+   // Scroll state is read when the reply is applied, not when the read started: a reader who
+   // scrolled up while it was pending stays where they are (#252 review).
+   let height = 0, follow = false;
+   const measure = () => { height = this.messages.scrollHeight; follow = this.messages.scrollHeight - this.messages.scrollTop - this.messages.clientHeight <= 8; };
    if (older) {
     const next: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, "", this.before!, ""));
     if (this.disposed || next.session_id !== session || this.page?.session_id !== session) return;
+    measure();
     this.entries = mergeTranscript(this.entries, next.entries ?? [], { older: true });
     this.before = next.before;
    } else {
     // The chat's own live read (readLive): an after page that may re-send unloaded history is
     // replaced by the newest page, as the agent's chat does (#749 review F2).
-    const live = await readLive(this.entries, this.page, !!this.before, async after => {
+    const live = await readLive(this.page, () => ({ entries: this.entries, hasOlder: !!this.before }), async after => {
      const read: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, after, "", after ? this.before ?? "" : ""));
      return this.disposed ? null : read;
     });
     if (!live) return;
+    measure();
     if (live.reset) this.before = live.page.before;
     this.entries = live.entries; this.page = live.page;
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());

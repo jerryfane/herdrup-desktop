@@ -125,18 +125,22 @@ export function mergeNewest(current: Entry[], page: Entry[]): Entry[] | null {
  *  `read(after)` fetches a page after that cursor ("" for the newest page) and returns null once
  *  the reply is stale. An after page that may re-send unloaded history (replayUnknown) is replaced
  *  by the newest page, merged by position (rereadMerge). `reset`: the chat starts over from
- *  `page` (a new session, a first read, or a newest page sharing nothing with it). */
+ *  `page` (a new session, a first read, or a newest page sharing nothing with it).
+ *  `current()` is the chat's entries now and whether older history is left: it is read after each
+ *  request, never before, so history loaded while a read is pending is kept (#253). */
 export interface LiveRead { page: TranscriptPage; entries: Entry[]; reset: boolean }
-export async function readLive(entries: Entry[], held: TranscriptPage | null, hasOlder: boolean, read: (after: string) => Promise<TranscriptPage | null>): Promise<LiveRead | null> {
+export async function readLive(held: TranscriptPage | null, current: () => { entries: Entry[]; hasOlder: boolean }, read: (after: string) => Promise<TranscriptPage | null>): Promise<LiveRead | null> {
  let page = await read(held?.after ?? "");
  if (!page) return null;
- const reread = !!held && held.session_id === page.session_id && replayUnknown(entries, page, hasOlder);
+ const now = current();
+ const reread = !!held && held.session_id === page.session_id && replayUnknown(now.entries, page, now.hasOlder);
  const ambiguous = page.entries ?? [];
  if (reread) {
   const newest = await read("");
   if (!newest) return null;
   page = newest;
  }
+ const entries = current().entries;
  const merged = reread && held?.session_id === page.session_id ? rereadMerge(entries, ambiguous, page.entries ?? []) : undefined;
  const reset = !held || held.session_id !== page.session_id || merged === null;
  return { page, reset, entries: merged ?? mergeTranscript(reset ? [] : entries, page.entries ?? [], { resent: page.resent }) };
