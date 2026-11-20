@@ -398,11 +398,15 @@ func TestSignInIsOfferedPerProviderOnceTheServiceListsIt(t *testing.T) {
 
 // A sign-out whose context ends while a refresh is out (a window closed):
 // the refresh's later answer must neither crash nor bring the session back.
+// Each step waits on an explicit signal: the refresh has reached the
+// service, sign-out has returned, the refresh has finished.
 func TestARefreshAnsweringAfterSignOutCommitsNothing(t *testing.T) {
 	f, c, store, now := signedIn(t)
-	gate := make(chan struct{})
+	started, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/auth/refresh" {
+			once.Do(func() { close(started) })
 			<-gate
 		}
 		f.serve(w, r)
@@ -413,29 +417,26 @@ func TestARefreshAnsweringAfterSignOutCommitsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- c.SignOut(ctx) }()
-	time.Sleep(50 * time.Millisecond) // SignOut is waiting on the refresh
+	<-started // the refresh is at the service
+	c.mu.Lock()
+	inFlight := c.flight
+	c.mu.Unlock()
+	if inFlight == nil {
+		t.Fatal("no refresh in flight")
+	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("sign-out: %v", err)
 	}
-	close(gate) // the refresh answers now
-	for i := 0; i < 50; i++ {
-		c.mu.Lock()
-		idle := c.flight == nil
-		c.mu.Unlock()
-		if idle {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
+	close(gate) // the refresh answers, with a good token pair
+	<-inFlight.done
 	if s, _ := c.Current(); s != nil {
 		t.Fatalf("signed in again after sign-out: %+v", s)
 	}
 	if store.raw != nil {
 		t.Fatalf("the late refresh stored a session: %s", store.raw)
 	}
-	if _, err := c.AccessToken(context.Background()); !errors.Is(err, ErrSignedOut) {
-		t.Fatalf("access after sign-out: %v", err)
+	if !errors.Is(inFlight.err, ErrSignedOut) {
+		t.Fatalf("the late refresh's result: %v; want ErrSignedOut", inFlight.err)
 	}
 }

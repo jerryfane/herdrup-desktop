@@ -466,7 +466,11 @@ func (d *Desk) RemoveMachine(id string) error {
 		// Pushed as a tombstone on the next sync, so the account's other
 		// devices drop it too. Kept before the machine goes: a removal the
 		// account would never hear of is refused instead.
-		state := d.loadSyncState()
+		state, err := d.loadSyncState()
+		if err != nil {
+			d.storeMu.Unlock()
+			return err
+		}
 		if !slices.Contains(state.Deletes, syncID) {
 			state.Deletes = append(state.Deletes, syncID)
 			if err := d.storeSyncState(state); err != nil {

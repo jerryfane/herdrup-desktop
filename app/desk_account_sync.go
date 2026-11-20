@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -30,16 +31,31 @@ type syncState struct {
 	AccountID string         `json:"accountId"`
 	Mirror    account.Mirror `json:"mirror"`
 	Deletes   []string       `json:"deletes,omitempty"`
+	// Baseline is each machine's shared fields (sharedFields) as this
+	// device last agreed them with the account, by sync id: a machine that
+	// differs from it was edited here. Device-local fields such as whether
+	// this device signs in with a key are not part of it.
+	Baseline map[string]account.HostBody `json:"baseline,omitempty"`
 }
 
 func (d *Desk) syncStatePath() string { return filepath.Join(d.dir, "account-sync.json") }
 
-func (d *Desk) loadSyncState() syncState {
+// loadSyncState reads account-sync.json; none yet is an empty state, and an
+// unreadable or damaged one is an error (never a silent restart, which
+// would drop pending deletes).
+func (d *Desk) loadSyncState() (syncState, error) {
 	var s syncState
-	if raw, err := os.ReadFile(d.syncStatePath()); err == nil {
-		_ = json.Unmarshal(raw, &s)
+	raw, err := os.ReadFile(d.syncStatePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
 	}
-	return s
+	if err != nil {
+		return s, err
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return syncState{}, fmt.Errorf("account sync state %s: %w", d.syncStatePath(), err)
+	}
+	return s, nil
 }
 
 func (d *Desk) storeSyncState(s syncState) error {
@@ -54,24 +70,43 @@ func (d *Desk) storeSyncState(s syncState) error {
 	return os.Rename(tmp, d.syncStatePath())
 }
 
-// hostBody is what a saved machine syncs as, over base (the account's copy,
-// so fields this app doesn't keep, such as label, are kept).
-func hostBody(m Machine, base account.HostBody) account.HostBody {
-	b := base
-	b.Nickname, b.Host, b.Port, b.Username = m.Nickname, m.Host, m.Port, m.User
+// sharedFields are the fields one device's edit of a machine changes for
+// every device: nickname, host, port and username.
+func sharedFields(m Machine) account.HostBody {
+	port := m.Port
+	if port == 0 {
+		port = 22
+	}
+	return account.HostBody{Nickname: m.Nickname, Host: m.Host, Port: port, Username: m.User}
+}
+
+func sharedOf(b account.HostBody) account.HostBody {
 	if b.Port == 0 {
 		b.Port = 22
 	}
-	b.AuthKind = "password"
-	if m.KeyPath != "" {
-		b.AuthKind = "key"
+	return account.HostBody{Nickname: b.Nickname, Host: b.Host, Port: b.Port, Username: b.Username}
+}
+
+// hostBody is what a saved machine syncs as, over base (the account's copy,
+// so fields this app doesn't keep, such as label, are kept). Whether it
+// signs in with a key is this device's: it is sent for a new machine only,
+// and an edit keeps the account's value.
+func hostBody(m Machine, base account.HostBody) account.HostBody {
+	b := base
+	s := sharedFields(m)
+	b.Nickname, b.Host, b.Port, b.Username = s.Nickname, s.Host, s.Port, s.Username
+	if b.AuthKind == "" {
+		b.AuthKind = "password"
+		if m.KeyPath != "" {
+			b.AuthKind = "key"
+		}
 	}
 	return b
 }
 
-// sameHost reports whether a machine's synced fields equal body's.
+// sameHost reports whether a machine's shared fields equal body's.
 func sameHost(m Machine, body account.HostBody) bool {
-	return hostBody(m, body) == body
+	return sharedFields(m) == sharedOf(body)
 }
 
 // SyncedMachine is an account machine this device hasn't saved: the
@@ -104,9 +139,9 @@ func (d *Desk) SyncedMachines() ([]SyncedMachine, error) {
 	}
 	d.storeMu.Lock()
 	st, err := d.load()
-	state := d.loadSyncState()
+	state, stateErr := d.loadSyncState()
 	d.storeMu.Unlock()
-	if err != nil {
+	if err = errors.Join(err, stateErr); err != nil {
 		return nil, err
 	}
 	if state.AccountID != cur.AccountID {
@@ -159,8 +194,11 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	// result for the old one is dropped.
 	still := func() bool { c, _ := d.account.Current(); return c != nil && c.AccountID == acct }
 	d.storeMu.Lock()
-	state := d.loadSyncState()
+	state, err := d.loadSyncState()
 	d.storeMu.Unlock()
+	if err != nil {
+		return err
+	}
 	switched := state.AccountID != acct
 	if switched {
 		// Another account (or the first sync): pull everything first and
@@ -198,14 +236,19 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		d.storeMu.Unlock()
 		return err
 	}
-	pending := d.loadSyncState().Deletes
+	latest, err := d.loadSyncState()
+	if err != nil {
+		d.storeMu.Unlock()
+		return err
+	}
+	pending, baseline := latest.Deletes, latest.Baseline
 	if switched {
-		pending = nil
+		pending, baseline = nil, nil
 		for i := range st.Machines {
 			st.Machines[i].SyncID = ""
 		}
 	}
-	changes, deletes, renamed := mergeMachines(&st, old, mirror, known, pending)
+	changes, deletes, renamed, baseline := mergeMachines(&st, old, mirror, known, pending, baseline)
 	if err := d.store(st); err != nil {
 		d.storeMu.Unlock()
 		return err
@@ -215,7 +258,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		d.boards.forget(from)
 		d.boards.allow(to)
 	}
-	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes}
+	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline}
 	if err := d.storeSyncState(state); err != nil {
 		d.storeMu.Unlock()
 		return err
@@ -248,7 +291,11 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 			d.storeMu.Unlock()
 			return nil
 		}
-		state = d.loadSyncState()
+		state, err = d.loadSyncState()
+		if err != nil {
+			d.storeMu.Unlock()
+			return err
+		}
 		pushed := map[string]bool{}
 		for _, c := range changes {
 			if c.Deleted {
@@ -271,21 +318,31 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 // synced, known the ids the account is known to have held) to the saved
 // machines and returns the changes to push, one per id. deletes are
 // machines removed here and not yet pushed; it returns those left.
-func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[string]bool, deletes []string) (changes []account.Change, left []string, renamed map[string]string) {
+func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[string]bool, deletes []string, baseline map[string]account.HostBody) (changes []account.Change, left []string, renamed map[string]string, nextBaseline map[string]account.HostBody) {
 	renamed = map[string]string{}
-	before := map[string]account.HostBody{}
-	for _, h := range old.Hosts {
-		before[h.ID] = h.Body
-	}
 	now := map[string]account.HostBody{}
 	for _, h := range mirror.Hosts {
 		now[h.ID] = h.Body
 	}
-	// A local edit since the last sync wins over the account's copy: the
-	// last write to reach the service wins (§5.3), and this one hasn't yet.
+	// A machine was edited here when its shared fields differ from what this
+	// device last agreed with the account (its baseline; the last mirror for
+	// a machine from before baselines). Device-local fields never count.
+	agreed := func(id string) (account.HostBody, bool) {
+		if b, ok := baseline[id]; ok {
+			return b, true
+		}
+		for _, h := range old.Hosts {
+			if h.ID == id {
+				return sharedOf(h.Body), true
+			}
+		}
+		return account.HostBody{}, false
+	}
+	// An edit made here since the last sync wins over the account's copy:
+	// the last write to reach the service wins (§5.3), and this one hasn't.
 	edited := map[int]bool{}
 	for i, m := range st.Machines {
-		if base, ok := before[m.SyncID]; m.SyncID != "" && ok && !sameHost(m, base) {
+		if base, ok := agreed(m.SyncID); m.SyncID != "" && ok && sharedFields(m) != base {
 			edited[i] = true
 		}
 	}
@@ -296,7 +353,7 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 	plan, err := account.PlanHosts(local, mirror.Hosts, known)
 	if err != nil {
 		log.Printf("account sync: %v", err)
-		return nil, deletes, renamed
+		return nil, deletes, renamed, baseline
 	}
 	// One change per id: the service refuses a push naming an id twice.
 	seen := map[string]bool{}
@@ -379,7 +436,16 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 			left = append(left, id)
 		}
 	}
-	return changes, left, renamed
+	// What this device and the account now agree on: a machine's shared
+	// fields as they stand after the merge. One whose remote change couldn't
+	// be applied here keeps its own, so it isn't pushed back as an edit.
+	nextBaseline = map[string]account.HostBody{}
+	for _, m := range st.Machines {
+		if m.SyncID != "" {
+			nextBaseline[m.SyncID] = sharedFields(m)
+		}
+	}
+	return changes, left, renamed, nextBaseline
 }
 
 // machineSyncEvery is how often a signed-in app syncs machines while open.

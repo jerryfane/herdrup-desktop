@@ -394,7 +394,7 @@ func TestOneChangePerID(t *testing.T) {
 	hostB := account.RemoteHost{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Rev: 2, Body: account.HostBody{Host: "PI", Username: "root"}}
 	mirror := account.Mirror{Rev: 2, Hosts: []account.RemoteHost{hostA, hostB}}
 	st := machineStore{Machines: []Machine{{Host: "pi", User: "root", Port: 22, KeyPath: "/k", SyncID: hostA.ID}}}
-	changes, _, _ := mergeMachines(&st, mirror, mirror, map[string]bool{hostA.ID: true, hostB.ID: true}, []string{hostB.ID})
+	changes, _, _, _ := mergeMachines(&st, mirror, mirror, map[string]bool{hostA.ID: true, hostB.ID: true}, []string{hostB.ID}, nil)
 	n := 0
 	for _, c := range changes {
 		if c.ID == hostB.ID {
@@ -433,5 +433,83 @@ func TestARemovalWhoseTombstoneCantBeKeptIsRefused(t *testing.T) {
 	}
 	if _, ok := syncIDs(t, mac)["root@pi:22"]; !ok {
 		t.Fatal("the machine was removed though the account would never hear of it")
+	}
+}
+
+// #257 review round 3: whether a device signs in with a key or a password
+// is its own. A password device that changed nothing must not push its
+// nickname back over the key device's rename, sync after sync.
+func TestADevicesOwnSignInKindIsNotAnEdit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	ctx := context.Background()
+	keyDev, pwDev := device(t, srv), device(t, srv)
+	if err := keyDev.SaveMachine(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := pwDev.SaveMachine(Machine{Nickname: "Old", Host: "pi", User: "root"}, ""); err != nil { // password here
+		t.Fatal(err)
+	}
+	sync := func(d *Desk) {
+		t.Helper()
+		if err := d.SyncMachines(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sync(keyDev)
+	sync(pwDev)
+	if err := keyDev.SaveMachine(Machine{Nickname: "New", Host: "pi", User: "root", KeyPath: "/k"}, "root@pi:22"); err != nil {
+		t.Fatal(err)
+	}
+	sync(keyDev)
+	w.mu.Lock()
+	writes := w.rev
+	w.mu.Unlock()
+	for range 3 {
+		sync(pwDev)
+	}
+	live := w.live()
+	id := syncIDs(t, keyDev)["root@pi:22"]
+	if body := string(live[id].Body); !strings.Contains(body, `"New"`) || !strings.Contains(body, `"key"`) {
+		t.Fatalf("account copy after the password device synced: %s; want the key device's rename and auth kind kept", body)
+	}
+	w.mu.Lock()
+	extra := w.rev - writes
+	w.mu.Unlock()
+	if extra != 0 {
+		t.Fatalf("the unchanged password device wrote %d times", extra)
+	}
+	ms, _ := pwDev.Machines()
+	if ms[0].Nickname != "New" || ms[0].KeyPath != "" {
+		t.Fatalf("password device: %+v; want the rename taken and no key path", ms[0].Machine)
+	}
+}
+
+// #257 review round 3: a damaged account-sync.json is an error, never a
+// silent restart: no removal, no sync, and the file is left for a look.
+func TestADamagedSyncStateStopsRemovalAndSync(t *testing.T) {
+	quietSync(t)
+	_, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mac.syncStatePath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.RemoveMachine("root@pi:22"); err == nil {
+		t.Fatal("removed a machine with a damaged sync state")
+	}
+	if _, ok := syncIDs(t, mac)["root@pi:22"]; !ok {
+		t.Fatal("the machine is gone")
+	}
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("synced over a damaged sync state")
+	}
+	if raw, _ := os.ReadFile(mac.syncStatePath()); string(raw) != "{not json" {
+		t.Fatalf("the damaged file was replaced: %q", raw)
 	}
 }
