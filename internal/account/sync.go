@@ -63,15 +63,17 @@ const maxPullPages = 64 // 64 × 500 items, past the 2,000-item account cap
 
 // PullSince reads every change after since, following the cursor. A 410
 // restarts from 0 and the result is Full.
-func (c *Client) PullSince(ctx context.Context, since int64) (Pull, error) {
-	p, err := c.pull(ctx, since)
+// Every request is for account acct: ErrAccountChanged once another
+// account is signed in.
+func (c *Client) PullSince(ctx context.Context, acct string, since int64) (Pull, error) {
+	p, err := c.pull(ctx, acct, since)
 	if errors.Is(err, ErrResetRequired) && since != 0 {
-		return c.pull(ctx, 0)
+		return c.pull(ctx, acct, 0)
 	}
 	return p, err
 }
 
-func (c *Client) pull(ctx context.Context, since int64) (Pull, error) {
+func (c *Client) pull(ctx context.Context, acct string, since int64) (Pull, error) {
 	out := Pull{Full: since == 0}
 	query := url.Values{"since": {strconv.FormatInt(since, 10)}}
 	for page := 0; page < maxPullPages; page++ {
@@ -81,7 +83,7 @@ func (c *Client) pull(ctx context.Context, since int64) (Pull, error) {
 			More    bool   `json:"more"`
 			Cursor  string `json:"cursor"`
 		}
-		if err := c.authed(ctx, http.MethodGet, "/v1/sync?"+query.Encode(), nil, &answer); err != nil {
+		if err := c.authed(ctx, acct, http.MethodGet, "/v1/sync?"+query.Encode(), nil, &answer); err != nil {
 			var api *APIError
 			if errors.As(err, &api) && api.Status == http.StatusGone {
 				return Pull{}, ErrResetRequired
@@ -101,13 +103,14 @@ func (c *Client) pull(ctx context.Context, since int64) (Pull, error) {
 	return Pull{}, fmt.Errorf("account service: more than %d sync pages", maxPullPages)
 }
 
-// Push writes changes (≤100) and returns the service's answer.
-func (c *Client) Push(ctx context.Context, changes []Change) (PushResult, error) {
+// Push writes changes (≤100) to account acct and returns the service's
+// answer; ErrAccountChanged once another account is signed in.
+func (c *Client) Push(ctx context.Context, acct string, changes []Change) (PushResult, error) {
 	var out PushResult
 	if len(changes) == 0 {
 		return out, nil
 	}
-	err := c.authed(ctx, http.MethodPost, "/v1/sync", map[string]any{"changes": changes}, &out)
+	err := c.authed(ctx, acct, http.MethodPost, "/v1/sync", map[string]any{"changes": changes}, &out)
 	return out, err
 }
 

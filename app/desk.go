@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -463,19 +462,21 @@ func (d *Desk) RemoveMachine(id string) error {
 		return nil
 	}
 	syncID := st.Machines[i].SyncID
-	st.Machines = append(st.Machines[:i], st.Machines[i+1:]...)
-	wasActive := st.Active == id
 	if syncID != "" {
 		// Pushed as a tombstone on the next sync, so the account's other
-		// devices drop it too.
+		// devices drop it too. Kept before the machine goes: a removal the
+		// account would never hear of is refused instead.
 		state := d.loadSyncState()
 		if !slices.Contains(state.Deletes, syncID) {
 			state.Deletes = append(state.Deletes, syncID)
 			if err := d.storeSyncState(state); err != nil {
-				log.Printf("account sync: %v", err)
+				d.storeMu.Unlock()
+				return err
 			}
 		}
 	}
+	st.Machines = append(st.Machines[:i], st.Machines[i+1:]...)
+	wasActive := st.Active == id
 	if wasActive {
 		st.Active = ""
 	}

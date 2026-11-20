@@ -167,7 +167,10 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		// adopt its ids before this device pushes anything.
 		state = syncState{AccountID: acct}
 	}
-	pull, err := d.account.PullSince(ctx, state.Mirror.Rev)
+	pull, err := d.account.PullSince(ctx, acct, state.Mirror.Rev)
+	if errors.Is(err, account.ErrAccountChanged) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -221,15 +224,22 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 
 	for start := 0; start < len(changes); start += 100 {
 		batch := changes[start:min(start+100, len(changes))]
-		if _, err := d.account.Push(ctx, batch); err != nil {
+		if _, err := d.account.Push(ctx, acct, batch); err != nil {
 			// Nothing is lost: an unacknowledged id is pushed again next
-			// time, and pending deletes stay pending.
+			// time, and pending deletes stay pending. Another account's
+			// session gets none of this account's changes.
+			if errors.Is(err, account.ErrAccountChanged) {
+				return nil
+			}
 			return err
 		}
 	}
 	if len(changes) > 0 {
 		// Read our own writes back, so the mirror holds what the account holds.
-		pull, err := d.account.PullSince(ctx, mirror.Rev)
+		pull, err := d.account.PullSince(ctx, acct, mirror.Rev)
+		if errors.Is(err, account.ErrAccountChanged) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

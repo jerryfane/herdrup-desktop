@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -402,5 +403,35 @@ func TestOneChangePerID(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("%d changes for %s: %+v", n, hostB.ID, changes)
+	}
+}
+
+// #257 review P3: a removal whose tombstone can't be kept is refused, so the
+// account never keeps a machine this device says it deleted.
+func TestARemovalWhoseTombstoneCantBeKeptIsRefused(t *testing.T) {
+	quietSync(t)
+	_, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The sync state can't be written: its path is a directory.
+	if err := os.Remove(mac.syncStatePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(mac.syncStatePath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mac.syncStatePath(), "x"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.RemoveMachine("root@pi:22"); err == nil {
+		t.Fatal("the removal succeeded without its tombstone")
+	}
+	if _, ok := syncIDs(t, mac)["root@pi:22"]; !ok {
+		t.Fatal("the machine was removed though the account would never hear of it")
 	}
 }

@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -92,18 +93,18 @@ func TestPullFollowsTheCursorAndARemovedFloorRestartsAFullPull(t *testing.T) {
 	s := &syncService{items: []Item{hostItem(1, "a", false), hostItem(2, "b", false), hostItem(3, "c", false), hostItem(4, "", true), hostItem(5, "e", false)}}
 	c := syncClient(t, s)
 	ctx := context.Background()
-	p, err := c.PullSince(ctx, 0)
+	p, err := c.PullSince(ctx, "acct", 0)
 	if err != nil || !p.Full || p.Rev != 5 || len(p.Items) != 5 {
 		t.Fatalf("full pull: %+v, %v", p, err)
 	}
-	p, err = c.PullSince(ctx, 3)
+	p, err = c.PullSince(ctx, "acct", 3)
 	if err != nil || p.Full || len(p.Items) != 2 || !p.Items[0].Deleted {
 		t.Fatalf("incremental: %+v, %v", p, err)
 	}
 	s.mu.Lock()
 	s.floor = 4
 	s.mu.Unlock()
-	p, err = c.PullSince(ctx, 3)
+	p, err = c.PullSince(ctx, "acct", 3)
 	if err != nil || !p.Full || len(p.Items) != 5 {
 		t.Fatalf("after a prune: %+v, %v; want a full pull", p, err)
 	}
@@ -119,7 +120,7 @@ func TestPullFollowsTheCursorAndARemovedFloorRestartsAFullPull(t *testing.T) {
 func TestPushedHostsCarryOnlyTheAllowlist(t *testing.T) {
 	s := &syncService{items: []Item{hostItem(1, "a", false)}}
 	c := syncClient(t, s)
-	_, err := c.Push(context.Background(), []Change{{Collection: "hosts", ID: "00000000-0000-4000-8000-000000000001", Body: HostBody{Host: "pi", Port: 22, Username: "root", AuthKind: "key"}}})
+	_, err := c.Push(context.Background(), "acct", []Change{{Collection: "hosts", ID: "00000000-0000-4000-8000-000000000001", Body: HostBody{Host: "pi", Port: 22, Username: "root", AuthKind: "key"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,10 +168,31 @@ func TestASyncCallRetriesOnceWithAFreshAccessToken(t *testing.T) {
 	store := &memStore{}
 	store.raw, _ = json.Marshal(stored{RefreshToken: token("r1", 1), Session: Session{AccountID: "acct"}})
 	c := New(srv.URL, "linux", store, srv.Client())
-	if _, err := c.PullSince(context.Background(), 0); err != nil {
+	if _, err := c.PullSince(context.Background(), "acct", 0); err != nil {
 		t.Fatalf("pull after a refused access token: %v", err)
 	}
 	if len(seen) != 2 || seen[0] == seen[1] || n != 2 {
 		t.Fatalf("auth headers %v after %d refreshes; want a retry with a new token", seen, n)
+	}
+}
+
+// #257 review: sync work planned for one account never reaches another. Once
+// the signed-in account is another one, its requests carry no token.
+func TestSyncRequestsAreBoundToTheirAccount(t *testing.T) {
+	s := &syncService{items: []Item{hostItem(1, "a", false)}}
+	c := syncClient(t, s)
+	ctx := context.Background()
+	if _, err := c.PullSince(ctx, "acct", 0); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.saved = &stored{RefreshToken: token("r1", 5), Session: Session{AccountID: "acct-b"}}
+	c.mu.Unlock()
+	before := len(s.auth)
+	if _, err := c.Push(ctx, "acct", []Change{{Collection: "hosts", ID: "00000000-0000-4000-8000-000000000001", Body: HostBody{Host: "x", Username: "u"}}}); !errors.Is(err, ErrAccountChanged) {
+		t.Fatalf("push for the old account: %v; want ErrAccountChanged", err)
+	}
+	if len(s.auth) != before || len(s.pushes) != 0 {
+		t.Fatalf("the old account's push reached the service (%d calls, %d pushes)", len(s.auth)-before, len(s.pushes))
 	}
 }
