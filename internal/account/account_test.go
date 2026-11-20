@@ -396,6 +396,24 @@ func TestSignInIsOfferedPerProviderOnceTheServiceListsIt(t *testing.T) {
 	}
 }
 
+// A service that can't answer its health check is an error, not "no
+// sign-in": the app keeps the account row (and a signed-in session) with the
+// problem instead of hiding it (herdrup #770-f3).
+func TestUnreachableServiceIsAnErrorNotNoSignIn(t *testing.T) {
+	f, srv := newFake(t)
+	f.mu.Lock()
+	f.down = true
+	f.mu.Unlock()
+	c := New(srv.URL, "linux", &memStore{}, srv.Client())
+	if got, err := c.WebSignInProviders(context.Background()); err == nil {
+		t.Fatalf("a failed health check read as no sign-in: %v", got)
+	}
+	gone := New("http://127.0.0.1:1", "linux", &memStore{}, srv.Client())
+	if got, err := gone.WebSignInProviders(context.Background()); err == nil {
+		t.Fatalf("no answer read as no sign-in: %v", got)
+	}
+}
+
 // A sign-out whose context ends while a refresh is out (a window closed):
 // the refresh's later answer must neither crash nor bring the session back.
 // Each step waits on an explicit signal: the refresh has reached the

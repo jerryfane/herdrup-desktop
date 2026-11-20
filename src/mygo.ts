@@ -1179,7 +1179,8 @@ export const Desk = {
    * AccountProviders are the ways the HerdrUp account service can sign in
    * on the web now ("apple", "google"; its /v1/health web_sign_in_* flags):
    * the page shows a button for each, and no account row or first-launch
-   * sign-in when there are none. Offline counts as none.
+   * sign-in when there are none. A service it can't reach is an error, not
+   * none: the account row stays, with the problem.
    */
   accountProviders(): Promise<string[]> {
     return call("Desk.AccountProviders");
