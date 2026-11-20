@@ -1335,7 +1335,7 @@ class Detail {
    // held_from: the oldest page held, "" once nothing is older (herdr #430). A server without
    // `resent` may re-send a prompt the chat has not loaded: readLive reads the newest page then.
    const stale = () => this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll;
-   const live = await readLive(this.entries, this.chat, !!this.oldestCursor, async after => {
+   const live = await readLive(this.chat, () => ({ entries: this.entries, hasOlder: !!this.oldestCursor }), async after => {
     const read: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, after, "", "", after ? this.oldestCursor ?? "" : ""));
     return stale() ? null : read;
    });
