@@ -267,7 +267,13 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 
 	for start := 0; start < len(changes); start += 100 {
 		batch := changes[start:min(start+100, len(changes))]
-		if _, err := d.account.Push(ctx, acct, batch); err != nil {
+		_, err := d.account.Push(ctx, acct, batch)
+		if err == nil {
+			// Acknowledged: what was written is what this device and the
+			// account now agree on.
+			err = d.ackBaseline(acct, batch)
+		}
+		if err != nil {
 			// Nothing is lost: an unacknowledged id is pushed again next
 			// time, and pending deletes stay pending. Another account's
 			// session gets none of this account's changes.
@@ -312,6 +318,25 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	}
 	publishSyncedMachines(unsavedHosts(st.Machines, state.Mirror.Hosts))
 	return nil
+}
+
+// ackBaseline records a pushed batch's bodies as agreed.
+func (d *Desk) ackBaseline(acct string, batch []account.Change) error {
+	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
+	state, err := d.loadSyncState()
+	if err != nil || state.AccountID != acct {
+		return err
+	}
+	if state.Baseline == nil {
+		state.Baseline = map[string]account.HostBody{}
+	}
+	for _, c := range batch {
+		if b, ok := c.Body.(account.HostBody); ok && !c.Deleted {
+			state.Baseline[c.ID] = sharedOf(b)
+		}
+	}
+	return d.storeSyncState(state)
 }
 
 // mergeMachines applies the account's hosts (mirror; old is the copy last
@@ -439,10 +464,24 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 	// What this device and the account now agree on: a machine's shared
 	// fields as they stand after the merge. One whose remote change couldn't
 	// be applied here keeps its own, so it isn't pushed back as an edit.
+	// A machine this sync writes keeps its old baseline until the service
+	// acknowledges the write (ackBaseline): a refused push must leave the
+	// edit an edit, to be sent again.
 	nextBaseline = map[string]account.HostBody{}
+	writing := map[string]bool{}
+	for _, c := range changes {
+		if !c.Deleted {
+			writing[c.ID] = true
+		}
+	}
 	for _, m := range st.Machines {
-		if m.SyncID != "" {
+		if m.SyncID == "" {
+			continue
+		}
+		if !writing[m.SyncID] {
 			nextBaseline[m.SyncID] = sharedFields(m)
+		} else if base, ok := agreed(m.SyncID); ok {
+			nextBaseline[m.SyncID] = base
 		}
 	}
 	return changes, left, renamed, nextBaseline

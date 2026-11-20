@@ -513,3 +513,37 @@ func TestADamagedSyncStateStopsRemovalAndSync(t *testing.T) {
 		t.Fatalf("the damaged file was replaced: %q", raw)
 	}
 }
+
+// #257 review round 4: a local edit whose push the service refused stays an
+// edit, and the next sync sends it.
+func TestARefusedEditIsSentAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	ctx := context.Background()
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SaveMachine(Machine{Nickname: "New", Host: "pi", User: "root", KeyPath: "/k"}, "root@pi:22"); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(ctx); err == nil {
+		t.Fatal("a refused push reported success")
+	}
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := syncIDs(t, mac)["root@pi:22"]
+	if body := string(w.live()[id].Body); !strings.Contains(body, `"New"`) {
+		t.Fatalf("account copy after the retry: %s; want the edit sent", body)
+	}
+}
