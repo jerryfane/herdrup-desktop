@@ -2122,7 +2122,7 @@ export const events = {
    */
   accountChanged: event<AccountState>("account:changed"),
   /** SyncedMachinesChanged tells the page the account's machines changed. */
-  accountMachines: event<SyncedMachine[]>("account:machines"),
+  syncedMachinesChanged: event<SyncedMachine[]>("syncedMachines:changed"),
   /** AgentActionRequested asks the page for a row menu item's dialog. */
   agentActionRequested: event<AgentAction>("agentActionRequested"),
   /** PaneActionChosen is a ••• item the page carries out. */

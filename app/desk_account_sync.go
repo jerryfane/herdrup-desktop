@@ -84,7 +84,7 @@ type SyncedMachine struct {
 }
 
 // SyncedMachinesChanged tells the page the account's machines changed.
-var SyncedMachinesChanged = mygo.NewEvent[[]SyncedMachine]("account:machines")
+var SyncedMachinesChanged = mygo.NewEvent[[]SyncedMachine]("syncedMachines:changed")
 
 var publishSyncedMachines = func(m []SyncedMachine) { SyncedMachinesChanged.Broadcast(m) }
 
