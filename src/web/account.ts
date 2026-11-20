@@ -69,22 +69,37 @@ export interface WebSession { accountID: string; displayHint?: string }
 const ACCESS = /^a1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
 
 /** One page's account session. `fetch` is the page's; tests pass a stub. */
+/** The Web Locks API (navigator.locks): one holder per name across this origin's tabs. */
+export interface AccountLocks { request<T>(name: string, callback: () => Promise<T>): Promise<T> }
+/** Every tab shares the refresh cookie, so its rotations take turns across tabs: a second
+ *  refresh with a cookie another tab just rotated away would revoke the session. */
+const REFRESH_LOCK = "herdrup-account-refresh";
+
+const browserLocks = (): AccountLocks | null => (globalThis.navigator as { locks?: AccountLocks } | undefined)?.locks ?? null;
+
+/** One page's account session. `fetch` is the page's; tests pass a stub. */
 export class WebAccount {
  private access = "";
  private accessUntil = 0;
  private session: WebSession | null = null;
  private flight: Promise<string> | null = null;
+ /** Counts sign-outs: a refresh commits only into the session it started from. */
+ private epoch = 0;
 
- constructor(private readonly fetcher: typeof fetch, private readonly service = ACCOUNT_SERVICE, private readonly now = Date.now) {}
+ constructor(private readonly fetcher: typeof fetch, private readonly service = ACCOUNT_SERVICE, private readonly now = Date.now,
+  private readonly locks: AccountLocks | null = browserLocks()) {}
 
  get current(): WebSession | null { return this.session; }
 
  /** A current access token, refreshing through the cookie when the one held is missing or within
-  *  a minute of expiry. Concurrent callers share one refresh. Throws SignedOutError when the
-  *  service has no session for this browser. */
+  *  a minute of expiry. Callers in this page share one refresh, and tabs take turns (the lock).
+  *  Throws SignedOutError when the service has no session for this browser. */
  accessToken(): Promise<string> {
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
-  this.flight ??= this.refresh().finally(() => { this.flight = null; });
+  if (!this.flight) {
+   const flight: Promise<string> = this.exclusive(() => this.refresh(this.epoch)).finally(() => { if (this.flight === flight) this.flight = null; });
+   this.flight = flight;
+  }
   return this.flight;
  }
 
@@ -94,11 +109,19 @@ export class WebAccount {
   catch (error) { if (error instanceof SignedOutError) return null; throw error; }
  }
 
- private async refresh(): Promise<string> {
+ private exclusive<T>(run: () => Promise<T>): Promise<T> {
+  return this.locks ? this.locks.request(REFRESH_LOCK, run) : run();
+ }
+
+ private async refresh(epoch: number): Promise<string> {
+  // Another tab may have refreshed while this one waited for the lock: the browser sends the
+  // cookie as it is now, so this rotation follows that one.
   const response = await this.fetcher(`${this.service}/v1/auth/refresh`, { method: "POST", credentials: "include", mode: "cors", cache: "no-store" });
+  if (epoch !== this.epoch) throw new SignedOutError();
   if (response.status === 401) { this.forget(); throw new SignedOutError(); }
   if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
   const pair = await response.json() as { account_id?: unknown; access_token?: unknown; access_expires_in?: unknown; display_hint?: unknown };
+  if (epoch !== this.epoch) throw new SignedOutError();
   if (typeof pair.access_token !== "string" || !ACCESS.test(pair.access_token) || typeof pair.access_expires_in !== "number" || typeof pair.account_id !== "string") {
    throw new AccountServiceError(response.status, "malformed_session");
   }
@@ -110,14 +133,15 @@ export class WebAccount {
  }
 
  /** Ends the session by its cookie, which the service clears; it answers 204 even with no
-  *  session, so this works after the access token expired. */
+  *  session, so this works after the access token expired. It takes the refresh lock, so the
+  *  cookie it sends is the newest, and a refresh still out commits nothing. */
  async signOut(): Promise<void> {
   this.forget();
-  const response = await this.fetcher(`${this.service}/v1/auth/signout`, { method: "POST", credentials: "include", mode: "cors" });
+  const response = await this.exclusive(() => this.fetcher(`${this.service}/v1/auth/signout`, { method: "POST", credentials: "include", mode: "cors" }));
   if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
  }
 
- private forget() { this.access = ""; this.accessUntil = 0; this.session = null; }
+ private forget() { this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null; }
 }
 
 async function errorCode(response: Response): Promise<string> {

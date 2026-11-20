@@ -395,3 +395,47 @@ func TestSignInIsOfferedPerProviderOnceTheServiceListsIt(t *testing.T) {
 		t.Fatalf("a later outage withdrew sign-in from a running app: %v", got)
 	}
 }
+
+// A sign-out whose context ends while a refresh is out (a window closed):
+// the refresh's later answer must neither crash nor bring the session back.
+func TestARefreshAnsweringAfterSignOutCommitsNothing(t *testing.T) {
+	f, c, store, now := signedIn(t)
+	gate := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/auth/refresh" {
+			<-gate
+		}
+		f.serve(w, r)
+	}))
+	defer slow.Close()
+	c.service = slow.URL
+	*now = now.Add(2 * time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.SignOut(ctx) }()
+	time.Sleep(50 * time.Millisecond) // SignOut is waiting on the refresh
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("sign-out: %v", err)
+	}
+	close(gate) // the refresh answers now
+	for i := 0; i < 50; i++ {
+		c.mu.Lock()
+		idle := c.flight == nil
+		c.mu.Unlock()
+		if idle {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if s, _ := c.Current(); s != nil {
+		t.Fatalf("signed in again after sign-out: %+v", s)
+	}
+	if store.raw != nil {
+		t.Fatalf("the late refresh stored a session: %s", store.raw)
+	}
+	if _, err := c.AccessToken(context.Background()); !errors.Is(err, ErrSignedOut) {
+		t.Fatalf("access after sign-out: %v", err)
+	}
+}

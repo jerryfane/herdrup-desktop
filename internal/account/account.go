@@ -117,7 +117,13 @@ type Client struct {
 	store    Store
 	now      func() time.Time
 
-	mu       sync.Mutex
+	// writes serialises the session's transitions with their store writes,
+	// so a sign-out's delete can't be followed by a late refresh's save.
+	writes sync.Mutex
+	mu     sync.Mutex
+	// epoch counts sign-ins and sign-outs: a refresh commits only into the
+	// session it started from.
+	epoch    uint64
 	live     map[Provider]bool // providers the service said it offers (kept once seen)
 	pending  string            // the newest sign-in's handoff verifier
 	saved    *stored
@@ -129,8 +135,9 @@ type Client struct {
 
 // refresh is one refresh in flight; done closes when it has an answer.
 type refresh struct {
-	done chan struct{}
-	err  error
+	done  chan struct{}
+	err   error
+	epoch uint64
 }
 
 // New returns a client for service (DefaultService when ""). platform is
@@ -283,7 +290,11 @@ func (c *Client) FinishSignIn(ctx context.Context, code string) (Session, error)
 		return Session{}, errors.New("account service: malformed session")
 	}
 	s := &stored{RefreshToken: pair.RefreshToken, Session: Session{AccountID: pair.AccountID, DisplayHint: pair.DisplayHint}}
+	c.writes.Lock()
+	defer c.writes.Unlock()
 	c.mu.Lock()
+	c.epoch++
+	c.flight = nil
 	c.saved, c.loaded = s, true
 	c.access, c.accessAt = pair.AccessToken, c.expiry(pair.AccessExpiresIn)
 	c.mu.Unlock()
@@ -346,7 +357,7 @@ func (c *Client) AccessToken(ctx context.Context) (string, error) {
 	}
 	f := c.flight
 	if f == nil {
-		f = &refresh{done: make(chan struct{})}
+		f = &refresh{done: make(chan struct{}), epoch: c.epoch}
 		c.flight = f
 		token := c.saved.RefreshToken
 		go c.refresh(f, token)
@@ -377,13 +388,24 @@ func (c *Client) refresh(f *refresh, token string) {
 	defer cancel()
 	var pair tokenPair
 	err := c.post(ctx, "/v1/auth/refresh", "", map[string]string{"refresh_token": token}, &pair)
+	c.writes.Lock()
+	defer c.writes.Unlock()
 	c.mu.Lock()
-	c.flight = nil
+	if c.flight == f {
+		c.flight = nil
+	}
 	var api *APIError
 	switch {
+	case c.epoch != f.epoch || c.saved == nil:
+		// Signed out (or in again) while this ran: its answer belongs to a
+		// session the app no longer holds.
+		c.mu.Unlock()
+		f.err = ErrSignedOut
+		return
 	case errors.As(err, &api) && api.Status == http.StatusUnauthorized:
 		// invalid_token or session_revoked: this token never works again.
 		c.saved, c.access = nil, ""
+		c.epoch++
 		c.mu.Unlock()
 		_ = c.store.Delete()
 		f.err = ErrSignedOut
@@ -417,10 +439,14 @@ func (c *Client) refresh(f *refresh, token string) {
 // either way.
 func (c *Client) SignOut(ctx context.Context) error {
 	token, err := c.AccessToken(ctx)
+	c.writes.Lock()
 	c.mu.Lock()
+	c.epoch++
+	c.flight = nil
 	c.saved, c.access, c.pending, c.loaded = nil, "", "", true
 	c.mu.Unlock()
 	deleted := c.store.Delete()
+	c.writes.Unlock()
 	if err == nil {
 		var api *APIError
 		if err := c.post(ctx, "/v1/auth/signout", token, nil, nil); err != nil && !(errors.As(err, &api) && api.Status == http.StatusUnauthorized) {

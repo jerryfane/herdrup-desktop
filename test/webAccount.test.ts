@@ -84,3 +84,46 @@ test("each provider's button shows only once the service lists its web_sign_in_*
  expect(await webSignInProviders(health({}, 503))).toEqual([]);
  expect(await webSignInProviders((async () => { throw new TypeError("offline"); }) as unknown as typeof fetch)).toEqual([]);
 });
+
+/** navigator.locks for tests: one holder per name, queued. */
+function locks(): import("../src/web/account").AccountLocks {
+ const tails = new Map<string, Promise<unknown>>();
+ return {
+  request<T>(name: string, run: () => Promise<T>): Promise<T> {
+   const before = tails.get(name) ?? Promise.resolve();
+   const result = before.then(run, run);
+   tails.set(name, result.catch(() => undefined));
+   return result;
+  },
+ };
+}
+
+test("two tabs sharing the cookie take turns refreshing, so neither presents a spent cookie", async () => {
+ const s = service(), shared = locks();
+ const tabA = new WebAccount(s.fetcher, undefined, Date.now, shared), tabB = new WebAccount(s.fetcher, undefined, Date.now, shared);
+ const [a, b] = await Promise.all([tabA.check(), tabB.check()]);
+ expect(a?.accountID).toBe("acct-1");
+ expect(b?.accountID).toBe("acct-1");
+ const sent = s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).map(c => c.cookie);
+ expect(sent).toEqual(["c0", "c1"]);
+});
+
+test("a refresh that answers after sign-out does not bring the session back", async () => {
+ let release!: () => void;
+ const gate = new Promise<void>(r => { release = r; });
+ const s = service();
+ const slow = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input).endsWith("/v1/auth/refresh")) await gate;
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const account = new WebAccount(slow, undefined, Date.now, locks());
+ const pending = account.accessToken();
+ await new Promise(r => setTimeout(r, 0)); // the refresh is on the wire
+ const signedOut = account.signOut();
+ release();
+ await expect(pending).rejects.toBeInstanceOf(SignedOutError);
+ await signedOut;
+ expect(account.current).toBeNull();
+ // Sign-out waited for the refresh, so it sent the rotated cookie.
+ expect(s.calls.find(c => c.url.endsWith("/v1/auth/signout"))!.cookie).toBe("c1");
+});

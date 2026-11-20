@@ -30,10 +30,6 @@ function providerButtons(providers: readonly string[], pick: (provider: "apple" 
  return [...(providers.includes("apple") ? [apple] : []), ...(providers.includes("google") ? [google] : [])];
 }
 
-/** Starts a sign-in; on desktop the browser comes back on herdrup://account# (Go publishes
- *  accountChanged), in the web guest the page itself navigates away. */
-async function startSignIn(provider: "apple" | "google"): Promise<void> { await Desk.accountSignIn(provider); }
-
 /** The Settings page "HerdrUp account": sign in, who is signed in, sign out. */
 export class HerdrUpAccountPanel {
  readonly root = el("div", "account-panel");
@@ -79,7 +75,7 @@ export class HerdrUpAccountPanel {
    const buttons = el("div", "account-providers");
    buttons.append(...providerButtons(this.providers, provider => {
     this.waiting = true; this.draw();
-    void startSignIn(provider).catch(error => { this.waiting = false; this.state = { ...(this.state ?? { signedIn: false, persistent: true }), problem: errorText(error) }; this.draw(); });
+    void Desk.accountSignIn(provider).catch(error => { this.waiting = false; this.state = { ...(this.state ?? { signedIn: false, persistent: true }), problem: errorText(error) }; this.draw(); });
    }));
    nodes.push(buttons);
    if (this.waiting) nodes.push(el("p", "account-note", "Finish signing in in your browser."));
@@ -133,7 +129,7 @@ export class AccountWelcome {
   const actions = el("div", "account-welcome-actions");
   actions.append(...providerButtons(this.providers, provider => {
    this.waiting = true; this.draw("");
-   void startSignIn(provider).catch(error => { this.waiting = false; this.draw(errorText(error)); });
+   void Desk.accountSignIn(provider).catch(error => { this.waiting = false; this.draw(errorText(error)); });
   }));
   const skip = el("button", "account-welcome-skip", "Set up without an account"); skip.type = "button";
   skip.onclick = () => this.finish();
