@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, remainingDraft, replayUnknown, rereadMerge, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -1332,29 +1332,26 @@ class Detail {
   const epoch = this.chatEpoch, poll = ++this.chatPoll;
   clearTimeout(this.refreshTimer);
   try {
-   // held_from: the oldest page held, "" once nothing is older (herdr #430).
-   let page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, this.chat?.after ?? "", "", "", this.oldestCursor ?? ""));
-   if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
-   // A server without `resent` may have re-sent a prompt the chat has not loaded, or sent a new
-   // one: read the newest page instead, which holds only the tail (mergeNewest, herdrup #736).
-   const reread = !!this.chat && this.chat.session_id === page.session_id && replayUnknown(this.entries, page, !!this.oldestCursor);
-   const ambiguous = page.entries ?? [];
-   if (reread) {
-    page = JSON.parse(await Desk.chatTranscript(this.token, "", "", "", ""));
-    if (this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll) return;
-   }
+   // held_from: the oldest page held, "" once nothing is older (herdr #430). A server without
+   // `resent` may re-send a prompt the chat has not loaded: readLive reads the newest page then.
+   const stale = () => this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll;
+   const live = await readLive(this.entries, this.chat, !!this.oldestCursor, async after => {
+    const read: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, after, "", "", after ? this.oldestCursor ?? "" : ""));
+    return stale() ? null : read;
+   });
+   if (!live) return;
+   const page = live.page;
    // What the page held before this read, older history included: only the live tail's new user
    // entries can be the send.
    const held = new Set(this.entries.map(entry => entry.id));
-   const newest = reread && this.chat?.session_id === page.session_id ? rereadMerge(this.entries, ambiguous, page.entries ?? []) : undefined;
-   if (!this.chat || this.chat.session_id !== page.session_id || newest === null) {
+   if (live.reset) {
     if (this.chat && this.chat.session_id !== page.session_id) this.outgoing = [];
     this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
    }
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
-   this.entries = newest ?? mergeTranscript(this.entries, page.entries ?? [], { resent: page.resent }); this.chat = page; this.chatFailed = false;
+   this.entries = live.entries; this.chat = page; this.chatFailed = false;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();

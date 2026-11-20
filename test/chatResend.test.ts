@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { reconcileOutgoing, sendShown, type Outgoing } from "../src/chatPoll";
-import { groupTranscript, liveEntries, mergeNewest, mergeTranscript, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
+import { groupTranscript, liveEntries, mergeNewest, mergeTranscript, readLive, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
 
 // Captured 2026-11-15 from a live host (herdr 0.9.5) for enyo, shared with a guest; ids and
 // timestamps are real, text replaced (herdrup #684's fixture). When the pane's remembered
@@ -139,4 +139,26 @@ test("the re-read keeps the ambiguous page's updates to held entries", () => {
  expect(merged[0]!.origin).toBe("other");
  // A newest page that shares nothing starts the chat over, as mergeNewest does.
  expect(rereadMerge([prompt, u], [marked], [at("x", 5000)])).toBeNull();
+});
+
+// readLive is the live read of both the agent's chat and a topic's (#749 review F2): the captured
+// replay above, from a server without `resent`, is read again as the newest page; the old prompts
+// stay out and the new turn is kept.
+test("a live read re-reads the newest page when an after page may replay unloaded prompts", async () => {
+ const reads: string[] = [];
+ const pages: Record<string, TranscriptPage> = {
+  a1: { after: "a2", session_id: "s", entries: [...resent, ...appended] },
+  "": { after: "a2", session_id: "s", entries: [...newest, ...appended] },
+ };
+ const live = await readLive(newest, { after: "a1", session_id: "s", entries: [] }, true, async after => { reads.push(after); return pages[after]!; });
+ expect(reads).toEqual(["a1", ""]);
+ expect(live!.reset).toBe(false);
+ expect(live!.entries.map(e => e.id)).toEqual([...newest, ...appended].map(e => e.id));
+});
+
+test("a live read takes a new session whole, and stops on a stale reply", async () => {
+ const fresh: TranscriptPage = { after: "b1", session_id: "t", entries: appended };
+ const live = await readLive(newest, { after: "a1", session_id: "s", entries: [] }, true, async () => fresh);
+ expect([live!.reset, live!.entries.map(e => e.id)]).toEqual([true, appended.map(e => e.id)]);
+ expect(await readLive(newest, { after: "a1", session_id: "s", entries: [] }, true, async () => null)).toBeNull();
 });

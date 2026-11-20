@@ -8,7 +8,7 @@ import type { TopicsUpdate } from "./mygo";
 import { errorText } from "./errors";
 import { composerEnterSends } from "./composer";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing, type Outgoing } from "./chatPoll";
-import { groupTranscript, mergeTranscript, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
+import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicTitle, type TopicInfo } from "./topicsModel";
 
@@ -412,15 +412,25 @@ class TopicChat {
   const session = this.page?.session_id;
   try {
    const held = new Set(this.entries.map(entry => entry.id));
-   const raw = await Desk.topicTranscript(this.host.token, this.topic.topic_id, older ? "" : this.page?.after ?? "", older ? this.before! : "", older ? "" : this.before ?? "");
-   const next: TranscriptPage = JSON.parse(raw);
-   if (this.disposed || (older && (next.session_id !== session || this.page?.session_id !== session))) return;
    const height = this.messages.scrollHeight;
    const follow = this.messages.scrollHeight - this.messages.scrollTop - this.messages.clientHeight <= 8;
-   if (this.page?.session_id !== next.session_id) { this.entries = []; this.before = next.before; }
-   this.entries = mergeTranscript(this.entries, next.entries, { older, resent: next.resent });
-   if (older) this.before = next.before; else this.page = next;
-   if (!older) this.outgoing = reconcileOutgoing(this.outgoing, held, next.entries, Date.now());
+   if (older) {
+    const next: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, "", this.before!, ""));
+    if (this.disposed || next.session_id !== session || this.page?.session_id !== session) return;
+    this.entries = mergeTranscript(this.entries, next.entries ?? [], { older: true });
+    this.before = next.before;
+   } else {
+    // The chat's own live read (readLive): an after page that may re-send unloaded history is
+    // replaced by the newest page, as the agent's chat does (#749 review F2).
+    const live = await readLive(this.entries, this.page, !!this.before, async after => {
+     const read: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, after, "", after ? this.before ?? "" : ""));
+     return this.disposed ? null : read;
+    });
+    if (!live) return;
+    if (live.reset) this.before = live.page.before;
+    this.entries = live.entries; this.page = live.page;
+    this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
+   }
    this.notice.textContent = "";
    this.draw(follow);
    if (older) this.messages.scrollTop += this.messages.scrollHeight - height;
