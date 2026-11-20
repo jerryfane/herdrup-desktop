@@ -21,6 +21,8 @@ import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type Welcome } from "./start";
+import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
+import { returnedFromSignIn } from "./account";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -40,10 +42,19 @@ let guestBar: { tab: GuestTab; gram: boolean } | null = null;
 let guestHome: ReturnType<typeof initGuestHome> | null = null;
 let ready = false;
 
+// The HerdrUp account (design #698 §2.3): on the guest's Settings and on the plain screen without
+// a grant, once the account service offers web sign-in on this origin (guest.herdrup.app only).
+const account = new HerdrUpAccountPanel(() => { if (shownWelcome) showWelcome(shownWelcome); else render(); });
+const accountRoot = () => account.available ? account.root : null;
+// Back from the account service (?account=1 or ?account_error=): the guest lands on Settings,
+// where the result shows. accountDesk.ts has already taken the marker out of the address, so this
+// reads the URL the page was loaded with.
+let landOnSettings = returnedFromSignIn((performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.name ?? location.href) !== null;
+
 // main.ts guestActions; "hosts" is Leave share or Remove share: this browser holds no other.
 const guestActions = {
  agents: () => { guestTab = "agents"; render(); },
- settings: () => { closeWriter(); guestTab = "settings"; render(); },
+ settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },
  // The guest's one Gram (#697): this browser's shared agents (one until accounts, #698).
  gram: (grant: string | null = null) => { closeWriter(); selectGuestGram(grant); guestTab = "gram"; render(); },
  hosts: () => { closeWriter(); closeInteraction(); showWelcome(welcome(localOwnerHint.get())); },
@@ -65,6 +76,8 @@ function showWelcome(w: Welcome | null) {
  const card = el("div", "web-welcome-card");
  card.append(el("h1", "", w.title), el("p", "", w.body));
  if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }
+ const signIn = accountRoot();
+ if (signIn) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), signIn); card.append(part); }
  welcomeView.replaceChildren(card);
  render();
 }
@@ -140,7 +153,8 @@ window.addEventListener("guest-gram", event => {
 
 events.stateChanged.on((s) => {
  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
-  guestTab = "agents";
+  guestTab = landOnSettings ? "settings" : "agents";
+  landOnSettings = false;
  }
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
@@ -165,13 +179,14 @@ async function init() {
  reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
  animateDisclosures(document.body);
  enableLongPress();
- guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions);
+ guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot });
  initInteraction($("detail"), symbol, target => { selectedAgent = target; render(); });
  await initGram({
   el, symbol, placeInitials, spinner: spinnerSVG,
   barChanged: () => { if (guestBar?.tab === "gram") void buildBars(guestBar); },
   guestGramChanged: () => { setTabBadge(); if (guestBar && guestBar.gram !== guestGramOffer().offered) render(); },
  }, $("detail"), $("sidebar"), $("tabbar"));
+ void account.refresh(true);
  if (payload !== "") showOpening();
  let started;
  try {
@@ -183,6 +198,8 @@ async function init() {
  board = await Desk.board();
  await document.fonts.ready;
  ready = true;
+ // No share to land in: the result shows on this screen instead.
+ if (started.kind === "welcome") landOnSettings = false;
  showWelcome(started.kind === "welcome" ? started.welcome : null);
 }
 
