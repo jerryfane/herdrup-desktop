@@ -160,7 +160,9 @@ func webSignInFeature(p Provider) string { return "web_sign_in_" + string(p) }
 // WebSignInProviders returns the providers the service can sign in with on
 // the web, Apple first, so the app shows only buttons a deployed service
 // can finish. A provider seen once stays for the life of the client; the
-// rest are asked again on the next call.
+// rest are asked again on the next call. A health check that fails (no
+// answer, not 200, not JSON) is an error unless a provider was seen
+// before: unreachable is not the same as "offers no sign-in".
 func (c *Client) WebSignInProviders(ctx context.Context) ([]Provider, error) {
 	c.mu.Lock()
 	all := c.live[Apple] && c.live[Google]
@@ -168,30 +170,16 @@ func (c *Client) WebSignInProviders(ctx context.Context) ([]Provider, error) {
 	if all {
 		return []Provider{Apple, Google}, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.service+"/v1/health", nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var health struct {
-		Features []string `json:"features"`
-	}
-	ok := resp.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&health) == nil
+	features, err := c.healthFeatures(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.live == nil {
 		c.live = map[Provider]bool{}
 	}
-	if ok {
-		for _, f := range health.Features {
-			for _, p := range []Provider{Apple, Google} {
-				if f == webSignInFeature(p) {
-					c.live[p] = true
-				}
+	for _, f := range features {
+		for _, p := range []Provider{Apple, Google} {
+			if f == webSignInFeature(p) {
+				c.live[p] = true
 			}
 		}
 	}
@@ -201,7 +189,33 @@ func (c *Client) WebSignInProviders(ctx context.Context) ([]Provider, error) {
 			out = append(out, p)
 		}
 	}
+	if len(out) == 0 && err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// healthFeatures is the service's /v1/health feature list.
+func (c *Client) healthFeatures(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.service+"/v1/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("account service health: %s", resp.Status)
+	}
+	var health struct {
+		Features []string `json:"features"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&health); err != nil {
+		return nil, fmt.Errorf("account service health: %w", err)
+	}
+	return health.Features, nil
 }
 
 // StartSignIn returns the URL to open in the system browser. A sign-in

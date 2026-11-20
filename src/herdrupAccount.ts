@@ -9,6 +9,8 @@ import type { AccountState } from "./mygo";
 import { errorText } from "./errors";
 
 export const ACCOUNT_TITLE = "HerdrUp account";
+/** The panel's problem when the service's health check fails (no answer, not 200, not JSON). */
+const UNREACHABLE = "Couldn't reach the account service.";
 /** The first-launch sign-in was answered (any choice): it never comes back. */
 const WELCOME_SEEN = "account.welcomeSeen";
 
@@ -47,13 +49,19 @@ export class HerdrUpAccountPanel {
  summary(): string { return this.state?.signedIn ? "Signed in" : "Not signed in"; }
 
  /** Whether the service offers sign-in, and the session as the app holds it; `check` asks the
-  *  service too (a removed device shows signed out). */
+  *  service too (a removed device shows signed out). A service that can't be reached keeps the
+  *  panel, with the problem: only a service that answers and lists no web sign-in hides it. */
  async refresh(check = false): Promise<void> {
-  try {
-   this.providers = await Desk.accountProviders();
-   this.available = this.providers.length > 0;
-   if (this.available) this.state = check ? await Desk.accountCheck() : await Desk.accountState();
-  } catch (error) { this.state = { signedIn: false, persistent: true, problem: errorText(error) }; }
+  let unreachable = false;
+  try { this.providers = await Desk.accountProviders(); }
+  catch { this.providers = []; unreachable = true; }
+  this.available = unreachable || this.providers.length > 0;
+  if (this.available) {
+   try {
+    const s = check ? await Desk.accountCheck() : await Desk.accountState();
+    this.state = unreachable && !s.problem ? { ...s, problem: UNREACHABLE } : s;
+   } catch (error) { this.state = { signedIn: false, persistent: true, problem: errorText(error) }; }
+  }
   this.draw(); this.changed();
  }
 

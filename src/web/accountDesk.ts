@@ -38,7 +38,7 @@ export function createAccountDesk(page: AccountPage) {
  const desk = {
   async accountProviders(): Promise<string[]> {
    if (!webSignInAvailable(page.origin)) return [];
-   live ??= webSignInProviders(page.fetch).then(list => { if (list.length < 2) live = null; return list; });
+   live ??= webSignInProviders(page.fetch).then(list => { if (list.length < 2) live = null; return list; }, error => { live = null; throw error; });
    return live;
   },
   async accountState(): Promise<AccountState> { return state(takeProblem()); },

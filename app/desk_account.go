@@ -80,16 +80,20 @@ func (d *Desk) accountState(problem string) AccountState {
 // AccountProviders are the ways the HerdrUp account service can sign in
 // on the web now ("apple", "google"; its /v1/health web_sign_in_* flags):
 // the page shows a button for each, and no account row or first-launch
-// sign-in when there are none. Offline counts as none.
-func (d *Desk) AccountProviders(ctx context.Context) []string {
+// sign-in when there are none. A service it can't reach is an error, not
+// none: the account row stays, with the problem.
+func (d *Desk) AccountProviders(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	live, _ := d.account.WebSignInProviders(ctx)
+	live, err := d.account.WebSignInProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, 0, len(live))
 	for _, p := range live {
 		out = append(out, string(p))
 	}
-	return out
+	return out, nil
 }
 
 // AccountState is the account as the app holds it. It does not ask the

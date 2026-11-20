@@ -46,15 +46,14 @@ export function signInEndedProblem(code: string): string {
 }
 
 /** The providers the service can sign in with on the web now, Apple first: its /v1/health
- *  web_sign_in_apple / web_sign_in_google flags (desktop's WebSignInProviders). */
+ *  web_sign_in_apple / web_sign_in_google flags (desktop's WebSignInProviders). A health check
+ *  that fails (no answer, not 200, not JSON) rejects: unreachable is not "offers no sign-in". */
 export async function webSignInProviders(fetcher: typeof fetch, service = ACCOUNT_SERVICE): Promise<Provider[]> {
- try {
-  const response = await fetcher(`${service}/v1/health`, { cache: "no-store" });
-  if (!response.ok) return [];
-  const health = await response.json() as { features?: unknown };
-  const features = Array.isArray(health.features) ? health.features : [];
-  return (["apple", "google"] as const).filter(p => features.includes(`web_sign_in_${p}`));
- } catch { return []; }
+ const response = await fetcher(`${service}/v1/health`, { cache: "no-store" });
+ if (!response.ok) throw new AccountServiceError(response.status, "health");
+ const health = await response.json() as { features?: unknown };
+ const features = Array.isArray(health.features) ? health.features : [];
+ return (["apple", "google"] as const).filter(p => features.includes(`web_sign_in_${p}`));
 }
 
 export class SignedOutError extends Error {

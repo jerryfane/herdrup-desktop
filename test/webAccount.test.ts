@@ -4,6 +4,7 @@
 // because a rotated-away cookie revokes the session.
 import { expect, test } from "bun:test";
 import { returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
+import { createAccountDesk } from "../src/web/accountDesk";
 
 const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0")}`;
 
@@ -81,8 +82,27 @@ test("each provider's button shows only once the service lists its web_sign_in_*
  expect(await webSignInProviders(health({ ok: true, version: "0.4.0" }))).toEqual([]);
  expect(await webSignInProviders(health({ ok: true, features: ["native_sign_in", "web_sign_in_google"] }))).toEqual(["google"]);
  expect(await webSignInProviders(health({ ok: true, features: ["web_sign_in_google", "web_sign_in_apple"] }))).toEqual(["apple", "google"]);
- expect(await webSignInProviders(health({}, 503))).toEqual([]);
- expect(await webSignInProviders((async () => { throw new TypeError("offline"); }) as unknown as typeof fetch)).toEqual([]);
+});
+
+// herdrup #770-f3: unreachable is not "no sign-in", or a failed health check hides the panel.
+test("a health check that fails rejects instead of listing no providers", async () => {
+ const health = (body: unknown, status = 200) => (async () => Response.json(body, { status })) as unknown as typeof fetch;
+ await expect(webSignInProviders(health({}, 503))).rejects.toThrow();
+ await expect(webSignInProviders((async () => { throw new TypeError("offline"); }) as unknown as typeof fetch)).rejects.toThrow("offline");
+ await expect(webSignInProviders((async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch)).rejects.toThrow();
+});
+
+test("the web Desk's providers: a failed check rejects and the next one asks again; other origins get none", async () => {
+ let down = true, asked = 0;
+ const fetcher = (async () => { asked++; return down ? new Response("", { status: 503 }) : Response.json({ features: ["web_sign_in_apple"] }); }) as unknown as typeof fetch;
+ const page = (origin: string) => ({ origin, href: `${origin}/web/`, fetch: fetcher, navigate() {}, replaceURL() {} });
+ const { desk } = createAccountDesk(page("https://guest.herdrup.app"));
+ await expect(desk.accountProviders()).rejects.toThrow();
+ down = false;
+ expect(await desk.accountProviders()).toEqual(["apple"]);
+ const before = asked;
+ expect(await createAccountDesk(page("https://guest.herdrup.themartian.app")).desk.accountProviders()).toEqual([]);
+ expect(asked).toBe(before);
 });
 
 /** navigator.locks for tests: one holder per name, queued. */

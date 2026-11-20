@@ -46,9 +46,6 @@ let ready = false;
 // a grant, once the account service offers web sign-in on this origin (guest.herdrup.app only).
 const account = new HerdrUpAccountPanel(() => { if (shownWelcome) showWelcome(shownWelcome); else render(); });
 const accountRoot = () => account.available ? account.root : null;
-// Back from the account service (?account=1 or ?account_error=): the guest lands on Settings,
-// where the result shows.
-let landOnSettings = signInReturned;
 
 // main.ts guestActions; "hosts" is Leave share or Remove share: this browser holds no other.
 const guestActions = {
@@ -152,8 +149,7 @@ window.addEventListener("guest-gram", event => {
 
 events.stateChanged.on((s) => {
  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
-  guestTab = landOnSettings ? "settings" : "agents";
-  landOnSettings = false;
+  guestTab = "agents";
  }
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
@@ -185,7 +181,6 @@ async function init() {
   barChanged: () => { if (guestBar?.tab === "gram") void buildBars(guestBar); },
   guestGramChanged: () => { setTabBadge(); if (guestBar && guestBar.gram !== guestGramOffer().offered) render(); },
  }, $("detail"), $("sidebar"), $("tabbar"));
- void account.refresh(true);
  if (payload !== "") showOpening();
  let started;
  try {
@@ -197,9 +192,11 @@ async function init() {
  board = await Desk.board();
  await document.fonts.ready;
  ready = true;
- // No share to land in: the result shows on this screen instead.
- if (started.kind === "welcome") landOnSettings = false;
  showWelcome(started.kind === "welcome" ? started.welcome : null);
+ // Back from the account service (?account=1 or ?account_error=) with a share: its Settings,
+ // where the result shows. Either way the panel is asked once, so the result shows once.
+ if (started.kind === "connected" && signInReturned) guestActions.settings();
+ else void account.refresh(true);
 }
 
 void init();
