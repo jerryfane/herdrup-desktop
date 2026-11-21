@@ -544,6 +544,47 @@ func (d *Desk) ChatAnswerForm(ctx context.Context, token, askID string, values m
 	return ChatAnswerFormReply{Status: result.Status, Answers: result.Answers}, nil
 }
 
+// ChatDismissReply is how a Dismiss ended: Dismissed once herdr confirmed
+// the ask cancelled, else herdr's refusal (Code ask_not_pending or
+// ask_mismatch: the ask is already gone, nothing was sent to the pane).
+type ChatDismissReply struct {
+	Dismissed bool   `json:"dismissed,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// ChatDismissAsk closes the agent's pending ask as cancelled with
+// agent.dismiss_ask (herdr #484), owner or guest; the page offers it only
+// where the ask is dismissable for this caller.
+func (d *Desk) ChatDismissAsk(ctx context.Context, token, askID string) (ChatDismissReply, error) {
+	v, err := d.agentView(token)
+	if err != nil {
+		return ChatDismissReply{}, err
+	}
+	ctx, cancel := viewRequest(ctx, v.ctx)
+	defer cancel()
+	defer v.at.link.pollGuestStatus()
+	params := herdrapi.AgentDismissAskParams{Target: v.PaneID, AskID: askID}
+	var result herdrapi.ResponseResultAskDismissed
+	if guestLink := v.at.link.guest; guestLink != nil {
+		result, err = guestLink.AgentDismissAsk(ctx, params)
+	} else {
+		result, err = v.client.AgentDismissAsk(ctx, params)
+	}
+	if err != nil {
+		var api *bridge.APIError
+		if errors.As(err, &api) {
+			return ChatDismissReply{Code: api.Code, Message: api.Message}, nil
+		}
+		var unsupported *engine.ErrUnsupported
+		if errors.As(err, &unsupported) {
+			return ChatDismissReply{Code: "ask_unsupported", Message: unsupported.Error()}, nil
+		}
+		return ChatDismissReply{}, err
+	}
+	return ChatDismissReply{Dismissed: result.Dismissed}, nil
+}
+
 // OpenExternalURL deliberately excludes executable/file URLs from model output.
 func (d *Desk) OpenExternalURL(raw string) error {
 	u, err := url.Parse(raw)

@@ -23,7 +23,7 @@ import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt
 import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
-import type { AskForm, AskFormAnswer, FieldValue } from "./askFormModel";
+import type { AskForm, AskFormAnswer, AskFormStatus, FieldValue } from "./askFormModel";
 import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { forgetChats, recallChat, rememberChat } from "./chatMemory";
 import { forgetScreens, recallScreen, rememberScreen } from "./terminalMemory";
@@ -365,6 +365,8 @@ class Detail {
   *  reported before the transcript shows them. */
  formStates = new Map<string, AskFormState>();
  localFormAnswers = new Map<string, { answers: AskFormAnswer[]; sent: boolean }>();
+ /** Asks agent.dismiss_ask closed, shown Cancelled until the transcript's form_status says so. */
+ localDismissed = new Set<string>();
  entries: Entry[] = [];
  // The drawn window's top row (chatWindow.ts); null: the newest rows, until the first draw pins it.
  drawFrom: string | null = null;
@@ -1566,7 +1568,7 @@ class Detail {
  private questionSignature(row: ChatRow | null, id: string): unknown[] {
   // A form's state appears on its first draw at version 0: count none as 0 too, or the first
   // unchanged poll would redraw the card and take the focus from a field being typed in.
-  return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.view?.askForm];
+  return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
  }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
   * its board status, or with none yet the transcript's working turn — and the chat loads. One
@@ -1882,7 +1884,9 @@ class Detail {
  }
  renderQuestion(entry: Entry, pending?: TranscriptPage["pending_ask"], showLink = true, useLocalAnswer = true): HTMLElement {
   const answer = entry.answer ?? (useLocalAnswer ? this.localAnswers.get(entry.id) : undefined);
-  const active = !answer && pending?.id === entry.id ? pending : undefined;
+  // Dismissed here (agent.dismiss_ask): Cancelled now, before the transcript's form_status.
+  const status = entry.form_status ?? (this.localDismissed.has(entry.id) ? "cancelled" : null);
+  const active = !answer && !status && pending?.id === entry.id ? pending : undefined;
   const questions = entry.questions ?? active?.questions ?? [];
   const card = el("section", "chat-question");
   card.dataset.state = answer ? "answered" : active ? "open" : "unanswered";
@@ -1897,13 +1901,14 @@ class Detail {
   const viewer = this.viewer();
   const waiting = waitingForOwner(viewer, this.answersRefused);
   const form = entry.form ?? (pending?.id === entry.id ? pending.form : null) ?? null;
-  if (form || entry.form_answer || entry.form_status) { this.renderFormQuestion(card, entry, form, pending, viewer, waiting, showLink ? "chat" : "sheet"); return row; }
+  if (form || entry.form_answer) { this.renderFormQuestion(card, entry, form, status ? undefined : pending, viewer, waiting, showLink ? "chat" : "sheet", status); return row; }
   card.append(el("p", "chat-question-title", questions.map(question => question.question).join("\n")));
   if (answer) {
    const chosen = el("p", "chat-question-answer", "✓ " + chooser(viewer, waiting));
    chosen.append(el("strong", "", answer.join(", "))); card.append(chosen); return row;
   }
-  if (!active) { card.append(el("p", "chat-question-note", "Not answered")); return row; }
+  // A plain ask settles with form_status too (herdr #484): cancelled by Dismiss or Esc, or timed out.
+  if (!active) { card.append(el("p", "chat-question-note", status === "cancelled" ? "Cancelled" : status === "timed_out" ? "Timed out without an answer" : "Not answered")); return row; }
   const options = el("div", "chat-question-options");
   const question = questions[0];
   const answerable = canAnswer(active, waiting);
@@ -1926,19 +1931,25 @@ class Detail {
    const terminal = button("Answer in Terminal", () => { void this.chooseMode("terminal"); });
    terminal.className = "chat-question-terminal"; card.append(terminal);
   }
+  // ChatAskCard.dismissButton (herdrup #781): its own line under the options, 8 above.
+  if (active.dismissable === true) {
+   const dismiss = button("Dismiss", () => { void this.dismissAsk(active.id); });
+   dismiss.className = "chat-question-dismiss"; dismiss.disabled = this.answering; card.append(dismiss);
+  }
   return row;
  }
  /** omp's HTML-form ask (owner 2026-11-10, proposal B): the stepper while it waits, the answers
   *  once given. Answering needs a host with capabilities.ask_form and herdr's form_answerable;
-  *  otherwise the form shows read-only with "Answer in Terminal", or a guest waits for the owner. */
- renderFormQuestion(card: HTMLElement, entry: Entry, form: AskForm | null, pending: TranscriptPage["pending_ask"], viewer: Viewer, waiting: string | null, surface: "chat" | "sheet") {
+  *  otherwise the form shows read-only with "Answer in Terminal", or a guest waits for the owner.
+  *  `status`: how it settled (form_status, or Cancelled once dismissed here). */
+ renderFormQuestion(card: HTMLElement, entry: Entry, form: AskForm | null, pending: TranscriptPage["pending_ask"], viewer: Viewer, waiting: string | null, surface: "chat" | "sheet", status: AskFormStatus | null) {
   card.classList.add("ask-form");
   const local = entry.form_answer ? undefined : this.localFormAnswers.get(entry.id);
   const answers = entry.form_answer ?? local?.answers;
-  if (answers || entry.form_status) {
+  if (answers || status) {
    card.dataset.state = "answered";
    const credit: AnswerCredit = !viewer.guest ? "you" : waiting === null ? "anyone" : { owner: waiting };
-   card.append(...askFormAnswered(form, answers ?? [], entry.form_status ?? null, credit, local?.sent ?? false));
+   card.append(...askFormAnswered(form, answers ?? [], status, credit, local?.sent ?? false));
    return;
   }
   const active = pending?.id === entry.id ? pending : undefined;
@@ -1961,6 +1972,8 @@ class Detail {
    changed: () => this.drawChat(false),
    submit: values => { void this.answerForm(entry.id, values, () => draftAnswers(form, state.draft)); },
    terminal: () => { void this.chooseMode("terminal"); },
+   // AskFormStepper.dismissLink (herdrup #781): herdr's dismissable, where this viewer answers.
+   dismiss: active.dismissable === true && waiting === null ? () => { void this.dismissAsk(entry.id); } : null,
   }));
  }
  openQuestion(id: string) {
@@ -2279,6 +2292,33 @@ class Detail {
     this.localFormAnswers.set(askID, { answers: sentAnswers(), sent: true });
    } else {
     this.localFormAnswers.set(askID, { answers: result.answers ?? [], sent: false });
+   }
+  } catch {
+   if (current()) this.answerProblem = { askID, message: "Couldn't reach the agent. Try again.", offersTerminal: false };
+  } finally {
+   this.answering = false;
+   if (current()) this.drawChat(false);
+   if (current() && this.mode === "chat") void this.refreshChat(this.generation);
+  }
+ }
+ /** Dismiss: close the pending ask as cancelled (agent.dismiss_ask, Esc in omp's dialog;
+  *  ChatModel.dismissAsk, herdrup #781). An ask already gone (answered elsewhere, or replaced)
+  *  refreshes quietly; any other refusal shows on the card like an answer's. */
+ async dismissAsk(askID: string) {
+  if (this.answering || this.localDismissed.has(askID)) return;
+  const epoch = this.chatEpoch, session = this.chat?.session_id;
+  const current = () => !this.disposed && epoch === this.chatEpoch && session === this.chat?.session_id;
+  this.answering = true; this.answerProblem = null;
+  this.drawChat(false);
+  try {
+   const result = await Desk.chatDismissAsk(this.token, askID);
+   if (!current()) return;
+   if (result.code === "ask_not_pending" || result.code === "ask_mismatch") {
+    if (this.chat?.pending_ask?.id === askID) this.chat.pending_ask = undefined;
+   } else if (result.code) {
+    this.answerProblem = { askID, message: `Couldn't dismiss: ${result.message || result.code}`, offersTerminal: false };
+   } else {
+    this.localDismissed.add(askID); this.formStates.delete(askID);
    }
   } catch {
    if (current()) this.answerProblem = { askID, message: "Couldn't reach the agent. Try again.", offersTerminal: false };

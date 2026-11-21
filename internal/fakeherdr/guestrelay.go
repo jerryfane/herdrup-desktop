@@ -674,9 +674,9 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 			m["message"] = r.GuestName + " (via HerdrUp): " + *p.Message
 		}
 		write(forward(m))
-	case "agent.answer", "agent.answer_form":
+	case "agent.answer", "agent.answer_form", "agent.dismiss_ask":
 		// guest_gate.rs:972-991; refused before herdr #352. agent.answer_form
-		// follows agent.answer's rules (herdr ask-form contract).
+		// and agent.dismiss_ask (herdr #484) follow agent.answer's rules.
 		if r.OwnerOnlyAnswers || !names(p.Target) {
 			refuse("guest_forbidden")
 			return

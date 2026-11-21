@@ -372,3 +372,84 @@ func TestChatPromptWaitsForTheAgentsStatus(t *testing.T) {
 		t.Fatalf("unverified receipt %s, %v", receipt, err)
 	}
 }
+
+// The owner's Dismiss is agent.dismiss_ask on the open agent (herdr #484):
+// herdr's refusals come back as codes for the page to word, and a herdr
+// without ask_dismiss reads ask_unsupported, never a call it can't serve.
+func TestChatDismissAskClosesTheOwnersAsk(t *testing.T) {
+	var mu sync.Mutex
+	var sent []map[string]any
+	advertised := true
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		original := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch method {
+			case "ping":
+				pong := fakeherdr.Pong(true)
+				pong["capabilities"].(map[string]bool)["ask_dismiss"] = advertised
+				return pong, nil
+			case "agent.dismiss_ask":
+				var p map[string]any
+				_ = json.Unmarshal(raw, &p)
+				sent = append(sent, p)
+				if p["ask_id"] == "gone" {
+					return nil, &fakeherdr.APIError{Code: "ask_not_pending", Message: "The question is no longer pending"}
+				}
+				if p["ask_id"] == "stuck" {
+					return nil, &fakeherdr.APIError{Code: "not_cancelled", Message: "omp did not report the ask cancelled"}
+				}
+				return map[string]any{"type": "ask_dismissed", "dismissed": true}, nil
+			}
+			return original(method, raw)
+		}
+	})
+	board := d.Board()
+	if _, err := d.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if reply, err := d.ChatDismissAsk(ctx, "view", "q1"); err != nil || !reply.Dismissed {
+		t.Fatalf("dismiss: %+v, %v", reply, err)
+	}
+	if reply, err := d.ChatDismissAsk(ctx, "view", "gone"); err != nil || reply.Dismissed || reply.Code != "ask_not_pending" {
+		t.Fatalf("dismiss of an answered ask: %+v, %v", reply, err)
+	}
+	if reply, err := d.ChatDismissAsk(ctx, "view", "stuck"); err != nil || reply.Code != "not_cancelled" || reply.Message == "" {
+		t.Fatalf("a dismiss omp didn't confirm: %+v, %v", reply, err)
+	}
+	mu.Lock()
+	got := append([]map[string]any(nil), sent...)
+	mu.Unlock()
+	if len(got) != 3 || got[0]["target"] != "w1:p1" || got[0]["ask_id"] != "q1" {
+		t.Fatalf("herdr got %v", got)
+	}
+	d.Disconnect()
+
+	// A herdr without ask_dismiss: no call goes out.
+	mu.Lock()
+	advertised, sent = false, nil
+	mu.Unlock()
+	old, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		original := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "agent.dismiss_ask" {
+				mu.Lock()
+				sent = append(sent, nil)
+				mu.Unlock()
+			}
+			return original(method, raw)
+		}
+	})
+	board = old.Board()
+	if _, err := old.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := old.ChatDismissAsk(ctx, "view", "q1"); err != nil || reply.Code != "ask_unsupported" {
+		t.Fatalf("dismiss on a herdr without ask_dismiss: %+v, %v", reply, err)
+	}
+	if len(sent) != 0 {
+		t.Fatal("a herdr without ask_dismiss was sent agent.dismiss_ask")
+	}
+}
