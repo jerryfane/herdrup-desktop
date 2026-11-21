@@ -772,7 +772,10 @@ async function init() {
   });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
   hostsHold = hosts.holdsHome;
-  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((guestBar ? guestTab === "settings" : tab === "settings") && compactQuery.matches) { settingsPushed = true; render(); } });
+  // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
+  // connection, not the bar last drawn: from the host chooser over a share there is no guest bar
+  // yet, and the account avatar still opens the share's Settings (#270).
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((state.guest ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
   await initGram(
     {
       el,
