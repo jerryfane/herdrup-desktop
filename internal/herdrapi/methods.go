@@ -54,6 +54,9 @@ const (
 	CapabilityAgentSessionTransfer Capability = "agent_session_transfer"
 	// agent.answer_form and the `form` on asks (herdr ask-form contract, 2026-11-10).
 	CapabilityAskForm Capability = "ask_form"
+	// agent.dismiss_ask and pending_ask.dismissable (herdr #484). The page
+	// gates its Dismiss on dismissable alone, which a guest's view carries too.
+	CapabilityAskDismiss Capability = "ask_dismiss"
 	// agent.transcript max_bytes: a size-budgeted newest or older page (herdr #409).
 	CapabilityTranscriptMaxBytes Capability = "transcript_max_bytes"
 	// agent.topics.*, the agent.topics.changed event and topic_sessions (herdr #475).
@@ -96,6 +99,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentSessionTransfer
 	case CapabilityAskForm:
 		return caps.AskForm
+	case CapabilityAskDismiss:
+		return caps.AskDismiss
 	case CapabilityTranscriptMaxBytes:
 		return caps.TranscriptMaxBytes
 	case CapabilityAgentTopics:
@@ -200,6 +205,8 @@ var Methods = []Method{
 	{Name: "agent.answer", Params: typeOf[AgentAnswerParams](), Results: []Result{result[ResponseResultAgentAnswer]("agent_answer")}, Capability: CapabilityAgentAnswer},
 	// Answers an omp HTML-form ask (herdr ask-form contract).
 	{Name: "agent.answer_form", Params: typeOf[AgentAnswerFormParams](), Results: []Result{result[ResponseResultAskFormAnswered]("ask_form_answered")}, Capability: CapabilityAskForm},
+	// Closes an omp agent's pending ask as cancelled, as Esc in the terminal (herdr #484).
+	{Name: "agent.dismiss_ask", Params: typeOf[AgentDismissAskParams](), Results: []Result{result[ResponseResultAskDismissed]("ask_dismissed")}, Capability: CapabilityAskDismiss},
 	// herdr #475 (src/api/schema/topics.rs): an omp agent's topics.
 	{Name: "agent.topics.list", Params: typeOf[AgentTarget](), Results: []Result{result[ResponseResultAgentTopics]("agent_topics")}, Capability: CapabilityAgentTopics},
 	{Name: "agent.topics.new", Params: typeOf[AgentTopicsNewParams](), Results: []Result{result[ResponseResultAgentTopicCreated]("agent_topic_created")}, Capability: CapabilityAgentTopics},

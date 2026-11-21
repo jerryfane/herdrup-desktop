@@ -1942,6 +1942,24 @@
           "description": "The secret an agent's control socket asks for. It acts for the agent, so\n`Debug` never prints it; it serializes as a plain string only for the wire.",
           "type": "string"
         },
+        "AgentDismissAskParams": {
+          "description": "`agent.dismiss_ask` — close an omp agent's pending `ask` (plain or HTML\nform) as cancelled, as Esc in the terminal does.",
+          "properties": {
+            "ask_id": {
+              "description": "The pending ask's tool call id, from `agent.transcript`'s `pending_ask`.\nRefused unless it is still the agent's current pending ask.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Agent name or pane id, resolved like `agent.read`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "ask_id"
+          ],
+          "type": "object"
+        },
         "AgentForgetParams": {
           "description": "`agent.forget` — permanently drop an archived agent's record (issue #291).\nOnly herdr's resume pointer is removed; the harness transcript and session\nfiles on disk are left untouched. Live agents are refused.",
           "properties": {
@@ -3831,8 +3849,31 @@
           },
           "type": "object"
         },
+        "GuestRemoveDeviceParams": {
+          "description": "`guest.remove_device`: drop one device from an account-bound share for\ngood, closing its live sessions. The person's other devices keep the\nshare, and no statement brings the removed device back.",
+          "properties": {
+            "fingerprint": {
+              "description": "The device's fingerprint, from `guest.list` (`fingerprint` or a\n`devices[].fingerprint`).",
+              "type": "string"
+            },
+            "guest_id": {
+              "type": "string"
+            },
+            "machine": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "guest_id",
+            "fingerprint"
+          ],
+          "type": "object"
+        },
         "GuestRevokeParams": {
-          "description": "`guest.revoke`: exactly one of `guest_id` or `invite_id`. Revoking a guest\ncloses its live sessions immediately.",
+          "description": "`guest.revoke`: exactly one of `guest_id`, `invite_id` or `person`.\nRevoking a guest closes its live sessions immediately; `person` revokes\nevery share of one person at once (a `person` from `guest.list`).",
           "properties": {
             "guest_id": {
               "type": [
@@ -3847,6 +3888,12 @@
               ]
             },
             "machine": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "person": {
               "type": [
                 "string",
                 "null"
@@ -7401,6 +7448,22 @@
         {
           "properties": {
             "method": {
+              "const": "guest.remove_device",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GuestRemoveDeviceParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "guest.audit",
               "type": "string"
             },
@@ -8159,6 +8222,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentAnswerFormParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.dismiss_ask",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentDismissAskParams"
             }
           },
           "required": [
@@ -15067,6 +15146,16 @@
               "const": "gram_file",
               "description": "The guest opened a shared Gram's file.",
               "type": "string"
+            },
+            {
+              "const": "device_added",
+              "description": "The person added a device to an account-bound share (`text` is its\nname, `fingerprint` the device's).",
+              "type": "string"
+            },
+            {
+              "const": "device_removed",
+              "description": "The owner removed a device from an account-bound share.",
+              "type": "string"
             }
           ]
         },
@@ -15088,6 +15177,41 @@
             "name",
             "size",
             "sha256"
+          ],
+          "type": "object"
+        },
+        "GuestDeviceInfo": {
+          "description": "One more device of an account-bound share.",
+          "properties": {
+            "added_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device": {
+              "type": "string"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "last_seen_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "removed": {
+              "description": "The owner removed it (`guest.remove_device`); it is refused for good.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "fingerprint",
+            "device",
+            "added_ms",
+            "removed"
           ],
           "type": "object"
         },
@@ -15122,6 +15246,11 @@
         },
         "GuestInfo": {
           "properties": {
+            "account_bound": {
+              "default": false,
+              "description": "The guest bound this share to their HerdrUp account, so each of their\ndevices may use it (\"on all my devices\").",
+              "type": "boolean"
+            },
             "created_ms": {
               "format": "uint64",
               "minimum": 0,
@@ -15129,6 +15258,14 @@
             },
             "device": {
               "type": "string"
+            },
+            "devices": {
+              "default": [],
+              "description": "Devices the person added to an account-bound share after the one\nthat accepted (`fingerprint`, `device`), including removed ones.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/GuestDeviceInfo"
+              },
+              "type": "array"
             },
             "fingerprint": {
               "description": "`SHA256:` plus the first 8 bytes of SHA-256(device key), for example\n`SHA256:9f3a·e71c·04bd·c21e`.",
@@ -15149,6 +15286,11 @@
               ]
             },
             "name": {
+              "type": "string"
+            },
+            "person": {
+              "default": "",
+              "description": "Who the share belongs to, for grouping and `guest.revoke {person}`:\nthe account's id on this host when account-bound, else `fingerprint`.",
               "type": "string"
             },
             "revoked": {
@@ -16589,6 +16731,11 @@
               "description": "One single-select question with at least one option, and a caller that\nmay answer it. Always false for an HTML form ask.",
               "type": "boolean"
             },
+            "dismissable": {
+              "default": false,
+              "description": "This caller may close the ask as cancelled with `agent.dismiss_ask`\n(omp cancels a plain ask and an HTML form alike on Esc). Clients\ngate their Dismiss button on it.",
+              "type": "boolean"
+            },
             "form": {
               "anyOf": [
                 {
@@ -17609,6 +17756,23 @@
                 "type",
                 "status",
                 "answers"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.dismiss_ask`: the ask's tool result reads cancelled.",
+              "properties": {
+                "dismissed": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "ask_dismissed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "dismissed"
               ],
               "type": "object"
             },
@@ -18750,6 +18914,12 @@
                     "null"
                   ]
                 },
+                "person": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "type": {
                   "const": "guest_revoked",
                   "type": "string"
@@ -18775,6 +18945,30 @@
               "required": [
                 "type",
                 "guest"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The share after `guest.remove_device`.",
+              "properties": {
+                "closed_streams": {
+                  "description": "Live guest streams of that device closed by the removal.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "guest": {
+                  "$ref": "#/schemas/success_response/$defs/GuestInfo"
+                },
+                "type": {
+                  "const": "guest_device_removed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "guest",
+                "closed_streams"
               ],
               "type": "object"
             },
@@ -19719,6 +19913,11 @@
               "description": "`herdr api-bridge --multi` forwards newline-delimited requests over one\nlong-lived bridge process instead of one process per request.",
               "type": "boolean"
             },
+            "ask_dismiss": {
+              "default": false,
+              "description": "Serves `agent.dismiss_ask`: closes a pending omp ask (plain or form)\nas cancelled.",
+              "type": "boolean"
+            },
             "ask_form": {
               "default": false,
               "description": "Parses omp HTML form asks (`form` on transcript asks and `pending_ask`)\nand serves `agent.answer_form`.",
@@ -20225,7 +20424,7 @@
               "type": "object"
             },
             {
-              "description": "An `ask` tool call; `id` is the tool call id, `answer` the selection once made.\nFor an HTML form ask, `form` holds the form, `questions`/`answer` stay as a\ncompatibility view and `form_answer`/`form_status` arrive with the result.",
+              "description": "An `ask` tool call; `id` is the tool call id, `answer` the selection once made.\nFor an HTML form ask, `form` holds the form, `questions`/`answer` stay as a\ncompatibility view and `form_answer`/`form_status` arrive with the result.\nA plain ask that ended without a selection has `form_status: cancelled`.",
               "properties": {
                 "answer": {
                   "items": {

@@ -25,6 +25,11 @@ type Interaction struct {
 	// OlderPages is how many older transcript pages sit before the newest one
 	// (0: one). Each holds one owner prompt; the oldest is "older".
 	OlderPages int
+	// Dismissable marks the pending ask dismissable and serves
+	// agent.dismiss_ask (herdr #484); off, herdr is one without Dismiss.
+	Dismissable bool
+	// DismissRefusal, when set, is the error agent.dismiss_ask answers with.
+	DismissRefusal *APIError
 }
 
 var interactionQuestionOptions = []string{"Run focused checks", "Inspect the diff", "Use Terminal"}
@@ -145,9 +150,9 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		}
 		if !x.answered && x.form != "" {
 			page["pending_ask"] = map[string]any{"id": "q1", "answerable": false, "questions": askFormQuestions(),
-				"form": askFormJSON(x.form == AskFormReadOnly), "form_answerable": x.form != AskFormReadOnly}
+				"form": askFormJSON(x.form == AskFormReadOnly), "form_answerable": x.form != AskFormReadOnly, "dismissable": x.Dismissable}
 		} else if !x.answered {
-			page["pending_ask"] = map[string]any{"id": "q1", "answerable": true, "questions": []any{map[string]any{"question": "Which verification should run?", "multi": false, "options": interactionQuestionOptions}}}
+			page["pending_ask"] = map[string]any{"id": "q1", "answerable": true, "questions": []any{map[string]any{"question": "Which verification should run?", "multi": false, "options": interactionQuestionOptions}}, "dismissable": x.Dismissable}
 		}
 		return page, nil, true
 	case "agent.prompt":
@@ -186,6 +191,32 @@ func (x *Interaction) Handle(method string, raw json.RawMessage) (any, *APIError
 		})
 		x.answered = true
 		return map[string]any{"type": "agent_answer", "status": "answered", "ask_id": "q1", "option": p.Option, "pane_id": p.Target}, nil, true
+	case "agent.dismiss_ask":
+		if !x.Dismissable {
+			return nil, nil, false
+		}
+		var d struct {
+			AskID string `json:"ask_id"`
+		}
+		_ = json.Unmarshal(raw, &d)
+		switch {
+		case x.answered:
+			return nil, &APIError{Code: "ask_not_pending", Message: "The question is no longer pending"}, true
+		case d.AskID != "q1":
+			return nil, &APIError{Code: "ask_mismatch", Message: "Another question is pending now"}, true
+		case x.DismissRefusal != nil:
+			return nil, x.DismissRefusal, true
+		}
+		// herdr #484: the settled entry reads form_status cancelled, plain or form.
+		entry := map[string]any{"kind": "ask", "id": "q1", "ts_ms": 5, "form_status": "cancelled"}
+		if x.form != "" {
+			entry["questions"], entry["form"] = askFormQuestions(), askFormJSON(false)
+		} else {
+			entry["questions"] = []any{map[string]any{"question": "Which verification should run?", "multi": false, "options": interactionQuestionOptions}}
+		}
+		x.entries = append(x.entries, entry)
+		x.answered = true
+		return map[string]any{"type": "ask_dismissed", "dismissed": true}, nil, true
 	}
 	return nil, nil, false
 }

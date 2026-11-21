@@ -17,7 +17,9 @@ export interface TranscriptPage {
   *  (origin-mark replays, changed steps), `[]` when none. Absent on older servers. */
  resent?: string[];
  plan?: PlanItem[] | null;
- pending_ask?: { id: string; answerable: boolean; questions: Question[]; form?: AskForm | null; form_answerable?: boolean };
+ /** `dismissable`: this caller may close the ask as cancelled (agent.dismiss_ask, herdr #484);
+  *  absent from an older herdr, which offers no Dismiss. */
+ pending_ask?: { id: string; answerable: boolean; questions: Question[]; form?: AskForm | null; form_answerable?: boolean; dismissable?: boolean };
  working?: { intent?: string; [key: string]: unknown };
  subagents?: TranscriptSubagent[];
  /** The model omp runs and its effort (herdr TranscriptModel); the newest page's. */

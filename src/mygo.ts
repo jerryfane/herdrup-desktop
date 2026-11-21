@@ -316,6 +316,17 @@ export interface ChatAnswerReply {
   ownerAnswers?: boolean;
 }
 
+/**
+ * ChatDismissReply is how a Dismiss ended: Dismissed once herdr confirmed
+ * the ask cancelled, else herdr's refusal (Code ask_not_pending or
+ * ask_mismatch: the ask is already gone, nothing was sent to the pane).
+ */
+export interface ChatDismissReply {
+  dismissed?: boolean;
+  code?: string;
+  message?: string;
+}
+
 /** ChatMenuChoice identifies a snapshot of a message, not a mutable transcript row. */
 export interface ChatMenuChoice {
   id: string;
@@ -1287,6 +1298,14 @@ export const Desk = {
    */
   chatAnswerForm(token: string, askID: string, values: Record<string, AskFormValue>): Promise<ChatAnswerFormReply> {
     return call("Desk.ChatAnswerForm", token, askID, values);
+  },
+  /**
+   * ChatDismissAsk closes the agent's pending ask as cancelled with
+   * agent.dismiss_ask (herdr #484), owner or guest; the page offers it only
+   * where the ask is dismissable for this caller.
+   */
+  chatDismissAsk(token: string, askID: string): Promise<ChatDismissReply> {
+    return call("Desk.ChatDismissAsk", token, askID);
   },
   /** ChatMenu uses an OS menu so transcript polling cannot replace an open menu. */
   chatMenu(id: string, offersMarkdown: boolean): Promise<void> {

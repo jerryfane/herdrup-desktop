@@ -367,6 +367,10 @@
 .chat-question-waiting { display:flex; align-items:center; gap:8px; margin:10px 0 0; font:600 calc(10.5px * var(--chat-text-scale, 1)) var(--font-machine); letter-spacing:1.2px; color:var(--status-waiting); }
 .chat-question-waiting-dot { width:7px; height:7px; border-radius:50%; background:var(--status-waiting); flex:none; }
 .agent-detail .chat-question-terminal, .chat-question-sheet .chat-question-terminal { margin-top:10px; border:0; border-radius:18px; padding:8px 14px; font:600 14px var(--font-app); color:var(--color-text); background:var(--color-surface-raised); }
+/* ChatAskCard.dismissButton (herdrup #781): a secondary text button on its own line, 8 under the
+   card's last control; textDim, never a destructive colour; half opacity while a send is out. */
+.chat-question .chat-question-dismiss { display:block; margin-top:8px; padding:6px 0; border:0; background:none; color:var(--color-text-dim); font:600 calc(14px * var(--chat-text-scale, 1)) var(--font-app); cursor:pointer; }
+.chat-question .chat-question-dismiss:disabled { opacity:.5; cursor:default; }
 .agent-detail .chat-question-open { display:block; margin-top:6px; padding:0; border:0; background:none; color:var(--color-brand); font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-question-context { margin-top:12px; font:400 14px var(--font-app); }
 .chat-question-context summary { cursor:pointer; }
@@ -411,6 +415,9 @@ button.ask-form-other-caption { cursor:pointer; }
 .ask-form-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin-top:12px; }
 .chat-question .ask-form-link { display:flex; align-items:center; gap:3px; padding:0; border:0; background:none; color:var(--color-text-dim); font:600 calc(14px * var(--chat-text-scale, 1)) var(--font-app); cursor:pointer; }
 .chat-question .ask-form-link:disabled { color:var(--color-hairline); cursor:default; }
+/* Dismiss right after Back, 14 apart (the foot's 12 gap and 2), the next control pushed right. */
+.ask-form-foot .ask-form-dismiss { margin-left:2px; margin-right:auto; }
+.ask-form-foot .ask-form-dismiss:only-child { margin-left:0; }
 .ask-form-hint { color:var(--color-text-faint); font:400 13px var(--font-app); }
 .chat-question .ask-form-next, .chat-question .ask-form-submit { height:34px; padding:0 20px; border:0; border-radius:17px; background:var(--color-text); color:var(--color-ground); font:600 14px var(--font-app); cursor:pointer; }
 .chat-question .ask-form-submit { width:100%; height:40px; border-radius:12px; font-size:15px; }

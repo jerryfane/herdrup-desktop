@@ -5,7 +5,7 @@
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
+ Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
@@ -580,6 +580,25 @@ export function createGuestDesk(env: DeskEnv) {
      if (error.code !== "") reply.code = error.code;
      if (error.apiMessage !== "") reply.message = error.apiMessage;
      if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;
+     return reply;
+    }
+    throw error;
+   } finally {
+    v.active.kick();
+   }
+  },
+
+  async chatDismissAsk(token: string, askID: string): Promise<ChatDismissReply> {
+   const v = viewOf(token);
+   try {
+    // guest.Transport.AgentDismissAsk: straight to the relay, as agent.answer_form (answers.go).
+    const result = await v.active.link.call<{ dismissed?: boolean } | null>("agent.dismiss_ask", { target: v.paneID, ask_id: askID }, within(v));
+    return result?.dismissed ? { dismissed: true } : {};
+   } catch (error) {
+    if (error instanceof HerdrAPIError) {
+     const reply: ChatDismissReply = {};
+     if (error.code !== "") reply.code = error.code;
+     if (error.apiMessage !== "") reply.message = error.apiMessage;
      return reply;
     }
     throw error;

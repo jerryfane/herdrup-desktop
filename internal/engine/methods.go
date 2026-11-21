@@ -108,6 +108,12 @@ func (c *Client) AgentAnswerForm(ctx context.Context, p herdrapi.AgentAnswerForm
 	return call[herdrapi.ResponseResultAskFormAnswered](ctx, c, "agent.answer_form", p)
 }
 
+// AgentDismissAsk is agent.dismiss_ask (capability ask_dismiss): closes an
+// omp agent's pending ask as cancelled, as Esc in its dialog does.
+func (c *Client) AgentDismissAsk(ctx context.Context, p herdrapi.AgentDismissAskParams) (herdrapi.ResponseResultAskDismissed, error) {
+	return call[herdrapi.ResponseResultAskDismissed](ctx, c, "agent.dismiss_ask", p)
+}
+
 // AccountsList is accounts.list: the credential accounts, whose labels
 // name the account an agent row shows.
 func (c *Client) AccountsList(ctx context.Context) (herdrapi.ResponseResultAccountsList, error) {

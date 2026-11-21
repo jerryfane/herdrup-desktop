@@ -55,6 +55,17 @@ export interface AskFormCardInput {
  changed(): void;
  submit(values: Record<string, FieldValue>): void;
  terminal(): void;
+ /** Dismiss (agent.dismiss_ask): null unless herdr marks the ask dismissable for this viewer. */
+ dismiss: (() => void) | null;
+}
+
+/** AskFormStepper.dismissLink (herdrup #781): "Dismiss" right after Back, 14 apart, a
+ *  secondary link (never a destructive colour), greyed while a send or dismiss is out. */
+function dismissLink(input: AskFormCardInput): HTMLButtonElement[] {
+ if (!input.dismiss) return [];
+ const link = button("ask-form-link ask-form-dismiss", input.dismiss, "Dismiss");
+ link.disabled = input.sending;
+ return [link];
 }
 
 function header(label: string, count: number, current: number): HTMLElement {
@@ -86,6 +97,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   const intro = formContext(form.intro_markdown, form.intro, "ask-form-intro");
   if (intro) nodes.push(intro);
   nodes.push(button("chat-question-terminal", input.terminal, "Answer in Terminal"));
+  if (input.dismiss) { const foot = el("div", "ask-form-foot"); foot.append(...dismissLink(input)); nodes.push(foot); }
   return nodes;
  }
 
@@ -123,7 +135,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   const back = button("ask-form-link", () => go(count - 1, false));
   back.append(symbolNow("chevron.left", 10, "bold"), el("span", "", "Back"));
   back.disabled = input.sending;
-  foot.append(back, el("span", "ask-form-hint", "Click an answer to change it"));
+  foot.append(back, ...dismissLink(input), el("span", "ask-form-hint", "Click an answer to change it"));
   nodes.push(foot);
   return nodes;
  }
@@ -213,8 +225,10 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
    const forward = button("ask-form-link", () => go(step + 1, false));
    forward.append(el("span", "", "Next"), symbolNow("chevron.right", 10, "bold"));
    forward.disabled = step === count - 1;
-   foot.append(back, forward);
+   foot.append(back, ...dismissLink(input), forward);
    nodes.push(foot);
+  } else if (input.dismiss) {
+   const foot = el("div", "ask-form-foot"); foot.append(...dismissLink(input)); nodes.push(foot);
   }
   if (input.waiting !== null) {
    const line = el("p", "chat-question-waiting");
@@ -248,7 +262,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   forward.append(el("span", "", "Review all"), symbolNow("chevron.right", 10, "bold"));
  }
  forward.disabled = input.sending;
- foot.append(back, forward);
+ foot.append(back, ...dismissLink(input), forward);
  nodes.push(foot);
  return nodes;
 }
@@ -284,7 +298,7 @@ export function askFormAnswered(form: AskForm | null, answers: AskFormAnswer[], 
  const head = el("p", "ask-form-answered-head");
  if (sent) head.append(symbolNow("checkmark", 12, "semibold"), el("span", "", "Sent"));
  else if (status === "timed_out" && !given.length) head.append(el("span", "", "Timed out without an answer"));
- else if (status === "cancelled" && !given.length) head.append(el("span", "", "Not answered"));
+ else if (status === "cancelled" && !given.length) head.append(el("span", "", "Cancelled"));
  else {
   const who = credit === "you" ? "You answered" : credit === "anyone" ? "Answered" : `${credit.owner} answered`;
   head.append(symbolNow("checkmark", 12, "semibold"), el("span", "", `${who} ${given.length} of ${total}`));

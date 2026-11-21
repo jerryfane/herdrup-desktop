@@ -31,6 +31,16 @@ func (t *Transport) AgentAnswerForm(ctx context.Context, params herdrapi.AgentAn
 	return reply, err
 }
 
+// AgentDismissAsk is agent.dismiss_ask on the granted agent (herdr #484):
+// the same guest rules as agent.answer_form. herdr says whether this guest
+// may dismiss through the pending ask's dismissable; the gate's pong lists no
+// ask_dismiss, so this goes straight to the relay as answers do.
+func (t *Transport) AgentDismissAsk(ctx context.Context, params herdrapi.AgentDismissAskParams) (herdrapi.ResponseResultAskDismissed, error) {
+	var reply herdrapi.ResponseResultAskDismissed
+	err := t.Call(ctx, "agent.dismiss_ask", params, &reply)
+	return reply, err
+}
+
 // SendMenuKeys is pane.send_keys on the granted pane. The gate takes only
 // menu keys, at most one that commits the menu and that one last, and only
 // while the agent awaits menu input (guest_gate.rs:472-524, 992-1038).

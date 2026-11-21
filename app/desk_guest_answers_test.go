@@ -54,6 +54,14 @@ func (h *guestOwnerHost) handle(method string, raw json.RawMessage) (any, *fakeh
 		_ = json.Unmarshal(raw, &p)
 		h.answers = append(h.answers, p)
 		return map[string]any{"type": "ask_form_answered", "status": "answered", "answers": []any{map[string]any{"name": "where", "question": "Where to build", "answer": "Apex"}}}, nil
+	case "agent.dismiss_ask":
+		var p map[string]any
+		_ = json.Unmarshal(raw, &p)
+		h.answers = append(h.answers, p)
+		if p["ask_id"] != "q1" {
+			return nil, &fakeherdr.APIError{Code: "ask_mismatch", Message: "Another question is pending now"}
+		}
+		return map[string]any{"type": "ask_dismissed", "dismissed": true}, nil
 	case "pane.send_keys":
 		var p struct {
 			PaneID string   `json:"pane_id"`
@@ -183,6 +191,36 @@ func TestGuestFormAnswerGoesThroughTheGuestLink(t *testing.T) {
 	want := []map[string]any{{"target": "w1:p2", "ask_id": "q1", "values": map[string]any{"where": map[string]any{"options": []any{"apex"}}}}}
 	if !reflect.DeepEqual(answers, want) {
 		t.Errorf("owner's herdr got %v, want %v", answers, want)
+	}
+}
+
+// A guest dismisses where it may answer (herdr #484): straight to the relay,
+// past the gate's pong (which lists no ask_dismiss), and herdr's refusal
+// comes back as its code for the page to word.
+func TestGuestDismissGoesThroughTheGuestLink(t *testing.T) {
+	owner := &guestOwnerHost{status: "blocked", seq: 4}
+	relay, err := fakeherdr.NewGuestRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.Handle = owner.handle
+	d, view := openGuestAgent(t, relay, guest.SystemClock)
+	ctx := context.Background()
+	if reply, err := d.ChatDismissAsk(ctx, view.Token, "q1"); err != nil || !reply.Dismissed || reply.Code != "" {
+		t.Fatalf("guest dismiss: %+v, %v", reply, err)
+	}
+	if reply, err := d.ChatDismissAsk(ctx, view.Token, "q0"); err != nil || reply.Dismissed || reply.Code != "ask_mismatch" {
+		t.Fatalf("dismiss of a replaced ask: %+v, %v", reply, err)
+	}
+	answers, _ := owner.sent()
+	want := []map[string]any{{"target": "w1:p2", "ask_id": "q1"}, {"target": "w1:p2", "ask_id": "q0"}}
+	if !reflect.DeepEqual(answers, want) {
+		t.Errorf("owner's herdr got %v, want %v", answers, want)
+	}
+	// A host that keeps answers for the owner keeps dismissing for them too.
+	relay.OwnerOnlyAnswers = true
+	if reply, err := d.ChatDismissAsk(ctx, view.Token, "q1"); err != nil || reply.Code != "guest_forbidden" {
+		t.Fatalf("dismiss on an owner-answers host: %+v, %v", reply, err)
 	}
 }
 
