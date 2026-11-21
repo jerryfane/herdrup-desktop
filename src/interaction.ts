@@ -1246,7 +1246,7 @@ class Detail {
  }
  openChat(generation: number) {
   this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
-  this.answerProblem = null; this.localAnswers.clear();
+  this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
   this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
   const composer = el("div", "chat-composer");
   const actions = el("div", "composer-actions");
@@ -1349,7 +1349,7 @@ class Detail {
    if (live.reset) {
     if (this.chat && this.chat.session_id !== page.session_id) this.outgoing = [];
     this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++;
-    this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear();
+    this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear(); this.localDismissed.clear();
    }
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
@@ -1360,7 +1360,7 @@ class Detail {
    for (const entry of this.entries) {
     if (entry.kind !== "ask") continue;
     if (entry.answer) this.localAnswers.delete(entry.id);
-    if (entry.form_answer || entry.form_status) { this.localFormAnswers.delete(entry.id); this.formStates.delete(entry.id); }
+    if (entry.form_answer || entry.form_status) { this.localFormAnswers.delete(entry.id); this.formStates.delete(entry.id); this.localDismissed.delete(entry.id); }
    }
    if (this.sendFollow && sendShown(held, this.entries)) this.sendFollow = null;
    this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
@@ -2317,8 +2317,11 @@ class Detail {
     if (this.chat?.pending_ask?.id === askID) this.chat.pending_ask = undefined;
    } else if (result.code) {
     this.answerProblem = { askID, message: `Couldn't dismiss: ${result.message || result.code}`, offersTerminal: false };
-   } else {
+   } else if (result.dismissed) {
     this.localDismissed.add(askID); this.formStates.delete(askID);
+   } else {
+    // herdr answered without saying the ask closed: the card stays as it is.
+    this.answerProblem = { askID, message: "Couldn't dismiss: herdr did not confirm it", offersTerminal: false };
    }
   } catch {
    if (current()) this.answerProblem = { askID, message: "Couldn't reach the agent. Try again.", offersTerminal: false };

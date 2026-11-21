@@ -244,6 +244,8 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   const problem = fieldProblem(field, draftOf(field), initial[field.name]!);
   if (problem) nodes.push(el("p", "ask-form-problem", problem));
  }
+ // A refused Dismiss (or a send's refusal, seen again on a step) shows where the card is now.
+ if (input.problem) nodes.push(el("p", "chat-question-problem", input.problem.message));
  const foot = el("div", "ask-form-foot");
  const back = button("ask-form-link", () => go(step - 1, false));
  back.append(symbolNow("chevron.left", 10, "bold"), el("span", "", "Back"));
