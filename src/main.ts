@@ -612,15 +612,18 @@ function showAppUpdates() {
   void Desk.appUpdatesShown();
 }
 /** Settings at `page`, with or without a machine connected (settingsAsked), also while a share
- *  is open (its Settings are the app's too). */
+ *  is open (its Settings are the app's too). It goes by the connection, not the bar on screen:
+ *  from the host chooser over an open share (no guest bar drawn), it leaves the chooser for the
+ *  share's Settings, as render would show the share again anyway (review of #261). */
 function openSettingsPage(page: Parameters<ReturnType<typeof initSettings>["openPage"]>[0]) {
   if (!settings) return;
-  if (guestBar) {
-    closeWriter(); guestTab = "settings";
+  closeWriter();
+  choosingHost = false;
+  if (state.guest) {
+    guestTab = "settings";
     settings.openPage(page);
   } else {
     tab = "settings";
-    choosingHost = false;
     settingsAsked = true;
     settings.openPage(page);
     void buildTabBar();

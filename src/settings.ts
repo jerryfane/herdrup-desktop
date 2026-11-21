@@ -60,8 +60,9 @@ type Page = "machines" | "herdrupAccount" | "accounts" | "sharedAccess" | "notif
  *  (`details`, guestHome.ts) in place of the machine's, and a way to connect a machine of
  *  its own. `key` changes when the page's content does. */
 export interface ShareSettings { key: string; agentName: string; ownerName: string; machineLabel: string; details(): HTMLElement; connectOwn(): void }
-/** The pages a share's Settings has: the share's ("machines"), and the app's own. */
-const shareLeaves = new Set<Page>(["machines", "textSize", "appUpdates"]);
+/** The pages a share's Settings has: the share's ("machines"), and the app's own (its text size,
+ *  updates and HerdrUp account, whose row it lists too). */
+const shareLeaves = new Set<Page>(["machines", "herdrupAccount", "textSize", "appUpdates"]);
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
