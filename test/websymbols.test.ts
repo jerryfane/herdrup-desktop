@@ -66,7 +66,7 @@ const drawnOnlyOnMac = [
  "checkmark.shield.fill", "chevron.left.forwardslash.chevron.right", "chevron.up.chevron.down", "circle",
  "desktopcomputer", "doc.on.clipboard", "doc.text", "envelope", "exclamationmark.bubble", "exclamationmark.circle",
  "exclamationmark.triangle.fill", "gauge.with.needle",
- "key.horizontal", "keyboard", "lightbulb", "lock.open", "lock.shield", "pause.circle", "person.2", "person.crop.circle",
+ "key.horizontal", "keyboard", "lightbulb", "lock.open", "lock.shield", "pause.circle", "person.2", "person.crop.circle", "person.fill",
  "photo.on.rectangle", "plus.circle", "qrcode.viewfinder", "questionmark.circle.fill",
  "shield.lefthalf.filled", "sparkles", "stop.circle", "textformat.size",
 ];

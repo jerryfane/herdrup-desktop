@@ -71,13 +71,14 @@ function updateAsks(listVisible: boolean) {
   const starShows = !!starAsk?.update(listVisible && !updateShows);
   $("sidebar").classList.toggle("star-asking", updateShows || starShows);
 }
-// Settings, App updates was asked for (the update notification, the tray): it shows even with
-// no machine connected, as the app's own update needs none, until another tab is chosen.
-let appUpdatesAsked = false;
-// The owner's tab bar and the sidebar rail choose a tab here, which also leaves the App
-// updates request (review of #167).
+// Settings was asked for from outside its tab (App updates from the update notification or the
+// tray, HerdrUp account from the host home's avatar): it shows even with no machine connected,
+// as neither needs one, until another tab is chosen.
+let settingsAsked = false;
+// The owner's tab bar and the sidebar rail choose a tab here, which also leaves that request
+// (review of #167).
 function selectTab(next: typeof tab) {
-  tab = next; choosingHost = false; appUpdatesAsked = false; settingsPushed = false;
+  tab = next; choosingHost = false; settingsAsked = false; settingsPushed = false;
   void buildTabBar(); void buildTopBar(); render();
 }
 // ---- Phone layout (rover, gitmoot 456087) ----
@@ -152,7 +153,7 @@ async function buildTopBar() {
   const slot = barSlot;
   const back = await slot("chevron.left", guestView ? "Machines" : "Choose host");
   back.tabIndex = 0; back.setAttribute("role", "button");
-  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; appUpdatesAsked = false; render(); };
+  const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; settingsAsked = false; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
   if (guestView && selectedTab === "gram") {
@@ -509,7 +510,7 @@ onTextSizeChanged(() => {
 let renderedOnce = false, pushTimer = 0;
 function render() {
   if (!renderReady) return;
-  const showConnect = !(appUpdatesAsked && tab === "settings") && (choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected"));
+  const showConnect = !(settingsAsked && tab === "settings") && (choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected"));
   const guestVisible = !!state.guest && !showConnect;
   // The guest's Gram is every shared agent's (#697); its tab shows while one shares Gram.
   setGuestGram(guestVisible);
@@ -607,19 +608,25 @@ events.agentOpen.on((target) => openAgent(target));
 function showAppUpdates() {
   if (!settings || !renderReady) return;
   if (!appUpdatesShown) { void Desk.appUpdatesShown(); return; }
+  openSettingsPage("appUpdates");
+  void Desk.appUpdatesShown();
+}
+/** Settings at `page`, with or without a machine connected (settingsAsked), also while a share
+ *  is open (its Settings are the app's too). */
+function openSettingsPage(page: Parameters<ReturnType<typeof initSettings>["openPage"]>[0]) {
+  if (!settings) return;
   if (guestBar) {
     closeWriter(); guestTab = "settings";
-    settings.openPage("appUpdates");
+    settings.openPage(page);
   } else {
     tab = "settings";
     choosingHost = false;
-    appUpdatesAsked = true;
-    settings.openPage("appUpdates");
+    settingsAsked = true;
+    settings.openPage(page);
     void buildTabBar();
     void buildTopBar();
   }
   render();
-  void Desk.appUpdatesShown();
 }
 events.appUpdateOpen.on(showAppUpdates);
 
@@ -760,7 +767,7 @@ async function init() {
     // layout returns to the list when the agent's page closes.
     if (state.guest || compactQuery.matches) render();
   });
-  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render());
+  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
   hostsHold = hosts.holdsHome;
   settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((guestBar ? guestTab === "settings" : tab === "settings") && compactQuery.matches) { settingsPushed = true; render(); } });
   await initGram(

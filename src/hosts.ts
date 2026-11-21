@@ -9,6 +9,8 @@ import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
 import networkIcon from "../third_party/phosphor/web/network.svg?url";
 import lockOpenIcon from "../third_party/phosphor/web/lock-open.svg?url";
+import personIcon from "../third_party/phosphor/web/user-fill.svg?url";
+import { accountAvatar } from "./accountAvatar";
 
 // HerdrSetup (HerdrApp.swift 746-760). Only "this iPhone" becomes "this computer"
 // (coordinator 379911); the rest of the copy is the native text.
@@ -34,13 +36,29 @@ function action(text: string, run: () => void) {
 
 // `holdChanged` re-renders the window when the connecting hold starts or ends;
 // `spinner` is the shared small progress view.
-export function initHosts(container: HTMLElement, form: HTMLFormElement, showAgents: () => void, symbol: SymbolRenderer, spinner: string, holdChanged: () => void) {
+export function initHosts(container: HTMLElement, form: HTMLFormElement, showAgents: () => void, symbol: SymbolRenderer, spinner: string, holdChanged: () => void, openAccount: () => void) {
  const home = element("div", "host-home");
  const header = element("header", "host-home-header");
  const mark = element("img", "host-home-mark"); mark.src = "/herdrup/app-logo.png"; mark.alt = "";
+ // The account avatar (accountAvatar.ts) at the end of the logo row; it opens Settings, HerdrUp
+ // account, which is also where signing in happens.
+ const avatar = element("button", "host-home-account"); avatar.type = "button"; avatar.hidden = true;
+ avatar.onclick = openAccount;
+ const person = element("span", "host-home-account-person"); person.setAttribute("aria-hidden", "true");
+ if (appleSymbols()) void symbol("person.fill", 15, "regular").then(node => person.append(node));
+ else { const icon = element("span", "host-home-account-glyph"); icon.style.setProperty("--host-icon", `url("${personIcon}")`); person.append(icon); }
+ const logoRow = element("div", "host-home-logo-row"); logoRow.append(mark, avatar);
  const identity = element("div", "host-home-identity");
+ const heading = element("h1", "", "herdrup");
  const subtitle = element("p", "", "connect to your machine");
- identity.append(element("h1", "", "herdrup"), subtitle); header.append(mark, identity);
+ identity.append(heading, subtitle); header.append(logoRow, identity);
+ // "Welcome back" while the account has machines to pair here (1B-dk), else the plain title; a
+ // sign-out puts the plain one back.
+ let hasShares = false;
+ const drawIdentity = (welcomeBack: boolean) => {
+  heading.textContent = welcomeBack ? "Welcome back" : "herdrup";
+  subtitle.textContent = welcomeBack ? (accountHint ? `Signed in · ${accountHint}` : "Signed in") : hasShares ? "your shared agents" : "connect to your machine";
+ };
  const section = element("section", "host-home-saved");
  const rows = element("div", "host-home-rows");
  section.append(element("h2", "", "SAVED"), rows);
@@ -86,14 +104,24 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    row.append(lines, pairButton);
    return row;
   }));
-  if (accountHint !== null && syncedMachines.length) {
-   header.querySelector("h1")!.textContent = "Welcome back";
-   subtitle.textContent = accountHint ? `Signed in · ${accountHint}` : "Signed in";
-  }
+  drawIdentity(accountHint !== null && syncedMachines.length > 0);
  };
+ // accountVersion: an older refresh still waiting on the service never draws over a newer one.
+ let accountVersion = 0;
  const refreshAccount = async () => {
+  const at = ++accountVersion;
   const state = await Desk.accountState().catch(() => null);
+  const providers = state?.signedIn ? [] : await Desk.accountProviders().catch(() => []);
+  if (at !== accountVersion) return;
   accountHint = state?.signedIn ? state.displayHint ?? "" : null;
+  const look = accountAvatar(state, providers);
+  avatar.hidden = !look.shown;
+  if (look.shown) {
+   avatar.className = `host-home-account ${state?.signedIn ? "in" : "out"}`;
+   avatar.replaceChildren(look.initial ?? person);
+   if (look.dot) avatar.append(element("span", `host-home-account-dot ${look.dot}`));
+   avatar.setAttribute("aria-label", look.label); avatar.title = look.label;
+  }
   syncedMachines = accountHint === null ? [] : await Desk.syncedMachines().catch(() => []);
   drawSynced();
  };
@@ -176,7 +204,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const ownerBody = element("div", "host-owner-setup-body");
  ownerSetup.append(ownerSummary, ownerBody);
  const placeOwnerSetup = (hasShared: boolean) => {
-  if (!(accountHint !== null && syncedMachines.length)) subtitle.textContent = hasShared ? "your shared agents" : "connect to your machine";
+  hasShares = hasShared; drawIdentity(accountHint !== null && syncedMachines.length > 0);
   if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };

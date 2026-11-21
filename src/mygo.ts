@@ -47,6 +47,11 @@ export interface AccountState {
   persistent: boolean;
   /** Problem is why the newest sign-in or session check failed, "" if none. */
   problem?: string;
+  /**
+   * SyncFailed is true while this account's newest machine sync failed:
+   * the host home's account avatar shows it needs attention.
+   */
+  syncFailed?: boolean;
 }
 
 /**

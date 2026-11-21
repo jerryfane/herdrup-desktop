@@ -24,6 +24,9 @@ type AccountState struct {
 	Persistent bool `json:"persistent"`
 	// Problem is why the newest sign-in or session check failed, "" if none.
 	Problem string `json:"problem,omitempty"`
+	// SyncFailed is true while this account's newest machine sync failed:
+	// the host home's account avatar shows it needs attention.
+	SyncFailed bool `json:"syncFailed,omitempty"`
 }
 
 // AccountChanged tells the page the account state changed (a finished
@@ -73,6 +76,7 @@ func (d *Desk) accountState(problem string) AccountState {
 	}
 	if current != nil {
 		s.SignedIn, s.DisplayHint = true, current.DisplayHint
+		s.SyncFailed = d.syncFailed(current.AccountID)
 	}
 	return s
 }
