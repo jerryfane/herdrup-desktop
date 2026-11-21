@@ -37,7 +37,8 @@ export interface AccountState {
   signedIn: boolean;
   /**
    * DisplayHint is the Google address the service sent at sign-in, ""
-   * for Apple or after a relaunch the hint was not kept for.
+   * for Apple. It is kept with the session in the credential store, so
+   * it survives a relaunch and goes with a sign-out or an ended session.
    */
   displayHint?: string;
   /**
@@ -47,6 +48,11 @@ export interface AccountState {
   persistent: boolean;
   /** Problem is why the newest sign-in or session check failed, "" if none. */
   problem?: string;
+  /**
+   * SyncFailed is true while this account's newest machine sync failed:
+   * the host home's account avatar shows it needs attention.
+   */
+  syncFailed?: boolean;
 }
 
 /**

@@ -17,13 +17,17 @@ import (
 type AccountState struct {
 	SignedIn bool `json:"signedIn"`
 	// DisplayHint is the Google address the service sent at sign-in, ""
-	// for Apple or after a relaunch the hint was not kept for.
+	// for Apple. It is kept with the session in the credential store, so
+	// it survives a relaunch and goes with a sign-out or an ended session.
 	DisplayHint string `json:"displayHint,omitempty"`
 	// Persistent is false where the system has no credential store: the
 	// session ends when the app quits.
 	Persistent bool `json:"persistent"`
 	// Problem is why the newest sign-in or session check failed, "" if none.
 	Problem string `json:"problem,omitempty"`
+	// SyncFailed is true while this account's newest machine sync failed:
+	// the host home's account avatar shows it needs attention.
+	SyncFailed bool `json:"syncFailed,omitempty"`
 }
 
 // AccountChanged tells the page the account state changed (a finished
@@ -73,6 +77,7 @@ func (d *Desk) accountState(problem string) AccountState {
 	}
 	if current != nil {
 		s.SignedIn, s.DisplayHint = true, current.DisplayHint
+		s.SyncFailed = d.syncFailed(current.AccountID)
 	}
 	return s
 }

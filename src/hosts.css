@@ -2,6 +2,20 @@
 .connect:has(.host-home) { padding:0; }
 .host-home-header { display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:10px 4px 6px; }
 .host-home-mark { width:44px; height:44px; border-radius:11px; }
+/* The account avatar (accountAvatar.ts; host-status proposal 1, iOS herdrup #780): a 44 hit target
+   centred on a 32 neutral circle, the circle on the logo row's trailing edge and centred with the
+   44 logo; one status dot at most. Signed out on the surface with a 1 inset hairline. */
+.host-home-logo-row { display:flex; align-items:center; justify-content:space-between; align-self:stretch; }
+.connect .host-home-account { flex:none; width:44px; height:44px; margin:0 -6px 0 0; padding:0; border:0; border-radius:50%; background:none; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+.connect .host-home-account[hidden] { display:none; }
+.host-home-account-circle { position:relative; width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font:600 15px/1 var(--font-app); letter-spacing:-.23px; }
+.host-home-account-circle.out { background:var(--color-surface); box-shadow:inset 0 0 0 1px var(--color-hairline); color:var(--color-text-dim); }
+.host-home-account-circle.in { background:var(--color-surface-raised); color:var(--color-text); }
+.host-home-account-person { display:flex; }
+.host-home-account-glyph { display:block; width:15px; height:15px; background:currentColor; mask:var(--host-icon) center/contain no-repeat; -webkit-mask:var(--host-icon) center/contain no-repeat; }
+.host-home-account-dot { position:absolute; right:-1px; bottom:-1px; width:9px; height:9px; border-radius:50%; box-shadow:0 0 0 2px var(--color-ground); }
+.host-home-account-dot.done { background:var(--status-done); }
+.host-home-account-dot.waiting { background:var(--status-waiting); }
 .connect .host-home h1 { font-size:calc(34px * var(--ui-font-scale, 1)); font-weight:700; margin:0; line-height:var(--leading-system); }
 .host-home-header p { font-size:calc(16px * var(--ui-font-scale, 1)); line-height:var(--leading-system); margin:2px 0 0; color:var(--color-text-dim); }
 .host-home-saved h2 { font-family:inherit; font-size:calc(12px * var(--ui-font-scale, 1)); line-height:var(--leading-system); font-weight:600; letter-spacing:1.4px; color:var(--color-text-dim); margin:0 18px 8px; }

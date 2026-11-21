@@ -128,7 +128,38 @@ var publishSyncedMachines = func(m []SyncedMachine) { SyncedMachinesChanged.Broa
 
 // accountSync runs one sync at a time: a call waits for the one running and
 // then makes its own, so it returns once a sync that began after it is done.
-type accountSync struct{ mu sync.Mutex }
+// failedFor is the account whose newest sync failed, "" if none: the host
+// home's account avatar says "needs attention" while it is the signed-in one.
+// It has its own lock, as accountState reads it while a sync holds mu.
+type accountSync struct {
+	mu        sync.Mutex
+	failedMu  sync.Mutex
+	failedFor string
+}
+
+// syncFailed is whether acct's newest sync failed.
+func (d *Desk) syncFailed(acct string) bool {
+	d.accountSync.failedMu.Lock()
+	defer d.accountSync.failedMu.Unlock()
+	return acct != "" && d.accountSync.failedFor == acct
+}
+
+// noteSync records how acct's sync ended and tells the page when that
+// changes whether it needs attention.
+func (d *Desk) noteSync(acct string, failed bool) {
+	d.accountSync.failedMu.Lock()
+	was := d.accountSync.failedFor == acct
+	switch {
+	case failed:
+		d.accountSync.failedFor = acct
+	case was:
+		d.accountSync.failedFor = ""
+	}
+	d.accountSync.failedMu.Unlock()
+	if was != failed {
+		publishAccount(d.accountState(""))
+	}
+}
 
 // SyncedMachines is the account's machines this device hasn't saved, as
 // last synced (no network).
@@ -176,10 +207,15 @@ func unsavedHosts(local []Machine, mirror []account.RemoteHost) []SyncedMachine 
 func (d *Desk) SyncMachines(ctx context.Context) error {
 	d.accountSync.mu.Lock()
 	defer d.accountSync.mu.Unlock()
+	cur, _ := d.account.Current()
 	err := d.syncMachinesOnce(ctx)
 	if errors.Is(err, account.ErrSignedOut) {
 		publishAccount(d.accountState(""))
 		return nil
+	}
+	// A sign-in to another account meanwhile is not this account failing.
+	if cur != nil && !errors.Is(err, account.ErrAccountChanged) {
+		d.noteSync(cur.AccountID, err != nil)
 	}
 	return err
 }

@@ -280,6 +280,51 @@ func TestARefusedFirstPushLosesNoMachine(t *testing.T) {
 	}
 }
 
+// The host home's avatar needs attention while the signed-in account's
+// newest sync failed: a failed push sets it and tells the page, the next
+// good sync clears it, and another account never inherits it.
+func TestAFailedSyncNeedsAttentionUntilTheNextGoodOne(t *testing.T) {
+	quietSync(t)
+	var published []AccountState
+	previous := publishAccount
+	publishAccount = func(s AccountState) { published = append(published, s) }
+	t.Cleanup(func() { publishAccount = previous })
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); err != nil || mac.AccountState().SyncFailed {
+		t.Fatalf("a good sync: %v, %+v", err, mac.AccountState())
+	}
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SaveMachine(Machine{Host: "nas", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a refused push reported success")
+	}
+	if !mac.AccountState().SyncFailed || len(published) != 1 || !published[0].SyncFailed {
+		t.Fatalf("after a failed sync: %+v, published %+v", mac.AccountState(), published)
+	}
+	signInTo(mac, srv, "other")
+	if mac.AccountState().SyncFailed {
+		t.Fatal("another account inherited the failed sync")
+	}
+	signInTo(mac, srv, "acct")
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if mac.AccountState().SyncFailed || len(published) != 2 || published[1].SyncFailed {
+		t.Fatalf("after the next good sync: %+v, published %+v", mac.AccountState(), published)
+	}
+}
+
 // #257 review P2: changing a machine's host or user on either device is an
 // edit of the same item, not a delete and a new machine.
 func TestIdentityChangingRenamesFollowTheItem(t *testing.T) {
