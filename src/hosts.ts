@@ -111,10 +111,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const refreshAccount = async () => {
   const at = ++accountVersion;
   const state = await Desk.accountState().catch(() => null);
-  const providers = state?.signedIn ? [] : await Desk.accountProviders().catch(() => []);
+  // null: the service couldn't be reached, which is not "no sign-in" (accountAvatar.ts).
+  const providers = state?.signedIn ? [] : await Desk.accountProviders().catch(() => null);
   if (at !== accountVersion) return;
   accountHint = state?.signedIn ? state.displayHint ?? "" : null;
-  const look = accountAvatar(state, providers);
+  const look = accountAvatar(state, providers === null || providers.length > 0);
   avatar.hidden = !look.shown;
   if (look.shown) {
    const circle = element("span", `host-home-account-circle ${state?.signedIn ? "in" : "out"}`);

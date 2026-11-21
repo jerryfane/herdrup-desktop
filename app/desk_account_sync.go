@@ -128,32 +128,40 @@ var publishSyncedMachines = func(m []SyncedMachine) { SyncedMachinesChanged.Broa
 
 // accountSync runs one sync at a time: a call waits for the one running and
 // then makes its own, so it returns once a sync that began after it is done.
-// failedFor is the account whose newest sync failed, "" if none: the host
-// home's account avatar says "needs attention" while it is the signed-in one.
-// It has its own lock, as accountState reads it while a sync holds mu.
+// failed holds the accounts whose newest finished sync failed: the host
+// home's account avatar says "needs attention" while the signed-in one is
+// among them. It has its own lock, as accountState reads it while a sync
+// holds mu.
 type accountSync struct {
-	mu        sync.Mutex
-	failedMu  sync.Mutex
-	failedFor string
+	mu       sync.Mutex
+	failedMu sync.Mutex
+	failed   map[string]bool
 }
 
-// syncFailed is whether acct's newest sync failed.
+// errSyncAbandoned is a sync dropped because the session became another
+// account's (or ended) while it ran: it neither failed nor succeeded.
+var errSyncAbandoned = errors.New("account sync abandoned: the session changed")
+
+// syncFailed is whether acct's newest finished sync failed.
 func (d *Desk) syncFailed(acct string) bool {
 	d.accountSync.failedMu.Lock()
 	defer d.accountSync.failedMu.Unlock()
-	return acct != "" && d.accountSync.failedFor == acct
+	return d.accountSync.failed[acct]
 }
 
-// noteSync records how acct's sync ended and tells the page when that
-// changes whether it needs attention.
+// noteSync records how acct's sync ended, leaving every other account's
+// result as it was, and tells the page when that changes whether acct needs
+// attention.
 func (d *Desk) noteSync(acct string, failed bool) {
 	d.accountSync.failedMu.Lock()
-	was := d.accountSync.failedFor == acct
-	switch {
-	case failed:
-		d.accountSync.failedFor = acct
-	case was:
-		d.accountSync.failedFor = ""
+	was := d.accountSync.failed[acct]
+	if failed {
+		if d.accountSync.failed == nil {
+			d.accountSync.failed = map[string]bool{}
+		}
+		d.accountSync.failed[acct] = true
+	} else {
+		delete(d.accountSync.failed, acct)
 	}
 	d.accountSync.failedMu.Unlock()
 	if was != failed {
@@ -213,8 +221,12 @@ func (d *Desk) SyncMachines(ctx context.Context) error {
 		publishAccount(d.accountState(""))
 		return nil
 	}
-	// A sign-in to another account meanwhile is not this account failing.
-	if cur != nil && !errors.Is(err, account.ErrAccountChanged) {
+	// A sync the session left (another account, or none) says nothing
+	// about this account: its last result stands.
+	if errors.Is(err, errSyncAbandoned) {
+		return nil
+	}
+	if cur != nil {
 		d.noteSync(cur.AccountID, err != nil)
 	}
 	return err
@@ -243,7 +255,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	}
 	pull, err := d.account.PullSince(ctx, acct, state.Mirror.Rev)
 	if errors.Is(err, account.ErrAccountChanged) {
-		return nil
+		return errSyncAbandoned
 	}
 	if err != nil {
 		return err
@@ -265,7 +277,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	d.storeMu.Lock()
 	if !still() {
 		d.storeMu.Unlock()
-		return nil
+		return errSyncAbandoned
 	}
 	st, err := d.load()
 	if err != nil {
@@ -314,7 +326,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 			// time, and pending deletes stay pending. Another account's
 			// session gets none of this account's changes.
 			if errors.Is(err, account.ErrAccountChanged) {
-				return nil
+				return errSyncAbandoned
 			}
 			return err
 		}
@@ -323,7 +335,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		// Read our own writes back, so the mirror holds what the account holds.
 		pull, err := d.account.PullSince(ctx, acct, mirror.Rev)
 		if errors.Is(err, account.ErrAccountChanged) {
-			return nil
+			return errSyncAbandoned
 		}
 		if err != nil {
 			return err
@@ -331,7 +343,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		d.storeMu.Lock()
 		if !still() {
 			d.storeMu.Unlock()
-			return nil
+			return errSyncAbandoned
 		}
 		state, err = d.loadSyncState()
 		if err != nil {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/account"
 )
@@ -28,6 +29,8 @@ type syncWorker struct {
 	account string // "acct" when empty
 	// failPush answers the next pushes 503 (the service down mid-sync).
 	failPush bool
+	// onPull, when set, runs once inside the next pull, before it answers.
+	onPull func()
 }
 
 func (w *syncWorker) live() map[string]account.Item {
@@ -60,6 +63,10 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", 1, w.n), "access_expires_in": 3600,
 			"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, w.n), "refresh_expires_in": 1})
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet:
+		if hook := w.onPull; hook != nil {
+			w.onPull = nil
+			hook()
+		}
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		var changes []account.Item
 		for _, it := range w.items {
@@ -322,6 +329,79 @@ func TestAFailedSyncNeedsAttentionUntilTheNextGoodOne(t *testing.T) {
 	}
 	if mac.AccountState().SyncFailed || len(published) != 2 || published[1].SyncFailed {
 		t.Fatalf("after the next good sync: %+v, published %+v", mac.AccountState(), published)
+	}
+}
+
+// #263: each account keeps its own result. A fails, B fails, and back on A
+// it still needs attention; B's later good sync clears only B.
+func TestEachAccountKeepsItsOwnSyncFailure(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	fail := func(on bool) { w.mu.Lock(); w.failPush = on; w.mu.Unlock() }
+	as := func(acct string) { w.mu.Lock(); w.account = acct; w.mu.Unlock(); signInTo(mac, srv, acct) }
+	fail(true)
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("A: a refused push reported success")
+	}
+	as("other")
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("B: a refused push reported success")
+	}
+	as("acct")
+	if !mac.AccountState().SyncFailed {
+		t.Fatal("back on A, its failure was lost to B's")
+	}
+	fail(false)
+	as("other")
+	if err := mac.SyncMachines(context.Background()); err != nil || mac.AccountState().SyncFailed {
+		t.Fatalf("B's good sync: %v, %+v", err, mac.AccountState())
+	}
+	as("acct")
+	if !mac.AccountState().SyncFailed {
+		t.Fatal("B's good sync cleared A's failure")
+	}
+}
+
+// #262: a sync the session leaves midway (here a sign-out during its pull)
+// neither fails nor succeeds, so A's earlier failure stands.
+func TestAnAbandonedSyncLeavesTheLastResult(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a refused push reported success")
+	}
+	var signedOut sync.WaitGroup
+	signedOut.Add(1)
+	client := mac.account
+	w.mu.Lock()
+	w.failPush = false
+	w.onPull = func() {
+		go func() { defer signedOut.Done(); _ = client.SignOut(context.Background()) }()
+		for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+			if s, _ := client.Current(); s == nil {
+				return
+			}
+		}
+	}
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatalf("a sync the session left: %v", err)
+	}
+	signedOut.Wait()
+	signInTo(mac, srv, "acct")
+	if !mac.AccountState().SyncFailed {
+		t.Fatal("an abandoned sync cleared A's failure")
 	}
 }
 
