@@ -117,10 +117,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   const look = accountAvatar(state, providers);
   avatar.hidden = !look.shown;
   if (look.shown) {
-   avatar.className = `host-home-account ${state?.signedIn ? "in" : "out"}`;
-   avatar.replaceChildren(look.initial ?? person);
-   if (look.dot) avatar.append(element("span", `host-home-account-dot ${look.dot}`));
-   avatar.setAttribute("aria-label", look.label); avatar.title = look.label;
+   const circle = element("span", `host-home-account-circle ${state?.signedIn ? "in" : "out"}`);
+   circle.append(look.initial ?? person);
+   if (look.dot) circle.append(element("span", `host-home-account-dot ${look.dot}`));
+   avatar.replaceChildren(circle);
+   avatar.setAttribute("aria-label", `HerdrUp account, ${look.value}`); avatar.title = look.value;
   }
   syncedMachines = accountHint === null ? [] : await Desk.syncedMachines().catch(() => []);
   drawSynced();
