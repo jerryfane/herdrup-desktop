@@ -4,7 +4,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
-import { GuestTransport, REUSE_AGE_LIMIT_MS, REUSE_IDLE_LIMIT_MS, type Access, type TransportOptions, type WebSocketFactory } from "../src/webguest/transport";
+import { type Access, guestLink, GuestTransport, REUSE_AGE_LIMIT_MS, REUSE_IDLE_LIMIT_MS, type TransportOptions, type WebSocketFactory } from "../src/webguest/transport";
 import { guestGate, memoryRelay, startRelay, type GateAnswer, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
@@ -73,7 +73,7 @@ async function setup(multiRequest: boolean, options: TransportOptions & { memory
   relay = startRelay({ admit: () => undefined, serve: gate.serve });
  }
  relays.push(relay);
- const transport = new GuestTransport(accessOn(relay), staticKey(await generateIdentity()), transportOptions);
+ const transport = new GuestTransport(guestLink(accessOn(relay)), staticKey(await generateIdentity()), transportOptions);
  transports.push(transport);
  return { host, gate, relay, transport };
 }
@@ -194,7 +194,7 @@ test("streams open their own session", async () => {
   },
  });
  relays.push(relay);
- const transport = new GuestTransport(accessOn(relay), staticKey(await generateIdentity()));
+ const transport = new GuestTransport(guestLink(accessOn(relay)), staticKey(await generateIdentity()));
  transports.push(transport);
  await list(transport);
  const stream = await transport.openStream("pane.stream", { pane_id: "p1" });
@@ -267,7 +267,7 @@ test("a reused session neither connects nor ends the backoff", async () => {
   serve: gate.serve,
  });
  relays.push(relay);
- const transport = new GuestTransport(accessOn(relay), staticKey(await generateIdentity()));
+ const transport = new GuestTransport(guestLink(accessOn(relay)), staticKey(await generateIdentity()));
  transports.push(transport);
  await list(transport);
  const held = host.hold();

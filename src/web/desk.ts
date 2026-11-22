@@ -13,7 +13,7 @@ import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
 import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
-import { acceptInvite, GuestTransport, type Access, type Features as TransportFeatures, type WebSocketFactory } from "../webguest/transport";
+import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
 import { buildBoard, displayName, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, untagged } from "./engine";
 import { emit } from "./events";
@@ -403,7 +403,7 @@ export function createGuestDesk(env: DeskEnv) {
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
-   const transport = new GuestTransport(grant, identity, { now, webSocket: env.webSocket });
+   const transport = new GuestTransport(guestLink(grant), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [] };
    active = l;
