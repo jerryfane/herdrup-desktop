@@ -53,10 +53,9 @@ export function approveCode(browserPub: Uint8Array, approverPub: Uint8Array, non
  return String(n % 10000).padStart(4, "0");
 }
 
-/** The AEAD step alone: the plaintext of a sealed envelope, or an error when it doesn't open
- *  (wrong key, seq or approver, or tampered). Callers take the machine list with openEnvelope;
- *  this is exported for AccountService's vector, whose plaintext is no machine list. */
-export async function openSealed(key: StaticKey, approverPub: Uint8Array, seq: number, sealed: string): Promise<Uint8Array> {
+/** The AEAD step: the plaintext of a sealed envelope, or an error when it doesn't open (wrong key,
+ *  seq or approver, or tampered). */
+async function openSealed(key: StaticKey, approverPub: Uint8Array, seq: number, sealed: string): Promise<Uint8Array> {
  const browserPub = key.publicKey;
  sized(browserPub, approverPub);
  if (!Number.isSafeInteger(seq) || seq < 0) throw new Error("approve-v1: bad seq");

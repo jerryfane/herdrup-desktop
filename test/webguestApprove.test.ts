@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
-import { approveCode, approveCommit, openEnvelope, openSealed } from "../src/webguest/approve";
+import { approveCode, approveCommit, openEnvelope } from "../src/webguest/approve";
 import { seal } from "./approveSeal";
 import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { BadChallengeError, enrolProof } from "../src/webguest/enrol";
 import { staticKey } from "../src/webguest/identity";
 import type { StaticKey } from "../src/webguest/noise";
 import vector from "../internal/account/testdata/approve-v1.json";
+import listVector from "../internal/account/testdata/approve-v1-list.json";
 import enrolVectors from "../internal/account/testdata/enrol-v1.json";
 
 const b = (s: string) => { const v = fromB64url(s); if (v === null) throw new Error(`not b64url: ${s}`); return v; };
@@ -19,25 +20,34 @@ async function keys(secret: Uint8Array): Promise<Record<string, StaticKey>> {
  return { raw: staticKey({ v: 1, kind: "raw", secret, publicKey }), webcrypto: staticKey({ v: 1, kind: "webcrypto", privateKey, publicKey }) };
 }
 
-test("approve-v1 matches AccountService's vector: commit, code and the sealed list, with either key form", async () => {
+test("approve-v1 matches AccountService's vector: commit and code", () => {
  const B = b(vector.browser_pub), T = b(vector.approver_pub), nB = b(vector.nonce_b), nT = b(vector.nonce_t);
  expect(toB64url(approveCommit(B, nB))).toBe(vector.commit);
  expect(approveCode(B, T, nB, nT)).toBe(vector.code);
- for (const [kind, key] of Object.entries(await keys(b(vector.browser_priv)))) {
-  expect(toB64url(key.publicKey), kind).toBe(vector.browser_pub);
-  expect(new TextDecoder().decode(await openSealed(key, T, vector.seq, vector.sealed)), kind).toBe(vector.envelope_json);
+});
+
+test("a machine list sealed by another implementation opens to its list, with either key form", async () => {
+ const T = b(listVector.approver_pub);
+ const sent = JSON.parse(listVector.envelope_json);
+ for (const [kind, key] of Object.entries(await keys(b(listVector.browser_priv)))) {
+  expect(toB64url(key.publicKey), kind).toBe(listVector.browser_pub);
+  const list = await openEnvelope(key, T, listVector.seq, listVector.sealed);
+  expect(list.machines.map(m => [m.label, m.hostID, m.nodePub, m.grantID, m.scope, m.expiresUnix]), kind)
+   .toEqual(sent.machines.map((m: Record<string, unknown>) => [m.label, m.host_id, m.node_pub, m.grant_id, m.scope, m.expires_unix]));
+  expect(list.skipped, kind).toEqual([{ hostItemID: sent.skipped[0].host_item_id, label: "old-vps", reason: "needs_update", version: "0.8.3" }]);
+  expect([list.seq, list.approver], kind).toEqual([listVector.seq, "Jerry's MacBook"]);
  }
 });
 
 test("an envelope opens only for the seq, approver and bytes it was sealed with", async () => {
- const { raw: key } = await keys(b(vector.browser_priv));
- const T = b(vector.approver_pub);
- await expect(openSealed(key, T, vector.seq + 1, vector.sealed)).rejects.toThrow();
- const flipped = b(vector.sealed); flipped[20] ^= 1;
- await expect(openSealed(key, T, vector.seq, toB64url(flipped))).rejects.toThrow();
+ const { raw: key } = await keys(b(listVector.browser_priv));
+ const T = b(listVector.approver_pub);
+ await expect(openEnvelope(key, T, listVector.seq + 1, listVector.sealed)).rejects.toThrow();
+ const flipped = b(listVector.sealed); flipped[20] ^= 1;
+ await expect(openEnvelope(key, T, listVector.seq, toB64url(flipped))).rejects.toThrow();
  const other = x25519.getPublicKey(new Uint8Array(32).fill(7));
- await expect(openSealed(key, other, vector.seq, vector.sealed)).rejects.toThrow();
- await expect(openSealed(key, T, vector.seq, vector.sealed + "=")).rejects.toThrow("malformed");
+ await expect(openEnvelope(key, other, listVector.seq, listVector.sealed)).rejects.toThrow();
+ await expect(openEnvelope(key, T, listVector.seq, listVector.sealed + "=")).rejects.toThrow("malformed");
 });
 
 const machine = { host_item_id: "H1", label: "dev2306", relay: "https://guest.herdrup.app", host_id: toB64url(new Uint8Array(16).fill(1)),
