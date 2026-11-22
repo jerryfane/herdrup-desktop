@@ -22,7 +22,7 @@ export type OwnerPhase =
  | { kind: "waiting" }
  /** A trusted device opened it: the person types these digits there. */
  | { kind: "code"; code: string; approver: string }
- | { kind: "approved"; approver: VerifiedApprover }
+ | { kind: "approved"; record: OwnerRecord }
  | { kind: "denied" }
  | { kind: "expired" }
  | { kind: "failed"; problem: string };
@@ -47,6 +47,17 @@ export const pollDelay = (elapsedMs: number) => elapsedMs < 60_000 ? 2_000 : 5_0
 /** How long the list may take to appear after the service says approved. */
 const ENVELOPE_TRIES = 5;
 
+/** p, or the abort's reason as soon as signal aborts: an abandoned run stops waiting (and lets go
+ *  of the tab lock) at once, and sends nothing after. */
+function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+ if (signal.aborted) return Promise.reject(signal.reason);
+ return new Promise<T>((resolve, reject) => {
+  const stop = () => reject(signal.reason);
+  signal.addEventListener("abort", stop, { once: true });
+  p.then(v => { signal.removeEventListener("abort", stop); resolve(v); }, e => { signal.removeEventListener("abort", stop); reject(e); });
+ });
+}
+
 const sleepFor = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
  if (signal.aborted) { reject(signal.reason); return; }
  const t = setTimeout(() => { signal.removeEventListener("abort", stop); resolve(); }, ms);
@@ -54,10 +65,17 @@ const sleepFor = (ms: number, signal: AbortSignal) => new Promise<void>((resolve
  signal.addEventListener("abort", stop, { once: true });
 });
 
-/** The browser's key for owner access: the guest identity (made now if there is none), and only
- *  when WebCrypto keeps it non-extractable. A raw key is never replaced: it may hold a share. */
+/** The browser's key for owner access: the guest identity, only when WebCrypto keeps it
+ *  non-extractable. With none saved, a key is made and saved only if it is a WebCrypto one, so an
+ *  unsupported visit leaves nothing behind that a later, supported one would be refused for. A
+ *  saved raw key is never replaced: it may hold a share. */
 export async function ownerKey(identities: IdentityStore, subtle: SubtleCrypto | null = globalThis.crypto?.subtle ?? null): Promise<StaticKey | null> {
- const record = await identities.get() ?? await identities.add(await generateIdentity(subtle));
+ let record = await identities.get();
+ if (record === undefined) {
+  const made = await generateIdentity(subtle);
+  if (made.kind !== "webcrypto") return null;
+  record = await identities.add(made);
+ }
  return record.kind === "webcrypto" ? staticKey(record, subtle) : null;
 }
 
@@ -88,15 +106,20 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  const now = deps.now ?? Date.now;
  const key = await ownerKey(deps.identities, deps.subtle);
  if (key === null) { onPhase({ kind: "unsupported" }); return; }
+ const devicePub = toB64url(key.publicKey);
  onPhase({ kind: "starting" });
  let id: string, expiresAt: number, acct: string;
  const nonceB = newApproveNonce();
  try {
   // The whole approval is the account's it starts in: a call after another sign-in sends nothing.
-  acct = await deps.account.currentAccount();
-  try { await deps.account.enrol(key, deps.deviceName, acct); }
-  catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
-  const created = await deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct);
+  acct = await abortable(deps.account.currentAccount(), signal);
+  // Under the lock, the first visit and Ask again alike: an approval this account already has
+  // (another tab may have just finished one) shows instead of asking again.
+  const saved = await abortable(deps.store.get(acct, devicePub), signal);
+  if (saved !== undefined && saved.approvers.length > 0) { onPhase({ kind: "approved", record: saved }); return; }
+  try { await abortable(deps.account.enrol(key, deps.deviceName, acct), signal); }
+  catch (error) { if (signal.aborted || !(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
+  const created = await abortable(deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct), signal);
   id = created.id; expiresAt = now() + created.expires_in * 1000;
  } catch (error) { if (!signal.aborted) onPhase({ kind: "failed", problem: problemOf(error) }); return; }
  if (signal.aborted) return;
@@ -107,7 +130,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  for (;;) {
   try { await sleep(pollDelay(now() - started), signal); } catch { return; }
   let st: ApprovalStatus;
-  try { st = await deps.account.approvalState(id, acct); }
+  try { st = await abortable(deps.account.approvalState(id, acct), signal); }
   catch (error) {
    if (signal.aborted) return;
    if (error instanceof AccountServiceError && error.code === "account_changed") { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -123,7 +146,8 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
    const pub = fromB64url(st.approver?.device_pub, 32), nonceT = fromB64url(st.nonce_t, 32);
    if (pub === null || nonceT === null) continue; // not complete yet: read again
    // B reveals only now, holding nonce_t (§2.2 step 3); the code covers T, the key the list must come from.
-   try { await deps.account.reveal(id, nonceB, acct); }
+   if (signal.aborted) return;
+   try { await abortable(deps.account.reveal(id, nonceB, acct), signal); }
    catch (error) {
     if (signal.aborted) return;
     if (!(error instanceof AccountServiceError && error.code === "already_revealed")) { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -135,7 +159,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
   if (st.state === "approved") {
    // Approval needs the code, which exists only after this browser revealed: anything else is
    // a service this browser can't follow, never an approval to take.
-   const taken = approver !== null && await takeApproval(deps, acct, key, approver, onPhase, signal, sleep);
+   const taken = approver !== null && await takeApproval(deps, acct, devicePub, key, approver, onPhase, signal, sleep);
    if (taken || signal.aborted) return;
    onPhase({ kind: "failed", problem: "HerdrUp approved this browser, but its list of machines didn't arrive or didn't open. Ask again." });
    return;
@@ -145,51 +169,41 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
 }
 
 /** After approval: the envelope from the approver the code covered, opened and kept. */
-async function takeApproval(deps: ApprovalDeps, acct: string, key: StaticKey, approver: { pub: Uint8Array; name: string }, onPhase: (p: OwnerPhase) => void,
+async function takeApproval(deps: ApprovalDeps, acct: string, devicePub: string, key: StaticKey, approver: { pub: Uint8Array; name: string }, onPhase: (p: OwnerPhase) => void,
  signal: AbortSignal, sleep: NonNullable<ApprovalDeps["sleep"]>): Promise<boolean> {
  const pub = toB64url(approver.pub);
  for (let attempt = 0; attempt < ENVELOPE_TRIES; attempt++) {
   if (attempt > 0) { try { await sleep(2_000, signal); } catch { return true; } }
   let self: BrowserSelf;
-  try { self = await deps.account.browserSelf(acct); } catch { if (signal.aborted) return true; continue; }
+  try { self = await abortable(deps.account.browserSelf(acct), signal); } catch { if (signal.aborted) return true; continue; }
   const sealed = self.envelopes.find(e => e.approver_pub === pub);
   if (sealed === undefined) continue;
   let envelope: Envelope;
   try { envelope = await openEnvelope(key, approver.pub, sealed.seq, sealed.sealed); }
   catch { return false; }
   const verified: VerifiedApprover = { pub, name: approver.name, envelope };
-  const record = await deps.store.get();
-  await deps.store.put(withApprover(record, verified));
-  if (!signal.aborted) onPhase({ kind: "approved", approver: verified });
+  if (signal.aborted) return true;
+  const record = await deps.store.merge(acct, devicePub, [verified]);
+  if (!signal.aborted) onPhase({ kind: "approved", record });
   return true;
  }
  return false;
 }
 
-function withApprover(record: OwnerRecord | undefined, approver: VerifiedApprover): OwnerRecord {
- const others = (record?.approvers ?? []).filter(a => a.pub !== approver.pub);
- return { v: 1, approvers: [...others, approver] };
-}
-
-/** On later loads: the newer lists from approvers this browser verified, opened and kept. A list
- *  from any other key, an older seq, or one that doesn't open is left out (the service carries
- *  them, so it could offer any). Returns the record as kept. */
-export async function refreshLists(account: Pick<WebAccount, "browserSelf">, key: StaticKey, store: OwnerStore): Promise<OwnerRecord | undefined> {
- const record = await store.get();
+/** On later loads: account's newer lists from approvers this browser verified, opened and merged
+ *  in (an approver's list only for a higher seq, compared when written). A list from any other key,
+ *  an older seq, or one that doesn't open is left out (the service carries them, so it could
+ *  offer any). Returns the record as kept, or undefined when this account has none here. */
+export async function refreshLists(account: Pick<WebAccount, "browserSelf">, acct: string, key: StaticKey, store: OwnerStore): Promise<OwnerRecord | undefined> {
+ const devicePub = toB64url(key.publicKey);
+ const record = await store.get(acct, devicePub);
  if (record === undefined || record.approvers.length === 0) return record;
- const self = await account.browserSelf();
- let changed = false;
- const approvers = await Promise.all(record.approvers.map(async a => {
+ const self = await account.browserSelf(acct);
+ const newer = (await Promise.all(record.approvers.map(async (a): Promise<VerifiedApprover | null> => {
   const sealed = self.envelopes.find(e => e.approver_pub === a.pub);
-  if (sealed === undefined || sealed.seq <= a.envelope.seq) return a;
-  try {
-   const envelope = await openEnvelope(key, fromB64url(a.pub, 32)!, sealed.seq, sealed.sealed);
-   changed = true;
-   return { ...a, envelope };
-  } catch { return a; }
- }));
- if (!changed) return record;
- const next: OwnerRecord = { v: 1, approvers };
- await store.put(next);
- return next;
+  if (sealed === undefined || sealed.seq <= a.envelope.seq) return null;
+  try { return { ...a, envelope: await openEnvelope(key, fromB64url(a.pub, 32)!, sealed.seq, sealed.sealed) }; }
+  catch { return null; }
+ }))).filter((a): a is VerifiedApprover => a !== null);
+ return newer.length === 0 ? record : await store.merge(acct, devicePub, newer);
 }
