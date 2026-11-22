@@ -1,0 +1,10 @@
+{
+ "source": "node:crypto only (diffieHellman, hkdfSync, aes-256-gcm), WIRE-PLAN approve-v1 §2.3, RFC 7748 §6.1 keys; a whole machine list as D1 seals it",
+ "browser_priv": "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo",
+ "browser_pub": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+ "approver_priv": "XasIfmJKikt54X-Lg4AO5m87sSkmGLb9HC-LJ_-I4Os",
+ "approver_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08",
+ "seq": 1800000000123,
+ "envelope_json": "{\"v\":1,\"seq\":1800000000123,\"issued_unix\":1799999000,\"approver\":\"Jerry's MacBook\",\"machines\":[{\"host_item_id\":\"6f9b1c2e-0000-4000-8000-000000000001\",\"label\":\"dev2306\",\"relay\":\"https://guest.herdrup.app\",\"host_id\":\"AQEBAQEBAQEBAQEBAQEBAQ\",\"node_pub\":\"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI\",\"grant_id\":\"AwMDAwMDAwMDAwMDAwMDAw\",\"scope\":\"terminal\",\"expires_unix\":1802592000}],\"skipped\":[{\"host_item_id\":\"6f9b1c2e-0000-4000-8000-000000000002\",\"label\":\"old-vps\",\"reason\":\"needs_update\",\"version\":\"0.8.3\"}]}",
+ "sealed": "RERERERERERERERE-XqakBevowKGoqK_PHpJMsK5DtrU82J3ORRcpgsG4tHETxy-Tfu6HaQPvkBFfZD875Z7JfnbPHZVudNpwKG5bxPyC5FvhWpsYaTV6GWhSS96_zxP53U98szwwKjuvRh4RupUDgcJsES1-aNEOM_nMvRKGZo80idi58UOYqxsMLGNvrDJ6r_V2iK5d6fRn8kL0DUWZvvnLwqyGAA4pQ3GgVVbbdkTd4BzhyIo0ia8bksP_2ZWrIMe6OVNa0HL-RDGC-egkLAnrdt_3ED7eg7QRg-c1YYPLrTYU4vWThFVhCAcDnp94DKhyscZf21bYMLO2I0ldhl0utPdkza4rufoP-0T5bBCHu01ZahjT-kU_eAY6z6xrdQYAUm4g9ItOoi0wyUNNeG-xU2eYIqH3riaNzu-AnPdHoK-oKhOhZcg1ZWUVu7_bMB6vvrM8X31jf3ePTY0_HHpKUqf107Ml92fsZWiJOFDGSYfGxBIGZdxDler_9ROvNVipM6g152KaUk6FdFV6HNoWk--5Kb6xT1EnjlLcs8Byo3qNgnBfZZ-RHUqcPK6jxd5gAtxShVUVwivLv9xTItNGXuvabVpJCB5_upleIt3OiJqLQ5PL6fUDinUPzOGIq21rByWtjtiAR9mvJqrME3gHO5j3b7ALmOejy1SjYuDXx28ONzvfl2eJ6tQl3kl9qfNvHE"
+}

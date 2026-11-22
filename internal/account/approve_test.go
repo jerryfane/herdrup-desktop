@@ -23,12 +23,14 @@ type approveVector struct {
 	Sealed       string `json:"sealed"`
 }
 
-func loadApproveVector(t *testing.T) (approveVector, x25519Key, x25519Key) {
+// loadApproveVector reads a vector made with node:crypto alone from WIRE-PLAN
+// §2.2-2.3 (RFC 7748 §6.1 keys), so the Go code is checked against a second
+// implementation; the browser's (test/webguestApprove.test.ts) reads the same
+// files. approve-v1.json is AccountService's test/vectors/approve-v1.json;
+// approve-v1-list.json seals a whole machine list as D1 does.
+func loadApproveVector(t *testing.T, name string) (approveVector, x25519Key, x25519Key) {
 	t.Helper()
-	// Made with node:crypto alone from WIRE-PLAN §2.2-2.3 (RFC 7748 §6.1 keys), so the
-	// Go code is checked against a second implementation, as the browser's will be.
-	// AccountService's approve-v1.json replaces it when A1 lands.
-	raw, err := os.ReadFile("testdata/approve-v1-local.json")
+	raw, err := os.ReadFile("testdata/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +49,7 @@ func loadApproveVector(t *testing.T) (approveVector, x25519Key, x25519Key) {
 }
 
 func TestApproveMatchesTheIndependentVector(t *testing.T) {
-	v, browser, approver := loadApproveVector(t)
+	v, browser, approver := loadApproveVector(t, "approve-v1.json")
 	B, T := b64(t, v.BrowserPub), b64(t, v.ApproverPub)
 	if !bytes.Equal(browser.PublicKey(), B) || !bytes.Equal(approver.PublicKey(), T) {
 		t.Fatal("vector keys don't derive their public halves")
@@ -70,7 +72,7 @@ func TestApproveMatchesTheIndependentVector(t *testing.T) {
 // A compromised service swaps the browser key or the nonce the browser reveals:
 // the approver must refuse, and the codes must differ.
 func TestApproveRefusesASwappedKeyOrNonce(t *testing.T) {
-	v, _, _ := loadApproveVector(t)
+	v, _, _ := loadApproveVector(t, "approve-v1.json")
 	B, T, nB, nT := b64(t, v.BrowserPub), b64(t, v.ApproverPub), b64(t, v.NonceB), b64(t, v.NonceT)
 	commit, _ := ApproveCommit(B, nB)
 	if err := ApproveOpen(B, commit, nB); err != nil {
@@ -102,7 +104,7 @@ func TestApproveRefusesASwappedKeyOrNonce(t *testing.T) {
 // The browser accepts an envelope only from the approver it verified, at the
 // sequence it was sealed for, and only unmodified.
 func TestEnvelopeOpensOnlyForItsApproverAndSeq(t *testing.T) {
-	_, browser, approver := loadApproveVector(t)
+	_, browser, approver := loadApproveVector(t, "approve-v1.json")
 	sealed, err := SealEnvelope(approver, browser.PublicKey(), 3, []byte(`{"v":1}`))
 	if err != nil {
 		t.Fatal(err)
@@ -136,5 +138,18 @@ func TestSealedLengthIsTheSealedEnvelopesLength(t *testing.T) {
 		if got := SealedLength(n); got != len(sealed) {
 			t.Fatalf("SealedLength(%d) = %d, sealed %d", n, got, len(sealed))
 		}
+	}
+}
+
+// The browser's machine list, as another implementation sealed it, opens to
+// exactly its JSON.
+func TestApproveOpensTheMachineListVector(t *testing.T) {
+	v, browser, _ := loadApproveVector(t, "approve-v1-list.json")
+	plain, err := OpenEnvelope(browser, b64(t, v.ApproverPub), v.Seq, v.Sealed)
+	if err != nil || string(plain) != v.EnvelopeJSON {
+		t.Fatalf("open = %q, %v", plain, err)
+	}
+	if _, err := OpenEnvelope(browser, b64(t, v.ApproverPub), v.Seq+1, v.Sealed); err == nil {
+		t.Fatal("opened at another seq")
 	}
 }

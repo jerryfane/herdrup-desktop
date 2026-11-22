@@ -3,13 +3,18 @@
 // so every call is credentialed and carries no token in its body, and refreshes are single-flight
 // because a rotated-away cookie revokes the session.
 import { expect, test } from "bun:test";
-import { returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
+import { AccountServiceError, returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { fromB64url, toB64url } from "../src/webguest/b64url";
+import { enrolProof } from "../src/webguest/enrol";
+import { staticKey } from "../src/webguest/identity";
 import { createAccountDesk } from "../src/web/accountDesk";
 
 const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0")}`;
 
-/** The service: one cookie that rotates on each refresh; a spent cookie revokes the session. */
-function service() {
+/** The service: one cookie that rotates on each refresh; a spent cookie revokes the session.
+ *  route answers the account calls (null: 404), given the Bearer token sent. */
+function service(route: (url: string, init: RequestInit, bearer: string) => Response | Promise<Response> | null = () => null, accountOf: (n: number) => string = () => "acct-1") {
  let cookie = "c0", n = 0, revoked = false;
  const spent = new Set<string>();
  const calls: { url: string; init: RequestInit; cookie: string }[] = [];
@@ -22,10 +27,11 @@ function service() {
   if (url.endsWith("/v1/auth/refresh")) {
    if (revoked || !sent || spent.has(sent)) { revoked = true; return Response.json({ error: "session_revoked" }, { status: 401 }); }
    spent.add(sent); n++; cookie = `c${n}`;
-   return Response.json({ account_id: "acct-1", access_token: access(n), access_expires_in: 3600, ...(n === 1 ? { display_hint: "jerry@example.com" } : {}) });
+   return Response.json({ account_id: accountOf(n), access_token: access(n), access_expires_in: 3600, ...(n === 1 ? { display_hint: "jerry@example.com" } : {}) });
   }
   if (url.endsWith("/v1/auth/signout")) { revoked = true; return new Response(null, { status: 204 }); }
-  return Response.json({ error: "not_found" }, { status: 404 });
+  const bearer = String((init.headers as Record<string, string> | undefined)?.Authorization ?? "").replace(/^Bearer /, "");
+  return await route(url, init, bearer) ?? Response.json({ error: "not_found" }, { status: 404 });
  }) as typeof fetch;
  return { fetcher, calls, revoke: () => { revoked = true; } };
 }
@@ -160,4 +166,98 @@ test("a refresh queued behind the lock when sign-out starts does not sign back i
  await expect(pending).rejects.toBeInstanceOf(SignedOutError);
  await signedOut;
  expect(account.current).toBeNull();
+});
+
+test("account calls carry the access token; one the service refuses is refreshed and sent once more, not forever", async () => {
+ const seen: string[] = [];
+ const s = service((url, _init, bearer) => {
+  if (!url.endsWith("/v1/browsers/self")) return null;
+  seen.push(bearer);
+  return bearer === access(2) ? Response.json({ envelopes: [] }) : Response.json({ error: "unauthorized" }, { status: 401 });
+ });
+ const account = new WebAccount(s.fetcher);
+ expect(await account.browserSelf()).toEqual({ envelopes: [] });
+ expect(seen).toEqual([access(1), access(2)]);
+ let sends = 0;
+ const stuck = new WebAccount(service((url) => { if (!url.endsWith("/v1/browsers/self")) return null; sends++; return Response.json({ error: "unauthorized" }, { status: 401 }); }).fetcher);
+ const error = await stuck.browserSelf().catch(e => e);
+ expect(error).toBeInstanceOf(AccountServiceError);
+ expect(error.status).toBe(401);
+ expect(sends).toBe(2);
+});
+
+test("enrolment proves the browser's key for this account's challenge and adds it as a web device; another account's challenge is refused", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ const serverPub = toB64url(x25519.getPublicKey(new Uint8Array(32).fill(9)));
+ let challengeAccount = "acct-1";
+ const posted: Record<string, string>[] = [];
+ const s = service(async (url, init) => {
+  if (url.endsWith("/v1/devices/challenge")) return Response.json({ challenge_id: "chal-1", server_pub: serverPub, salt: toB64url(new Uint8Array(32).fill(3)), account_id: challengeAccount, expires_in: 60 });
+  if (url.endsWith("/v1/devices")) { posted.push(JSON.parse(String(init.body))); return Response.json({ device: { id: "dev-1", name: "Chrome on macOS", platform: "web", device_pub: toB64url(key.publicKey), created_ms: 1 } }); }
+  return null;
+ });
+ const account = new WebAccount(s.fetcher);
+ await account.accessToken();
+ expect((await account.enrol(key, "Chrome on macOS")).id).toBe("dev-1");
+ const proof = await enrolProof(key, { challenge_id: "chal-1", server_pub: serverPub, salt: toB64url(new Uint8Array(32).fill(3)), account_id: "acct-1" });
+ expect(posted).toEqual([{ challenge_id: "chal-1", device_pub: proof.devicePub, mac: proof.mac, name: "Chrome on macOS", platform: "web" }]);
+ expect(fromB64url(posted[0]!.device_pub)).toEqual(key.publicKey);
+ challengeAccount = "acct-2";
+ await expect(account.enrol(key, "Chrome on macOS")).rejects.toMatchObject({ code: "account_changed" });
+ expect(posted.length).toBe(1);
+});
+
+test("a call refused with 401 is not sent again once the refreshed session is another account's", async () => {
+ const posted: string[] = [];
+ const s = service((url, _init, bearer) => {
+  if (!url.endsWith("/v1/approvals")) return null;
+  posted.push(bearer);
+  return Response.json({ error: "unauthorized" }, { status: 401 });
+ }, n => n === 1 ? "acct-A" : "acct-B");
+ const account = new WebAccount(s.fetcher);
+ await expect(account.requestApproval(new Uint8Array(32))).rejects.toMatchObject({ code: "account_changed" });
+ expect(posted).toEqual([access(1)]);
+ // Bound up front: another account's session sends nothing.
+ await expect(account.requestApproval(new Uint8Array(32), "acct-A")).rejects.toMatchObject({ code: "account_changed" });
+ expect(posted).toEqual([access(1)]);
+});
+
+test("after the page's token expires and the cookie now holds another sign-in, no write goes out as that account", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ for (const write of [(a: WebAccount) => a.requestApproval(new Uint8Array(32)), (a: WebAccount) => a.enrol(key, "Chrome on macOS")]) {
+  let now = 1_000_000;
+  const sent: string[] = [];
+  const s = service((url, _init, bearer) => { if (url.endsWith("/v1/approvals") || url.includes("/v1/devices")) sent.push(`${url.slice(url.indexOf("/v1/"))} ${bearer}`); return Response.json({}); },
+   n => n === 1 ? "acct-A" : "acct-B");
+  const account = new WebAccount(s.fetcher, undefined, () => now);
+  await account.accessToken(); // signed in as acct-A
+  now += 3_600_000; // A's bearer expired; the cookie now refreshes to acct-B
+  await expect(write(account)).rejects.toMatchObject({ code: "account_changed" });
+  expect(sent).toEqual([]);
+ }
+});
+
+test("an aborted call sends nothing more: not enrolment's second step, not the retry after a 401", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ let stop = new AbortController();
+ const sent: string[] = [];
+ const s = service((url) => {
+  const path = url.slice(url.indexOf("/v1/"));
+  sent.push(path);
+  // The caller leaves while the service answers.
+  stop.abort(new Error("left"));
+  if (path === "/v1/devices/challenge") return Response.json({ challenge_id: "c", server_pub: toB64url(x25519.getPublicKey(new Uint8Array(32).fill(9))), salt: toB64url(new Uint8Array(32).fill(3)), account_id: "acct-1" });
+  if (path === "/v1/approvals") return Response.json({ error: "unauthorized" }, { status: 401 });
+  return null;
+ });
+ const account = new WebAccount(s.fetcher);
+ await expect(account.enrol(key, "x", undefined, stop.signal)).rejects.toThrow("left");
+ expect(sent).toEqual(["/v1/devices/challenge"]);
+ stop = new AbortController();
+ sent.length = 0;
+ await expect(account.requestApproval(new Uint8Array(32), undefined, stop.signal)).rejects.toThrow("left");
+ expect(sent).toEqual(["/v1/approvals"]);
 });
