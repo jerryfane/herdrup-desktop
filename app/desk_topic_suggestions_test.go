@@ -416,3 +416,33 @@ func TestTopicsSettleSuggestionsReportsTheFirstRefusal(t *testing.T) {
 	}
 	waitFor(t, "the read after the settle", func() bool { return len(updates()) > before })
 }
+
+// An open Inbox whose first lists fail for a passing reason (an omp agent
+// whose topics are not reachable yet) asks again on topicsRetry's schedule,
+// then follows the served suggestions.
+func TestTopicsInboxAsksAgainAfterAFailedList(t *testing.T) {
+	saved := topicsRetry
+	topicsRetry = []time.Duration{20 * time.Millisecond}
+	t.Cleanup(func() { topicsRetry = saved })
+	failures := 2
+	d, _, updates := suggestionsDesk(t, func(f *fakeherdr.Topics) {
+		f.ListFail = func() bool { failures--; return failures >= 0 }
+	}, nil)
+	if err := d.TopicsFollowInbox("view", true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the list after two failed reads", func() bool {
+		u := updates()
+		return len(u) >= 3 && u[0].Problem != "" && u[len(u)-1].Problem == "" && u[len(u)-1].SuggestionsServed
+	})
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.topics.mu.Lock()
+	following, retrying := v.topics.cancel != nil, v.topics.retry != nil
+	v.topics.mu.Unlock()
+	if !following || retrying {
+		t.Fatalf("after the list: following %v, retrying %v", following, retrying)
+	}
+}

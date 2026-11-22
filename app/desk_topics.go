@@ -31,6 +31,12 @@ const (
 	topicMessageBytes = 32 * 1024
 )
 
+// topicsRetry is the wait before the open Inbox asks again after a list that
+// failed for a passing reason (topics_unreachable, a timeout, a dropped call)
+// or a capability that couldn't be read: iOS TopicsDiscoveryBackoff, the last
+// one repeating. Tests replace it.
+var topicsRetry = []time.Duration{60 * time.Second, 120 * time.Second, 240 * time.Second, 480 * time.Second, 600 * time.Second}
+
 // TopicsUpdate is the page's Topics state for one view: the list, ordered
 // as the Topics view lists it, or why the newest read failed (the last list
 // stays on screen: topics_unreachable keeps it). Offered says the agent
@@ -87,6 +93,12 @@ type topicsState struct {
 	inbox   bool
 	reading bool
 	again   bool
+	// settled: the newest read is the agent's word: a list with a known
+	// suggestions capability, or a refusal for good (topicsNotOffered).
+	// Until then the open Inbox asks again on topicsRetry's schedule.
+	settled bool
+	retry   *time.Timer
+	retries int
 }
 
 // TopicsAvailable reports whether the view's server serves an omp agent's
@@ -144,7 +156,8 @@ func (d *Desk) TopicsFollow(token string, shown bool) error {
 
 // TopicsFollowInbox says whether the page's Inbox (its Chat view) is open:
 // while it is and the agent's suggestions are served, the list is followed
-// as Topics follows it. It stops when open goes false or the view closes.
+// as Topics follows it; until a read settles that, it is asked again on
+// topicsRetry's schedule. It stops when open goes false or the view closes.
 func (d *Desk) TopicsFollowInbox(token string, open bool) error {
 	v, err := d.agentView(token)
 	if err != nil {
@@ -153,10 +166,10 @@ func (d *Desk) TopicsFollowInbox(token string, open bool) error {
 	t := &v.topics
 	t.mu.Lock()
 	t.inbox = open
-	loaded := t.last.Loaded
+	settled := t.settled
 	t.mu.Unlock()
-	if open && !loaded {
-		// Whether suggestions are served is the list's word: read it once.
+	if open && !settled {
+		// Whether suggestions are served is the list's word.
 		d.topicsRead(v)
 	}
 	d.topicsWatch(v)
@@ -164,11 +177,29 @@ func (d *Desk) TopicsFollowInbox(token string, open bool) error {
 }
 
 // topicsWatch starts the follower when Topics shows or the Inbox is open on
-// served suggestions, and stops it when neither holds.
+// served suggestions, and stops it when neither holds. Otherwise an open
+// Inbox whose newest read didn't settle asks again after a backoff.
 func (d *Desk) topicsWatch(v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
 	want := t.shown || (t.inbox && t.last.SuggestionsServed)
+	retry := !want && t.inbox && !t.settled && v.ctx.Err() == nil
+	switch {
+	case retry && t.retry == nil:
+		wait := topicsRetry[min(t.retries, len(topicsRetry)-1)]
+		t.retries++
+		t.retry = time.AfterFunc(wait, func() {
+			t.mu.Lock()
+			t.retry = nil
+			t.mu.Unlock()
+			if v.ctx.Err() == nil {
+				d.topicsRead(v)
+			}
+		})
+	case !retry && t.retry != nil:
+		t.retry.Stop()
+		t.retry = nil
+	}
 	if want == (t.cancel != nil) || v.ctx.Err() != nil {
 		t.mu.Unlock()
 		return
@@ -291,9 +322,9 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	defer cancel()
 	requested := time.Now()
 	list, err := v.client.AgentTopicsList(ctx, v.PaneID)
-	served := false
+	served, known := false, true
 	if err == nil && list.Suggestions != nil {
-		served, _ = v.client.Supports(ctx, herdrapi.CapabilityAgentTopicSuggestions)
+		served, known = v.client.Supports(ctx, herdrapi.CapabilityAgentTopicSuggestions)
 	}
 	if v.ctx.Err() != nil {
 		return
@@ -305,13 +336,24 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	switch {
 	case err == nil:
 		u.Topics, u.Offered, u.Problem = orderedTopics(list.Topics), true, ""
-		u.Suggestions, u.SuggestionsServed, u.RequestedMs = openSuggestions(list.Suggestions), served, requested.UnixMilli()
+		u.Suggestions, u.RequestedMs = openSuggestions(list.Suggestions), requested.UnixMilli()
+		// A capability that couldn't be read keeps the last answer and
+		// leaves the read unsettled.
+		if known {
+			u.SuggestionsServed = served
+		}
+		t.settled = known
 	case topicsNotOffered(err):
 		// Not an agent with topics (any more): the page goes back to Chat and Terminal.
 		u.Topics, u.Offered, u.Problem = nil, false, ""
 		u.Suggestions, u.SuggestionsServed, u.RequestedMs = nil, false, requested.UnixMilli()
+		t.settled = true
 	default:
 		u.Problem = topicsProblem(err)
+		t.settled = false
+	}
+	if t.settled {
+		t.retries = 0
 	}
 	t.last = u
 	t.mu.Unlock()

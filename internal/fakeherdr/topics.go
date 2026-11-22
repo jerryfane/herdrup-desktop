@@ -39,6 +39,10 @@ type Topics struct {
 	// Refuse answers a suggestion's accept or dismiss with this error, by
 	// suggestion id, before anything else is checked.
 	Refuse map[string]*APIError
+	// ListFail, when it says so, answers agent.topics.list
+	// topics_unreachable (the steady answer of an omp agent whose topics are
+	// not reachable yet). It runs under the fixture's lock.
+	ListFail func() bool
 	// off: agents whose topics are switched off; plain: omp agents without
 	// suggestions (their omp answers the suggestion methods topics_unsupported).
 	off, plain map[string]bool
@@ -139,6 +143,9 @@ func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		return fields
 	}
 	if method == "agent.topics.list" {
+		if t.ListFail != nil && t.ListFail() {
+			return nil, &APIError{Code: "topics_unreachable", Message: "the agent's topics are not reachable"}, true
+		}
 		list := make([]any, 0, len(a.order))
 		for _, id := range a.order {
 			list = append(list, maps.Clone(a.topics[id].info))

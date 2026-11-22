@@ -144,6 +144,16 @@ export function organiseAnswered(before: readonly AgentTopicSuggestionInfo[], af
  const held = new Set(before.map(s => s.suggestion_id));
  return after.some(s => !held.has(s.suggestion_id));
 }
+/** How long Organise shows as running once the agent took it: agent.topics.organise only says the
+ *  turn started (or is queued), and a turn that proposes nothing is a finished Organise with no
+ *  event to say so (herdrup #797). After this the button works again; a second Organise while the
+ *  first still runs gets the server's organise_running. */
+export const ORGANISE_WAIT_MS = 3 * 60_000;
+
+/** Organise is over: new proposals arrived, or its wait ran out. */
+export function organiseOver(before: readonly AgentTopicSuggestionInfo[], after: readonly AgentTopicSuggestionInfo[], answeredMs: number, nowMs: number): boolean {
+ return organiseAnswered(before, after) || nowMs - answeredMs >= ORGANISE_WAIT_MS;
+}
 /** What Organise is doing once it started. */
 export function organiseNote(queued: boolean): string {
  return queued ? "Organise starts when the agent's current turn ends." : "The agent is reading the Inbox to propose topics.";

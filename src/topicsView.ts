@@ -11,7 +11,7 @@ import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing,
 import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicTitle, type TopicInfo } from "./topicsModel";
-import { createLabel, isTicked, keptUnticks, messagesText, organiseAnswered, organiseNote, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
+import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
 import { appleSymbols } from "./platform";
 import infoIcon from "../third_party/phosphor/web/info.svg?url";
 import tickedIcon from "../third_party/phosphor/web/check-circle-fill.svg?url";
@@ -96,6 +96,9 @@ export class TopicsPane {
  private readonly bar = el("div", "topics-proposals-bar");
  private organising = false;
  private organiseText: string | null = null;
+ /** When the agent took Organise (ms), and the timer that ends its wait. */
+ private organiseAt = Infinity;
+ private organiseTimer: ReturnType<typeof setTimeout> | undefined;
  /** Proposals the reader unticked; every other one is ticked. */
  private unticked = new Set<string>();
  /** Create N topics or Not now is going through the proposals. */
@@ -136,7 +139,7 @@ export class TopicsPane {
  }
 
  dispose() {
-  this.disposed = true; this.resize.disconnect();
+  this.disposed = true; this.resize.disconnect(); clearTimeout(this.organiseTimer);
   this.sheet?.close(); this.chat?.dispose(); this.chat = null;
   if (this.shown) void Desk.topicsFollow(this.host.token, false).catch(() => undefined);
  }
@@ -149,8 +152,8 @@ export class TopicsPane {
 
  apply(u: TopicsUpdate) {
   if (this.disposed) return;
-  // New proposals arrived: Organise has answered.
-  if (this.organising && organiseAnswered(this.update?.suggestions ?? [], u.suggestions ?? [])) { this.organising = false; this.organiseText = null; }
+  // New proposals arrived, or Organise's wait ran out: it has answered.
+  if (this.organising && organiseOver(this.update?.suggestions ?? [], u.suggestions ?? [], this.organiseAt, Date.now())) this.endOrganise();
   this.unticked = keptUnticks(this.unticked, u.suggestions ?? []);
   this.update = u;
   this.drawList();
@@ -243,14 +246,22 @@ export class TopicsPane {
  /** Asks the agent to propose topics from its Inbox (TopicsModel.organise). */
  private async organise() {
   if (this.organising) return;
-  this.organising = true; this.organiseText = null; this.actionNote = null; this.drawList();
+  this.organising = true; this.organiseText = null; this.actionNote = null; this.organiseAt = Infinity; this.drawList();
   try {
    const queued = await Desk.topicsOrganise(this.host.token);
-   if (this.organising) this.organiseText = organiseNote(queued);
+   if (this.organising) {
+    this.organiseText = organiseNote(queued); this.organiseAt = Date.now();
+    clearTimeout(this.organiseTimer);
+    this.organiseTimer = setTimeout(() => { if (this.organising && !this.disposed) { this.endOrganise(); this.drawList(); } }, ORGANISE_WAIT_MS);
+   }
   } catch (error) {
    this.organising = false; this.organiseText = errorText(error);
   }
   this.drawList();
+ }
+
+ private endOrganise() {
+  this.organising = false; this.organiseText = null; this.organiseAt = Infinity; clearTimeout(this.organiseTimer);
  }
 
  /** One proposal: ticked until the reader unticks it, with its message count and the agent's reason. */
