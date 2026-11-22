@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import type { ChatRow, Entry } from "../src/interactionModel";
 import type { AgentTopicSuggestionInfo } from "../src/mygo";
-import { carriedText, createLabel, dismissedText, inboxRows, settledLine, settlePlan, suggestionFromEntry, switchStatusText, switchTitle, tickedCount, yieldSettled, type Settled } from "../src/topicSuggestionsModel";
+import { carriedText, createLabel, dismissedText, inboxRows, keptUnticks, messagesText, organiseAnswered, organiseNote, proposalsHeading, settledLine, settlePlan, suggestionFromEntry, switchStatusText, switchTitle, tickedCount, yieldSettled, type Settled } from "../src/topicSuggestionsModel";
 
 const entry = (e: Partial<Entry> & { id: string; kind: string }): ChatRow => ({ kind: "entry", id: e.id, entry: { ts_ms: 1, ...e } as Entry });
 const suggestion = (id: string, state: string, extra: Record<string, unknown> = {}) => entry({ kind: "topic_suggestion", id, title: "iPad build times", reason: "40 min", message_ids: ["u1", "r1"], message_count: 12, state, ...extra });
@@ -57,4 +57,16 @@ test("Create N is the ticked count; the plan accepts the ticked and dismisses th
  expect(createLabel(1)).toBe("Create 1 topic");
  expect(createLabel(2)).toBe("Create 2 topics");
  expect(settlePlan(all, new Set(["b"]))).toEqual({ accept: ["a", "c"], dismiss: ["b"] });
+});
+
+test("Organise: answered by a new proposal only, unticks kept while open, and the list's words", () => {
+ expect(organiseAnswered([listed("sg1")], [listed("sg1")])).toBe(false);
+ expect(organiseAnswered([listed("sg1")], [listed("sg1"), listed("sg2")])).toBe(true);
+ expect(organiseAnswered([listed("sg1"), listed("sg2")], [listed("sg2")])).toBe(false);
+ expect([...keptUnticks(new Set(["sg1", "sg9"]), [listed("sg1"), listed("sg2")])]).toEqual(["sg1"]);
+ expect(organiseNote(true)).toBe("Organise starts when the agent's current turn ends.");
+ expect(organiseNote(false)).toBe("The agent is reading the Inbox to propose topics.");
+ expect(proposalsHeading(" docs ")).toBe("SUGGESTED BY DOCS");
+ expect(proposalsHeading("")).toBe("SUGGESTED BY THE AGENT");
+ expect([messagesText(0), messagesText(1), messagesText(4)]).toEqual([null, "1 msg", "4 msgs"]);
 });

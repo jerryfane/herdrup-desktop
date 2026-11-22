@@ -36,6 +36,9 @@ type Topics struct {
 	// OnSwitch runs after the switch changed an agent, outside the lock: the
 	// roster's owner tells its subscribers to list again.
 	OnSwitch func()
+	// Refuse answers a suggestion's accept or dismiss with this error, by
+	// suggestion id, before anything else is checked.
+	Refuse map[string]*APIError
 	// off: agents whose topics are switched off; plain: omp agents without
 	// suggestions (their omp answers the suggestion methods topics_unsupported).
 	off, plain map[string]bool

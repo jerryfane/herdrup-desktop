@@ -204,6 +204,9 @@ func (t *Topics) handleSuggestions(method string, raw json.RawMessage) (any, *AP
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	suggestion := method == "agent.topics.accept_suggestion" || method == "agent.topics.dismiss_suggestion" || method == "agent.topics.organise"
+	if refusal := t.Refuse[p.SuggestionID]; refusal != nil && suggestion && method != "agent.topics.organise" {
+		return nil, refusal, true
+	}
 	switch {
 	case t.off[p.Target] && suggestion:
 		return nil, &APIError{Code: "topics_disabled", Message: "topics are off for this agent"}, true

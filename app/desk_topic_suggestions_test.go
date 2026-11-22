@@ -394,4 +394,17 @@ func TestTopicsSettleSuggestionsReportsTheFirstRefusal(t *testing.T) {
 	if problem, err := d.TopicsSettleSuggestions(context.Background(), "view", []string{"sg1"}, []string{"sg2"}); err != nil || problem != "This agent has no topics." {
 		t.Fatalf("settle on an omp without suggestions: %q, %v", problem, err)
 	}
+
+	// Two different refusals in one settle: the first is the one reported,
+	// and someone else's earlier Start (already_accepted) is not a refusal.
+	d, _, _ = suggestionsDesk(t, func(f *fakeherdr.Topics) {
+		f.Refuse = map[string]*fakeherdr.APIError{
+			"sg1": {Code: "already_accepted", Message: "started"},
+			"sg2": {Code: "topic_rejected", Message: "busy"},
+			"sg3": {Code: "topics_disabled", Message: "off"},
+		}
+	}, nil)
+	if problem, err := d.TopicsSettleSuggestions(context.Background(), "view", []string{"sg1", "sg2"}, []string{"sg3"}); err != nil || problem != "The agent refused: busy" {
+		t.Fatalf("settle with two refusals: %q, %v; want the first", problem, err)
+	}
 }
