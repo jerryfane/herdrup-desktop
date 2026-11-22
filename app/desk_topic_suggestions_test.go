@@ -446,3 +446,32 @@ func TestTopicsInboxAsksAgainAfterAFailedList(t *testing.T) {
 		t.Fatalf("after the list: following %v, retrying %v", following, retrying)
 	}
 }
+
+// Closing the view drops a pending Inbox retry at once, not when it fires.
+func TestTopicsClosingTheViewDropsTheInboxRetry(t *testing.T) {
+	saved := topicsRetry
+	topicsRetry = []time.Duration{time.Hour}
+	t.Cleanup(func() { topicsRetry = saved })
+	d, _, updates := suggestionsDesk(t, func(f *fakeherdr.Topics) {
+		f.ListFail = func() bool { return true }
+	}, nil)
+	if err := d.TopicsFollowInbox("view", true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the failed list", func() bool {
+		u := updates()
+		return len(u) > 0 && u[0].Problem != ""
+	})
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrying := func() bool {
+		v.topics.mu.Lock()
+		defer v.topics.mu.Unlock()
+		return v.topics.retry != nil
+	}
+	waitFor(t, "the retry armed", retrying)
+	d.CloseAgentView("view")
+	waitFor(t, "the retry dropped", func() bool { return !retrying() })
+}
