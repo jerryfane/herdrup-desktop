@@ -584,6 +584,11 @@ func (d *Desk) removeGrant(ctx context.Context, g webGrant) error {
 	return err
 }
 
+// webOwnerProtocol is the owner_access protocol of a machine that admits
+// owner browsers (H2). 1 only stores grants (H1, herdr #491): a grant there
+// couldn't let the browser in. A herdr that leaves the field out is older.
+const webOwnerProtocol = 2
+
 // grantOn adds the grant on one machine: owner_access.info for its relay id,
 // a statement for that host, then owner_access.add. A machine that can't take
 // owner grants is skipped with the envelope's reason.
@@ -607,6 +612,8 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 		return webEnvelopeMachine{}, "unsupported", nil
 	case err != nil:
 		return webEnvelopeMachine{}, "", err
+	case info.Protocol < webOwnerProtocol:
+		return webEnvelopeMachine{}, "needs_update", nil
 	}
 	if !webrelay.Allowed(info.RelayURL) {
 		return webEnvelopeMachine{}, "relay_not_allowed", nil
