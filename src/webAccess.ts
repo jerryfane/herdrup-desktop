@@ -10,7 +10,7 @@ import { Desk, events } from "./mygo";
 import type { WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { webGuest } from "./platform";
-import { canApprove, codeInput, nextRequest, resultLines, skipReason, wrongCode, type WebAccessRequestView } from "./webAccessModel";
+import { askOffered, canApprove, codeInput, nextRequest, resultLines, skipReason, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
  *  calls a minute per account, and a request lasts 10 minutes. */
@@ -39,7 +39,8 @@ export function initWebAccess(): void {
  if (webGuest) return;
  const closed = new Set<string>();
  let open: string | null = null;
- let offered: boolean | null = null;
+ // The service's last answer to "do you offer browser approval?"; an error isn't kept.
+ let offered: { offered: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
 
  const schedule = () => { clearTimeout(timer); timer = setTimeout(() => { void look(); }, POLL_MS); };
@@ -48,8 +49,8 @@ export function initWebAccess(): void {
    if (document.visibilityState !== "visible" || open !== null) return;
    const state = await Desk.accountState();
    if (!state.signedIn) { offered = null; return; }
-   offered ??= await Desk.webAccessOffered();
-   if (!offered) return;
+   if (askOffered(offered, Date.now())) offered = { offered: await Desk.webAccessOffered(), at: Date.now() };
+   if (!offered?.offered) return;
    const req = nextRequest(await Desk.webAccessRequests() as WebAccessRequestView[], closed);
    if (req) await showSheet(req, () => { closed.add(req.id); open = null; });
   } catch { /* the next look tries again */ }
@@ -90,46 +91,67 @@ export function initWebAccess(): void {
 
   const problem = el("p", "web-access-problem"); problem.hidden = true;
   const deny = el("button", "ghost", "Deny"); deny.type = "button";
+  // Shown once a denial failed: this computer won't approve any more, and the request ends on its own.
+  const close = el("button", "ghost", "Close"); close.type = "button"; close.hidden = true;
   const approve = el("button", "", "Approve"); approve.type = "button";
-  const buttons = el("div", "buttons"); buttons.append(deny, approve);
+  const buttons = el("div", "buttons"); buttons.append(close, deny, approve);
   const section = (label: string, ...nodes: HTMLElement[]) => { const s = el("section", "web-access-section"); s.append(el("h3", "settings-section-label", label), ...nodes); return s; };
   dialog.append(title, lead, status, codeLabel, section("MACHINES", list, el("p", "web-access-dim", "Approving turns on web access on the machines you tick.")),
    section("ACCESS", access, terminalNote), section("FOR", time), problem, buttons);
 
-  let busy = false, tries = 0, finished = false;
-  // Once the request is approved, denied or gone, its choices no longer do anything: lock them.
-  const end = () => { finished = true; for (const i of dialog.querySelectorAll("input")) i.disabled = true; approve.disabled = true; };
-  const update = () => { approve.disabled = finished || !canApprove(code.value, ticked.size, busy) || code.disabled; };
+  // busy: a call is in flight (Approve and Deny wait for each other). locked: the choices no longer
+  // do anything (approved, too many codes, or a pending answer). finished: the request is over.
+  let busy = false, locked = false, finished = false, retry = false;
+  const lock = () => { locked = true; for (const i of dialog.querySelectorAll("input")) i.disabled = true; };
+  const end = () => { finished = true; lock(); approve.hidden = true; close.hidden = true; deny.textContent = "Done"; };
+  const update = () => {
+   deny.disabled = busy;
+   approve.disabled = busy || finished || (!retry && (locked || !canApprove(code.value, ticked.size, false) || code.disabled));
+  };
   const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
   code.oninput = () => { code.value = codeInput(code.value); say(""); update(); };
 
   const off = events.webAccessUpdate.on(u => {
    if (u.id !== req.id) return;
-   if (u.state === "ready") { status.textContent = "The browser shows a code now."; code.disabled = false; code.focus(); update(); return; }
+   if (u.state === "ready") { status.textContent = "The browser shows a code now."; if (!locked) { code.disabled = false; code.focus(); } update(); return; }
    end(); status.textContent = u.problem || "This request ended.";
+   update();
   });
-  deny.onclick = async () => {
-   if (!finished) await Desk.webAccessDeny(req.id).catch(() => {});
-   finished = true; dialog.close();
+  const run = async (f: () => Promise<void>) => {
+   busy = true; update();
+   try { await f(); } catch (error) { say(errorText(error)); } finally { busy = false; update(); }
   };
-  approve.onclick = async () => {
-   busy = true; update(); say("");
-   try {
+  deny.onclick = () => {
+   if (finished) { dialog.close(); return; }
+   void run(async () => {
+    try { await Desk.webAccessDeny(req.id); }
+    catch (error) { say(`Couldn't deny: ${errorText(error)}. Deny to try again.`); close.hidden = false; lock(); return; }
+    finished = true; dialog.close();
+   });
+  };
+  close.onclick = () => { finished = true; dialog.close(); };
+  approve.onclick = () => void run(async () => {
+   say("");
+   if (!retry) {
     const check = await Desk.webAccessCheckCode(req.id, code.value);
     if (!check.ok) {
-     tries++; say(wrongCode(tries));
-     if (check.denied) end();
-     code.value = ""; code.focus();
+     say(wrongCode(check));
+     code.value = "";
+     if (check.left === 0) { lock(); if (check.denied) end(); else close.hidden = false; }
+     else code.focus();
      return;
     }
-    approve.textContent = "Approving…";
+   }
+   approve.textContent = "Approving…";
+   try {
     const result = await Desk.webAccessApprove(req.id, [...ticked], scope, length);
-    const { done: approved, lines } = resultLines(result);
+    const { done: approved, unsure, lines } = resultLines(result);
     say(lines.join(" "));
-    if (approved) { end(); deny.textContent = "Done"; approve.hidden = true; status.textContent = "Approved. The browser can open your machines now."; }
-   } catch (error) { say(errorText(error)); }
-   finally { busy = false; if (!approve.hidden) approve.textContent = "Approve"; update(); }
-  };
+    retry = unsure;
+    if (unsure) lock();
+    if (approved) { end(); status.textContent = "Approved. The browser can open your machines now."; }
+   } finally { approve.textContent = retry ? "Try again" : "Approve"; }
+  });
   dialog.addEventListener("cancel", event => { if (!finished) event.preventDefault(); });
   dialog.addEventListener("close", () => { off(); dialog.remove(); done(); }, { once: true });
   document.body.append(dialog);

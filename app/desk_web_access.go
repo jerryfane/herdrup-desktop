@@ -7,6 +7,11 @@ package main
 // over SSH (owner_access.add, herdr #491) and seals the machine list to the
 // browser. The account service carries the request and the sealed list; it
 // can't grant anything itself.
+//
+// Grants exist only for a recorded approval: they are made after the service
+// confirms the request is still open, and removed again when the service
+// definitely didn't record the approval. When that can't be told (no
+// answer), the grants stay and Approve retries the same report.
 
 import (
 	"context"
@@ -24,15 +29,11 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
+	"github.com/jerryfane/herdrup-desktop/internal/webrelay"
 )
 
-// webNow is the clock for grant expiry; tests replace it.
+// webNow is the clock for grant expiry and envelope seq; tests replace it.
 var webNow = time.Now
-
-// webRelays are the relays the web app's CSP lets a browser reach
-// (GuestRelay/public/_headers connect-src). A machine on another relay is
-// skipped as relay_not_allowed.
-var webRelays = []string{"https://guest.herdrup.app", "https://guest.herdrup.themartian.app"}
 
 // webAccessTTLs are the lengths the sheet offers, longest first (owner
 // decision: 30 days at most).
@@ -60,17 +61,16 @@ type WebAccessMachine struct {
 	Unavailable string `json:"unavailable,omitempty"`
 }
 
-// WebAccessCode is the state of an approval after the browser revealed.
-type WebAccessCode struct {
-	// Ready: the code can be typed. False while the browser hasn't revealed.
-	Ready bool `json:"ready"`
-}
-
 // WebAccessResult is what an approval did on each machine.
 type WebAccessResult struct {
 	Granted []string           `json:"granted"`
 	Skipped []WebAccessSkipped `json:"skipped"`
 	Failed  []WebAccessSkipped `json:"failed"`
+	// Unsure: the service's answer to the approval was lost (Problem says
+	// how); the grants are kept, Approve sends the same report again and
+	// Deny removes them.
+	Unsure  bool   `json:"unsure,omitempty"`
+	Problem string `json:"problem,omitempty"`
 }
 
 // WebAccessSkipped is a machine left out, with the reason the browser sees
@@ -83,29 +83,69 @@ type WebAccessSkipped struct {
 
 // webApproval is the one approval in progress on this computer.
 type webApproval struct {
-	mu     sync.Mutex
 	acct   string
 	a      *account.Approval
 	cancel context.CancelFunc
+	// op makes Approve and Deny one at a time.
+	op sync.Mutex
+	// pending is an approval whose report got no answer: its grants stand
+	// until the service's outcome is known. Guarded by op.
+	pending *webPending
+}
+
+// webPending is a report sent without a known outcome, and the grants it
+// carries.
+type webPending struct {
+	scope     string
+	expiresMs int64
+	seq       uint64
+	envelope  []byte
+	grants    []webGrant
+	res       WebAccessResult
+}
+
+// webGrant is a grant made on one machine, to remove it again.
+type webGrant struct {
+	m       webMachine
+	grantID string
 }
 
 var (
 	errNoApproval     = errors.New("that request is no longer open here")
 	errNoMachines     = errors.New("choose at least one machine")
 	errWebAccessScope = errors.New("choose chat or chat and terminal")
+	errWebAccessBusy  = errors.New("still working on this request")
+	errAlreadyOver    = errors.New("this request is already over")
 )
 
+// webSeqLast is the last envelope seq this process used.
+var (
+	webSeqMu   sync.Mutex
+	webSeqLast uint64
+)
+
+// webSeq is the next envelope seq: the clock in milliseconds, above any seq
+// used before. The service keeps the highest seq per browser and approver and
+// refuses one not above it (herdrup #792); this device can't read that value,
+// so each report, a new approval included, takes a fresh, larger one.
+func webSeq() uint64 {
+	webSeqMu.Lock()
+	defer webSeqMu.Unlock()
+	webSeqLast = max(uint64(webNow().UnixMilli()), webSeqLast+1)
+	return webSeqLast
+}
+
 // WebAccessOffered reports whether the account service carries browser
-// approvals: the page polls for requests and offers approval only then.
-func (d *Desk) WebAccessOffered(ctx context.Context) bool {
-	cur, _ := d.account.Current()
-	if cur == nil {
-		return false
+// approvals. An error means the service couldn't be asked; the page asks
+// again on its next look.
+func (d *Desk) WebAccessOffered(ctx context.Context) (bool, error) {
+	cur, err := d.account.Current()
+	if err != nil || cur == nil {
+		return false, errSignedOutHere(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	offered, _ := d.account.WebApproveOffered(ctx)
-	return offered
+	return d.account.WebApproveOffered(ctx)
 }
 
 // WebAccessRequests lists browsers waiting for approval on the account.
@@ -161,8 +201,8 @@ func machineLabel(m Machine) string {
 }
 
 // WebAccessStart claims request id for this computer and waits (in the
-// background) for the browser to show its code. One approval at a time: a
-// new one replaces the last.
+// background, until the request expires) for the browser to show its code.
+// One approval at a time: a new one replaces the last.
 func (d *Desk) WebAccessStart(ctx context.Context, id string) error {
 	cur, err := d.account.Current()
 	if err != nil || cur == nil {
@@ -186,8 +226,7 @@ func (d *Desk) WebAccessStart(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	// The browser reveals within the request's 10 minutes, or never.
-	wctx, stop := context.WithTimeout(context.Background(), 10*time.Minute)
+	wctx, stop := context.WithTimeout(context.Background(), time.Duration(list[i].ExpiresIn)*time.Second)
 	w := &webApproval{acct: cur.AccountID, a: a, cancel: stop}
 	d.mu.Lock()
 	if d.webApproval != nil {
@@ -226,6 +265,8 @@ func (d *Desk) emitWebAccess(id string, err error) {
 		u.State, u.Problem = "tampered", "This request was tampered with. It was denied."
 	case errors.Is(err, context.Canceled):
 		return
+	case errors.Is(err, context.DeadlineExceeded):
+		u.State, u.Problem = "ended", "This request expired before the browser showed its code."
 	default:
 		u.State, u.Problem = "ended", err.Error()
 	}
@@ -242,11 +283,14 @@ func (d *Desk) currentApproval(id string) (*webApproval, error) {
 	return w, nil
 }
 
-// WebAccessCheck is a typed code's outcome: Ok, or not; Denied after three
-// wrong codes (the request is closed).
+// WebAccessCheck is a typed code's outcome. Left is how many more codes may
+// be typed; at 0 this computer won't approve the request, and Denied says the
+// browser was told (else Problem says why not, and Deny tries again).
 type WebAccessCheck struct {
-	Ok     bool `json:"ok"`
-	Denied bool `json:"denied"`
+	Ok      bool   `json:"ok"`
+	Left    int    `json:"left"`
+	Denied  bool   `json:"denied"`
+	Problem string `json:"problem,omitempty"`
 }
 
 // WebAccessCheckCode compares the code the user typed.
@@ -255,18 +299,64 @@ func (d *Desk) WebAccessCheckCode(ctx context.Context, id, typed string) (WebAcc
 	if err != nil {
 		return WebAccessCheck{}, err
 	}
-	ok, denied := w.a.CheckCode(ctx, strings.TrimSpace(typed))
-	return WebAccessCheck{Ok: ok, Denied: denied}, nil
+	if !w.op.TryLock() {
+		return WebAccessCheck{}, errWebAccessBusy
+	}
+	defer w.op.Unlock()
+	c, err := w.a.CheckCode(ctx, strings.TrimSpace(typed))
+	if err != nil {
+		return WebAccessCheck{}, err
+	}
+	out := WebAccessCheck{Ok: c.Ok, Left: c.Left, Denied: c.Denied}
+	if c.Denied {
+		w.cancel()
+	}
+	if c.DenyErr != nil {
+		out.Problem = c.DenyErr.Error()
+	}
+	return out, nil
 }
 
-// WebAccessDeny denies request id.
+// WebAccessDeny denies request id. It returns only once the service took the
+// denial (or the request was already over); on an error the page keeps the
+// request open so Deny can be tried again. Grants waiting on an unknown
+// approval are removed once the request is known not to be approved.
 func (d *Desk) WebAccessDeny(ctx context.Context, id string) error {
 	w, err := d.currentApproval(id)
 	if err != nil {
 		return err
 	}
+	if !w.op.TryLock() {
+		return errWebAccessBusy
+	}
+	defer w.op.Unlock()
+	err = w.a.Deny(ctx)
+	ended := errors.Is(err, account.ErrApprovalEnded)
+	if err != nil && !ended {
+		return err
+	}
 	w.cancel()
-	return w.a.Deny(ctx)
+	if w.pending == nil {
+		return nil
+	}
+	if ended {
+		// Over before the denial: approved by the report that got no answer,
+		// or expired without it.
+		approved, err := w.a.Approved(ctx)
+		if err != nil {
+			return err
+		}
+		if approved {
+			w.pending = nil
+			return errAlreadyOver
+		}
+	}
+	failed := d.removeGrants(ctx, w.pending.grants)
+	w.pending = nil
+	if len(failed) > 0 {
+		return fmt.Errorf("denied, but couldn't remove the access added on %s", strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // webMachine is one machine the approval reaches: its saved entry and how to
@@ -276,19 +366,31 @@ type webMachine struct {
 	label string
 }
 
+// webGrantTime is how long one machine's grant may take (SSH, info,
+// statement, add); the request must have that much left per machine.
+const webGrantTime = 30 * time.Second
+
 // WebAccessApprove adds a grant for the browser on each chosen machine and
 // sends it the sealed list. scope is "chat" or "terminal"; length one of
 // webAccessTTLs. Machines that fail are reported, not fatal; with none
-// granted the request stays open so the user can retry or deny.
+// granted the request stays open so the user can retry or deny. After a lost
+// answer it sends the same report again, whatever was chosen.
 func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []string, scope, length string) (WebAccessResult, error) {
 	res := WebAccessResult{Granted: []string{}, Skipped: []WebAccessSkipped{}, Failed: []WebAccessSkipped{}}
 	w, err := d.currentApproval(id)
 	if err != nil {
 		return res, err
 	}
+	if !w.op.TryLock() {
+		return res, errWebAccessBusy
+	}
+	defer w.op.Unlock()
+	if w.pending != nil {
+		return d.report(ctx, w, w.pending)
+	}
 	// No grant on any machine before the user typed the browser's code.
-	if !w.a.Matched() {
-		return res, account.ErrCodeNotChecked
+	if err := w.a.Ready(); err != nil {
+		return res, err
 	}
 	if scope != "chat" && scope != "terminal" {
 		return res, errWebAccessScope
@@ -312,10 +414,21 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 			chosen = append(chosen, webMachine{m: m, label: machineLabel(m)})
 		}
 	}
+	if len(chosen) == 0 {
+		return res, errNoMachines
+	}
+	// The request must still be open, with time to grant and report, before
+	// any machine changes: a grant the service then can't record would be
+	// access nobody approved.
+	if err := w.a.Live(ctx, webGrantTime*time.Duration(len(chosen)+1)); err != nil {
+		return res, err
+	}
 	req := w.a.Request()
-	envelope := webEnvelope{V: 1, Seq: 1, IssuedUnix: webNow().Unix(), Approver: accountDeviceName(), Machines: []webEnvelopeMachine{}, Skipped: []webEnvelopeSkipped{}}
+	seq := webSeq()
+	envelope := webEnvelope{V: 1, Seq: seq, IssuedUnix: webNow().Unix(), Approver: accountDeviceName(), Machines: []webEnvelopeMachine{}, Skipped: []webEnvelopeSkipped{}}
 	expires := webNow().Add(ttl)
 	ownerScope := herdrapi.OwnerScope(scope)
+	var grants []webGrant
 	for _, c := range chosen {
 		g, skip, err := d.grantOn(ctx, w.acct, c, herdrapi.OwnerAccessAddParams{
 			DevicePub: req.Browser.DevicePub, DeviceName: truncate(req.Browser.Name, 64),
@@ -332,6 +445,7 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 			res.Granted = append(res.Granted, c.label)
 			g.HostItemID = c.m.SyncID
 			envelope.Machines = append(envelope.Machines, g)
+			grants = append(grants, webGrant{m: c, grantID: g.GrantID})
 		}
 	}
 	if len(envelope.Machines) == 0 {
@@ -341,11 +455,56 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 	if err != nil {
 		return res, err
 	}
-	if err := w.a.Approve(ctx, scope, expires.UnixMilli(), envelope.Seq, plain); err != nil {
-		return res, err
+	return d.report(ctx, w, &webPending{scope: scope, expiresMs: expires.UnixMilli(), seq: seq, envelope: plain, grants: grants, res: res})
+}
+
+// report sends the approval with its grants. Recorded: done. Definitely not
+// recorded: the grants are removed and the reason returned. Unknown: the
+// grants stay, p is kept for the next Approve or Deny, and the result says
+// Unsure (a result, not an error, so the page gets it).
+func (d *Desk) report(ctx context.Context, w *webApproval, p *webPending) (WebAccessResult, error) {
+	res := p.res
+	err := w.a.Approve(ctx, p.scope, p.expiresMs, p.seq, p.envelope)
+	var refused *account.NotApprovedError
+	switch {
+	case err == nil:
+		w.pending = nil
+		w.cancel()
+		return res, nil
+	case errors.As(err, &refused):
+		w.pending = nil
+		if failed := d.removeGrants(context.WithoutCancel(ctx), p.grants); len(failed) > 0 {
+			return res, fmt.Errorf("the browser wasn't approved (%v), and the access added on %s couldn't be removed", err, strings.Join(failed, ", "))
+		}
+		return res, fmt.Errorf("the browser wasn't approved: %w", err)
 	}
-	w.cancel()
+	w.pending = p
+	res.Unsure, res.Problem = true, err.Error()
 	return res, nil
+}
+
+// removeGrants removes grants made for an approval that wasn't recorded,
+// and returns the labels of the machines where that failed.
+func (d *Desk) removeGrants(ctx context.Context, grants []webGrant) []string {
+	var failed []string
+	for _, g := range grants {
+		if err := d.removeGrant(ctx, g); err != nil {
+			failed = append(failed, g.m.label)
+		}
+	}
+	return failed
+}
+
+func (d *Desk) removeGrant(ctx context.Context, g webGrant) error {
+	client, done, err := d.ownerClient(ctx, g.m.m)
+	if err != nil {
+		return err
+	}
+	defer done()
+	cctx, cancel := context.WithTimeout(ctx, webGrantTime)
+	defer cancel()
+	_, err = client.OwnerAccessRemove(cctx, herdrapi.OwnerAccessRemoveParams{GrantID: &g.grantID})
+	return err
 }
 
 // grantOn adds the grant on one machine: owner_access.info for its relay id,
@@ -357,19 +516,20 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 		return webEnvelopeMachine{}, "unreachable", nil
 	}
 	defer done()
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, webGrantTime)
 	defer cancel()
 	info, err := client.OwnerAccessInfo(cctx)
 	var api *bridge.APIError
+	var old *engine.ErrUnsupported
 	switch {
+	case errors.As(err, &old):
+		return webEnvelopeMachine{}, "needs_update", nil
 	case errors.As(err, &api) && api.Code == "owner_access_unsupported":
 		return webEnvelopeMachine{}, "unsupported", nil
-	case errors.As(err, &api) && (api.Code == "unknown_method" || api.Code == "method_not_found"):
-		return webEnvelopeMachine{}, "needs_update", nil
 	case err != nil:
 		return webEnvelopeMachine{}, "", err
 	}
-	if !slices.Contains(webRelays, strings.TrimRight(info.RelayURL, "/")) {
+	if !webrelay.Allowed(info.RelayURL) {
 		return webEnvelopeMachine{}, "relay_not_allowed", nil
 	}
 	statements, err := d.account.Statements(cctx, acct, []string{info.HostID})

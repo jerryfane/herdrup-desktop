@@ -11,6 +11,16 @@ export function nextRequest(requests: readonly WebAccessRequestView[], closed: R
  return requests.find(r => r.claimed === "no" && r.expiresIn > 0 && !closed.has(r.id)) ?? null;
 }
 
+/** How long a "not offered" answer from the account service holds before the page asks again, so a
+ *  rollout is seen without signing in again. */
+export const OFFERED_RECHECK_MS = 10 * 60_000;
+
+/** Whether to ask the service if it offers browser approval: never asked (or the answer was an
+ *  error, which the page doesn't keep), or "no" asked long enough ago. */
+export function askOffered(last: { offered: boolean; at: number } | null, now: number): boolean {
+ return last === null || (!last.offered && now - last.at >= OFFERED_RECHECK_MS);
+}
+
 /** The code box keeps digits only, at most 4. */
 export function codeInput(raw: string): string {
  return raw.replace(/\D+/g, "").slice(0, 4);
@@ -33,20 +43,32 @@ export function skipReason(reason: string): string {
  return SKIP_REASONS[reason] ?? reason;
 }
 
-export interface WebAccessResultView { granted: string[]; skipped: { label: string; reason: string }[]; failed: { label: string; reason: string }[] }
+export interface WebAccessResultView {
+ granted: string[]; skipped: { label: string; reason: string }[]; failed: { label: string; reason: string }[];
+ unsure?: boolean; problem?: string;
+}
 
-/** What the sheet says after Approve. done: the browser is approved (at least one machine). */
-export function resultLines(r: WebAccessResultView): { done: boolean; lines: string[] } {
+/** What the sheet says after Approve. done: the browser is approved (at least one machine). unsure:
+ *  the service's answer was lost; the access stays until Approve (the same answer again) or Deny. */
+export function resultLines(r: WebAccessResultView): { done: boolean; unsure: boolean; lines: string[] } {
+ if (r.unsure) {
+  return { done: false, unsure: true, lines: [
+   `Couldn't tell whether the browser was approved${r.problem ? ` (${r.problem})` : ""}.`,
+   "Try again sends the same answer; Deny removes the access it added.",
+  ] };
+ }
  const lines: string[] = [];
  if (r.granted.length) lines.push(`Approved on ${r.granted.join(", ")}.`);
  for (const s of r.skipped) lines.push(`${s.label} ${skipReason(s.reason)}.`);
  for (const f of r.failed) lines.push(`${f.label}: ${f.reason}`);
  if (!r.granted.length) lines.push("The browser isn't approved yet. Choose another machine, or Deny.");
- return { done: r.granted.length > 0, lines };
+ return { done: r.granted.length > 0, unsure: false, lines };
 }
 
-/** After a wrong code: the message, and whether the request is now denied. */
-export function wrongCode(tries: number, max = 3): string {
- const left = max - tries;
- return left > 0 ? `That code doesn't match the browser's. ${left} ${left === 1 ? "try" : "tries"} left.` : "Denied after three wrong codes.";
+/** A wrong code as the computer counted it (Desk.webAccessCheckCode): left more may be typed; at 0
+ *  this computer won't approve, and denied says the browser was told (else problem says why not). */
+export function wrongCode(c: { left: number; denied: boolean; problem?: string }): string {
+ if (c.left > 0) return `That code doesn't match the browser's. ${c.left} ${c.left === 1 ? "try" : "tries"} left.`;
+ if (c.denied) return "Too many wrong codes. The request was denied.";
+ return `Too many wrong codes, so this computer won't approve it. Telling the browser failed${c.problem ? ` (${c.problem})` : ""}: Deny to try again.`;
 }

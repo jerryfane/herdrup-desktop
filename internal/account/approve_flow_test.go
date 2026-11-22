@@ -35,12 +35,21 @@ type approvalService struct {
 	nonceT   []byte
 	finished map[string]string
 	denied   int
+	// Faults: the next readBusy state reads answer 429; finishes answer
+	// finishStatus (0: as asked) and, when lost, are still recorded; state
+	// reads answer readStatus (0: the state).
+	readBusy     int
+	finishStatus int
+	lost         bool
+	readStatus   int
+	finishes     int
+	expiresIn    int
 }
 
 func newApprovalService(t *testing.T) *approvalService {
 	b := fixedKey(t, 0xb0)
 	nonce, _ := NewApproveNonce()
-	return &approvalService{browser: b, shown: b, nonceB: nonce, reveal: nonce}
+	return &approvalService{browser: b, shown: b, nonceB: nonce, reveal: nonce, expiresIn: 600}
 }
 
 func (s *approvalService) request() ApprovalRequest {
@@ -60,17 +69,36 @@ func (s *approvalService) serve(w http.ResponseWriter, r *http.Request, body map
 		s.nonceT, _ = base64.RawURLEncoding.DecodeString(body["nonce_t"])
 		reply(w, 200, map[string]any{})
 	case r.URL.Path == "/v1/approvals/req-1" && r.Method == http.MethodGet:
-		if s.finished != nil {
-			reply(w, 200, map[string]any{"state": s.finished["outcome"]})
-		} else if s.nonceT == nil {
-			reply(w, 200, map[string]any{"state": ApprovalWaiting})
-		} else {
-			reply(w, 200, map[string]any{"state": ApprovalRevealed, "nonce_b": base64.RawURLEncoding.EncodeToString(s.reveal)})
+		switch {
+		case s.readBusy > 0:
+			s.readBusy--
+			reply(w, 429, map[string]any{"error": "too_many_requests"})
+		case s.readStatus != 0:
+			reply(w, s.readStatus, map[string]any{"error": "unavailable"})
+		case s.finished != nil:
+			reply(w, 200, map[string]any{"state": s.finished["outcome"], "expires_in": s.expiresIn})
+		case s.nonceT == nil:
+			reply(w, 200, map[string]any{"state": ApprovalWaiting, "expires_in": s.expiresIn})
+		default:
+			reply(w, 200, map[string]any{"state": ApprovalRevealed, "expires_in": s.expiresIn, "nonce_b": base64.RawURLEncoding.EncodeToString(s.reveal)})
 		}
 	case r.URL.Path == "/v1/approvals/req-1/finish" && r.Method == http.MethodPost:
+		s.finishes++
+		if s.finished != nil {
+			reply(w, 409, map[string]any{"error": "already_finished"})
+			break
+		}
+		if s.finishStatus != 0 && !s.lost {
+			reply(w, s.finishStatus, map[string]any{"error": "unavailable"})
+			break
+		}
 		s.finished = body
 		if body["outcome"] == "denied" {
 			s.denied++
+		}
+		if s.lost {
+			reply(w, s.finishStatus, map[string]any{"error": "unavailable"})
+			break
 		}
 		reply(w, 200, map[string]any{})
 	default:
@@ -117,7 +145,7 @@ func TestAnHonestBrowserIsApprovedWithItsCodeAndCanOpenTheMachineList(t *testing
 	if err := a.Approve(ctx, "terminal", 1, 1, []byte(`{"v":1}`)); !errors.Is(err, ErrCodeNotChecked) {
 		t.Fatalf("approve before the code: %v", err)
 	}
-	if ok, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !ok {
+	if c, err := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok || err != nil {
 		t.Fatal("the browser's own code was refused")
 	}
 	if err := a.Approve(ctx, "terminal", 1_800_000_000_000, 1, []byte(`{"v":1,"machines":[]}`)); err != nil {
@@ -171,12 +199,12 @@ func TestASwappedBrowserKeyIsNeverApproved(t *testing.T) {
 		t.Fatal("fixture: the attacker's code equals the browser's; pick other seeds")
 	}
 	for i := 0; i < maxCodeTries; i++ {
-		ok, denied := a.CheckCode(ctx, real)
-		if ok {
-			t.Fatal("approved a code shown for another key")
+		c, err := a.CheckCode(ctx, real)
+		if c.Ok || err != nil {
+			t.Fatalf("approved a code shown for another key: %+v, %v", c, err)
 		}
-		if denied != (i == maxCodeTries-1) {
-			t.Fatalf("try %d: denied = %v", i+1, denied)
+		if last := i == maxCodeTries-1; c.Denied != last || c.Left != maxCodeTries-1-i {
+			t.Fatalf("try %d: %+v", i+1, c)
 		}
 	}
 	if err := a.Approve(ctx, "chat", 1, 1, []byte(`{}`)); !errors.Is(err, ErrApprovalEnded) {
@@ -184,5 +212,150 @@ func TestASwappedBrowserKeyIsNeverApproved(t *testing.T) {
 	}
 	if s.denied != 1 || s.finished["outcome"] != "denied" || s.finished["sealed"] != "" {
 		t.Fatalf("finish = %v, denials %d", s.finished, s.denied)
+	}
+}
+
+// revealedApproval is an approval whose browser revealed, for the steps after.
+func revealedApproval(t *testing.T) (*approvalService, *Approval, x25519Key) {
+	t.Helper()
+	s, c, approver := approvalSetup(t)
+	a, err := c.StartApproval(context.Background(), "acct-1", approver, s.request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AwaitReveal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return s, a, approver
+}
+
+// A rate-limited read keeps the claim: the wait goes on and sees the reveal.
+func TestARateLimitedReadDoesNotEndTheWaitForTheReveal(t *testing.T) {
+	s, c, approver := approvalSetup(t)
+	s.readBusy = 2
+	a, err := c.StartApproval(context.Background(), "acct-1", approver, s.request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.AwaitReveal(ctx); err != nil {
+		t.Fatalf("reveal after two 429s: %v", err)
+	}
+	if c, err := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok || err != nil {
+		t.Fatalf("code after the busy reads: %+v, %v", c, err)
+	}
+}
+
+// The last wrong code locks the approval even when the denial can't be sent;
+// Deny then sends it again.
+func TestWrongCodesLockTheApprovalEvenWhenTheDenialFails(t *testing.T) {
+	s, a, approver := revealedApproval(t)
+	ctx := context.Background()
+	s.finishStatus = http.StatusServiceUnavailable
+	var c CodeCheck
+	for range maxCodeTries {
+		c, _ = a.CheckCode(ctx, "0000")
+	}
+	if c.Left != 0 || c.Denied || c.DenyErr == nil {
+		t.Fatalf("third wrong code with the service down: %+v", c)
+	}
+	if c, err := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); c.Ok || !errors.Is(err, ErrApprovalEnded) {
+		t.Fatalf("right code after the lockout: %+v, %v", c, err)
+	}
+	if err := a.Approve(ctx, "chat", 1, 1, []byte(`{}`)); !errors.Is(err, ErrApprovalEnded) {
+		t.Fatalf("approve after the lockout: %v", err)
+	}
+	s.mu.Lock()
+	s.finishStatus = 0
+	s.mu.Unlock()
+	if err := a.Deny(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.denied != 1 {
+		t.Fatalf("denials recorded = %d, want 1", s.denied)
+	}
+}
+
+// A denial that fails is reported, and the next Deny sends it again.
+func TestDenyFailsUntilTheServiceTakesIt(t *testing.T) {
+	s, a, _ := revealedApproval(t)
+	ctx := context.Background()
+	s.finishStatus = http.StatusServiceUnavailable
+	if err := a.Deny(ctx); err == nil {
+		t.Fatal("denial reported done while the service refused it")
+	}
+	s.mu.Lock()
+	s.finishStatus = 0
+	s.mu.Unlock()
+	if err := a.Deny(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s.finishes != 2 || s.denied != 1 {
+		t.Fatalf("finishes %d, denials %d; want 2 and 1", s.finishes, s.denied)
+	}
+}
+
+// A failed approval is told apart: refused (still revealed, or ended) is
+// NotApprovedError, recorded but unanswered is success, and an unknown
+// outcome is neither.
+func TestAFailedApprovalIsToldApart(t *testing.T) {
+	cases := []struct {
+		name       string
+		lost       bool
+		readStatus int
+		want       string
+	}{
+		{"refused", false, 0, "not approved"},
+		{"answer lost", true, 0, "approved"},
+		{"unknown", false, http.StatusServiceUnavailable, "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, a, approver := revealedApproval(t)
+			ctx := context.Background()
+			if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
+				t.Fatal("code refused")
+			}
+			s.mu.Lock()
+			s.finishStatus, s.lost, s.readStatus = http.StatusServiceUnavailable, tc.lost, tc.readStatus
+			s.mu.Unlock()
+			err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`))
+			var refused *NotApprovedError
+			got := "unknown"
+			switch {
+			case err == nil:
+				got = "approved"
+			case errors.As(err, &refused):
+				got = "not approved"
+			}
+			if got != tc.want {
+				t.Fatalf("approve: %v (%s), want %s", err, got, tc.want)
+			}
+		})
+	}
+}
+
+// Live refuses a request that ended or has too little time left.
+func TestLiveRefusesAnEndedOrEndingRequest(t *testing.T) {
+	s, a, approver := revealedApproval(t)
+	ctx := context.Background()
+	if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
+		t.Fatal("code refused")
+	}
+	if err := a.Live(ctx, time.Minute); err != nil {
+		t.Fatalf("open request: %v", err)
+	}
+	s.mu.Lock()
+	s.expiresIn = 20
+	s.mu.Unlock()
+	if err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnding) {
+		t.Fatalf("20 s left: %v", err)
+	}
+	s.mu.Lock()
+	s.finished = map[string]string{"outcome": ApprovalExpired}
+	s.mu.Unlock()
+	if err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnded) {
+		t.Fatalf("expired: %v", err)
 	}
 }

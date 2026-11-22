@@ -1285,12 +1285,15 @@ export interface TopicsUpdate {
 }
 
 /**
- * WebAccessCheck is a typed code's outcome: Ok, or not; Denied after three
- * wrong codes (the request is closed).
+ * WebAccessCheck is a typed code's outcome. Left is how many more codes may
+ * be typed; at 0 this computer won't approve the request, and Denied says the
+ * browser was told (else Problem says why not, and Deny tries again).
  */
 export interface WebAccessCheck {
   ok: boolean;
+  left: number;
   denied: boolean;
+  problem?: string;
 }
 
 /** WebAccessMachine is one saved machine as the sheet lists it. */
@@ -1324,6 +1327,13 @@ export interface WebAccessResult {
   granted: string[];
   skipped: WebAccessSkipped[];
   failed: WebAccessSkipped[];
+  /**
+   * Unsure: the service's answer to the approval was lost (Problem says
+   * how); the grants are kept, Approve sends the same report again and
+   * Deny removes them.
+   */
+  unsure?: boolean;
+  problem?: string;
 }
 
 /**
@@ -2395,7 +2405,8 @@ export const Desk = {
    * WebAccessApprove adds a grant for the browser on each chosen machine and
    * sends it the sealed list. scope is "chat" or "terminal"; length one of
    * webAccessTTLs. Machines that fail are reported, not fatal; with none
-   * granted the request stays open so the user can retry or deny.
+   * granted the request stays open so the user can retry or deny. After a lost
+   * answer it sends the same report again, whatever was chosen.
    */
   webAccessApprove(id: string, machineIDs: string[], scope: string, length: string): Promise<WebAccessResult> {
     return call("Desk.WebAccessApprove", id, machineIDs, scope, length);
@@ -2404,7 +2415,12 @@ export const Desk = {
   webAccessCheckCode(id: string, typed: string): Promise<WebAccessCheck> {
     return call("Desk.WebAccessCheckCode", id, typed);
   },
-  /** WebAccessDeny denies request id. */
+  /**
+   * WebAccessDeny denies request id. It returns only once the service took the
+   * denial (or the request was already over); on an error the page keeps the
+   * request open so Deny can be tried again. Grants waiting on an unknown
+   * approval are removed once the request is known not to be approved.
+   */
   webAccessDeny(id: string): Promise<void> {
     return call("Desk.WebAccessDeny", id);
   },
@@ -2414,7 +2430,8 @@ export const Desk = {
   },
   /**
    * WebAccessOffered reports whether the account service carries browser
-   * approvals: the page polls for requests and offers approval only then.
+   * approvals. An error means the service couldn't be asked; the page asks
+   * again on its next look.
    */
   webAccessOffered(): Promise<boolean> {
     return call("Desk.WebAccessOffered");
@@ -2425,8 +2442,8 @@ export const Desk = {
   },
   /**
    * WebAccessStart claims request id for this computer and waits (in the
-   * background) for the browser to show its code. One approval at a time: a
-   * new one replaces the last.
+   * background, until the request expires) for the browser to show its code.
+   * One approval at a time: a new one replaces the last.
    */
   webAccessStart(id: string): Promise<void> {
     return call("Desk.WebAccessStart", id);

@@ -7,9 +7,8 @@ package account
 //
 //	GET  /v1/approvals                         → {requests:[…]}
 //	POST /v1/approvals/<id>/claim   {nonce_t}  → 200 | 409 already_claimed
-//	GET  /v1/approvals/<id>                    → {state, approver?, nonce_t?, nonce_b?}
+//	GET  /v1/approvals/<id>                    → {state, expires_in, approver?, nonce_t?, nonce_b?}
 //	POST /v1/approvals/<id>/finish  {outcome, scope?, expires_ms?, seq?, sealed?}
-//	PUT  /v1/browsers/<device_id>/envelope {scope, expires_ms, seq, sealed} → 200 | 409 stale_seq
 //	POST /v1/statements {hosts}               → {statements:[{host, jws}], exp}
 
 import (
@@ -48,8 +47,10 @@ type ApprovalRequest struct {
 
 // ApprovalStatus is GET /v1/approvals/<id> as the approver reads it.
 type ApprovalStatus struct {
-	State    string `json:"state"`
-	Approver *struct {
+	State string `json:"state"`
+	// ExpiresIn is the seconds the request has left.
+	ExpiresIn int64 `json:"expires_in"`
+	Approver  *struct {
 		DevicePub string `json:"device_pub"`
 		Name      string `json:"name"`
 	} `json:"approver,omitempty"`
@@ -57,8 +58,8 @@ type ApprovalStatus struct {
 	NonceB string `json:"nonce_b,omitempty"`
 }
 
-// ApprovalGrant is what the approver reports with an approval or a renewal:
-// the scope and expiry it gave, and the machine list sealed to the browser.
+// ApprovalGrant is what the approver reports with an approval: the scope and
+// expiry it gave, and the machine list sealed to the browser.
 type ApprovalGrant struct {
 	Scope     string `json:"scope"`
 	ExpiresMs int64  `json:"expires_ms"`
@@ -123,12 +124,6 @@ func (c *Client) ApproveBrowser(ctx context.Context, acct, id string, g Approval
 func (c *Client) DenyBrowser(ctx context.Context, acct, id string) error {
 	return c.authed(ctx, acct, http.MethodPost, "/v1/approvals/"+url.PathEscape(id)+"/finish",
 		map[string]string{"outcome": "denied"}, nil)
-}
-
-// PutBrowserEnvelope replaces the machine list this device sealed for browser
-// deviceID (renewal, machines added or removed). seq must be above the last.
-func (c *Client) PutBrowserEnvelope(ctx context.Context, acct, deviceID string, g ApprovalGrant) error {
-	return c.authed(ctx, acct, http.MethodPut, "/v1/browsers/"+url.PathEscape(deviceID)+"/envelope", g, nil)
 }
 
 // Statements returns this device's account statements for hosts (≤ 50).
