@@ -609,7 +609,7 @@ func TestWebAccessRemovesTheGrantsOfAReportRefusedAtOnce(t *testing.T) {
 }
 
 // A selection whose list could outgrow what the service takes is refused
-// before any machine changes, with how many fit.
+// before any machine changes.
 func TestWebAccessRefusesASelectionTooLargeForOneReport(t *testing.T) {
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
 	ids := []string{machine}
@@ -629,7 +629,7 @@ func TestWebAccessRefusesASelectionTooLargeForOneReport(t *testing.T) {
 	}
 	typeCode(t, d, w)
 	_, err = d.WebAccessApprove(context.Background(), "req-1", ids, "chat", "7d")
-	if err == nil || !strings.Contains(err.Error(), "choose at most") {
+	if err == nil || !strings.Contains(err.Error(), "deselect some") {
 		t.Fatalf("approve 61 machines: %v", err)
 	}
 	if g := w.grants(t); len(g) != 0 {

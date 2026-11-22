@@ -76,17 +76,12 @@ type Approval struct {
 	// recorded after it (both need a request with no outcome), so no
 	// approval of this request ever will be.
 	denied bool
-	// unsureAt: when the last finish with an unknown outcome was sent (zero:
-	// none was). The service checks expiry when a finish arrives, so until
-	// finishFence after it an expired request may still record that finish.
-	unsureAt time.Time
+	// unsure: a finish this device sent has an unknown outcome. The service
+	// checks expiry when a finish arrives and writes nothing when it reports
+	// a request expired, so such a finish may still be recorded after an
+	// expired read.
+	unsure bool
 }
-
-// finishFence is how long after it was sent a finish may still be recorded:
-// the service checks the request's expiry when the finish arrives and
-// commits it within that same request (herdrup AccountService handleFinish),
-// which never runs anywhere near this long.
-const finishFence = 2 * time.Minute
 
 // StartApproval claims req for this device (key is its enrolled device key).
 // The browser key and commit are the ones in req, read before nonce_t exists.
@@ -250,27 +245,29 @@ func (a *Approval) Ready() error {
 // Live checks with the service, just before grants are made, that the
 // request is still revealed to this device with at least min left, so no
 // machine gets a grant the service would then refuse to record. It returns
-// the time the request has left.
-func (a *Approval) Live(ctx context.Context, min time.Duration) (time.Duration, error) {
+// the request's deadline, counted from before the read (the service rounds
+// the time left up to a second, so one second less).
+func (a *Approval) Live(ctx context.Context, min time.Duration) (time.Time, error) {
 	if err := a.Ready(); err != nil {
-		return 0, err
+		return time.Time{}, err
 	}
+	start := time.Now()
 	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
 	switch {
 	case requestGone(err):
 		a.end()
-		return 0, ErrApprovalEnded
+		return time.Time{}, ErrApprovalEnded
 	case err != nil:
-		return 0, err
+		return time.Time{}, err
 	case st.State != ApprovalRevealed:
 		a.end()
-		return 0, ErrApprovalEnded
+		return time.Time{}, ErrApprovalEnded
 	}
-	left := time.Duration(st.ExpiresIn) * time.Second
-	if left < min {
-		return left, ErrApprovalEnding
+	deadline := start.Add(time.Duration(st.ExpiresIn-1) * time.Second)
+	if time.Until(deadline) < min {
+		return deadline, ErrApprovalEnding
 	}
-	return left, nil
+	return deadline, nil
 }
 
 // Approve finishes the request with the grants made on the machines and the
@@ -289,7 +286,6 @@ func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, s
 	if err != nil {
 		return &NotApprovedError{err}
 	}
-	sent := a.c.now()
 	if err := a.c.ApproveBrowser(ctx, a.acct, a.request.ID, ApprovalGrant{Scope: scope, ExpiresMs: expiresMs, Seq: seq, Sealed: sealed}); err != nil {
 		// The service answering with a refusal (a 4xx other than 429: the
 		// finish is one transaction, herdrup #792) didn't record this
@@ -297,10 +293,8 @@ func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, s
 		var api *APIError
 		refused := errors.As(err, &api) && api.Status >= 400 && api.Status < 500 && api.Status != http.StatusTooManyRequests
 		a.mu.Lock()
-		earlier := !a.unsureAt.IsZero()
-		if !refused {
-			a.unsureAt = sent
-		}
+		earlier := a.unsure
+		a.unsure = a.unsure || !refused
 		a.mu.Unlock()
 		if refused && !earlier {
 			// The only finish this device sent was refused, and only the
@@ -316,8 +310,8 @@ func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, s
 
 // settle decides what the finishes this device sent did, from the
 // request's state: approved means one went through (only the claimant
-// finishes); denied, or expired once finishFence has passed since the last
-// unknown one, means none can. Still revealed proves nothing, since a sent
+// finishes); denied means none can be; expired means none can be only when
+// none had an unknown outcome. Still revealed proves nothing, since a sent
 // finish may yet be applied; anything else stays unknown.
 func (a *Approval) settle(ctx context.Context, finishErr error) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
@@ -337,9 +331,10 @@ func (a *Approval) settle(ctx context.Context, finishErr error) error {
 
 // Outcome reads the request's state as the service has it now. final says
 // it is the request's outcome for this device: approved, denied, or expired
-// with no finish of this device left that could still be recorded. A
-// request the service no longer knows is an error (its outcome can't be
-// told).
+// when no finish of this device has an unknown outcome (an expiry the
+// service only computes doesn't stop an earlier finish from being
+// recorded). A request the service no longer knows is an error (its outcome
+// can't be told).
 func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
 	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
 	if err != nil {
@@ -351,7 +346,7 @@ func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
 	case ApprovalExpired:
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		return st.State, a.unsureAt.IsZero() || a.c.now().Sub(a.unsureAt) >= finishFence, nil
+		return st.State, !a.unsure, nil
 	}
 	return st.State, false, nil
 }

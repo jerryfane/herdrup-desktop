@@ -362,8 +362,14 @@ func TestLiveRefusesAnEndedOrEndingRequest(t *testing.T) {
 	if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
 		t.Fatal("code refused")
 	}
-	if _, err := a.Live(ctx, time.Minute); err != nil {
+	// The deadline counts from before the read, less the second the
+	// service may have rounded up.
+	deadline, err := a.Live(ctx, time.Minute)
+	if err != nil {
 		t.Fatalf("open request: %v", err)
+	}
+	if latest := time.Now().Add(599 * time.Second); deadline.After(latest) {
+		t.Fatalf("deadline %v is after %v (600 s left, rounded up)", deadline, latest)
 	}
 	s.mu.Lock()
 	s.expiresIn = 20
@@ -380,13 +386,12 @@ func TestLiveRefusesAnEndedOrEndingRequest(t *testing.T) {
 }
 
 // After a finish with an unknown outcome, an expired read settles nothing
-// until no finish sent before it can still be recorded; a later refusal
-// doesn't settle it either. Then the request is over without approval.
-func TestAnExpiredReadSettlesOnlyOnceNoFinishCanStillLand(t *testing.T) {
+// (the service only computes that expiry, and the finish may still be
+// recorded), and a later refusal doesn't either. It settles when the service
+// shows the finish recorded.
+func TestAnExpiredReadDoesNotSettleAFinishWithAnUnknownOutcome(t *testing.T) {
 	s, a, approver := revealedApproval(t)
 	ctx := context.Background()
-	clock := time.Unix(1_800_000_000, 0)
-	a.c.now = func() time.Time { return clock }
 	if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
 		t.Fatal("code refused")
 	}
@@ -401,13 +406,15 @@ func TestAnExpiredReadSettlesOnlyOnceNoFinishCanStillLand(t *testing.T) {
 	s.mu.Lock()
 	s.finishStatus = http.StatusGone
 	s.mu.Unlock()
-	clock = clock.Add(finishFence - time.Second)
 	if err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`)); err == nil || errors.As(err, &refused) {
-		t.Fatalf("refused within the fence: %v; want unknown", err)
+		t.Fatalf("refused after the unknown one: %v; want unknown", err)
 	}
-	clock = clock.Add(time.Second)
-	if err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`)); !errors.As(err, &refused) {
-		t.Fatalf("past the fence: %v; want not approved", err)
+	// The first finish was recorded after all.
+	s.mu.Lock()
+	s.readState = ApprovalApproved
+	s.mu.Unlock()
+	if err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`)); err != nil {
+		t.Fatalf("once the service shows it: %v; want approved", err)
 	}
 }
 

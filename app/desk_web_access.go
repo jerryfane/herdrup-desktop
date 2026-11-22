@@ -389,7 +389,7 @@ func (d *Desk) WebAccessDeny(ctx context.Context, id string) error {
 			w.pending = nil
 			return errAlreadyOver
 		case state == account.ApprovalExpired && !final:
-			return errors.New("the request expired just after a report that may still be recorded: Deny again in a few minutes")
+			return fmt.Errorf("the request expired while a report's outcome was unknown, so the access added on %s stays until the account service shows how it ended: Deny to check again", grantLabels(w.pending.grants))
 		case !final:
 			return fmt.Errorf("the request is still %s: Deny to try again", state)
 		}
@@ -470,17 +470,20 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 	}
 	// The sealed list must fit what the service takes, at its largest (every
 	// machine granted), before any machine changes.
-	if n := webEnvelopeFits(chosen); n < len(chosen) {
-		return res, fmt.Errorf("%d machines don't fit in one approval: choose at most %d", len(chosen), n)
+	if !webEnvelopeFits(chosen) {
+		return res, errors.New("these machines don't fit in one approval: deselect some and try again")
 	}
 	// The request must still be open, with time to grant and report, before
 	// any machine changes: a grant the service then can't record would be
-	// access nobody approved. Machines are granted until the report must go.
-	left, err := w.a.Live(ctx, webGrantTime+webReportTime)
+	// access nobody approved. Machines are granted until the report must go,
+	// and none past that.
+	deadline, err := w.a.Live(ctx, webGrantTime+webReportTime)
 	if err != nil {
 		return res, err
 	}
-	reportBy := time.Now().Add(left - webReportTime)
+	reportBy := deadline.Add(-webReportTime)
+	grantCtx, cancelGrants := context.WithDeadline(ctx, reportBy)
+	defer cancelGrants()
 	seq, err := d.nextWebSeq(w.approver)
 	if err != nil {
 		return res, err
@@ -495,7 +498,7 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 			res.Failed = append(res.Failed, WebAccessSkipped{Label: c.label, Reason: errNoTimeLeft.Error()})
 			continue
 		}
-		g, skip, err := d.grantOn(ctx, w.acct, c, herdrapi.OwnerAccessAddParams{
+		g, skip, err := d.grantOn(grantCtx, w.acct, c, herdrapi.OwnerAccessAddParams{
 			DevicePub: req.Browser.DevicePub, DeviceName: truncate(req.Browser.Name, 64),
 			Scope: &ownerScope, TtlSecs: uint64(ttl / time.Second),
 			ApprovedBy: truncate(accountDeviceName(), 64),
@@ -686,26 +689,23 @@ type webEnvelopeSkipped struct {
 	Version    string `json:"version,omitempty"`
 }
 
-// webEnvelopeFits returns how many of chosen, in order, fit one sealed list
-// the service takes, each counted as granted with every field at its
+// webEnvelopeFits reports whether the sealed list for chosen fits what the
+// service takes, each machine counted as granted with every field at its
 // longest: herdr's host_id and grant_id are b64url of 16 bytes and node_pub
 // of an X25519 key, the relay is one of webrelay.Origins, and seq and times
 // take their most digits. A skipped machine adds less.
-func webEnvelopeFits(chosen []webMachine) int {
+func webEnvelopeFits(chosen []webMachine) bool {
 	relay := slices.MaxFunc(webrelay.Origins, func(a, b string) int { return len(a) - len(b) })
 	e := webEnvelope{V: 1, Seq: math.MaxUint64, IssuedUnix: math.MaxInt64, Approver: accountDeviceName(), Machines: []webEnvelopeMachine{}, Skipped: []webEnvelopeSkipped{}}
-	for i, c := range chosen {
+	for _, c := range chosen {
 		e.Machines = append(e.Machines, webEnvelopeMachine{
 			HostItemID: c.m.SyncID, Label: c.label, Relay: relay,
 			HostID: strings.Repeat("h", 22), NodePub: strings.Repeat("n", 43), GrantID: strings.Repeat("g", 22),
 			Scope: "terminal", ExpiresUnix: math.MaxInt64,
 		})
-		plain, err := json.Marshal(e)
-		if err != nil || account.SealedLength(len(plain)) > account.MaxSealedLength {
-			return i
-		}
 	}
-	return len(chosen)
+	plain, err := json.Marshal(e)
+	return err == nil && account.SealedLength(len(plain)) <= account.MaxSealedLength
 }
 
 func truncate(s string, n int) string {
