@@ -99,6 +99,8 @@ export class TopicsPane {
  /** When the agent took Organise (ms), and the timer that ends its wait. */
  private organiseAt = Infinity;
  private organiseTimer: ReturnType<typeof setTimeout> | undefined;
+ /** The newest Organise request: an older one's reply, error or wait changes nothing. */
+ private organiseSeq = 0;
  /** Proposals the reader unticked; every other one is ticked. */
  private unticked = new Set<string>();
  /** Create N topics or Not now is going through the proposals. */
@@ -246,18 +248,19 @@ export class TopicsPane {
  /** Asks the agent to propose topics from its Inbox (TopicsModel.organise). */
  private async organise() {
   if (this.organising) return;
+  const seq = ++this.organiseSeq;
   this.organising = true; this.organiseText = null; this.actionNote = null; this.organiseAt = Infinity; this.drawList();
   try {
    const queued = await Desk.topicsOrganise(this.host.token);
-   if (this.disposed) return;
+   if (this.disposed || seq !== this.organiseSeq) return;
    if (this.organising) {
     // performance.now: elapsed time, which a change of the wall clock doesn't move.
     this.organiseText = organiseNote(queued); this.organiseAt = performance.now();
     clearTimeout(this.organiseTimer);
-    this.organiseTimer = setTimeout(() => { if (this.organising && !this.disposed) { this.endOrganise(); this.drawList(); } }, ORGANISE_WAIT_MS);
+    this.organiseTimer = setTimeout(() => { if (seq === this.organiseSeq && this.organising && !this.disposed) { this.endOrganise(); this.drawList(); } }, ORGANISE_WAIT_MS);
    }
   } catch (error) {
-   if (this.disposed) return;
+   if (this.disposed || seq !== this.organiseSeq) return;
    this.organising = false; this.organiseText = errorText(error);
   }
   this.drawList();
