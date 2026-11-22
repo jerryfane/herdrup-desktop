@@ -80,7 +80,6 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 const ownerStore = new IndexedDBOwnerStore();
 const deviceName = browserDeviceName(navigator.userAgent);
 let ownerPhase: OwnerPhase | null = null;
-let ownerRecord: OwnerRecord | undefined;
 let ownerRun: AbortController | null = null;
 /** The person chose "Use a guest invitation instead" on this load. */
 let guestInstead = false;
@@ -92,10 +91,11 @@ let probing: ReturnType<typeof setInterval> | null = null;
 
 /** Asks every approved machine how it is, while the machine list shows. */
 async function probeAll() {
- if (ownerRecord === undefined) return;
+ if (ownerPhase?.kind !== "approved") return;
+ const record = ownerPhase.record;
  const key = await ownerKey(ownerAccess.identities).catch(() => null);
  if (key === null) return;
- await Promise.all(approvedMachines(ownerRecord).machines.map(async m => {
+ await Promise.all(approvedMachines(record).machines.map(async m => {
   statuses.set(m.hostID, await probeMachine(m, key, statements, deviceName));
   if (probing !== null) redrawWelcome();
  }));
@@ -121,20 +121,18 @@ const redrawWelcome = () => { if (shownWelcome) showWelcome(shownWelcome); };
  *  was approved for. A share left or wiped, signed in or not, still asks for a new invite. */
 const ownerWanted = (shown: WelcomeState) => account.signedIn && shown.owner === null && !guestInstead;
 
-/** The kept approvals, refreshed from the service; else a new approval request. */
-async function beginOwner() {
- ownerPhase = { kind: "starting" };
- const record = await ownerStore.get().catch(() => undefined);
- if (record === undefined || record.approvers.length === 0) { startApproval(); return; }
- ownerRecord = record;
- ownerPhase = { kind: "approved", approver: record.approvers[0]! };
- redrawWelcome();
+/** Newer lists for the approval shown (same account, same key), taken in the background. */
+async function refreshShown(run: AbortController, record: OwnerRecord) {
  const key = await ownerKey(ownerAccess.identities).catch(() => null);
- if (key === null) return;
- const fresh = await refreshLists(ownerAccess.account, key, ownerStore).catch(() => undefined);
- if (fresh !== undefined && ownerPhase?.kind === "approved") { ownerRecord = fresh; redrawWelcome(); }
+ if (key === null || ownerRun !== run) return;
+ const fresh = await refreshLists(ownerAccess.account, record.account, key, ownerStore).catch(() => undefined);
+ if (fresh === undefined || ownerRun !== run || ownerPhase?.kind !== "approved") return;
+ ownerPhase = { kind: "approved", record: fresh };
+ redrawWelcome();
 }
 
+/** The approval: what this account already has here shows (runApproval reads it under the tab
+ *  lock), else this browser asks; Ask again goes the same way. */
 function startApproval() {
  ownerRun?.abort();
  const run = new AbortController();
@@ -143,15 +141,16 @@ function startApproval() {
  redrawWelcome();
  const onPhase = async (p: OwnerPhase) => {
   if (ownerRun !== run) return;
-  if (p.kind === "approved") ownerRecord = await ownerStore.get().catch(() => undefined);
   ownerPhase = p;
+  if (p.kind === "approved") void refreshShown(run, p.record);
   redrawWelcome();
  };
  runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store: ownerStore, deviceName }, p => void onPhase(p), run.signal)
   .catch(error => { if (ownerRun === run) { ownerPhase = { kind: "failed", problem: errorText(error) }; redrawWelcome(); } });
 }
 
-function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; stopProbes(); }
+/** Stops the approval and forgets what it showed: another sign-in starts from its own account. */
+function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; stopProbes(); statuses.clear(); }
 
 // ---- The plain screen without a grant ----
 
@@ -162,8 +161,8 @@ function showWelcome(shown: WelcomeState | null) {
  if (shown === null) { stopOwner(); welcomeView.hidden = true; render(); return; }
  let card: HTMLElement;
  if (ownerWanted(shown)) {
-  if (ownerPhase === null) void beginOwner();
-  card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, ownerRecord, {
+  if (ownerPhase === null) startApproval();
+  card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, {
    again: startApproval,
    guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
    open: openMachine,

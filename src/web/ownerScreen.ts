@@ -63,8 +63,8 @@ export function approvedMachines(record: OwnerRecord): { machines: EnvelopeMachi
  return { machines: [...machines.values()], skipped: [...skipped.values()].filter(s => !granted.has(s.hostItemID)) };
 }
 
-/** The card for phase. deviceName is this browser's name; record the kept approvals, if any. */
-export function ownerCard(phase: OwnerPhase, deviceName: string, record: OwnerRecord | undefined, actions: OwnerActions, spinnerSVG: string,
+/** The card for phase; deviceName is this browser's name, statuses each machine's probe. */
+export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerActions, spinnerSVG: string,
  statuses: ReadonlyMap<string, MachineStatus> = new Map()): HTMLElement {
  const card = el("div", "web-welcome-card web-owner-card");
  const guest = () => button("web-owner-link", "Use a guest invitation instead", actions.guestInstead);
@@ -90,7 +90,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, record: OwnerRe
    card.append(el("h1", "", "Not approved"), el("p", "", "HerdrUp didn't approve this browser."), again(), guest());
    break;
   case "expired":
-   card.append(el("h1", "", "The request expired"), el("p", "", "No device approved this browser within 10 minutes."), again(), guest());
+   card.append(el("h1", "", "The request expired"), el("p", "", "No device approved this browser in time."), again(), guest());
    break;
   case "failed": {
    const problem = el("p", "web-welcome-error", phase.problem); problem.setAttribute("role", "alert");
@@ -105,7 +105,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, record: OwnerRe
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
    break;
   case "approved":
-   card.append(...approvedList(record ?? { v: 1, approvers: [phase.approver] }, statuses, actions.open));
+   card.append(...approvedList(phase.record, statuses, actions.open));
    break;
  }
  return card;
