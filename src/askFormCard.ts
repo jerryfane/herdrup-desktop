@@ -96,8 +96,8 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  if (readOnly && count === 0) {
   const intro = formContext(form.intro_markdown, form.intro, "ask-form-intro");
   if (intro) nodes.push(intro);
-  nodes.push(button("chat-question-terminal", input.terminal, "Answer in Terminal"));
   if (input.dismiss) { const foot = el("div", "ask-form-foot"); foot.append(...dismissLink(input)); nodes.push(foot); }
+  nodes.push(...readOnlyFooter(input));
   return nodes;
  }
 
@@ -230,16 +230,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
   } else if (input.dismiss) {
    const foot = el("div", "ask-form-foot"); foot.append(...dismissLink(input)); nodes.push(foot);
   }
-  if (input.waiting !== null) {
-   const line = el("p", "chat-question-waiting");
-   line.append(el("span", "chat-question-waiting-dot"), el("span", "", `WAITING FOR ${input.waiting.toUpperCase()} TO ANSWER`));
-   nodes.push(line);
-   // Dismiss still shows while waiting, so its refusal must too (herdrup#782, #787).
-   if (input.problem) nodes.push(el("p", "chat-question-problem", input.problem.message));
-  } else {
-   if (input.problem) nodes.push(el("p", "chat-question-problem", input.problem.message));
-   nodes.push(button("chat-question-terminal", input.terminal, "Answer in Terminal"));
-  }
+  nodes.push(...readOnlyFooter(input));
   return nodes;
  }
  if (state.shownProblem === field.name) {
@@ -316,4 +307,15 @@ export function askFormAnswered(form: AskForm | null, answers: AskFormAnswer[], 
   nodes.push(row);
  });
  return nodes;
+}
+
+/** Under a form this viewer can't fill here: whom a waiting guest waits for, or the way to answer
+ *  in the Terminal; and a refused Dismiss or send either way, since Dismiss still shows while
+ *  waiting (herdrup#782, #787). */
+function readOnlyFooter(input: AskFormCardInput): HTMLElement[] {
+ const problem = input.problem ? [el("p", "chat-question-problem", input.problem.message)] : [];
+ if (input.waiting === null) return [...problem, button("chat-question-terminal", input.terminal, "Answer in Terminal")];
+ const line = el("p", "chat-question-waiting");
+ line.append(el("span", "chat-question-waiting-dot"), el("span", "", `WAITING FOR ${input.waiting.toUpperCase()} TO ANSWER`));
+ return [line, ...problem];
 }
