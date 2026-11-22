@@ -167,12 +167,30 @@ export class WebAccount {
   if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
  }
 
- /** One call to the service as this session: the access token as Bearer, and once more with a
-  *  fresh token when the service says the one sent is no longer good (401). Errors are
-  *  AccountServiceError with the service's code, or SignedOutError. */
- private async authed<T>(method: string, path: string, body?: unknown): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
+ /** A token and the account it is for, read together: a refresh sets both at once. */
+ private async credential(): Promise<{ token: string; account: string }> {
+  for (;;) {
    const token = await this.accessToken();
+   if (this.access === token && this.session !== null) return { token, account: this.session.accountID };
+  }
+ }
+
+ /** The account this session is signed in to now; an operation spanning calls binds to it. */
+ async currentAccount(): Promise<string> {
+  return (await this.credential()).account;
+ }
+
+ /** One call to the service as this session: the access token as Bearer, and once more with a
+  *  fresh token when the service says the one sent is no longer good (401). The call is bound to
+  *  account (else to the first token's): a token for another account (the cookie now holds
+  *  another sign-in) is refused before anything is sent, so a write is never replayed there.
+  *  Errors are AccountServiceError with the service's code, or SignedOutError. */
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string): Promise<T> {
+  let bound = account;
+  for (let attempt = 0; ; attempt++) {
+   const { token, account: now } = await this.credential();
+   if (bound !== undefined && now !== bound) throw new AccountServiceError(409, "account_changed");
+   bound = now;
    const response = await this.fetcher(`${this.service}${path}`, {
     method, mode: "cors", cache: "no-store",
     headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
@@ -180,45 +198,46 @@ export class WebAccount {
    });
    if (response.status === 401 && attempt === 0) { if (this.access === token) { this.access = ""; this.accessUntil = 0; } continue; }
    if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
-   return (response.status === 204 ? undefined : await response.json()) as T;
+   return await response.json() as T;
   }
  }
 
  /** Adds this browser to the account as a device with key (the guest identity), or binds this
   *  session to it when the account already has it. The challenge is single-use and lives 60 s,
-  *  so both calls run together. Refusals: device_in_other_account, session_has_device (409),
-  *  too_many_devices (403). */
- async enrol(key: StaticKey, name: string): Promise<AccountDevice> {
-  const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge");
-  if (ch.account_id !== this.session?.accountID) throw new AccountServiceError(409, "account_changed");
+  *  so both calls run together, as account (default: the current one). Refusals:
+  *  device_in_other_account, session_has_device (409), too_many_devices (403), account_changed. */
+ async enrol(key: StaticKey, name: string, account?: string): Promise<AccountDevice> {
+  const acct = account ?? await this.currentAccount();
+  const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge", undefined, acct);
+  if (ch.account_id !== acct) throw new AccountServiceError(409, "account_changed");
   const { devicePub, mac } = await enrolProof(key, ch);
-  const out = await this.authed<{ device: AccountDevice }>("POST", "/v1/devices", { challenge_id: ch.challenge_id, device_pub: devicePub, mac, name, platform: "web" });
+  const out = await this.authed<{ device: AccountDevice }>("POST", "/v1/devices", { challenge_id: ch.challenge_id, device_pub: devicePub, mac, name, platform: "web" }, acct);
   return out.device;
  }
 
  /** Asks the account's trusted devices to approve this browser (approve-v1 step 1); replaces
-  *  any request this browser has open. */
- requestApproval(commit: Uint8Array): Promise<{ id: string; expires_in: number }> {
-  return this.authed("POST", "/v1/approvals", { commit: toB64url(commit) });
+  *  any request this browser has open. account binds the call (see authed). */
+ requestApproval(commit: Uint8Array, account?: string): Promise<{ id: string; expires_in: number }> {
+  return this.authed("POST", "/v1/approvals", { commit: toB64url(commit) }, account);
  }
 
- approvalState(id: string): Promise<ApprovalStatus> {
-  return this.authed("GET", `/v1/approvals/${encodeURIComponent(id)}`);
+ approvalState(id: string, account?: string): Promise<ApprovalStatus> {
+  return this.authed("GET", `/v1/approvals/${encodeURIComponent(id)}`, undefined, account);
  }
 
  /** Reveals nonce_b (step 3), once the request is claimed and nonce_t is held. */
- async reveal(id: string, nonceB: Uint8Array): Promise<void> {
-  await this.authed("POST", `/v1/approvals/${encodeURIComponent(id)}/reveal`, { nonce_b: toB64url(nonceB) });
+ async reveal(id: string, nonceB: Uint8Array, account?: string): Promise<void> {
+  await this.authed("POST", `/v1/approvals/${encodeURIComponent(id)}/reveal`, { nonce_b: toB64url(nonceB) }, account);
  }
 
  /** This browser's access as the service shows it, and the sealed machine lists it holds. */
- browserSelf(): Promise<BrowserSelf> {
-  return this.authed("GET", "/v1/browsers/self");
+ browserSelf(account?: string): Promise<BrowserSelf> {
+  return this.authed("GET", "/v1/browsers/self", undefined, account);
  }
 
  /** This device's statements for hosts (relay host ids): what an owner hello carries. */
- statements(hosts: string[]): Promise<{ statements: { host: string; jws: string }[]; exp: number }> {
-  return this.authed("POST", "/v1/statements", { hosts });
+ statements(hosts: string[], account?: string): Promise<{ statements: { host: string; jws: string }[]; exp: number }> {
+  return this.authed("POST", "/v1/statements", { hosts }, account);
  }
 
  private forget() { this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null; }
