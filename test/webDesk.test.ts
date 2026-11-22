@@ -61,6 +61,7 @@ test("a signed-in owner's first visit says own machines aren't here yet; a left 
  const out = welcome(first, false), signedIn = welcome(first, true);
  expect(signedIn.title).toBe("Signed in");
  expect(signedIn.body).not.toBe(out.body);
+ expect(signedIn.body).toContain("coming soon");
  expect(signedIn.error).toBe(first.error);
  expect(welcome({ owner: "Jerry" }, true)).toEqual(welcome({ owner: "Jerry" }, false));
 });
