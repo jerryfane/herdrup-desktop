@@ -136,6 +136,14 @@ func (a *Approval) CheckCode(ctx context.Context, typed string) (ok, denied bool
 	return false, deny
 }
 
+// Matched reports whether the user typed the browser's code correctly and the
+// request is still open: grants may be made on the machines only then.
+func (a *Approval) Matched() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.matched && !a.done
+}
+
 // Approve finishes the request with the grants made on the machines and the
 // machine list (envelope JSON) sealed to the browser at seq.
 func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, seq uint64, envelope []byte) error {

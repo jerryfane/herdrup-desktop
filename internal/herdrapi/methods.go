@@ -182,6 +182,12 @@ var Methods = []Method{
 	{Name: "guest.invite.create", Params: typeOf[GuestInviteCreateParams](), Results: []Result{result[ResponseResultGuestInviteCreated]("guest_invite_created")}},
 	// schema.rs:99; guest_owner.rs:132.
 	{Name: "guest.list", Params: typeOf[GuestListParams](), Results: []Result{result[ResponseResultGuestList]("guest_list")}},
+	// herdr #491 (web owner access). Owner only; the machine the session runs on.
+	{Name: "owner_access.info", Params: typeOf[OwnerAccessInfoParams](), Results: []Result{result[ResponseResultOwnerAccessInfo]("owner_access_info")}},
+	{Name: "owner_access.list", Params: typeOf[OwnerAccessListParams](), Results: []Result{result[ResponseResultOwnerAccessList]("owner_access_list")}},
+	{Name: "owner_access.add", Params: typeOf[OwnerAccessAddParams](), Results: []Result{result[ResponseResultOwnerAccessAdded]("owner_access_added")}},
+	{Name: "owner_access.renew", Params: typeOf[OwnerAccessRenewParams](), Results: []Result{result[ResponseResultOwnerAccessRenewed]("owner_access_renewed")}},
+	{Name: "owner_access.remove", Params: typeOf[OwnerAccessRemoveParams](), Results: []Result{result[ResponseResultOwnerAccessRemoved]("owner_access_removed")}},
 	// schema.rs:100; guest_owner.rs:140.
 	{Name: "guest.revoke", Params: typeOf[GuestRevokeParams](), Results: []Result{result[ResponseResultGuestRevoked]("guest_revoked")}},
 	// schema.rs:101; guest_owner.rs:154.

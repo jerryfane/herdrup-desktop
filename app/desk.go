@@ -137,6 +137,9 @@ type Desk struct {
 	accountStore *account.SecretsStore
 	accountSync  accountSync
 	accountEnrol accountEnrol
+	// webApproval is the browser approval this computer is running (web
+	// owner access, desk_web_access.go); guarded by mu.
+	webApproval *webApproval
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 

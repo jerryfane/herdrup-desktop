@@ -99,21 +99,6 @@
               "type": "string"
             },
             {
-              "const": "suggested",
-              "description": "The agent suggested a topic: `suggestion_id` names it and `topic_id`\nis empty. The suggestion is in `agent.topics.list` at once; its\n`agent.transcript` entry appears once the agent's current turn ends.",
-              "type": "string"
-            },
-            {
-              "const": "suggestion_accepted",
-              "description": "Suggestion `suggestion_id` was accepted; `topic_id` is empty (the\ntopic's id is in the accept reply and the transcript entry).",
-              "type": "string"
-            },
-            {
-              "const": "suggestion_dismissed",
-              "description": "Suggestion `suggestion_id` was dismissed; `topic_id` is empty.",
-              "type": "string"
-            },
-            {
               "const": "unknown",
               "description": "A reason this server does not know yet.",
               "type": "string"
@@ -990,7 +975,7 @@
               "type": "object"
             },
             {
-              "description": "One of an omp agent's topics changed (`agent.topics.changed`), or one\nof its topic suggestions was accepted or dismissed (`suggestion_id`).",
+              "description": "One of an omp agent's topics changed (`agent.topics.changed`).",
               "properties": {
                 "agent": {
                   "type": [
@@ -1003,13 +988,6 @@
                 },
                 "reason": {
                   "$ref": "#/schemas/event/$defs/AgentTopicChangeReason"
-                },
-                "suggestion_id": {
-                  "description": "The suggestion whose state changed (`suggestion_accepted`,\n`suggestion_dismissed`).",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 },
                 "topic_id": {
                   "type": "string"
@@ -2300,22 +2278,6 @@
           ],
           "type": "object"
         },
-        "AgentTopicSuggestionTarget": {
-          "description": "One suggestion of one agent (`agent.topics.accept_suggestion`, which\nstarts the topic with the messages the agent picked, and\n`agent.topics.dismiss_suggestion`).",
-          "properties": {
-            "suggestion_id": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "target",
-            "suggestion_id"
-          ],
-          "type": "object"
-        },
         "AgentTopicTarget": {
           "description": "One topic of one agent (`agent.topics.close`, `agent.topics.reopen`).",
           "properties": {
@@ -2350,18 +2312,6 @@
             "target",
             "title",
             "message"
-          ],
-          "type": "object"
-        },
-        "AgentTopicsOrganiseParams": {
-          "description": "`agent.topics.organise`: one agent.",
-          "properties": {
-            "target": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
           ],
           "type": "object"
         },
@@ -4354,6 +4304,128 @@
                 "value"
               ],
               "type": "object"
+            }
+          ]
+        },
+        "OwnerAccessAddParams": {
+          "additionalProperties": false,
+          "description": "`owner_access.add`: allow one browser key on this machine, bound to the\naccount of the device approving it. A live grant for the same key is\nreplaced.",
+          "properties": {
+            "account_statement": {
+              "description": "The approving device's own account statement for this machine\n(`aud` = `host_id` from `owner_access.info`). Its `sub` becomes the\ngrant's account.",
+              "type": "string"
+            },
+            "approved_by": {
+              "description": "The approving device's name, for display: 1 to 64 printable\ncharacters.",
+              "type": "string"
+            },
+            "device_name": {
+              "description": "For example `Chrome on macOS`: 1 to 64 printable characters.",
+              "type": "string"
+            },
+            "device_pub": {
+              "description": "The browser's X25519 key (its Noise key), unpadded base64url of 32\nbytes.",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/schemas/request/$defs/OwnerScope",
+              "default": "terminal",
+              "description": "Default: `terminal`."
+            },
+            "ttl_secs": {
+              "description": "Grant lifetime in seconds, 3600 to 2592000 (1 hour to 30 days).\nAnything else is refused with `owner_ttl_invalid`, never clamped.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "device_pub",
+            "device_name",
+            "ttl_secs",
+            "account_statement",
+            "approved_by"
+          ],
+          "type": "object"
+        },
+        "OwnerAccessInfoParams": {
+          "additionalProperties": false,
+          "description": "`owner_access.info`: this machine's relay identity, created on first use.",
+          "type": "object"
+        },
+        "OwnerAccessListParams": {
+          "additionalProperties": false,
+          "description": "`owner_access.list`: every owner grant kept, revoked and expired ones\nincluded until they are deleted 30 days after they ended.",
+          "type": "object"
+        },
+        "OwnerAccessRemoveParams": {
+          "additionalProperties": false,
+          "description": "`owner_access.remove`: exactly one of `grant_id`, `device_pub` or\n`fingerprint`. Unknown or already removed grants answer `removed: []`.",
+          "properties": {
+            "device_pub": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fingerprint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "grant_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "OwnerAccessRenewParams": {
+          "additionalProperties": false,
+          "description": "`owner_access.renew`: `expires = now + ttl_secs` (not added to the time\nleft). Revives an expired grant that was not removed, within 30 days of\nits expiry.",
+          "properties": {
+            "grant_id": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/OwnerScope"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Change the scope; unchanged when absent."
+            },
+            "ttl_secs": {
+              "description": "3600 to 2592000, as for `owner_access.add`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "grant_id",
+            "ttl_secs"
+          ],
+          "type": "object"
+        },
+        "OwnerScope": {
+          "description": "What a granted browser may do on this machine.",
+          "oneOf": [
+            {
+              "const": "chat",
+              "description": "Agents only: read and talk to local agents.",
+              "type": "string"
+            },
+            {
+              "const": "terminal",
+              "description": "Agents and their terminals. A terminal is a shell on this machine.",
+              "type": "string"
             }
           ]
         },
@@ -7544,6 +7616,87 @@
           "type": "object"
         },
         {
+          "description": "Owner only: the owner's browsers allowed on this machine (owner\ngrants). Never reachable by guests, federation peers or fenced callers.",
+          "properties": {
+            "method": {
+              "const": "owner_access.info",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/OwnerAccessInfoParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "owner_access.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/OwnerAccessListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "owner_access.add",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/OwnerAccessAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "owner_access.renew",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/OwnerAccessRenewParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "owner_access.remove",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/OwnerAccessRemoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "client.window_title.set",
@@ -9482,56 +9635,6 @@
             "params"
           ],
           "type": "object"
-        },
-        {
-          "description": "Start the topic an omp agent suggested (`capabilities.agent_topic_suggestions`).",
-          "properties": {
-            "method": {
-              "const": "agent.topics.accept_suggestion",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/AgentTopicSuggestionTarget"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "agent.topics.dismiss_suggestion",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/AgentTopicSuggestionTarget"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Ask an omp agent to review its main conversation and suggest topics.",
-          "properties": {
-            "method": {
-              "const": "agent.topics.organise",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/AgentTopicsOrganiseParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
         }
       ],
       "properties": {
@@ -10382,21 +10485,6 @@
             {
               "const": "restored",
               "description": "The agent restored the topic with its session (startup, session switch).",
-              "type": "string"
-            },
-            {
-              "const": "suggested",
-              "description": "The agent suggested a topic: `suggestion_id` names it and `topic_id`\nis empty. The suggestion is in `agent.topics.list` at once; its\n`agent.transcript` entry appears once the agent's current turn ends.",
-              "type": "string"
-            },
-            {
-              "const": "suggestion_accepted",
-              "description": "Suggestion `suggestion_id` was accepted; `topic_id` is empty (the\ntopic's id is in the accept reply and the transcript entry).",
-              "type": "string"
-            },
-            {
-              "const": "suggestion_dismissed",
-              "description": "Suggestion `suggestion_id` was dismissed; `topic_id` is empty.",
               "type": "string"
             },
             {
@@ -11276,7 +11364,7 @@
               "type": "object"
             },
             {
-              "description": "One of an omp agent's topics changed (`agent.topics.changed`), or one\nof its topic suggestions was accepted or dismissed (`suggestion_id`).",
+              "description": "One of an omp agent's topics changed (`agent.topics.changed`).",
               "properties": {
                 "agent": {
                   "type": [
@@ -11289,13 +11377,6 @@
                 },
                 "reason": {
                   "$ref": "#/schemas/subscription_stream_event/$defs/AgentTopicChangeReason"
-                },
-                "suggestion_id": {
-                  "description": "The suggestion whose state changed (`suggestion_accepted`,\n`suggestion_dismissed`).",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 },
                 "topic_id": {
                   "type": "string"
@@ -13207,21 +13288,6 @@
               "type": "string"
             },
             {
-              "const": "suggested",
-              "description": "The agent suggested a topic: `suggestion_id` names it and `topic_id`\nis empty. The suggestion is in `agent.topics.list` at once; its\n`agent.transcript` entry appears once the agent's current turn ends.",
-              "type": "string"
-            },
-            {
-              "const": "suggestion_accepted",
-              "description": "Suggestion `suggestion_id` was accepted; `topic_id` is empty (the\ntopic's id is in the accept reply and the transcript entry).",
-              "type": "string"
-            },
-            {
-              "const": "suggestion_dismissed",
-              "description": "Suggestion `suggestion_id` was dismissed; `topic_id` is empty.",
-              "type": "string"
-            },
-            {
               "const": "unknown",
               "description": "A reason this server does not know yet.",
               "type": "string"
@@ -13357,41 +13423,6 @@
               "type": "string"
             }
           ]
-        },
-        "AgentTopicSuggestionInfo": {
-          "description": "One open topic suggestion, as `agent.topics.list` reports it: the agent\nproposes moving these messages of its main conversation into a new topic.",
-          "properties": {
-            "created_unix_ms": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "message_ids": {
-              "description": "The main conversation's entries (`agent.transcript` ids) the topic\nwould start with.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "reason": {
-              "description": "Why the agent suggests it, in its words.",
-              "type": "string"
-            },
-            "suggestion_id": {
-              "type": "string"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "suggestion_id",
-            "title",
-            "reason",
-            "message_ids",
-            "created_unix_ms"
-          ],
-          "type": "object"
         },
         "AskForm": {
           "description": "An omp (≥ 18.18.3) `ask` HTML form, reduced the way omp's terminal form\ndraws it (upstream `packages/tui/src/html-form/parse.ts`). Hidden inputs\nare left out: omp submits them itself.",
@@ -14697,7 +14728,7 @@
               "type": "object"
             },
             {
-              "description": "One of an omp agent's topics changed (`agent.topics.changed`), or one\nof its topic suggestions was accepted or dismissed (`suggestion_id`).",
+              "description": "One of an omp agent's topics changed (`agent.topics.changed`).",
               "properties": {
                 "agent": {
                   "type": [
@@ -14710,13 +14741,6 @@
                 },
                 "reason": {
                   "$ref": "#/schemas/success_response/$defs/AgentTopicChangeReason"
-                },
-                "suggestion_id": {
-                  "description": "The suggestion whose state changed (`suggestion_accepted`,\n`suggestion_dismissed`).",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 },
                 "topic_id": {
                   "type": "string"
@@ -15375,6 +15399,21 @@
               "const": "device_removed",
               "description": "The owner removed a device from an account-bound share.",
               "type": "string"
+            },
+            {
+              "const": "owner_added",
+              "description": "The owner allowed a browser (`owner_access.add`). Owner events carry\nthe grant id in `guest_id`, the browser's name in `name`, its\nfingerprint, and an empty `pane`; `text` is the approving device.",
+              "type": "string"
+            },
+            {
+              "const": "owner_renewed",
+              "description": "The owner renewed a browser's grant (`text` is its scope).",
+              "type": "string"
+            },
+            {
+              "const": "owner_removed",
+              "description": "The owner removed a browser, or a newer grant for the same key\nreplaced it (`text` is `replaced`).",
+              "type": "string"
             }
           ]
         },
@@ -15988,6 +16027,88 @@
             {
               "const": "unconfigured",
               "description": "Direct mode without a complete APNs key config, or relay/auto mode with no\ncapability-bearing device registered yet.",
+              "type": "string"
+            }
+          ]
+        },
+        "OwnerGrantInfo": {
+          "description": "One owner grant. The account it is bound to is never shown.",
+          "properties": {
+            "approved_by": {
+              "type": "string"
+            },
+            "created_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "device": {
+              "type": "string"
+            },
+            "device_pub": {
+              "description": "The browser's key, unpadded base64url.",
+              "type": "string"
+            },
+            "expires_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fingerprint": {
+              "description": "`SHA256:` plus the first 8 bytes of SHA-256(device key), as for guests.",
+              "type": "string"
+            },
+            "grant_id": {
+              "type": "string"
+            },
+            "last_seen_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "renewed_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "revoked": {
+              "description": "Removed (`owner_access.remove`) or replaced by a newer grant for the\nsame key. A revoked grant is never renewed.",
+              "type": "boolean"
+            },
+            "scope": {
+              "$ref": "#/schemas/success_response/$defs/OwnerScope"
+            }
+          },
+          "required": [
+            "grant_id",
+            "device_pub",
+            "fingerprint",
+            "device",
+            "scope",
+            "approved_by",
+            "created_ms",
+            "expires_ms",
+            "revoked"
+          ],
+          "type": "object"
+        },
+        "OwnerScope": {
+          "description": "What a granted browser may do on this machine.",
+          "oneOf": [
+            {
+              "const": "chat",
+              "description": "Agents only: read and talk to local agents.",
+              "type": "string"
+            },
+            {
+              "const": "terminal",
+              "description": "Agents and their terminals. A terminal is a shell on this machine.",
               "type": "string"
             }
           ]
@@ -18683,16 +18804,6 @@
                 "pane_id": {
                   "type": "string"
                 },
-                "suggestions": {
-                  "description": "The agent's open topic suggestions, oldest first. Present only when\nthe agent's omp serves suggestions\n(`agent.topics.accept_suggestion`); absent for an omp without them.",
-                  "items": {
-                    "$ref": "#/schemas/success_response/$defs/AgentTopicSuggestionInfo"
-                  },
-                  "type": [
-                    "array",
-                    "null"
-                  ]
-                },
                 "topics": {
                   "items": {
                     "$ref": "#/schemas/success_response/$defs/AgentTopicInfo"
@@ -18813,93 +18924,6 @@
                 "agent",
                 "pane_id",
                 "topic_id"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`agent.topics.accept_suggestion`: the topic started from the\nsuggestion. A suggestion accepted before answers the same `topic_id`\nwith `already_accepted: true`.",
-              "properties": {
-                "agent": {
-                  "type": "string"
-                },
-                "already_accepted": {
-                  "type": "boolean"
-                },
-                "pane_id": {
-                  "type": "string"
-                },
-                "suggestion_id": {
-                  "type": "string"
-                },
-                "topic_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "agent_topic_suggestion_accepted",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "agent",
-                "pane_id",
-                "suggestion_id",
-                "topic_id",
-                "already_accepted"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`agent.topics.dismiss_suggestion`; `already_dismissed` when it was\ndismissed before.",
-              "properties": {
-                "agent": {
-                  "type": "string"
-                },
-                "already_dismissed": {
-                  "type": "boolean"
-                },
-                "pane_id": {
-                  "type": "string"
-                },
-                "suggestion_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "agent_topic_suggestion_dismissed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "agent",
-                "pane_id",
-                "suggestion_id",
-                "already_dismissed"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`agent.topics.organise`: the review turn was started, or `queued`\nbehind the agent's running turn. Its suggestions arrive as\n`topic_suggestion` entries of `agent.transcript`.",
-              "properties": {
-                "agent": {
-                  "type": "string"
-                },
-                "pane_id": {
-                  "type": "string"
-                },
-                "queued": {
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "agent_topics_organise_started",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "agent",
-                "pane_id",
-                "queued"
               ],
               "type": "object"
             },
@@ -19329,6 +19353,141 @@
               "required": [
                 "type",
                 "entries"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "This machine's relay identity for owner access. Never includes\nsecrets.",
+              "properties": {
+                "host_id": {
+                  "description": "The relay's id for this machine, unpadded base64url of 16 bytes.",
+                  "type": "string"
+                },
+                "link": {
+                  "$ref": "#/schemas/success_response/$defs/GuestLinkInfo"
+                },
+                "max_ttl_secs": {
+                  "description": "The longest grant `owner_access.add` and `owner_access.renew` accept.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "node_pub": {
+                  "description": "This machine's X25519 Noise key, unpadded base64url of 32 bytes.",
+                  "type": "string"
+                },
+                "protocol": {
+                  "description": "Owner access protocol version.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "relay_url": {
+                  "type": "string"
+                },
+                "scopes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/OwnerScope"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "owner_access_info",
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "protocol",
+                "host_id",
+                "node_pub",
+                "relay_url",
+                "link",
+                "max_ttl_secs",
+                "scopes",
+                "version"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "grants": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/OwnerGrantInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "owner_access_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grants"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "grant": {
+                  "$ref": "#/schemas/success_response/$defs/OwnerGrantInfo"
+                },
+                "replaced": {
+                  "description": "Grants for the same key that this one replaced (now revoked).",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "owner_access_added",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grant",
+                "replaced"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "grant": {
+                  "$ref": "#/schemas/success_response/$defs/OwnerGrantInfo"
+                },
+                "type": {
+                  "const": "owner_access_renewed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grant"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "removed": {
+                  "description": "Grants this call revoked; `[]` when none matched.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "owner_access_removed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "removed"
               ],
               "type": "object"
             },
@@ -20229,11 +20388,6 @@
               },
               "type": "array"
             },
-            "agent_topic_suggestions": {
-              "default": false,
-              "description": "Serves `agent.topics.accept_suggestion`, `agent.topics.dismiss_suggestion`\nand `agent.topics.organise`, `suggestions` on `agent.topics.list` and\n`topic_suggestion` entries on `agent.transcript`. Whether one agent's\nomp has suggestions shows per agent: its `agent.topics.list` carries\n`suggestions` only then, and an omp without them answers these\nmethods `topics_unsupported`.",
-              "type": "boolean"
-            },
             "agent_topics": {
               "default": false,
               "description": "Serves `agent.topics.*`, the `agent.topics.changed` event and\n`topic_sessions` on `agent.list`/`agent.get`.",
@@ -20546,23 +20700,6 @@
             "agent_status"
           ],
           "type": "object"
-        },
-        "TopicSuggestionState": {
-          "description": "Where a topic suggestion stands (`agent.transcript` `topic_suggestion`).",
-          "oneOf": [
-            {
-              "enum": [
-                "open",
-                "dismissed"
-              ],
-              "type": "string"
-            },
-            {
-              "const": "accepted",
-              "description": "A topic was started from it (`topic_id`).",
-              "type": "string"
-            }
-          ]
         },
         "TranscriptAuthor": {
           "description": "Who wrote a `user` entry: the owner at the terminal, or a guest whose prompt\narrived through HerdrUp with the `<name> (via HerdrUp): ` prefix.",
@@ -20915,69 +21052,6 @@
                 "id",
                 "ts_ms",
                 "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A topic the agent suggests starting from some of its messages (omp\nwith topics). `id` is the suggestion id `agent.topics.accept_suggestion`\nand `agent.topics.dismiss_suggestion` take. Its newest state wins: an\n`after` page re-sends the entry under the same id when it changes.",
-              "properties": {
-                "by": {
-                  "description": "Who accepted or dismissed it: `owner`, or the guest's name as\nthe owner's share names them.",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "topic_suggestion",
-                  "type": "string"
-                },
-                "message_count": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "message_ids": {
-                  "description": "The entries of this conversation the topic would start with.",
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "reason": {
-                  "type": "string"
-                },
-                "state": {
-                  "$ref": "#/schemas/success_response/$defs/TopicSuggestionState"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "topic_id": {
-                  "description": "The topic started from it, once `accepted`.",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "ts_ms": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "kind",
-                "id",
-                "ts_ms",
-                "title",
-                "reason",
-                "message_ids",
-                "message_count",
-                "state"
               ],
               "type": "object"
             }
