@@ -3,28 +3,16 @@
 // commit, types the code it computes, and seals the machine list as internal/account/approve.go
 // does (the sealing here mirrors SealEnvelope; test/webguestApprove.test.ts pins the opening).
 import { expect, test } from "bun:test";
-import { gcm } from "@noble/ciphers/aes.js";
 import { x25519 } from "@noble/curves/ed25519.js";
-import { hkdf } from "@noble/hashes/hkdf.js";
-import { sha256 } from "@noble/hashes/sha2.js";
 import { approveCode, approveCommit } from "../src/webguest/approve";
+import { seal } from "./approveSeal";
 import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { MemoryIdentityStore } from "../src/webguest/identity";
 import { AccountServiceError, type ApprovalStatus, type BrowserSelf } from "../src/web/account";
 import { refreshLists, runApproval, type OwnerPhase } from "../src/web/ownerApproval";
 import { MemoryOwnerStore } from "../src/web/ownerStore";
 
-const enc = new TextEncoder();
-const cat = (...p: Uint8Array[]) => { const o = new Uint8Array(p.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 
-/** Go SealEnvelope: approver secret t seals json to browser key B at seq. */
-function seal(t: Uint8Array, B: Uint8Array, seq: number, json: object): string {
- const T = x25519.getPublicKey(t);
- const k = hkdf(sha256, x25519.getSharedSecret(t, B), cat(B, T), enc.encode("herdrup-approve-v1|envelope"), 32);
- const s = new Uint8Array(8); new DataView(s.buffer).setBigUint64(0, BigInt(seq));
- const iv = crypto.getRandomValues(new Uint8Array(12));
- return toB64url(cat(iv, gcm(k, iv, cat(enc.encode("herdrup-approve-v1|envelope"), new Uint8Array([0]), B, T, s)).encrypt(enc.encode(JSON.stringify(json)))));
-}
 
 const hostID = toB64url(new Uint8Array(16).fill(1));
 const list = (seq: number, label = "dev2306") => ({ v: 1, seq, issued_unix: 1_799_000_000, approver: "Jerry's Mac", skipped: [],
@@ -47,15 +35,19 @@ interface World {
  envelope?: (B: Uint8Array) => { approver_pub: string; seq: number; sealed: string };
  enrolError?: AccountServiceError;
  calls: string[];
+ /** The account each call was bound to. */
+ accounts: (string | undefined)[];
  typed?: string;
 }
 
 function service(w: World) {
  let commit = "", B = new Uint8Array(), nonceT = new Uint8Array(32).fill(4), nonceB: Uint8Array | null = null, polls = 0, approvedAt = -1;
  const account = {
-  async enrol(key: { publicKey: Uint8Array }) { w.calls.push("enrol"); B = key.publicKey; if (w.enrolError) throw w.enrolError; return { id: "dev-b", name: "", platform: "web", device_pub: toB64url(B), created_ms: 1 }; },
-  async requestApproval(c: Uint8Array) { w.calls.push("request"); commit = toB64url(c); return { id: "req-1", expires_in: 600 }; },
-  async approvalState(): Promise<ApprovalStatus> {
+  async currentAccount() { return "acct-1"; },
+  async enrol(key: { publicKey: Uint8Array }, _name: string, acct?: string) { w.accounts.push(acct); w.calls.push("enrol"); B = key.publicKey; if (w.enrolError) throw w.enrolError; return { id: "dev-b", name: "", platform: "web", device_pub: toB64url(B), created_ms: 1 }; },
+  async requestApproval(c: Uint8Array, acct?: string) { w.accounts.push(acct); w.calls.push("request"); commit = toB64url(c); return { id: "req-1", expires_in: 600 }; },
+  async approvalState(_id: string, acct?: string): Promise<ApprovalStatus> {
+   w.accounts.push(acct);
    polls++;
    if (polls <= w.claimAfter) return { state: "waiting", expires_in: 600 };
    if (nonceB === null) return { state: "claimed", expires_in: 600, approver: { device_pub: toB64url(w.T), name: "Jerry's Mac" }, nonce_t: toB64url(nonceT) };
@@ -68,8 +60,9 @@ function service(w: World) {
    if (polls - approvedAt < w.approveAfter) return { state: "revealed", expires_in: 600 };
    return { state: w.outcome, expires_in: 0 };
   },
-  async reveal(_id: string, n: Uint8Array) { w.calls.push("reveal"); nonceB = n; },
-  async browserSelf(): Promise<BrowserSelf> {
+  async reveal(_id: string, n: Uint8Array, acct?: string) { w.accounts.push(acct); w.calls.push("reveal"); nonceB = n; },
+  async browserSelf(acct?: string): Promise<BrowserSelf> {
+   w.accounts.push(acct);
    w.calls.push("self");
    const e = w.envelope ? w.envelope(B) : { approver_pub: toB64url(w.T), seq: 7, sealed: seal(w.t, B, 7, list(7)) };
    return { access: { state: "approved" }, envelopes: [e] };
@@ -80,7 +73,7 @@ function service(w: World) {
 
 function world(over: Partial<World> = {}): World {
  const t = new Uint8Array(32).fill(8);
- return { t, T: x25519.getPublicKey(t), claimAfter: 2, approveAfter: 1, outcome: "approved", calls: [], ...over };
+ return { t, T: x25519.getPublicKey(t), claimAfter: 2, approveAfter: 1, outcome: "approved", calls: [], accounts: [], ...over };
 }
 
 async function run(w: World, identities?: MemoryIdentityStore) {
@@ -98,6 +91,7 @@ test("the browser shows no code until a device claims, reveals only then, and ke
  const code = phases.find(p => p.kind === "code") as Extract<OwnerPhase, { kind: "code" }>;
  expect(code.code).toBe(w.typed!);
  expect(w.calls).toEqual(["enrol", "request", "reveal", "self"]);
+ expect(new Set(w.accounts)).toEqual(new Set(["acct-1"]));
  expect(store.record?.approvers).toEqual([{ pub: toB64url(w.T), name: "Jerry's Mac", envelope: expect.objectContaining({ seq: 7, machines: [expect.objectContaining({ label: "dev2306", hostID })] }) }]);
 });
 

@@ -35,8 +35,8 @@ function sized(...parts: Uint8Array[]) {
 const labelled = (label: string, ...parts: Uint8Array[]) => sha256(concat(text.encode(label), new Uint8Array([0]), ...parts));
 
 /** A fresh 32-byte nonce; never reuse one. */
-export function newApproveNonce(random: (n: number) => Uint8Array = n => crypto.getRandomValues(new Uint8Array(n))): Uint8Array {
- return random(SIZE);
+export function newApproveNonce(): Uint8Array {
+ return crypto.getRandomValues(new Uint8Array(SIZE));
 }
 
 /** The browser's commitment to nonceB for its key B, sent before it learns anything of T. */
@@ -53,9 +53,10 @@ export function approveCode(browserPub: Uint8Array, approverPub: Uint8Array, non
  return String(n % 10000).padStart(4, "0");
 }
 
-/** Opens a sealed envelope as the browser (key holds b) from approverPub at seq: the plaintext
- *  bytes, or an error when it doesn't open (wrong key, seq or approver, or tampered). */
-export async function openEnvelope(key: StaticKey, approverPub: Uint8Array, seq: number, sealed: string): Promise<Uint8Array> {
+/** The AEAD step alone: the plaintext of a sealed envelope, or an error when it doesn't open
+ *  (wrong key, seq or approver, or tampered). Callers take the machine list with openEnvelope;
+ *  this is exported for AccountService's vector, whose plaintext is no machine list. */
+export async function openSealed(key: StaticKey, approverPub: Uint8Array, seq: number, sealed: string): Promise<Uint8Array> {
  const browserPub = key.publicKey;
  sized(browserPub, approverPub);
  if (!Number.isSafeInteger(seq) || seq < 0) throw new Error("approve-v1: bad seq");
@@ -75,17 +76,22 @@ export interface EnvelopeMachine {
  hostItemID: string; label: string; relay: string; hostID: string; nodePub: string;
  grantID: string; scope: "chat" | "terminal"; expiresUnix: number;
 }
-export type SkipReason = "needs_update" | "unsupported" | "unreachable" | "relay_not_allowed";
+const SKIP_REASONS = ["needs_update", "unsupported", "unreachable", "relay_not_allowed"] as const;
+export type SkipReason = typeof SKIP_REASONS[number];
 export interface EnvelopeSkipped { hostItemID: string; label: string; reason: SkipReason; version?: string }
 export interface Envelope { seq: number; issuedUnix: number; approver: string; machines: EnvelopeMachine[]; skipped: EnvelopeSkipped[] }
 
-const SKIP_REASONS: readonly string[] = ["needs_update", "unsupported", "unreachable", "relay_not_allowed"];
 const str = (v: unknown): v is string => typeof v === "string";
 const int = (v: unknown): v is number => Number.isSafeInteger(v);
 
-/** The machine list in an opened envelope, sealed for seq. Anything else in its shape is refused:
- *  the browser connects only to what this returns. */
-export function parseEnvelope(plain: Uint8Array, seq: number): Envelope {
+/** The machine list approverPub sealed to this browser (key holds b) at seq: opened, then taken
+ *  only in the shape the approver seals (app/desk_web_access.go webEnvelope) and for that seq.
+ *  The browser connects only to what this returns. */
+export async function openEnvelope(key: StaticKey, approverPub: Uint8Array, seq: number, sealed: string): Promise<Envelope> {
+ return parseEnvelope(await openSealed(key, approverPub, seq, sealed), seq);
+}
+
+function parseEnvelope(plain: Uint8Array, seq: number): Envelope {
  let e: Record<string, unknown>;
  try { e = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plain)); }
  catch { throw new Error("approve-v1: the machine list isn't JSON"); }
@@ -99,7 +105,7 @@ export function parseEnvelope(plain: Uint8Array, seq: number): Envelope {
   return { hostItemID: m.host_item_id, label: m.label, relay: m.relay, hostID: m.host_id as string, nodePub: m.node_pub as string, grantID: m.grant_id, scope: m.scope, expiresUnix: m.expires_unix };
  });
  const skipped = e.skipped.map((s: Record<string, unknown>): EnvelopeSkipped => {
-  if (s === null || typeof s !== "object" || !str(s.host_item_id) || !str(s.label) || !str(s.reason) || !SKIP_REASONS.includes(s.reason) || (s.version !== undefined && !str(s.version))) throw bad("a malformed skipped machine");
+  if (s === null || typeof s !== "object" || !str(s.host_item_id) || !str(s.label) || !str(s.reason) || !(SKIP_REASONS as readonly string[]).includes(s.reason) || (s.version !== undefined && !str(s.version))) throw bad("a malformed skipped machine");
   return { hostItemID: s.host_item_id, label: s.label, reason: s.reason as SkipReason, ...(s.version !== undefined ? { version: s.version as string } : {}) };
  });
  return { seq, issuedUnix: e.issued_unix, approver: e.approver, machines, skipped };

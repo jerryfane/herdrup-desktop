@@ -14,7 +14,7 @@ const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0"
 
 /** The service: one cookie that rotates on each refresh; a spent cookie revokes the session.
  *  route answers the account calls (null: 404), given the Bearer token sent. */
-function service(route: (url: string, init: RequestInit, bearer: string) => Response | Promise<Response> | null = () => null) {
+function service(route: (url: string, init: RequestInit, bearer: string) => Response | Promise<Response> | null = () => null, accountOf: (n: number) => string = () => "acct-1") {
  let cookie = "c0", n = 0, revoked = false;
  const spent = new Set<string>();
  const calls: { url: string; init: RequestInit; cookie: string }[] = [];
@@ -27,7 +27,7 @@ function service(route: (url: string, init: RequestInit, bearer: string) => Resp
   if (url.endsWith("/v1/auth/refresh")) {
    if (revoked || !sent || spent.has(sent)) { revoked = true; return Response.json({ error: "session_revoked" }, { status: 401 }); }
    spent.add(sent); n++; cookie = `c${n}`;
-   return Response.json({ account_id: "acct-1", access_token: access(n), access_expires_in: 3600, ...(n === 1 ? { display_hint: "jerry@example.com" } : {}) });
+   return Response.json({ account_id: accountOf(n), access_token: access(n), access_expires_in: 3600, ...(n === 1 ? { display_hint: "jerry@example.com" } : {}) });
   }
   if (url.endsWith("/v1/auth/signout")) { revoked = true; return new Response(null, { status: 204 }); }
   const bearer = String((init.headers as Record<string, string> | undefined)?.Authorization ?? "").replace(/^Bearer /, "");
@@ -178,10 +178,12 @@ test("account calls carry the access token; one the service refuses is refreshed
  const account = new WebAccount(s.fetcher);
  expect(await account.browserSelf()).toEqual({ envelopes: [] });
  expect(seen).toEqual([access(1), access(2)]);
- const stuck = new WebAccount(service((url) => url.endsWith("/v1/browsers/self") ? Response.json({ error: "unauthorized" }, { status: 401 }) : null).fetcher);
+ let sends = 0;
+ const stuck = new WebAccount(service((url) => { if (!url.endsWith("/v1/browsers/self")) return null; sends++; return Response.json({ error: "unauthorized" }, { status: 401 }); }).fetcher);
  const error = await stuck.browserSelf().catch(e => e);
  expect(error).toBeInstanceOf(AccountServiceError);
  expect(error.status).toBe(401);
+ expect(sends).toBe(2);
 });
 
 test("enrolment proves the browser's key for this account's challenge and adds it as a web device; another account's challenge is refused", async () => {
@@ -204,4 +206,19 @@ test("enrolment proves the browser's key for this account's challenge and adds i
  challengeAccount = "acct-2";
  await expect(account.enrol(key, "Chrome on macOS")).rejects.toMatchObject({ code: "account_changed" });
  expect(posted.length).toBe(1);
+});
+
+test("a call refused with 401 is not sent again once the refreshed session is another account's", async () => {
+ const posted: string[] = [];
+ const s = service((url, _init, bearer) => {
+  if (!url.endsWith("/v1/approvals")) return null;
+  posted.push(bearer);
+  return Response.json({ error: "unauthorized" }, { status: 401 });
+ }, n => n === 1 ? "acct-A" : "acct-B");
+ const account = new WebAccount(s.fetcher);
+ await expect(account.requestApproval(new Uint8Array(32))).rejects.toMatchObject({ code: "account_changed" });
+ expect(posted).toEqual([access(1)]);
+ // Bound up front: another account's session sends nothing.
+ await expect(account.requestApproval(new Uint8Array(32), "acct-A")).rejects.toMatchObject({ code: "account_changed" });
+ expect(posted).toEqual([access(1)]);
 });

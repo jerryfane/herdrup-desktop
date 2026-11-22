@@ -5,7 +5,7 @@
 // approval it opens the machine list sealed to it by that device, whose key the code covered, and
 // keeps it (ownerStore.ts). Later loads take newer lists only from approvers kept that way.
 
-import { approveCode, approveCommit, newApproveNonce, openEnvelope, parseEnvelope, type Envelope } from "../webguest/approve";
+import { approveCode, approveCommit, newApproveNonce, openEnvelope, type Envelope } from "../webguest/approve";
 import { fromB64url, toB64url } from "../webguest/b64url";
 import { generateIdentity, staticKey, type IdentityStore } from "../webguest/identity";
 import type { StaticKey } from "../webguest/noise";
@@ -27,7 +27,7 @@ export type OwnerPhase =
  | { kind: "expired" }
  | { kind: "failed"; problem: string };
 
-type Account = Pick<WebAccount, "enrol" | "requestApproval" | "approvalState" | "reveal" | "browserSelf">;
+type Account = Pick<WebAccount, "currentAccount" | "enrol" | "requestApproval" | "approvalState" | "reveal" | "browserSelf">;
 
 export interface ApprovalDeps {
  account: Account;
@@ -37,7 +37,6 @@ export interface ApprovalDeps {
  deviceName: string;
  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
  now?: () => number;
- random?: (n: number) => Uint8Array;
  subtle?: SubtleCrypto | null;
  /** navigator.locks: one tab at a time runs an approval (each request replaces the last). */
  locks?: { request<T>(name: string, options: { ifAvailable: true }, run: (lock: unknown) => Promise<T>): Promise<T> } | null;
@@ -67,6 +66,7 @@ const problemOf = (error: unknown): string => {
   if (error.code === "too_many_requests") return "Too many approval requests from this account. Try again in an hour.";
   if (error.code === "device_in_other_account") return "This browser is already a device of another HerdrUp account.";
   if (error.code === "too_many_devices") return "The account has too many devices. Remove one in HerdrUp, then try again.";
+  if (error.code === "account_changed") return "This browser is now signed in to another account. Ask again to approve it there.";
   return error.status >= 500 ? "The account service is unavailable. Try again later." : `The account service refused the request (${error.code || error.status}).`;
  }
  return "Couldn't reach the account service. Check the connection and try again.";
@@ -89,12 +89,14 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  const key = await ownerKey(deps.identities, deps.subtle);
  if (key === null) { onPhase({ kind: "unsupported" }); return; }
  onPhase({ kind: "starting" });
- let id: string, expiresAt: number;
- const nonceB = newApproveNonce(deps.random);
+ let id: string, expiresAt: number, acct: string;
+ const nonceB = newApproveNonce();
  try {
-  try { await deps.account.enrol(key, deps.deviceName); }
+  // The whole approval is the account's it starts in: a call after another sign-in sends nothing.
+  acct = await deps.account.currentAccount();
+  try { await deps.account.enrol(key, deps.deviceName, acct); }
   catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
-  const created = await deps.account.requestApproval(approveCommit(key.publicKey, nonceB));
+  const created = await deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct);
   id = created.id; expiresAt = now() + created.expires_in * 1000;
  } catch (error) { if (!signal.aborted) onPhase({ kind: "failed", problem: problemOf(error) }); return; }
  if (signal.aborted) return;
@@ -105,9 +107,10 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  for (;;) {
   try { await sleep(pollDelay(now() - started), signal); } catch { return; }
   let st: ApprovalStatus;
-  try { st = await deps.account.approvalState(id); }
+  try { st = await deps.account.approvalState(id, acct); }
   catch (error) {
    if (signal.aborted) return;
+   if (error instanceof AccountServiceError && error.code === "account_changed") { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
    // The browser asked again elsewhere (a new request replaces this one) or it was swept.
    if (error instanceof AccountServiceError && error.status === 404) { onPhase({ kind: "expired" }); return; }
    if (now() >= expiresAt) { onPhase({ kind: "expired" }); return; }
@@ -120,7 +123,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
    const pub = fromB64url(st.approver?.device_pub, 32), nonceT = fromB64url(st.nonce_t, 32);
    if (pub === null || nonceT === null) continue; // not complete yet: read again
    // B reveals only now, holding nonce_t (§2.2 step 3); the code covers T, the key the list must come from.
-   try { await deps.account.reveal(id, nonceB); }
+   try { await deps.account.reveal(id, nonceB, acct); }
    catch (error) {
     if (signal.aborted) return;
     if (!(error instanceof AccountServiceError && error.code === "already_revealed")) { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -132,7 +135,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
   if (st.state === "approved") {
    // Approval needs the code, which exists only after this browser revealed: anything else is
    // a service this browser can't follow, never an approval to take.
-   const taken = approver !== null && await takeApproval(deps, key, approver, onPhase, signal, sleep);
+   const taken = approver !== null && await takeApproval(deps, acct, key, approver, onPhase, signal, sleep);
    if (taken || signal.aborted) return;
    onPhase({ kind: "failed", problem: "HerdrUp approved this browser, but its list of machines didn't arrive or didn't open. Ask again." });
    return;
@@ -142,17 +145,17 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
 }
 
 /** After approval: the envelope from the approver the code covered, opened and kept. */
-async function takeApproval(deps: ApprovalDeps, key: StaticKey, approver: { pub: Uint8Array; name: string }, onPhase: (p: OwnerPhase) => void,
+async function takeApproval(deps: ApprovalDeps, acct: string, key: StaticKey, approver: { pub: Uint8Array; name: string }, onPhase: (p: OwnerPhase) => void,
  signal: AbortSignal, sleep: NonNullable<ApprovalDeps["sleep"]>): Promise<boolean> {
  const pub = toB64url(approver.pub);
  for (let attempt = 0; attempt < ENVELOPE_TRIES; attempt++) {
   if (attempt > 0) { try { await sleep(2_000, signal); } catch { return true; } }
   let self: BrowserSelf;
-  try { self = await deps.account.browserSelf(); } catch { if (signal.aborted) return true; continue; }
+  try { self = await deps.account.browserSelf(acct); } catch { if (signal.aborted) return true; continue; }
   const sealed = self.envelopes.find(e => e.approver_pub === pub);
   if (sealed === undefined) continue;
   let envelope: Envelope;
-  try { envelope = parseEnvelope(await openEnvelope(key, approver.pub, sealed.seq, sealed.sealed), sealed.seq); }
+  try { envelope = await openEnvelope(key, approver.pub, sealed.seq, sealed.sealed); }
   catch { return false; }
   const verified: VerifiedApprover = { pub, name: approver.name, envelope };
   const record = await deps.store.get();
@@ -180,7 +183,7 @@ export async function refreshLists(account: Pick<WebAccount, "browserSelf">, key
   const sealed = self.envelopes.find(e => e.approver_pub === a.pub);
   if (sealed === undefined || sealed.seq <= a.envelope.seq) return a;
   try {
-   const envelope = parseEnvelope(await openEnvelope(key, fromB64url(a.pub, 32)!, sealed.seq, sealed.sealed), sealed.seq);
+   const envelope = await openEnvelope(key, fromB64url(a.pub, 32)!, sealed.seq, sealed.sealed);
    changed = true;
    return { ...a, envelope };
   } catch { return a; }

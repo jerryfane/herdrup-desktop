@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
-import { approveCode, approveCommit, openEnvelope, parseEnvelope } from "../src/webguest/approve";
+import { approveCode, approveCommit, openEnvelope, openSealed } from "../src/webguest/approve";
+import { seal } from "./approveSeal";
 import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { BadChallengeError, enrolProof } from "../src/webguest/enrol";
 import { staticKey } from "../src/webguest/identity";
@@ -24,37 +25,39 @@ test("approve-v1 matches AccountService's vector: commit, code and the sealed li
  expect(approveCode(B, T, nB, nT)).toBe(vector.code);
  for (const [kind, key] of Object.entries(await keys(b(vector.browser_priv)))) {
   expect(toB64url(key.publicKey), kind).toBe(vector.browser_pub);
-  expect(new TextDecoder().decode(await openEnvelope(key, T, vector.seq, vector.sealed)), kind).toBe(vector.envelope_json);
+  expect(new TextDecoder().decode(await openSealed(key, T, vector.seq, vector.sealed)), kind).toBe(vector.envelope_json);
  }
 });
 
 test("an envelope opens only for the seq, approver and bytes it was sealed with", async () => {
  const { raw: key } = await keys(b(vector.browser_priv));
  const T = b(vector.approver_pub);
- await expect(openEnvelope(key, T, vector.seq + 1, vector.sealed)).rejects.toThrow();
+ await expect(openSealed(key, T, vector.seq + 1, vector.sealed)).rejects.toThrow();
  const flipped = b(vector.sealed); flipped[20] ^= 1;
- await expect(openEnvelope(key, T, vector.seq, toB64url(flipped))).rejects.toThrow();
+ await expect(openSealed(key, T, vector.seq, toB64url(flipped))).rejects.toThrow();
  const other = x25519.getPublicKey(new Uint8Array(32).fill(7));
- await expect(openEnvelope(key, other, vector.seq, vector.sealed)).rejects.toThrow();
- await expect(openEnvelope(key, T, vector.seq, vector.sealed + "=")).rejects.toThrow("malformed");
+ await expect(openSealed(key, other, vector.seq, vector.sealed)).rejects.toThrow();
+ await expect(openSealed(key, T, vector.seq, vector.sealed + "=")).rejects.toThrow("malformed");
 });
 
 const machine = { host_item_id: "H1", label: "dev2306", relay: "https://guest.herdrup.app", host_id: toB64url(new Uint8Array(16).fill(1)),
  node_pub: toB64url(new Uint8Array(32).fill(2)), grant_id: "g1", scope: "chat", expires_unix: 1_800_000_000 };
-const plain = (e: object) => new TextEncoder().encode(JSON.stringify(e));
-const list = (over: object = {}) => plain({ v: 1, seq: 9, issued_unix: 1_799_000_000, approver: "Jerry's Mac", machines: [machine],
+const list = (over: object = {}) => ({ v: 1, seq: 9, issued_unix: 1_799_000_000, approver: "Jerry's Mac", machines: [machine],
  skipped: [{ host_item_id: "H2", label: "old-vps", reason: "needs_update", version: "0.8.3" }], ...over });
 
-test("the machine list is taken only in the shape the approver seals, for the seq it was sealed with", () => {
- expect(parseEnvelope(list(), 9)).toEqual({ seq: 9, issuedUnix: 1_799_000_000, approver: "Jerry's Mac",
+test("the machine list is taken only in the shape the approver seals, for the seq it was sealed with", async () => {
+ const t = new Uint8Array(32).fill(8), T = x25519.getPublicKey(t);
+ const { raw: key } = await keys(new Uint8Array(32).fill(6));
+ const open = (json: object, sealedAt = 9, openAt = sealedAt) => openEnvelope(key, T, openAt, seal(t, key.publicKey, sealedAt, json));
+ expect(await open(list())).toEqual({ seq: 9, issuedUnix: 1_799_000_000, approver: "Jerry's Mac",
   machines: [{ hostItemID: "H1", label: "dev2306", relay: "https://guest.herdrup.app", hostID: machine.host_id, nodePub: machine.node_pub, grantID: "g1", scope: "chat", expiresUnix: 1_800_000_000 }],
   skipped: [{ hostItemID: "H2", label: "old-vps", reason: "needs_update", version: "0.8.3" }] });
- expect(() => parseEnvelope(list(), 8)).toThrow("seq");
- expect(() => parseEnvelope(list({ v: 2 }), 9)).toThrow("version");
- expect(() => parseEnvelope(list({ machines: [{ ...machine, node_pub: machine.node_pub + "A" }] }), 9)).toThrow("machine");
- expect(() => parseEnvelope(list({ machines: [{ ...machine, scope: "admin" }] }), 9)).toThrow("machine");
- expect(() => parseEnvelope(list({ skipped: [{ host_item_id: "H2", label: "x", reason: "because" }] }), 9)).toThrow("skipped");
- expect(() => parseEnvelope(new TextEncoder().encode("{"), 9)).toThrow("JSON");
+ // Sealed at 8 with seq 9 inside: it opens at 8, and the list says another seq.
+ await expect(open(list(), 8)).rejects.toThrow("seq");
+ await expect(open(list({ v: 2 }))).rejects.toThrow("version");
+ await expect(open(list({ machines: [{ ...machine, node_pub: machine.node_pub + "A" }] }))).rejects.toThrow("machine");
+ await expect(open(list({ machines: [{ ...machine, scope: "admin" }] }))).rejects.toThrow("machine");
+ await expect(open(list({ skipped: [{ host_item_id: "H2", label: "x", reason: "because" }] }))).rejects.toThrow("skipped");
 });
 
 test("the enrolment proof matches the Worker's vectors, with either key form; a low-order server key is refused", async () => {
