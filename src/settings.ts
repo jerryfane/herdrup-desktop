@@ -32,6 +32,18 @@ import pickerIcon from "../third_party/phosphor/web/caret-up-down.svg?url";
 import chatsIcon from "../third_party/phosphor/web/chats.svg?url";
 import sparkleIcon from "../third_party/phosphor/web/sparkle-bold.svg?url";
 import usageIcon from "../third_party/phosphor/web/chart-bar.svg?url";
+import userCircleFillIcon from "../third_party/phosphor/web/user-circle-fill.svg?url";
+import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
+import promptIcon from "../third_party/phosphor/web/chat-centered-text.svg?url";
+import syncIcon from "../third_party/phosphor/web/arrows-clockwise.svg?url";
+import phoneIcon from "../third_party/phosphor/web/device-mobile.svg?url";
+import tabletIcon from "../third_party/phosphor/web/device-tablet.svg?url";
+import laptopIcon from "../third_party/phosphor/web/laptop.svg?url";
+import globeIcon from "../third_party/phosphor/web/globe.svg?url";
+import signOutIcon from "../third_party/phosphor/web/sign-out.svg?url";
+import trashIcon from "../third_party/phosphor/web/trash.svg?url";
+import moreIcon from "../third_party/phosphor/web/dots-three-circle.svg?url";
+import warningIcon from "../third_party/phosphor/web/warning.svg?url";
 import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
@@ -52,6 +64,11 @@ const settingIcons: Record<string, string> = {
   "bubble.left.and.bubble.right": chatsIcon,
   "sparkles": sparkleIcon,
   "chart.bar": usageIcon,
+  // The HerdrUp account page (herdrupAccount.ts), as the Swift app's HerdrUpAccountContent.
+  "person.crop.circle.fill": userCircleFillIcon, "desktopcomputer": desktopIcon, "text.bubble": promptIcon,
+  "arrow.triangle.2.circlepath": syncIcon, "iphone": phoneIcon, "ipad": tabletIcon, "laptopcomputer": laptopIcon,
+  "globe": globeIcon, "rectangle.portrait.and.arrow.right": signOutIcon, "trash": trashIcon,
+  "ellipsis.circle": moreIcon, "exclamationmark.triangle": warningIcon,
 };
 
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -106,7 +123,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   });
   // The HerdrUp account (herdrupAccount.ts), not the agents' accounts above: its row shows once
   // the account service offers sign-in.
-  const herdrupAccount = new HerdrUpAccountPanel(() => { herdrupAccountSummary.textContent = herdrupAccount.summary(); if (herdrupAccountShown !== herdrupAccount.available) { herdrupAccountShown = herdrupAccount.available; renderIndex(); } });
+  const herdrupAccount = new HerdrUpAccountPanel(() => { herdrupAccountSummary.textContent = herdrupAccount.summary(); if (herdrupAccountShown !== herdrupAccount.available) { herdrupAccountShown = herdrupAccount.available; renderIndex(); } }, glyph);
   const herdrupAccountSummary = el("span", "settings-row-value");
   let herdrupAccountShown = false;
   void herdrupAccount.refresh();

@@ -71,6 +71,10 @@ type Session struct {
 	// DisplayHint is the Google address the service passes once at sign-in
 	// ("Signed in as …"); "" for Apple, which sends none.
 	DisplayHint string `json:"display_hint,omitempty"`
+	// Provider is how this session signed in (apple or google); "" for a
+	// session from before it was kept. Deleting the account signs in again
+	// with it.
+	Provider Provider `json:"provider,omitempty"`
 }
 
 // tokenPair is the service's TokenPair (AccountService/src/sessions.ts),
@@ -123,14 +127,18 @@ type Client struct {
 	mu     sync.Mutex
 	// epoch counts sign-ins and sign-outs: a refresh commits only into the
 	// session it started from.
-	epoch    uint64
-	live     map[Provider]bool // providers the service said it offers (kept once seen)
-	pending  string            // the newest sign-in's handoff verifier
-	saved    *stored
-	loaded   bool
-	access   string
-	accessAt time.Time // when the access token stops working
-	flight   *refresh
+	epoch   uint64
+	live    map[Provider]bool // providers the service said it offers (kept once seen)
+	pending string            // the newest sign-in's handoff verifier
+	// pendingProvider is the provider of the newest sign-in (pending).
+	pendingProvider Provider
+	// pendingDelete is the newest deletion's handoff verifier (delete.go).
+	pendingDelete string
+	saved         *stored
+	loaded        bool
+	access        string
+	accessAt      time.Time // when the access token stops working
+	flight        *refresh
 }
 
 // refresh is one refresh in flight; done closes when it has an answer.
@@ -229,7 +237,7 @@ func (c *Client) StartSignIn(provider Provider) (string, error) {
 		return "", err
 	}
 	c.mu.Lock()
-	c.pending = verifier
+	c.pending, c.pendingProvider = verifier, provider
 	c.mu.Unlock()
 	// The session opens with the platform named here when the code is
 	// redeemed; the handoff itself carries only the code and verifier.
@@ -290,7 +298,7 @@ func (c *Client) FinishSignIn(ctx context.Context, code string) (Session, error)
 		return Session{}, errors.New("account: malformed sign-in link")
 	}
 	c.mu.Lock()
-	verifier := c.pending
+	verifier, provider := c.pending, c.pendingProvider
 	c.pending = ""
 	c.mu.Unlock()
 	if verifier == "" {
@@ -303,7 +311,7 @@ func (c *Client) FinishSignIn(ctx context.Context, code string) (Session, error)
 	if !pair.valid() {
 		return Session{}, errors.New("account service: malformed session")
 	}
-	s := &stored{RefreshToken: pair.RefreshToken, Session: Session{AccountID: pair.AccountID, DisplayHint: pair.DisplayHint}}
+	s := &stored{RefreshToken: pair.RefreshToken, Session: Session{AccountID: pair.AccountID, DisplayHint: pair.DisplayHint, Provider: provider}}
 	c.writes.Lock()
 	defer c.writes.Unlock()
 	c.mu.Lock()
@@ -453,14 +461,7 @@ func (c *Client) refresh(f *refresh, token string) {
 // either way.
 func (c *Client) SignOut(ctx context.Context) error {
 	token, err := c.AccessToken(ctx)
-	c.writes.Lock()
-	c.mu.Lock()
-	c.epoch++
-	c.flight = nil
-	c.saved, c.access, c.pending, c.loaded = nil, "", "", true
-	c.mu.Unlock()
-	deleted := c.store.Delete()
-	c.writes.Unlock()
+	deleted := c.forget()
 	if err == nil {
 		var api *APIError
 		if err := c.post(ctx, "/v1/auth/signout", token, nil, nil); err != nil && !(errors.As(err, &api) && api.Status == http.StatusUnauthorized) {
@@ -470,6 +471,30 @@ func (c *Client) SignOut(ctx context.Context) error {
 		}
 	}
 	return deleted
+}
+
+// forget drops the session here (memory and store): a sign-out, or the
+// account deleted on the service.
+func (c *Client) forget() error {
+	_, err := c.forgetIf(func() bool { return true })
+	return err
+}
+
+// forgetIf drops the session only when still holds under the session lock
+// (the session a deletion was started for, say). It reports whether it did.
+func (c *Client) forgetIf(still func() bool) (bool, error) {
+	c.writes.Lock()
+	defer c.writes.Unlock()
+	c.mu.Lock()
+	if !still() {
+		c.mu.Unlock()
+		return false, nil
+	}
+	c.epoch++
+	c.flight = nil
+	c.saved, c.access, c.pending, c.pendingDelete, c.loaded = nil, "", "", "", true
+	c.mu.Unlock()
+	return true, c.store.Delete()
 }
 
 func (c *Client) persist(s *stored) error {

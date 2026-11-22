@@ -1,6 +1,27 @@
 /* The HerdrUp account sign-in (herdrupAccount.ts). Neutral surfaces; the provider buttons follow
    Apple's white and Google's dark outline (1B mockup), with their marks as content. */
-.account-panel { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
+/* The Settings page body: Settings' 16 pt sides like every page (settings.css), and the sign-in
+   (lead, buttons, notes) centred in the column as the 1B sheet centres it. */
+.account-panel { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 8px 16px 4px; text-align: center; }
+.account-panel .account-lead { max-width: 420px; }
+/* Signed in, the Swift screen (AccountViews.swift HerdrUpAccountContent): Settings' groups and
+   rows at full width, left-aligned, 22 between groups. */
+.account-panel.account-panel-full { align-items: stretch; gap: 0; padding: 0; text-align: left; }
+.account-panel-full > .settings-section:not(:first-child) { margin-top: 22px; }
+.account-panel-full > .settings-section > .settings-section-label { margin-top: 0; }
+/* Row geometry is Settings' own (settings.css .settings-glyph-rows); only what differs is here. */
+.account-panel-full .account-row { cursor: pointer; }
+.account-panel-full .account-row-static { cursor: default; }
+.account-panel-full .account-row:disabled { opacity: 0.6; cursor: default; }
+/* Delete account: Swift's died ink on the label and glyph (destructive, not a coloured card). */
+.account-panel-full .account-row-destructive, .account-panel-full .account-row-destructive .settings-glyph { color: var(--status-died); }
+.account-footnote { margin: 8px 32px 0; color: var(--color-text-faint); font: 400 13px/1.4 var(--font-app); }
+.account-device-manage { display: grid; place-items: center; width: 44px; height: 44px; margin-right: -12px; border: 0; background: none; color: var(--color-text-dim); cursor: pointer; }
+/* Fixed in the body (above the settings group's clip), placed under its ⋯ button by herdrupAccount.ts. */
+.account-device-menu { position: fixed; z-index: 50; display: flex; flex-direction: column; min-width: 160px; padding: 6px; border: 1px solid var(--color-hairline); border-radius: 12px; background: var(--color-surface-raised); color: var(--color-text); }
+.account-device-menu button { padding: 8px 12px; border: 0; border-radius: 8px; background: none; color: var(--color-text); text-align: left; font: 400 15px var(--font-app); cursor: pointer; }
+.account-device-menu button:hover, .account-device-menu button:focus-visible { background: var(--color-surface); }
+.account-rename input { width: 100%; box-sizing: border-box; margin: 4px 0 12px; }
 .account-lead, .account-welcome-lead { margin: 0; color: var(--color-text-dim); font: 400 15px var(--font-app); }
 .account-providers, .account-welcome-actions { display: flex; flex-direction: column; gap: 10px; width: min(360px, 100%); }
 .account-provider { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 46px; padding: 0 18px; border-radius: 99px; font: 600 16px var(--font-app); cursor: pointer; }

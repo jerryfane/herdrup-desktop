@@ -136,6 +136,7 @@ type Desk struct {
 	account      *account.Client
 	accountStore *account.SecretsStore
 	accountSync  accountSync
+	accountEnrol accountEnrol
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 

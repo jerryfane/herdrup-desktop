@@ -90,6 +90,6 @@ func storedSize(b PromptBody) int {
 	if enc.Encode(b) != nil {
 		return math.MaxInt
 	}
-	separators := strings.Count(b.Title+b.Text, "\u2028") + strings.Count(b.Title+b.Text, "\u2029")
+	separators := strings.Count(b.Title, "\u2028") + strings.Count(b.Title, "\u2029") + strings.Count(b.Text, "\u2028") + strings.Count(b.Text, "\u2029")
 	return len(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))) - 3*separators
 }
