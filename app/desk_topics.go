@@ -219,17 +219,27 @@ func (d *Desk) topicsWatch(v *interaction) {
 	case retry && t.retry == nil:
 		wait := topicsRetry[min(t.retries, len(topicsRetry)-1)]
 		t.retries++
-		t.retry = time.AfterFunc(wait, func() {
+		// Each callback acts only on its own retry: one that fired while
+		// the Inbox rearmed waits on t.mu and must not stop the new one.
+		var timer *time.Timer
+		timer = time.AfterFunc(wait, func() {
 			t.mu.Lock()
+			if t.retry != timer {
+				t.mu.Unlock()
+				return
+			}
 			t.stopRetry()
 			t.mu.Unlock()
 			if v.ctx.Err() == nil {
 				d.topicsRead(v)
 			}
 		})
+		t.retry = timer
 		t.retryOnClose = context.AfterFunc(v.ctx, func() {
 			t.mu.Lock()
-			t.stopRetry()
+			if t.retry == timer {
+				t.stopRetry()
+			}
 			t.mu.Unlock()
 		})
 	case !retry && t.retry != nil:
