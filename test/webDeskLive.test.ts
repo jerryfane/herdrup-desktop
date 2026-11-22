@@ -24,7 +24,7 @@ beforeAll(async () => {
  const binary = join(dir, "fakeherdr");
  const build = Bun.spawnSync([go, "build", "-o", binary, "./cmd/fakeherdr"], { cwd: repo, env: { ...process.env, CGO_ENABLED: "0" }, stderr: "pipe" });
  if (build.exitCode !== 0) throw new Error("go build ./cmd/fakeherdr: " + build.stderr.toString());
- fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-guest-relay", "127.0.0.1:0", "-guest-pause-file", join(dir, "paused")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+ fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-guest-relay", "127.0.0.1:0", "-guest-pause-file", join(dir, "paused"), "-topics-list-fail-file", join(dir, "topics-fail")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
  const found = Promise.withResolvers<string>();
  void (async () => {
   let log = "";
@@ -53,7 +53,7 @@ function next<T>(on: (f: (v: T) => void) => () => void, ok: (v: T) => boolean, m
 
 test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pauses through the relay", async () => {
  const grants = new MemoryGrantStore(), owner = new MemoryOwnerHint();
- const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner, webSocket: (url) => new WebSocket(url) });
+ const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner, webSocket: (url) => new WebSocket(url), topicsRetryMs: [100] });
  const reviewed = await desk.inspectGuestInvitation(invite);
  expect(reviewed).toMatchObject({ ownerName: "Fixture Owner", agentName: "docs", guestName: "visitor" });
  const access = await desk.acceptGuestInvitation(invite);
@@ -105,6 +105,18 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  expect(await desk.topicsSend("view-1", "t3", "hi")).toEqual({ mode: "", delivery: "refused", problem: "The agent refused: the topic is closed" });
  await expect(desk.topicTranscript("view-1", "t99", "", "", "")).rejects.toThrow("This topic's conversation can't be found.");
  await desk.topicsFollow("view-1", false);
+
+ // The open Inbox asks again after a list that failed for a passing reason (herdrup #796): here
+ // topics_unreachable, as an omp agent answers while its topics are not reachable yet.
+ writeFileSync(join(dir, "topics-fail"), "");
+ await desk.topicsFollowInbox("view-1", true);
+ const failed = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.token === "view-1" && !!u.problem);
+ await desk.topicsRefresh("view-1");
+ await failed;
+ const recovered = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.token === "view-1" && !u.problem, 10_000);
+ rmSync(join(dir, "topics-fail"));
+ expect((await recovered).topics.length).toBeGreaterThan(0);
+ await desk.topicsFollowInbox("view-1", false);
 
  const frame = next<TerminalEvent>((f) => events.terminalChanged.on(f), (e) => e.frame?.frame === "reset");
  await desk.startTerminal("view-1", "s1");

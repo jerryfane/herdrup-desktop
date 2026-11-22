@@ -2258,7 +2258,8 @@ export const Desk = {
   /**
    * TopicsFollowInbox says whether the page's Inbox (its Chat view) is open:
    * while it is and the agent's suggestions are served, the list is followed
-   * as Topics follows it. It stops when open goes false or the view closes.
+   * as Topics follows it; until a read settles that, it is asked again on
+   * topicsRetry's schedule. It stops when open goes false or the view closes.
    */
   topicsFollowInbox(token: string, open: boolean): Promise<void> {
     return call("Desk.TopicsFollowInbox", token, open);

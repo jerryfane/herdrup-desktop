@@ -36,6 +36,9 @@ const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab"
 // desk_interaction_compose.go promptWait
 /** A guest's Topics poll while it shows (TopicsModel.pollSeconds): the gate has no event stream. */
 export const TOPICS_GUEST_POLL_MS = 15_000;
+/** desk_topics.go topicsRetry (iOS TopicsDiscoveryBackoff): the waits before the open Inbox asks
+ *  again after a list that failed for a passing reason, the last one repeating. */
+export const TOPICS_RETRY_MS: readonly number[] = [60_000, 120_000, 240_000, 480_000, 600_000];
 const TOPIC_TOO_LONG = "Messages are limited to 32 KB. Send it in parts.";
 export const PROMPT_WAIT = { timeout_ms: 6000, until: ["working", "idle", "blocked", "done", "unknown"] };
 const UNCONFIRMED_CODES = ["timeout", "agent_prompt_unverifiable", "agent_prompt_stalled", "agent_status_unobserved_after_submit", "agent_prompt_unsubmitted"];
@@ -151,6 +154,8 @@ export interface DeskEnv {
  now?: () => number;
  /** Opens a link in a new browsing context; window.open outside tests. */
  openWindow?: (url: string) => void;
+ /** TOPICS_RETRY_MS unless a test passes its own. */
+ topicsRetryMs?: readonly number[];
 }
 
 interface Active {
@@ -169,7 +174,12 @@ interface Active {
 
 interface MountedView extends GuestView {
  /** The agent's Topics (desk_topics.go topicsState): the last list and the poll while shown. */
- topics: { last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean; shown: boolean; inbox: boolean };
+ topics: {
+  last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean; shown: boolean; inbox: boolean;
+  /** desk_topics.go settled: the newest read is the agent's word (a list with a known suggestions
+   *  capability, or a refusal for good); until then the open Inbox asks again after retry's wait. */
+  settled: boolean; retry: ReturnType<typeof setTimeout> | null; retries: number;
+ };
  active: Active;
  view: AgentView;
  share: { details: GuestShareDetails };
@@ -180,6 +190,7 @@ interface MountedView extends GuestView {
 
 export function createGuestDesk(env: DeskEnv) {
  const now = env.now ?? Date.now;
+ const retryMs = env.topicsRetryMs?.length ? env.topicsRetryMs : TOPICS_RETRY_MS;
  let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", live: false };
  let board: BoardUpdate | null = null;
  let active: Active | null = null;
@@ -229,10 +240,16 @@ export function createGuestDesk(env: DeskEnv) {
  }
 
  /** desk_topics.go topicsWatch: the poll runs while Topics shows, or while the Inbox is open on an
-  *  agent whose suggestions are served. */
+  *  agent whose suggestions are served; an open Inbox whose newest read didn't settle asks again. */
  function watchTopics(v: MountedView) {
   const t = v.topics;
   const want = !v.life.signal.aborted && (t.shown || (t.inbox && t.last.suggestionsServed));
+  const retry = !want && !v.life.signal.aborted && t.inbox && !t.settled;
+  if (retry && t.retry === null) {
+   const wait = retryMs[Math.min(t.retries, retryMs.length - 1)]!;
+   t.retries++;
+   t.retry = setTimeout(() => { t.retry = null; if (!v.life.signal.aborted) readTopics(v); }, wait);
+  } else if (!retry && t.retry !== null) { clearTimeout(t.retry); t.retry = null; }
   if (want === (t.poll !== null)) return;
   if (!want) { clearInterval(t.poll!); t.poll = null; return; }
   t.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(t.poll!); t.poll = null; return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
@@ -247,20 +264,33 @@ export function createGuestDesk(env: DeskEnv) {
     t.again = false;
     const u: TopicsUpdate = { ...t.last, token: v.token, loaded: true };
     delete u.changed;
+    const requested = Date.now();
+    type Listed = { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"] };
+    let list: Listed | null = null;
     try {
-     const requested = Date.now();
-     const list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"] };
-     u.topics = orderedTopics(list.topics ?? []); u.offered = true; delete u.problem;
-     // desk_topics.go: Organise shows where the list carries suggestions on a host advertising them.
-     u.suggestions = (list.suggestions ?? []).filter(x => x.suggestion_id !== ""); u.requestedMs = requested;
-     u.suggestionsServed = list.suggestions !== undefined && (await v.active.client.ping(within(v))).capabilities?.agent_topic_suggestions === true;
+     list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as Listed;
     } catch (error) {
      if (v.life.signal.aborted) return;
      const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
-     if (topicsNotOffered(code)) { u.topics = []; u.offered = false; delete u.problem; u.suggestions = []; u.suggestionsServed = false; }
+     t.settled = topicsNotOffered(code);
+     if (t.settled) { u.topics = []; u.offered = false; delete u.problem; u.suggestions = []; u.suggestionsServed = false; }
      else u.problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
     }
+    if (list) {
+     u.topics = orderedTopics(list.topics ?? []); u.offered = true; delete u.problem;
+     // desk_topics.go: Organise shows where the list carries suggestions on a host advertising them.
+     u.suggestions = (list.suggestions ?? []).filter(x => x.suggestion_id !== ""); u.requestedMs = requested;
+     // The capability is read apart from the list: a ping that fails keeps the last answer and
+     // leaves the read unsettled, never a problem on a list that came back.
+     t.settled = true;
+     if (list.suggestions === undefined) u.suggestionsServed = false;
+     else {
+      try { u.suggestionsServed = (await v.active.client.ping(within(v))).capabilities?.agent_topic_suggestions === true; }
+      catch { t.settled = false; }
+     }
+    }
     if (v.life.signal.aborted) return;
+    if (t.settled) t.retries = 0;
     t.last = u;
     emit("topicsChanged", u);
     watchTopics(v);
@@ -273,6 +303,7 @@ export function createGuestDesk(env: DeskEnv) {
   if (!v) return;
   mounted = null;
   if (v.topics.poll) clearInterval(v.topics.poll);
+  if (v.topics.retry) clearTimeout(v.topics.retry);
   v.life.abort(new Error("agent view changed; request was not sent"));
   setView(null);
  }
@@ -425,7 +456,7 @@ export function createGuestDesk(env: DeskEnv) {
    unmount();
    const life = new AbortController();
    const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null,
-    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false } };
+    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0 } };
    l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
    mounted = v;
    setView(v);
@@ -481,7 +512,7 @@ export function createGuestDesk(env: DeskEnv) {
   async topicsFollowInbox(token: string, open: boolean): Promise<void> {
    const v = viewOf(token);
    v.topics.inbox = open;
-   if (open && !v.topics.last.loaded) readTopics(v);
+   if (open && !v.topics.settled) readTopics(v);
    watchTopics(v);
   },
 

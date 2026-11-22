@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import type { ChatRow, Entry } from "../src/interactionModel";
 import type { AgentTopicSuggestionInfo } from "../src/mygo";
-import { carriedText, createLabel, dismissedText, inboxRows, keptUnticks, messagesText, organiseAnswered, organiseNote, proposalsHeading, settledLine, settlePlan, suggestionFromEntry, switchStatusText, switchTitle, tickedCount, yieldSettled, type Settled } from "../src/topicSuggestionsModel";
+import { carriedText, createLabel, dismissedText, inboxRows, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseAnswered, organiseNote, organiseOver, proposalsHeading, settledLine, settlePlan, suggestionFromEntry, switchStatusText, switchTitle, tickedCount, yieldSettled, type Settled } from "../src/topicSuggestionsModel";
 
 const entry = (e: Partial<Entry> & { id: string; kind: string }): ChatRow => ({ kind: "entry", id: e.id, entry: { ts_ms: 1, ...e } as Entry });
 const suggestion = (id: string, state: string, extra: Record<string, unknown> = {}) => entry({ kind: "topic_suggestion", id, title: "iPad build times", reason: "40 min", message_ids: ["u1", "r1"], message_count: 12, state, ...extra });
@@ -69,4 +69,15 @@ test("Organise: answered by a new proposal only, unticks kept while open, and th
  expect(proposalsHeading(" docs ")).toBe("SUGGESTED BY DOCS");
  expect(proposalsHeading("")).toBe("SUGGESTED BY THE AGENT");
  expect([messagesText(0), messagesText(1), messagesText(4)]).toEqual([null, "1 msg", "4 msgs"]);
+});
+
+test("Organise is over when new proposals arrive or its wait runs out, not only on a new id (herdrup #797)", () => {
+ const t0 = 1_000_000;
+ expect(organiseOver([listed("sg1")], [listed("sg1")], t0, t0 + 1000)).toBe(false);
+ expect(organiseOver([listed("sg1")], [listed("sg1"), listed("sg2")], t0, t0 + 1000)).toBe(true);
+ // A turn that proposed nothing: the same list, or none, once the wait ran out.
+ expect(organiseOver([listed("sg1")], [listed("sg1")], t0, t0 + ORGANISE_WAIT_MS)).toBe(true);
+ expect(organiseOver([], [], t0, t0 + ORGANISE_WAIT_MS)).toBe(true);
+ // Before the agent took it, there is no wait to run out.
+ expect(organiseOver([], [], Infinity, t0 + 10 * ORGANISE_WAIT_MS)).toBe(false);
 });
