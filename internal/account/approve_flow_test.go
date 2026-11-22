@@ -37,11 +37,13 @@ type approvalService struct {
 	denied   int
 	// Faults: the next readBusy state reads answer 429; finishes answer
 	// finishStatus (0: as asked) and, when lost, are still recorded; state
-	// reads answer readStatus (0: the state).
+	// reads answer readStatus (0: the state), or readState when set (an
+	// expiry the service computes on the read, recording nothing).
 	readBusy     int
 	finishStatus int
 	lost         bool
 	readStatus   int
+	readState    string
 	finishes     int
 	expiresIn    int
 }
@@ -75,6 +77,8 @@ func (s *approvalService) serve(w http.ResponseWriter, r *http.Request, body map
 			reply(w, 429, map[string]any{"error": "too_many_requests"})
 		case s.readStatus != 0:
 			reply(w, s.readStatus, map[string]any{"error": "unavailable"})
+		case s.readState != "":
+			reply(w, 200, map[string]any{"state": s.readState, "expires_in": 0})
 		case s.finished != nil:
 			reply(w, 200, map[string]any{"state": s.finished["outcome"], "expires_in": s.expiresIn})
 		case s.nonceT == nil:
@@ -296,10 +300,10 @@ func TestDenyFailsUntilTheServiceTakesIt(t *testing.T) {
 	}
 }
 
-// A failed approval is told apart: refused by the service, or a request that
-// ended, is NotApprovedError; recorded but unanswered is success; a request
-// still revealed after a lost or 5xx answer is unknown, since the finish may
-// yet be applied.
+// A failed approval is told apart: the only finish refused by the service,
+// or a request that ended, is NotApprovedError; recorded but unanswered is
+// success; a request still revealed, or read as expired, after a lost or 5xx
+// answer is unknown, since the finish may yet be applied.
 func TestAFailedApprovalIsToldApart(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -307,13 +311,19 @@ func TestAFailedApprovalIsToldApart(t *testing.T) {
 		lost         bool
 		readStatus   int
 		outcome      string
+		readState    string
 		want         string
 	}{
-		{"refused by the service", http.StatusConflict, false, 0, "", "not approved"},
-		{"503, still revealed", http.StatusServiceUnavailable, false, 0, "", "unknown"},
-		{"503, then expired", http.StatusServiceUnavailable, false, 0, ApprovalExpired, "not approved"},
-		{"answer lost", http.StatusServiceUnavailable, true, 0, "", "approved"},
-		{"state unreadable", http.StatusServiceUnavailable, false, http.StatusServiceUnavailable, "", "unknown"},
+		{"refused by the service", http.StatusConflict, false, 0, "", "", "not approved"},
+		// The browser replaced the request: the finish and every read are 404.
+		{"refused, then gone", http.StatusNotFound, false, http.StatusNotFound, "", "", "not approved"},
+		{"503, still revealed", http.StatusServiceUnavailable, false, 0, "", "", "unknown"},
+		{"request over before the finish", http.StatusServiceUnavailable, false, 0, ApprovalExpired, "", "not approved"},
+		{"503, then read as expired", http.StatusServiceUnavailable, false, 0, "", ApprovalExpired, "unknown"},
+		// The browser denied it meanwhile: no finish can be recorded after that.
+		{"503, then read as denied", http.StatusServiceUnavailable, false, 0, "", ApprovalDenied, "not approved"},
+		{"answer lost", http.StatusServiceUnavailable, true, 0, "", "", "approved"},
+		{"state unreadable", http.StatusServiceUnavailable, false, http.StatusServiceUnavailable, "", "", "unknown"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,7 +333,7 @@ func TestAFailedApprovalIsToldApart(t *testing.T) {
 				t.Fatal("code refused")
 			}
 			s.mu.Lock()
-			s.finishStatus, s.lost, s.readStatus = tc.finishStatus, tc.lost, tc.readStatus
+			s.finishStatus, s.lost, s.readStatus, s.readState = tc.finishStatus, tc.lost, tc.readStatus, tc.readState
 			if tc.outcome != "" {
 				s.finishStatus = 0
 				s.finished = map[string]string{"outcome": tc.outcome}
@@ -366,5 +376,52 @@ func TestLiveRefusesAnEndedOrEndingRequest(t *testing.T) {
 	s.mu.Unlock()
 	if _, err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnded) {
 		t.Fatalf("expired: %v", err)
+	}
+}
+
+// After a finish with an unknown outcome, an expired read settles nothing
+// until no finish sent before it can still be recorded; a later refusal
+// doesn't settle it either. Then the request is over without approval.
+func TestAnExpiredReadSettlesOnlyOnceNoFinishCanStillLand(t *testing.T) {
+	s, a, approver := revealedApproval(t)
+	ctx := context.Background()
+	clock := time.Unix(1_800_000_000, 0)
+	a.c.now = func() time.Time { return clock }
+	if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
+		t.Fatal("code refused")
+	}
+	s.mu.Lock()
+	s.finishStatus, s.readState = http.StatusServiceUnavailable, ApprovalExpired
+	s.mu.Unlock()
+	var refused *NotApprovedError
+	if err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`)); err == nil || errors.As(err, &refused) {
+		t.Fatalf("lost finish, then expired: %v; want unknown", err)
+	}
+	// The service now refuses finishes (410 expired).
+	s.mu.Lock()
+	s.finishStatus = http.StatusGone
+	s.mu.Unlock()
+	clock = clock.Add(finishFence - time.Second)
+	if err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`)); err == nil || errors.As(err, &refused) {
+		t.Fatalf("refused within the fence: %v; want unknown", err)
+	}
+	clock = clock.Add(time.Second)
+	if err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`)); !errors.As(err, &refused) {
+		t.Fatalf("past the fence: %v; want not approved", err)
+	}
+}
+
+// Once the service took this device's denial, Deny keeps saying so: no
+// approval of the request can be recorded after it.
+func TestATakenDenialStaysTheOutcome(t *testing.T) {
+	s, a, _ := revealedApproval(t)
+	ctx := context.Background()
+	for try := 1; try <= 2; try++ {
+		if err := a.Deny(ctx); err != nil {
+			t.Fatalf("deny %d: %v", try, err)
+		}
+	}
+	if s.finishes != 1 || s.denied != 1 {
+		t.Fatalf("finishes %d, denials %d; want 1 and 1", s.finishes, s.denied)
 	}
 }

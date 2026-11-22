@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -358,8 +359,8 @@ func (d *Desk) WebAccessCheckCode(ctx context.Context, id, typed string) (WebAcc
 // WebAccessDeny denies request id. It returns only once the service took the
 // denial (or the request was already over); on an error the page keeps the
 // request open so Deny can be tried again. Grants waiting on a report with
-// no known outcome are removed only once the service shows the request ended
-// without approval.
+// no known outcome are removed once this denial was taken, or once the
+// service shows the request ended with no report of this device recorded.
 func (d *Desk) WebAccessDeny(ctx context.Context, id string) error {
 	w, err := d.currentApproval(id)
 	if err != nil {
@@ -369,23 +370,29 @@ func (d *Desk) WebAccessDeny(ctx context.Context, id string) error {
 		return errWebAccessBusy
 	}
 	defer w.op.Unlock()
-	err = w.a.Deny(ctx)
-	if err != nil && !errors.Is(err, account.ErrApprovalEnded) {
-		return fmt.Errorf("couldn't deny (%w): Deny to try again", err)
+	denyErr := w.a.Deny(ctx)
+	if denyErr != nil && !errors.Is(denyErr, account.ErrApprovalEnded) {
+		return fmt.Errorf("couldn't deny (%w): Deny to try again", denyErr)
 	}
 	w.cancel()
 	if w.pending == nil {
 		return nil
 	}
-	state, err := w.a.State(ctx)
-	switch {
-	case err != nil:
-		return fmt.Errorf("couldn't tell whether the browser was approved (%w): Deny to try again", err)
-	case state == account.ApprovalApproved:
-		w.pending = nil
-		return errAlreadyOver
-	case state != account.ApprovalDenied && state != account.ApprovalExpired:
-		return fmt.Errorf("the request is still %s: Deny to try again", state)
+	// Taken by the service, the denial is the outcome. Otherwise the request
+	// was over before it, and only the service knows how.
+	if denyErr != nil {
+		state, final, err := w.a.Outcome(ctx)
+		switch {
+		case err != nil:
+			return fmt.Errorf("couldn't tell whether the browser was approved (%w): Deny to try again", err)
+		case state == account.ApprovalApproved:
+			w.pending = nil
+			return errAlreadyOver
+		case state == account.ApprovalExpired && !final:
+			return errors.New("the request expired just after a report that may still be recorded: Deny again in a few minutes")
+		case !final:
+			return fmt.Errorf("the request is still %s: Deny to try again", state)
+		}
 	}
 	// The ones that couldn't be removed stay pending for the next Deny.
 	w.pending.grants = d.removeGrants(ctx, w.pending.grants)
@@ -460,6 +467,11 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 	}
 	if len(chosen) == 0 {
 		return res, errNoMachines
+	}
+	// The sealed list must fit what the service takes, at its largest (every
+	// machine granted), before any machine changes.
+	if n := webEnvelopeFits(chosen); n < len(chosen) {
+		return res, fmt.Errorf("%d machines don't fit in one approval: choose at most %d", len(chosen), n)
 	}
 	// The request must still be open, with time to grant and report, before
 	// any machine changes: a grant the service then can't record would be
@@ -572,13 +584,15 @@ func (d *Desk) removeGrant(ctx context.Context, g webGrant) error {
 // a statement for that host, then owner_access.add. A machine that can't take
 // owner grants is skipped with the envelope's reason.
 func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrapi.OwnerAccessAddParams) (webEnvelopeMachine, string, error) {
-	client, done, err := d.ownerClient(ctx, c.m)
+	// One deadline for the SSH dial and every call, so a machine never takes
+	// more than webGrantTime of the time kept before the report.
+	cctx, cancel := context.WithTimeout(ctx, webGrantTime)
+	defer cancel()
+	client, done, err := d.ownerClient(cctx, c.m)
 	if err != nil {
 		return webEnvelopeMachine{}, "unreachable", nil
 	}
 	defer done()
-	cctx, cancel := context.WithTimeout(ctx, webGrantTime)
-	defer cancel()
 	info, err := client.OwnerAccessInfo(cctx)
 	var api *bridge.APIError
 	var old *engine.ErrUnsupported
@@ -670,6 +684,28 @@ type webEnvelopeSkipped struct {
 	Label      string `json:"label"`
 	Reason     string `json:"reason"`
 	Version    string `json:"version,omitempty"`
+}
+
+// webEnvelopeFits returns how many of chosen, in order, fit one sealed list
+// the service takes, each counted as granted with every field at its
+// longest: herdr's host_id and grant_id are b64url of 16 bytes and node_pub
+// of an X25519 key, the relay is one of webrelay.Origins, and seq and times
+// take their most digits. A skipped machine adds less.
+func webEnvelopeFits(chosen []webMachine) int {
+	relay := slices.MaxFunc(webrelay.Origins, func(a, b string) int { return len(a) - len(b) })
+	e := webEnvelope{V: 1, Seq: math.MaxUint64, IssuedUnix: math.MaxInt64, Approver: accountDeviceName(), Machines: []webEnvelopeMachine{}, Skipped: []webEnvelopeSkipped{}}
+	for i, c := range chosen {
+		e.Machines = append(e.Machines, webEnvelopeMachine{
+			HostItemID: c.m.SyncID, Label: c.label, Relay: relay,
+			HostID: strings.Repeat("h", 22), NodePub: strings.Repeat("n", 43), GrantID: strings.Repeat("g", 22),
+			Scope: "terminal", ExpiresUnix: math.MaxInt64,
+		})
+		plain, err := json.Marshal(e)
+		if err != nil || account.SealedLength(len(plain)) > account.MaxSealedLength {
+			return i
+		}
+	}
+	return len(chosen)
 }
 
 func truncate(s string, n int) string {

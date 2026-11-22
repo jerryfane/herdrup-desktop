@@ -563,3 +563,76 @@ func TestWebAccessDenyKeepsTheGrantsOfAnApprovalThatWentThrough(t *testing.T) {
 		t.Fatalf("outcome %q", w.outcome)
 	}
 }
+
+// A denial the service took is the outcome: the grants of an approval whose
+// answer was lost are removed even when the request can't be read any more
+// (the browser already started a new one), and Deny again still says done.
+func TestWebAccessDenyRemovesTheGrantsOnceTheDenialIsTaken(t *testing.T) {
+	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	ctx := context.Background()
+	typeCode(t, d, w)
+	w.set(func() { w.finishStatus, w.readStatus = http.StatusServiceUnavailable, http.StatusServiceUnavailable })
+	if res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d"); err != nil || !res.Unsure {
+		t.Fatalf("lost answer: %+v, %v", res, err)
+	}
+	w.set(func() { w.finishStatus, w.readStatus = 0, http.StatusNotFound })
+	if err := d.WebAccessDeny(ctx, "req-1"); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	if live := w.live(t); len(live) != 0 {
+		t.Fatalf("live grants after the denial: %v", live)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.outcome != "denied" {
+		t.Fatalf("outcome %q", w.outcome)
+	}
+}
+
+// The first report refused outright (the browser replaced the request while
+// the grants were made, so the finish and every read are 404) was never
+// recorded: its grants are removed.
+func TestWebAccessRemovesTheGrantsOfAReportRefusedAtOnce(t *testing.T) {
+	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	typeCode(t, d, w)
+	w.set(func() { w.finishStatus, w.readStatus = http.StatusNotFound, http.StatusNotFound })
+	res, err := d.WebAccessApprove(context.Background(), "req-1", []string{machine}, "chat", "7d")
+	if err == nil || res.Unsure {
+		t.Fatalf("refused report: %+v, %v", res, err)
+	}
+	if len(w.grants(t)) != 1 {
+		t.Fatalf("fixture: grants %v, want the one made", w.grants(t))
+	}
+	if live := w.live(t); len(live) != 0 {
+		t.Fatalf("live grants after the refusal: %v", live)
+	}
+}
+
+// A selection whose list could outgrow what the service takes is refused
+// before any machine changes, with how many fit.
+func TestWebAccessRefusesASelectionTooLargeForOneReport(t *testing.T) {
+	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	ids := []string{machine}
+	d.storeMu.Lock()
+	st, err := d.load()
+	for i := range 60 {
+		m := Machine{Host: fmt.Sprintf("box%02d.example", i), User: "me", Nickname: fmt.Sprintf("%02d %s", i, strings.Repeat("n", 61))}
+		st.Machines = append(st.Machines, m)
+		ids = append(ids, machineID(m))
+	}
+	if err == nil {
+		err = d.store(st)
+	}
+	d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeCode(t, d, w)
+	_, err = d.WebAccessApprove(context.Background(), "req-1", ids, "chat", "7d")
+	if err == nil || !strings.Contains(err.Error(), "choose at most") {
+		t.Fatalf("approve 61 machines: %v", err)
+	}
+	if g := w.grants(t); len(g) != 0 {
+		t.Fatalf("grants made before the refusal: %v", g)
+	}
+}

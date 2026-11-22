@@ -123,3 +123,18 @@ func TestEnvelopeOpensOnlyForItsApproverAndSeq(t *testing.T) {
 		t.Error("opened a modified envelope")
 	}
 }
+
+// SealedLength is exactly what SealEnvelope produces, so a list measured
+// with it is refused by the service only when it would really be too long.
+func TestSealedLengthIsTheSealedEnvelopesLength(t *testing.T) {
+	approver, browser := fixedKey(t, 0x70), fixedKey(t, 0xb0)
+	for _, n := range []int{0, 1, 2, 3, 100, 12_000} {
+		sealed, err := SealEnvelope(approver, browser.PublicKey(), 1, make([]byte, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := SealedLength(n); got != len(sealed) {
+			t.Fatalf("SealedLength(%d) = %d, sealed %d", n, got, len(sealed))
+		}
+	}
+}

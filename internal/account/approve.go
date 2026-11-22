@@ -161,6 +161,17 @@ func SealEnvelope(approver DeviceKey, browserPub []byte, seq uint64, plaintext [
 	return base64.RawURLEncoding.EncodeToString(out), nil
 }
 
+// MaxSealedLength is the longest sealed envelope the account service takes
+// (herdrup AccountService MAX_SEALED_LENGTH); a longer one is refused with 400.
+const MaxSealedLength = 16 * 1024
+
+// SealedLength is the length of SealEnvelope's result for an n-byte
+// plaintext: base64url of the AES-GCM nonce, ciphertext and tag.
+func SealedLength(n int) int {
+	const gcmNonce, gcmTag = 12, 16
+	return base64.RawURLEncoding.EncodedLen(gcmNonce + n + gcmTag)
+}
+
 // OpenEnvelope opens sealed as the browser (key holds b) from approverPub at seq.
 func OpenEnvelope(browser DeviceKey, approverPub []byte, seq uint64, sealed string) ([]byte, error) {
 	browserPub := browser.PublicKey()
