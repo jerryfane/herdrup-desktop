@@ -258,8 +258,12 @@ export class TopicsPane {
   const body = el("div", "topics-about-body");
   for (const [title, text] of ABOUT_TOPICS) { const part = el("section"); part.append(el("h3", "", title), el("p", "", text)); body.append(part); }
   dialog.append(header, body);
-  dialog.addEventListener("close", () => { dialog.remove(); anchor.setAttribute("aria-expanded", "false"); if (this.sheet === dialog) this.sheet = null; }, { once: true });
+  // The popover is placed once, under the "i": a resize (which may also switch Topics to the
+  // narrow layout) closes it, as iPad drops a popover when the size changes; the sheet stays.
+  const resized = () => dialog.close();
+  dialog.addEventListener("close", () => { removeEventListener("resize", resized); dialog.remove(); anchor.setAttribute("aria-expanded", "false"); if (this.sheet === dialog) this.sheet = null; }, { once: true });
   if (popover) {
+   addEventListener("resize", resized);
    // A click on the transparent backdrop lands on the dialog itself, outside its box.
    dialog.addEventListener("click", event => {
     const r = dialog.getBoundingClientRect();
