@@ -389,22 +389,30 @@ func TestTopicsSettleSuggestions(t *testing.T) {
 	}
 }
 
-func TestTopicsSettleSuggestionsReportsTheFirstRefusal(t *testing.T) {
-	d, _, _ := suggestionsDesk(t, func(f *fakeherdr.Topics) { f.WithoutSuggestions("w1:p1") }, nil)
+func TestTopicsSettleSuggestionsOnAnOmpWithoutThem(t *testing.T) {
+	d, _, updates := suggestionsDesk(t, func(f *fakeherdr.Topics) { f.WithoutSuggestions("w1:p1") }, nil)
+	before := len(updates())
 	if problem, err := d.TopicsSettleSuggestions(context.Background(), "view", []string{"sg1"}, []string{"sg2"}); err != nil || problem != "This agent has no topics." {
 		t.Fatalf("settle on an omp without suggestions: %q, %v", problem, err)
 	}
+	// The settle reads the list again in the background; let it publish
+	// before the test ends, so it never overlaps the next test's hooks.
+	waitFor(t, "the read after the settle", func() bool { return len(updates()) > before })
+}
 
-	// Two different refusals in one settle: the first is the one reported,
-	// and someone else's earlier Start (already_accepted) is not a refusal.
-	d, _, _ = suggestionsDesk(t, func(f *fakeherdr.Topics) {
+// Two different refusals in one settle: the first is the one reported, and
+// someone else's earlier Start (already_accepted) is not a refusal.
+func TestTopicsSettleSuggestionsReportsTheFirstRefusal(t *testing.T) {
+	d, _, updates := suggestionsDesk(t, func(f *fakeherdr.Topics) {
 		f.Refuse = map[string]*fakeherdr.APIError{
 			"sg1": {Code: "already_accepted", Message: "started"},
 			"sg2": {Code: "topic_rejected", Message: "busy"},
 			"sg3": {Code: "topics_disabled", Message: "off"},
 		}
 	}, nil)
+	before := len(updates())
 	if problem, err := d.TopicsSettleSuggestions(context.Background(), "view", []string{"sg1", "sg2"}, []string{"sg3"}); err != nil || problem != "The agent refused: busy" {
 		t.Fatalf("settle with two refusals: %q, %v; want the first", problem, err)
 	}
+	waitFor(t, "the read after the settle", func() bool { return len(updates()) > before })
 }
