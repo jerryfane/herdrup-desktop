@@ -10,11 +10,11 @@ import { statementCache } from "../src/web/statements";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 /** Statements jws-1, jws-2, …, each fresh for 600 s, and what was dropped. */
-function statements(): StatementSource & { issued: number; dropped: string[] } {
+function statements(): StatementSource & { issued: number; dropped: string[][] } {
  const s = {
-  issued: 0, dropped: [] as string[],
+  issued: 0, dropped: [] as string[][],
   async get() { s.issued++; return { jws: `jws-${s.issued}`, expMs: Date.now() + 600_000 }; },
-  drop(host: string) { s.dropped.push(host); },
+  drop(host: string, jws: string) { s.dropped.push([host, jws]); },
  };
  return s;
 }
@@ -85,7 +85,7 @@ test("a refused statement is dropped and the hello tried once more with a fresh 
   const t = new GuestTransport(ownerLink(endpointOf(relay), "x", s), staticKey(await generateIdentity()));
   expect(await t.call("ping")).toEqual({ type: "pong" });
   expect(hellos).toEqual(["jws-1", "jws-2"]);
-  expect(s.dropped).toEqual([relay.hostID]);
+  expect(s.dropped).toEqual([[relay.hostID, "jws-1"]]);
   t.close();
   refuse = 5;
   const t2 = new GuestTransport(ownerLink(endpointOf(relay), "x", s), staticKey(await generateIdentity()));
@@ -116,15 +116,60 @@ test("before the deadline the session sends a newer statement in-band, as one wh
  } finally { relay.stop(); }
 });
 
-test("the statement cache shares one request per machine, asks again when too little is left, and forgets a refused one", async () => {
- let clock = 1_000_000_000_000, asked = 0;
- const cache = statementCache({ async statements(hosts: string[]) { asked++; return { statements: hosts.map(host => ({ host, jws: `${host}-${asked}` })), exp: clock / 1000 + 600 }; } }, () => clock);
+/** The account service's statements for the cache tests: who is signed in, and each issue. */
+function issuer(clock: () => number) {
+ const t = { signedIn: "acct-A" as string | null, asked: [] as string[], hold: null as PromiseWithResolvers<void> | null };
+ const api = {
+  async currentAccount() { if (t.signedIn === null) throw new Error("Signed out"); return t.signedIn; },
+  async statements(hosts: string[], acct?: string) {
+   t.asked.push(`${acct}:${hosts[0]}`);
+   if (t.hold) await t.hold.promise;
+   return { statements: hosts.map(host => ({ host, jws: `${acct}-${host}-${t.asked.length}` })), exp: Math.floor(clock() / 1000) + 600 };
+  },
+ };
+ return { t, api };
+}
+
+test("the statement cache shares one request per machine, asks again when too little is left, and forgets only the refused one", async () => {
+ let clock = 1_000_000_000_000;
+ const { t, api } = issuer(() => clock);
+ const cache = statementCache(api, () => clock);
  const signal = new AbortController().signal;
  const [a, b] = await Promise.all([cache.get("H", 120_000, signal), cache.get("H", 120_000, signal)]);
- expect([a.jws, b.jws, asked]).toEqual(["H-1", "H-1", 1]);
+ expect([a.jws, b.jws, t.asked.length]).toEqual(["acct-A-H-1", "acct-A-H-1", 1]);
  clock += 400_000; // 200 s left
- expect((await cache.get("H", 120_000, signal)).jws).toBe("H-1");
- expect((await cache.get("H", 300_000, signal)).jws).toBe("H-2");
- cache.drop("H");
- expect((await cache.get("H", 120_000, signal)).jws).toBe("H-3");
+ expect((await cache.get("H", 120_000, signal)).jws).toBe("acct-A-H-1");
+ expect((await cache.get("H", 300_000, signal)).jws).toBe("acct-A-H-2");
+ // A late refusal of the first statement leaves the newer one.
+ cache.drop("H", "acct-A-H-1");
+ expect((await cache.get("H", 120_000, signal)).jws).toBe("acct-A-H-2");
+ cache.drop("H", "acct-A-H-2");
+ expect((await cache.get("H", 120_000, signal)).jws).toBe("acct-A-H-3");
+});
+
+test("a statement is its account's: another sign-in asks for its own, and none is given after sign-out", async () => {
+ const { t, api } = issuer(Date.now);
+ const cache = statementCache(api);
+ const signal = new AbortController().signal;
+ expect((await cache.get("H", 120_000, signal)).jws).toStartWith("acct-A-");
+ t.signedIn = "acct-B";
+ expect((await cache.get("H", 120_000, signal)).jws).toStartWith("acct-B-");
+ expect(t.asked).toEqual(["acct-A:H", "acct-B:H"]);
+ t.signedIn = null;
+ await expect(cache.get("H", 120_000, signal)).rejects.toThrow("Signed out");
+});
+
+test("a caller stops waiting for a stalled statement when its signal aborts; the request goes on for the others", async () => {
+ const { t, api } = issuer(Date.now);
+ t.hold = Promise.withResolvers<void>();
+ const cache = statementCache(api);
+ const mine = new AbortController();
+ const waiting = cache.get("H", 120_000, mine.signal);
+ const other = cache.get("H", 120_000, new AbortController().signal);
+ await Promise.resolve();
+ mine.abort(new Error("call deadline"));
+ await expect(waiting).rejects.toThrow("call deadline");
+ t.hold.resolve();
+ expect((await other).jws).toStartWith("acct-A-");
+ expect(t.asked.length).toBe(1);
 });
