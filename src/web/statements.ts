@@ -6,20 +6,11 @@
 // left; callers that ask at once share one request, and each stops waiting when its own signal
 // aborts while the request goes on for the others.
 
+import { untilAborted } from "../webguest/abort";
 import type { StatementSource } from "../webguest/owner";
 import type { WebAccount } from "./account";
 
 type Held = { jws: string; expMs: number };
-
-/** p, or the abort's reason as soon as signal aborts (p goes on for anyone else waiting on it). */
-function waitFor<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
- if (signal.aborted) return Promise.reject(signal.reason);
- return new Promise<T>((resolve, reject) => {
-  const stop = () => reject(signal.reason);
-  signal.addEventListener("abort", stop, { once: true });
-  p.then(v => { signal.removeEventListener("abort", stop); resolve(v); }, e => { signal.removeEventListener("abort", stop); reject(e); });
- });
-}
 
 export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount">, now: () => number = Date.now): StatementSource {
  const held = new Map<string, Held>();
@@ -27,7 +18,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
  const keyOf = (acct: string, hostID: string) => `${acct}\n${hostID}`;
  return {
   async get(hostID, minLeftMs, signal) {
-   const acct = await waitFor(account.currentAccount(), signal);
+   const acct = await untilAborted(account.currentAccount(), signal);
    const key = keyOf(acct, hostID);
    const h = held.get(key);
    if (h !== undefined && h.expMs - now() >= minLeftMs) return h;
@@ -43,7 +34,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
     asking.set(key, flight);
    }
    // The newest the service gives, even with less left than asked: it is all there is.
-   return await waitFor(flight, signal);
+   return await untilAborted(flight, signal);
   },
   drop(hostID, jws) {
    for (const [key, h] of held) if (key.endsWith(`\n${hostID}`) && h.jws === jws) held.delete(key);

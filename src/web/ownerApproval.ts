@@ -5,6 +5,7 @@
 // approval it opens the machine list sealed to it by that device, whose key the code covered, and
 // keeps it (ownerStore.ts). Later loads take newer lists only from approvers kept that way.
 
+import { untilAborted } from "../webguest/abort";
 import { approveCode, approveCommit, newApproveNonce, openEnvelope, type Envelope } from "../webguest/approve";
 import { fromB64url, toB64url } from "../webguest/b64url";
 import { generateIdentity, staticKey, type IdentityStore } from "../webguest/identity";
@@ -46,17 +47,6 @@ export interface ApprovalDeps {
 export const pollDelay = (elapsedMs: number) => elapsedMs < 60_000 ? 2_000 : 5_000;
 /** How long the list may take to appear after the service says approved. */
 const ENVELOPE_TRIES = 5;
-
-/** p, or the abort's reason as soon as signal aborts: an abandoned run stops waiting (and lets go
- *  of the tab lock) at once, and sends nothing after. */
-function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
- if (signal.aborted) return Promise.reject(signal.reason);
- return new Promise<T>((resolve, reject) => {
-  const stop = () => reject(signal.reason);
-  signal.addEventListener("abort", stop, { once: true });
-  p.then(v => { signal.removeEventListener("abort", stop); resolve(v); }, e => { signal.removeEventListener("abort", stop); reject(e); });
- });
-}
 
 const sleepFor = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
  if (signal.aborted) { reject(signal.reason); return; }
@@ -112,14 +102,14 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  const nonceB = newApproveNonce();
  try {
   // The whole approval is the account's it starts in: a call after another sign-in sends nothing.
-  acct = await abortable(deps.account.currentAccount(), signal);
+  acct = await untilAborted(deps.account.currentAccount(), signal);
   // Under the lock, the first visit and Ask again alike: an approval this account already has
   // (another tab may have just finished one) shows instead of asking again.
-  const saved = await abortable(deps.store.get(acct, devicePub), signal);
+  const saved = await untilAborted(deps.store.get(acct, devicePub), signal);
   if (saved !== undefined && saved.approvers.length > 0) { onPhase({ kind: "approved", record: saved }); return; }
-  try { await abortable(deps.account.enrol(key, deps.deviceName, acct), signal); }
+  try { await untilAborted(deps.account.enrol(key, deps.deviceName, acct), signal); }
   catch (error) { if (signal.aborted || !(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
-  const created = await abortable(deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct), signal);
+  const created = await untilAborted(deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct), signal);
   id = created.id; expiresAt = now() + created.expires_in * 1000;
  } catch (error) { if (!signal.aborted) onPhase({ kind: "failed", problem: problemOf(error) }); return; }
  if (signal.aborted) return;
@@ -130,7 +120,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  for (;;) {
   try { await sleep(pollDelay(now() - started), signal); } catch { return; }
   let st: ApprovalStatus;
-  try { st = await abortable(deps.account.approvalState(id, acct), signal); }
+  try { st = await untilAborted(deps.account.approvalState(id, acct), signal); }
   catch (error) {
    if (signal.aborted) return;
    if (error instanceof AccountServiceError && error.code === "account_changed") { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -147,7 +137,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
    if (pub === null || nonceT === null) continue; // not complete yet: read again
    // B reveals only now, holding nonce_t (§2.2 step 3); the code covers T, the key the list must come from.
    if (signal.aborted) return;
-   try { await abortable(deps.account.reveal(id, nonceB, acct), signal); }
+   try { await untilAborted(deps.account.reveal(id, nonceB, acct), signal); }
    catch (error) {
     if (signal.aborted) return;
     if (!(error instanceof AccountServiceError && error.code === "already_revealed")) { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -175,7 +165,7 @@ async function takeApproval(deps: ApprovalDeps, acct: string, devicePub: string,
  for (let attempt = 0; attempt < ENVELOPE_TRIES; attempt++) {
   if (attempt > 0) { try { await sleep(2_000, signal); } catch { return true; } }
   let self: BrowserSelf;
-  try { self = await abortable(deps.account.browserSelf(acct), signal); } catch { if (signal.aborted) return true; continue; }
+  try { self = await untilAborted(deps.account.browserSelf(acct), signal); } catch { if (signal.aborted) return true; continue; }
   const sealed = self.envelopes.find(e => e.approver_pub === pub);
   if (sealed === undefined) continue;
   let envelope: Envelope;
