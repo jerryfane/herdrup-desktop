@@ -196,3 +196,43 @@ func TestSyncRequestsAreBoundToTheirAccount(t *testing.T) {
 		t.Fatalf("the old account's push reached the service (%d calls, %d pushes)", len(s.auth)-before, len(s.pushes))
 	}
 }
+
+// Each batch is a push the service takes: ≤100 changes and a request body,
+// as Push encodes it (HTML-escaped by json.Marshal), of ≤256 KiB; together
+// they are the changes in order.
+func TestBatchesFitThePushLimits(t *testing.T) {
+	var changes []Change
+	for i := range 150 {
+		text := strings.Repeat("x", 100)
+		if i%3 == 0 {
+			text = strings.Repeat("<", 2000) // 6 bytes each once escaped
+		}
+		changes = append(changes, Change{Collection: "prompts", ID: strconv.Itoa(i), Body: PromptBody{Text: text}})
+	}
+	batches, err := Batches(changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var joined []Change
+	for _, b := range batches {
+		raw, _ := json.Marshal(map[string]any{"changes": b})
+		if len(b) == 0 || len(b) > MaxPushChanges || len(raw) > MaxPushBytes {
+			t.Fatalf("a batch of %d changes, %d bytes", len(b), len(raw))
+		}
+		joined = append(joined, b...)
+	}
+	if len(batches) < 2 || len(joined) != len(changes) || joined[0].ID != "0" || joined[149].ID != "149" {
+		t.Fatalf("%d batches holding %d changes", len(batches), len(joined))
+	}
+}
+
+// The item limit is on the body as the service stores it: 8 KB of text can
+// take twice that once its quotes are escaped.
+func TestValidPromptMeasuresTheStoredBody(t *testing.T) {
+	if !ValidPrompt(PromptBody{Text: strings.Repeat("<", 8192)}) {
+		t.Fatal("8 KB of < (stored unescaped) refused")
+	}
+	if ValidPrompt(PromptBody{Text: "x" + strings.Repeat(`"`, 8191)}) {
+		t.Fatal("a prompt whose stored body passes 16 KiB accepted")
+	}
+}

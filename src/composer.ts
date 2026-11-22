@@ -1,4 +1,4 @@
-import type { GramAttachment } from "./mygo";
+import { Desk, events, type GramAttachment, type SavedPrompt } from "./mygo";
 import { onFileDrop } from "mygo-runtime";
 import { chipGlyph, chipRing } from "./gramModel";
 
@@ -140,13 +140,30 @@ export function composerGlyph(name: string, size: number): HTMLElement {
   return glyph;
 }
 
-interface SavedPrompt { id: string; nickname: string; text: string }
-const promptStorageKey = "dev.herdr.savedPrompts.v1";
+/** Where this WebView kept saved prompts before they moved into Desk (desk_prompts.go). */
+const legacyPromptsKey = "dev.herdr.savedPrompts.v1";
+
+/** Takes the WebView's old list into Desk, ids kept, then clears it. Desk takes a list in once
+ *  (a second window's call, racing this one, adds nothing). */
+export async function migrateSavedPrompts(storage: Pick<Storage, "getItem" | "removeItem"> = localStorage,
+  desk: Pick<typeof Desk, "importSavedPrompts"> = Desk): Promise<void> {
+  const raw = storage.getItem(legacyPromptsKey);
+  if (raw === null) return;
+  await desk.importSavedPrompts(JSON.parse(raw) as SavedPrompt[]);
+  storage.removeItem(legacyPromptsKey);
+}
 
 export class SavedPromptsMenu {
   readonly button = document.createElement("button");
   private readonly menu = document.createElement("div");
   private sheet: HTMLDialogElement | null = null;
+  private prompts: SavedPrompt[] = [];
+  private deleting = false;
+  // A sync (or another composer) changed the list: an open menu shows the new one.
+  private readonly offChanged = events.savedPromptsChanged.on(list => {
+    this.prompts = list;
+    if (!this.menu.hidden) this.render(this.deleting);
+  });
   private outside = (event: PointerEvent) => {
     if (event.target instanceof Node && !this.menu.contains(event.target) && !this.button.contains(event.target)) this.menu.hidden = true;
   };
@@ -159,33 +176,33 @@ export class SavedPromptsMenu {
     this.menu.className = "saved-prompts-menu"; this.menu.hidden = true; this.menu.setAttribute("role", "menu");
     this.button.onclick = () => {
       if (!this.menu.hidden) { this.menu.hidden = true; return; }
-      try { this.render(this.load()); this.menu.hidden = false; this.menu.querySelector("button")?.focus(); }
-      catch(error) { this.onError(error); }
+      void this.load().then(() => { this.render(false); this.menu.hidden = false; this.menu.querySelector("button")?.focus(); }, this.onError);
     };
     this.menu.onkeydown = event => { if (event.key === "Escape") { event.stopPropagation(); this.menu.hidden = true; this.button.focus(); } };
     document.addEventListener("pointerdown", this.outside);
+    // Now rather than at the first open, so the old list syncs with the account without it.
+    migrateSavedPrompts().catch(onError);
   }
   mount(parent: HTMLElement) { parent.append(this.button, this.menu); }
-  private load(): SavedPrompt[] { return JSON.parse(localStorage.getItem(promptStorageKey) ?? "[]") as SavedPrompt[]; }
+  private async load() { await migrateSavedPrompts(); this.prompts = await Desk.savedPrompts(); }
   private action(label: string, run: () => void) {
     const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.setAttribute("role", "menuitem");
     button.onclick = () => { try { run(); } catch(error) { this.onError(error); } }; return button;
   }
-  private render(prompts: SavedPrompt[], deleting = false) {
+  private render(deleting: boolean) {
+    this.deleting = deleting;
     this.menu.replaceChildren();
-    for (const prompt of prompts) {
+    for (const prompt of this.prompts) {
       this.menu.append(this.action(prompt.nickname.trim() || prompt.text, () => {
-        if (deleting) {
-          localStorage.setItem(promptStorageKey, JSON.stringify(this.load().filter(item => item.id !== prompt.id)));
-          this.render(this.load(), true);
-        } else { this.menu.hidden = true; this.onSelect(prompt.text); }
+        if (deleting) void Desk.deletePrompt(prompt.id).then(list => { this.prompts = list; this.render(true); }, this.onError);
+        else { this.menu.hidden = true; this.onSelect(prompt.text); }
       }));
     }
-    if (prompts.length) this.menu.append(document.createElement("hr"));
+    if (this.prompts.length) this.menu.append(document.createElement("hr"));
     this.menu.append(this.action(deleting ? "Back" : "Save new prompt…", () => {
-      if (deleting) this.render(this.load()); else { this.menu.hidden = true; this.edit(); }
+      if (deleting) this.render(false); else { this.menu.hidden = true; this.edit(); }
     }));
-    if (prompts.length && !deleting) this.menu.append(this.action("Delete a prompt", () => this.render(this.load(), true)));
+    if (this.prompts.length && !deleting) this.menu.append(this.action("Delete a prompt", () => this.render(true)));
   }
   private edit() {
     const sheet = document.createElement("dialog"); this.sheet = sheet; sheet.className = "save-prompt-sheet";
@@ -202,16 +219,16 @@ export class SavedPromptsMenu {
     text.oninput = () => { save.disabled = !text.value.trim(); };
     form.onsubmit = event => {
       event.preventDefault(); if (!text.value.trim()) return;
-      try {
-        const prompts = this.load(); prompts.push({ id: crypto.randomUUID(), nickname: nickname.value.trim(), text: text.value.trim() });
-        localStorage.setItem(promptStorageKey, JSON.stringify(prompts)); sheet.close();
-      } catch(reason) { error.textContent = String(reason); }
+      save.disabled = true;
+      void migrateSavedPrompts().then(() => Desk.savePrompt({ id: "", nickname: nickname.value.trim(), text: text.value.trim() })).then(
+        list => { this.prompts = list; sheet.close(); },
+        reason => { save.disabled = false; error.textContent = String(reason); });
     };
     form.append(save, error); sheet.append(header, form); document.body.append(sheet);
     sheet.addEventListener("close", () => { sheet.remove(); this.sheet = null; this.button.focus(); }, { once: true }); sheet.showModal();
   }
   dispose() {
-    document.removeEventListener("pointerdown", this.outside);
+    document.removeEventListener("pointerdown", this.outside); this.offChanged();
     this.sheet?.close(); this.menu.remove(); this.button.remove();
   }
 }

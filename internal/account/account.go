@@ -560,7 +560,9 @@ func (c *Client) send(ctx context.Context, method, path, bearer string, body any
 		return err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	// A sync page holds up to 500 items of the account's 1 MB of bodies
+	// (prompts are up to 8 KB each), so an answer may run past a megabyte.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return err
 	}

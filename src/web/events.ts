@@ -51,6 +51,7 @@ export const events: { [K in EventName]: GoEvent<Payload<K>> } = {
  topicsChanged: event("topicsChanged"),
  accountChanged: event("accountChanged"),
  syncedMachinesChanged: event("syncedMachinesChanged"),
+ savedPromptsChanged: event("savedPromptsChanged"),
  appUpdateOpen: event("appUpdateOpen"),
  dictationChanged: event("dictationChanged"),
  agentOpen: event("agentOpen"),

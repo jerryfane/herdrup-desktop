@@ -55,6 +55,21 @@ export interface AccountState {
   syncFailed?: boolean;
 }
 
+/** AccountSyncStatus is what the account page shows about sync. */
+export interface AccountSyncStatus {
+  /**
+   * LastSyncedMs is when the newest sync of the signed-in account
+   * finished well, 0 for never.
+   */
+  lastSyncedMs: number;
+  /**
+   * Machines and Prompts are the items of each the account holds, as of
+   * the newest finished sync.
+   */
+  machines: number;
+  prompts: number;
+}
+
 /**
  * AgentAction is an agent row menu item. The page shows its dialog for
  * Kind rename, avatar, restart, swap or transfer, then calls the Desk
@@ -1013,6 +1028,16 @@ export interface SavedMachineStatus {
 }
 
 /**
+ * SavedPrompt is one saved prompt. ID is a lowercase UUID, the account
+ * item's id too.
+ */
+export interface SavedPrompt {
+  id: string;
+  nickname: string;
+  text: string;
+}
+
+/**
  * SavedTerminal is device-local metadata. Plain shells do not appear in
  * agent.list; their pane identities must survive closing and reopening the app.
  */
@@ -1221,6 +1246,21 @@ export const Desk = {
   accountState(): Promise<AccountState> {
     return call("Desk.AccountState");
   },
+  /**
+   * AccountSyncNow runs a sync round now (the account page's "Sync now") and
+   * then tells the page the account's state, whichever way it ended.
+   */
+  accountSyncNow(): Promise<void> {
+    return call("Desk.AccountSyncNow");
+  },
+  /**
+   * AccountSyncStatus is the signed-in account's newest good sync (no
+   * network): when, and what the account held then. All zero when signed
+   * out or before this account's first good sync.
+   */
+  accountSyncStatus(): Promise<AccountSyncStatus> {
+    return call("Desk.AccountSyncStatus");
+  },
   /** Accounts returns the credential accounts' labels by id. */
   accounts(): Promise<Record<string, string>> {
     return call("Desk.Accounts");
@@ -1381,6 +1421,13 @@ export const Desk = {
   },
   creationKinds(token: string): Promise<string> {
     return call("Desk.CreationKinds", token);
+  },
+  /**
+   * DeletePrompt removes the saved prompt with id and returns those left. The
+   * account's other devices drop it too: the next sync pushes its tombstone.
+   */
+  deletePrompt(id: string): Promise<SavedPrompt[]> {
+    return call("Desk.DeletePrompt", id);
   },
   /** DiscardPairingLink forgets the opened link the page shows as id (Cancel). */
   discardPairingLink(id: string): Promise<void> {
@@ -1643,6 +1690,15 @@ export const Desk = {
     return call("Desk.HasGuestInvitationClipboardText");
   },
   /**
+   * ImportSavedPrompts takes in the prompts the page kept in localStorage
+   * before they moved here, once: ids are kept (lowercased; one that isn't a
+   * UUID gets a new one), one already saved is not added twice, and a later
+   * call adds nothing. It returns the saved prompts.
+   */
+  importSavedPrompts(list: SavedPrompt[]): Promise<SavedPrompt[]> {
+    return call("Desk.ImportSavedPrompts", list);
+  },
+  /**
    * InspectGuestInvitation reads an invitation for review. A short link's sealed
    * invite is fetched from its relay first, so this can fail with
    * guest.ErrInviteRevoked or the retryable guest.ErrInviteUnreachable.
@@ -1829,6 +1885,17 @@ export const Desk = {
   saveMachine(m: Machine, replacing: string): Promise<void> {
     return call("Desk.SaveMachine", m, replacing);
   },
+  /**
+   * SavePrompt adds p (ID "") at the end, or replaces the saved prompt with
+   * its ID in place, and returns the saved prompts.
+   */
+  savePrompt(p: SavedPrompt): Promise<SavedPrompt[]> {
+    return call("Desk.SavePrompt", p);
+  },
+  /** SavedPrompts is every saved prompt, in the menu's order. */
+  savedPrompts(): Promise<SavedPrompt[]> {
+    return call("Desk.SavedPrompts");
+  },
   savedTerminals(machineID: string, session: string): Promise<SavedTerminal[]> {
     return call("Desk.SavedTerminals", machineID, session);
   },
@@ -1985,8 +2052,9 @@ export const Desk = {
     return call("Desk.SwapSettingsAccount", token, id);
   },
   /**
-   * SyncMachines pulls the account's machines, merges them into the saved
-   * ones and pushes this device's changes. Without a session it does nothing.
+   * SyncMachines is one sync round with the account: it pulls the account's
+   * machines and prompts, merges them into the saved ones and pushes this
+   * device's changes. Without a session it does nothing.
    */
   syncMachines(): Promise<void> {
     return call("Desk.SyncMachines");
@@ -2183,6 +2251,11 @@ export const events = {
    * the app; the page takes it with TakePairingLink and asks before pairing.
    */
   pairingLinkOpened: event<boolean>("pairing-link:opened"),
+  /**
+   * SavedPromptsChanged tells the page the saved prompts changed (a sync
+   * brought another device's, or another composer saved one).
+   */
+  savedPromptsChanged: event<SavedPrompt[]>("savedPrompts:changed"),
   /**
    * SessionsChanged is sent with the session pills: none while fewer than
    * two sessions run, as herdrup hides them then.

@@ -128,33 +128,52 @@ func PlanHosts(local []LocalHost, mirror []RemoteHost, known map[string]bool) (H
 	return plan, nil
 }
 
-// Mirror is the account's hosts as last pulled, and the revision to pull
-// from next. A full pull replaces it; an incremental one patches it.
+// Mirror is the account's hosts and prompts as last pulled, and the
+// revision to pull from next. A full pull replaces it; an incremental one
+// patches it.
 type Mirror struct {
-	Rev   int64        `json:"rev"`
-	Hosts []RemoteHost `json:"hosts"`
+	Rev     int64          `json:"rev"`
+	Hosts   []RemoteHost   `json:"hosts"`
+	Prompts []RemotePrompt `json:"prompts,omitempty"`
 }
 
 // Apply folds a pull into the mirror.
 func (m Mirror) Apply(p Pull) Mirror {
-	live, deleted := RemoteHosts(p.Items)
-	byID := map[string]RemoteHost{}
-	if !p.Full {
-		for _, h := range m.Hosts {
-			byID[h.ID] = h
+	hosts, goneHosts := RemoteHosts(p.Items)
+	prompts, gonePrompts := RemotePrompts(p.Items)
+	return Mirror{
+		Rev:     p.Rev,
+		Hosts:   fold(m.Hosts, p.Full, hosts, goneHosts, func(h RemoteHost) (string, int64) { return h.ID, h.Rev }),
+		Prompts: fold(m.Prompts, p.Full, prompts, gonePrompts, func(h RemotePrompt) (string, int64) { return h.ID, h.Rev }),
+	}
+}
+
+// fold patches one collection's items with a pull's (all of them when
+// full), oldest revision first.
+func fold[T any](held []T, full bool, live []T, deleted []string, key func(T) (string, int64)) []T {
+	byID := map[string]T{}
+	if !full {
+		for _, it := range held {
+			id, _ := key(it)
+			byID[id] = it
 		}
 	}
 	for _, id := range deleted {
 		delete(byID, id)
 	}
-	for _, h := range live {
-		byID[h.ID] = h
+	for _, it := range live {
+		id, _ := key(it)
+		byID[id] = it
 	}
-	out := Mirror{Rev: p.Rev}
-	for _, h := range byID {
-		out.Hosts = append(out.Hosts, h)
+	var out []T
+	for _, it := range byID {
+		out = append(out, it)
 	}
-	sort.Slice(out.Hosts, func(i, j int) bool { return out.Hosts[i].Rev < out.Hosts[j].Rev })
+	sort.Slice(out, func(i, j int) bool {
+		_, a := key(out[i])
+		_, b := key(out[j])
+		return a < b
+	})
 	return out
 }
 
