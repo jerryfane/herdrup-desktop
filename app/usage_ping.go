@@ -25,14 +25,26 @@ const usagePingRelay = "https://guest.herdrup.themartian.app/v1/ping"
 // next start or focus tries again.
 const usagePingTimeout = 10 * time.Second
 
+// release is set to "1" only by the release workflow (MYGO_LDFLAGS="-X
+// main.release=1"). Only those builds count as installs: a local, CI or probe
+// build never pings the relay, so test runs with a fresh home each time can't
+// add one-day installs (jarvis 533595: 239 such desktop-linux installs).
+var release string
+
+// releaseTelemetry reports whether this run may send usage pings and crash
+// reports to the relay: a release build, not a smoke or reference run, and not
+// under CI.
+func releaseTelemetry() bool {
+	return release == "1" && !smokeEnabled() && os.Getenv("CI") == ""
+}
+
 // usagePingURL is where pings go. HERDRUP_USAGE_PING_URL (a full endpoint URL)
-// replaces the relay, the only way a smoke or reference capture sends one;
-// without it those runs send nothing.
+// replaces the relay, the only way a test, smoke or reference run sends one.
 func usagePingURL() string {
 	if url := os.Getenv("HERDRUP_USAGE_PING_URL"); url != "" {
 		return url
 	}
-	if smokeEnabled() || refEnabled() {
+	if !releaseTelemetry() {
 		return ""
 	}
 	return usagePingRelay

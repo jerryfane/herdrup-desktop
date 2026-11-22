@@ -112,6 +112,8 @@ jobs:
       - name: Build
         env:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          # Only these builds send usage pings and crash reports (app/usage_ping.go release).
+          MYGO_LDFLAGS: -X main.release=1
         run: bun run build -- -platform "${{ matrix.platform }}"
       # The disk image is checked here rather than in a job of its own, to
       # hold one shared Mac instead of two.

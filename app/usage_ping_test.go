@@ -357,32 +357,42 @@ func TestUsagePingNeverSendsWithoutAURL(t *testing.T) {
 	}
 }
 
-func TestUsagePingURLIsOffInCapturesUnlessStubbed(t *testing.T) {
-	saved := smoke
-	t.Cleanup(func() { smoke = saved })
+// Only the release workflow's builds may ping or report crashes: a local or
+// probe build, a smoke or reference capture, or any run under CI sends nothing
+// unless a test stubs the URL (jarvis 533595).
+func TestTelemetryOnlyFromReleaseBuildsOutsideCI(t *testing.T) {
+	savedSmoke, savedRelease := smoke, release
+	t.Cleanup(func() { smoke, release = savedSmoke, savedRelease })
 	t.Setenv("HERDRUP_USAGE_PING_URL", "")
+	t.Setenv("HERDRUP_CRASH_REPORT_URL", "")
 	t.Setenv("HERDRUP_REF_STATE", "")
+	t.Setenv("CI", "")
+	check := func(label, wantPing, wantCrash string) {
+		t.Helper()
+		if got := usagePingURL(); got != wantPing {
+			t.Errorf("%s: usage ping URL = %q, want %q", label, got, wantPing)
+		}
+		if got := crashReportURL(); got != wantCrash {
+			t.Errorf("%s: crash report URL = %q, want %q", label, got, wantCrash)
+		}
+	}
 
-	smoke = ""
-	if got := usagePingURL(); got != usagePingRelay {
-		t.Fatalf("release build URL = %q", got)
-	}
+	smoke, release = "", ""
+	check("local or probe build", "", "")
+	release = "1"
+	check("release build", usagePingRelay, crashReportRelay)
+	t.Setenv("CI", "true")
+	check("release build under CI", "", "")
+	t.Setenv("CI", "")
 	smoke = "1"
-	if got := usagePingURL(); got != "" {
-		t.Fatalf("smoke build URL = %q, want none", got)
-	}
+	check("smoke build", "", "")
 	t.Setenv("HERDRUP_REF_STATE", "/tmp/ref.json")
-	if got := usagePingURL(); got != "" {
-		t.Fatalf("reference capture URL = %q, want none", got)
-	}
+	check("reference capture", "", "")
 	t.Setenv("HERDRUP_USAGE_PING_URL", "http://127.0.0.1:9/v1/ping")
-	if got := usagePingURL(); got != "http://127.0.0.1:9/v1/ping" {
-		t.Fatalf("stubbed reference capture URL = %q", got)
-	}
-	smoke = ""
-	if got := usagePingURL(); got != "http://127.0.0.1:9/v1/ping" {
-		t.Fatalf("stubbed release URL = %q", got)
-	}
+	t.Setenv("HERDRUP_CRASH_REPORT_URL", "http://127.0.0.1:9/v1/crash")
+	check("stubbed capture", "http://127.0.0.1:9/v1/ping", "http://127.0.0.1:9/v1/crash")
+	smoke, release = "", ""
+	check("stubbed local build", "http://127.0.0.1:9/v1/ping", "http://127.0.0.1:9/v1/crash")
 }
 
 func TestUsagePingApp(t *testing.T) {
