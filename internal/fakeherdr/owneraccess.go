@@ -22,11 +22,21 @@ type OwnerAccess struct {
 	// Statements are the account statements add received, in order (herdr
 	// checks aud == HostID; tests check which one the client sent).
 	Statements []string
+	// protocol is what owner_access.info reports (SetProtocol); 0 leaves
+	// the field out, as a herdr from before it did.
+	protocol uint32
+}
+
+// SetProtocol sets the owner access protocol owner_access.info reports.
+func (o *OwnerAccess) SetProtocol(p uint32) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.protocol = p
 }
 
 // NewOwnerAccess serves a machine on relay with a fixed relay id.
 func NewOwnerAccess(relay string) *OwnerAccess {
-	return &OwnerAccess{HostID: base64.RawURLEncoding.EncodeToString([]byte("fake-host-id-016")), Relay: relay}
+	return &OwnerAccess{HostID: base64.RawURLEncoding.EncodeToString([]byte("fake-host-id-016")), Relay: relay, protocol: 2}
 }
 
 func ownerRefuse(code, msg string) *APIError { return &APIError{Code: code, Message: msg} }
@@ -61,9 +71,13 @@ func (o *OwnerAccess) Handle(method string, raw json.RawMessage) (any, *APIError
 		if _, e := closedParams(raw); e != nil {
 			return nil, e, true
 		}
-		return map[string]any{"type": "owner_access_info", "protocol": 1, "host_id": o.HostID,
+		info := map[string]any{"type": "owner_access_info", "host_id": o.HostID,
 			"node_pub": base64.RawURLEncoding.EncodeToString(sha256.New().Sum(nil)), "relay_url": o.Relay,
-			"link": map[string]any{"state": "idle"}, "max_ttl_secs": 2592000, "scopes": []string{"chat", "terminal"}, "version": "0.9.5-fake"}, nil, true
+			"link": map[string]any{"state": "idle"}, "max_ttl_secs": 2592000, "scopes": []string{"chat", "terminal"}, "version": "0.9.5-fake"}
+		if o.protocol != 0 {
+			info["protocol"] = o.protocol
+		}
+		return info, nil, true
 	case "owner_access.list":
 		if _, e := closedParams(raw); e != nil {
 			return nil, e, true

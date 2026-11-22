@@ -467,15 +467,33 @@ func TestWebAccessDenyWaitsForApprovalAndReportsAFailedDenial(t *testing.T) {
 	}
 }
 
-// A herdr without owner_access (its unknown-method answer, which the engine
-// turns into ErrUnsupported) is skipped as needs_update.
+// A herdr that can't let an owner's browser in is skipped as needs_update,
+// with no grant written: one without owner_access (its unknown-method
+// answer, which the engine turns into ErrUnsupported), one that only stores
+// grants (protocol 1, H1), and one from before the protocol field.
 func TestWebAccessSkipsAnOlderHerdrAsNeedsUpdate(t *testing.T) {
-	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
-	typeCode(t, d, w)
-	w.set(func() { w.old = true })
-	res, err := d.WebAccessApprove(context.Background(), "req-1", []string{machine}, "chat", "7d")
-	if err != nil || len(res.Skipped) != 1 || res.Skipped[0].Reason != "needs_update" || len(res.Failed) != 0 {
-		t.Fatalf("approve %+v, %v", res, err)
+	for _, tc := range []struct {
+		name     string
+		old      bool
+		protocol uint32
+	}{
+		{"no owner_access", true, 2},
+		{"stores grants only", false, 1},
+		{"no protocol field", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+			typeCode(t, d, w)
+			w.set(func() { w.old = tc.old })
+			w.owner.SetProtocol(tc.protocol)
+			res, err := d.WebAccessApprove(context.Background(), "req-1", []string{machine}, "chat", "7d")
+			if err != nil || len(res.Skipped) != 1 || res.Skipped[0].Reason != "needs_update" || len(res.Failed) != 0 || len(res.Granted) != 0 {
+				t.Fatalf("approve %+v, %v", res, err)
+			}
+			if g := w.grants(t); len(g) != 0 {
+				t.Fatalf("grants written: %v", g)
+			}
+		})
 	}
 }
 
