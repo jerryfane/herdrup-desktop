@@ -76,10 +76,9 @@ type Approval struct {
 	// recorded after it (both need a request with no outcome), so no
 	// approval of this request ever will be.
 	denied bool
-	// unsure: a finish this device sent has an unknown outcome. A service
-	// that only computes an expiry when it reports it may still record such
-	// a finish afterwards; one that lists approval_expiry_final stores the
-	// expiry first, which stops it.
+	// unsure: a finish this device sent has an unknown outcome. An expiry
+	// the service only computed may still be followed by that finish being
+	// recorded; a stored one (outcome_stored) stops it.
 	unsure bool
 }
 
@@ -331,16 +330,11 @@ func (a *Approval) settle(ctx context.Context, finishErr error) error {
 
 // Outcome reads the request's state as the service has it now. final says
 // it is the request's outcome for this device: approved, denied, or expired
-// when no finish of this device has an unknown outcome, or when the service
-// stores the expiry it reports (approval_expiry_final, listed both before
-// and after the read, so a deploy or rollback between can't count). A
-// request the service no longer knows is an error (its outcome can't be
-// told).
+// when no finish of this device has an unknown outcome or this very read
+// says the expiry is stored (outcome_stored: a Worker version that doesn't
+// store it never says so, whatever /v1/health lists). A request the service
+// no longer knows is an error (its outcome can't be told).
 func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
-	a.mu.Lock()
-	unsure := a.unsure
-	a.mu.Unlock()
-	storedBefore := unsure && a.c.expiryFinal(ctx)
 	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
 	if err != nil {
 		return "", false, err
@@ -349,7 +343,9 @@ func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
 	case ApprovalApproved, ApprovalDenied:
 		return st.State, true, nil
 	case ApprovalExpired:
-		return st.State, !unsure || storedBefore && a.c.expiryFinal(ctx), nil
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return st.State, !a.unsure || st.OutcomeStored, nil
 	}
 	return st.State, false, nil
 }

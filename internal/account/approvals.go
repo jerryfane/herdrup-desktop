@@ -56,6 +56,10 @@ type ApprovalStatus struct {
 	} `json:"approver,omitempty"`
 	NonceT string `json:"nonce_t,omitempty"`
 	NonceB string `json:"nonce_b,omitempty"`
+	// OutcomeStored: the service answered from an outcome it stored, not one
+	// it computed from the clock. For an expiry, no finish can be recorded
+	// after it (herdrup #801).
+	OutcomeStored bool `json:"outcome_stored,omitempty"`
 }
 
 // ApprovalGrant is what the approver reports with an approval: the scope and
@@ -84,18 +88,6 @@ func (c *Client) WebApproveOffered(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return slices.Contains(features, WebApproveFeature), nil
-}
-
-// approvalExpiryFinalFeature is the /v1/health feature that says the
-// service stores a request's expiry before it reports it, after which no
-// finish is recorded (herdrup #801): a reported expiry is final.
-const approvalExpiryFinalFeature = "approval_expiry_final"
-
-// expiryFinal reports whether the service lists approval_expiry_final; an
-// unreadable list is no.
-func (c *Client) expiryFinal(ctx context.Context) bool {
-	features, err := c.healthFeatures(ctx)
-	return err == nil && slices.Contains(features, approvalExpiryFinalFeature)
 }
 
 // Approvals lists the browsers waiting for this account's approval.
