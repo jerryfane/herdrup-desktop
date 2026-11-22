@@ -317,7 +317,8 @@ func TestDenyFailsUntilTheServiceTakesIt(t *testing.T) {
 // A failed approval is told apart: the only finish refused by the service,
 // or a request that ended, is NotApprovedError; recorded but unanswered is
 // success; a request still revealed, or read as expired, after a lost or 5xx
-// answer is unknown, since the finish may yet be applied.
+// answer is unknown, since the finish may yet be applied, unless that read
+// says the expiry is stored (outcome_stored), which no finish can follow.
 func TestAFailedApprovalIsToldApart(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -326,18 +327,20 @@ func TestAFailedApprovalIsToldApart(t *testing.T) {
 		readStatus   int
 		outcome      string
 		readState    string
+		readStored   bool
 		want         string
 	}{
-		{"refused by the service", http.StatusConflict, false, 0, "", "", "not approved"},
+		{"refused by the service", http.StatusConflict, false, 0, "", "", false, "not approved"},
 		// The browser replaced the request: the finish and every read are 404.
-		{"refused, then gone", http.StatusNotFound, false, http.StatusNotFound, "", "", "not approved"},
-		{"503, still revealed", http.StatusServiceUnavailable, false, 0, "", "", "unknown"},
-		{"request over before the finish", http.StatusServiceUnavailable, false, 0, ApprovalExpired, "", "not approved"},
-		{"503, then read as expired", http.StatusServiceUnavailable, false, 0, "", ApprovalExpired, "unknown"},
+		{"refused, then gone", http.StatusNotFound, false, http.StatusNotFound, "", "", false, "not approved"},
+		{"503, still revealed", http.StatusServiceUnavailable, false, 0, "", "", false, "unknown"},
+		{"request over before the finish", http.StatusServiceUnavailable, false, 0, ApprovalExpired, "", false, "not approved"},
+		{"503, then read as expired", http.StatusServiceUnavailable, false, 0, "", ApprovalExpired, false, "unknown"},
+		{"503, then read as a stored expiry", http.StatusServiceUnavailable, false, 0, "", ApprovalExpired, true, "not approved"},
 		// The browser denied it meanwhile: no finish can be recorded after that.
-		{"503, then read as denied", http.StatusServiceUnavailable, false, 0, "", ApprovalDenied, "not approved"},
-		{"answer lost", http.StatusServiceUnavailable, true, 0, "", "", "approved"},
-		{"state unreadable", http.StatusServiceUnavailable, false, http.StatusServiceUnavailable, "", "", "unknown"},
+		{"503, then read as denied", http.StatusServiceUnavailable, false, 0, "", ApprovalDenied, false, "not approved"},
+		{"answer lost", http.StatusServiceUnavailable, true, 0, "", "", false, "approved"},
+		{"state unreadable", http.StatusServiceUnavailable, false, http.StatusServiceUnavailable, "", "", false, "unknown"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -347,7 +350,7 @@ func TestAFailedApprovalIsToldApart(t *testing.T) {
 				t.Fatal("code refused")
 			}
 			s.mu.Lock()
-			s.finishStatus, s.lost, s.readStatus, s.readState = tc.finishStatus, tc.lost, tc.readStatus, tc.readState
+			s.finishStatus, s.lost, s.readStatus, s.readState, s.readStored = tc.finishStatus, tc.lost, tc.readStatus, tc.readState, tc.readStored
 			if tc.outcome != "" {
 				s.finishStatus = 0
 				s.finished = map[string]string{"outcome": tc.outcome}
@@ -451,43 +454,5 @@ func TestATakenDenialStaysTheOutcome(t *testing.T) {
 	}
 	if s.finishes != 1 || s.denied != 1 {
 		t.Fatalf("finishes %d, denials %d; want 1 and 1", s.finishes, s.denied)
-	}
-}
-
-// After a finish with an unknown outcome, an expired read is final only
-// when that read says the service stored the expiry (outcome_stored); an
-// unmarked one, from a Worker that only computes it, stays unknown.
-func TestAStoredExpiryIsFinal(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		stored bool
-		want   string
-	}{
-		{"stored", true, "not approved"},
-		{"computed", false, "unknown"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s, a, approver := revealedApproval(t)
-			ctx := context.Background()
-			if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
-				t.Fatal("code refused")
-			}
-			s.mu.Lock()
-			s.finishStatus, s.readState = http.StatusServiceUnavailable, ApprovalExpired
-			s.readStored = tc.stored
-			s.mu.Unlock()
-			err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`))
-			var refused *NotApprovedError
-			got := "unknown"
-			switch {
-			case err == nil:
-				got = "approved"
-			case errors.As(err, &refused):
-				got = "not approved"
-			}
-			if got != tc.want {
-				t.Fatalf("lost finish, then a stored expiry: %v (%s), want %s", err, got, tc.want)
-			}
-		})
 	}
 }
