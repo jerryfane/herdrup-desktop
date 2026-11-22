@@ -118,10 +118,19 @@ test("before the deadline the session sends a newer statement in-band, as one wh
 
 /** The account service's statements for the cache tests: who is signed in, and each issue. */
 function issuer(clock: () => number) {
- const t = { signedIn: "acct-A" as string | null, asked: [] as string[], looked: 0, hold: null as PromiseWithResolvers<void> | null };
+ const t = { signedIn: "acct-A" as string | null, generation: 0, signOutAfterLookup: false, asked: [] as string[], looked: 0, hold: null as PromiseWithResolvers<void> | null,
+  /** Sign-out ends the session; signing in again starts another, even for the same account. */
+  signOut() { t.signedIn = null; t.generation++; } };
  const api = {
   get current() { return t.signedIn === null ? null : { accountID: t.signedIn }; },
-  async currentAccount() { t.looked++; if (t.signedIn === null) throw new Error("Signed out"); return t.signedIn; },
+  get generation() { return t.generation; },
+  async currentAccount() {
+   t.looked++;
+   if (t.signedIn === null) throw new Error("Signed out");
+   const a = t.signedIn;
+   if (t.signOutAfterLookup) t.signOut();
+   return a;
+  },
   async statements(hosts: string[], acct?: string) {
    t.asked.push(`${acct}:${hosts[0]}`);
    if (t.hold) await t.hold.promise;
@@ -183,7 +192,7 @@ test("a statement that comes back after sign-out, or after another sign-in, is n
   const signal = new AbortController().signal;
   const pending = cache.get("H", 120_000, signal);
   await Promise.resolve(); await Promise.resolve();
-  t.signedIn = after; // the session changed while A's statement was being issued
+  t.signOut(); t.signedIn = after; // the session changed while A's statement was being issued
   t.hold.resolve();
   await expect(pending).rejects.toMatchObject({ code: "account_changed" });
   t.hold = null;
@@ -219,4 +228,27 @@ test("a reply that ends an owner session (the grant re-read as expired) isn't fo
   expect(hellos).toBe(2);
   t.close();
  } finally { relay.stop(); }
+});
+
+test("nothing crosses a sign-out, even back into the same account: in flight, held, or between lookup and hit", async () => {
+ const { t, api } = issuer(Date.now);
+ const cache = statementCache(api);
+ const signal = new AbortController().signal;
+ // In flight across sign-out and sign-in as A again: refused, and not kept.
+ t.hold = Promise.withResolvers<void>();
+ const pending = cache.get("H", 120_000, signal);
+ await Promise.resolve(); await Promise.resolve();
+ t.signOut(); t.signedIn = "acct-A";
+ t.hold.resolve(); t.hold = null;
+ await expect(pending).rejects.toMatchObject({ code: "account_changed" });
+ const fresh = await cache.get("H", 120_000, signal);
+ expect(t.asked.length).toBe(2);
+ // Held from the earlier session: the new one asks for its own.
+ t.signOut(); t.signedIn = "acct-A";
+ expect((await cache.get("H", 120_000, signal)).jws).not.toBe(fresh.jws);
+ expect(t.asked.length).toBe(3);
+ // Signed out between the account lookup and a hit on the held statement: refused.
+ t.signOutAfterLookup = true;
+ await expect(cache.get("H", 120_000, signal)).rejects.toMatchObject({ code: "account_changed" });
+ expect(t.asked.length).toBe(3); // nothing asked for while signed out
 });

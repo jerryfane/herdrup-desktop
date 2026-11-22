@@ -550,9 +550,9 @@ export function decodeReply(line: string): unknown {
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
 export interface TransportLink {
  endpoint: Endpoint;
- /** The hello for one connect; refused, when the host refuses its statement, drops that exact
-  *  statement and says whether a fresh one is worth one more connect. */
- hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => boolean }>;
+ /** The hello for one connect. refused, when given, opts into one more connect after the host
+  *  refuses the hello's statement, and drops that exact statement first. */
+ hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void }>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number }>;
@@ -714,7 +714,7 @@ export class GuestTransport {
   if (this.#now() < this.#retryAt) throw rateLimited();
   let session: Session;
   for (let attempt = 0; ; attempt++) {
-   let hello: { payload: Uint8Array; refused?: () => boolean } | null = null;
+   let hello: { payload: Uint8Array; refused?: () => void } | null = null;
    try {
     hello = await this.#link.hello(signal);
     session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory);
@@ -722,7 +722,7 @@ export class GuestTransport {
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
     // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && error instanceof GuestError && error.kind === "statement" && hello?.refused?.()) continue;
+    if (attempt === 0 && error instanceof GuestError && error.kind === "statement" && hello?.refused) { hello.refused(); continue; }
     throw error;
    }
   }
