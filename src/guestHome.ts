@@ -118,8 +118,9 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    // roster has its search field.
    const header = node("header", "guest-home-header");
    const title = node("h2", "", access.machineLabel); title.dataset.testid = "guest-home-title";
+   // The count only once the machine listed its agents: none is not the same as not yet.
    header.append(title, node("p", "", owner
-    ? `${ownerRows.length} ${ownerRows.length === 1 ? "agent" : "agents"} · ${ownerScope(owner)}`
+    ? (board ? `${ownerRows.length} ${ownerRows.length === 1 ? "agent" : "agents"} · ` : "") + ownerScope(owner)
     : `Shared by ${access.ownerName} · 1 agent`));
    // content (GuestHomeView.swift 196-230), by the connection's phase.
    let content: HTMLElement;
@@ -146,7 +147,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     content = node("div", "guest-home-loading"); content.innerHTML = deps.spinner;
     content.setAttribute("role", "status"); content.setAttribute("aria-label", "Connecting");
    } else if (owner && ownerRows.length === 0) {
-    content = await message("square.grid.2x2", `No agents on ${access.machineLabel}`, "Agents started there show here.");
+    content = await message("square.grid.2x2.fill", `No agents on ${access.machineLabel}`, "Agents started there show here.");
    } else if (owner) {
     content = node("div", "guest-owner-agents");
     for (const r of ownerRows) {
