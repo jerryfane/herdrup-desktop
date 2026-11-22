@@ -301,4 +301,33 @@ test("the web Desk publishes accountChanged the moment the session ends", async 
  signOutHeld.resolve();
  await out;
  off();
+
+test("a call already cancelled starts nothing, not even a refresh; one cancelled behind the refresh lock stops waiting", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ const s = service();
+ const gone = new AbortController(); gone.abort(new Error("left"));
+ await expect(new WebAccount(s.fetcher).enrol(key, "x", undefined, gone.signal)).rejects.toThrow("left");
+ expect(s.calls).toEqual([]);
+ // Another tab holds the refresh lock: the cancelled caller doesn't wait for it.
+ const held = Promise.withResolvers<void>();
+ const locks = { request: async <T>(_n: string, run: () => Promise<T>) => { await held.promise; return run(); } };
+ const queued = new AbortController();
+ const pending = new WebAccount(s.fetcher, undefined, Date.now, locks).requestApproval(new Uint8Array(32), undefined, queued.signal);
+ queued.abort(new Error("closed"));
+ await expect(pending).rejects.toThrow("closed");
+ held.resolve();
+});
+
+test("an abort while an error body is read is reported as the abort, not as the service's answer", async () => {
+ const gate = Promise.withResolvers<void>();
+ const stop = new AbortController();
+ const s = service(url => url.endsWith("/v1/browsers/self")
+  ? new Response(new ReadableStream({ async pull(c) { await gate.promise; c.enqueue(new TextEncoder().encode('{"error":"device_required"}')); c.close(); } }), { status: 403, headers: { "Content-Type": "application/json" } })
+  : null);
+ const pending = new WebAccount(s.fetcher).browserSelf(undefined, stop.signal);
+ for (let i = 0; i < 10; i++) await Promise.resolve();
+ stop.abort(new Error("left"));
+ gate.resolve();
+ await expect(pending).rejects.toThrow("left");
 });
