@@ -55,12 +55,12 @@ const (
 )
 
 // crashReportURL is where reports go. HERDRUP_CRASH_REPORT_URL replaces the
-// relay; smoke and reference runs send nothing otherwise.
+// relay; otherwise only a release build outside CI sends (releaseTelemetry).
 func crashReportURL() string {
 	if url := os.Getenv("HERDRUP_CRASH_REPORT_URL"); url != "" {
 		return url
 	}
-	if smokeEnabled() || refEnabled() {
+	if !releaseTelemetry() {
 		return ""
 	}
 	return crashReportRelay
