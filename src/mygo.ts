@@ -1254,8 +1254,9 @@ export const Desk = {
     return call("Desk.AccountSyncNow");
   },
   /**
-   * AccountSyncStatus is the signed-in account's sync as last finished (no
-   * network); all zero when signed out or before this account's first sync.
+   * AccountSyncStatus is the signed-in account's newest good sync (no
+   * network): when, and what the account held then. All zero when signed
+   * out or before this account's first good sync.
    */
   accountSyncStatus(): Promise<AccountSyncStatus> {
     return call("Desk.AccountSyncStatus");

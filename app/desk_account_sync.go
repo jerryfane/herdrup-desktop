@@ -48,8 +48,13 @@ type syncState struct {
 	// PromptBaseline is each prompt's fields as this device last agreed
 	// them with the account: a prompt that differs from it was edited here.
 	PromptBaseline map[string]promptFields `json:"promptBaseline,omitempty"`
-	// LastSyncedMs is when the newest sync of AccountID finished well.
-	LastSyncedMs int64 `json:"lastSyncedMs,omitempty"`
+	// PromptsSending are the prompts this sync is writing: a prompt sent
+	// for the first time is in neither Mirror nor PromptBaseline until it
+	// is read back, and one deleted meanwhile still needs its tombstone.
+	PromptsSending []string `json:"promptsSending,omitempty"`
+	// LastSync is the newest sync of AccountID that finished well: when,
+	// and the items the account held then.
+	LastSync *AccountSyncStatus `json:"lastSync,omitempty"`
 }
 
 func (d *Desk) syncStatePath() string { return filepath.Join(d.dir, "account-sync.json") }
@@ -328,10 +333,10 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		return err
 	}
 	pending, baseline := latest.Deletes, latest.Baseline
-	pendingPrompts, promptBaseline, lastSynced := latest.PromptDeletes, latest.PromptBaseline, latest.LastSyncedMs
+	pendingPrompts, promptBaseline, lastSync := latest.PromptDeletes, latest.PromptBaseline, latest.LastSync
 	if switched {
 		pending, baseline = nil, nil
-		pendingPrompts, promptBaseline, lastSynced = nil, nil, 0
+		pendingPrompts, promptBaseline, lastSync = nil, nil, nil
 		for i := range st.Machines {
 			st.Machines[i].SyncID = ""
 		}
@@ -356,8 +361,14 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		}
 	}
 	changes = append(changes, promptChanges...)
-	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline,
-		PromptsPulled: true, PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, LastSyncedMs: lastSynced}
+	var sending []string
+	for _, c := range promptChanges {
+		if !c.Deleted {
+			sending = append(sending, c.ID)
+		}
+	}
+	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline, PromptsPulled: true,
+		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptsSending: sending, LastSync: lastSync}
 	if err := d.storeSyncState(state); err != nil {
 		d.storeMu.Unlock()
 		return err
@@ -367,8 +378,11 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		publishSavedPrompts(listOf(prompts))
 	}
 
-	for start := 0; start < len(changes); start += 100 {
-		batch := changes[start:min(start+100, len(changes))]
+	batches, err := account.Batches(changes)
+	if err != nil {
+		return err
+	}
+	for _, batch := range batches {
 		_, err := d.account.Push(ctx, acct, batch)
 		if err == nil {
 			// Acknowledged: what was written is what this device and the
@@ -416,8 +430,9 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		state.Deletes = slices.DeleteFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] })
 		state.PromptDeletes = slices.DeleteFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] })
 		state.Mirror = state.Mirror.Apply(readBack)
+		state.PromptsSending = nil
 	}
-	state.LastSyncedMs = time.Now().UnixMilli()
+	state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	err = d.storeSyncState(state)
 	d.storeMu.Unlock()
 	if err != nil {
@@ -463,8 +478,9 @@ type AccountSyncStatus struct {
 	Prompts  int `json:"prompts"`
 }
 
-// AccountSyncStatus is the signed-in account's sync as last finished (no
-// network); all zero when signed out or before this account's first sync.
+// AccountSyncStatus is the signed-in account's newest good sync (no
+// network): when, and what the account held then. All zero when signed
+// out or before this account's first good sync.
 func (d *Desk) AccountSyncStatus() (AccountSyncStatus, error) {
 	cur, _ := d.account.Current()
 	if cur == nil {
@@ -473,10 +489,10 @@ func (d *Desk) AccountSyncStatus() (AccountSyncStatus, error) {
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
 	d.storeMu.Unlock()
-	if err != nil || state.AccountID != cur.AccountID {
+	if err != nil || state.AccountID != cur.AccountID || state.LastSync == nil {
 		return AccountSyncStatus{}, err
 	}
-	return AccountSyncStatus{LastSyncedMs: state.LastSyncedMs, Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}, nil
+	return *state.LastSync, nil
 }
 
 // AccountSyncNow runs a sync round now (the account page's "Sync now") and

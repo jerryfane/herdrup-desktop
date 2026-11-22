@@ -16,7 +16,7 @@ const legacy = "dev.herdr.savedPrompts.v1";
 
 test("the WebView's old prompt list moves into Desk once, ids kept, and the old key is cleared", async () => {
  const storage = memory();
- const desk = createPromptsDesk(storage);
+ const desk = createPromptsDesk(() => storage);
  storage.setItem(legacy, JSON.stringify([
   { id: "0F8FAD5B-D9CB-469F-A165-70867728950E", nickname: " standup ", text: "What did you do?" },
   { id: "7c9e6679-7425-40de-944b-e07fc1f90ae7", nickname: "", text: "run the tests" },
@@ -36,7 +36,8 @@ test("the WebView's old prompt list moves into Desk once, ids kept, and the old 
 });
 
 test("the browser guest's prompts save, edit in place and delete", async () => {
- const desk = createPromptsDesk(memory());
+ const storage = memory();
+ const desk = createPromptsDesk(() => storage);
  const [first] = await desk.savePrompt({ id: "", nickname: " a ", text: "one" });
  await desk.savePrompt({ id: "", nickname: "", text: "two" });
  expect(first!.nickname).toBe("a");
@@ -44,4 +45,11 @@ test("the browser guest's prompts save, edit in place and delete", async () => {
  expect(edited.map(p => p.text)).toEqual(["one, edited", "two"]);
  expect((await desk.deletePrompt(first!.id)).map(p => p.text)).toEqual(["two"]);
  await expect(desk.savePrompt({ id: "", nickname: "", text: "  " })).rejects.toThrow();
+});
+
+test("a browser that refuses storage still makes the guest Desk; the prompt calls fail instead", async () => {
+ const refused = new Error("SecurityError: The operation is insecure.");
+ const desk = createPromptsDesk(() => { throw refused; });
+ await expect(desk.savedPrompts()).rejects.toBe(refused);
+ await expect(desk.savePrompt({ id: "", nickname: "", text: "one" })).rejects.toBe(refused);
 });

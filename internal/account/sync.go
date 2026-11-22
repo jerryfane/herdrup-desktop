@@ -111,8 +111,45 @@ func (c *Client) pull(ctx context.Context, acct string, since int64) (Pull, erro
 	return Pull{}, fmt.Errorf("account service: more than %d sync pages", maxPullPages)
 }
 
-// Push writes changes (≤100) to account acct and returns the service's
-// answer; ErrAccountChanged once another account is signed in.
+// The service's limits on one push (src/sync.ts MAX_CHANGES,
+// MAX_SYNC_BODY_BYTES): past either it answers 413 to the whole push.
+const (
+	MaxPushChanges = 100
+	MaxPushBytes   = 256 * 1024
+)
+
+// pushOverhead is `{"changes":[` and `]}` around the changes.
+const pushOverhead = len(`{"changes":[]}`)
+
+// Batches splits changes into pushes the service takes: at most
+// MaxPushChanges each, and each request body (as Push encodes it) at most
+// MaxPushBytes. Order is kept.
+func Batches(changes []Change) ([][]Change, error) {
+	var out [][]Change
+	start, size := 0, pushOverhead
+	for i, c := range changes {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return nil, err
+		}
+		n := len(raw)
+		if i > start {
+			n++ // the comma
+		}
+		if i > start && (i-start == MaxPushChanges || size+n > MaxPushBytes) {
+			out = append(out, changes[start:i])
+			start, size, n = i, pushOverhead, len(raw)
+		}
+		size += n
+	}
+	if start < len(changes) {
+		out = append(out, changes[start:])
+	}
+	return out, nil
+}
+
+// Push writes changes (one of Batches) to account acct and returns the
+// service's answer; ErrAccountChanged once another account is signed in.
 func (c *Client) Push(ctx context.Context, acct string, changes []Change) (PushResult, error) {
 	var out PushResult
 	if len(changes) == 0 {

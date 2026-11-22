@@ -15,9 +15,11 @@ function promptID(id: string): string {
  return UUID.test(lower) ? lower : crypto.randomUUID();
 }
 
-export function createPromptsDesk(storage: Pick<Storage, "getItem" | "setItem"> = localStorage) {
- const read = (): Stored => JSON.parse(storage.getItem(SAVED_PROMPTS_KEY) ?? `{"prompts":[]}`) as Stored;
- const write = (stored: Stored) => storage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(stored));
+/** `storage` is looked up on each call, not when the module loads: a browser that refuses storage
+ *  (a throwing `localStorage` getter) still starts, and the prompt calls reject with its error. */
+export function createPromptsDesk(storage: () => Pick<Storage, "getItem" | "setItem"> = () => localStorage) {
+ const read = (): Stored => JSON.parse(storage().getItem(SAVED_PROMPTS_KEY) ?? `{"prompts":[]}`) as Stored;
+ const write = (stored: Stored) => storage().setItem(SAVED_PROMPTS_KEY, JSON.stringify(stored));
  return {
   async savedPrompts(): Promise<SavedPrompt[]> { return read().prompts; },
   async savePrompt(p: SavedPrompt): Promise<SavedPrompt[]> {

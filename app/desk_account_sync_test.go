@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,6 +35,10 @@ type syncWorker struct {
 	failPush bool
 	// onPull, when set, runs once inside the next pull, before it answers.
 	onPull func()
+	// onPush, when set, runs once inside the next push, before it is applied.
+	onPush func()
+	// pushes counts the pushes the service took.
+	pushes int
 }
 
 func (w *syncWorker) live() map[string]account.Item {
@@ -86,10 +92,24 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 				Body       json.RawMessage `json:"body"`
 			}
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		raw, _ := io.ReadAll(r.Body)
+		// sync.ts MAX_SYNC_BODY_BYTES and MAX_CHANGES: a bigger push is refused whole.
+		if len(raw) > 256*1024 {
+			reply(413, map[string]string{"error": "too_large"})
+			return
+		}
+		_ = json.Unmarshal(raw, &body)
+		if len(body.Changes) > 100 {
+			reply(413, map[string]string{"error": "too_large"})
+			return
+		}
 		if w.failPush {
 			reply(503, map[string]string{"error": "unavailable"})
 			return
+		}
+		if hook := w.onPush; hook != nil {
+			w.onPush = nil
+			hook()
 		}
 		ids := map[string]bool{}
 		for _, c := range body.Changes {
@@ -101,8 +121,22 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			ids[c.Collection+"/"+c.ID] = true
 		}
 		for _, c := range body.Changes {
-			if c.Body != nil && !validSyncBody(c.Collection, c.Body) {
+			if c.Body == nil {
+				continue
+			}
+			if !validSyncBody(c.Collection, c.Body) {
 				reply(400, map[string]string{"error": "invalid_item"})
+				return
+			}
+			// MAX_ITEM_BYTES, of the body as JSON.stringify writes it.
+			var fields map[string]any
+			_ = json.Unmarshal(c.Body, &fields)
+			var stored bytes.Buffer
+			enc := json.NewEncoder(&stored)
+			enc.SetEscapeHTML(false)
+			_ = enc.Encode(fields)
+			if stored.Len()-1 > 16*1024 {
+				reply(413, map[string]string{"error": "too_large"})
 				return
 			}
 		}
@@ -129,6 +163,7 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			}
 			w.items[c.ID] = it
 		}
+		w.pushes++
 		reply(200, map[string]any{"rev": w.rev, "applied": []any{}, "conflicts": []any{}})
 	default:
 		reply(404, map[string]string{"error": "not_found"})
@@ -995,5 +1030,90 @@ func TestAccountSyncStatusAndSyncNow(t *testing.T) {
 	signInTo(mac, srv, "other")
 	if s, _ := mac.AccountSyncStatus(); s != (AccountSyncStatus{}) {
 		t.Fatalf("another account's status: %+v", s)
+	}
+}
+
+// #273 review: 40 prompts of 8 KB are more than one push may carry (256
+// KiB), though fewer than 100: they go in as many pushes as the bytes need.
+func TestManyLongPromptsFitTheServicesPushLimit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	for i := range 40 {
+		savePrompt(t, mac, "", "", fmt.Sprintf("%02d", i)+strings.Repeat("x", 8000))
+	}
+	syncEach(t, mac)
+	if n := len(w.livePrompts()); n != 40 || w.pushes < 2 {
+		t.Fatalf("the account holds %d prompts after %d pushes; want 40 in more than one", n, w.pushes)
+	}
+}
+
+// #273 review: a prompt within 8 KB of text whose stored body passes the
+// service's 16 KiB item limit (quotes take two bytes each) stays here and
+// doesn't stop the rest of the push.
+func TestAPromptTooBigToStoreStaysHere(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	quotes := savePrompt(t, mac, "", "", "x"+strings.Repeat(`"`, 8191))
+	good := savePrompt(t, mac, "", "", "fits")
+	syncEach(t, mac)
+	live := w.livePrompts()
+	if _, sent := live[quotes.ID]; sent || live[good.ID] == "" {
+		t.Fatalf("the account holds %v; want only the prompt that fits", live)
+	}
+	if _, kept := promptsOf(t, mac)[quotes.ID]; !kept {
+		t.Fatal("the prompt too big to store was dropped here")
+	}
+}
+
+// #273 review: a prompt deleted while its first upload is on the way is
+// deleted in the account by the next sync, not brought back.
+func TestAPromptDeletedWhileItUploadsStaysDeleted(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac, linux := device(t, srv), device(t, srv)
+	p := savePrompt(t, mac, "", "", "short-lived")
+	w.mu.Lock()
+	w.onPush = func() {
+		if _, err := mac.DeletePrompt(p.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	w.mu.Unlock()
+	syncEach(t, mac, mac, linux)
+	if got := promptsOf(t, mac); len(got) != 0 {
+		t.Fatalf("mac's prompts: %+v; want the deleted one gone", got)
+	}
+	if _, ok := w.livePrompts()[p.ID]; ok {
+		t.Fatal("the account still holds the prompt deleted during its upload")
+	}
+	if got := promptsOf(t, linux); len(got) != 0 {
+		t.Fatalf("linux's prompts: %+v", got)
+	}
+}
+
+// #273 review: the status's counts are the account's at its time. A failed
+// sync that pulled another device's prompt leaves both as they were.
+func TestAFailedSyncLeavesTheStatusAsItWas(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	savePrompt(t, mac, "", "", "one")
+	syncEach(t, mac)
+	before, err := mac.AccountSyncStatus()
+	if err != nil || before.Prompts != 1 || before.LastSyncedMs == 0 {
+		t.Fatalf("after a good sync: %+v, %v", before, err)
+	}
+	w.seedPrompt("00000000-0000-4000-8000-000000000001", `{"text":"from the phone"}`)
+	savePrompt(t, mac, "", "", "two")
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a refused push reported success")
+	}
+	if after, _ := mac.AccountSyncStatus(); after != before {
+		t.Fatalf("after a failed sync: %+v; want %+v", after, before)
 	}
 }

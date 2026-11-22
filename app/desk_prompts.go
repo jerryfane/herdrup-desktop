@@ -156,12 +156,14 @@ func (d *Desk) DeletePrompt(id string) ([]SavedPrompt, error) {
 		d.storeMu.Unlock()
 		return listOf(st.Prompts), nil
 	}
-	// A prompt the account holds (or was sent) is kept for a tombstone
-	// before it goes, as RemoveMachine: a removal the account would never
-	// hear of is refused instead.
+	// A prompt the account holds, or may hold (a sync is sending it), is
+	// kept for a tombstone before it goes, as RemoveMachine: a removal the
+	// account would never hear of is refused instead. The next sync pushes
+	// the tombstone only if the account then holds the prompt.
 	state, err := d.loadSyncState()
 	_, agreed := state.PromptBaseline[id]
-	held := agreed || slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == id })
+	held := agreed || slices.Contains(state.PromptsSending, id) ||
+		slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == id })
 	if err == nil && held && !slices.Contains(state.PromptDeletes, id) {
 		state.PromptDeletes = append(state.PromptDeletes, id)
 		err = d.storeSyncState(state)

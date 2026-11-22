@@ -1,8 +1,10 @@
 package account
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -14,12 +16,17 @@ const PromptsCap = 500
 // The prompts collection's field limits (§5.5, AccountService src/sync.ts):
 // a title of up to 128 code points on one line, a text of up to 8 KB of
 // UTF-8 that may hold tabs and line breaks, and an order the service can
-// keep exactly.
+// keep exactly. The body as the service stores it (JSON.stringify of those
+// fields) is at most MaxItemBytes.
 const (
 	maxPromptTitle = 128
 	maxPromptText  = 8192
 	maxPromptOrder = 1<<53 - 1
 )
+
+// MaxItemBytes is the most UTF-8 bytes one item's body may take once the
+// service has serialised it (MAX_ITEM_BYTES; 413 too_large).
+const MaxItemBytes = 16 * 1024
 
 // RemotePrompt is a live (not deleted) prompts item.
 type RemotePrompt struct {
@@ -70,5 +77,19 @@ func ValidPrompt(b PromptBody) bool {
 	if o := b.Order; o != nil && (math.IsNaN(*o) || math.Abs(*o) > maxPromptOrder) {
 		return false
 	}
-	return true
+	return storedSize(b) <= MaxItemBytes
+}
+
+// storedSize is the length of b as the service stores it: JSON.stringify,
+// which escapes what Go's encoder does without HTML escaping, except U+2028
+// and U+2029, which it keeps as themselves (3 bytes, not 6).
+func storedSize(b PromptBody) int {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(b) != nil {
+		return math.MaxInt
+	}
+	separators := strings.Count(b.Title+b.Text, "\u2028") + strings.Count(b.Title+b.Text, "\u2029")
+	return len(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))) - 3*separators
 }
