@@ -86,6 +86,18 @@ func (c *Client) WebApproveOffered(ctx context.Context) (bool, error) {
 	return slices.Contains(features, WebApproveFeature), nil
 }
 
+// approvalExpiryFinalFeature is the /v1/health feature that says the
+// service stores a request's expiry before it reports it, after which no
+// finish is recorded (herdrup #801): a reported expiry is final.
+const approvalExpiryFinalFeature = "approval_expiry_final"
+
+// expiryFinal reports whether the service lists approval_expiry_final; an
+// unreadable list is no.
+func (c *Client) expiryFinal(ctx context.Context) bool {
+	features, err := c.healthFeatures(ctx)
+	return err == nil && slices.Contains(features, approvalExpiryFinalFeature)
+}
+
 // Approvals lists the browsers waiting for this account's approval.
 func (c *Client) Approvals(ctx context.Context, acct string) ([]ApprovalRequest, error) {
 	var out struct {

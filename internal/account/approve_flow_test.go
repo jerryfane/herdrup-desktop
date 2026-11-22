@@ -50,6 +50,11 @@ type approvalService struct {
 	readHeld  time.Duration
 	readAt    time.Time
 	expiresIn int
+	// features, when set, is the /v1/health list; with featureReads > 0
+	// only that many health reads list it (a rollback after them).
+	features     []string
+	featureReads int
+	healthReads  int
 }
 
 func newApprovalService(t *testing.T) *approvalService {
@@ -71,6 +76,13 @@ func (s *approvalService) serve(w http.ResponseWriter, r *http.Request, body map
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
+	case r.URL.Path == "/v1/health" && s.features != nil:
+		s.healthReads++
+		listed := s.features
+		if s.featureReads > 0 && s.healthReads > s.featureReads {
+			listed = []string{}
+		}
+		reply(w, 200, map[string]any{"ok": true, "features": listed})
 	case r.URL.Path == "/v1/approvals/req-1/claim" && r.Method == http.MethodPost:
 		s.nonceT, _ = base64.RawURLEncoding.DecodeString(body["nonce_t"])
 		reply(w, 200, map[string]any{})
@@ -445,5 +457,40 @@ func TestATakenDenialStaysTheOutcome(t *testing.T) {
 	}
 	if s.finishes != 1 || s.denied != 1 {
 		t.Fatalf("finishes %d, denials %d; want 1 and 1", s.finishes, s.denied)
+	}
+}
+
+// A service that stores the expiry it reports (approval_expiry_final) makes
+// an expired read final even after a finish with an unknown outcome, but
+// only when it lists the feature both before and after the read.
+func TestAStoredExpiryIsFinal(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		featureReads int
+		want         string
+	}{
+		{"listed throughout", 0, "not approved"},
+		{"rolled back during the read", 1, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, a, approver := revealedApproval(t)
+			ctx := context.Background()
+			if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
+				t.Fatal("code refused")
+			}
+			s.mu.Lock()
+			s.finishStatus, s.readState = http.StatusServiceUnavailable, ApprovalExpired
+			s.features, s.featureReads = []string{"web_approve", "approval_expiry_final"}, tc.featureReads
+			s.mu.Unlock()
+			err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`))
+			var refused *NotApprovedError
+			got := "unknown"
+			if errors.As(err, &refused) {
+				got = "not approved"
+			}
+			if got != tc.want {
+				t.Fatalf("lost finish, then a stored expiry: %v (%s), want %s", err, got, tc.want)
+			}
+		})
 	}
 }
