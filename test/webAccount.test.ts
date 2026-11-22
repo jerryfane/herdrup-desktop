@@ -302,3 +302,18 @@ test("the web Desk publishes accountChanged the moment the session ends", async 
  await out;
  off();
 });
+
+test("the session generation changes when the session ends and when a refresh brings another account", async () => {
+ let now = 1_000_000;
+ const s = service(undefined, n => n === 2 ? "acct-B" : "acct-A");
+ const account = new WebAccount(s.fetcher, undefined, () => now);
+ await account.accessToken();
+ const a = account.generation;
+ now += 3_600_000; await account.accessToken(); // B
+ const b = account.generation;
+ now += 3_600_000; await account.accessToken(); // A again
+ const a2 = account.generation;
+ expect(new Set([a, b, a2]).size).toBe(3);
+ await account.signOut();
+ expect(account.generation).not.toBe(a2);
+});

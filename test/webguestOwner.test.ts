@@ -10,10 +10,10 @@ import { statementCache } from "../src/web/statements";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 /** Statements jws-1, jws-2, …, each fresh for 600 s, and what was dropped. */
-function statements(): StatementSource & { issued: number; dropped: string[][] } {
+function statements(): StatementSource & { issued: number; dropped: string[][]; alive: boolean } {
  const s = {
-  issued: 0, dropped: [] as string[][],
-  async get() { s.issued++; return { jws: `jws-${s.issued}`, expMs: Date.now() + 600_000 }; },
+  issued: 0, dropped: [] as string[][], alive: true,
+  async get() { s.issued++; return { jws: `jws-${s.issued}`, expMs: Date.now() + 600_000, live: () => s.alive }; },
   drop(host: string, jws: string) { s.dropped.push([host, jws]); },
  };
  return s;
@@ -251,4 +251,31 @@ test("nothing crosses a sign-out, even back into the same account: in flight, he
  t.signOutAfterLookup = true;
  await expect(cache.get("H", 120_000, signal)).rejects.toMatchObject({ code: "account_changed" });
  expect(t.asked.length).toBe(3); // nothing asked for while signed out
+});
+
+test("a hello whose session ended (signed out while it was prepared) is never dialed", async () => {
+ // admit counts each connect (startRelay counts only through it).
+ const relay = startRelay({ admit: () => undefined, serve: async (_conn, handshake) => { await ping((await handshake()).reply(ownerReply(Math.floor(Date.now() / 1000) + 660))); } });
+ try {
+  const s = statements();
+  s.alive = false;
+  const t = new GuestTransport(ownerLink(endpointOf(relay), "x", s), staticKey(await generateIdentity()));
+  await expect(t.call("ping")).rejects.toBeInstanceOf(GuestError);
+  expect(relay.connects).toBe(0);
+  t.close();
+ } finally { relay.stop(); }
+});
+
+test("from A to B and back to A by refresh, A's earlier statement isn't used: the session changed twice", async () => {
+ const { t, api } = issuer(Date.now);
+ const cache = statementCache(api);
+ const signal = new AbortController().signal;
+ const first = await cache.get("H", 120_000, signal);
+ t.generation++; t.signedIn = "acct-B";  // a refresh brought B's session
+ await cache.get("H", 120_000, signal);
+ t.generation++; t.signedIn = "acct-A";  // and A's again
+ const again = await cache.get("H", 120_000, signal);
+ expect(again.jws).not.toBe(first.jws);
+ expect(first.live()).toBe(false);
+ expect(t.asked.length).toBe(3);
 });

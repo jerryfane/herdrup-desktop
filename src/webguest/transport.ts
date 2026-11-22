@@ -390,7 +390,10 @@ class Session {
 }
 
 /** session.go:125-178: dial, handshake, and the host's admission. */
-async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory): Promise<Session> {
+/** The hello's session ended before it went out. */
+const helloStale = () => closed();
+
+async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory, live?: () => boolean): Promise<Session> {
  const address = socketURL(endpoint);
  if (endpoint.hostPublicKey.length !== 32) throw other("The shared machine's saved identity is damaged.");
  const handshake = new Initiator({ hostID: endpoint.hostID, hostPublicKey: endpoint.hostPublicKey, staticKey: identity });
@@ -400,8 +403,10 @@ async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8
  } catch (error) {
   throw other(`prepare secure guest hello: ${error instanceof Error ? error.message : String(error)}`);
  }
+ if (live && !live()) throw helloStale();
  const socket = await RelaySocket.connect(address, factory, signal);
  try {
+  if (live && !live()) throw helloStale();
   socket.send(message);
   const reply = await socket.read();
   if (reply === null) throw other("The shared machine closed the connection during the secure handshake.");
@@ -551,8 +556,10 @@ export function decodeReply(line: string): unknown {
 export interface TransportLink {
  endpoint: Endpoint;
  /** The hello for one connect. refused, when given, opts into one more connect after the host
-  *  refuses the hello's statement, and drops that exact statement first. */
- hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void }>;
+  *  refuses the hello's statement, and drops that exact statement first. live, when given, is
+  *  checked just before dialing and before sending: a hello whose session ended (sign-out)
+  *  is never sent. */
+ hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void; live?: () => boolean }>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number }>;
@@ -714,10 +721,10 @@ export class GuestTransport {
   if (this.#now() < this.#retryAt) throw rateLimited();
   let session: Session;
   for (let attempt = 0; ; attempt++) {
-   let hello: { payload: Uint8Array; refused?: () => void } | null = null;
+   let hello: { payload: Uint8Array; refused?: () => void; live?: () => boolean } | null = null;
    try {
     hello = await this.#link.hello(signal);
-    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory);
+    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live);
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();

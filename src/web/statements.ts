@@ -1,10 +1,11 @@
 // This browser's account statements per machine (POST /v1/statements; AccountService
 // statements.ts: 600 s each, exp absolute). An owner hello and its in-band refresh carry one. A
-// statement belongs to the session it was issued in: each one is held, and each request shared,
-// under that session (its generation and account), and it is stored or handed out only while that
-// session is still this page's, so nothing crosses a sign-out, even back into the same account.
-// A statement is asked for again once too little of it is left; callers that ask at once share
-// one request, and each stops waiting when its own signal aborts while the request goes on.
+// statement belongs to the session it was issued in (WebAccount.generation and the account):
+// the cache holds only the current session's, drops them all when the session changes, and
+// stores or hands one out only while that session is still the page's; each statement it gives
+// says live() for the transport to check again right before it dials and sends. A statement is
+// asked for again once too little of it is left; callers that ask at once share one request,
+// and each stops waiting when its own signal aborts while the request goes on.
 
 import type { StatementSource } from "../webguest/owner";
 import { AccountServiceError, type WebAccount } from "./account";
@@ -27,8 +28,10 @@ function waitFor<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 const stale = () => new AccountServiceError(409, "account_changed");
 
 export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount" | "current" | "generation">, now: () => number = Date.now): StatementSource {
- const held = new Map<string, Held>();
- const asking = new Map<string, Promise<Held>>();
+ // The current session's statements and requests, by host; replaced when the session changes.
+ let session = "";
+ let held = new Map<string, Held>();
+ let asking = new Map<string, Promise<Held>>();
  return {
   async get(hostID, minLeftMs, signal) {
    signal.throwIfAborted();
@@ -36,28 +39,28 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
    const generation = account.generation;
    const live = () => account.generation === generation && account.current?.accountID === acct;
    if (!live()) throw stale();
-   const key = `${generation}\n${acct}\n${hostID}`;
-   const h = held.get(key);
-   if (h !== undefined && h.expMs - now() >= minLeftMs) return h;
-   let flight = asking.get(key);
+   if (session !== `${generation}\n${acct}`) { session = `${generation}\n${acct}`; held = new Map(); asking = new Map(); }
+   const mine = { held, asking };
+   const h = held.get(hostID);
+   if (h !== undefined && h.expMs - now() >= minLeftMs) return { ...h, live };
+   let flight = asking.get(hostID);
    if (flight === undefined) {
     flight = account.statements([hostID], acct).then(reply => {
-     if (!live()) throw stale();
      const s = reply.statements.find(x => x.host === hostID);
      if (s === undefined || typeof s.jws !== "string" || !Number.isSafeInteger(reply.exp)) throw new Error("The account service gave no statement for this machine.");
      const got = { jws: s.jws, expMs: reply.exp * 1000 };
-     held.set(key, got);
+     mine.held.set(hostID, got);
      return got;
-    }).finally(() => asking.delete(key));
-    asking.set(key, flight);
+    }).finally(() => mine.asking.delete(hostID));
+    asking.set(hostID, flight);
    }
    // The newest the service gives, even with less left than asked: it is all there is.
    const got = await waitFor(flight, signal);
    if (!live()) throw stale();
-   return got;
+   return { ...got, live };
   },
   drop(hostID, jws) {
-   for (const [key, h] of held) if (key.endsWith(`\n${hostID}`) && h.jws === jws) held.delete(key);
+   if (held.get(hostID)?.jws === jws) held.delete(hostID);
   },
  };
 }
