@@ -22,7 +22,8 @@
 .account-panel-full .settings-group > .account-row + .account-row::before { content: ""; position: absolute; top: -1px; left: 52px; right: 0; height: 1px; background: var(--color-hairline-quiet); }
 .account-footnote { margin: 8px 32px 0; color: var(--color-text-faint); font: 400 13px/1.4 var(--font-app); }
 .account-device-manage { display: grid; place-items: center; width: 44px; height: 44px; margin-right: -12px; border: 0; background: none; color: var(--color-text-dim); cursor: pointer; }
-.account-device-menu { position: absolute; right: 16px; top: 46px; z-index: 5; display: flex; flex-direction: column; min-width: 160px; padding: 6px; border: 1px solid var(--color-hairline); border-radius: 12px; background: var(--color-surface-raised); }
+/* Fixed in the body (above the settings group's clip), placed under its ⋯ button by herdrupAccount.ts. */
+.account-device-menu { position: fixed; z-index: 50; display: flex; flex-direction: column; min-width: 160px; padding: 6px; border: 1px solid var(--color-hairline); border-radius: 12px; background: var(--color-surface-raised); color: var(--color-text); }
 .account-device-menu button { padding: 8px 12px; border: 0; border-radius: 8px; background: none; color: var(--color-text); text-align: left; font: 400 15px var(--font-app); cursor: pointer; }
 .account-device-menu button:hover, .account-device-menu button:focus-visible { background: var(--color-surface); }
 .account-rename input { width: 100%; box-sizing: border-box; margin: 4px 0 12px; }

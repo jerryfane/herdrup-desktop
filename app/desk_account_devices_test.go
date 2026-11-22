@@ -193,14 +193,14 @@ func TestRemovingThisComputerSignsItOut(t *testing.T) {
 	if err := d.enrolThisDevice(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.AccountRemoveDevice(ctx, "d0", false); err != nil || !d.AccountState().SignedIn {
+	if err := d.AccountRemoveDevice(ctx, "d0"); err != nil || !d.AccountState().SignedIn {
 		t.Fatalf("remove another device: %v, %+v", err, d.AccountState())
 	}
 	list, _ := d.AccountDevices(ctx)
 	if len(list.Devices) != 1 {
 		t.Fatalf("after removing the phone: %+v", list)
 	}
-	if err := d.AccountRemoveDevice(ctx, list.Devices[0].ID, true); err != nil {
+	if err := d.AccountRemoveDevice(ctx, list.Devices[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	if d.AccountState().SignedIn {

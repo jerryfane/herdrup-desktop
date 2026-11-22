@@ -476,14 +476,25 @@ func (c *Client) SignOut(ctx context.Context) error {
 // forget drops the session here (memory and store): a sign-out, or the
 // account deleted on the service.
 func (c *Client) forget() error {
+	_, err := c.forgetIf(func() bool { return true })
+	return err
+}
+
+// forgetIf drops the session only when still holds under the session lock
+// (the session a deletion was started for, say). It reports whether it did.
+func (c *Client) forgetIf(still func() bool) (bool, error) {
 	c.writes.Lock()
 	defer c.writes.Unlock()
 	c.mu.Lock()
+	if !still() {
+		c.mu.Unlock()
+		return false, nil
+	}
 	c.epoch++
 	c.flight = nil
 	c.saved, c.access, c.pending, c.pendingDelete, c.loaded = nil, "", "", "", true
 	c.mu.Unlock()
-	return c.store.Delete()
+	return true, c.store.Delete()
 }
 
 func (c *Client) persist(s *stored) error {

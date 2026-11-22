@@ -80,8 +80,10 @@ func (c *Client) AbandonDelete() {
 }
 
 // FinishDelete deletes account acct with the code the browser brought back
-// and the pending verifier. On success the session is forgotten here (the
-// account and its sessions are gone on the service).
+// and the pending verifier. On success the session that started it is
+// forgotten here (the account and its sessions are gone on the service), but
+// not a session signed in since. ErrDeleteUnconfirmed means the request went
+// out and no answer came back: the service may have deleted the account.
 func (c *Client) FinishDelete(ctx context.Context, acct, code string) (Deleted, error) {
 	if !handoffCode.MatchString(code) {
 		return Deleted{}, errors.New("account: malformed delete link")
@@ -89,20 +91,28 @@ func (c *Client) FinishDelete(ctx context.Context, acct, code string) (Deleted, 
 	c.mu.Lock()
 	verifier := c.pendingDelete
 	c.pendingDelete = ""
+	epoch := c.epoch
 	c.mu.Unlock()
 	if verifier == "" {
 		return Deleted{}, ErrNoDelete
 	}
 	var out Deleted
 	if err := c.authed(ctx, acct, http.MethodPost, "/v1/account/delete", map[string]string{"handoff_code": code, "handoff_verifier": verifier}, &out); err != nil {
-		return Deleted{}, err
+		var api *APIError
+		if errors.As(err, &api) || errors.Is(err, ErrSignedOut) || errors.Is(err, ErrAccountChanged) {
+			return Deleted{}, err
+		}
+		return Deleted{}, errors.Join(ErrDeleteUnconfirmed, err)
 	}
 	if !out.Deleted {
 		return Deleted{}, errors.New("account service: the deletion was not confirmed")
 	}
-	c.forget()
-	return out, nil
+	_, err := c.forgetIf(func() bool { return c.epoch == epoch && c.saved != nil && c.saved.AccountID == acct })
+	return out, err
 }
+
+// ErrDeleteUnconfirmed is a deletion request that got no answer.
+var ErrDeleteUnconfirmed = errors.New("account: the deletion's answer didn't arrive")
 
 // ErrNoDelete means a delete link arrived that this app did not start (or
 // started before the newest one).

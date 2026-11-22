@@ -112,6 +112,9 @@ func deleteEndedProblem(code string) string {
 func deleteProblem(err error) string {
 	var api *account.APIError
 	switch {
+	case errors.Is(err, account.ErrDeleteUnconfirmed):
+		// The service deletes before it answers: a lost answer may hide a deletion.
+		return "The account service didn't answer, so the deletion isn't confirmed. Open this page again to see whether the account still exists."
 	case errors.Is(err, account.ErrNoDelete):
 		return "This confirmation was started elsewhere or already used. Nothing was deleted."
 	case errors.As(err, &api) && api.Code == "wrong_account":

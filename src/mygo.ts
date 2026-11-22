@@ -1297,12 +1297,12 @@ export const Desk = {
     return call("Desk.AccountProviders");
   },
   /**
-   * AccountRemoveDevice removes device id. Removing this computer ends its
-   * session too (the service drops the sessions bound to the device), so it
-   * is signed out here as well.
+   * AccountRemoveDevice removes device id. When it is this computer (the
+   * service's own device list says so), its session ends on the service too,
+   * so it is signed out here as well.
    */
-  accountRemoveDevice(id: string, current: boolean): Promise<void> {
-    return call("Desk.AccountRemoveDevice", id, current);
+  accountRemoveDevice(id: string): Promise<void> {
+    return call("Desk.AccountRemoveDevice", id);
   },
   /** AccountRenameDevice renames device id. */
   accountRenameDevice(id: string, name: string): Promise<void> {

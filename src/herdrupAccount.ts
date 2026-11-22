@@ -54,17 +54,24 @@ export class HerdrUpAccountPanel {
  private devices: AccountDevices | null = null;
  private sync: AccountSyncStatus | null = null;
  private devicesProblem = "";
+ /** A Rename or Remove the service refused: shown under DEVICES until the next device action. */
+ private deviceNote = "";
  private deleteInfo: AccountDeleteInfo | null = null;
  /** A deletion's outcome, shown on the signed-out page after it (or on this page if it failed). */
  private deleteNote = "";
  private deleting = false;
+ /** Bumped by each details load and by a session change: an older load's answers are dropped. */
+ private detailsGeneration = 0;
 
  constructor(private readonly changed: () => void, private readonly glyph: Glyph | null = null) {
   events.accountChanged.on(s => {
    const was = this.state?.signedIn;
    this.waiting = false; this.state = s;
-   if (!s.signedIn) { this.devices = null; this.sync = null; this.deleteInfo = null; }
-   else if (!was) void this.loadDetails();
+   if (!s.signedIn) {
+    // The session ended: its devices, counts and any deletion it was waiting on go with it.
+    this.detailsGeneration++;
+    this.devices = null; this.sync = null; this.deleteInfo = null; this.deleting = false; this.deviceNote = "";
+   } else if (!was) void this.loadDetails();
    this.draw(); this.changed();
   });
   events.accountDeleted.on(r => {
@@ -76,6 +83,10 @@ export class HerdrUpAccountPanel {
     : r.problem ?? "";
    this.draw();
   });
+  // A sync that finished (in the background, after sign-in, or elsewhere) refreshes SYNCED.
+  const synced = () => { if (this.state?.signedIn) void this.loadSyncStatus(); };
+  events.syncedMachinesChanged.on(synced);
+  events.savedPromptsChanged.on(synced);
  }
 
  /** The full signed-in screen: the desktop app's, not the web guest's. */
@@ -105,11 +116,24 @@ export class HerdrUpAccountPanel {
  /** The SYNCED counts and the DEVICES list (desktop only). */
  private async loadDetails() {
   if (!this.full || !this.state?.signedIn) return;
+  const at = ++this.detailsGeneration;
   const [sync, devices, del] = await Promise.allSettled([Desk.accountSyncStatus(), Desk.accountDevices(), Desk.accountDeleteInfo()]);
+  if (at !== this.detailsGeneration) return;
   if (sync.status === "fulfilled") this.sync = sync.value;
   if (devices.status === "fulfilled") { this.devices = devices.value; this.devicesProblem = ""; }
   else this.devicesProblem = errorText(devices.reason);
   if (del.status === "fulfilled") this.deleteInfo = del.value;
+  this.draw();
+ }
+
+ /** SYNCED alone, after a sync finished; a newer full load wins over it. */
+ private async loadSyncStatus() {
+  if (!this.full) return;
+  const at = this.detailsGeneration;
+  const [sync, state] = await Promise.allSettled([Desk.accountSyncStatus(), Desk.accountState()]);
+  if (at !== this.detailsGeneration) return;
+  if (sync.status === "fulfilled") this.sync = sync.value;
+  if (state.status === "fulfilled" && state.value.signedIn) this.state = state.value;
   this.draw();
  }
 
@@ -170,6 +194,7 @@ export class HerdrUpAccountPanel {
   for (const device of this.devices?.devices ?? []) deviceRows.push(this.deviceRow(device));
   if (!this.devices) deviceRows.push(row(glyph("desktopcomputer"), this.devicesProblem ? "Couldn't load devices" : "Loading devices…", this.devicesProblem));
   nodes.push(group("DEVICES", deviceRows));
+  if (this.deviceNote) { const line = footnote(this.deviceNote); line.setAttribute("role", "status"); nodes.push(line); }
   const signOut = row(glyph("rectangle.portrait.and.arrow.right"), this.busy === "signing-out" ? "Signing out…" : "Sign out", "", null, () => { void this.confirmSignOut(); });
   signOut.disabled = this.busy !== "";
   nodes.push(group(null, [signOut]));
@@ -199,20 +224,32 @@ export class HerdrUpAccountPanel {
   return row(glyph(deviceIcon(device.platform)), device.name, device.current ? "This computer" : platformName(device.platform), manage);
  }
 
- /** The device's menu: Rename, Remove (Swift's Menu). */
+ /** The device's menu: Rename, Remove (Swift's Menu). Placed in the body at a fixed position
+  *  under the ⋯ button, so the settings group's rounded clip never cuts it (no popover API:
+  *  older WebKitGTK lacks it). Closes on a pick, Escape, a click elsewhere or a scroll. */
  private deviceMenu(device: AccountDevice, anchor: HTMLElement) {
+  document.querySelector(".account-device-menu")?.remove();
   const menu = el("div", "account-device-menu"); menu.setAttribute("role", "menu");
-  const item = (label: string, cls: string, run: () => void) => {
-   const b = el("button", cls, label); b.type = "button"; b.setAttribute("role", "menuitem");
+  const close = () => {
+   menu.remove();
+   document.removeEventListener("pointerdown", outside, true);
+   removeEventListener("scroll", close, true); removeEventListener("resize", close);
+  };
+  const outside = (e: Event) => { if (!menu.contains(e.target as Node)) close(); };
+  const item = (label: string, run: () => void) => {
+   const b = el("button", "", label); b.type = "button"; b.setAttribute("role", "menuitem");
    b.onclick = () => { close(); run(); }; return b;
   };
-  const close = () => { menu.remove(); document.removeEventListener("pointerdown", outside, true); };
-  const outside = (e: Event) => { if (!menu.contains(e.target as Node)) close(); };
-  menu.append(item("Rename", "", () => this.rename(device)), item("Remove", "", () => { void this.remove(device); }));
-  anchor.parentElement!.append(menu);
-  document.addEventListener("pointerdown", outside, true);
-  (menu.firstElementChild as HTMLElement).focus();
+  menu.append(item("Rename", () => this.rename(device)), item("Remove", () => { void this.remove(device); }));
   menu.onkeydown = e => { if (e.key === "Escape") { close(); anchor.focus(); } };
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect(), m = menu.getBoundingClientRect();
+  const top = r.bottom + 4 + m.height > innerHeight ? Math.max(8, r.top - 4 - m.height) : r.bottom + 4;
+  menu.style.left = `${Math.max(8, Math.min(r.right - m.width, innerWidth - m.width - 8))}px`;
+  menu.style.top = `${top}px`;
+  document.addEventListener("pointerdown", outside, true);
+  addEventListener("scroll", close, true); addEventListener("resize", close);
+  (menu.firstElementChild as HTMLElement).focus();
  }
 
  private rename(device: AccountDevice) {
@@ -239,13 +276,13 @@ export class HerdrUpAccountPanel {
   const ok = await confirm(`Remove ${device.name}?`,
    device.current ? `This signs this computer out of the account. ${KEPT.replace("Your machines", "Its machines")}`
     : `${device.name} is signed out of the account and can no longer open shares bound to it.`, "Remove device");
-  if (ok) await this.deviceAction(Desk.accountRemoveDevice(device.id, device.current), `Couldn't remove ${device.name}`);
+  if (ok) await this.deviceAction(Desk.accountRemoveDevice(device.id), `Couldn't remove ${device.name}`);
  }
 
  private async deviceAction(work: Promise<void>, failure: string) {
-  this.busy = "device"; this.draw();
-  try { await work; } catch (error) { this.devicesProblem = `${failure}: ${errorText(error)}`; }
-  this.busy = ""; this.devices = null;
+  this.busy = "device"; this.deviceNote = ""; this.draw();
+  try { await work; } catch (error) { this.deviceNote = `${failure}: ${errorText(error)}`; }
+  this.busy = "";
   if (this.state?.signedIn) await this.loadDetails(); else this.draw();
  }
 

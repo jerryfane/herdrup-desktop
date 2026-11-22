@@ -167,16 +167,21 @@ func (d *Desk) AccountRenameDevice(ctx context.Context, id, name string) error {
 	return err
 }
 
-// AccountRemoveDevice removes device id. Removing this computer ends its
-// session too (the service drops the sessions bound to the device), so it
-// is signed out here as well.
-func (d *Desk) AccountRemoveDevice(ctx context.Context, id string, current bool) error {
+// AccountRemoveDevice removes device id. When it is this computer (the
+// service's own device list says so), its session ends on the service too,
+// so it is signed out here as well.
+func (d *Desk) AccountRemoveDevice(ctx context.Context, id string) error {
 	cur, err := d.account.Current()
 	if err != nil || cur == nil {
 		return errSignedOutHere(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	list, err := d.account.Devices(ctx, cur.AccountID)
+	if err != nil {
+		return err
+	}
+	current := slices.ContainsFunc(list, func(dv account.Device) bool { return dv.ID == id && dv.Current })
 	if err := d.account.RemoveDevice(ctx, cur.AccountID, id); err != nil {
 		return err
 	}
