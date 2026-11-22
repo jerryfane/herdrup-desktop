@@ -175,24 +175,31 @@ export class WebAccount {
   }
  }
 
- /** The account this session is signed in to now; an operation spanning calls binds to it. */
+ /** The account this page signed in to, before any refresh (the cookie may hold another sign-in
+  *  by now; calls bound to it then refuse); the first refresh's when there is none yet. An
+  *  operation spanning calls binds to it. */
  async currentAccount(): Promise<string> {
-  return (await this.credential()).account;
+  return this.session?.accountID ?? (await this.credential()).account;
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
   *  fresh token when the service says the one sent is no longer good (401). The call is bound to
-  *  account (else to the first token's): a token for another account (the cookie now holds
-  *  another sign-in) is refused before anything is sent, so a write is never replayed there.
-  *  Errors are AccountServiceError with the service's code, or SignedOutError. */
- private async authed<T>(method: string, path: string, body?: unknown, account?: string): Promise<T> {
-  let bound = account;
+  *  account, else to the account this page already signed in to, before any refresh; only with
+  *  none yet does the first token's account bind it. A token for another account (the cookie now
+  *  holds another sign-in) is refused before anything is sent, so a write never goes there.
+  *  signal, when it aborts, stops the call: nothing is sent once it has, not even the retry, and a
+  *  request in flight is cancelled. Errors are AccountServiceError with the service's code,
+  *  SignedOutError, or the abort's reason. */
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal): Promise<T> {
+  let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
+   signal?.throwIfAborted();
    const { token, account: now } = await this.credential();
+   signal?.throwIfAborted();
    if (bound !== undefined && now !== bound) throw new AccountServiceError(409, "account_changed");
    bound = now;
    const response = await this.fetcher(`${this.service}${path}`, {
-    method, mode: "cors", cache: "no-store",
+    method, mode: "cors", cache: "no-store", ...(signal ? { signal } : {}),
     headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
    });
@@ -206,38 +213,38 @@ export class WebAccount {
   *  session to it when the account already has it. The challenge is single-use and lives 60 s,
   *  so both calls run together, as account (default: the current one). Refusals:
   *  device_in_other_account, session_has_device (409), too_many_devices (403), account_changed. */
- async enrol(key: StaticKey, name: string, account?: string): Promise<AccountDevice> {
+ async enrol(key: StaticKey, name: string, account?: string, signal?: AbortSignal): Promise<AccountDevice> {
   const acct = account ?? await this.currentAccount();
-  const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge", undefined, acct);
+  const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge", undefined, acct, signal);
   if (ch.account_id !== acct) throw new AccountServiceError(409, "account_changed");
   const { devicePub, mac } = await enrolProof(key, ch);
-  const out = await this.authed<{ device: AccountDevice }>("POST", "/v1/devices", { challenge_id: ch.challenge_id, device_pub: devicePub, mac, name, platform: "web" }, acct);
+  const out = await this.authed<{ device: AccountDevice }>("POST", "/v1/devices", { challenge_id: ch.challenge_id, device_pub: devicePub, mac, name, platform: "web" }, acct, signal);
   return out.device;
  }
 
  /** Asks the account's trusted devices to approve this browser (approve-v1 step 1); replaces
   *  any request this browser has open. account binds the call (see authed). */
- requestApproval(commit: Uint8Array, account?: string): Promise<{ id: string; expires_in: number }> {
-  return this.authed("POST", "/v1/approvals", { commit: toB64url(commit) }, account);
+ requestApproval(commit: Uint8Array, account?: string, signal?: AbortSignal): Promise<{ id: string; expires_in: number }> {
+  return this.authed("POST", "/v1/approvals", { commit: toB64url(commit) }, account, signal);
  }
 
- approvalState(id: string, account?: string): Promise<ApprovalStatus> {
-  return this.authed("GET", `/v1/approvals/${encodeURIComponent(id)}`, undefined, account);
+ approvalState(id: string, account?: string, signal?: AbortSignal): Promise<ApprovalStatus> {
+  return this.authed("GET", `/v1/approvals/${encodeURIComponent(id)}`, undefined, account, signal);
  }
 
  /** Reveals nonce_b (step 3), once the request is claimed and nonce_t is held. */
- async reveal(id: string, nonceB: Uint8Array, account?: string): Promise<void> {
-  await this.authed("POST", `/v1/approvals/${encodeURIComponent(id)}/reveal`, { nonce_b: toB64url(nonceB) }, account);
+ async reveal(id: string, nonceB: Uint8Array, account?: string, signal?: AbortSignal): Promise<void> {
+  await this.authed("POST", `/v1/approvals/${encodeURIComponent(id)}/reveal`, { nonce_b: toB64url(nonceB) }, account, signal);
  }
 
  /** This browser's access as the service shows it, and the sealed machine lists it holds. */
- browserSelf(account?: string): Promise<BrowserSelf> {
-  return this.authed("GET", "/v1/browsers/self", undefined, account);
+ browserSelf(account?: string, signal?: AbortSignal): Promise<BrowserSelf> {
+  return this.authed("GET", "/v1/browsers/self", undefined, account, signal);
  }
 
  /** This device's statements for hosts (relay host ids): what an owner hello carries. */
- statements(hosts: string[], account?: string): Promise<{ statements: { host: string; jws: string }[]; exp: number }> {
-  return this.authed("POST", "/v1/statements", { hosts }, account);
+ statements(hosts: string[], account?: string, signal?: AbortSignal): Promise<{ statements: { host: string; jws: string }[]; exp: number }> {
+  return this.authed("POST", "/v1/statements", { hosts }, account, signal);
  }
 
  private forget() { this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null; }

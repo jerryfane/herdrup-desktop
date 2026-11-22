@@ -107,9 +107,8 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
   // (another tab may have just finished one) shows instead of asking again.
   const saved = await untilAborted(deps.store.get(acct, devicePub), signal);
   if (saved !== undefined && saved.approvers.length > 0) { onPhase({ kind: "approved", record: saved }); return; }
-  try { await untilAborted(deps.account.enrol(key, deps.deviceName, acct), signal); }
-  catch (error) { if (signal.aborted || !(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
-  const created = await untilAborted(deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct), signal);
+  await untilAborted(bindDevice(deps.account, key, deps.deviceName, acct, signal), signal);
+  const created = await untilAborted(deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct, signal), signal);
   id = created.id; expiresAt = now() + created.expires_in * 1000;
  } catch (error) { if (!signal.aborted) onPhase({ kind: "failed", problem: problemOf(error) }); return; }
  if (signal.aborted) return;
@@ -120,7 +119,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  for (;;) {
   try { await sleep(pollDelay(now() - started), signal); } catch { return; }
   let st: ApprovalStatus;
-  try { st = await untilAborted(deps.account.approvalState(id, acct), signal); }
+  try { st = await untilAborted(deps.account.approvalState(id, acct, signal), signal); }
   catch (error) {
    if (signal.aborted) return;
    if (error instanceof AccountServiceError && error.code === "account_changed") { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -137,7 +136,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
    if (pub === null || nonceT === null) continue; // not complete yet: read again
    // B reveals only now, holding nonce_t (§2.2 step 3); the code covers T, the key the list must come from.
    if (signal.aborted) return;
-   try { await untilAborted(deps.account.reveal(id, nonceB, acct), signal); }
+   try { await untilAborted(deps.account.reveal(id, nonceB, acct, signal), signal); }
    catch (error) {
     if (signal.aborted) return;
     if (!(error instanceof AccountServiceError && error.code === "already_revealed")) { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -165,7 +164,7 @@ async function takeApproval(deps: ApprovalDeps, acct: string, devicePub: string,
  for (let attempt = 0; attempt < ENVELOPE_TRIES; attempt++) {
   if (attempt > 0) { try { await sleep(2_000, signal); } catch { return true; } }
   let self: BrowserSelf;
-  try { self = await untilAborted(deps.account.browserSelf(acct), signal); } catch { if (signal.aborted) return true; continue; }
+  try { self = await untilAborted(deps.account.browserSelf(acct, signal), signal); } catch { if (signal.aborted) return true; continue; }
   const sealed = self.envelopes.find(e => e.approver_pub === pub);
   if (sealed === undefined) continue;
   let envelope: Envelope;
@@ -180,15 +179,32 @@ async function takeApproval(deps: ApprovalDeps, acct: string, devicePub: string,
  return false;
 }
 
+/** Binds this sign-in's session to the browser's key as an account device (enrolling it the first
+ *  time); a session bound already is fine. The service serves a browser's own endpoints only to a
+ *  session bound to its device. */
+export async function bindDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
+ try { await account.enrol(key, name, acct, signal); }
+ catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
+}
+
 /** On later loads: account's newer lists from approvers this browser verified, opened and merged
  *  in (an approver's list only for a higher seq, compared when written). A list from any other key,
  *  an older seq, or one that doesn't open is left out (the service carries them, so it could
  *  offer any). Returns the record as kept, or undefined when this account has none here. */
-export async function refreshLists(account: Pick<WebAccount, "browserSelf">, acct: string, key: StaticKey, store: OwnerStore): Promise<OwnerRecord | undefined> {
+export async function refreshLists(account: Pick<WebAccount, "browserSelf" | "enrol">, acct: string, key: StaticKey, store: OwnerStore, deviceName: string,
+ signal?: AbortSignal): Promise<OwnerRecord | undefined> {
  const devicePub = toB64url(key.publicKey);
  const record = await store.get(acct, devicePub);
  if (record === undefined || record.approvers.length === 0) return record;
- const self = await account.browserSelf(acct);
+ let self: BrowserSelf;
+ try { self = await account.browserSelf(acct, signal); }
+ catch (error) {
+  // A new sign-in's session isn't bound to this browser yet: bind it to the same key (no new
+  // approval; the machines grant the key), then read once more.
+  if (!(error instanceof AccountServiceError && error.code === "device_required")) throw error;
+  await bindDevice(account, key, deviceName, acct, signal);
+  self = await account.browserSelf(acct, signal);
+ }
  const newer = (await Promise.all(record.approvers.map(async (a): Promise<VerifiedApprover | null> => {
   const sealed = self.envelopes.find(e => e.approver_pub === a.pub);
   if (sealed === undefined || sealed.seq <= a.envelope.seq) return null;
