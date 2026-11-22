@@ -2249,10 +2249,19 @@ export const Desk = {
   },
   /**
    * TopicsFollow keeps the list current while the page's Topics shows, and
-   * stops when shown goes false or the view closes.
+   * stops when shown goes false (unless the Inbox still follows) or the view
+   * closes.
    */
   topicsFollow(token: string, shown: boolean): Promise<void> {
     return call("Desk.TopicsFollow", token, shown);
+  },
+  /**
+   * TopicsFollowInbox says whether the page's Inbox (its Chat view) is open:
+   * while it is and the agent's suggestions are served, the list is followed
+   * as Topics follows it. It stops when open goes false or the view closes.
+   */
+  topicsFollowInbox(token: string, open: boolean): Promise<void> {
+    return call("Desk.TopicsFollowInbox", token, open);
   },
   /**
    * TopicsNew starts a topic with its title and first message; the page

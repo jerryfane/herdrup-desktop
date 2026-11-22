@@ -984,7 +984,7 @@ class Detail {
  resolvedMode(): ChatMode { return resolvedMode(this.asked, this.chatAvailable, this.topicsAvailable()); }
  mountTopics(view: AgentView) {
   const pane = new TopicsPane({
-   token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "",
+   token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
    renderRow: row => this.renderRow(row),
    openInbox: () => { void this.chooseMode("chat"); },
    symbol: (name, size, weight) => symbol(name, size, weight),
@@ -1021,7 +1021,11 @@ class Detail {
   if (mode === "topics" && this.findOpen) this.toggleFind(false);
   if (this.findToggle) this.findToggle.hidden = mode === "topics";
   this.topicsButton.setAttribute("aria-pressed", String(mode === "topics"));
-  if (this.topics) { this.topics.root.hidden = mode !== "topics"; this.topics.show(mode === "topics"); }
+  if (this.topics) {
+   this.topics.root.hidden = mode !== "topics"; this.topics.show(mode === "topics");
+   // iOS ChatView: the open Inbox follows the list while the agent's suggestions are served (Go decides).
+   void Desk.topicsFollowInbox(this.token, mode === "chat").catch(() => undefined);
+  }
   this.body.dataset.mode = mode;
   this.updateGuestQuestion();
   this.setCtrl(false);

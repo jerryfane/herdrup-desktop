@@ -4,13 +4,14 @@
 // place of it otherwise. The list comes from Go (Desk.topicsFollow publishes topicsChanged).
 import "./topics.css";
 import { Desk, events } from "./mygo";
-import type { TopicsUpdate } from "./mygo";
+import type { AgentTopicSuggestionInfo, TopicsUpdate } from "./mygo";
 import { errorText } from "./errors";
 import { composerEnterSends } from "./composer";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing, type Outgoing } from "./chatPoll";
 import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicTitle, type TopicInfo } from "./topicsModel";
+import { createLabel, isTicked, keptUnticks, messagesText, organiseAnswered, organiseNote, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
 import { appleSymbols } from "./platform";
 import infoIcon from "../third_party/phosphor/web/info.svg?url";
 
@@ -39,6 +40,8 @@ export interface TopicsHost {
  token: string;
  /** The guest's own name ("" for the owner): a topic send is credited as a Chat send is. */
  guestSelf: string;
+ /** The agent's name as its row shows it: "SUGGESTED BY <NAME>". */
+ agentName: string;
  guest: boolean;
  /** The chat's renderer for one transcript row; a question in it is not answered here (#745
   *  ChatModel.answersQuestions: a topic's question is the Inbox's, in the terminal). */
@@ -86,7 +89,15 @@ export class TopicsPane {
  private disposed = false;
  private readonly resize: ResizeObserver;
  private sheet: HTMLDialogElement | null = null;
-
+ // Organise (herdrup #788, TopicsView.swift proposal 3): the agent proposes topics from its Inbox.
+ private readonly organiseButton = button("", "topics-organise", () => void this.organise());
+ private readonly bar = el("div", "topics-proposals-bar");
+ private organising = false;
+ private organiseText: string | null = null;
+ /** Proposals the reader unticked; every other one is ticked. */
+ private unticked = new Set<string>();
+ /** Create N topics or Not now is going through the proposals. */
+ private settling = false;
  constructor(private readonly host: TopicsHost) {
   const head = el("div", "topics-head");
   const heading = el("span", "topics-heading");
@@ -94,12 +105,15 @@ export class TopicsPane {
   head.append(heading);
   // Text only: square.and.pencil has no Windows/Linux stand-in (src/web/symbols.data.ts).
   const create = button("New topic", "topics-new", () => this.openNewTopic());
-  head.append(create);
+  // A plain word in the bar (proposal 3), only where the agent's suggestions are served.
+  this.organiseButton.hidden = true;
+  head.append(this.organiseButton, create);
   this.searchInput.type = "search"; this.searchInput.placeholder = "Search topics";
   this.searchInput.setAttribute("aria-label", "Search topics");
   this.searchInput.oninput = () => this.drawList();
   this.problem.setAttribute("role", "status"); this.problem.hidden = true;
-  this.column.append(head, this.searchInput, this.problem, this.rows);
+  this.bar.hidden = true;
+  this.column.append(head, this.searchInput, this.problem, this.rows, this.bar);
   const rule = el("div", "topics-rule"); rule.setAttribute("aria-hidden", "true");
   this.root.append(this.column, rule, this.side);
   this.resize = new ResizeObserver(() => {
@@ -133,6 +147,9 @@ export class TopicsPane {
 
  apply(u: TopicsUpdate) {
   if (this.disposed) return;
+  // New proposals arrived: Organise has answered.
+  if (this.organising && organiseAnswered(this.update?.suggestions ?? [], u.suggestions ?? [])) { this.organising = false; this.organiseText = null; }
+  this.unticked = keptUnticks(this.unticked, u.suggestions ?? []);
   this.update = u;
   this.drawList();
   if (this.pendingOpen && u.topics.some(t => t.topic_id === this.pendingOpen)) { const id = this.pendingOpen; this.pendingOpen = null; this.select(id); }
@@ -186,9 +203,18 @@ export class TopicsPane {
  private drawList() {
   const u = this.update, query = this.searchInput.value;
   const note = this.actionNote ?? u?.problem ?? "";
-  this.problem.replaceChildren(); this.problem.hidden = note === "";
+  this.problem.replaceChildren(); this.problem.hidden = note === "" && this.organiseText === null;
+  // A refusal or problem has a dot; what Organise is doing is plain dim text (TopicsView: topics-organise-note).
   if (note) { const dot = el("span", "topics-problem-dot"); dot.setAttribute("aria-hidden", "true"); this.problem.append(dot, el("span", "", note)); }
+  else if (this.organiseText !== null) this.problem.append(el("span", "topics-organise-note", this.organiseText));
+  this.drawOrganise();
   const nodes: HTMLElement[] = [this.inboxRow()];
+  const suggestions = this.suggestions();
+  if (suggestions.length && query === "") {
+   const heading = el("h3", "topics-section", proposalsHeading(this.host.agentName));
+   heading.dataset.proposals = "";
+   nodes.push(heading, ...suggestions.map(s => this.proposalRow(s)));
+  }
   const shown = searchTopics(this.topics(), query);
   for (const section of topicSections(shown, new Date())) {
    nodes.push(el("h3", "topics-section", section.id.toUpperCase()));
@@ -197,6 +223,83 @@ export class TopicsPane {
   if (u?.loaded && !this.topics().length && !u.problem) nodes.push(el("p", "topics-empty", "No topics yet. A topic is a lasting line of work with its own conversation."));
   else if (query.trim() !== "" && !shown.length) nodes.push(el("p", "topics-empty", "No topic matches."));
   this.rows.replaceChildren(...nodes);
+  this.drawBar();
+ }
+
+ private suggestions(): AgentTopicSuggestionInfo[] { return this.update?.suggestions ?? []; }
+
+ /** Organise in the bar: shown where suggestions are served, dim and disabled while it runs. */
+ private drawOrganise() {
+  const b = this.organiseButton;
+  b.hidden = !this.update?.suggestionsServed;
+  b.disabled = this.organising;
+  b.replaceChildren();
+  if (this.organising) { const spin = el("span", "topics-organise-spinner"); spin.setAttribute("aria-hidden", "true"); b.append(spin); }
+  b.append(document.createTextNode("Organise"));
+ }
+
+ /** Asks the agent to propose topics from its Inbox (TopicsModel.organise). */
+ private async organise() {
+  if (this.organising) return;
+  this.organising = true; this.organiseText = null; this.actionNote = null; this.drawList();
+  try {
+   const queued = await Desk.topicsOrganise(this.host.token);
+   if (this.organising) this.organiseText = organiseNote(queued);
+  } catch (error) {
+   this.organising = false; this.organiseText = errorText(error);
+  }
+  this.drawList();
+ }
+
+ /** One proposal: ticked until the reader unticks it, with its message count and the agent's reason. */
+ private proposalRow(s: AgentTopicSuggestionInfo): HTMLElement {
+  const ticked = isTicked(this.unticked, s.suggestion_id);
+  const title = suggestionTitle(s.title);
+  const row = button("", "topics-proposal", () => {
+   if (this.unticked.has(s.suggestion_id)) this.unticked.delete(s.suggestion_id); else this.unticked.add(s.suggestion_id);
+   this.drawList();
+  });
+  row.dataset.proposal = s.suggestion_id;
+  row.disabled = this.settling;
+  row.setAttribute("role", "checkbox"); row.setAttribute("aria-checked", String(ticked));
+  row.setAttribute("aria-label", title);
+  if (s.reason) row.setAttribute("aria-description", s.reason);
+  const tick = el("span", "topics-proposal-tick"); tick.setAttribute("aria-hidden", "true");
+  void this.host.symbol(ticked ? "checkmark.circle.fill" : "circle", 20, "regular").then(svg => tick.append(svg));
+  const lines = el("span", "topics-row-lines");
+  const top = el("span", "topic-row-top");
+  top.append(el("strong", "topic-row-title", title));
+  const count = messagesText(s.message_ids.length);
+  if (count) top.append(el("span", "topic-row-time", count));
+  lines.append(top);
+  if (s.reason) lines.append(el("span", "topics-proposal-reason", s.reason));
+  row.append(tick, lines);
+  return row;
+ }
+
+ /** Not now · Create N topics under the list while there are proposals. */
+ private drawBar() {
+  const suggestions = this.suggestions();
+  this.bar.hidden = suggestions.length === 0;
+  if (this.bar.hidden) { this.bar.replaceChildren(); return; }
+  const count = tickedCount(suggestions, this.unticked);
+  const dismiss = button("Not now", "topics-proposals-dismiss", () => void this.settle(false));
+  const create = button(createLabel(count), "topics-proposals-create", () => void this.settle(true));
+  dismiss.disabled = this.settling; create.disabled = this.settling || count === 0;
+  this.bar.replaceChildren(dismiss, create);
+ }
+
+ /** Create N topics starts the ticked proposals and sets the rest aside; Not now sets all aside. */
+ private async settle(create: boolean) {
+  if (this.settling) return;
+  this.settling = true; this.drawList();
+  const plan = settlePlan(this.suggestions(), create ? this.unticked : new Set(this.suggestions().map(s => s.suggestion_id)));
+  try {
+   const problem = await Desk.topicsSettleSuggestions(this.host.token, plan.accept, plan.dismiss);
+   this.actionNote = problem === "" ? null : problem;
+  } catch (error) { this.actionNote = errorText(error); }
+  this.settling = false; this.unticked = new Set();
+  this.drawList();
  }
 
  private inboxRow(): HTMLElement {

@@ -169,7 +169,7 @@ interface Active {
 
 interface MountedView extends GuestView {
  /** The agent's Topics (desk_topics.go topicsState): the last list and the poll while shown. */
- topics: { last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean };
+ topics: { last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean; shown: boolean; inbox: boolean };
  active: Active;
  view: AgentView;
  share: { details: GuestShareDetails };
@@ -228,6 +228,16 @@ export function createGuestDesk(env: DeskEnv) {
   }
  }
 
+ /** desk_topics.go topicsWatch: the poll runs while Topics shows, or while the Inbox is open on an
+  *  agent whose suggestions are served. */
+ function watchTopics(v: MountedView) {
+  const t = v.topics;
+  const want = !v.life.signal.aborted && (t.shown || (t.inbox && t.last.suggestionsServed));
+  if (want === (t.poll !== null)) return;
+  if (!want) { clearInterval(t.poll!); t.poll = null; return; }
+  t.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(t.poll!); t.poll = null; return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
+ }
+
  /** desk_topics.go topicsRead: one list read at a time, one more after it when asked meanwhile. */
  function readTopics(v: MountedView) {
   const t = v.topics;
@@ -253,6 +263,7 @@ export function createGuestDesk(env: DeskEnv) {
     if (v.life.signal.aborted) return;
     t.last = u;
     emit("topicsChanged", u);
+    watchTopics(v);
    } while (t.again);
   })().finally(() => { t.reading = null; });
  }
@@ -414,7 +425,7 @@ export function createGuestDesk(env: DeskEnv) {
    unmount();
    const life = new AbortController();
    const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null,
-    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false } };
+    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false } };
    l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
    mounted = v;
    setView(v);
@@ -462,10 +473,16 @@ export function createGuestDesk(env: DeskEnv) {
 
   async topicsFollow(token: string, shown: boolean): Promise<void> {
    const v = viewOf(token);
-   if (v.topics.poll) { clearInterval(v.topics.poll); v.topics.poll = null; }
-   if (!shown) return;
-   readTopics(v);
-   v.topics.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(v.topics.poll!); return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
+   v.topics.shown = shown;
+   if (shown) readTopics(v);
+   watchTopics(v);
+  },
+
+  async topicsFollowInbox(token: string, open: boolean): Promise<void> {
+   const v = viewOf(token);
+   v.topics.inbox = open;
+   if (open && !v.topics.last.loaded) readTopics(v);
+   watchTopics(v);
   },
 
   async topicTranscript(token: string, topic: string, after: string, before: string, heldFrom: string): Promise<string> {

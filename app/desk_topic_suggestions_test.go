@@ -211,6 +211,63 @@ func TestTopicSuggestionsStartNotNowAndOrganise(t *testing.T) {
 	waitFor(t, "only sg3 open", func() bool { return slices.Equal(suggestionIDs(last()), []string{"sg3"}) })
 }
 
+// The Inbox follows the list as Topics does while the agent's suggestions are
+// served (iOS ChatView): Organise's proposals arrive with Topics never shown,
+// and the watch stops with the Inbox and with the view.
+func TestTopicsInboxFollowsServedSuggestions(t *testing.T) {
+	d, _, updates := suggestionsDesk(t, nil, nil)
+	ctx := context.Background()
+	last := func() TopicsUpdate { u := updates(); return u[len(u)-1] }
+	if err := d.TopicsFollowInbox("view", true); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the first list", func() bool { u := updates(); return len(u) > 0 && last().SuggestionsServed })
+	if _, err := d.TopicsOrganise(ctx, "view"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "Organise's proposals without Topics shown", func() bool { return len(last().Suggestions) == 3 })
+
+	following := func() bool {
+		v, err := d.agentView("view")
+		if err != nil {
+			return false
+		}
+		v.topics.mu.Lock()
+		defer v.topics.mu.Unlock()
+		return v.topics.cancel != nil
+	}
+	if !following() {
+		t.Fatal("the open Inbox on served suggestions does not follow the list")
+	}
+	if err := d.TopicsFollowInbox("view", false); err != nil {
+		t.Fatal(err)
+	}
+	if following() {
+		t.Fatal("the closed Inbox still follows the list")
+	}
+	before := len(updates())
+	if _, err := d.TopicsOrganise(ctx, "view"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	// Organise's own read, but not the proposals a turn later.
+	if n := len(updates()); n != before+1 || len(last().Suggestions) != 3 {
+		t.Fatalf("%d updates after the Inbox closed (want %d), %d suggestions", n-before, 1, len(last().Suggestions))
+	}
+
+	if err := d.TopicsFollowInbox("view", true); err != nil || !following() {
+		t.Fatalf("reopened Inbox: following %v, %v", following(), err)
+	}
+	v, _ := d.agentView("view")
+	d.CloseAgentView("view")
+	v.topics.mu.Lock()
+	cancel := v.topics.cancel
+	v.topics.mu.Unlock()
+	if v.ctx.Err() == nil || cancel == nil {
+		t.Fatalf("view closed: ctx %v; the follower's context is the view's", v.ctx.Err())
+	}
+}
+
 // Organise shows only where both say so: the server advertises
 // agent_topic_suggestions and the agent's list carries `suggestions`. An
 // omp without them answers topics_unsupported; a server without the

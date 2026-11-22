@@ -76,11 +76,15 @@ func withLists(u TopicsUpdate) TopicsUpdate {
 }
 
 // topicsState is one view's topics watch: the last list and the follower
-// that keeps it current while Topics shows.
+// that keeps it current while Topics shows, or while the Inbox (the chat)
+// is open on an agent whose suggestions are served (iOS ChatView follows
+// the list then, so a listed suggestion shows before its transcript entry).
 type topicsState struct {
 	mu      sync.Mutex
 	last    TopicsUpdate
 	cancel  context.CancelFunc
+	shown   bool
+	inbox   bool
 	reading bool
 	again   bool
 }
@@ -120,7 +124,8 @@ func (d *Desk) TopicsRefresh(ctx context.Context, token string) error {
 }
 
 // TopicsFollow keeps the list current while the page's Topics shows, and
-// stops when shown goes false or the view closes.
+// stops when shown goes false (unless the Inbox still follows) or the view
+// closes.
 func (d *Desk) TopicsFollow(token string, shown bool) error {
 	v, err := d.agentView(token)
 	if err != nil {
@@ -128,26 +133,62 @@ func (d *Desk) TopicsFollow(token string, shown bool) error {
 	}
 	t := &v.topics
 	t.mu.Lock()
-	if t.cancel != nil {
+	t.shown = shown
+	t.mu.Unlock()
+	if shown {
+		d.topicsRead(v)
+	}
+	d.topicsWatch(v)
+	return nil
+}
+
+// TopicsFollowInbox says whether the page's Inbox (its Chat view) is open:
+// while it is and the agent's suggestions are served, the list is followed
+// as Topics follows it. It stops when open goes false or the view closes.
+func (d *Desk) TopicsFollowInbox(token string, open bool) error {
+	v, err := d.agentView(token)
+	if err != nil {
+		return err
+	}
+	t := &v.topics
+	t.mu.Lock()
+	t.inbox = open
+	loaded := t.last.Loaded
+	t.mu.Unlock()
+	if open && !loaded {
+		// Whether suggestions are served is the list's word: read it once.
+		d.topicsRead(v)
+	}
+	d.topicsWatch(v)
+	return nil
+}
+
+// topicsWatch starts the follower when Topics shows or the Inbox is open on
+// served suggestions, and stops it when neither holds.
+func (d *Desk) topicsWatch(v *interaction) {
+	t := &v.topics
+	t.mu.Lock()
+	want := t.shown || (t.inbox && t.last.SuggestionsServed)
+	if want == (t.cancel != nil) || v.ctx.Err() != nil {
+		t.mu.Unlock()
+		return
+	}
+	if !want {
 		t.cancel()
 		t.cancel = nil
-	}
-	if !shown {
 		t.mu.Unlock()
-		return nil
+		return
 	}
 	ctx, cancel := context.WithCancel(v.ctx)
 	t.cancel = cancel
 	t.mu.Unlock()
 	go d.followTopics(ctx, v)
-	return nil
 }
 
 // followTopics: a guest polls every topicsGuestPoll; the owner follows
 // agent.topics.changed for this pane and polls every topicsBackstop. A
 // server that refuses the subscription is polled at the guest's pace.
 func (d *Desk) followTopics(ctx context.Context, v *interaction) {
-	d.topicsRead(v)
 	poll := topicsGuestPoll
 	if !v.Guest {
 		events := make(chan struct{}, 1)
@@ -275,6 +316,8 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	t.last = u
 	t.mu.Unlock()
 	publishTopics(u)
+	// Suggestions served or not: the open Inbox follows the list or stops.
+	d.topicsWatch(v)
 }
 
 // openSuggestions are the list's suggestions as the page lists them
