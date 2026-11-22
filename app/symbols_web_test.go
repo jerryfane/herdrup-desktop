@@ -26,7 +26,7 @@ var webSymbolSizes = []struct {
 	{14, "medium"}, {14, "semibold"}, {15, "medium"}, {15, "regular"},
 	{15, "semibold"}, {16, "medium"}, {16, "semibold"}, {17, "regular"}, {17, "semibold"},
 	{18, "medium"}, {18, "regular"}, {18, "semibold"}, {19, "regular"},
-	{19, "semibold"}, {21, "medium"}, {22, "regular"}, {28, "regular"},
+	{19, "semibold"}, {20, "regular"}, {21, "medium"}, {22, "regular"}, {28, "regular"},
 }
 
 // webSymbolErrors are calls Image refuses, with each check's error text.

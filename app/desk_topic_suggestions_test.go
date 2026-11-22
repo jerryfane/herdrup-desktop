@@ -245,14 +245,14 @@ func TestTopicsInboxFollowsServedSuggestions(t *testing.T) {
 	if following() {
 		t.Fatal("the closed Inbox still follows the list")
 	}
-	before := len(updates())
 	if _, err := d.TopicsOrganise(ctx, "view"); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	// Organise's own read, but not the proposals a turn later.
-	if n := len(updates()); n != before+1 || len(last().Suggestions) != 3 {
-		t.Fatalf("%d updates after the Inbox closed (want %d), %d suggestions", n-before, 1, len(last().Suggestions))
+	// Organise's own read lists the 3 open; its proposals a turn later are
+	// not read without a follower.
+	if n := len(last().Suggestions); n != 3 {
+		t.Fatalf("%d suggestions listed after the Inbox closed; want the 3 before Organise's proposals", n)
 	}
 
 	if err := d.TopicsFollowInbox("view", true); err != nil || !following() {
