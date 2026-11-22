@@ -108,6 +108,9 @@ func TestLoadRejectsWhatItCannotMap(t *testing.T) {
 		"unresolved ref": func(defs map[string]any) {
 			defs["Wait"].(map[string]any)["properties"].(map[string]any)["next"] = map[string]any{"$ref": "#/schemas/request/$defs/Nope"}
 		},
+		"false as a property schema": func(defs map[string]any) {
+			defs["Wait"].(map[string]any)["properties"].(map[string]any)["machine"] = false
+		},
 	} {
 		var doc map[string]any
 		if err := json.Unmarshal(fixture(t), &doc); err != nil {
@@ -118,6 +121,37 @@ func TestLoadRejectsWhatItCannotMap(t *testing.T) {
 		if _, err := Load(raw); err == nil {
 			t.Errorf("%s: loaded", name)
 		}
+	}
+}
+
+// herdr closes some params to unknown fields ("additionalProperties": false,
+// herdr #491 owner_access.*). That is an ordinary struct: the same Go type as
+// without it, since the client never sends extra fields.
+func TestLoadAcceptsAClosedObject(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(fixture(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	open, err := Load(fixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc["schemas"].(map[string]any)["request"].(map[string]any)["$defs"].(map[string]any)["Wait"].(map[string]any)["additionalProperties"] = false
+	raw, _ := json.Marshal(doc)
+	closed, err := Load(raw)
+	if err != nil {
+		t.Fatalf("closed object: %v", err)
+	}
+	a, err := open.Go("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := closed.Go("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Error("a closed object generates different Go")
 	}
 }
 

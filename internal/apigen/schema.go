@@ -25,7 +25,7 @@ type node struct {
 	Properties           map[string]*node  `json:"properties"`
 	Required             []string          `json:"required"`
 	Items                *node             `json:"items"`
-	AdditionalProperties *node             `json:"additionalProperties"`
+	AdditionalProperties additional        `json:"additionalProperties"`
 	OneOf                []*node           `json:"oneOf"`
 	AnyOf                []*node           `json:"anyOf"`
 	Defs                 map[string]*node  `json:"$defs"`
@@ -52,6 +52,23 @@ func (n *node) UnmarshalJSON(b []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	return dec.Decode((*plain)(n))
+}
+
+// additional is "additionalProperties": a schema for a map's values, or
+// false, which closes an object to unknown fields (herdr refuses them). A
+// closed object generates the same struct: the client never sends extras.
+type additional struct {
+	schema *node
+	closed bool
+}
+
+func (a *additional) UnmarshalJSON(b []byte) error {
+	if string(bytes.TrimSpace(b)) == "false" {
+		*a = additional{closed: true}
+		return nil
+	}
+	a.schema = new(node)
+	return json.Unmarshal(b, a.schema)
 }
 
 // typeList is a JSON Schema "type": one name or a list of names.
@@ -290,10 +307,13 @@ func shape(n *node) string {
 			sort.Strings(req)
 			out["required"] = req
 		}
-		for k, v := range map[string]*node{"items": n.Items, "additionalProperties": n.AdditionalProperties, "propertyNames": n.PropertyNames} {
+		for k, v := range map[string]*node{"items": n.Items, "additionalProperties": n.AdditionalProperties.schema, "propertyNames": n.PropertyNames} {
 			if v != nil {
 				out[k] = walk(v)
 			}
+		}
+		if n.AdditionalProperties.closed {
+			out["additionalProperties"] = false
 		}
 		for k, alts := range map[string][]*node{"oneOf": n.OneOf, "anyOf": n.AnyOf} {
 			if alts != nil {
@@ -446,7 +466,7 @@ func (b *builder) kindOf(n *node) (Kind, error) {
 		}
 		return KindFlat, nil
 	case n.isType("object") && n.alternatives() == nil:
-		if n.AdditionalProperties != nil {
+		if n.AdditionalProperties.schema != nil {
 			return 0, errors.New("a named map type is not supported")
 		}
 		return KindStruct, nil
@@ -755,10 +775,10 @@ func (b *builder) typeOf(n *node) (goType, error) {
 		out.expr = "[]" + elem.held()
 		out.nilable = true
 	case "object":
-		if n.AdditionalProperties == nil {
+		if n.AdditionalProperties.schema == nil {
 			return goType{}, errors.New("an inline object needs additionalProperties")
 		}
-		val, err := b.typeOf(n.AdditionalProperties)
+		val, err := b.typeOf(n.AdditionalProperties.schema)
 		if err != nil {
 			return goType{}, fmt.Errorf("additionalProperties: %w", err)
 		}
