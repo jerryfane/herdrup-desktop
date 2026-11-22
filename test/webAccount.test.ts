@@ -238,3 +238,26 @@ test("after the page's token expires and the cookie now holds another sign-in, n
   expect(sent).toEqual([]);
  }
 });
+
+test("an aborted call sends nothing more: not enrolment's second step, not the retry after a 401", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ let stop = new AbortController();
+ const sent: string[] = [];
+ const s = service((url) => {
+  const path = url.slice(url.indexOf("/v1/"));
+  sent.push(path);
+  // The caller leaves while the service answers.
+  stop.abort(new Error("left"));
+  if (path === "/v1/devices/challenge") return Response.json({ challenge_id: "c", server_pub: toB64url(x25519.getPublicKey(new Uint8Array(32).fill(9))), salt: toB64url(new Uint8Array(32).fill(3)), account_id: "acct-1" });
+  if (path === "/v1/approvals") return Response.json({ error: "unauthorized" }, { status: 401 });
+  return null;
+ });
+ const account = new WebAccount(s.fetcher);
+ await expect(account.enrol(key, "x", undefined, stop.signal)).rejects.toThrow("left");
+ expect(sent).toEqual(["/v1/devices/challenge"]);
+ stop = new AbortController();
+ sent.length = 0;
+ await expect(account.requestApproval(new Uint8Array(32), undefined, stop.signal)).rejects.toThrow("left");
+ expect(sent).toEqual(["/v1/approvals"]);
+});
