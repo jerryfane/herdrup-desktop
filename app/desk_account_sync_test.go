@@ -202,7 +202,9 @@ func signInTo(d *Desk, srv *httptest.Server, acct string) {
 func quietSync(t *testing.T) {
 	previous, background, prompts := publishSyncedMachines, backgroundMachineSync, publishSavedPrompts
 	publishSyncedMachines, backgroundMachineSync, publishSavedPrompts = func([]SyncedMachine) {}, false, func([]SavedPrompt) {}
-	t.Cleanup(func() { publishSyncedMachines, backgroundMachineSync, publishSavedPrompts = previous, background, prompts })
+	t.Cleanup(func() {
+		publishSyncedMachines, backgroundMachineSync, publishSavedPrompts = previous, background, prompts
+	})
 }
 
 func syncIDs(t *testing.T, d *Desk) map[string]string {
@@ -830,31 +832,40 @@ func TestPromptsSyncAcrossTwoDevices(t *testing.T) {
 // The owner's case: this device synced machines before prompts synced, has
 // its own prompts, and the account already holds the Swift app's. Both
 // lists end up on both, the account's after this device's, and the
-// device's after the account's last order.
+// device's after the account's last order. A tombstone the account holds
+// from long ago doesn't take a prompt this device never synced.
 func TestSigningInWithPromptsKeepsTheAccountsToo(t *testing.T) {
 	quietSync(t)
 	w, srv := newWorker(t, "")
-	const phone, phone2 = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	const phone, phone2, old = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"
+	w.mu.Lock()
+	w.rev++
+	w.items[old] = account.Item{Collection: "prompts", ID: old, Rev: w.rev, Deleted: true}
+	w.mu.Unlock()
 	w.seedPrompt(phone2, `{"text":"second","order":1}`)
 	w.seedPrompt(phone, `{"title":"From the phone","text":"hello","order":0}`)
 	mac := device(t, srv)
 	// A machines-only sync already ran: its mirror is past the prompts' revisions.
-	if err := mac.storeSyncState(syncState{AccountID: "acct", Mirror: account.Mirror{Rev: 2}}); err != nil {
+	if err := mac.storeSyncState(syncState{AccountID: "acct", Mirror: account.Mirror{Rev: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := mac.ImportSavedPrompts([]SavedPrompt{{ID: old, Text: "from localStorage"}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	own := savePrompt(t, mac, "", "desk", "from the desktop")
 	syncEach(t, mac)
 	list, _ := mac.SavedPrompts()
-	want := []SavedPrompt{own, {ID: phone, Nickname: "From the phone", Text: "hello"}, {ID: phone2, Text: "second"}}
+	want := []SavedPrompt{kept[0], own, {ID: phone, Nickname: "From the phone", Text: "hello"}, {ID: phone2, Text: "second"}}
 	if !slices.Equal(list, want) {
 		t.Fatalf("mac's prompts: %+v; want %+v", list, want)
 	}
-	if body := w.livePrompts()[own.ID]; body != `{"title":"desk","text":"from the desktop","order":2}` {
+	if body := w.livePrompts()[own.ID]; body != `{"title":"desk","text":"from the desktop","order":3}` {
 		t.Fatalf("the desktop's prompt in the account: %s", body)
 	}
 	linux := device(t, srv)
 	syncEach(t, linux)
-	if got := promptsOf(t, linux); len(got) != 3 || got[own.ID] != own {
+	if got := promptsOf(t, linux); len(got) != 4 || got[own.ID] != own || got[old] != kept[0] {
 		t.Fatalf("another device's prompts: %+v", got)
 	}
 }

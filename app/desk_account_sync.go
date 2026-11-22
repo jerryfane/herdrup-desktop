@@ -293,13 +293,18 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	for _, id := range tombstoned {
 		known[id] = true
 	}
+	// The same for prompts, but on this device's first prompt sync none is
+	// known (AccountLocalSync.swift): the account's old deletes don't take
+	// prompts this device never synced.
 	knownPrompts := map[string]bool{}
 	for _, p := range old.Prompts {
 		knownPrompts[p.ID] = true
 	}
-	_, tombstonedPrompts := account.RemotePrompts(pull.Items)
-	for _, id := range tombstonedPrompts {
-		knownPrompts[id] = true
+	if state.PromptsPulled {
+		_, tombstonedPrompts := account.RemotePrompts(pull.Items)
+		for _, id := range tombstonedPrompts {
+			knownPrompts[id] = true
+		}
 	}
 
 	d.storeMu.Lock()
