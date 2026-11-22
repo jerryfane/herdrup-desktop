@@ -11,11 +11,21 @@ import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing,
 import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicTitle, type TopicInfo } from "./topicsModel";
+import { appleSymbols } from "./platform";
+import infoIcon from "../third_party/phosphor/web/info.svg?url";
 
 /** iPad's regular width: the list beside the open topic's chat at this page width and above. */
 export const TOPICS_WIDE_PX = 760;
 const TOO_LONG = "Messages are limited to 32 KB. Send it in parts.";
 const UNCONFIRMED = "Couldn't confirm delivery. Check the topic before sending again.";
+/** "About topics", word for word as the owner approved it (topics-info proposal 1, 22 Nov). */
+const ABOUT_TOPICS: readonly [string, string][] = [
+ ["One subject each", "Topics are separate conversations with the same agent, one per subject (for example “Q4 board pack”). Each keeps its own history, so subjects don’t mix."],
+ ["The Inbox", "The Inbox is the agent’s main conversation. Messages from outside (other agents, Gram, reviews) arrive there. Replies to something a topic started go back to that topic."],
+ ["Starting a topic", "Tap New topic and give it a title and a first message. Topics are not created automatically. The short summary under each topic is written automatically after each reply."],
+ ["Working in parallel", "Several topics can work at the same time. A topic can look at another topic’s conversation, and the Inbox knows what every topic is doing."],
+ ["Closing", "Closing a topic keeps everything: it writes a closing note, and you can reopen it later. Nothing is deleted."],
+];
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
  const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node;
@@ -79,7 +89,9 @@ export class TopicsPane {
 
  constructor(private readonly host: TopicsHost) {
   const head = el("div", "topics-head");
-  head.append(el("strong", "", "Topics"));
+  const heading = el("span", "topics-heading");
+  heading.append(el("strong", "", "Topics"), this.aboutButton());
+  head.append(heading);
   // Text only: square.and.pencil has no Windows/Linux stand-in (src/web/symbols.data.ts).
   const create = button("New topic", "topics-new", () => this.openNewTopic());
   head.append(create);
@@ -221,6 +233,48 @@ export class TopicsPane {
   try { await call(); this.actionNote = null; }
   catch (error) { this.actionNote = errorText(error); }
   if (!this.disposed) this.drawList();
+ }
+
+ /** The "i" after the Topics heading: info.circle in the secondary ink (SF on a Mac, Phosphor's
+  *  info elsewhere). */
+ private aboutButton(): HTMLButtonElement {
+  const b = button("", "topics-about-button", () => this.openAbout(b));
+  b.setAttribute("aria-label", "About topics"); b.setAttribute("aria-haspopup", "dialog"); b.title = "About topics";
+  if (appleSymbols()) void this.host.symbol("info.circle", 17, "regular").then(icon => b.append(icon));
+  else { const mask = el("span", "topics-about-glyph"); mask.style.setProperty("--about-icon", `url("${infoIcon}")`); b.append(mask); }
+  return b;
+ }
+
+ /** About topics: a popover pointing at the "i" when the page is wide (iPad), a sheet with Done
+  *  otherwise (iPhone). Escape or a click outside closes the popover; the list never moves. */
+ private openAbout(anchor: HTMLElement) {
+  this.sheet?.close();
+  const popover = this.wide;
+  const dialog = el("dialog", popover ? "topics-about topics-about-popover" : "subagent-sheet topics-sheet topics-about"); this.sheet = dialog;
+  dialog.setAttribute("aria-label", "About topics");
+  const header = el("header");
+  header.append(el("strong", "", "About topics"));
+  if (!popover) header.append(button("Done", "topics-sheet-done", () => dialog.close()));
+  const body = el("div", "topics-about-body");
+  for (const [title, text] of ABOUT_TOPICS) { const part = el("section"); part.append(el("h3", "", title), el("p", "", text)); body.append(part); }
+  dialog.append(header, body);
+  dialog.addEventListener("close", () => { dialog.remove(); anchor.setAttribute("aria-expanded", "false"); if (this.sheet === dialog) this.sheet = null; }, { once: true });
+  if (popover) {
+   // A click on the transparent backdrop lands on the dialog itself, outside its box.
+   dialog.addEventListener("click", event => {
+    const r = dialog.getBoundingClientRect();
+    if (event.target === dialog && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom)) dialog.close();
+   });
+  }
+  document.body.append(dialog); dialog.showModal(); anchor.setAttribute("aria-expanded", "true");
+  if (popover) {
+   const a = anchor.getBoundingClientRect(), width = Math.min(320, innerWidth - 16);
+   const top = a.bottom + 8;
+   dialog.style.left = `${Math.max(8, Math.min(a.left - 16, innerWidth - width - 8))}px`;
+   dialog.style.top = `${top}px`; dialog.style.width = `${width}px`;
+   dialog.style.maxHeight = `${Math.max(160, innerHeight - top - 16)}px`;
+  }
+  body.scrollTop = 0;
  }
 
  /** New topic: a title and the first message, which starts its first turn (NewTopicSheet). */
