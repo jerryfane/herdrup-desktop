@@ -301,6 +301,7 @@ test("the web Desk publishes accountChanged the moment the session ends", async 
  signOutHeld.resolve();
  await out;
  off();
+});
 
 test("a call already cancelled starts nothing, not even a refresh; one cancelled behind the refresh lock stops waiting", async () => {
  const secret = new Uint8Array(32).fill(5);
