@@ -2418,8 +2418,9 @@ export const Desk = {
   /**
    * WebAccessDeny denies request id. It returns only once the service took the
    * denial (or the request was already over); on an error the page keeps the
-   * request open so Deny can be tried again. Grants waiting on an unknown
-   * approval are removed once the request is known not to be approved.
+   * request open so Deny can be tried again. Grants waiting on a report with
+   * no known outcome are removed only once the service shows the request ended
+   * without approval.
    */
   webAccessDeny(id: string): Promise<void> {
     return call("Desk.WebAccessDeny", id);

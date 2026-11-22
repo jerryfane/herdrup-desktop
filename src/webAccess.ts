@@ -106,7 +106,7 @@ export function initWebAccess(): void {
   const end = () => { finished = true; lock(); approve.hidden = true; close.hidden = true; deny.textContent = "Done"; };
   const update = () => {
    deny.disabled = busy;
-   approve.disabled = busy || finished || (!retry && (locked || !canApprove(code.value, ticked.size, false) || code.disabled));
+   approve.disabled = busy || finished || (!retry && (locked || !canApprove(code.value, ticked.size) || code.disabled));
   };
   const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
   code.oninput = () => { code.value = codeInput(code.value); say(""); update(); };
@@ -125,7 +125,7 @@ export function initWebAccess(): void {
    if (finished) { dialog.close(); return; }
    void run(async () => {
     try { await Desk.webAccessDeny(req.id); }
-    catch (error) { say(`Couldn't deny: ${errorText(error)}. Deny to try again.`); close.hidden = false; lock(); return; }
+    catch (error) { say(errorText(error)); close.hidden = false; lock(); return; }
     finished = true; dialog.close();
    });
   };
@@ -143,6 +143,7 @@ export function initWebAccess(): void {
     }
    }
    approve.textContent = "Approving…";
+   retry = false;
    try {
     const result = await Desk.webAccessApprove(req.id, [...ticked], scope, length);
     const { done: approved, unsure, lines } = resultLines(result);

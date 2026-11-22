@@ -11,10 +11,9 @@ test("the sheet opens for the oldest request nobody is approving and the user ha
 
 test("the code is four digits and Approve needs a code and a machine", () => {
  expect(codeInput(" 4 7-2a9 1")).toBe("4729");
- expect(canApprove("4729", 1, false)).toBe(true);
- expect(canApprove("472", 1, false)).toBe(false);
- expect(canApprove("4729", 0, false)).toBe(false);
- expect(canApprove("4729", 2, true)).toBe(false);
+ expect(canApprove("4729", 1)).toBe(true);
+ expect(canApprove("472", 1)).toBe(false);
+ expect(canApprove("4729", 0)).toBe(false);
 });
 
 test("an approval with no machine granted leaves the request open and says why", () => {

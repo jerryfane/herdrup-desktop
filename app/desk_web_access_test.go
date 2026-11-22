@@ -479,12 +479,87 @@ func TestWebAccessSkipsAnOlderHerdrAsNeedsUpdate(t *testing.T) {
 	}
 }
 
-// Seqs only grow, also within one millisecond.
+// Seqs only grow: within one millisecond, and after a restart with the clock
+// set back (the last seq is on disk).
 func TestWebSeqAlwaysGrows(t *testing.T) {
-	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
 	t.Cleanup(func() { webNow = time.Now })
-	a, b := webSeq(), webSeq()
-	if a < uint64(time.Unix(1_800_000_000, 0).UnixMilli()) || b <= a {
-		t.Fatalf("seqs %d then %d", a, b)
+	dir := t.TempDir()
+	key := []byte(strings.Repeat("k", 32))
+	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
+	first := &Desk{dir: dir}
+	a, err1 := first.nextWebSeq(key)
+	b, err2 := first.nextWebSeq(key)
+	if err1 != nil || err2 != nil || a < uint64(time.Unix(1_800_000_000, 0).UnixMilli()) || b <= a {
+		t.Fatalf("seqs %d then %d (%v, %v)", a, b, err1, err2)
+	}
+	webNow = func() time.Time { return time.Unix(1_800_000_000, 0).Add(-time.Hour) }
+	restarted := &Desk{dir: dir}
+	if c, err := restarted.nextWebSeq(key); err != nil || c <= b {
+		t.Fatalf("after a restart with the clock set back: %d after %d (%v)", c, b, err)
+	}
+}
+
+// Twenty ticked machines fit a fresh request: the time check is the
+// request's own deadline, not a fixed time per machine.
+func TestWebAccessManyMachinesFitAFreshRequest(t *testing.T) {
+	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	ids := []string{machine}
+	d.storeMu.Lock()
+	st, err := d.load()
+	for i := range 20 {
+		m := Machine{Host: fmt.Sprintf("box%02d.example", i), User: "me"}
+		st.Machines = append(st.Machines, m)
+		ids = append(ids, machineID(m))
+	}
+	if err == nil {
+		err = d.store(st)
+	}
+	d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeCode(t, d, w)
+	res, err := d.WebAccessApprove(context.Background(), "req-1", ids, "chat", "7d")
+	if err != nil || len(res.Granted) != 1 || len(res.Skipped) != 20 {
+		t.Fatalf("approve: granted %v, skipped %d, failed %v, %v", res.Granted, len(res.Skipped), res.Failed, err)
+	}
+	if live := w.live(t); len(live) != 1 {
+		t.Fatalf("live grants %v", live)
+	}
+}
+
+// After an approval whose answer was lost, Deny never removes a grant the
+// service may have published: not when its state can't be read, not when
+// Deny is tried again, and not once the service shows the approval.
+func TestWebAccessDenyKeepsTheGrantsOfAnApprovalThatWentThrough(t *testing.T) {
+	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	ctx := context.Background()
+	typeCode(t, d, w)
+	// The service records the approval, but its answer and later reads fail.
+	w.set(func() {
+		w.finishStatus, w.lost, w.readStatus = http.StatusServiceUnavailable, true, http.StatusServiceUnavailable
+	})
+	if res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d"); err != nil || !res.Unsure {
+		t.Fatalf("lost answer: %+v, %v", res, err)
+	}
+	for try := 1; try <= 2; try++ {
+		if err := d.WebAccessDeny(ctx, "req-1"); err == nil {
+			t.Fatalf("deny %d reported done while the outcome is unknown", try)
+		}
+		if live := w.live(t); len(live) != 1 {
+			t.Fatalf("after deny %d: live grants %v", try, live)
+		}
+	}
+	w.set(func() { w.readStatus = 0 })
+	if err := d.WebAccessDeny(ctx, "req-1"); !errors.Is(err, errAlreadyOver) {
+		t.Fatalf("deny once the approval shows: %v", err)
+	}
+	if live := w.live(t); len(live) != 1 {
+		t.Fatalf("live grants %v", live)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.outcome != "approved" {
+		t.Fatalf("outcome %q", w.outcome)
 	}
 }

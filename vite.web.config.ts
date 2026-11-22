@@ -46,7 +46,9 @@ function runtimeFiles(): Plugin {
 }
 
 /** The page's connect-src names the relays of internal/webrelay/relays.json, the list the desktop
- *  checks a machine's relay against before it grants a browser access (app/desk_web_access.go). */
+ *  checks a machine's relay against before it grants a browser access (app/desk_web_access.go).
+ *  The build also ships the list as relays.json, so the guest relay can write its /web/* CSP
+ *  header from the artifact it serves rather than from its own copy. */
 function relayOrigins(): Plugin {
   const origins: unknown = JSON.parse(readFileSync(resolve(root, "internal/webrelay/relays.json"), "utf8"));
   if (!Array.isArray(origins) || !origins.length || !origins.every(o => typeof o === "string" && /^https:\/\/[a-z0-9.-]+$/.test(o)))
@@ -54,6 +56,9 @@ function relayOrigins(): Plugin {
   const sources = origins.map(o => o.replace(/^https:/, "wss:")).join(" ");
   return {
     name: "herdrup-guest-web-relays",
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "relays.json", source: JSON.stringify(origins) + "\n" });
+    },
     transformIndexHtml: {
       order: "pre",
       handler: html => {

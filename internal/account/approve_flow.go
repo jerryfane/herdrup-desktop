@@ -234,36 +234,42 @@ func (a *Approval) Ready() error {
 }
 
 // Live checks with the service, just before grants are made, that the
-// request is still revealed to this device with at least margin left, so no
-// machine gets a grant the service would then refuse to report.
-func (a *Approval) Live(ctx context.Context, margin time.Duration) error {
+// request is still revealed to this device with at least min left, so no
+// machine gets a grant the service would then refuse to record. It returns
+// the time the request has left.
+func (a *Approval) Live(ctx context.Context, min time.Duration) (time.Duration, error) {
 	if err := a.Ready(); err != nil {
-		return err
+		return 0, err
 	}
 	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
 	switch {
 	case requestGone(err):
 		a.end()
-		return ErrApprovalEnded
+		return 0, ErrApprovalEnded
 	case err != nil:
-		return err
+		return 0, err
 	case st.State != ApprovalRevealed:
 		a.end()
-		return ErrApprovalEnded
-	case time.Duration(st.ExpiresIn)*time.Second < margin:
-		return ErrApprovalEnding
+		return 0, ErrApprovalEnded
 	}
-	return nil
+	left := time.Duration(st.ExpiresIn) * time.Second
+	if left < min {
+		return left, ErrApprovalEnding
+	}
+	return left, nil
 }
 
 // Approve finishes the request with the grants made on the machines and the
 // machine list (envelope JSON) sealed to the browser at seq. It returns nil
 // once the service has the approval (also when only its reply was lost), a
-// *NotApprovedError when the service doesn't have it, and any other error
-// when that can't be told.
+// *NotApprovedError when the service definitely doesn't have it, and any
+// other error when that can't be told. Sent again after an unknown outcome,
+// it reports what the service has.
 func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, seq uint64, envelope []byte) error {
 	if err := a.Ready(); err != nil {
-		return &NotApprovedError{err}
+		// Locked or over since an earlier report: only the service knows
+		// whether that report was recorded.
+		return a.settle(ctx, err)
 	}
 	sealed, err := SealEnvelope(a.key, a.browserPub, seq, envelope)
 	if err != nil {
@@ -276,46 +282,52 @@ func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, s
 	return nil
 }
 
-// settle decides what a failed finish did from the request as the service
-// has it now. The finish is one transaction (herdrup #792), so a request
-// still revealed was not approved, and an approved one was by this device,
-// its claimant.
+// settle decides what a failed finish did. Approved: this device's finish
+// went through (only the claimant finishes). Denied or expired: no finish of
+// this request can go through any more. Still revealed proves nothing after
+// a lost answer, since the finish may yet be applied; only an answer from the
+// service refusing it (a 4xx other than 429: the finish is one transaction,
+// herdrup #792) means it wasn't. Anything else stays unknown.
 func (a *Approval) settle(ctx context.Context, finishErr error) error {
+	var api *APIError
+	refused := errors.As(finishErr, &api) && api.Status >= 400 && api.Status < 500 && api.Status != http.StatusTooManyRequests
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
 	switch {
-	case err == nil && st.State == ApprovalApproved:
+	case err != nil:
+	case st.State == ApprovalApproved:
 		a.end()
 		return nil
-	case err == nil && st.State == ApprovalRevealed:
-		return &NotApprovedError{finishErr}
-	case err == nil || requestGone(err):
+	case st.State == ApprovalDenied || st.State == ApprovalExpired:
 		a.end()
+		return &NotApprovedError{finishErr}
+	case st.State == ApprovalRevealed && refused:
 		return &NotApprovedError{finishErr}
 	}
 	return fmt.Errorf("couldn't tell whether the browser was approved: %w", finishErr)
 }
 
-// Approved reads whether the service recorded this request as approved.
-func (a *Approval) Approved(ctx context.Context) (bool, error) {
+// State reads the request's state as the service has it now; a request the
+// service no longer knows is an error (its outcome can't be told).
+func (a *Approval) State(ctx context.Context) (string, error) {
 	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
-	if requestGone(err) {
-		return false, nil
+	if err != nil {
+		return "", err
 	}
-	return err == nil && st.State == ApprovalApproved, err
+	return st.State, nil
 }
 
 // Deny finishes the request as denied. It locks the approval at once, and
-// reports success only when the service took the denial; ErrApprovalEnded
-// when the request was already over.
+// reports success only when the service took this denial; ErrApprovalEnded
+// when the request was already over (nothing is sent then).
 func (a *Approval) Deny(ctx context.Context) error {
 	a.mu.Lock()
 	a.locked = true
 	done := a.done
 	a.mu.Unlock()
 	if done {
-		return nil
+		return ErrApprovalEnded
 	}
 	err := a.c.DenyBrowser(ctx, a.acct, a.request.ID)
 	var api *APIError

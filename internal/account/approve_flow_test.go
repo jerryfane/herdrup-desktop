@@ -296,19 +296,24 @@ func TestDenyFailsUntilTheServiceTakesIt(t *testing.T) {
 	}
 }
 
-// A failed approval is told apart: refused (still revealed, or ended) is
-// NotApprovedError, recorded but unanswered is success, and an unknown
-// outcome is neither.
+// A failed approval is told apart: refused by the service, or a request that
+// ended, is NotApprovedError; recorded but unanswered is success; a request
+// still revealed after a lost or 5xx answer is unknown, since the finish may
+// yet be applied.
 func TestAFailedApprovalIsToldApart(t *testing.T) {
 	cases := []struct {
-		name       string
-		lost       bool
-		readStatus int
-		want       string
+		name         string
+		finishStatus int
+		lost         bool
+		readStatus   int
+		outcome      string
+		want         string
 	}{
-		{"refused", false, 0, "not approved"},
-		{"answer lost", true, 0, "approved"},
-		{"unknown", false, http.StatusServiceUnavailable, "unknown"},
+		{"refused by the service", http.StatusConflict, false, 0, "", "not approved"},
+		{"503, still revealed", http.StatusServiceUnavailable, false, 0, "", "unknown"},
+		{"503, then expired", http.StatusServiceUnavailable, false, 0, ApprovalExpired, "not approved"},
+		{"answer lost", http.StatusServiceUnavailable, true, 0, "", "approved"},
+		{"state unreadable", http.StatusServiceUnavailable, false, http.StatusServiceUnavailable, "", "unknown"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,7 +323,11 @@ func TestAFailedApprovalIsToldApart(t *testing.T) {
 				t.Fatal("code refused")
 			}
 			s.mu.Lock()
-			s.finishStatus, s.lost, s.readStatus = http.StatusServiceUnavailable, tc.lost, tc.readStatus
+			s.finishStatus, s.lost, s.readStatus = tc.finishStatus, tc.lost, tc.readStatus
+			if tc.outcome != "" {
+				s.finishStatus = 0
+				s.finished = map[string]string{"outcome": tc.outcome}
+			}
 			s.mu.Unlock()
 			err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`))
 			var refused *NotApprovedError
@@ -343,19 +352,19 @@ func TestLiveRefusesAnEndedOrEndingRequest(t *testing.T) {
 	if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
 		t.Fatal("code refused")
 	}
-	if err := a.Live(ctx, time.Minute); err != nil {
+	if _, err := a.Live(ctx, time.Minute); err != nil {
 		t.Fatalf("open request: %v", err)
 	}
 	s.mu.Lock()
 	s.expiresIn = 20
 	s.mu.Unlock()
-	if err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnding) {
+	if _, err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnding) {
 		t.Fatalf("20 s left: %v", err)
 	}
 	s.mu.Lock()
 	s.finished = map[string]string{"outcome": ApprovalExpired}
 	s.mu.Unlock()
-	if err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnded) {
+	if _, err := a.Live(ctx, time.Minute); !errors.Is(err, ErrApprovalEnded) {
 		t.Fatalf("expired: %v", err)
 	}
 }

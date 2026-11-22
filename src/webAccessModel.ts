@@ -26,9 +26,9 @@ export function codeInput(raw: string): string {
  return raw.replace(/\D+/g, "").slice(0, 4);
 }
 
-/** Approve is possible with 4 digits, at least one machine and nothing in flight. */
-export function canApprove(code: string, machines: number, busy: boolean): boolean {
- return code.length === 4 && machines > 0 && !busy;
+/** Approve needs 4 digits and at least one machine (the sheet also waits for calls in flight). */
+export function canApprove(code: string, machines: number): boolean {
+ return code.length === 4 && machines > 0;
 }
 
 const SKIP_REASONS: Record<string, string> = {
