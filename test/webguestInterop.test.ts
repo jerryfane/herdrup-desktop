@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { parseInvite } from "../src/webguest/invite";
-import { acceptInvite, GuestTransport } from "../src/webguest/transport";
+import { acceptInvite, guestLink, GuestTransport } from "../src/webguest/transport";
 import type { Subprocess } from "bun";
 
 const go = Bun.which("go");
@@ -54,10 +54,10 @@ test.skipIf(go === null)("the web guest redeems a Go relay's invitation and call
  // The invitation is one-use, and only this browser's key is the guest.
  const reuse = await acceptInvite(invite, staticKey(await generateIdentity()), "Browser").catch((error: Error) => error.message);
  expect(reuse).toBe("This invitation was already used. Ask the owner for a new one.");
- const stranger = new GuestTransport(access, staticKey(await generateIdentity()));
+ const stranger = new GuestTransport(guestLink(access), staticKey(await generateIdentity()));
  expect(await stranger.call("ping").catch((error: Error) => error.message)).toBe("This shared access is no longer available. Ask the owner for a new invitation.");
 
- const transport = new GuestTransport(access, identity);
+ const transport = new GuestTransport(guestLink(access), identity);
  const pong = await transport.call("ping");
  expect(pong).toMatchObject({ type: "pong", version: "fake" });
  const list = await transport.call("agent.list") as { type: string; agents: { terminal_id: string }[] };

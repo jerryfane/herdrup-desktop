@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { parseInvite } from "../src/webguest/invite";
-import { acceptInvite, GuestTransport } from "../src/webguest/transport";
+import { acceptInvite, guestLink, GuestTransport } from "../src/webguest/transport";
 import { setLink, transportLink } from "../src/web/link";
 import { setSharedAgents, setView } from "../src/web/view";
 import { registerFiles } from "../src/web/files";
@@ -62,7 +62,7 @@ function bytes(n: number, seed: number): Uint8Array<ArrayBuffer> {
 test.skipIf(go === null)("a multi-chunk file uploads through the Gram and pane composers and downloads back identical", async () => {
  const identity = staticKey(await generateIdentity());
  const access = await acceptInvite(parseInvite(inviteLink, Date.now()), identity, "Browser", { webSocket: url => new WebSocket(url) });
- const transport = new GuestTransport(access, identity);
+ const transport = new GuestTransport(guestLink(access), identity);
  const link = transportLink({ ...access, acceptedAt: access.acceptedAt.toISOString() }, transport);
  await link.call("ping");
  expect(link.features().gram).toBe(true);

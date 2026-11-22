@@ -6,7 +6,7 @@ import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { Invite } from "../src/webguest/invite";
 import { MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT } from "../src/webguest/noise";
-import { acceptInvite, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
+import { acceptInvite, guestLink, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
 import { memoryRelay, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
@@ -57,7 +57,7 @@ test("guest acceptance and returning traffic authenticate both peers (guest_test
  const access = await acceptInvite(invite, guest, "Desktop");
  expect([access.agentTarget, access.guestID, access.ownerName, access.agentName]).toEqual(["%42", "grant-1", "Owner", "Worker"]);
 
- const transport = new GuestTransport(access, guest);
+ const transport = new GuestTransport(guestLink(access), guest);
  const longText = "x".repeat(MAX_NOISE_PLAINTEXT * 2);
  expect(await transport.call("pane.send_text", { text: longText })).toEqual({ text: "hello" });
  expect(requests.pop()).toBe(longText);
@@ -76,7 +76,7 @@ test("guest acceptance and returning traffic authenticate both peers (guest_test
  for (mode of [1, 2]) expect([mode, await kindOf(transport.call("ping"))]).toEqual([mode, "revoked"]);
 
  const wrongKey = { ...access, endpoint: { ...access.endpoint, hostPublicKey: new Uint8Array(32).fill(9) } };
- expect(await kindOf(new GuestTransport(wrongKey, guest).call("ping"))).not.toBe("accepted");
+ expect(await kindOf(new GuestTransport(guestLink(wrongKey), guest).call("ping"))).not.toBe("accepted");
 
  mode = 4;
  const cancelled = await transport.openStream("events.subscribe", undefined, { signal: AbortSignal.timeout(30) }).then(() => null, (error) => error);
@@ -95,7 +95,7 @@ test("a stream keeps its socket and yields lines until the host closes", async (
    opened.resolve();
   },
  }));
- const transport = new GuestTransport(accessOn(relay), await identity());
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  const stream = await transport.openStream("pane.stream", { pane_id: "p" });
  await opened.promise;
  const lines: string[] = [];
@@ -115,7 +115,7 @@ test("closing the transport ends its open streams", async () => {
    opened.resolve();
   },
  }));
- const transport = new GuestTransport(accessOn(relay), await identity());
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  const stream = await transport.openStream("pane.stream");
  await opened.promise;
  const next = stream.next();
@@ -133,7 +133,7 @@ test("API errors, closes and refusals read as the Go client words them", async (
    script(host);
   },
  }));
- const transport = new GuestTransport(accessOn(relay), await identity());
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  script = (host) => host.write(`{"id":"x","error":{"code":"not_found","message":"no such pane","current":7}}\n`);
  const apiError = await transport.call("pane.get").catch((error) => error);
  expect(apiError).toBeInstanceOf(HerdrAPIError);
@@ -168,7 +168,7 @@ test("the relay's going-away close reads as the host offline", async () => {
   (await handshake()).reply({ ok: true, guest_id: "grant-1" });
   conn.close(1001, "host_offline");
  });
- const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { webSocket });
  expect(await kindOf(transport.call("ping"))).toBe("host_offline");
 });
 
@@ -181,7 +181,7 @@ test("a reply line over 64 MiB is refused", async () => {
   // Yields between frames so the guest reads as the host writes, as over a socket.
   for (; sent <= MAX_REPLY_LINE_BYTES + chunk.length && !conn.ended; sent += chunk.length) { host.write(chunk); await Promise.resolve(); }
  });
- const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { webSocket });
  expect(await transport.call("agent.read").catch((error: Error) => error.message)).toBe("Shared-machine reply exceeds the maximum line size.");
  expect(sent).toBeGreaterThan(MAX_REPLY_LINE_BYTES);
 }, 60_000);
@@ -196,7 +196,7 @@ test("a frame over the Noise message limit ends the connection on arrival", asyn
   conn.send(new Uint8Array(MAX_NOISE_MESSAGE + 1));
   closedByGuest = (await conn.read()) === null;
  });
- const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { webSocket });
  const stream = await transport.openStream("events.subscribe");
  expect(await stream.next().catch((error: Error) => error.message)).toBe("The shared machine sent an oversized message.");
  await Bun.sleep(0);
@@ -213,7 +213,7 @@ test("an unread backlog past the queue limit ends the connection and frees it", 
   for (; sent <= MAX_QUEUED_BYTES && !conn.ended; sent += frame.length) { conn.send(frame); await Promise.resolve(); }
   closedByGuest = conn.ended;
  });
- const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { webSocket });
  const stream = await transport.openStream("events.subscribe");
  for (let i = 0; i < 5000 && !closedByGuest; i++) await Bun.sleep(0);
  expect(closedByGuest).toBe(true);
@@ -232,7 +232,7 @@ test("unread empty frames past the frame limit end the connection", async () => 
   for (; sent <= MAX_QUEUED_FRAMES && !conn.ended; sent++) { conn.send(empty); if (sent % 256 === 0) await Promise.resolve(); }
   closedByGuest = conn.ended;
  });
- const transport = new GuestTransport(accessOn(relay), await identity(), { webSocket });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { webSocket });
  const stream = await transport.openStream("events.subscribe");
  for (let i = 0; i < 5000 && !closedByGuest; i++) await Bun.sleep(0);
  expect(closedByGuest).toBe(true);
@@ -243,7 +243,7 @@ test("unread empty frames past the frame limit end the connection", async () => 
 test("a call ends at its round-trip limit, handshake included (session.go:18)", async () => {
  expect(ROUND_TRIP_LIMIT_MS).toBe(60_000);
  const relay = track(startRelay({ async serve(_conn, handshake) { await handshake(); } }));
- const transport = new GuestTransport(accessOn(relay), await identity(), { callLimitMs: 200 });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { callLimitMs: 200 });
  expect(await kindOf(transport.call("ping"))).toBe("timeout");
 });
 
@@ -269,7 +269,7 @@ test("a refused upgrade is read as rate limited and starts the backoff without r
   ws.addEventListener("close", (event) => seen.push(`close ${event.code} clean=${event.wasClean}`));
   return ws;
  };
- const transport = new GuestTransport(accessOn(relay), await identity(), { now: () => clock, webSocket: observe });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { now: () => clock, webSocket: observe });
  expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
  expect(seen[0]).toBe("error");
  expect(seen[1]).toMatch(/^close 10\d\d clean=false$/);
@@ -289,7 +289,7 @@ test("a refused upgrade is read as rate limited and starts the backoff without r
 test("the relay's refusal close codes read as rate limited, offline and busy", async () => {
  let clock = 1_000_000, code = 4429, reason = "rate_limited";
  const relay = track(startRelay({ admit: () => undefined, async serve(conn) { conn.close(code, reason); } }));
- const transport = new GuestTransport(accessOn(relay), await identity(), { now: () => clock });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { now: () => clock });
  expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
  expect(transport.rateLimitedUntil()).toBe(clock + 15_000);
  expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
@@ -312,7 +312,7 @@ test("a connect the relay admits ends the backoff", async () => {
    host.write(`{"result":{"type":"pong"}}\n`);
   },
  }));
- const transport = new GuestTransport(accessOn(relay), await identity(), { now: () => clock });
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), { now: () => clock });
  expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
  clock += 15_000;
  refuse = false;
@@ -339,7 +339,7 @@ test("an admitted handshake begun before a refusal keeps its cooldown", async ()
    host.write(`{"result":{"type":"pong"}}\n`);
   },
  }));
- const transport = new GuestTransport(accessOn(relay), await identity());
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  const a = transport.call("ping");
  await helloA.promise;
  expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
