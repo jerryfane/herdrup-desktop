@@ -12,7 +12,7 @@ import (
 
 // Sync is the account's settings sync (design #698 §5, AccountService
 // src/sync.ts): GET /v1/sync pages changes since a revision; POST /v1/sync
-// writes some. Only the hosts collection is used by the desktop app so far.
+// writes some. The desktop app syncs the hosts and prompts collections.
 
 // Item is one synced item as the service sends it.
 type Item struct {
@@ -42,6 +42,14 @@ type HostBody struct {
 	Username string `json:"username"`
 	AuthKind string `json:"auth_kind,omitempty"`
 	Label    string `json:"label,omitempty"`
+}
+
+// PromptBody is the prompts collection's allowlist (§5.1): a saved prompt's
+// title (none when empty), its text and its place in the list.
+type PromptBody struct {
+	Title string   `json:"title,omitempty"`
+	Text  string   `json:"text"`
+	Order *float64 `json:"order,omitempty"`
 }
 
 // Pull is the result of reading the service's changes.

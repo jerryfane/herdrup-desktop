@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,7 +21,8 @@ import (
 
 // syncWorker is the account service's sync as AccountService src/sync.ts
 // keeps it: one revision per write, last write wins, tombstones for deletes,
-// and the hosts allowlist (any other field is a 400).
+// the hosts and prompts allowlists and field rules (a bad change refuses the
+// whole push, 400), and the prompts cap (403).
 type syncWorker struct {
 	mu      sync.Mutex
 	rev     int64
@@ -99,18 +101,27 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			ids[c.Collection+"/"+c.ID] = true
 		}
 		for _, c := range body.Changes {
-			if c.Body != nil {
-				var fields map[string]any
-				_ = json.Unmarshal(c.Body, &fields)
-				for k := range fields {
-					switch k {
-					case "nickname", "host", "port", "username", "auth_kind", "label":
-					default:
-						reply(400, map[string]string{"error": "invalid_item"})
-						return
-					}
-				}
+			if c.Body != nil && !validSyncBody(c.Collection, c.Body) {
+				reply(400, map[string]string{"error": "invalid_item"})
+				return
 			}
+		}
+		prompts := 0
+		for id, it := range w.items {
+			if it.Collection == "prompts" && !it.Deleted && !ids["prompts/"+id] {
+				prompts++
+			}
+		}
+		for _, c := range body.Changes {
+			if c.Collection == "prompts" && !c.Deleted {
+				prompts++
+			}
+		}
+		if prompts > account.PromptsCap {
+			reply(403, map[string]string{"error": "quota"})
+			return
+		}
+		for _, c := range body.Changes {
 			w.rev++
 			it := account.Item{Collection: c.Collection, ID: c.ID, Rev: w.rev, Deleted: c.Deleted}
 			if !c.Deleted {
@@ -122,6 +133,49 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 	default:
 		reply(404, map[string]string{"error": "not_found"})
 	}
+}
+
+// validSyncBody is sync.ts's check of one body: only the collection's
+// allowlisted fields, a prompt's text present and ≤8 KB, its title ≤128
+// code points and its order a number.
+func validSyncBody(collection string, raw json.RawMessage) bool {
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	switch collection {
+	case "hosts":
+		for k := range fields {
+			switch k {
+			case "nickname", "host", "port", "username", "auth_kind", "label":
+			default:
+				return false
+			}
+		}
+		return true
+	case "prompts":
+		for k, v := range fields {
+			switch k {
+			case "title":
+				if s, ok := v.(string); !ok || len([]rune(s)) > 128 {
+					return false
+				}
+			case "text":
+				if s, ok := v.(string); !ok || s == "" || len(s) > 8192 {
+					return false
+				}
+			case "order":
+				if _, ok := v.(float64); !ok {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		_, hasText := fields["text"]
+		return hasText
+	}
+	return false
 }
 
 type signedInStore struct{ raw []byte }
@@ -146,9 +200,9 @@ func signInTo(d *Desk, srv *httptest.Server, acct string) {
 }
 
 func quietSync(t *testing.T) {
-	previous, background := publishSyncedMachines, backgroundMachineSync
-	publishSyncedMachines, backgroundMachineSync = func([]SyncedMachine) {}, false
-	t.Cleanup(func() { publishSyncedMachines, backgroundMachineSync = previous, background })
+	previous, background, prompts := publishSyncedMachines, backgroundMachineSync, publishSavedPrompts
+	publishSyncedMachines, backgroundMachineSync, publishSavedPrompts = func([]SyncedMachine) {}, false, func([]SavedPrompt) {}
+	t.Cleanup(func() { publishSyncedMachines, backgroundMachineSync, publishSavedPrompts = previous, background, prompts })
 }
 
 func syncIDs(t *testing.T, d *Desk) map[string]string {
@@ -670,5 +724,265 @@ func TestARefusedEditIsSentAgain(t *testing.T) {
 	id := syncIDs(t, mac)["root@pi:22"]
 	if body := string(w.live()[id].Body); !strings.Contains(body, `"New"`) {
 		t.Fatalf("account copy after the retry: %s; want the edit sent", body)
+	}
+}
+
+// seedPrompt puts a prompt in the account as another device (the Swift
+// app) wrote it.
+func (w *syncWorker) seedPrompt(id, body string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.rev++
+	w.items[id] = account.Item{Collection: "prompts", ID: id, Rev: w.rev, Body: json.RawMessage(body)}
+}
+
+func (w *syncWorker) livePrompts() map[string]string {
+	out := map[string]string{}
+	for id, it := range w.live() {
+		if it.Collection == "prompts" {
+			out[id] = string(it.Body)
+		}
+	}
+	return out
+}
+
+func savePrompt(t *testing.T, d *Desk, id, nickname, text string) SavedPrompt {
+	t.Helper()
+	list, err := d.SavePrompt(SavedPrompt{ID: id, Nickname: nickname, Text: text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" {
+		return list[len(list)-1]
+	}
+	i := slices.IndexFunc(list, func(p SavedPrompt) bool { return p.ID == id })
+	if i < 0 {
+		t.Fatalf("no prompt %s after saving it: %+v", id, list)
+	}
+	return list[i]
+}
+
+func promptsOf(t *testing.T, d *Desk) map[string]SavedPrompt {
+	t.Helper()
+	list, err := d.SavedPrompts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]SavedPrompt{}
+	for _, p := range list {
+		out[p.ID] = p
+	}
+	return out
+}
+
+func syncEach(t *testing.T, ds ...*Desk) {
+	t.Helper()
+	for _, d := range ds {
+		if err := d.SyncMachines(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Two devices with one account: a prompt saved on each shows on both, an
+// edit on one reaches the other, and so does a delete.
+func TestPromptsSyncAcrossTwoDevices(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac, linux := device(t, srv), device(t, srv)
+	a := savePrompt(t, mac, "", "standup", "What did you do?")
+	b := savePrompt(t, linux, "", "", "Run the tests\nthen push")
+	syncEach(t, mac, linux, mac)
+	for name, d := range map[string]*Desk{"mac": mac, "linux": linux} {
+		got := promptsOf(t, d)
+		if len(got) != 2 || got[a.ID] != a || got[b.ID] != b {
+			t.Fatalf("%s's prompts: %+v; want %+v and %+v", name, got, a, b)
+		}
+	}
+	if live := w.livePrompts(); len(live) != 2 {
+		t.Fatalf("the account holds %v; want both prompts", live)
+	}
+
+	edited := savePrompt(t, mac, a.ID, "Standup", "What did you do yesterday?")
+	if edited.ID != a.ID {
+		t.Fatalf("an edit made a new prompt: %+v", edited)
+	}
+	syncEach(t, mac, linux)
+	if got := promptsOf(t, linux)[a.ID]; got != edited {
+		t.Fatalf("linux after the mac's edit: %+v; want %+v", got, edited)
+	}
+
+	if _, err := linux.DeletePrompt(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, linux, mac)
+	if got := promptsOf(t, mac); len(got) != 1 || got[a.ID] != edited {
+		t.Fatalf("mac after linux's delete: %+v; want only %+v", got, edited)
+	}
+	if _, ok := w.livePrompts()[b.ID]; ok {
+		t.Fatal("the account still holds the deleted prompt")
+	}
+	if raw, _ := os.ReadFile(linux.syncStatePath()); strings.Contains(string(raw), `"promptDeletes"`) {
+		t.Fatalf("the pushed delete is still pending: %s", raw)
+	}
+}
+
+// The owner's case: this device synced machines before prompts synced, has
+// its own prompts, and the account already holds the Swift app's. Both
+// lists end up on both, the account's after this device's, and the
+// device's after the account's last order.
+func TestSigningInWithPromptsKeepsTheAccountsToo(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	const phone, phone2 = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	w.seedPrompt(phone2, `{"text":"second","order":1}`)
+	w.seedPrompt(phone, `{"title":"From the phone","text":"hello","order":0}`)
+	mac := device(t, srv)
+	// A machines-only sync already ran: its mirror is past the prompts' revisions.
+	if err := mac.storeSyncState(syncState{AccountID: "acct", Mirror: account.Mirror{Rev: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	own := savePrompt(t, mac, "", "desk", "from the desktop")
+	syncEach(t, mac)
+	list, _ := mac.SavedPrompts()
+	want := []SavedPrompt{own, {ID: phone, Nickname: "From the phone", Text: "hello"}, {ID: phone2, Text: "second"}}
+	if !slices.Equal(list, want) {
+		t.Fatalf("mac's prompts: %+v; want %+v", list, want)
+	}
+	if body := w.livePrompts()[own.ID]; body != `{"title":"desk","text":"from the desktop","order":2}` {
+		t.Fatalf("the desktop's prompt in the account: %s", body)
+	}
+	linux := device(t, srv)
+	syncEach(t, linux)
+	if got := promptsOf(t, linux); len(got) != 3 || got[own.ID] != own {
+		t.Fatalf("another device's prompts: %+v", got)
+	}
+}
+
+// A prompt travels as title (the nickname trimmed, none when empty), text
+// with its line breaks, and order; an edit keeps the account's order.
+func TestPromptFieldsRoundTrip(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac, linux := device(t, srv), device(t, srv)
+	daily := savePrompt(t, mac, "", "  daily  ", "line one\n\tline two")
+	bare := savePrompt(t, mac, "", "", "no title")
+	syncEach(t, mac)
+	live := w.livePrompts()
+	if live[daily.ID] != `{"title":"daily","text":"line one\n\tline two","order":0}` || live[bare.ID] != `{"text":"no title","order":1}` {
+		t.Fatalf("the account's copies: %v", live)
+	}
+	syncEach(t, linux)
+	if got := promptsOf(t, linux)[daily.ID]; got.Nickname != "daily" || got.Text != "line one\n\tline two" {
+		t.Fatalf("linux's copy: %+v", got)
+	}
+	savePrompt(t, linux, bare.ID, "titled", "no title, edited")
+	syncEach(t, linux)
+	if body := w.livePrompts()[bare.ID]; body != `{"title":"titled","text":"no title, edited","order":1}` {
+		t.Fatalf("the edited prompt in the account: %s; want its order kept", body)
+	}
+}
+
+// A prompt the service would refuse (too long, no text) or one past the
+// account's cap is not sent, so the rest of the push goes through; it stays
+// on this device.
+func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	long := savePrompt(t, mac, "", "", strings.Repeat("x", 8193))
+	good := savePrompt(t, mac, "", "", "fits")
+	syncEach(t, mac)
+	live := w.livePrompts()
+	if _, sent := live[long.ID]; sent || live[good.ID] == "" {
+		t.Fatalf("the account holds %v; want only the prompt that fits", live)
+	}
+	if got := promptsOf(t, mac); len(got) != 2 {
+		t.Fatalf("mac's prompts after the sync: %+v; want both kept", got)
+	}
+	empty := SavedPrompt{ID: "00000000-0000-4000-8000-000000000009"}
+	if _, changes, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil); len(changes) != 0 {
+		t.Fatalf("an empty prompt was sent: %+v", changes)
+	}
+
+	for i := range account.PromptsCap - 1 {
+		w.seedPrompt(fmt.Sprintf("00000000-0000-4000-9000-%012d", i), `{"text":"seeded"}`)
+	}
+	over := savePrompt(t, mac, "", "", "one too many")
+	syncEach(t, mac)
+	if _, sent := w.livePrompts()[over.ID]; sent || len(w.livePrompts()) != account.PromptsCap {
+		t.Fatalf("the account holds %d prompts (the last one sent: %v); want the cap", len(w.livePrompts()), sent)
+	}
+	if _, kept := promptsOf(t, mac)[over.ID]; !kept {
+		t.Fatal("the prompt past the cap was dropped here")
+	}
+}
+
+// A prompt deleted on another device goes here too, unless it was edited
+// here since: then the edit stands and is pushed back.
+func TestAPromptEditedHereOutlivesItsRemoteDelete(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac, linux := device(t, srv), device(t, srv)
+	kept := savePrompt(t, mac, "", "", "keep me")
+	gone := savePrompt(t, mac, "", "", "drop me")
+	syncEach(t, mac, linux)
+	for _, id := range []string{kept.ID, gone.ID} {
+		if _, err := linux.DeletePrompt(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	syncEach(t, linux)
+	edited := savePrompt(t, mac, kept.ID, "", "keep me, edited")
+	syncEach(t, mac)
+	if got := promptsOf(t, mac); len(got) != 1 || got[kept.ID] != edited {
+		t.Fatalf("mac's prompts: %+v; want only the edited one", got)
+	}
+	if body := w.livePrompts()[kept.ID]; !strings.Contains(body, "keep me, edited") {
+		t.Fatalf("the account's copy: %q; want the edit pushed back", body)
+	}
+}
+
+// The account page's status: what the account held at the newest good
+// sync of the signed-in account, under its JSON names; Sync now runs one
+// and tells the page.
+func TestAccountSyncStatusAndSyncNow(t *testing.T) {
+	quietSync(t)
+	var published []AccountState
+	previous := publishAccount
+	publishAccount = func(s AccountState) { published = append(published, s) }
+	t.Cleanup(func() { publishAccount = previous })
+	_, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if s, err := mac.AccountSyncStatus(); err != nil || s != (AccountSyncStatus{}) {
+		t.Fatalf("before any sync: %+v, %v", s, err)
+	}
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	first := savePrompt(t, mac, "", "", "one")
+	savePrompt(t, mac, "", "", "two")
+	start := time.Now().UnixMilli()
+	if err := mac.AccountSyncNow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(published) != 1 || !published[0].SignedIn {
+		t.Fatalf("published %+v; want the account state once", published)
+	}
+	// A delete not yet synced: the status is still the account's.
+	if _, err := mac.DeletePrompt(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	s, err := mac.AccountSyncStatus()
+	if err != nil || s.LastSyncedMs < start || s.LastSyncedMs > time.Now().UnixMilli() || s.Machines != 1 || s.Prompts != 2 {
+		t.Fatalf("after the sync: %+v, %v", s, err)
+	}
+	raw, _ := json.Marshal(s)
+	if want := fmt.Sprintf(`{"lastSyncedMs":%d,"machines":1,"prompts":2}`, s.LastSyncedMs); string(raw) != want {
+		t.Fatalf("status JSON %s; want %s", raw, want)
+	}
+	signInTo(mac, srv, "other")
+	if s, _ := mac.AccountSyncStatus(); s != (AccountSyncStatus{}) {
+		t.Fatalf("another account's status: %+v", s)
 	}
 }

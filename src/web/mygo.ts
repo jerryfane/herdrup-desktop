@@ -6,6 +6,7 @@ import type { Desk as GoDesk, Dictation as GoDictation } from "../mygo";
 import { browserEnv, createGuestDesk } from "./desk";
 import { gramDesk, guestGramDesk } from "./gram";
 import { browserAccountPage, createAccountDesk } from "./accountDesk";
+import { createPromptsDesk } from "./prompts";
 
 export type * from "../mygo";
 export { events } from "./events";
@@ -15,7 +16,7 @@ type DeskFns = typeof GoDesk;
 
 const notAvailable = () => Promise.reject(new Error("Not available in the browser"));
 const account = createAccountDesk(browserAccountPage());
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...createGuestDesk(browserEnv()), ...account.desk };
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...createGuestDesk(browserEnv()), ...account.desk, ...createPromptsDesk() };
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
 export const signInReturned = account.signInReturned;
 
