@@ -114,3 +114,4 @@ dialog.topics-about:focus { outline: none; }
 .agent-detail .topics-proposals-dismiss { border: 1px solid var(--color-hairline); background: var(--color-surface); color: var(--color-text); }
 .agent-detail .topics-proposals-create { border: 0; background: var(--color-text); color: var(--color-ground); }
 .agent-detail .topics-proposals-bar > button:disabled { opacity: .5; }
+.topics-proposal-glyph { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--tick-icon) center/contain no-repeat; }

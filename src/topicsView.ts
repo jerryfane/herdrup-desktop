@@ -14,6 +14,8 @@ import { activityMs, messageTooLong, searchTopics, sendNote, statusDot, statusTe
 import { createLabel, isTicked, keptUnticks, messagesText, organiseAnswered, organiseNote, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
 import { appleSymbols } from "./platform";
 import infoIcon from "../third_party/phosphor/web/info.svg?url";
+import tickedIcon from "../third_party/phosphor/web/check-circle-fill.svg?url";
+import untickedIcon from "../third_party/phosphor/web/circle.svg?url";
 
 /** iPad's regular width: the list beside the open topic's chat at this page width and above. */
 export const TOPICS_WIDE_PX = 760;
@@ -265,7 +267,9 @@ export class TopicsPane {
   row.setAttribute("aria-label", title);
   if (s.reason) row.setAttribute("aria-description", s.reason);
   const tick = el("span", "topics-proposal-tick"); tick.setAttribute("aria-hidden", "true");
-  void this.host.symbol(ticked ? "checkmark.circle.fill" : "circle", 20, "regular").then(svg => tick.append(svg));
+  // checkmark.circle.fill / circle: SF on a Mac, Phosphor's check-circle fill and circle elsewhere.
+  if (appleSymbols()) void this.host.symbol(ticked ? "checkmark.circle.fill" : "circle", 20, "regular").then(svg => tick.append(svg));
+  else { const mask = el("span", "topics-proposal-glyph"); mask.style.setProperty("--tick-icon", `url("${ticked ? tickedIcon : untickedIcon}")`); tick.append(mask); }
   const lines = el("span", "topics-row-lines");
   const top = el("span", "topic-row-top");
   top.append(el("strong", "topic-row-title", title));
