@@ -42,21 +42,22 @@
 .settings-row-subtitle { color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
 .settings-row-value { min-width:0; overflow:hidden; text-overflow:ellipsis; color:var(--color-text-dim); font:400 15px var(--font-app); font-variant-numeric:tabular-nums; white-space:nowrap; }
 .settings-row:has(> .settings-row-value) > .settings-row-lines { min-width:min-content; }
-/* Swift glyphRow: fixed geometry; uiTypography scales only the font sizes. */
-.settings-index .settings-row { display:flex; min-height:52px; padding:0 16px; font-size:17px; }
-.settings-index .settings-row > .settings-row-lines { gap:1px; padding:11px 0; }
-.settings-index .settings-row > .settings-glyph:first-child { width:24px; height:24px; }
-.settings-index .settings-row-subtitle { font-size:14px; line-height:var(--leading-app); }
-.settings-index .settings-row > .settings-row-value,
-.settings-index .settings-row > .settings-menu-picker,
-.settings-index .settings-row > .settings-switch,
-.settings-index .settings-row > .settings-glyph:last-child { margin-left:20px; }
+/* Swift glyphRow: fixed geometry; uiTypography scales only the font sizes. The index and the
+   HerdrUp account page (herdrupAccount.ts) both draw these rows: .settings-glyph-rows. */
+:is(.settings-index, .settings-glyph-rows) .settings-row { display:flex; min-height:52px; padding:0 16px; font-size:17px; }
+:is(.settings-index, .settings-glyph-rows) .settings-row > .settings-row-lines { gap:1px; padding:11px 0; }
+:is(.settings-index, .settings-glyph-rows) .settings-row > .settings-glyph:first-child { width:24px; height:24px; }
+:is(.settings-index, .settings-glyph-rows) .settings-row-subtitle { font-size:14px; line-height:var(--leading-app); }
+:is(.settings-index, .settings-glyph-rows) .settings-row > .settings-row-value,
+:is(.settings-index, .settings-glyph-rows) .settings-row > .settings-menu-picker,
+:is(.settings-index, .settings-glyph-rows) .settings-row > .settings-switch,
+:is(.settings-index, .settings-glyph-rows) .settings-row > .settings-glyph:last-child { margin-left:20px; }
 .settings-menu-picker { position:relative; flex:none; display:flex; align-items:center; gap:3px; color:var(--color-text-dim); font:400 17px/var(--leading-app) var(--font-app); white-space:nowrap; }
 .settings-menu-picker > .settings-glyph { width:auto; }
 .settings-menu-picker > select { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font:inherit; }
 .settings-menu-picker:focus-within { outline:2px solid var(--color-text-faint); outline-offset:3px; border-radius:4px; }
-.settings-index .settings-group > .settings-row + .settings-row { border-top:0; margin-top:1px; }
-.settings-index .settings-group > .settings-row + .settings-row::before { content:""; position:absolute; top:-1px; left:52px; right:0; height:1px; background:var(--color-hairline-quiet); }
+:is(.settings-index, .settings-glyph-rows) .settings-group > .settings-row + .settings-row { border-top:0; margin-top:1px; }
+:is(.settings-index, .settings-glyph-rows) .settings-group > .settings-row + .settings-row::before { content:""; position:absolute; top:-1px; left:52px; right:0; height:1px; background:var(--color-hairline-quiet); }
 .settings-version { display:flex; flex-direction:column; align-items:center; gap:4px; margin:28px 16px 0; color:var(--color-text-faint); text-align:center; font:400 12px/var(--leading-machine) var(--font-machine); }
 .settings-version > span { min-height:round(up, calc(1em * var(--leading-machine)), var(--pixel)); }
 .settings-version-stance { font-size:11px; }

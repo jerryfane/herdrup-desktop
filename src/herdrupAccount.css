@@ -9,17 +9,12 @@
 .account-panel.account-panel-full { align-items: stretch; gap: 0; padding: 0; text-align: left; }
 .account-panel-full > .settings-section:not(:first-child) { margin-top: 22px; }
 .account-panel-full > .settings-section > .settings-section-label { margin-top: 0; }
-.account-panel-full .account-row { min-height: 52px; padding: 0 16px; font-size: 17px; cursor: pointer; }
-.account-panel-full .account-row > .settings-row-lines { gap: 1px; padding: 11px 0; }
-.account-panel-full .account-row > .settings-glyph:first-child { width: 24px; height: 24px; }
-.account-panel-full .account-row .settings-row-subtitle { font-size: 14px; }
-.account-panel-full .account-row > .settings-row-value { margin-left: 20px; }
+/* Row geometry is Settings' own (settings.css .settings-glyph-rows); only what differs is here. */
+.account-panel-full .account-row { cursor: pointer; }
 .account-panel-full .account-row-static { cursor: default; }
 .account-panel-full .account-row:disabled { opacity: 0.6; cursor: default; }
 /* Delete account: Swift's died ink on the label and glyph (destructive, not a coloured card). */
 .account-panel-full .account-row-destructive, .account-panel-full .account-row-destructive .settings-glyph { color: var(--status-died); }
-.account-panel-full .settings-group > .account-row + .account-row { border-top: 0; margin-top: 1px; }
-.account-panel-full .settings-group > .account-row + .account-row::before { content: ""; position: absolute; top: -1px; left: 52px; right: 0; height: 1px; background: var(--color-hairline-quiet); }
 .account-footnote { margin: 8px 32px 0; color: var(--color-text-faint); font: 400 13px/1.4 var(--font-app); }
 .account-device-manage { display: grid; place-items: center; width: 44px; height: 44px; margin-right: -12px; border: 0; background: none; color: var(--color-text-dim); cursor: pointer; }
 /* Fixed in the body (above the settings group's clip), placed under its ⋯ button by herdrupAccount.ts. */

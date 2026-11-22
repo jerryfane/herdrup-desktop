@@ -169,3 +169,18 @@ func (c *Client) RenameDevice(ctx context.Context, acct, id, name string) (Devic
 func (c *Client) RemoveDevice(ctx context.Context, acct, id string) error {
 	return c.authed(ctx, acct, http.MethodDelete, "/v1/devices/"+url.PathEscape(id), nil, nil)
 }
+
+// RemoveThisDevice removes device id, the one this session is bound to.
+// The service ends that device's sessions with it, so the session is
+// forgotten here too, but only the session that asked: one signed in while
+// the answer was on its way is kept, and nothing is revoked on the service.
+func (c *Client) RemoveThisDevice(ctx context.Context, acct, id string) error {
+	c.mu.Lock()
+	epoch := c.epoch
+	c.mu.Unlock()
+	if err := c.RemoveDevice(ctx, acct, id); err != nil {
+		return err
+	}
+	_, err := c.forgetIf(func() bool { return c.epoch == epoch && c.saved != nil && c.saved.AccountID == acct })
+	return err
+}

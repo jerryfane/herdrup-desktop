@@ -26,6 +26,10 @@ type deviceWorker struct {
 	refuse   string // the next enrolment's refusal code
 	n        int
 	signedIn bool
+	// onDelete runs inside a DELETE /v1/devices/<id>, before it answers.
+	onDelete func()
+	// signedOut counts /v1/auth/signout calls (a revoked session).
+	signedOut int
 }
 
 func (w *deviceWorker) serve(rw http.ResponseWriter, r *http.Request) {
@@ -38,7 +42,7 @@ func (w *deviceWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(rw).Encode(v)
 		}
 	}
-	if r.URL.Path != "/v1/auth/refresh" && !w.signedIn {
+	if r.URL.Path != "/v1/auth/refresh" && r.URL.Path != "/v1/auth/handoff" && !w.signedIn {
 		reply(401, map[string]string{"error": "session_revoked"})
 		return
 	}
@@ -63,7 +67,13 @@ func (w *deviceWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, w.n), "refresh_expires_in": 1})
 	case r.URL.Path == "/v1/auth/signout":
 		w.signedIn = false
+		w.signedOut++
 		reply(204, nil)
+	case r.URL.Path == "/v1/auth/handoff":
+		w.signedIn = true
+		w.n++
+		reply(200, map[string]any{"account_id": "acct-2", "access_token": fmt.Sprintf("a1.%022d.%043d", 2, w.n), "access_expires_in": 3600,
+			"refresh_token": fmt.Sprintf("r1.%022d.%043d", 2, w.n), "refresh_expires_in": 1})
 	case r.URL.Path == "/v1/devices/challenge":
 		reply(200, map[string]any{"challenge_id": "CCCCCCCCCCCCCCCCCCCCCC", "server_pub": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08", "salt": "ERERERERERERERERERERERERERERERERERERERERERE", "account_id": "acct", "expires_in": 60})
 	case r.URL.Path == "/v1/devices" && r.Method == http.MethodPost:
@@ -105,7 +115,13 @@ func (w *deviceWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			}
 			w.devices = append(w.devices[:i], w.devices[i+1:]...)
 			if id == w.bound {
-				w.bound, w.signedIn = "", false
+				w.bound = ""
+			}
+			if hook := w.onDelete; hook != nil {
+				w.onDelete = nil
+				w.mu.Unlock()
+				hook()
+				w.mu.Lock()
 			}
 			reply(204, nil)
 			return
@@ -205,5 +221,42 @@ func TestRemovingThisComputerSignsItOut(t *testing.T) {
 	}
 	if d.AccountState().SignedIn {
 		t.Fatal("still signed in after removing this computer")
+	}
+}
+
+// #272 review: removing this computer, while a sign-in to another account
+// completes before the answer arrives, keeps that new session (neither
+// forgotten here nor revoked on the service).
+func TestALateRemovalOfThisComputerKeepsTheNewSession(t *testing.T) {
+	d, w := deviceDesk(t)
+	ctx := context.Background()
+	if err := d.enrolThisDevice(ctx); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := d.AccountDevices(ctx)
+	client := d.account
+	w.mu.Lock()
+	w.onDelete = func() {
+		_ = client.SignOut(context.Background())
+		if _, err := client.StartSignIn("google"); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, err := client.FinishSignIn(context.Background(), strings.Repeat("c", 43)); err != nil {
+			t.Error(err)
+		}
+	}
+	revokedBefore := w.signedOut
+	w.mu.Unlock()
+	if err := d.AccountRemoveDevice(ctx, list.Devices[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := d.account.Current(); cur == nil || cur.AccountID != "acct-2" {
+		t.Fatalf("the late removal dropped the new session: %+v", cur)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.signedOut != revokedBefore+1 {
+		t.Fatalf("sign-outs on the service: %d after %d; want only the test's own", w.signedOut, revokedBefore)
 	}
 }

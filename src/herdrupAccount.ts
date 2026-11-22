@@ -60,20 +60,17 @@ export class HerdrUpAccountPanel {
  /** A deletion's outcome, shown on the signed-out page after it (or on this page if it failed). */
  private deleteNote = "";
  private deleting = false;
- /** Bumped by each details load and by a session change: an older load's answers are dropped. */
+ /** Bumped by each full details load: an older load's devices and delete info are dropped. */
  private detailsGeneration = 0;
+ /** Bumped when a session ends: answers asked for under the old one are dropped. */
+ private session = 0;
+ /** SYNCED ordering across both loaders: each request takes a number, and only an answer newer
+  *  than the one shown replaces it. */
+ private syncSeq = 0;
+ private syncShown = 0;
 
  constructor(private readonly changed: () => void, private readonly glyph: Glyph | null = null) {
-  events.accountChanged.on(s => {
-   const was = this.state?.signedIn;
-   this.waiting = false; this.state = s;
-   if (!s.signedIn) {
-    // The session ended: its devices, counts and any deletion it was waiting on go with it.
-    this.detailsGeneration++;
-    this.devices = null; this.sync = null; this.deleteInfo = null; this.deleting = false; this.deviceNote = "";
-   } else if (!was) void this.loadDetails();
-   this.draw(); this.changed();
-  });
+  events.accountChanged.on(s => { this.waiting = false; this.applyState(s); this.draw(); this.changed(); });
   events.accountDeleted.on(r => {
    this.deleting = false;
    this.deleteNote = r.deleted
@@ -104,42 +101,64 @@ export class HerdrUpAccountPanel {
   catch { this.providers = []; unreachable = true; }
   this.available = unreachable || this.providers.length > 0;
   if (this.available) {
+   let s: AccountState;
    try {
-    const s = check ? await Desk.accountCheck() : await Desk.accountState();
-    this.state = unreachable && !s.problem ? { ...s, problem: UNREACHABLE } : s;
-   } catch (error) { this.state = { signedIn: false, persistent: true, problem: errorText(error) }; }
+    s = check ? await Desk.accountCheck() : await Desk.accountState();
+    if (unreachable && !s.problem) s = { ...s, problem: UNREACHABLE };
+   } catch (error) { s = { signedIn: false, persistent: true, problem: errorText(error) }; }
+   this.applyState(s, false);
   }
   this.draw(); this.changed();
   if (this.state?.signedIn) void this.loadDetails();
  }
 
+ /** Takes a new account state, from an event or a check alike. A session that ended takes its
+  *  devices, counts, notes and any deletion it was waiting on with it; one that began loads its
+  *  details (unless the caller loads them itself). */
+ private applyState(s: AccountState, load = true) {
+  const was = this.state?.signedIn;
+  this.state = s;
+  if (!s.signedIn) {
+   if (was !== false) this.session++;
+   this.devices = null; this.sync = null; this.deleteInfo = null; this.deleting = false; this.deviceNote = "";
+  } else if (!was && load) void this.loadDetails();
+ }
+
+ private takeSync(at: number, value: AccountSyncStatus) {
+  if (at > this.syncShown) { this.syncShown = at; this.sync = value; }
+ }
+
  /** The SYNCED counts and the DEVICES list (desktop only). */
  private async loadDetails() {
   if (!this.full || !this.state?.signedIn) return;
-  const at = ++this.detailsGeneration;
+  const session = this.session, at = ++this.detailsGeneration, syncAt = ++this.syncSeq;
   const [sync, devices, del] = await Promise.allSettled([Desk.accountSyncStatus(), Desk.accountDevices(), Desk.accountDeleteInfo()]);
-  if (at !== this.detailsGeneration) return;
-  if (sync.status === "fulfilled") this.sync = sync.value;
-  if (devices.status === "fulfilled") { this.devices = devices.value; this.devicesProblem = ""; }
-  else this.devicesProblem = errorText(devices.reason);
-  if (del.status === "fulfilled") this.deleteInfo = del.value;
+  if (session !== this.session) return;
+  if (sync.status === "fulfilled") this.takeSync(syncAt, sync.value);
+  if (at === this.detailsGeneration) {
+   if (devices.status === "fulfilled") { this.devices = devices.value; this.devicesProblem = ""; }
+   else this.devicesProblem = errorText(devices.reason);
+   if (del.status === "fulfilled") this.deleteInfo = del.value;
+  }
   this.draw();
  }
 
- /** SYNCED alone, after a sync finished; a newer full load wins over it. */
+ /** SYNCED alone, after a sync finished. */
  private async loadSyncStatus() {
   if (!this.full) return;
-  const at = this.detailsGeneration;
+  const session = this.session, syncAt = ++this.syncSeq;
   const [sync, state] = await Promise.allSettled([Desk.accountSyncStatus(), Desk.accountState()]);
-  if (at !== this.detailsGeneration) return;
-  if (sync.status === "fulfilled") this.sync = sync.value;
+  if (session !== this.session) return;
+  if (sync.status === "fulfilled") this.takeSync(syncAt, sync.value);
   if (state.status === "fulfilled" && state.value.signedIn) this.state = state.value;
   this.draw();
  }
 
  private draw() {
   const s = this.state;
-  this.root.classList.toggle("account-panel-full", !!s?.signedIn && this.full);
+  const full = !!s?.signedIn && this.full;
+  this.root.classList.toggle("account-panel-full", full);
+  this.root.classList.toggle("settings-glyph-rows", full);
   if (s?.signedIn && this.full) { this.root.replaceChildren(...this.signedInScreen(s)); return; }
   const nodes: HTMLElement[] = [];
   if (s?.signedIn) {
@@ -296,8 +315,9 @@ export class HerdrUpAccountPanel {
   this.busy = "syncing"; this.draw();
   try { await Desk.accountSyncNow(); } catch { /* the row says the last sync didn't finish */ }
   this.busy = "";
-  this.state = await Desk.accountState().catch(() => this.state);
-  await this.loadDetails();
+  const next = await Desk.accountState().catch(() => null);
+  if (next) this.applyState(next, false);
+  if (this.state?.signedIn) await this.loadDetails(); else this.draw();
  }
 
  private async confirmSignOut() {
@@ -325,8 +345,9 @@ export class HerdrUpAccountPanel {
 
  private async signOut() {
   this.busy = "signing-out"; this.draw();
-  try { this.state = await Desk.accountSignOut(); } catch (error) { this.state = { signedIn: false, persistent: true, problem: errorText(error) }; }
-  this.busy = ""; this.devices = null; this.sync = null;
+  let next: AccountState;
+  try { next = await Desk.accountSignOut(); } catch (error) { next = { signedIn: false, persistent: true, problem: errorText(error) }; }
+  this.busy = ""; this.applyState(next);
   this.draw(); this.changed();
  }
 }

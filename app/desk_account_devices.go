@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"os"
 	"runtime"
 	"slices"
@@ -182,15 +181,13 @@ func (d *Desk) AccountRemoveDevice(ctx context.Context, id string) error {
 		return err
 	}
 	current := slices.ContainsFunc(list, func(dv account.Device) bool { return dv.ID == id && dv.Current })
-	if err := d.account.RemoveDevice(ctx, cur.AccountID, id); err != nil {
+	if !current {
+		return d.account.RemoveDevice(ctx, cur.AccountID, id)
+	}
+	if err := d.account.RemoveThisDevice(ctx, cur.AccountID, id); err != nil {
 		return err
 	}
-	if current {
-		if err := d.account.SignOut(ctx); err != nil {
-			log.Printf("account: sign-out after removing this device: %v", err)
-		}
-		publishAccount(d.accountState(""))
-	}
+	publishAccount(d.accountState(""))
 	return nil
 }
 
