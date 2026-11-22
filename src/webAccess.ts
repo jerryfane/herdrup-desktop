@@ -97,14 +97,16 @@ export function initWebAccess(): void {
    section("ACCESS", access, terminalNote), section("FOR", time), problem, buttons);
 
   let busy = false, tries = 0, finished = false;
-  const update = () => { approve.disabled = !canApprove(code.value, ticked.size, busy) || code.disabled; };
+  // Once the request is approved, denied or gone, its choices no longer do anything: lock them.
+  const end = () => { finished = true; for (const i of dialog.querySelectorAll("input")) i.disabled = true; approve.disabled = true; };
+  const update = () => { approve.disabled = finished || !canApprove(code.value, ticked.size, busy) || code.disabled; };
   const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
   code.oninput = () => { code.value = codeInput(code.value); say(""); update(); };
 
   const off = events.webAccessUpdate.on(u => {
    if (u.id !== req.id) return;
    if (u.state === "ready") { status.textContent = "The browser shows a code now."; code.disabled = false; code.focus(); update(); return; }
-   finished = true; status.textContent = u.problem || "This request ended."; code.disabled = true; approve.disabled = true;
+   end(); status.textContent = u.problem || "This request ended.";
   });
   deny.onclick = async () => {
    if (!finished) await Desk.webAccessDeny(req.id).catch(() => {});
@@ -116,7 +118,7 @@ export function initWebAccess(): void {
     const check = await Desk.webAccessCheckCode(req.id, code.value);
     if (!check.ok) {
      tries++; say(wrongCode(tries));
-     if (check.denied) { finished = true; code.disabled = true; }
+     if (check.denied) end();
      code.value = ""; code.focus();
      return;
     }
@@ -124,7 +126,7 @@ export function initWebAccess(): void {
     const result = await Desk.webAccessApprove(req.id, [...ticked], scope, length);
     const { done: approved, lines } = resultLines(result);
     say(lines.join(" "));
-    if (approved) { finished = true; deny.textContent = "Done"; approve.hidden = true; status.textContent = "Approved. The browser can open your machines now."; }
+    if (approved) { end(); deny.textContent = "Done"; approve.hidden = true; status.textContent = "Approved. The browser can open your machines now."; }
    } catch (error) { say(errorText(error)); }
    finally { busy = false; if (!approve.hidden) approve.textContent = "Approve"; update(); }
   };
@@ -134,6 +136,6 @@ export function initWebAccess(): void {
   update();
   dialog.showModal();
   try { await Desk.webAccessStart(req.id); }
-  catch (error) { finished = true; status.textContent = errorText(error); code.disabled = true; update(); }
+  catch (error) { end(); status.textContent = errorText(error); }
  }
 }
