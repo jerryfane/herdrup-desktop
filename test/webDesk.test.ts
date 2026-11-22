@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { GuestError, HerdrAPIError, hostOffline, rateLimited, relayRefused, revoked } from "../src/webguest/errors";
 import { fingerprint, goTime, guestAvailability, guestList, paneStreamFrame, pageAccess, promptReceipt, PROMPT_WAIT, rateLimitedMessage, sharedListing } from "../src/web/desk";
-import { inviteText, signedInWelcome, start, takeFragment, welcome } from "../src/web/start";
+import { inviteText, start, takeFragment, welcome } from "../src/web/start";
 import type { Access } from "../src/mygo";
 
 const access = (guestID: string): Access => ({
@@ -49,18 +49,20 @@ test("first visit redeems and connects; a later visit resumes; nothing kept says
  expect(later.log).toEqual(["connect HOST/G1"]);
 
  const none = fakeDesk([], async () => access("G1"));
- expect(await start(none.desk, "", "https://x", () => null)).toEqual({ kind: "welcome", welcome: welcome(null) });
- expect(welcome(null).title).toBe("Open the invite link the owner sent you");
- expect(await start(none.desk, "", "https://x", () => "Jerry")).toEqual({ kind: "welcome", welcome: welcome("Jerry") });
- expect(welcome("Jerry").title).toBe("Ask Jerry for a new invite");
+ expect(await start(none.desk, "", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null } });
+ expect(welcome({ owner: null }, false).title).toBe("Open the invite link the owner sent you");
+ expect(await start(none.desk, "", "https://x", () => "Jerry")).toEqual({ kind: "welcome", welcome: { owner: "Jerry" } });
+ expect(welcome({ owner: "Jerry" }, false).title).toBe("Ask Jerry for a new invite");
  expect(none.log).toEqual([]);
 });
 
 test("a signed-in owner's first visit says own machines aren't here yet; a left share still asks for an invite", () => {
- const first = signedInWelcome(welcome(null, "This invitation was already used."));
- expect(first.title).toBe("Signed in");
- expect(first.error).toBe("This invitation was already used.");
- expect(signedInWelcome(welcome("Jerry"))).toEqual(welcome("Jerry"));
+ const first = { owner: null, error: "This invitation was already used." };
+ const out = welcome(first, false), signedIn = welcome(first, true);
+ expect(signedIn.title).toBe("Signed in");
+ expect(signedIn.body).not.toBe(out.body);
+ expect(signedIn.error).toBe(first.error);
+ expect(welcome({ owner: "Jerry" }, true)).toEqual(welcome({ owner: "Jerry" }, false));
 });
 
 test("a link opened again resumes the kept grant; a failed first redemption says why", async () => {
@@ -68,7 +70,7 @@ test("a link opened again resumes the kept grant; a failed first redemption says
  const again = fakeDesk([access("G1")], async () => { throw used; });
  expect(await start(again.desk, "PAYLOAD", "https://x", () => "Jerry")).toEqual({ kind: "connected", id: "HOST/G1" });
  const fresh = fakeDesk([], async () => { throw used; });
- expect(await start(fresh.desk, "PAYLOAD", "https://x", () => null)).toEqual({ kind: "welcome", welcome: welcome(null, used.message) });
+ expect(await start(fresh.desk, "PAYLOAD", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null, error: used.message } });
 });
 
 test("availability reads the transport's errors as desk_guest.go guestAvailability does", () => {

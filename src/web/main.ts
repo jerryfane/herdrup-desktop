@@ -20,7 +20,7 @@ import { animateDisclosures, applyMotions } from "../motion";
 import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
-import { signedInWelcome, start, takeFragment, welcome, type Welcome } from "./start";
+import { start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
 import { signInReturned } from "./mygo";
 
@@ -37,7 +37,7 @@ let state: ConnState = { phase: "idle", message: "", machine: "", herdr: "", liv
 let board: BoardUpdate | null = null;
 let guestTab: GuestTab = "agents";
 let selectedAgent: AgentTarget | null = null;
-let shownWelcome: Welcome | null = null;
+let shownWelcome: WelcomeState | null = null;
 let guestBar: { tab: GuestTab; gram: boolean } | null = null;
 let guestHome: ReturnType<typeof initGuestHome> | null = null;
 let ready = false;
@@ -53,7 +53,7 @@ const guestActions = {
  settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },
  // The guest's one Gram (#697): this browser's shared agents (one until accounts, #698).
  gram: (grant: string | null = null) => { closeWriter(); selectGuestGram(grant); guestTab = "gram"; render(); },
- hosts: () => { closeWriter(); closeInteraction(); showWelcome(welcome(localOwnerHint.get())); },
+ hosts: () => { closeWriter(); closeInteraction(); showWelcome({ owner: localOwnerHint.get() }); },
  open: (target: AgentTarget) => { guestTab = "agents"; void selectInteraction(target).then(render); },
 };
 
@@ -66,10 +66,11 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 
 // ---- The plain screen without a grant ----
 
-function showWelcome(shown: Welcome | null) {
+/** Shows the screen for shown (null hides it); its words follow the sign-in state at each draw. */
+function showWelcome(shown: WelcomeState | null) {
  shownWelcome = shown;
  if (shown === null) { welcomeView.hidden = true; render(); return; }
- const w = account.signedIn ? signedInWelcome(shown) : shown;
+ const w = welcome(shown, account.signedIn);
  const card = el("div", "web-welcome-card");
  card.append(el("h1", "", w.title), el("p", "", w.body));
  if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }
@@ -187,7 +188,7 @@ async function init() {
  try {
   started = await start(Desk, payload, location.origin, () => localOwnerHint.get());
  } catch (error) {
-  started = { kind: "welcome" as const, welcome: welcome(localOwnerHint.get(), errorText(error)) };
+  started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
  state = await Desk.state();
  board = await Desk.board();
