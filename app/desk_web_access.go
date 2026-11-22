@@ -109,10 +109,12 @@ type webPending struct {
 	res       WebAccessResult
 }
 
-// webGrant is a grant made on one machine, to remove it again.
+// webGrant is a grant made on one machine, to remove it again. expires is
+// when that machine ends it, by its own clock (it applies the length there).
 type webGrant struct {
 	m       webMachine
 	grantID string
+	expires time.Time
 }
 
 var (
@@ -390,7 +392,7 @@ func (d *Desk) WebAccessDeny(ctx context.Context, id string) error {
 			return errAlreadyOver
 		case state == account.ApprovalExpired && !final:
 			return fmt.Errorf("the request expired while a report's outcome was unknown, and the account service may never say how it ended. Unless it does, the access added on %s stays until %s or until it's removed on those machines. Deny only checks again",
-				grantLabels(w.pending.grants), time.UnixMilli(w.pending.expiresMs).Format("2 Jan 2006 15:04"))
+				grantLabels(w.pending.grants), grantsEnd(w.pending.grants).Format("2 Jan 2006 15:04"))
 		case !final:
 			return fmt.Errorf("the request is still %s: Deny to try again", state)
 		}
@@ -514,7 +516,7 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 			res.Granted = append(res.Granted, c.label)
 			g.HostItemID = c.m.SyncID
 			envelope.Machines = append(envelope.Machines, g)
-			grants = append(grants, webGrant{m: c, grantID: g.GrantID})
+			grants = append(grants, webGrant{m: c, grantID: g.GrantID, expires: time.Unix(g.ExpiresUnix, 0)})
 		}
 	}
 	if len(envelope.Machines) == 0 {
@@ -562,6 +564,17 @@ func (d *Desk) removeGrants(ctx context.Context, grants []webGrant) []webGrant {
 		}
 	}
 	return failed
+}
+
+// grantsEnd is when the last of grants ends, as their machines reported it.
+func grantsEnd(grants []webGrant) time.Time {
+	var end time.Time
+	for _, g := range grants {
+		if g.expires.After(end) {
+			end = g.expires
+		}
+	}
+	return end
 }
 
 func grantLabels(grants []webGrant) string {
