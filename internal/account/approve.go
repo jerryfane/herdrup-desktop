@@ -65,10 +65,13 @@ func checkSizes(keys [][]byte, nonces [][]byte) error {
 	return nil
 }
 
+// approveRand supplies nonces and IVs; tests make it deterministic.
+var approveRand io.Reader = rand.Reader
+
 // NewApproveNonce is a fresh 32-byte nonce; never reuse one.
 func NewApproveNonce() ([]byte, error) {
 	n := make([]byte, approveNonceSize)
-	if _, err := io.ReadFull(rand.Reader, n); err != nil {
+	if _, err := io.ReadFull(approveRand, n); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -151,7 +154,7 @@ func SealEnvelope(approver DeviceKey, browserPub []byte, seq uint64, plaintext [
 		return "", err
 	}
 	iv := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+	if _, err := io.ReadFull(approveRand, iv); err != nil {
 		return "", err
 	}
 	out := aead.Seal(iv, iv, plaintext, envelopeAAD(browserPub, approverPub, seq))
