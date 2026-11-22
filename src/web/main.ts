@@ -22,7 +22,11 @@ import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
-import { signInReturned } from "./mygo";
+import { ownerAccess, signInReturned } from "./mygo";
+import { AccountServiceError, SignedOutError } from "./account";
+import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
+import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
+import { browserDeviceName, ownerCard } from "./ownerScreen";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -64,16 +68,84 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
  return e;
 }
 
+// ---- Owner access: approving this browser (ownerApproval.ts, mockup 1) ----
+
+const ownerStore = new IndexedDBOwnerStore();
+const deviceName = browserDeviceName(navigator.userAgent);
+let ownerPhase: OwnerPhase | null = null;
+let ownerRun: AbortController | null = null;
+/** The person chose "Use a guest invitation instead" on this load. */
+let guestInstead = false;
+
+const redrawWelcome = () => { if (shownWelcome) showWelcome(shownWelcome); };
+
+/** A signed-in browser on its first visit is an owner's: it asks to be approved, or shows what it
+ *  was approved for. A share left or wiped, signed in or not, still asks for a new invite. */
+const ownerWanted = (shown: WelcomeState) => account.signedIn && shown.owner === null && !guestInstead;
+
+/** Newer lists for the approval shown (same account, same key), taken in the background. The
+ *  session now another account's, or signed out: the approval shown goes, and the screen starts
+ *  over for whoever is signed in. */
+async function refreshShown(run: AbortController, record: OwnerRecord) {
+ const key = await ownerKey(ownerAccess.identities).catch(() => null);
+ if (key === null || ownerRun !== run) return;
+ let fresh: OwnerRecord | undefined;
+ try { fresh = await refreshLists(ownerAccess.account, record.account, key, ownerStore, deviceName, run.signal); }
+ catch (error) {
+  if (ownerRun !== run) return;
+  if ((error instanceof AccountServiceError && error.code === "account_changed") || error instanceof SignedOutError) { stopOwner(); redrawWelcome(); }
+  return;
+ }
+ if (fresh === undefined || ownerRun !== run || ownerPhase?.kind !== "approved") return;
+ ownerPhase = { kind: "approved", record: fresh };
+ redrawWelcome();
+}
+
+/** The approval: what this account already has here shows (runApproval reads it under the tab
+ *  lock), else this browser asks; Ask again goes the same way. It only changes state: the
+ *  caller draws (showWelcome when entering owner mode, redrawWelcome for Ask again). */
+function beginApproval() {
+ ownerRun?.abort();
+ const run = new AbortController();
+ ownerRun = run;
+ ownerPhase = { kind: "starting" };
+ const onPhase = (p: OwnerPhase) => {
+  if (ownerRun !== run) return;
+  ownerPhase = p;
+  if (p.kind === "approved") void refreshShown(run, p.record);
+  redrawWelcome();
+ };
+ runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store: ownerStore, deviceName }, onPhase, run.signal)
+  .catch(error => { if (ownerRun === run) { ownerPhase = { kind: "failed", problem: errorText(error) }; redrawWelcome(); } });
+}
+
+/** Stops the approval and forgets what it showed: another sign-in starts from its own account. */
+function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; }
+
 // ---- The plain screen without a grant ----
 
-/** Shows the screen for shown (null hides it); its words follow the sign-in state at each draw. */
+/** Shows the screen for shown (null hides it): the owner's approval when this browser is signed
+ *  in on its first visit, else the words asking for an invite. */
 function showWelcome(shown: WelcomeState | null) {
  shownWelcome = shown;
- if (shown === null) { welcomeView.hidden = true; render(); return; }
- const w = welcome(shown, account.signedIn);
- const card = el("div", "web-welcome-card");
- card.append(el("h1", "", w.title), el("p", "", w.body));
- if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }
+ if (shown === null) { stopOwner(); welcomeView.hidden = true; render(); return; }
+ let card: HTMLElement;
+ if (ownerWanted(shown)) {
+  // An approval shown for an account this session no longer has (another sign-in) goes.
+  if (ownerPhase?.kind === "approved" && ownerAccess.account.current?.accountID !== ownerPhase.record.account) stopOwner();
+  if (ownerPhase === null) beginApproval();
+  card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, {
+   again: () => { beginApproval(); redrawWelcome(); },
+   guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
+  }, spinnerSVG);
+  if (shown.error) { const error = el("p", "web-welcome-error", shown.error); error.setAttribute("role", "alert"); card.prepend(error); }
+ } else {
+  if (!account.signedIn) stopOwner();
+  const w = welcome(shown);
+  card = el("div", "web-welcome-card");
+  card.append(el("h1", "", w.title), el("p", "", w.body));
+  if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }
+ }
  const signIn = accountRoot();
  if (signIn) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), signIn); card.append(part); }
  welcomeView.replaceChildren(card);

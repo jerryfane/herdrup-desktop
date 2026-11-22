@@ -35,6 +35,9 @@ export function createAccountDesk(page: AccountPage) {
   return s;
  };
  const takeProblem = () => { const p = pendingProblem; pendingProblem = ""; return p; };
+ // One session state for every view: the account panel and the owner screen hear each change
+ // (sign-in, sign-out, another account) when it happens, from the same event.
+ account.onSessionChange(() => emit("accountChanged", state()));
  const desk = {
   async accountProviders(): Promise<string[]> {
    if (!webSignInAvailable(page.origin)) return [];
@@ -58,5 +61,5 @@ export function createAccountDesk(page: AccountPage) {
    return s;
   },
  };
- return { desk, signInReturned: returned !== null };
+ return { desk, signInReturned: returned !== null, account };
 }

@@ -25,3 +25,15 @@
   body:not([data-web-detail="page"]):not([data-web-detail="bars"]) .detail { display: none; }
   body[data-web-detail="bars"] .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
 }
+
+/* Owner access: approving this browser (ownerScreen.ts, web owner access mockup 1). */
+.web-owner-waiting { display: flex; align-items: center; gap: 8px; color: var(--color-text-dim); font-size: 14px; }
+.web-owner-spinner { display: inline-flex; width: 16px; height: 16px; }
+.web-owner-spinner svg { width: 16px; height: 16px; }
+.web-owner-link { border: 0; padding: 4px; background: none; color: var(--color-text); font: 500 14px var(--font-app); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.web-owner-action { height: 36px; padding: 0 16px; border: 1px solid var(--color-hairline); border-radius: 99px; background: var(--color-surface); color: var(--color-text); font: 600 14px var(--font-app); cursor: pointer; }
+.web-owner-card .web-owner-note { font-size: 13px; color: var(--color-text-faint); }
+.web-owner-code { display: flex; gap: 14px; margin: 6px 0; font: 700 40px var(--font-machine); letter-spacing: 0; user-select: all; -webkit-user-select: all; }
+.web-owner-machines { align-self: stretch; margin: 4px 0 0; padding: 0; list-style: none; text-align: left; }
+.web-owner-machines li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-hairline); font-size: 14px; }
+.web-owner-machines li span { color: var(--color-text-dim); }
