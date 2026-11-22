@@ -1,4 +1,5 @@
 import "core-js/actual/promise/with-resolvers";
+import { errorDetail, startWithFallback } from "./startup";
 import { symbol } from "./symbol";
 import { Desk, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { paintShape } from "./continuous";
@@ -868,4 +869,12 @@ window.herdrupRef = {
   },
 };
 
-void init();
+// Startup that throws or never finishes still renders, and says why in the app's output
+// (startup.ts); so does any later uncaught error.
+const reportPageError = (message: string) => { void Desk.reportPageError(message).catch(() => {}); };
+window.addEventListener("error", event => reportPageError(`uncaught: ${errorDetail(event.error ?? event.message)}`));
+window.addEventListener("unhandledrejection", event => reportPageError(`unhandled rejection: ${errorDetail(event.reason)}`));
+void startWithFallback(init, {
+  firstRender: () => { if (renderReady) return; renderReady = true; render(); },
+  report: reportPageError,
+});

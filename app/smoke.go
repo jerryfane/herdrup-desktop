@@ -89,6 +89,13 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 			}
 		}
 	}()
+	// HERDRUP_SMOKE_FIRSTRUN=1: a first launch with no machine (RoverOS's first boot). The
+	// page must reach the host screen ("connect to your machine") without startup errors;
+	// nothing is connected.
+	if os.Getenv("HERDRUP_SMOKE_FIRSTRUN") == "1" {
+		go smokeFirstRun(win, loaded, os.Getenv("HERDRUP_SMOKE_CAPTURE"))
+		return
+	}
 	port, _ := strconv.Atoi(os.Getenv("HERDRUP_SMOKE_PORT"))
 	m := Machine{
 		Host:    os.Getenv("HERDRUP_SMOKE_HOST"),
@@ -185,4 +192,47 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 		return
 	}
 	time.AfterFunc(90*time.Second, func() { finish(false, "timed out without a board") })
+}
+
+// smokeFirstRunProbe reads whether the page shows the host screen (render adds
+// host-home-visible to the body) and the startup errors the preload captured.
+const smokeFirstRunProbe = `({
+ hostHome: document.body?.classList.contains("host-home-visible") === true,
+ text: document.body?.innerText.slice(0,300), errors: window.__herdrupSmokeErrors,
+})`
+
+// smokeFirstRun passes once the page shows the host screen with no startup
+// errors, and fails on an error or when the screen never comes.
+func smokeFirstRun(win *mygo.Window, loaded <-chan struct{}, out string) {
+	<-loaded
+	end := func(ok bool, why string) {
+		if png, err := win.CapturePage(); err == nil && out != "" {
+			_ = os.WriteFile(out, png, 0o644)
+		}
+		log.Printf("smoke: first run: %s", why)
+		if !ok {
+			os.Exit(1)
+		}
+		mygo.App.Quit()
+	}
+	var last any
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		v, err := win.Page().Eval(smokeFirstRunProbe)
+		if err != nil {
+			last = err
+			continue
+		}
+		last = v
+		m, _ := v.(map[string]any)
+		if errs, _ := m["errors"].([]any); len(errs) > 0 {
+			end(false, "uncaught startup errors: "+fmt.Sprint(errs))
+			return
+		}
+		if home, _ := m["hostHome"].(bool); home {
+			time.Sleep(500 * time.Millisecond)
+			end(true, "the host screen shows")
+			return
+		}
+	}
+	end(false, fmt.Sprintf("the host screen never showed; last probe: %v", last))
 }
