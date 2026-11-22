@@ -8,16 +8,21 @@
 
 import { untilAborted } from "../webguest/abort";
 import type { StatementSource } from "../webguest/owner";
-import type { WebAccount } from "./account";
+import { AccountServiceError, type WebAccount } from "./account";
 
 type Held = { jws: string; expMs: number };
 
-export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount">, now: () => number = Date.now): StatementSource {
+/** A statement issued while the session was acct's, returned after it no longer is (signed out,
+ *  or another sign-in): nothing is kept or used. */
+const stale = () => new AccountServiceError(409, "account_changed");
+
+export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount" | "current">, now: () => number = Date.now): StatementSource {
  const held = new Map<string, Held>();
  const asking = new Map<string, Promise<Held>>();
  const keyOf = (acct: string, hostID: string) => `${acct}\n${hostID}`;
  return {
   async get(hostID, minLeftMs, signal) {
+   signal.throwIfAborted();
    const acct = await untilAborted(account.currentAccount(), signal);
    const key = keyOf(acct, hostID);
    const h = held.get(key);
@@ -34,7 +39,10 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
     asking.set(key, flight);
    }
    // The newest the service gives, even with less left than asked: it is all there is.
-   return await untilAborted(flight, signal);
+   const got = await untilAborted(flight, signal);
+   // Held under acct, it stays acct's; it is handed out only while the session still is.
+   if (account.current?.accountID !== acct) throw stale();
+   return got;
   },
   drop(hostID, jws) {
    for (const [key, h] of held) if (key.endsWith(`\n${hostID}`) && h.jws === jws) held.delete(key);

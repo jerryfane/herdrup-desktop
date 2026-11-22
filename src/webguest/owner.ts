@@ -26,18 +26,14 @@ export function ownerLink(endpoint: Endpoint, device: string, statements: Statem
   endpoint,
   async hello(signal) {
    const { jws } = await statements.get(endpoint.hostID, HELLO_MIN_LEFT_MS, signal);
-   return new TextEncoder().encode(JSON.stringify({ v: 1, mode: "owner", account: jws, device }));
+   return {
+    payload: new TextEncoder().encode(JSON.stringify({ v: 1, mode: "owner", account: jws, device })),
+    refused: () => { statements.drop(endpoint.hostID, jws); return true; },
+   };
   },
   admit(reply) {
    if (reply.mode !== "owner") throw other("The machine didn't admit this browser as its owner.");
   },
   statement: signal => statements.get(endpoint.hostID, REFRESH_MIN_LEFT_MS, signal),
-  statementRefused(hello) {
-   let jws: unknown;
-   try { jws = (JSON.parse(new TextDecoder().decode(hello)) as { account?: unknown }).account; } catch { return false; }
-   if (typeof jws !== "string") return false;
-   statements.drop(endpoint.hostID, jws);
-   return true;
-  },
  };
 }
