@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { GuestError, HerdrAPIError, hostOffline, rateLimited, relayRefused, revoked } from "../src/webguest/errors";
 import { fingerprint, goTime, guestAvailability, guestList, paneStreamFrame, pageAccess, promptReceipt, PROMPT_WAIT, rateLimitedMessage, sharedListing } from "../src/web/desk";
-import { inviteText, start, takeFragment, welcome } from "../src/web/start";
+import { inviteText, signedInWelcome, start, takeFragment, welcome } from "../src/web/start";
 import type { Access } from "../src/mygo";
 
 const access = (guestID: string): Access => ({
@@ -54,6 +54,13 @@ test("first visit redeems and connects; a later visit resumes; nothing kept says
  expect(await start(none.desk, "", "https://x", () => "Jerry")).toEqual({ kind: "welcome", welcome: welcome("Jerry") });
  expect(welcome("Jerry").title).toBe("Ask Jerry for a new invite");
  expect(none.log).toEqual([]);
+});
+
+test("a signed-in owner's first visit says own machines aren't here yet; a left share still asks for an invite", () => {
+ const first = signedInWelcome(welcome(null, "This invitation was already used."));
+ expect(first.title).toBe("Signed in");
+ expect(first.error).toBe("This invitation was already used.");
+ expect(signedInWelcome(welcome("Jerry"))).toEqual(welcome("Jerry"));
 });
 
 test("a link opened again resumes the kept grant; a failed first redemption says why", async () => {
