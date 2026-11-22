@@ -24,7 +24,7 @@ var webSymbolSizes = []struct {
 	{9, "bold"}, {10, "bold"}, {10, "heavy"}, {11, "bold"}, {11, "semibold"},
 	{12, "medium"}, {12, "semibold"}, {13, "medium"}, {13, "semibold"},
 	{14, "medium"}, {14, "semibold"}, {15, "medium"}, {15, "regular"},
-	{15, "semibold"}, {16, "medium"}, {16, "semibold"}, {17, "semibold"},
+	{15, "semibold"}, {16, "medium"}, {16, "semibold"}, {17, "regular"}, {17, "semibold"},
 	{18, "medium"}, {18, "regular"}, {18, "semibold"}, {19, "regular"},
 	{19, "semibold"}, {21, "medium"}, {22, "regular"}, {28, "regular"},
 }
