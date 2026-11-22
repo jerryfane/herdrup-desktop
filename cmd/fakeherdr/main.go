@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +52,9 @@ func main() {
 	streamStall := flag.Int("stream-stall", 0, "with -interactions, end the first N pane.streams after 3 s with herdr's stream_stalled error (herdr #410), as a reader too slow for herdr is")
 	streamDelay := flag.Duration("stream-delay", 0, "with -interactions, start pane.stream after this delay, as a slow link does")
 	topics := flag.Bool("topics", false, "serve herdr #475 agent topics: agent.topics.*, agent.transcript with topic and agent_topics_changed events (ping advertises agent_topics and agent_transcript_topic); every agent has three sample topics")
+	topicSuggestions := flag.Bool("topic-suggestions", false, "with -topics, also serve herdr #489/#490: the Topics switch (agent.topics.set_enabled, topics_enabled on omp agents) and topic suggestions with Organise (ping advertises agent_topics_switch and agent_topic_suggestions); every agent's Inbox suggests one topic")
+	topicsOff := flag.String("topics-off", "", "with -topic-suggestions, comma-separated pane ids whose topics start switched off")
+	topicsPlain := flag.String("topics-no-suggestions", "", "with -topic-suggestions, comma-separated pane ids of omp agents without suggestions (topics_unsupported)")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
@@ -260,20 +264,14 @@ func main() {
 	}
 	if *topics {
 		fixture := fakeherdr.NewTopics()
-		previous, events := s.Handle, s.Events
-		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
-			if value, err, handled := fixture.Handle(method, params); handled {
-				return value, err
-			}
-			value, err := previous(method, params)
-			if method == "ping" && err == nil {
-				caps := value.(map[string]any)["capabilities"].(map[string]bool)
-				for _, name := range fixture.Capabilities() {
-					caps[name] = true
-				}
-			}
-			return value, err
-		}
+		fixture.Suggestions = *topicSuggestions
+		comma := func(r rune) bool { return r == ',' }
+		fixture.TurnOff(strings.FieldsFunc(*topicsOff, comma)...)
+		fixture.WithoutSuggestions(strings.FieldsFunc(*topicsPlain, comma)...)
+		// The switch restarts an agent: the app lists the roster again.
+		fixture.OnSwitch = func() { set.set(set.get()) }
+		events := s.Events
+		s.Handle = fixture.Serve(s.Handle)
 		s.Events = func(ctx context.Context, emit func([]byte) error) {
 			if events != nil {
 				go events(ctx, emit)

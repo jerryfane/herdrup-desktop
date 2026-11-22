@@ -212,7 +212,7 @@ export function groupTranscript(entries: Entry[], working: boolean): ChatRow[] {
    continue;
   }
   if (entry.kind === "reply" && !(entry.text ?? "").trim()) continue;
-  if (!["user", "reply", "note", "plan", "ask", "turn_end", "summary"].includes(entry.kind)) continue;
+  if (!["user", "reply", "note", "plan", "ask", "turn_end", "summary", "topic_suggestion"].includes(entry.kind)) continue;
   close(entry.ts_ms);
   if (entry.kind === "user" || entry.kind === "summary") plan = null;
   if (entry.kind === "user" && entry.ts_ms > 0) {

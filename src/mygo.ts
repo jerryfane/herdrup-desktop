@@ -136,6 +136,8 @@ export interface AgentAction {
   /** Source and Target are transfer's harnesses. */
   source?: string;
   target?: AgentActionTarget;
+  /** Enable is the topics switch's request: true turns topics on. */
+  enable?: boolean;
 }
 
 export interface AgentActionAccount {
@@ -190,6 +192,23 @@ export interface AgentTopicInfo {
  * AgentTopicState values a newer herdr adds decode as they are; see Known.
  */
 export type AgentTopicState = "starting" | "running" | "idle" | "dead" | "closed" | "unknown";
+
+/**
+ * One open topic suggestion, as `agent.topics.list` reports it: the agent
+ * proposes moving these messages of its main conversation into a new topic.
+ */
+export interface AgentTopicSuggestionInfo {
+  created_unix_ms: number;
+  /**
+   * The main conversation's entries (`agent.transcript` ids) the topic
+   * would start with.
+   */
+  message_ids: string[];
+  /** Why the agent suggests it, in its words. */
+  reason: string;
+  suggestion_id: string;
+  title: string;
+}
 
 /**
  * AgentView identifies one mounted detail view, not just a pane name. All writes
@@ -1229,12 +1248,29 @@ export interface TopicSendReply {
 }
 
 /**
+ * TopicsSwitched is how the owner's Topics switch ended: Changed is false
+ * when the agent already ran that way, and then nothing was restarted.
+ */
+export interface TopicsSwitched {
+  changed: boolean;
+  topicsEnabled: boolean;
+}
+
+/**
  * TopicsUpdate is the page's Topics state for one view: the list, ordered
  * as the Topics view lists it, or why the newest read failed (the last list
  * stays on screen: topics_unreachable keeps it). Offered says the agent
  * answered agent.topics.list this session, so the page offers Topics;
  * Changed names a topic whose conversation changed (an owner's event), so
  * an open topic chat reads its tail.
+ *
+ * Suggestions are the agent's open topic suggestions, oldest first (herdr
+ * #490): Organise's proposals and the ones it made in the Inbox.
+ * SuggestionsServed says the agent's omp serves them (its list carries
+ * `suggestions`) on a server with agent_topic_suggestions, so the list
+ * offers Organise. RequestedMs is when the read behind this list was asked
+ * for (Unix ms): a list asked for after a reader's Start or Not now went
+ * through is the server's word on that suggestion.
  */
 export interface TopicsUpdate {
   token: string;
@@ -1243,6 +1279,9 @@ export interface TopicsUpdate {
   loaded: boolean;
   problem?: string;
   changed?: string;
+  suggestions: AgentTopicSuggestionInfo[];
+  suggestionsServed: boolean;
+  requestedMs: number;
 }
 
 // ---- Services ----
@@ -2182,6 +2221,15 @@ export const Desk = {
     return call("Desk.TopicTranscript", token, topic, after, before, heldFrom);
   },
   /**
+   * TopicsAcceptSuggestion is a suggestion's Start (agent.topics.accept_suggestion):
+   * the agent starts the topic with the messages it picked, and the page opens
+   * it by the returned id. A suggestion someone started before answers that
+   * topic. Owner and guest alike (herdr guest_gate.rs, owner decision 2026-11-22).
+   */
+  topicsAcceptSuggestion(token: string, suggestionID: string): Promise<string> {
+    return call("Desk.TopicsAcceptSuggestion", token, suggestionID);
+  },
+  /**
    * TopicsAvailable reports whether the view's server serves an omp agent's
    * topics (agent_topics): the page asks the agent then (TopicsRefresh).
    */
@@ -2195,12 +2243,25 @@ export const Desk = {
   topicsClose(token: string, topicID: string): Promise<void> {
     return call("Desk.TopicsClose", token, topicID);
   },
+  /** TopicsDismissSuggestion is a suggestion's Not now (agent.topics.dismiss_suggestion). */
+  topicsDismissSuggestion(token: string, suggestionID: string): Promise<void> {
+    return call("Desk.TopicsDismissSuggestion", token, suggestionID);
+  },
   /**
    * TopicsFollow keeps the list current while the page's Topics shows, and
-   * stops when shown goes false or the view closes.
+   * stops when shown goes false (unless the Inbox still follows) or the view
+   * closes.
    */
   topicsFollow(token: string, shown: boolean): Promise<void> {
     return call("Desk.TopicsFollow", token, shown);
+  },
+  /**
+   * TopicsFollowInbox says whether the page's Inbox (its Chat view) is open:
+   * while it is and the agent's suggestions are served, the list is followed
+   * as Topics follows it. It stops when open goes false or the view closes.
+   */
+  topicsFollowInbox(token: string, open: boolean): Promise<void> {
+    return call("Desk.TopicsFollowInbox", token, open);
   },
   /**
    * TopicsNew starts a topic with its title and first message; the page
@@ -2208,6 +2269,14 @@ export const Desk = {
    */
   topicsNew(token: string, title: string, message: string): Promise<string> {
     return call("Desk.TopicsNew", token, title, message);
+  },
+  /**
+   * TopicsOrganise asks the agent to propose topics from its Inbox
+   * (agent.topics.organise). It answers at once, queued when the agent's
+   * current turn runs first; the proposals arrive later as open suggestions.
+   */
+  topicsOrganise(token: string): Promise<boolean> {
+    return call("Desk.TopicsOrganise", token);
   },
   /**
    * TopicsRefresh reads the agent's topics now and publishes them
@@ -2225,6 +2294,24 @@ export const Desk = {
   /** TopicsSend sends a message to one topic (agent.topics.send). */
   topicsSend(token: string, topicID: string, text: string): Promise<TopicSendReply> {
     return call("Desk.TopicsSend", token, topicID, text);
+  },
+  /**
+   * TopicsSetEnabled is the owner's Topics switch for one omp agent
+   * (agent.topics.set_enabled, herdr #489): herdr restarts it on the omp build
+   * with topics, or back on the standard one; its conversation and name stay.
+   * A refusal reads as the iPhone app words it (TopicsSwitchStatus.describe).
+   */
+  topicsSetEnabled(paneID: string, enabled: boolean): Promise<TopicsSwitched> {
+    return call("Desk.TopicsSetEnabled", paneID, enabled);
+  },
+  /**
+   * TopicsSettleSuggestions is the proposals bar (TopicsModel.settleProposals):
+   * Create N topics starts a topic from each of accept and sets dismiss
+   * aside; Not now sets all aside. A suggestion someone else settled first is
+   * skipped. It returns why one did not go through, "" when all did.
+   */
+  topicsSettleSuggestions(token: string, accept: string[], dismiss: string[]): Promise<string> {
+    return call("Desk.TopicsSettleSuggestions", token, accept, dismiss);
   },
   /**
    * TransferAccounts returns accounts.list as JSON, {"accounts": […]}, for

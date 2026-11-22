@@ -370,3 +370,26 @@ func (c *Client) AgentTopicsRename(ctx context.Context, p herdrapi.AgentTopicsRe
 	_, err := call[herdrapi.ResponseResultAgentTopicUpdated](ctx, c, "agent.topics.rename", p)
 	return err
 }
+
+// AgentTopicsSetEnabled switches one omp agent onto the topics build or back
+// (capability agent_topics_switch); Changed is false when it already was so.
+func (c *Client) AgentTopicsSetEnabled(ctx context.Context, p herdrapi.AgentTopicsSetEnabledParams) (herdrapi.ResponseResultAgentTopicsSwitched, error) {
+	return call[herdrapi.ResponseResultAgentTopicsSwitched](ctx, c, "agent.topics.set_enabled", p)
+}
+
+// AgentTopicsAcceptSuggestion starts the topic an agent suggested, with the
+// messages it picked (capability agent_topic_suggestions).
+func (c *Client) AgentTopicsAcceptSuggestion(ctx context.Context, p herdrapi.AgentTopicSuggestionTarget) (herdrapi.ResponseResultAgentTopicSuggestionAccepted, error) {
+	return call[herdrapi.ResponseResultAgentTopicSuggestionAccepted](ctx, c, "agent.topics.accept_suggestion", p)
+}
+
+// AgentTopicsDismissSuggestion sets an agent's topic suggestion aside.
+func (c *Client) AgentTopicsDismissSuggestion(ctx context.Context, p herdrapi.AgentTopicSuggestionTarget) (herdrapi.ResponseResultAgentTopicSuggestionDismissed, error) {
+	return call[herdrapi.ResponseResultAgentTopicSuggestionDismissed](ctx, c, "agent.topics.dismiss_suggestion", p)
+}
+
+// AgentTopicsOrganise asks the agent to propose topics from its Inbox; the
+// proposals arrive later as open suggestions.
+func (c *Client) AgentTopicsOrganise(ctx context.Context, p herdrapi.AgentTopicsOrganiseParams) (herdrapi.ResponseResultAgentTopicsOrganiseStarted, error) {
+	return call[herdrapi.ResponseResultAgentTopicsOrganiseStarted](ctx, c, "agent.topics.organise", p)
+}

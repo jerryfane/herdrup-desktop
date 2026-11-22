@@ -64,6 +64,13 @@ const (
 	// agent.transcript honours topic (herdr #475); a server without it pages
 	// the agent's main conversation, so topic is never sent there.
 	CapabilityAgentTranscriptTopic Capability = "agent_transcript_topic"
+	// agent.topics.set_enabled and topics_enabled on agent.list/agent.get
+	// (herdr #489): the owner's per-agent Topics switch.
+	CapabilityAgentTopicsSwitch Capability = "agent_topics_switch"
+	// agent.topics.accept_suggestion, dismiss_suggestion and organise,
+	// suggestions on agent.topics.list and topic_suggestion transcript
+	// entries (herdr #490).
+	CapabilityAgentTopicSuggestions Capability = "agent_topic_suggestions"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -107,6 +114,10 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentTopics
 	case CapabilityAgentTranscriptTopic:
 		return caps.AgentTranscriptTopic
+	case CapabilityAgentTopicsSwitch:
+		return caps.AgentTopicsSwitch
+	case CapabilityAgentTopicSuggestions:
+		return caps.AgentTopicSuggestions
 	}
 	return false
 }
@@ -214,6 +225,12 @@ var Methods = []Method{
 	{Name: "agent.topics.close", Params: typeOf[AgentTopicTarget](), Results: []Result{result[ResponseResultAgentTopicUpdated]("agent_topic_updated")}, Capability: CapabilityAgentTopics},
 	{Name: "agent.topics.reopen", Params: typeOf[AgentTopicTarget](), Results: []Result{result[ResponseResultAgentTopicUpdated]("agent_topic_updated")}, Capability: CapabilityAgentTopics},
 	{Name: "agent.topics.rename", Params: typeOf[AgentTopicsRenameParams](), Results: []Result{result[ResponseResultAgentTopicUpdated]("agent_topic_updated")}, Capability: CapabilityAgentTopics},
+	// herdr #489: the owner's Topics switch restarts an omp agent on (or off) the topics build.
+	{Name: "agent.topics.set_enabled", Params: typeOf[AgentTopicsSetEnabledParams](), Results: []Result{result[ResponseResultAgentTopicsSwitched]("agent_topics_switched")}, Capability: CapabilityAgentTopicsSwitch},
+	// herdr #490: the agent's topic suggestions and Organise.
+	{Name: "agent.topics.accept_suggestion", Params: typeOf[AgentTopicSuggestionTarget](), Results: []Result{result[ResponseResultAgentTopicSuggestionAccepted]("agent_topic_suggestion_accepted")}, Capability: CapabilityAgentTopicSuggestions},
+	{Name: "agent.topics.dismiss_suggestion", Params: typeOf[AgentTopicSuggestionTarget](), Results: []Result{result[ResponseResultAgentTopicSuggestionDismissed]("agent_topic_suggestion_dismissed")}, Capability: CapabilityAgentTopicSuggestions},
+	{Name: "agent.topics.organise", Params: typeOf[AgentTopicsOrganiseParams](), Results: []Result{result[ResponseResultAgentTopicsOrganiseStarted]("agent_topics_organise_started")}, Capability: CapabilityAgentTopicSuggestions},
 	// schema.rs:192; src/app/api/panes.rs:1905.
 	{Name: "pane.history", Params: typeOf[PaneHistoryParams](), Results: []Result{result[ResponseResultPaneHistory]("pane_history")}, Capability: CapabilityPaneHistory},
 	// schema.rs:194; acknowledged at src/api/server/pane_output_stream.rs:249,

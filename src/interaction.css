@@ -484,3 +484,15 @@ button.ask-form-other-caption { cursor:pointer; }
 .terminal-canvas { position: relative; }
 /* Its own layer over xterm, whose opaque canvas would otherwise paint over it (review of #213). */
 .terminal-last-screen { position: absolute; inset: 0; z-index: 1; margin: 0; padding: 0 8px; overflow: hidden; background: var(--color-ground-machine); font-family: var(--font-machine); line-height: 1.2; color: var(--color-text-dim); white-space: pre; pointer-events: none; }
+/* Topic suggestions (herdrup #788 ChatTopicSuggestion.swift): a neutral card with a hairline, a
+   quiet STARTS HERE mark, a faint Not now line and a Continued in topic chip. No tint. */
+.chat-suggestion-mark .chat-summary-text { font-weight:600; letter-spacing:0.08em; font-size:calc(11px * var(--chat-text-scale, 1)); }
+.chat-suggestion-card { box-sizing:border-box; display:flex; flex-direction:column; gap:8px; padding:12px 14px; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:16px; background:var(--color-surface); }
+.chat-suggestion-card > p { margin:0; }
+.chat-suggestion-title { font:400 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text); }
+.chat-suggestion-reason { font:400 calc(13.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-dim); }
+.chat-suggestion-count, .chat-suggestion-problem { display:flex; align-items:center; gap:6px; font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+.chat-suggestion-actions { display:flex; justify-content:flex-end; gap:8px; }
+.chat-suggestion-actions > button { border-radius:999px; }
+.chat-suggestion-continued-row { display:flex; justify-content:center; width:min(100%, calc(var(--gram-column, 720px) - 32px)); margin:0 auto 10px; }
+.chat-suggestion-continued { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; background:var(--color-surface); box-shadow:inset 0 0 0 1px var(--color-hairline); color:var(--color-text-dim); font:400 13px var(--font-app); }

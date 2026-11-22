@@ -94,3 +94,24 @@ dialog.topics-about:focus { outline: none; }
 .topics-about-popover .topics-about-body { gap: 12px; padding: 0 16px 16px; }
 .topics-about-popover .topics-about-body h3 { font-size: 13px; }
 .topics-about-popover .topics-about-body p { font-size: 13px; }
+
+/* Organise and the agent's proposals (herdrup #788, TopicsView.swift proposal 3): a plain word in
+   the bar, proposals ticked in the list itself, and Not now · Create N topics under it. */
+.agent-detail .topics-organise { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 6px; border: 0; background: none; color: var(--color-text); font: 600 14px var(--font-app); }
+.agent-detail .topics-organise[hidden] { display: none; }
+.agent-detail .topics-organise:disabled { color: var(--color-text-dim); }
+.topics-organise-spinner { flex: none; width: 10px; height: 10px; border: 2px solid var(--color-hairline); border-top-color: var(--color-text-dim); border-radius: 50%; animation: agent-turn .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .topics-organise-spinner { animation: none; } }
+.agent-detail .topics-proposal { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 10px 16px; border: 0; border-bottom: 1px solid var(--color-hairline-quiet); border-radius: 0; background: none; color: var(--color-text); text-align: left; font: inherit; }
+.agent-detail .topics-proposal:hover { background: var(--color-surface-raised); }
+.agent-detail .topics-proposal[aria-checked="false"] .topic-row-title { color: var(--color-text-dim); }
+.topics-proposal-tick { display: grid; place-items: center; flex: none; width: 24px; height: 24px; color: var(--color-text); }
+.topics-proposal[aria-checked="false"] .topics-proposal-tick { color: var(--color-text-faint); }
+.topics-proposal-reason { color: var(--color-text-dim); font: 400 13px var(--font-app); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.topics-proposals-bar { display: flex; gap: 10px; padding: 10px 16px 12px; border-top: 1px solid var(--color-hairline-quiet); background: var(--color-ground-machine); }
+.topics-proposals-bar[hidden] { display: none; }
+.agent-detail .topics-proposals-bar > button { flex: 1; height: 44px; border-radius: 99px; font: 600 15px var(--font-app); }
+.agent-detail .topics-proposals-dismiss { border: 1px solid var(--color-hairline); background: var(--color-surface); color: var(--color-text); }
+.agent-detail .topics-proposals-create { border: 0; background: var(--color-text); color: var(--color-ground); }
+.agent-detail .topics-proposals-bar > button:disabled { opacity: .5; }
+.topics-proposal-glyph { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--tick-icon) center/contain no-repeat; }

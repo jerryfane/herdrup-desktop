@@ -12,6 +12,7 @@ import {
   integralCropRect, renameField, transferPhaseIsConclusive, transferPhaseIsTerminal, workingSize,
   type TransferAgent, type TransferInfo,
 } from "./agentActionsModel";
+import { switchAction, switchMessage, switchStatusText, switchTitle, type SwitchRequest, type SwitchStatus } from "./topicSuggestionsModel";
 import "./agentActions.css";
 import { errorText } from "./errors";
 
@@ -60,13 +61,13 @@ function sheet(cls: string) {
 }
 
 /** The row menu's confirmation (SwiftUI confirmationDialog): the title,
- * its message, Cancel and the destructive action. Resolves true when the
- * action was chosen. */
-function confirmAction(title: string, message: string, action: string): Promise<boolean> {
+ * its message, Cancel and the action, destructive unless said otherwise.
+ * Resolves true when the action was chosen. */
+function confirmAction(title: string, message: string, action: string, destructive = true): Promise<boolean> {
   const dialog = el("dialog", "folder-naming agent-confirm");
   const buttons = el("div", "buttons");
   let chosen = false;
-  buttons.append(button("Cancel", "ghost", () => dialog.close()), button(action, "destructive", () => { chosen = true; dialog.close(); }));
+  buttons.append(button("Cancel", "ghost", () => dialog.close()), button(action, destructive ? "destructive" : "", () => { chosen = true; dialog.close(); }));
   dialog.append(el("h2", "", title), el("p", "", message), buttons);
   document.body.append(dialog);
   const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -115,6 +116,44 @@ function renameAgent(action: AgentAction) {
 async function restartAgent(action: AgentAction) {
   if (!await confirmAction("Restart agent?", `Interrupts ${action.title}'s current turn. Its session is preserved and reopened with --resume.`, "Restart")) return;
   await perform("restart", action.title, () => Desk.restartAgent(action.paneID, ""));
+}
+
+/** Turn on/off topics (herdrup #788 TopicsSwitch.swift): confirmed first, since the switch
+ * restarts the agent; then agent.topics.set_enabled, its progress and result in a neutral banner
+ * at the foot of the agents list, which clears itself a few seconds after it ends. */
+async function switchTopics(action: AgentAction) {
+  const request: SwitchRequest = { paneID: action.paneID, title: action.title, enable: !!action.enable };
+  if (!await confirmAction(switchTitle(request), switchMessage(request), switchAction(request), false)) return;
+  const show = switchBanner();
+  show({ kind: "working", request });
+  try {
+    const result = await Desk.topicsSetEnabled(request.paneID, request.enable);
+    show({ kind: "done", request, changed: result.changed });
+  } catch (error) {
+    show({ kind: "failed", request, why: failure(error) });
+  }
+}
+
+let bannerShown: SwitchStatus | null = null;
+/** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced. */
+function switchBanner() {
+  const sidebar = document.getElementById("sidebar") ?? document.body;
+  let banner = sidebar.querySelector<HTMLElement>(":scope > .topics-switch-banner");
+  if (!banner) {
+    banner = el("div", "topics-switch-banner");
+    banner.setAttribute("role", "status");
+    sidebar.append(banner);
+  }
+  const node = banner;
+  return (status: SwitchStatus) => {
+    bannerShown = status;
+    node.dataset.kind = status.kind;
+    const mark = el("span", status.kind === "working" ? "topics-switch-spinner" : status.kind === "failed" ? "topics-switch-dot" : "");
+    mark.setAttribute("aria-hidden", "true");
+    node.replaceChildren(...(status.kind === "done" ? [] : [mark]), el("span", "topics-switch-text", switchStatusText(status)));
+    node.hidden = false;
+    if (status.kind !== "working") setTimeout(() => { if (bannerShown === status) { node.hidden = true; bannerShown = null; } }, 6000);
+  };
 }
 
 /** Swap subscription? (HerdrApp.swift 3453-3473): agent.restart on the
@@ -656,6 +695,7 @@ export function initAgentActions(d: AgentActionDeps) {
       case "restart": void restartAgent(action); break;
       case "swap": void swapSubscription(action); break;
       case "avatar": openAvatarSheet(action.paneID, action.title); break;
+      case "topics": void switchTopics(action); break;
       case "transfer": void switchHarness(action); break;
     }
   });

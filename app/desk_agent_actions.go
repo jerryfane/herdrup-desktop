@@ -43,6 +43,8 @@ type AgentAction struct {
 	// Source and Target are transfer's harnesses.
 	Source string             `json:"source,omitempty"`
 	Target *AgentActionTarget `json:"target,omitempty"`
+	// Enable is the topics switch's request: true turns topics on.
+	Enable bool `json:"enable,omitempty"`
 }
 
 type AgentActionAccount struct {
@@ -132,6 +134,16 @@ func agentRowMenu(in agentMenuInput) []menuEntry {
 	out = append(out, agentMenu(in.Groups, deref(a.Name))...)
 	// HerdrApp.swift:4325.
 	out = append(out, menuEntry{Label: "Restart agent", Icon: "arrow.clockwise", Action: action("restart")})
+	// The Topics switch (herdrup #788 HerdrApp.swift:4492-4499): an omp agent
+	// on a server with agent_topics_switch that reports topics_enabled.
+	if enabled := a.TopicsEnabled; enabled != nil && herdrapi.CapabilityAgentTopicsSwitch.Supported(in.Caps) && ompHarness(deref(a.Agent)) {
+		act, label := action("topics"), "Turn on topics"
+		act.Enable = !*enabled
+		if *enabled {
+			label = "Turn off topics"
+		}
+		out = append(out, menuEntry{Label: label, Icon: "rectangle.stack", Action: act})
+	}
 	// HerdrApp.swift:4333-4355: local agents, on a server with
 	// agent_session_transfer or with a transfer under way.
 	targets := sessionTransferTargets(a, in.Caps)

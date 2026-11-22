@@ -169,7 +169,7 @@ interface Active {
 
 interface MountedView extends GuestView {
  /** The agent's Topics (desk_topics.go topicsState): the last list and the poll while shown. */
- topics: { last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean };
+ topics: { last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean; shown: boolean; inbox: boolean };
  active: Active;
  view: AgentView;
  share: { details: GuestShareDetails };
@@ -228,6 +228,16 @@ export function createGuestDesk(env: DeskEnv) {
   }
  }
 
+ /** desk_topics.go topicsWatch: the poll runs while Topics shows, or while the Inbox is open on an
+  *  agent whose suggestions are served. */
+ function watchTopics(v: MountedView) {
+  const t = v.topics;
+  const want = !v.life.signal.aborted && (t.shown || (t.inbox && t.last.suggestionsServed));
+  if (want === (t.poll !== null)) return;
+  if (!want) { clearInterval(t.poll!); t.poll = null; return; }
+  t.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(t.poll!); t.poll = null; return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
+ }
+
  /** desk_topics.go topicsRead: one list read at a time, one more after it when asked meanwhile. */
  function readTopics(v: MountedView) {
   const t = v.topics;
@@ -238,17 +248,22 @@ export function createGuestDesk(env: DeskEnv) {
     const u: TopicsUpdate = { ...t.last, token: v.token, loaded: true };
     delete u.changed;
     try {
-     const list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as { topics?: TopicsUpdate["topics"] };
+     const requested = Date.now();
+     const list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"] };
      u.topics = orderedTopics(list.topics ?? []); u.offered = true; delete u.problem;
+     // desk_topics.go: Organise shows where the list carries suggestions on a host advertising them.
+     u.suggestions = (list.suggestions ?? []).filter(x => x.suggestion_id !== ""); u.requestedMs = requested;
+     u.suggestionsServed = list.suggestions !== undefined && (await v.active.client.ping(within(v))).capabilities?.agent_topic_suggestions === true;
     } catch (error) {
      if (v.life.signal.aborted) return;
      const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
-     if (topicsNotOffered(code)) { u.topics = []; u.offered = false; delete u.problem; }
+     if (topicsNotOffered(code)) { u.topics = []; u.offered = false; delete u.problem; u.suggestions = []; u.suggestionsServed = false; }
      else u.problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
     }
     if (v.life.signal.aborted) return;
     t.last = u;
     emit("topicsChanged", u);
+    watchTopics(v);
    } while (t.again);
   })().finally(() => { t.reading = null; });
  }
@@ -410,7 +425,7 @@ export function createGuestDesk(env: DeskEnv) {
    unmount();
    const life = new AbortController();
    const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null,
-    topics: { last: { token, topics: [], offered: false, loaded: false }, poll: null, reading: null, again: false } };
+    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false } };
    l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
    mounted = v;
    setView(v);
@@ -458,10 +473,16 @@ export function createGuestDesk(env: DeskEnv) {
 
   async topicsFollow(token: string, shown: boolean): Promise<void> {
    const v = viewOf(token);
-   if (v.topics.poll) { clearInterval(v.topics.poll); v.topics.poll = null; }
-   if (!shown) return;
-   readTopics(v);
-   v.topics.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(v.topics.poll!); return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
+   v.topics.shown = shown;
+   if (shown) readTopics(v);
+   watchTopics(v);
+  },
+
+  async topicsFollowInbox(token: string, open: boolean): Promise<void> {
+   const v = viewOf(token);
+   v.topics.inbox = open;
+   if (open && !v.topics.last.loaded) readTopics(v);
+   watchTopics(v);
   },
 
   async topicTranscript(token: string, topic: string, after: string, before: string, heldFrom: string): Promise<string> {
@@ -526,6 +547,45 @@ export function createGuestDesk(env: DeskEnv) {
    if (title === "") throw new Error("A topic needs a title.");
    await topicsCall(v, "agent.topics.rename", { target: v.paneID, topic_id: topicID, title }, "agent_topic_updated");
    readTopics(v);
+  },
+
+  // Suggestions and Organise (desk_topics.go, herdr #490): a guest may Start, Not now and Organise.
+  async topicsAcceptSuggestion(token: string, suggestionID: string): Promise<string> {
+   const v = viewOf(token);
+   const accepted = await topicsCall<{ topic_id: string }>(v, "agent.topics.accept_suggestion", { target: v.paneID, suggestion_id: suggestionID }, "agent_topic_suggestion_accepted");
+   readTopics(v);
+   return accepted.topic_id;
+  },
+
+  async topicsDismissSuggestion(token: string, suggestionID: string): Promise<void> {
+   const v = viewOf(token);
+   await topicsCall(v, "agent.topics.dismiss_suggestion", { target: v.paneID, suggestion_id: suggestionID }, "agent_topic_suggestion_dismissed");
+   readTopics(v);
+  },
+
+  async topicsOrganise(token: string): Promise<boolean> {
+   const v = viewOf(token);
+   const started = await topicsCall<{ queued: boolean }>(v, "agent.topics.organise", { target: v.paneID }, "agent_topics_organise_started");
+   readTopics(v);
+   return started.queued;
+  },
+
+  async topicsSettleSuggestions(token: string, accept: string[], dismiss: string[]): Promise<string> {
+   const v = viewOf(token);
+   let problem = "";
+   const settle = async (id: string, start: boolean) => {
+    try {
+     await v.active.client.call(start ? "agent.topics.accept_suggestion" : "agent.topics.dismiss_suggestion", { target: v.paneID, suggestion_id: id },
+      start ? "agent_topic_suggestion_accepted" : "agent_topic_suggestion_dismissed", "", within(v));
+    } catch (error) {
+     const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "topics_unsupported" : "";
+     if (!problem && code !== "already_accepted" && code !== "suggestion_not_found") problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
+    }
+   };
+   for (const id of accept) await settle(id, true);
+   for (const id of dismiss) await settle(id, false);
+   readTopics(v);
+   return problem;
   },
 
   async chatPrompt(token: string, text: string): Promise<string> {

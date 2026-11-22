@@ -606,7 +606,7 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 	case "ping":
 		// project_pong (guest_gate.rs:421-435): only what the gate serves.
 		write(map[string]any{"type": "pong", "version": "fake", "protocol": 22,
-			"capabilities": map[string]bool{"agent_transcript": true, "agent_avatar": true, "agent_topics": true, "agent_transcript_topic": true}}, nil)
+			"capabilities": map[string]bool{"agent_transcript": true, "agent_avatar": true, "agent_topics": true, "agent_transcript_topic": true, "agent_topic_suggestions": true}}, nil)
 	case "agent.list":
 		agents := []any{}
 		if live {
@@ -653,9 +653,11 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		m := params()
 		m["target"], m["text"] = pane, r.GuestName+" (via HerdrUp): "+p.Text
 		write(forward(m))
-	case "agent.topics.list", "agent.topics.new", "agent.topics.send", "agent.topics.close", "agent.topics.reopen", "agent.topics.rename":
-		// guest_gate.rs (herdr #475): the granted agent's topics, with the
-		// owner's access; a message is capped and labelled as a prompt is.
+	case "agent.topics.list", "agent.topics.new", "agent.topics.send", "agent.topics.close", "agent.topics.reopen", "agent.topics.rename",
+		"agent.topics.accept_suggestion", "agent.topics.dismiss_suggestion", "agent.topics.organise":
+		// guest_gate.rs (herdr #475, #490): the granted agent's topics, with the
+		// owner's access; a message is capped and labelled as a prompt is, and
+		// omp records a suggestion's Start, Not now or Organise as by the guest.
 		if p.Message != nil && len(*p.Message) > 32*1024 {
 			write(nil, &APIError{Code: "invalid_params", Message: "guest messages are limited to 32 KiB"})
 			return
@@ -672,6 +674,9 @@ func (r *GuestRelay) request(ctx context.Context, line []byte, emit func([]byte)
 		m["target"] = pane
 		if p.Message != nil {
 			m["message"] = r.GuestName + " (via HerdrUp): " + *p.Message
+		}
+		if strings.Contains(req.Method, "suggestion") || req.Method == "agent.topics.organise" {
+			m["acting_guest"] = r.GuestName
 		}
 		write(forward(m))
 	case "agent.answer", "agent.answer_form", "agent.dismiss_ask":
