@@ -27,6 +27,12 @@ function host(hellos: Record<string, unknown>[], refuse = ""): TestRelay {
     const line = await session.readLine();
     if (line === null) return;
     const req = JSON.parse(line) as { id: string; method: string };
+    if (req.method === "pane.stream") {
+     // A renewal changed the scope: herdr ends the stream with owner_scope_changed.
+     session.write(JSON.stringify({ id: req.id, result: { type: "stream_started" } }) + "\n");
+     session.write(JSON.stringify({ error: { code: "owner_scope_changed", message: "the grant's scope changed" } }) + "\n");
+     continue;
+    }
     session.write(JSON.stringify(req.method === "agent.list" ? { id: req.id, result: { type: "agent_list", agents } } : { id: req.id, error: { code: "owner_forbidden", message: "no" } }) + "\n");
    }
   },
@@ -60,4 +66,24 @@ test("the machine probe counts the agents of a machine that admits this browser,
   expect(await probeMachine(machineOn(online), key, statements, "x")).toEqual({ kind: "online", agents: 3 });
   expect((await probeMachine(machineOn(ended), key, statements, "x")).kind).toBe("ended");
  } finally { online.stop(); ended.stop(); }
+});
+
+test("a pane stream the host ends for a changed scope asks the page to open it again", async () => {
+ const relay = host([]);
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const desk = createGuestDesk({ identities, grants: new MemoryGrantStore(), owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const listed = Promise.withResolvers<BoardUpdate>();
+ const ended = Promise.withResolvers<{ error?: string; reconnect?: boolean }>();
+ const offBoard = events.boardChanged.on(b => { if (b?.machineID === `owner:${relay.hostID}`) listed.resolve(b); });
+ const offTerm = events.terminalChanged.on(e => { if (e.error) ended.resolve(e); });
+ try {
+  await desk.connectOwner(machineOn(relay), statements, "x");
+  await listed.promise;
+  await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "view-1");
+  await desk.startTerminal("view-1", "stream-1");
+  const e = await ended.promise;
+  expect(e.error).toContain("owner_scope_changed");
+  expect(e.reconnect).toBe(true);
+ } finally { offBoard(); offTerm(); desk.disconnectOwner(); relay.stop(); }
 });

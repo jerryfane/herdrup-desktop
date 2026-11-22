@@ -25,7 +25,8 @@ export function guestPausedPage(availability: string | undefined, agent: string)
 
 /** herdr's guest_paused refusal, as Go words a herdr error ("herdr: guest_paused: …"). */
 export function isGuestPaused(message: string): boolean {
- return message.includes("guest_paused");
+ // owner_paused: a web owner's chat scope while the pane runs no local agent (herdr #497).
+ return message.includes("guest_paused") || message.includes("owner_paused");
 }
 
 /** failureNote for a send the host refused while paused (GuestPaneView.swift:918-920). */

@@ -787,7 +787,7 @@ export function createGuestDesk(env: DeskEnv) {
    }
    void (async () => {
     for (;;) {
-     let event: { frame?: PaneStreamFrame; error?: string };
+     let event: { frame?: PaneStreamFrame; error?: string; reconnect?: boolean };
      try {
       const next = await lines.next();
       if (life.signal.aborted) return;
@@ -796,6 +796,9 @@ export function createGuestDesk(env: DeskEnv) {
       if (life.signal.aborted) return;
       event = { error: message(error) };
      }
+     // herdr #497: a renewal changed the grant's scope and ended the stream; it opens again
+     // under the new one (interaction.ts reconnects on reconnect, once per STREAM_RECONNECT_MS).
+     if (event.error?.includes("owner_scope_changed")) event = { ...event, reconnect: true };
      emit("terminalChanged", { token, streamID, ...event });
      if (event.error !== undefined) { life.abort(); void lines.return?.(); return; }
     }

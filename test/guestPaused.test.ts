@@ -19,3 +19,8 @@ test("a send refused with guest_paused says the agent isn't running (GuestPaneVi
  expect(guestSendFailure(refused, "docs")).toBe("docs isn't running, so it wasn't sent.");
  expect(guestSendFailure("herdr: guest_forbidden: no", "docs")).toBeNull();
 });
+
+test("a web owner's owner_paused reads as paused, as guest_paused does", () => {
+ expect(isGuestPaused("pane.stream ended: herdr: owner_paused: no running agent")).toBe(true);
+ expect(isGuestPaused("herdr: owner_forbidden: not in this scope")).toBe(false);
+});
