@@ -8,9 +8,8 @@ import { APP_LINK_PREFIX, shortSegment } from "../webguest/invite";
 /** The Desk methods starting needs. */
 type StartDesk = Pick<typeof Desk, "sharedConnections" | "acceptGuestInvitation" | "connectGuest">;
 
-/** firstVisit: no share this browser remembers (the screen a signed-in owner gets too). */
-export interface Welcome { title: string; body: string; error?: string; firstVisit?: true }
-export type Started = { kind: "connected"; id: string } | { kind: "welcome"; welcome: Welcome };
+export interface Welcome { title: string; body: string; error?: string }
+export type Started = { kind: "connected"; id: string } | { kind: "welcome"; welcome: WelcomeState };
 
 /** The fragment's payload, removed from the address bar before anything else runs; "" when none. */
 export function takeFragment(location: Pick<Location, "hash" | "pathname" | "search">, history: Pick<History, "replaceState" | "state">): string {
@@ -33,20 +32,21 @@ export function inviteText(payload: string, origin: string): string {
 export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${access.endpoint.hostID}/${access.guestID}`;
 
 /** The plain screen without a grant: first visit, or a share left or wiped. owner is who shared
- *  the last grant this browser held, when it remembers. */
-export function welcome(owner: string | null, error?: string): Welcome {
- const who = owner ?? "the owner";
- return owner === null
-  ? { title: `Open the invite link ${who} sent you`, body: "It opens the agent they share with you here. If you used this page before and this browser's data was cleared, ask them for a new invite.", firstVisit: true, ...(error ? { error } : {}) }
-  : { title: `Ask ${who} for a new invite`, body: "This browser no longer holds the shared access. Open the new invite link here to use the agent again.", ...(error ? { error } : {}) };
-}
+ *  the last grant this browser held, when it remembers; error is why an invite just failed. */
+export interface WelcomeState { owner: string | null; error?: string }
 
-/** The first-visit screen for a browser signed in to a HerdrUp account. Owners can't use their own
- *  machines from the browser yet (web enrolment, D2), so it says so rather than asking for an
- *  invite; a share's "ask for a new invite" stays as it is. */
-export function signedInWelcome(w: Welcome): Welcome {
- if (!w.firstVisit) return w;
- return { title: "Signed in", body: "Using your own machines from this browser is coming soon. For now, use the HerdrUp app, or open an invite link someone sent you.", firstVisit: true, ...(w.error ? { error: w.error } : {}) };
+/** The screen's words for state, now. A browser signed in to a HerdrUp account on its first visit
+ *  is an owner: using their own machines from the browser waits on web enrolment (D2), so it
+ *  says so rather than asking for an invite. A share left or wiped asks for a new invite either
+ *  way. */
+export function welcome(state: WelcomeState, signedIn: boolean): Welcome {
+ const { owner, error } = state;
+ const words = owner !== null
+  ? { title: `Ask ${owner} for a new invite`, body: "This browser no longer holds the shared access. Open the new invite link here to use the agent again." }
+  : signedIn
+   ? { title: "Signed in", body: "Using your own machines from this browser is coming soon. For now, use the HerdrUp app, or open an invite link someone sent you." }
+   : { title: "Open the invite link the owner sent you", body: "It opens the agent they share with you here. If you used this page before and this browser's data was cleared, ask them for a new invite." };
+ return { ...words, ...(error ? { error } : {}) };
 }
 
 /** Redeems the fragment's invitation, or resumes the kept grant. A failed redemption with a grant
@@ -59,10 +59,10 @@ export async function start(desk: StartDesk, payload: string, origin: string, ow
    await desk.connectGuest(shareID(access));
    return { kind: "connected", id: shareID(access) };
   } catch (error) {
-   if (kept === undefined) return { kind: "welcome", welcome: welcome(owner(), error instanceof Error ? error.message : String(error)) };
+   if (kept === undefined) return { kind: "welcome", welcome: { owner: owner(), error: error instanceof Error ? error.message : String(error) } };
   }
  }
- if (kept === undefined) return { kind: "welcome", welcome: welcome(owner()) };
+ if (kept === undefined) return { kind: "welcome", welcome: { owner: owner() } };
  await desk.connectGuest(shareID(kept));
  return { kind: "connected", id: shareID(kept) };
 }
