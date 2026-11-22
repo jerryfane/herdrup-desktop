@@ -156,8 +156,11 @@ export class WebAccount {
   }
   this.access = pair.access_token;
   this.accessUntil = this.now() + pair.access_expires_in * 1000 - 60_000;
-  const hint = typeof pair.display_hint === "string" ? pair.display_hint : this.session?.displayHint;
+  const before = this.session?.accountID;
+  // The last hint only for the same account: another account's session never shows it.
+  const hint = typeof pair.display_hint === "string" ? pair.display_hint : before === pair.account_id ? this.session?.displayHint : undefined;
   this.session = { accountID: pair.account_id, ...(hint ? { displayHint: hint } : {}) };
+  if (before !== pair.account_id) this.notify();
   return this.access;
  }
 
@@ -250,7 +253,20 @@ export class WebAccount {
   return this.authed("POST", "/v1/statements", { hosts }, account, signal);
  }
 
- private forget() { this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null; }
+ /** Calls changed whenever this page's session starts, ends or becomes another account's, at the
+  *  moment it does (a sign-out tells at once, before its request completes). Returns what stops it. */
+ onSessionChange(changed: () => void): () => void {
+  this.listeners.add(changed);
+  return () => { this.listeners.delete(changed); };
+ }
+ private listeners = new Set<() => void>();
+ private notify() { for (const changed of this.listeners) changed(); }
+
+ private forget() {
+  const had = this.session !== null;
+  this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null;
+  if (had) this.notify();
+ }
 }
 
 async function errorCode(response: Response): Promise<string> {
