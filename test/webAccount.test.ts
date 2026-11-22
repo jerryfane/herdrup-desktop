@@ -222,3 +222,19 @@ test("a call refused with 401 is not sent again once the refreshed session is an
  await expect(account.requestApproval(new Uint8Array(32), "acct-A")).rejects.toMatchObject({ code: "account_changed" });
  expect(posted).toEqual([access(1)]);
 });
+
+test("after the page's token expires and the cookie now holds another sign-in, no write goes out as that account", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ for (const write of [(a: WebAccount) => a.requestApproval(new Uint8Array(32)), (a: WebAccount) => a.enrol(key, "Chrome on macOS")]) {
+  let now = 1_000_000;
+  const sent: string[] = [];
+  const s = service((url, _init, bearer) => { if (url.endsWith("/v1/approvals") || url.includes("/v1/devices")) sent.push(`${url.slice(url.indexOf("/v1/"))} ${bearer}`); return Response.json({}); },
+   n => n === 1 ? "acct-A" : "acct-B");
+  const account = new WebAccount(s.fetcher, undefined, () => now);
+  await account.accessToken(); // signed in as acct-A
+  now += 3_600_000; // A's bearer expired; the cookie now refreshes to acct-B
+  await expect(write(account)).rejects.toMatchObject({ code: "account_changed" });
+  expect(sent).toEqual([]);
+ }
+});

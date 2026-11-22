@@ -175,18 +175,21 @@ export class WebAccount {
   }
  }
 
- /** The account this session is signed in to now; an operation spanning calls binds to it. */
+ /** The account this page signed in to, before any refresh (the cookie may hold another sign-in
+  *  by now; calls bound to it then refuse); the first refresh's when there is none yet. An
+  *  operation spanning calls binds to it. */
  async currentAccount(): Promise<string> {
-  return (await this.credential()).account;
+  return this.session?.accountID ?? (await this.credential()).account;
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
   *  fresh token when the service says the one sent is no longer good (401). The call is bound to
-  *  account (else to the first token's): a token for another account (the cookie now holds
-  *  another sign-in) is refused before anything is sent, so a write is never replayed there.
+  *  account, else to the account this page already signed in to, before any refresh; only with
+  *  none yet does the first token's account bind it. A token for another account (the cookie now
+  *  holds another sign-in) is refused before anything is sent, so a write never goes there.
   *  Errors are AccountServiceError with the service's code, or SignedOutError. */
  private async authed<T>(method: string, path: string, body?: unknown, account?: string): Promise<T> {
-  let bound = account;
+  let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    const { token, account: now } = await this.credential();
    if (bound !== undefined && now !== bound) throw new AccountServiceError(409, "account_changed");
