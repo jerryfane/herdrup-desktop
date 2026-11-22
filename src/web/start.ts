@@ -8,7 +8,7 @@ import { APP_LINK_PREFIX, shortSegment } from "../webguest/invite";
 /** The Desk methods starting needs. */
 type StartDesk = Pick<typeof Desk, "sharedConnections" | "acceptGuestInvitation" | "connectGuest">;
 
-export interface Welcome { title: string; body: string; error?: string }
+interface Welcome { title: string; body: string; error?: string }
 export type Started = { kind: "connected"; id: string } | { kind: "welcome"; welcome: WelcomeState };
 
 /** The fragment's payload, removed from the address bar before anything else runs; "" when none. */
