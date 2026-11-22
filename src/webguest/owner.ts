@@ -11,8 +11,9 @@ import type { TransportLink } from "./transport";
 /** A statement the hello or a refresh sends: enough of it left, or a fresh one. */
 export interface StatementSource {
  get(hostID: string, minLeftMs: number, signal: AbortSignal): Promise<{ jws: string; expMs: number }>;
- /** Forgets the statement held for hostID: the machine refused it. */
- drop(hostID: string): void;
+ /** Forgets jws for hostID if it is still the statement held: the machine refused it. A newer
+  *  one another connection already took stays. */
+ drop(hostID: string, jws: string): void;
 }
 
 /** A hello's statement must outlive the handshake and a first round trip. */
@@ -31,6 +32,12 @@ export function ownerLink(endpoint: Endpoint, device: string, statements: Statem
    if (reply.mode !== "owner") throw other("The machine didn't admit this browser as its owner.");
   },
   statement: signal => statements.get(endpoint.hostID, REFRESH_MIN_LEFT_MS, signal),
-  statementRefused() { statements.drop(endpoint.hostID); return true; },
+  statementRefused(hello) {
+   let jws: unknown;
+   try { jws = (JSON.parse(new TextDecoder().decode(hello)) as { account?: unknown }).account; } catch { return false; }
+   if (typeof jws !== "string") return false;
+   statements.drop(endpoint.hostID, jws);
+   return true;
+  },
  };
 }

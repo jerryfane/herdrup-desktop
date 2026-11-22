@@ -205,10 +205,12 @@ class RelaySocket {
  /** Whether the socket is open with nothing unread: an idle session herdr has not ended or sent on. */
  get quiet(): boolean { return this.#end === null && this.#inbox.length === 0; }
 
- /** Calls onEnd once the socket ends, however it does; at once if it has. */
- whenEnded(onEnd: () => void) {
-  if (this.#end !== null) { onEnd(); return; }
+ /** Calls onEnd once the socket ends, however it does; at once if it has. Returns what takes
+  *  onEnd back off the socket (a parked session's cleanup, once the session is taken). */
+ whenEnded(onEnd: () => void): () => void {
+  if (this.#end !== null) { onEnd(); return () => {}; }
   this.#onEnd.push(onEnd);
+  return () => { this.#onEnd = this.#onEnd.filter(f => f !== onEnd); };
  }
 
  /** Sends a frame, or throws when it cannot go out: the socket ended, or is closing, which a
@@ -256,9 +258,6 @@ export interface HelloReply {
  ok: boolean;
  error: string;
  mode: string;
- grantID: string;
- scope: string;
- expiresUnix: number;
  /** When the host ends an account-bound session unless a newer statement arrives in-band; 0 for none. */
  deadlineUnix: number;
  guestID: string;
@@ -304,8 +303,7 @@ function parseHelloReply(plaintext: Uint8Array): HelloReply {
  const agent = record(object.agent);
  const features = record(object.features) ?? {};
  const reply: HelloReply = {
-  ok: object.ok, error: text("error"), mode: text("mode"), grantID: text("grant_id"), scope: text("scope"),
-  expiresUnix: whole(object, "expires_unix"), deadlineUnix: whole(record(object.account) ?? {}, "deadline_unix"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
+  ok: object.ok, error: text("error"), mode: text("mode"), deadlineUnix: whole(record(object.account) ?? {}, "deadline_unix"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
   agent: null, features: { gram: flag(features, "gram"), push: flag(features, "push"), multiRequest: flag(features, "multi_request") },
  };
  if (agent !== null) {
@@ -342,7 +340,7 @@ class Session {
  abort(reason: unknown) { this.socket.abort(reason); }
  /** Open, and herdr sent nothing on it since the last reply: fit to carry the next request. */
  get quiet(): boolean { return this.socket.quiet; }
- whenEnded(onEnd: () => void) { this.socket.whenEnded(onEnd); }
+ whenEnded(onEnd: () => void): () => void { return this.socket.whenEnded(onEnd); }
 
  /** session.go sendLine: the line and its "\n", split at the plaintext limit. onFrame hears each
   *  frame about to be handed to the socket: until one is, herdr cannot have the request. */
@@ -556,8 +554,9 @@ export interface TransportLink {
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number }>;
- /** The host refused the hello's statement: whether a fresh one is worth one more connect. */
- statementRefused?(): boolean;
+ /** The host refused the statement in hello (the bytes that connect sent): whether a fresh one
+  *  is worth one more connect. */
+ statementRefused?(hello: Uint8Array): boolean;
 }
 
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation. */
@@ -581,7 +580,7 @@ export interface TransportOptions {
 export interface RequestOptions { signal?: AbortSignal }
 
 /** The idle session a call left for the next one, since `since`, with its expiry timer. */
-interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout> }
+interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout>; unpark: () => void }
 
 /** What a request on a session came to (transport.go roundTrip): its reply line and whether the
  *  session is still open, or its failure and whether a frame of it went out (so herdr may have it). */
@@ -714,13 +713,15 @@ export class GuestTransport {
   if (this.#now() < this.#retryAt) throw rateLimited();
   let session: Session;
   for (let attempt = 0; ; attempt++) {
+   let hello: Uint8Array | null = null;
    try {
-    session = await openSession(this.#link.endpoint, this.#identity, await this.#link.hello(signal), signal, this.#factory);
+    hello = await this.#link.hello(signal);
+    session = await openSession(this.#link.endpoint, this.#identity, hello, signal, this.#factory);
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
     // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && error instanceof GuestError && error.kind === "statement" && this.#link.statementRefused?.()) continue;
+    if (attempt === 0 && hello !== null && error instanceof GuestError && error.kind === "statement" && this.#link.statementRefused?.(hello)) continue;
     throw error;
    }
   }
@@ -752,6 +753,7 @@ export class GuestTransport {
   this.#idle = null;
   if (idle === null) return null;
   clearTimeout(idle.timer);
+  idle.unpark();
   const now = this.#now();
   if (!idle.session.quiet || now - idle.since >= REUSE_IDLE_LIMIT_MS || now - idle.session.handshook >= REUSE_AGE_LIMIT_MS) { idle.session.close(); return null; }
   return idle.session;
@@ -770,9 +772,9 @@ export class GuestTransport {
    clearTimeout(idle.timer);
    session.close();
   };
-  const idle: IdleSession = { session, since: this.#now(), timer: setTimeout(drop, REUSE_IDLE_LIMIT_MS) };
+  const idle: IdleSession = { session, since: this.#now(), timer: setTimeout(drop, REUSE_IDLE_LIMIT_MS), unpark: () => {} };
   this.#idle = idle;
-  session.whenEnded(drop);
+  idle.unpark = session.whenEnded(drop);
  }
 }
 
