@@ -1920,18 +1920,22 @@ class Detail {
    options.append(choice);
   });
   card.append(options);
+  const problem = this.answerProblem?.askID === entry.id ? this.answerProblem : null;
   if (waiting !== null) {
    const line = el("p", "chat-question-waiting");
    line.append(el("span", "chat-question-waiting-dot"), el("span", "", `WAITING FOR ${waiting.toUpperCase()} TO ANSWER`));
-   card.append(line); return row;
+   card.append(line);
+   // Dismiss still shows while waiting, so its refusal must too (herdrup#782, #787).
+   if (problem) card.append(el("p", "chat-question-problem", problem.message));
+  } else {
+   if (problem) card.append(el("p", "chat-question-problem", problem.message));
+   if (problem ? problem.offersTerminal : !answerable) {
+    const terminal = button("Answer in Terminal", () => { void this.chooseMode("terminal"); });
+    terminal.className = "chat-question-terminal"; card.append(terminal);
+   }
   }
-  const problem = this.answerProblem?.askID === entry.id ? this.answerProblem : null;
-  if (problem) card.append(el("p", "chat-question-problem", problem.message));
-  if (problem ? problem.offersTerminal : !answerable) {
-   const terminal = button("Answer in Terminal", () => { void this.chooseMode("terminal"); });
-   terminal.className = "chat-question-terminal"; card.append(terminal);
-  }
-  // ChatAskCard.dismissButton (herdrup #781): its own line under the options, 8 above.
+  // ChatAskCard.dismissButton (herdrup #781): its own line under the options, 8 above; herdr's
+  // dismissable alone decides, a guest waiting for the owner included (herdrup #787).
   if (active.dismissable === true) {
    const dismiss = button("Dismiss", () => { void this.dismissAsk(active.id); });
    dismiss.className = "chat-question-dismiss"; dismiss.disabled = this.answering; card.append(dismiss);
@@ -1973,7 +1977,7 @@ class Detail {
    submit: values => { void this.answerForm(entry.id, values, () => draftAnswers(form, state.draft)); },
    terminal: () => { void this.chooseMode("terminal"); },
    // AskFormStepper.dismissLink (herdrup #781): herdr's dismissable, where this viewer answers.
-   dismiss: active.dismissable === true && waiting === null ? () => { void this.dismissAsk(entry.id); } : null,
+   dismiss: active.dismissable === true ? () => { void this.dismissAsk(entry.id); } : null,
   }));
  }
  openQuestion(id: string) {

@@ -234,6 +234,8 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
    const line = el("p", "chat-question-waiting");
    line.append(el("span", "chat-question-waiting-dot"), el("span", "", `WAITING FOR ${input.waiting.toUpperCase()} TO ANSWER`));
    nodes.push(line);
+   // Dismiss still shows while waiting, so its refusal must too (herdrup#782, #787).
+   if (input.problem) nodes.push(el("p", "chat-question-problem", input.problem.message));
   } else {
    if (input.problem) nodes.push(el("p", "chat-question-problem", input.problem.message));
    nodes.push(button("chat-question-terminal", input.terminal, "Answer in Terminal"));
