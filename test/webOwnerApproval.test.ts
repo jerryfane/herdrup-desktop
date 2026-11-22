@@ -137,12 +137,12 @@ test("later loads take a newer list only from a verified approver; older, foreig
  const key = staticKey(identities.record!);
  const B = key.publicKey;
  const stranger = new Uint8Array(32).fill(11);
- const offer = (envelopes: BrowserSelf["envelopes"]) => ({ browserSelf: async () => ({ envelopes }) });
- await refreshLists(offer([{ approver_pub: toB64url(w.T), seq: 6, sealed: seal(w.t, B, 6, list(6, "older")) }]), "acct-1", key, store);
- await refreshLists(offer([{ approver_pub: toB64url(x25519.getPublicKey(stranger)), seq: 50, sealed: seal(stranger, B, 50, list(50, "stranger")) }]), "acct-1", key, store);
- await refreshLists(offer([{ approver_pub: toB64url(w.T), seq: 9, sealed: seal(stranger, B, 9, list(9, "forged")) }]), "acct-1", key, store);
+ const offer = (envelopes: BrowserSelf["envelopes"]) => ({ browserSelf: async () => ({ envelopes }), enrol: async () => { throw new Error("not asked"); } });
+ await refreshLists(offer([{ approver_pub: toB64url(w.T), seq: 6, sealed: seal(w.t, B, 6, list(6, "older")) }]), "acct-1", key, store, "x");
+ await refreshLists(offer([{ approver_pub: toB64url(x25519.getPublicKey(stranger)), seq: 50, sealed: seal(stranger, B, 50, list(50, "stranger")) }]), "acct-1", key, store, "x");
+ await refreshLists(offer([{ approver_pub: toB64url(w.T), seq: 9, sealed: seal(stranger, B, 9, list(9, "forged")) }]), "acct-1", key, store, "x");
  expect((await kept())!.approvers.map(a => [a.envelope.seq, a.envelope.machines[0]!.label])).toEqual([[7, "dev2306"]]);
- await refreshLists(offer([{ approver_pub: toB64url(w.T), seq: 8, sealed: seal(w.t, B, 8, list(8, "renamed")) }]), "acct-1", key, store);
+ await refreshLists(offer([{ approver_pub: toB64url(w.T), seq: 8, sealed: seal(w.t, B, 8, list(8, "renamed")) }]), "acct-1", key, store, "x");
  expect((await kept())!.approvers.map(a => [a.envelope.seq, a.envelope.machines[0]!.label])).toEqual([[8, "renamed"]]);
  expect(fromB64url((await kept())!.approvers[0]!.pub)).toEqual(w.T);
 });
@@ -198,7 +198,13 @@ test("choosing a guest invitation while enrolment is in flight sends no approval
  const account = service(w);
  const enrolled = Promise.withResolvers<void>(), enrolling = Promise.withResolvers<void>();
  const enrol = account.enrol.bind(account);
- account.enrol = async (...args: Parameters<typeof enrol>) => { enrolling.resolve(); await enrolled.promise; return enrol(...args); };
+ // As WebAccount.enrol: the challenge, then (unless the caller's signal aborted) the device POST.
+ account.enrol = async (...args: Parameters<typeof enrol>) => {
+  enrolling.resolve(); await enrolled.promise;
+  if (args[3]?.aborted) throw args[3].reason;
+  w.calls.push("devices");
+  return enrol(...args);
+ };
  const stop = new AbortController();
  const phases: OwnerPhase[] = [];
  const running = runApproval({ account, identities: await webcryptoIdentities(), store: new MemoryOwnerStore(), deviceName: "x", sleep: async () => {}, now: () => 0, locks: null },
@@ -210,6 +216,7 @@ test("choosing a guest invitation while enrolment is in flight sends no approval
  await enrolled.promise;
  await Promise.resolve();
  expect(w.calls).not.toContain("request");
+ expect(w.calls).not.toContain("devices");
  expect(phases.map(p => p.kind)).not.toContain("failed");
 });
 
@@ -219,4 +226,25 @@ test("an unsupported first visit saves no key, so a later supported one can stil
  expect(identities.record).toBeUndefined();
  expect(await ownerKey(identities)).not.toBeNull();
  expect(identities.record?.kind).toBe("webcrypto");
+});
+
+test("a cached approval refreshes on a new sign-in: the session is bound to the same key, with no new approval", async () => {
+ const w = world();
+ const identities = await webcryptoIdentities();
+ const { store, kept } = await run(w, identities);
+ const { staticKey } = await import("../src/webguest/identity");
+ const key = staticKey(identities.record!);
+ const asked: string[] = [];
+ let bound = false;
+ const account = {
+  async browserSelf() {
+   asked.push("self");
+   if (!bound) throw new AccountServiceError(403, "device_required");
+   return { envelopes: [{ approver_pub: toB64url(w.T), seq: 8, sealed: seal(w.t, key.publicKey, 8, list(8, "renamed")) }] };
+  },
+  async enrol() { asked.push("enrol"); bound = true; return { id: "dev-b", name: "", platform: "web", device_pub: toB64url(key.publicKey), created_ms: 1 }; },
+ };
+ await refreshLists(account, "acct-1", key, store, "Chrome on macOS");
+ expect(asked).toEqual(["self", "enrol", "self"]);
+ expect((await kept())!.approvers.map(a => a.envelope.seq)).toEqual([8]);
 });
