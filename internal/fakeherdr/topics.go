@@ -16,6 +16,10 @@ import (
 // agent has the same three sample topics (one working, one idle with a
 // queued message, one closed); a send or a new topic answers with a reply a
 // moment later, as a topic's turn does. It runs no model.
+//
+// With Suggestions it is also herdr #489/#490 (topicsuggestions.go): the
+// owner's Topics switch (agent.topics.set_enabled, topics_enabled on the
+// roster) and the agent's topic suggestions with Organise.
 type Topics struct {
 	mu     sync.Mutex
 	agents map[string]*topicAgent
@@ -24,12 +28,27 @@ type Topics struct {
 	// Turn is how long a topic's turn takes before its reply (default 2 s).
 	Turn time.Duration
 	now  func() time.Time
+	// Suggestions serves agent_topics_switch and agent_topic_suggestions.
+	Suggestions bool
+	// SwitchDelay is how long agent.topics.set_enabled's restart takes
+	// (default 1.5 s).
+	SwitchDelay time.Duration
+	// OnSwitch runs after the switch changed an agent, outside the lock: the
+	// roster's owner tells its subscribers to list again.
+	OnSwitch func()
+	// off: agents whose topics are switched off; plain: omp agents without
+	// suggestions (their omp answers the suggestion methods topics_unsupported).
+	off, plain map[string]bool
 }
 
 type topicAgent struct {
 	order  []string
 	topics map[string]*fakeTopic
 	next   int
+	// suggestions are the Inbox's topic_suggestion entries, oldest first.
+	suggestions    []map[string]any
+	nextSuggestion int
+	organising     bool
 }
 
 type fakeTopic struct {
@@ -39,11 +58,17 @@ type fakeTopic struct {
 }
 
 func NewTopics() *Topics {
-	return &Topics{agents: map[string]*topicAgent{}, subs: map[chan []byte]bool{}, Turn: 2 * time.Second, now: time.Now}
+	return &Topics{agents: map[string]*topicAgent{}, subs: map[chan []byte]bool{}, Turn: 2 * time.Second, SwitchDelay: 1500 * time.Millisecond, now: time.Now,
+		off: map[string]bool{}, plain: map[string]bool{}}
 }
 
 // Capabilities are what a herdr with topics advertises on ping.
-func (*Topics) Capabilities() []string { return []string{"agent_topics", "agent_transcript_topic"} }
+func (t *Topics) Capabilities() []string {
+	if t.Suggestions {
+		return []string{"agent_topics", "agent_transcript_topic", "agent_topics_switch", "agent_topic_suggestions"}
+	}
+	return []string{"agent_topics", "agent_transcript_topic"}
+}
 
 func (t *Topics) agent(target string) *topicAgent {
 	if a := t.agents[target]; a != nil {
@@ -70,6 +95,9 @@ func (t *Topics) agent(target string) *topicAgent {
 		{"kind": "user", "id": "t3u1", "ts_ms": now - 10*day - 60000, "author": "owner", "text": "Book flights to Lisbon for the 4th."},
 		{"kind": "reply", "id": "t3r1", "ts_ms": now - 10*day, "final": true, "text": "Booked: TP 1361, departing 08:05."},
 	})
+	if t.Suggestions && !t.plain[target] {
+		t.suggestLocked(a, "Workspace review", "The workspace review is a subject of its own: a topic keeps it apart from the rest of the Inbox.", []string{"u1", "r1", "n1"})
+	}
 	t.agents[target] = a
 	return a
 }
@@ -79,6 +107,11 @@ func (t *Topics) agent(target string) *topicAgent {
 func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, bool) {
 	if !strings.HasPrefix(method, "agent.topics.") && method != "agent.transcript" {
 		return nil, nil, false
+	}
+	if t.Suggestions {
+		if value, err, ok := t.handleSuggestions(method, raw); ok {
+			return value, err, true
+		}
 	}
 	var p struct {
 		Target  string `json:"target"`
@@ -107,19 +140,17 @@ func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		for _, id := range a.order {
 			list = append(list, maps.Clone(a.topics[id].info))
 		}
-		return reply("agent_topics", map[string]any{"topics": list}), nil, true
+		fields := map[string]any{"topics": list}
+		if t.Suggestions && !t.plain[p.Target] {
+			fields["suggestions"] = openSuggestionsLocked(a)
+		}
+		return reply("agent_topics", fields), nil, true
 	}
 	if method == "agent.topics.new" {
 		if strings.TrimSpace(p.Title) == "" || strings.TrimSpace(p.Message) == "" {
 			return nil, &APIError{Code: "invalid_params", Message: "title and message are required"}, true
 		}
-		id := fmt.Sprintf("t%d", a.next)
-		a.next++
-		now := t.now().UnixMilli()
-		a.order = append(a.order, id)
-		a.topics[id] = &fakeTopic{info: map[string]any{"topic_id": id, "title": strings.TrimSpace(p.Title), "state": "starting", "turns": uint64(0), "queued": uint64(0),
-			"created_unix_ms": now, "last_activity_unix_ms": now}}
-		t.startTurnLocked(p.Target, id, p.Message)
+		id := t.newTopicLocked(p.Target, a, p.Title, p.Message)
 		return reply("agent_topic_created", map[string]any{"topic_id": id}), nil, true
 	}
 	id := p.TopicID

@@ -37,24 +37,42 @@ const (
 // answered agent.topics.list this session, so the page offers Topics;
 // Changed names a topic whose conversation changed (an owner's event), so
 // an open topic chat reads its tail.
+//
+// Suggestions are the agent's open topic suggestions, oldest first (herdr
+// #490): Organise's proposals and the ones it made in the Inbox.
+// SuggestionsServed says the agent's omp serves them (its list carries
+// `suggestions`) on a server with agent_topic_suggestions, so the list
+// offers Organise. RequestedMs is when the read behind this list was asked
+// for (Unix ms): a list asked for after a reader's Start or Not now went
+// through is the server's word on that suggestion.
 type TopicsUpdate struct {
-	Token   string                    `json:"token"`
-	Topics  []herdrapi.AgentTopicInfo `json:"topics"`
-	Offered bool                      `json:"offered"`
-	Loaded  bool                      `json:"loaded"`
-	Problem string                    `json:"problem,omitempty"`
-	Changed string                    `json:"changed,omitempty"`
+	Token             string                              `json:"token"`
+	Topics            []herdrapi.AgentTopicInfo           `json:"topics"`
+	Offered           bool                                `json:"offered"`
+	Loaded            bool                                `json:"loaded"`
+	Problem           string                              `json:"problem,omitempty"`
+	Changed           string                              `json:"changed,omitempty"`
+	Suggestions       []herdrapi.AgentTopicSuggestionInfo `json:"suggestions"`
+	SuggestionsServed bool                                `json:"suggestionsServed"`
+	RequestedMs       int64                               `json:"requestedMs"`
 }
 
 var TopicsChanged = mygo.NewEvent[TopicsUpdate]("topics:changed")
 
-// publishTopics sends one update to the page; the list is never null, which
-// the page reads as a list.
+// publishTopics sends one update to the page; the lists are never null,
+// which the page reads as lists.
 var publishTopics = func(u TopicsUpdate) {
+	TopicsChanged.Broadcast(withLists(u))
+}
+
+func withLists(u TopicsUpdate) TopicsUpdate {
 	if u.Topics == nil {
 		u.Topics = []herdrapi.AgentTopicInfo{}
 	}
-	TopicsChanged.Broadcast(u)
+	if u.Suggestions == nil {
+		u.Suggestions = []herdrapi.AgentTopicSuggestionInfo{}
+	}
+	return u
 }
 
 // topicsState is one view's topics watch: the last list and the follower
@@ -230,7 +248,12 @@ func (d *Desk) topicsRead(v *interaction) {
 func (d *Desk) topicsReadOnce(v *interaction) {
 	ctx, cancel := context.WithTimeout(v.ctx, 20*time.Second)
 	defer cancel()
+	requested := time.Now()
 	list, err := v.client.AgentTopicsList(ctx, v.PaneID)
+	served := false
+	if err == nil && list.Suggestions != nil {
+		served, _ = v.client.Supports(ctx, herdrapi.CapabilityAgentTopicSuggestions)
+	}
 	if v.ctx.Err() != nil {
 		return
 	}
@@ -241,15 +264,23 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	switch {
 	case err == nil:
 		u.Topics, u.Offered, u.Problem = orderedTopics(list.Topics), true, ""
+		u.Suggestions, u.SuggestionsServed, u.RequestedMs = openSuggestions(list.Suggestions), served, requested.UnixMilli()
 	case topicsNotOffered(err):
 		// Not an agent with topics (any more): the page goes back to Chat and Terminal.
 		u.Topics, u.Offered, u.Problem = nil, false, ""
+		u.Suggestions, u.SuggestionsServed, u.RequestedMs = nil, false, requested.UnixMilli()
 	default:
 		u.Problem = topicsProblem(err)
 	}
 	t.last = u
 	t.mu.Unlock()
 	publishTopics(u)
+}
+
+// openSuggestions are the list's suggestions as the page lists them
+// (AgentTopicList.suggestions): oldest first, one without an id left out.
+func openSuggestions(list []herdrapi.AgentTopicSuggestionInfo) []herdrapi.AgentTopicSuggestionInfo {
+	return slices.DeleteFunc(slices.Clone(list), func(s herdrapi.AgentTopicSuggestionInfo) bool { return s.SuggestionID == "" })
 }
 
 // orderedTopics is the Topics view's order (AgentTopicList.ordered): open
@@ -291,6 +322,9 @@ func topicsNotOffered(err error) bool {
 // topicsProblem says why a topics call failed, in the words the iPhone app
 // uses (TopicsModel.describe).
 func topicsProblem(err error) string {
+	if unsupported := (*engine.ErrUnsupported)(nil); errors.As(err, &unsupported) && unsupported.Capability == herdrapi.CapabilityAgentTopicSuggestions {
+		return "This server doesn't suggest topics."
+	}
 	var api *bridge.APIError
 	if !errors.As(err, &api) {
 		return "Couldn't reach the agent."
@@ -311,6 +345,16 @@ func topicsProblem(err error) string {
 		return "This agent is gone."
 	case "topics_unsupported":
 		return "This agent has no topics."
+	case "suggestion_not_found":
+		return "That suggestion is gone."
+	case "already_accepted":
+		return "Someone already started that topic."
+	case "organise_running":
+		return "The agent is already organising."
+	case "topics_disabled":
+		return "Topics are off for this agent."
+	case "invalid_message_ids":
+		return "The agent's picked messages are no longer in its conversation."
 	}
 	return "Couldn't reach the agent."
 }
@@ -447,4 +491,123 @@ func (d *Desk) topicAction(ctx context.Context, token string, do func(context.Co
 	}
 	d.topicsRead(v)
 	return nil
+}
+
+// TopicsAcceptSuggestion is a suggestion's Start (agent.topics.accept_suggestion):
+// the agent starts the topic with the messages it picked, and the page opens
+// it by the returned id. A suggestion someone started before answers that
+// topic. Owner and guest alike (herdr guest_gate.rs, owner decision 2026-11-22).
+func (d *Desk) TopicsAcceptSuggestion(ctx context.Context, token, suggestionID string) (string, error) {
+	var topicID string
+	err := d.topicAction(ctx, token, func(ctx context.Context, v *interaction) error {
+		accepted, err := v.client.AgentTopicsAcceptSuggestion(ctx, herdrapi.AgentTopicSuggestionTarget{Target: v.PaneID, SuggestionID: suggestionID})
+		topicID = accepted.TopicID
+		return err
+	})
+	return topicID, err
+}
+
+// TopicsDismissSuggestion is a suggestion's Not now (agent.topics.dismiss_suggestion).
+func (d *Desk) TopicsDismissSuggestion(ctx context.Context, token, suggestionID string) error {
+	return d.topicAction(ctx, token, func(ctx context.Context, v *interaction) error {
+		_, err := v.client.AgentTopicsDismissSuggestion(ctx, herdrapi.AgentTopicSuggestionTarget{Target: v.PaneID, SuggestionID: suggestionID})
+		return err
+	})
+}
+
+// TopicsOrganise asks the agent to propose topics from its Inbox
+// (agent.topics.organise). It answers at once, queued when the agent's
+// current turn runs first; the proposals arrive later as open suggestions.
+func (d *Desk) TopicsOrganise(ctx context.Context, token string) (bool, error) {
+	var queued bool
+	err := d.topicAction(ctx, token, func(ctx context.Context, v *interaction) error {
+		started, err := v.client.AgentTopicsOrganise(ctx, herdrapi.AgentTopicsOrganiseParams{Target: v.PaneID})
+		queued = started.Queued
+		return err
+	})
+	return queued, err
+}
+
+// TopicsSettleSuggestions is the proposals bar (TopicsModel.settleProposals):
+// Create N topics starts a topic from each of accept and sets dismiss
+// aside; Not now sets all aside. A suggestion someone else settled first is
+// skipped. It returns why one did not go through, "" when all did.
+func (d *Desk) TopicsSettleSuggestions(ctx context.Context, token string, accept, dismiss []string) (string, error) {
+	v, err := d.agentView(token)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := viewRequest(ctx, v.ctx)
+	defer cancel()
+	problem := ""
+	settle := func(id string, start bool) {
+		target := herdrapi.AgentTopicSuggestionTarget{Target: v.PaneID, SuggestionID: id}
+		var err error
+		if start {
+			_, err = v.client.AgentTopicsAcceptSuggestion(ctx, target)
+		} else {
+			_, err = v.client.AgentTopicsDismissSuggestion(ctx, target)
+		}
+		var api *bridge.APIError
+		if err == nil || problem != "" || (errors.As(err, &api) && (api.Code == "already_accepted" || api.Code == "suggestion_not_found")) {
+			return
+		}
+		problem = topicsProblem(err)
+	}
+	for _, id := range accept {
+		settle(id, true)
+	}
+	for _, id := range dismiss {
+		settle(id, false)
+	}
+	d.topicsRead(v)
+	return problem, nil
+}
+
+// TopicsSwitched is how the owner's Topics switch ended: Changed is false
+// when the agent already ran that way, and then nothing was restarted.
+type TopicsSwitched struct {
+	Changed       bool `json:"changed"`
+	TopicsEnabled bool `json:"topicsEnabled"`
+}
+
+// TopicsSetEnabled is the owner's Topics switch for one omp agent
+// (agent.topics.set_enabled, herdr #489): herdr restarts it on the omp build
+// with topics, or back on the standard one; its conversation and name stay.
+// A refusal reads as the iPhone app words it (TopicsSwitchStatus.describe).
+func (d *Desk) TopicsSetEnabled(ctx context.Context, paneID string, enabled bool) (TopicsSwitched, error) {
+	client, _, lifetime, err := d.agentLink(paneID)
+	if err != nil {
+		return TopicsSwitched{}, err
+	}
+	ctx, cancel := viewRequest(ctx, lifetime)
+	defer cancel()
+	switched, err := client.AgentTopicsSetEnabled(ctx, herdrapi.AgentTopicsSetEnabledParams{Target: paneID, Enabled: enabled})
+	if err != nil {
+		return TopicsSwitched{}, errors.New(topicsSwitchProblem(err))
+	}
+	return TopicsSwitched{Changed: switched.Changed, TopicsEnabled: switched.TopicsEnabled}, nil
+}
+
+// topicsSwitchProblem completes "Couldn't turn on topics: …"; agent.restart's
+// own refusals come through in herdr's words.
+func topicsSwitchProblem(err error) string {
+	if unsupported := (*engine.ErrUnsupported)(nil); errors.As(err, &unsupported) {
+		return "this server has no Topics switch."
+	}
+	var api *bridge.APIError
+	if !errors.As(err, &api) {
+		return "couldn't reach the server."
+	}
+	switch api.Code {
+	case "topics_build_missing":
+		return "this server has no omp build with topics."
+	case "not_omp":
+		return "only omp agents have topics."
+	case "guest_forbidden":
+		return "only the owner can switch topics."
+	case "agent_directory_unavailable":
+		return "the agent's folder is not available."
+	}
+	return api.Message
 }

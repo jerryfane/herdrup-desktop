@@ -135,12 +135,22 @@ export class TopicsPane {
   if (this.disposed) return;
   this.update = u;
   this.drawList();
+  if (this.pendingOpen && u.topics.some(t => t.topic_id === this.pendingOpen)) { const id = this.pendingOpen; this.pendingOpen = null; this.select(id); }
   const open = this.selected ? u.topics.find(t => t.topic_id === this.selected) : undefined;
   if (open && this.chat) { this.chat.setTopic(open); if (u.changed === open.topic_id) this.chat.refresh(); }
   if (this.wide && !this.chat) this.drawPlaceholder();
  }
 
  private topics(): TopicInfo[] { return this.update?.topics ?? []; }
+
+ /** Opens a topic by id (a suggestion's Start or its "Continued in topic" line): one that just
+  *  started opens once the list brings it. */
+ openTopic(id: string) {
+  if (this.topics().some(t => t.topic_id === id)) { this.pendingOpen = null; this.select(id); return; }
+  this.pendingOpen = id;
+  void Desk.topicsRefresh(this.host.token).catch(() => undefined);
+ }
+ private pendingOpen: string | null = null;
 
  private layout() {
   this.root.dataset.layout = this.wide ? "wide" : "narrow";
@@ -306,7 +316,7 @@ export class TopicsPane {
     // Its row arrives with the list the start publishes; the chat opens on it now.
     if (!this.topics().some(t => t.topic_id === id)) {
      const now = Date.now();
-     this.update = { ...(this.update ?? { token: this.host.token, offered: true, loaded: true, topics: [] }),
+     this.update = { ...(this.update ?? { token: this.host.token, offered: true, loaded: true, topics: [], suggestions: [], suggestionsServed: false, requestedMs: 0 }),
       topics: [{ topic_id: id, title: title.value.trim(), state: "starting", queued: 0, turns: 0, created_unix_ms: now, last_activity_unix_ms: now }, ...this.topics()] };
     }
     this.select(id);

@@ -238,12 +238,16 @@ export function createGuestDesk(env: DeskEnv) {
     const u: TopicsUpdate = { ...t.last, token: v.token, loaded: true };
     delete u.changed;
     try {
-     const list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as { topics?: TopicsUpdate["topics"] };
+     const requested = Date.now();
+     const list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"] };
      u.topics = orderedTopics(list.topics ?? []); u.offered = true; delete u.problem;
+     // desk_topics.go: Organise shows where the list carries suggestions on a host advertising them.
+     u.suggestions = (list.suggestions ?? []).filter(x => x.suggestion_id !== ""); u.requestedMs = requested;
+     u.suggestionsServed = list.suggestions !== undefined && (await v.active.client.ping(within(v))).capabilities?.agent_topic_suggestions === true;
     } catch (error) {
      if (v.life.signal.aborted) return;
      const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
-     if (topicsNotOffered(code)) { u.topics = []; u.offered = false; delete u.problem; }
+     if (topicsNotOffered(code)) { u.topics = []; u.offered = false; delete u.problem; u.suggestions = []; u.suggestionsServed = false; }
      else u.problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
     }
     if (v.life.signal.aborted) return;
@@ -410,7 +414,7 @@ export function createGuestDesk(env: DeskEnv) {
    unmount();
    const life = new AbortController();
    const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null,
-    topics: { last: { token, topics: [], offered: false, loaded: false }, poll: null, reading: null, again: false } };
+    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false } };
    l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
    mounted = v;
    setView(v);
@@ -526,6 +530,45 @@ export function createGuestDesk(env: DeskEnv) {
    if (title === "") throw new Error("A topic needs a title.");
    await topicsCall(v, "agent.topics.rename", { target: v.paneID, topic_id: topicID, title }, "agent_topic_updated");
    readTopics(v);
+  },
+
+  // Suggestions and Organise (desk_topics.go, herdr #490): a guest may Start, Not now and Organise.
+  async topicsAcceptSuggestion(token: string, suggestionID: string): Promise<string> {
+   const v = viewOf(token);
+   const accepted = await topicsCall<{ topic_id: string }>(v, "agent.topics.accept_suggestion", { target: v.paneID, suggestion_id: suggestionID }, "agent_topic_suggestion_accepted");
+   readTopics(v);
+   return accepted.topic_id;
+  },
+
+  async topicsDismissSuggestion(token: string, suggestionID: string): Promise<void> {
+   const v = viewOf(token);
+   await topicsCall(v, "agent.topics.dismiss_suggestion", { target: v.paneID, suggestion_id: suggestionID }, "agent_topic_suggestion_dismissed");
+   readTopics(v);
+  },
+
+  async topicsOrganise(token: string): Promise<boolean> {
+   const v = viewOf(token);
+   const started = await topicsCall<{ queued: boolean }>(v, "agent.topics.organise", { target: v.paneID }, "agent_topics_organise_started");
+   readTopics(v);
+   return started.queued;
+  },
+
+  async topicsSettleSuggestions(token: string, accept: string[], dismiss: string[]): Promise<string> {
+   const v = viewOf(token);
+   let problem = "";
+   const settle = async (id: string, start: boolean) => {
+    try {
+     await v.active.client.call(start ? "agent.topics.accept_suggestion" : "agent.topics.dismiss_suggestion", { target: v.paneID, suggestion_id: id },
+      start ? "agent_topic_suggestion_accepted" : "agent_topic_suggestion_dismissed", "", within(v));
+    } catch (error) {
+     const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "topics_unsupported" : "";
+     if (!problem && code !== "already_accepted" && code !== "suggestion_not_found") problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
+    }
+   };
+   for (const id of accept) await settle(id, true);
+   for (const id of dismiss) await settle(id, false);
+   readTopics(v);
+   return problem;
   },
 
   async chatPrompt(token: string, text: string): Promise<string> {

@@ -105,6 +105,11 @@ export function topicsProblem(code: string, message = ""): string {
   case "topic_not_found": return "This topic is gone.";
   case "agent_not_found": return "This agent is gone.";
   case "topics_unsupported": return "This agent has no topics.";
+  case "suggestion_not_found": return "That suggestion is gone.";
+  case "already_accepted": return "Someone already started that topic.";
+  case "organise_running": return "The agent is already organising.";
+  case "topics_disabled": return "Topics are off for this agent.";
+  case "invalid_message_ids": return "The agent's picked messages are no longer in its conversation.";
  }
  return "Couldn't reach the agent.";
 }

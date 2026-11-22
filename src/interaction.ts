@@ -10,7 +10,7 @@ import { openAvatarSheet } from "./agentActions";
 import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
-import type { AgentTarget, AgentView, BoardUpdate, GramAttachment, TopicsUpdate } from "./mygo";
+import type { AgentTarget, AgentTopicSuggestionInfo, AgentView, BoardUpdate, GramAttachment, TopicsUpdate } from "./mygo";
 import { closeWriter, ComposerEditor, composerEnterSends, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
@@ -35,6 +35,9 @@ import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from ".
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane } from "./topicsView";
 import { nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
+import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
+import chatTextIcon from "../third_party/phosphor/web/chat-text.svg?url";
+import stackIcon from "../third_party/phosphor/web/stack.svg?url";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -258,6 +261,15 @@ class Detail {
  topicsCapable = false;
  topicsOffer: TopicsOffer = { offered: false, refused: false };
  topics: TopicsPane | null = null;
+ /** The agent's open topic suggestions as its list reports them (herdrup #788): one shows in the
+  *  Inbox at once, before its transcript entry lands. */
+ listedSuggestions: AgentTopicSuggestionInfo[] = [];
+ suggestionsServed = false;
+ /** Suggestions this reader started or set aside, shown at once until the server says otherwise. */
+ settledSuggestions = new Map<string, Settled>();
+ /** The suggestion whose Start or Not now is on its way, and why the last one did not land. */
+ suggestionBusy: string | null = null;
+ suggestionProblem: { id: string; message: string } | null = null;
  generation = 0;
  title = el("strong");
  titleBlock = el("div", "pane-title-block");
@@ -988,6 +1000,10 @@ class Detail {
   const offered = this.topicsAvailable();
   this.topicsOffer = nextTopicsOffer(this.topicsOffer, update);
   this.topics.apply(update);
+  // Every list answer reaches the Inbox: the server's state wins over a local Start / Not now line.
+  this.listedSuggestions = update.suggestions ?? []; this.suggestionsServed = update.suggestionsServed;
+  this.settledSuggestions = yieldSettled(this.settledSuggestions, this.listedSuggestions, update.requestedMs);
+  if (this.mode === "chat" && this.chat) this.drawChat(false);
   this.topicsButton.hidden = !this.topicsAvailable();
   if (offered !== this.topicsAvailable() && this.resolvedMode() !== this.mode) void this.switchMode(this.resolvedMode());
  }
@@ -1410,7 +1426,7 @@ class Detail {
  private earlierOffered = false;
  /** The next window of loaded rows above the drawn ones; the row on top stays where it was. */
  revealEarlier() {
-  const rows = groupTranscript(this.entries, !!this.chat?.working);
+  const rows = this.chatRows();
   const start = drawnStart(rows, this.drawFrom);
   if (start === 0) return;
   const oldHeight = this.chatScroll.scrollHeight;
@@ -1421,7 +1437,7 @@ class Detail {
  /** The next window of rows already loaded, else the page before the oldest loaded one (the up
   *  arrow's walk); either way the row on top stays where it was. True when rows were added. */
  async showEarlier(generation: number): Promise<boolean> {
-  const rows = groupTranscript(this.entries, !!this.chat?.working);
+  const rows = this.chatRows();
   // Find draws every loaded row: only the older page adds any.
   const start = this.findOpen ? 0 : drawnStart(rows, this.drawFrom);
   if (start === 0) return this.loadEarlier(generation);
@@ -1444,11 +1460,11 @@ class Detail {
    this.olderLoad = "idle";
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
-   const before = groupTranscript(this.entries, !!this.chat?.working);
+   const before = this.chatRows();
    const top = windowStarting(before, drawnStart(before, this.drawFrom));
    this.entries = mergeTranscript(this.entries, page.entries, { older: true }); this.oldestCursor = page.before;
    rememberChat(JSON.stringify(this.target), { page: this.chat!, entries: this.entries, oldestCursor: this.oldestCursor });
-   this.drawFrom = revealedAbove(groupTranscript(this.entries, !!this.chat?.working), top) ?? this.drawFrom;
+   this.drawFrom = revealedAbove(this.chatRows(), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
    // A page that leaves the top in view offers the next one (checkTop never fetches it itself).
    requestAnimationFrame(() => this.checkTop());
@@ -1481,7 +1497,7 @@ class Detail {
   *  screen, which stays where it is. */
  pinWindowToView() {
   if (!this.chat || this.mode !== "chat") return;
-  const rows = groupTranscript(this.entries, !!this.chat.working);
+  const rows = this.chatRows();
   const viewTop = this.chatScroll.getBoundingClientRect().top;
   const anchor = [...this.transcript.children].find((node): node is HTMLElement =>
    node instanceof HTMLElement && !!node.dataset.id && node.getBoundingClientRect().bottom > viewTop);
@@ -1492,6 +1508,66 @@ class Detail {
   this.drawChat(false);
   this.chatScroll.scrollTop += anchor.getBoundingClientRect().top - top;
  }
+ /** The Inbox's rows: the transcript's, with the agent's topic suggestions (herdrup #788). */
+ chatRows(): (ChatRow | SuggestionRow)[] {
+  return inboxRows(groupTranscript(this.entries, !!this.chat?.working), this.listedSuggestions, this.settledSuggestions);
+ }
+ /** A suggestion's card or line, or the "<TITLE> STARTS HERE" mark (ChatTopicSuggestion.swift).
+  *  `interactive`: the Inbox, where Start and Not now act (owner and guest alike). */
+ renderSuggestionRow(row: SuggestionRow, interactive: boolean): HTMLElement {
+  if (row.kind === "mark") {
+   const mark = el("div", "chat-summary chat-suggestion-mark");
+   mark.append(el("span", "chat-summary-rule"), el("span", "chat-summary-text", `${suggestionTitle(row.title).toUpperCase()} STARTS HERE`), el("span", "chat-summary-rule"));
+   return mark;
+  }
+  const s: ChatSuggestion = row.suggestion, title = suggestionTitle(s.title);
+  if (s.state === "dismissed") return el("div", "chat-day chat-suggestion-dismissed", dismissedText(s));
+  if (s.state === "accepted") {
+   const chip = button("", () => { if (s.topicID) void this.openTopic(s.topicID); });
+   chip.className = "chat-suggestion-continued"; chip.disabled = !s.topicID;
+   const words = el("span"); words.append("Continued in topic ", el("strong", "", title));
+   chip.append(chatGlyph("rectangle.stack", 12, stackIcon), words);
+   const line = el("div", "chat-suggestion-continued-row"); line.append(chip); return line;
+  }
+  const card = el("div", "chat-message chat-suggestion-card");
+  const head = el("p", "chat-suggestion-title"); head.append("New subject? Start a topic: ", el("strong", "", title));
+  card.append(head);
+  if (s.reason) card.append(el("p", "chat-suggestion-reason", s.reason));
+  if (s.messageCount > 0) { const count = el("p", "chat-suggestion-count"); count.append(chatGlyph("text.bubble", 12, chatTextIcon), el("span", "", carriedText(s.messageCount))); card.append(count); }
+  const problem = this.suggestionProblem?.id === s.id ? this.suggestionProblem.message : null;
+  if (problem) card.append(el("p", "chat-suggestion-problem", problem));
+  if (interactive) {
+   const busy = this.suggestionBusy !== null;
+   const later = button("Not now", () => { void this.settleSuggestion(s.id, false); }); later.className = "ghost"; later.disabled = busy;
+   const start = button("Start", () => { void this.settleSuggestion(s.id, true); }); start.disabled = busy;
+   const actions = el("div", "chat-suggestion-actions"); actions.append(later, start); card.append(actions);
+  }
+  return card;
+ }
+ /** Start (accept_suggestion, then the topic opens) or Not now (dismiss_suggestion): a local line
+  *  shows at once and yields to the server's state (ChatModel.settleLocally). */
+ async settleSuggestion(id: string, start: boolean) {
+  if (this.suggestionBusy) return;
+  this.suggestionBusy = id; this.suggestionProblem = null; this.drawChat(false);
+  let topicID = "";
+  try {
+   if (start) topicID = await Desk.topicsAcceptSuggestion(this.token, id);
+   else await Desk.topicsDismissSuggestion(this.token, id);
+   const line = settledLine(id, start ? "accepted" : "dismissed", topicID || undefined, this.listedSuggestions, this.entries, Date.now());
+   if (line) this.settledSuggestions.set(id, line);
+  } catch (error) {
+   this.suggestionProblem = { id, message: (start ? "Couldn't start it: " : "Couldn't set it aside: ") + errorText(error) };
+  }
+  this.suggestionBusy = null;
+  if (this.disposed) return;
+  this.drawChat(false);
+  if (topicID) void this.openTopic(topicID);
+ }
+ /** Opens a topic by id in the Topics view (a suggestion's Start, its "Continued in topic"). */
+ async openTopic(topicID: string) {
+  await this.chooseMode("topics");
+  this.topics?.openTopic(topicID);
+ }
  drawChat(follow = true) {
   // Disclosures by their row and place in it, so a row leaving the window and coming back keeps
   // every one's state, whether or not its renderer named it.
@@ -1500,7 +1576,7 @@ class Detail {
    disclosures(node).forEach((d, i) => { const key = disclosureKey(d, node.dataset.id!, i); if (d.open) this.openRows.add(key); else this.openRows.delete(key); });
   }
   const opened = this.openRows;
-  const rows = groupTranscript(this.entries, !!this.chat?.working);
+  const rows = this.chatRows();
   // The window (chatWindow.ts): Find draws every loaded row, so all of them stay searchable; a
   // chat following its tail slides back to the newest rows; the first draw pins the top, so
   // rows arriving at the tail never push out what the reader sees.
@@ -1512,9 +1588,11 @@ class Detail {
   this.drawnIndex = start;
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
-   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id) : row);
+   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id)
+    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null] : row);
    if (old?.dataset.signature === signature) return old;
-   const node = row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
+   const node = row.kind === "suggestion" || row.kind === "mark" ? this.renderSuggestionRow(row, true)
+    : row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
    node.dataset.id = row.id; node.dataset.signature = signature;
    disclosures(node).forEach((d, i) => { d.open = opened.has(disclosureKey(d, row.id, i)); });
    return node;
@@ -2098,6 +2176,8 @@ class Detail {
  renderEntry(entry: Entry): HTMLElement {
   if (entry.kind === "ask") return this.renderQuestion(entry, undefined, false, false);
   if (entry.kind === "note") return this.renderNote(entry);
+  // A topic's or subagent's chat shows a suggestion without Start and Not now.
+  if (entry.kind === "topic_suggestion") return this.renderSuggestionRow({ kind: "suggestion", id: entry.id, suggestion: suggestionFromEntry(entry) }, false);
   if (entry.kind === "plan") {
    // Swift retains this row's gap; only the footer draws the current plan.
    const gap = el("div", "chat-plan-snapshot"); gap.setAttribute("aria-hidden", "true"); return gap;
