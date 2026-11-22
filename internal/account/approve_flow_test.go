@@ -38,23 +38,20 @@ type approvalService struct {
 	// Faults: the next readBusy state reads answer 429; finishes answer
 	// finishStatus (0: as asked) and, when lost, are still recorded; state
 	// reads answer readStatus (0: the state), or readState when set (an
-	// expiry the service computes on the read, recording nothing).
+	// expiry the service computes on the read, recording nothing; or, with
+	// readStored, one it stored).
 	readBusy     int
 	finishStatus int
 	lost         bool
 	readStatus   int
 	readState    string
+	readStored   bool
 	finishes     int
 	// readHeld, when set, holds each state read that long after noting
 	// when it arrived in readAt.
 	readHeld  time.Duration
 	readAt    time.Time
 	expiresIn int
-	// features, when set, is the /v1/health list; with featureReads > 0
-	// only that many health reads list it (a rollback after them).
-	features     []string
-	featureReads int
-	healthReads  int
 }
 
 func newApprovalService(t *testing.T) *approvalService {
@@ -76,13 +73,6 @@ func (s *approvalService) serve(w http.ResponseWriter, r *http.Request, body map
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
-	case r.URL.Path == "/v1/health" && s.features != nil:
-		s.healthReads++
-		listed := s.features
-		if s.featureReads > 0 && s.healthReads > s.featureReads {
-			listed = []string{}
-		}
-		reply(w, 200, map[string]any{"ok": true, "features": listed})
 	case r.URL.Path == "/v1/approvals/req-1/claim" && r.Method == http.MethodPost:
 		s.nonceT, _ = base64.RawURLEncoding.DecodeString(body["nonce_t"])
 		reply(w, 200, map[string]any{})
@@ -98,7 +88,11 @@ func (s *approvalService) serve(w http.ResponseWriter, r *http.Request, body map
 		case s.readStatus != 0:
 			reply(w, s.readStatus, map[string]any{"error": "unavailable"})
 		case s.readState != "":
-			reply(w, 200, map[string]any{"state": s.readState, "expires_in": 0})
+			st := map[string]any{"state": s.readState, "expires_in": 0}
+			if s.readStored {
+				st["outcome_stored"] = true
+			}
+			reply(w, 200, st)
 		case s.finished != nil:
 			reply(w, 200, map[string]any{"state": s.finished["outcome"], "expires_in": s.expiresIn})
 		case s.nonceT == nil:
@@ -460,17 +454,17 @@ func TestATakenDenialStaysTheOutcome(t *testing.T) {
 	}
 }
 
-// A service that stores the expiry it reports (approval_expiry_final) makes
-// an expired read final even after a finish with an unknown outcome, but
-// only when it lists the feature both before and after the read.
+// After a finish with an unknown outcome, an expired read is final only
+// when that read says the service stored the expiry (outcome_stored); an
+// unmarked one, from a Worker that only computes it, stays unknown.
 func TestAStoredExpiryIsFinal(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		featureReads int
-		want         string
+		name   string
+		stored bool
+		want   string
 	}{
-		{"listed throughout", 0, "not approved"},
-		{"rolled back during the read", 1, "unknown"},
+		{"stored", true, "not approved"},
+		{"computed", false, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, a, approver := revealedApproval(t)
@@ -480,12 +474,15 @@ func TestAStoredExpiryIsFinal(t *testing.T) {
 			}
 			s.mu.Lock()
 			s.finishStatus, s.readState = http.StatusServiceUnavailable, ApprovalExpired
-			s.features, s.featureReads = []string{"web_approve", "approval_expiry_final"}, tc.featureReads
+			s.readStored = tc.stored
 			s.mu.Unlock()
 			err := a.Approve(ctx, "chat", 1_800_000_000_000, 7, []byte(`{}`))
 			var refused *NotApprovedError
 			got := "unknown"
-			if errors.As(err, &refused) {
+			switch {
+			case err == nil:
+				got = "approved"
+			case errors.As(err, &refused):
 				got = "not approved"
 			}
 			if got != tc.want {
