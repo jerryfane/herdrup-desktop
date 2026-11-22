@@ -14,6 +14,9 @@ import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentitySt
 import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
 import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
+import { fromB64url } from "../webguest/b64url";
+import { ownerLink, type StatementSource } from "../webguest/owner";
+import type { EnvelopeMachine } from "../webguest/approve";
 import { buildBoard, displayName, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, untagged } from "./engine";
 import { emit } from "./events";
@@ -32,6 +35,9 @@ export const GUEST_STATUS_POLL_MS = 15_000;
 export const BROWSER_DEVICE = "Web browser";
 const ERR_SENDING = "a send is running"; // gramstore.ErrSending
 const GUEST_FORBIDDEN = "guest_forbidden"; // desk_guest_answers.go guestForbidden
+/** herdr owner_gate.rs: a method the owner browser's scope doesn't take; the session stays open. */
+const OWNER_FORBIDDEN = "owner_forbidden";
+const refusedHere = (code: string) => code === GUEST_FORBIDDEN || code === OWNER_FORBIDDEN;
 // desk_guest_answers.go guestMenuKeys
 const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab", "Enter"];
 // desk_interaction_compose.go promptWait
@@ -162,7 +168,10 @@ export interface DeskEnv {
 
 interface Active {
  id: string;
+ /** A guest grant's, or for an owner link (D2c) one made from the approved machine. */
  access: Access;
+ /** The approved machine of an owner link: every agent there is listed, none filtered. */
+ owner?: EnvelopeMachine;
  transport: GuestTransport;
  link: WebLink;
  client: GuestClient;
@@ -342,12 +351,12 @@ export function createGuestDesk(env: DeskEnv) {
     if (failure instanceof GuestError && failure.kind === "revoked") return;
    } else {
     listed = true;
-    const { agents, availability } = sharedListing(result!, l.access.agentTarget);
+    const { agents, availability } = l.owner ? { agents: result!.agents, availability: "" } : sharedListing(result!, l.access.agentTarget);
     publish("connected", "", availability);
     if (signal.aborted || active !== l) return;
     l.agents = agents;
     setSharedAgents(agents.map((a) => ({ pane_id: a.pane_id ?? "", name: a.name ?? null })));
-    if (agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
+    if (!l.owner && agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
     board = { board: buildBoard(agents), listedAt: goTime(new Date(now())).replace(/\.\d+Z$/, "Z"), session: "", machineID: l.id };
     emit("boardChanged", board);
    }
@@ -652,7 +661,7 @@ export function createGuestDesk(env: DeskEnv) {
      const reply: ChatAnswerReply = {};
      if (error.code !== "") reply.code = error.code;
      if (error.apiMessage !== "") reply.message = error.apiMessage;
-     if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;
+     if (refusedHere(error.code)) reply.ownerAnswers = true;
      return reply;
     }
     throw error;
@@ -672,7 +681,7 @@ export function createGuestDesk(env: DeskEnv) {
      const reply: ChatAnswerFormReply = {};
      if (error.code !== "") reply.code = error.code;
      if (error.apiMessage !== "") reply.message = error.apiMessage;
-     if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;
+     if (refusedHere(error.code)) reply.ownerAnswers = true;
      return reply;
     }
     throw error;
@@ -711,7 +720,7 @@ export function createGuestDesk(env: DeskEnv) {
     v.active.keyTaken = true;
     return {};
    } catch (error) {
-    if (!(error instanceof HerdrAPIError && error.code === GUEST_FORBIDDEN)) throw error;
+    if (!(error instanceof HerdrAPIError && refusedHere(error.code))) throw error;
     if (v.active.keyTaken) return {};
     let list: GuestList;
     try { list = guestList(await v.active.client.call("agent.list", {}, "agent_list", "", within(v))); } catch { return {}; }
@@ -866,7 +875,33 @@ export function createGuestDesk(env: DeskEnv) {
   },
  } satisfies Partial<DeskFns>;
 
- return desk;
+ /** Owner access (web owner access D2c): this browser's link to one of the machines it was
+  *  approved for, through ownerLink (its account statement in the hello), listing every agent
+  *  there. The agent page, chat and Topics then work as for a guest's link. */
+ async function connectOwner(m: EnvelopeMachine, statements: StatementSource, device: string): Promise<void> {
+  const hostPublicKey = fromB64url(m.nodePub, 32);
+  if (hostPublicKey === null) throw new Error("The approved machine's key is damaged.");
+  const identity = await requireIdentity();
+  const print = await identityFingerprint();
+  disconnect();
+  const endpoint = { relay: m.relay, hostID: m.hostID, hostPublicKey };
+  const access: Access = { guestID: m.grantID, guestName: "", machineLabel: m.label, ownerName: "", agentName: "", agentTarget: "", endpoint, acceptedAt: new Date(0) };
+  const transport = new GuestTransport(ownerLink(endpoint, device, statements), identity, { now, webSocket: env.webSocket });
+  const link = transportLink(pageAccess(access), transport);
+  const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [] };
+  active = l;
+  setLink(link);
+  void runGuest(l, print).finally(() => transport.close());
+ }
+
+ /** Leaves the owner link, back to the machine list. */
+ function disconnectOwner() {
+  if (!active?.owner) return;
+  disconnect();
+  setState(null, { phase: "idle", message: "", machine: "", herdr: "", live: false });
+ }
+
+ return Object.assign(desk, { connectOwner, disconnectOwner });
 }
 
 /** desk_guest_invite.go shareRoute's details. */

@@ -11,7 +11,7 @@ import { Desk, events, type AgentTarget, type BoardUpdate, type ConnState } from
 import { symbol } from "../symbol";
 import { avatar, placeInitials, spinnerSVG } from "../faces";
 import { barActions, barCount, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "../gram";
-import { commitTabBar, commitTopBar, placeTitle, tabNode } from "../bars";
+import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "../bars";
 import { initGuestHome } from "../guestHome";
 import { closeInteraction, initInteraction, interactionBoard, interactionVisible, selectInteraction, showInteraction } from "../interaction";
 import { closeWriter } from "../composer";
@@ -22,10 +22,13 @@ import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
-import { ownerAccess, signInReturned } from "./mygo";
+import { ownerAccess, ownerDesk, signInReturned } from "./mygo";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
-import { browserDeviceName, ownerCard } from "./ownerScreen";
+import { approvedMachines, browserDeviceName, ownerCard } from "./ownerScreen";
+import { probeMachine, PROBE_EVERY_MS, type MachineStatus } from "./ownerProbe";
+import { statementCache } from "./statements";
+import type { EnvelopeMachine } from "../webguest/approve";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -56,7 +59,12 @@ const guestActions = {
  settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },
  // The guest's one Gram (#697): this browser's shared agents (one until accounts, #698).
  gram: (grant: string | null = null) => { closeWriter(); selectGuestGram(grant); guestTab = "gram"; render(); },
- hosts: () => { closeWriter(); closeInteraction(); showWelcome({ owner: localOwnerHint.get() }); },
+ hosts: () => {
+  closeWriter(); closeInteraction();
+  // An owner's machine: back to the machine list.
+  if (ownerOpen !== null) { ownerOpen = null; ownerDesk.disconnectOwner(); showWelcome({ owner: null }); return; }
+  showWelcome({ owner: localOwnerHint.get() });
+ },
  open: (target: AgentTarget) => { guestTab = "agents"; void selectInteraction(target).then(render); },
 };
 
@@ -76,6 +84,36 @@ let ownerRecord: OwnerRecord | undefined;
 let ownerRun: AbortController | null = null;
 /** The person chose "Use a guest invitation instead" on this load. */
 let guestInstead = false;
+/** The approved machine whose agents show (desk.ts connectOwner); null on the machine list. */
+let ownerOpen: EnvelopeMachine | null = null;
+const statements = statementCache(ownerAccess.account);
+const statuses = new Map<string, MachineStatus>();
+let probing: ReturnType<typeof setInterval> | null = null;
+
+/** Asks every approved machine how it is, while the machine list shows. */
+async function probeAll() {
+ if (ownerRecord === undefined) return;
+ const key = await ownerKey(ownerAccess.identities).catch(() => null);
+ if (key === null) return;
+ await Promise.all(approvedMachines(ownerRecord).machines.map(async m => {
+  statuses.set(m.hostID, await probeMachine(m, key, statements, deviceName));
+  if (probing !== null) redrawWelcome();
+ }));
+}
+function startProbes() { if (probing !== null) return; probing = setInterval(() => void probeAll(), PROBE_EVERY_MS); void probeAll(); }
+function stopProbes() { if (probing !== null) { clearInterval(probing); probing = null; } }
+
+/** Opens an approved machine: its agents in the guest home, chat on the agent page. */
+function openMachine(m: EnvelopeMachine) {
+ stopProbes();
+ ownerOpen = m;
+ guestTab = "agents";
+ ownerDesk.connectOwner(m, statements, deviceName).then(() => showWelcome(null), (error: unknown) => {
+  ownerOpen = null;
+  statuses.set(m.hostID, { kind: "problem", message: errorText(error) });
+  redrawWelcome();
+ });
+}
 
 const redrawWelcome = () => { if (shownWelcome) showWelcome(shownWelcome); };
 
@@ -113,7 +151,7 @@ function startApproval() {
   .catch(error => { if (ownerRun === run) { ownerPhase = { kind: "failed", problem: errorText(error) }; redrawWelcome(); } });
 }
 
-function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; }
+function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; stopProbes(); }
 
 // ---- The plain screen without a grant ----
 
@@ -128,7 +166,9 @@ function showWelcome(shown: WelcomeState | null) {
   card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, ownerRecord, {
    again: startApproval,
    guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
-  }, spinnerSVG);
+   open: openMachine,
+  }, spinnerSVG, statuses);
+  if (ownerPhase?.kind === "approved") startProbes(); else stopProbes();
   if (shown.error) { const error = el("p", "web-welcome-error", shown.error); error.setAttribute("role", "alert"); card.prepend(error); }
  } else {
   if (!account.signedIn) stopOwner();
@@ -168,8 +208,17 @@ async function buildBars(view: { tab: GuestTab; gram: boolean }) {
  if (generation !== barGeneration) return;
  const count = view.tab === "gram" ? barCount() : null;
  const title = view.tab === "settings" ? "Settings" : view.tab === "gram" ? "Gram" : "Agents";
- // No Back: the browser holds this one share and no machine list to go back to.
- commitTopBar(false, null, [document.createTextNode(title), ...(count ? [count] : [])], actions);
+ // No Back for a guest: the browser holds this one share and no machine list to go back to.
+ // An owner's machine goes back to the machine list.
+ let back: HTMLElement | null = null;
+ if (ownerOpen !== null && view.tab === "agents") {
+  back = await barSlot("chevron.left", "Machines");
+  back.tabIndex = 0; back.setAttribute("role", "button");
+  back.onclick = guestActions.hosts;
+  back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); guestActions.hosts(); } };
+ }
+ if (generation !== barGeneration) return;
+ commitTopBar(back !== null, back, [document.createTextNode(ownerOpen !== null && view.tab === "agents" ? ownerOpen.label : title), ...(count ? [count] : [])], actions);
  commitTabBar(tabs, items.findIndex(([key]) => key === view.tab));
  setTabBadge();
 }
@@ -198,7 +247,8 @@ function render() {
  const nextBar = guestVisible ? { tab: guestTab, gram: gramOffered } : null;
  if (nextBar && (nextBar.tab !== guestBar?.tab || nextBar.gram !== guestBar?.gram)) void buildBars(nextBar);
  guestBar = nextBar;
- guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null);
+ guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null,
+  ownerOpen !== null ? { scope: ownerOpen.scope, expiresUnix: ownerOpen.expiresUnix } : undefined);
  select.hidden = !guestVisible || guestTab !== "agents" || interactionVisible();
  showGram(guestVisible && guestTab === "gram");
  showInteraction(guestVisible && guestTab === "agents");

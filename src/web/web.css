@@ -37,3 +37,7 @@
 .web-owner-machines { align-self: stretch; margin: 4px 0 0; padding: 0; list-style: none; text-align: left; }
 .web-owner-machines li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-hairline); font-size: 14px; }
 .web-owner-machines li span { color: var(--color-text-dim); }
+.web-owner-machines li .web-owner-machine { display: flex; flex: 1; justify-content: space-between; align-items: center; gap: 12px; padding: 0; border: 0; background: none; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
+.web-owner-machines li .web-owner-machine:disabled { cursor: default; opacity: 0.6; }
+.web-owner-machine-lines { display: flex; flex-direction: column; gap: 2px; }
+.web-owner-machine-lines span, .web-owner-machine-access { color: var(--color-text-dim); font-size: 13px; }
