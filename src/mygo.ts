@@ -1284,6 +1284,78 @@ export interface TopicsUpdate {
   requestedMs: number;
 }
 
+/**
+ * WebAccessCheck is a typed code's outcome. Left is how many more codes may
+ * be typed; at 0 this computer won't approve the request, and Denied says the
+ * browser was told (else Problem says why not, and Deny tries again).
+ */
+export interface WebAccessCheck {
+  ok: boolean;
+  left: number;
+  denied: boolean;
+  problem?: string;
+}
+
+/** WebAccessMachine is one saved machine as the sheet lists it. */
+export interface WebAccessMachine {
+  id: string;
+  label: string;
+  /**
+   * Available: this computer can open a session there now (a key file, or
+   * the machine it is connected to).
+   */
+  available: boolean;
+  /**
+   * Why not, when not available: "needs_key" (password machine, not
+   * connected now).
+   */
+  unavailable?: string;
+}
+
+/** WebAccessRequest is one browser waiting for approval, for the sheet. */
+export interface WebAccessRequest {
+  id: string;
+  browserName: string;
+  createdMs: number;
+  /** Claimed is "no", "you" or "other" (another device is approving it). */
+  claimed: string;
+  expiresIn: number;
+}
+
+/** WebAccessResult is what an approval did on each machine. */
+export interface WebAccessResult {
+  granted: string[];
+  skipped: WebAccessSkipped[];
+  failed: WebAccessSkipped[];
+  /**
+   * Unsure: the service's answer to the approval was lost (Problem says
+   * how); the grants are kept, Approve sends the same report again and
+   * Deny removes them.
+   */
+  unsure?: boolean;
+  problem?: string;
+}
+
+/**
+ * WebAccessSkipped is a machine left out, with the reason the browser sees
+ * (envelope "skipped": needs_update | unsupported | unreachable | relay_not_allowed)
+ * or the error text for a failure.
+ */
+export interface WebAccessSkipped {
+  label: string;
+  reason: string;
+}
+
+/**
+ * WebAccessUpdate tells the page where an approval stands: "ready" (the
+ * browser shows its code; type it), "tampered" (denied) or "ended".
+ */
+export interface WebAccessUpdate {
+  id: string;
+  state: string;
+  problem?: string;
+}
+
 // ---- Services ----
 
 /**
@@ -2330,6 +2402,54 @@ export const Desk = {
   transferAgentInfo(paneID: string, terminalID: string): Promise<string> {
     return call("Desk.TransferAgentInfo", paneID, terminalID);
   },
+  /**
+   * WebAccessApprove adds a grant for the browser on each chosen machine and
+   * sends it the sealed list. scope is "chat" or "terminal"; length one of
+   * webAccessTTLs. Machines that fail are reported, not fatal; with none
+   * granted the request stays open so the user can retry or deny. After a lost
+   * answer it sends the same report again, whatever was chosen.
+   */
+  webAccessApprove(id: string, machineIDs: string[], scope: string, length: string): Promise<WebAccessResult> {
+    return call("Desk.WebAccessApprove", id, machineIDs, scope, length);
+  },
+  /** WebAccessCheckCode compares the code the user typed. */
+  webAccessCheckCode(id: string, typed: string): Promise<WebAccessCheck> {
+    return call("Desk.WebAccessCheckCode", id, typed);
+  },
+  /**
+   * WebAccessDeny denies request id. It returns only once the service took the
+   * denial (or the request was already over); on an error the page keeps the
+   * request open so Deny can be tried again. Grants waiting on a report with
+   * no known outcome are removed once this denial was taken, or once the
+   * service shows the request ended with no report of this device recorded.
+   */
+  webAccessDeny(id: string): Promise<void> {
+    return call("Desk.WebAccessDeny", id);
+  },
+  /** WebAccessMachines lists the saved machines the sheet offers. */
+  webAccessMachines(): Promise<WebAccessMachine[]> {
+    return call("Desk.WebAccessMachines");
+  },
+  /**
+   * WebAccessOffered reports whether the account service carries browser
+   * approvals. An error means the service couldn't be asked; the page asks
+   * again on its next look.
+   */
+  webAccessOffered(): Promise<boolean> {
+    return call("Desk.WebAccessOffered");
+  },
+  /** WebAccessRequests lists browsers waiting for approval on the account. */
+  webAccessRequests(): Promise<WebAccessRequest[]> {
+    return call("Desk.WebAccessRequests");
+  },
+  /**
+   * WebAccessStart claims request id for this computer and waits (in the
+   * background, until the request expires) for the browser to show its code.
+   * One approval at a time: a new one replaces the last.
+   */
+  webAccessStart(id: string): Promise<void> {
+    return call("Desk.WebAccessStart", id);
+  },
 } as const;
 
 /**
@@ -2449,6 +2569,8 @@ export const events = {
    * update notification or the tray's update item.
    */
   appUpdateOpen: event<boolean>("app-update:open"),
+  /** WebAccessEvent carries approval updates to the page. */
+  webAccessUpdate: event<WebAccessUpdate>("web-access:update"),
   dictationChanged: event<DictationEvent>("dictation:changed"),
   /**
    * AgentOpen wakes the page for a scoped notification or tray activation.

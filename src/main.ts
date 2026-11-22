@@ -22,6 +22,7 @@ import { COMPOSER_TEXT_OFFSET, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { animateDisclosures, applyMotions, motionMode, motionSeconds, SPEC } from "./motion";
 import { initStarAsk } from "./starAsk";
 import { initAppUpdateAsk } from "./appUpdateAsk";
+import { initWebAccess } from "./webAccess";
 import { errorText } from "./errors";
 import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
@@ -762,6 +763,7 @@ async function init() {
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
   appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
+  initWebAccess();
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
   initInteraction($("detail"), symbol, target => {

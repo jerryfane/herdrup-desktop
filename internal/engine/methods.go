@@ -319,6 +319,35 @@ func (c *Client) GuestInviteCreate(ctx context.Context, p herdrapi.GuestInviteCr
 	return call[herdrapi.ResponseResultGuestInviteCreated](ctx, c, "guest.invite.create", p)
 }
 
+// The owner_access methods (herdr #491, web owner access) are owner only and
+// answer for the machine they run on: the approving device opens one session
+// per machine. They take no machine param (herdr refuses one).
+
+// OwnerAccessInfo is owner_access.info.
+func (c *Client) OwnerAccessInfo(ctx context.Context) (herdrapi.ResponseResultOwnerAccessInfo, error) {
+	return call[herdrapi.ResponseResultOwnerAccessInfo](ctx, c, "owner_access.info", herdrapi.OwnerAccessInfoParams{})
+}
+
+// OwnerAccessList is owner_access.list.
+func (c *Client) OwnerAccessList(ctx context.Context) (herdrapi.ResponseResultOwnerAccessList, error) {
+	return call[herdrapi.ResponseResultOwnerAccessList](ctx, c, "owner_access.list", herdrapi.OwnerAccessListParams{})
+}
+
+// OwnerAccessAdd is owner_access.add.
+func (c *Client) OwnerAccessAdd(ctx context.Context, p herdrapi.OwnerAccessAddParams) (herdrapi.ResponseResultOwnerAccessAdded, error) {
+	return call[herdrapi.ResponseResultOwnerAccessAdded](ctx, c, "owner_access.add", p)
+}
+
+// OwnerAccessRenew is owner_access.renew.
+func (c *Client) OwnerAccessRenew(ctx context.Context, p herdrapi.OwnerAccessRenewParams) (herdrapi.ResponseResultOwnerAccessRenewed, error) {
+	return call[herdrapi.ResponseResultOwnerAccessRenewed](ctx, c, "owner_access.renew", p)
+}
+
+// OwnerAccessRemove is owner_access.remove.
+func (c *Client) OwnerAccessRemove(ctx context.Context, p herdrapi.OwnerAccessRemoveParams) (herdrapi.ResponseResultOwnerAccessRemoved, error) {
+	return call[herdrapi.ResponseResultOwnerAccessRemoved](ctx, c, "owner_access.remove", p)
+}
+
 // GuestList is guest.list.
 func (c *Client) GuestList(ctx context.Context, p herdrapi.GuestListParams) (herdrapi.ResponseResultGuestList, error) {
 	return call[herdrapi.ResponseResultGuestList](ctx, c, "guest.list", p)
