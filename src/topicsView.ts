@@ -153,7 +153,7 @@ export class TopicsPane {
  apply(u: TopicsUpdate) {
   if (this.disposed) return;
   // New proposals arrived, or Organise's wait ran out: it has answered.
-  if (this.organising && organiseOver(this.update?.suggestions ?? [], u.suggestions ?? [], this.organiseAt, Date.now())) this.endOrganise();
+  if (this.organising && organiseOver(this.update?.suggestions ?? [], u.suggestions ?? [], this.organiseAt, performance.now())) this.endOrganise();
   this.unticked = keptUnticks(this.unticked, u.suggestions ?? []);
   this.update = u;
   this.drawList();
@@ -249,12 +249,15 @@ export class TopicsPane {
   this.organising = true; this.organiseText = null; this.actionNote = null; this.organiseAt = Infinity; this.drawList();
   try {
    const queued = await Desk.topicsOrganise(this.host.token);
+   if (this.disposed) return;
    if (this.organising) {
-    this.organiseText = organiseNote(queued); this.organiseAt = Date.now();
+    // performance.now: elapsed time, which a change of the wall clock doesn't move.
+    this.organiseText = organiseNote(queued); this.organiseAt = performance.now();
     clearTimeout(this.organiseTimer);
     this.organiseTimer = setTimeout(() => { if (this.organising && !this.disposed) { this.endOrganise(); this.drawList(); } }, ORGANISE_WAIT_MS);
    }
   } catch (error) {
+   if (this.disposed) return;
    this.organising = false; this.organiseText = errorText(error);
   }
   this.drawList();

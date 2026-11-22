@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -31,11 +32,25 @@ const (
 	topicMessageBytes = 32 * 1024
 )
 
+//go:embed topics_retry.json
+var topicsRetryJSON []byte
+
 // topicsRetry is the wait before the open Inbox asks again after a list that
 // failed for a passing reason (topics_unreachable, a timeout, a dropped call)
 // or a capability that couldn't be read: iOS TopicsDiscoveryBackoff, the last
-// one repeating. Tests replace it.
-var topicsRetry = []time.Duration{60 * time.Second, 120 * time.Second, 240 * time.Second, 480 * time.Second, 600 * time.Second}
+// one repeating. topics_retry.json holds it in seconds for this desk and the
+// web desk (src/web/desk.ts). Tests replace it.
+var topicsRetry = func() []time.Duration {
+	var secs []int
+	if err := json.Unmarshal(topicsRetryJSON, &secs); err != nil || len(secs) == 0 {
+		panic("topics_retry.json is not a list of seconds")
+	}
+	waits := make([]time.Duration, len(secs))
+	for i, s := range secs {
+		waits[i] = time.Duration(s) * time.Second
+	}
+	return waits
+}()
 
 // TopicsUpdate is the page's Topics state for one view: the list, ordered
 // as the Topics view lists it, or why the newest read failed (the last list
@@ -98,7 +113,10 @@ type topicsState struct {
 	// Until then the open Inbox asks again on topicsRetry's schedule.
 	settled bool
 	retry   *time.Timer
-	retries int
+	// retryOnClose stops retry when the view closes, so a closed view holds
+	// no timer.
+	retryOnClose func() bool
+	retries      int
 }
 
 // TopicsAvailable reports whether the view's server serves an omp agent's
@@ -176,6 +194,19 @@ func (d *Desk) TopicsFollowInbox(token string, open bool) error {
 	return nil
 }
 
+// stopRetry drops the Inbox's retry timer and its hook on the view's
+// close. t.mu is held.
+func (t *topicsState) stopRetry() {
+	if t.retry != nil {
+		t.retry.Stop()
+		t.retry = nil
+	}
+	if t.retryOnClose != nil {
+		t.retryOnClose()
+		t.retryOnClose = nil
+	}
+}
+
 // topicsWatch starts the follower when Topics shows or the Inbox is open on
 // served suggestions, and stops it when neither holds. Otherwise an open
 // Inbox whose newest read didn't settle asks again after a backoff.
@@ -190,15 +221,19 @@ func (d *Desk) topicsWatch(v *interaction) {
 		t.retries++
 		t.retry = time.AfterFunc(wait, func() {
 			t.mu.Lock()
-			t.retry = nil
+			t.stopRetry()
 			t.mu.Unlock()
 			if v.ctx.Err() == nil {
 				d.topicsRead(v)
 			}
 		})
+		t.retryOnClose = context.AfterFunc(v.ctx, func() {
+			t.mu.Lock()
+			t.stopRetry()
+			t.mu.Unlock()
+		})
 	case !retry && t.retry != nil:
-		t.retry.Stop()
-		t.retry = nil
+		t.stopRetry()
 	}
 	if want == (t.cancel != nil) || v.ctx.Err() != nil {
 		t.mu.Unlock()

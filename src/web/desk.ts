@@ -3,6 +3,7 @@
 // on webguest's GuestTransport. One browser holds one grant (storage.ts). Method names, arguments,
 // results and error texts are Go's; events go out through events.ts as Go broadcasts them.
 
+import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
  Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
@@ -37,8 +38,9 @@ const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab"
 /** A guest's Topics poll while it shows (TopicsModel.pollSeconds): the gate has no event stream. */
 export const TOPICS_GUEST_POLL_MS = 15_000;
 /** desk_topics.go topicsRetry (iOS TopicsDiscoveryBackoff): the waits before the open Inbox asks
- *  again after a list that failed for a passing reason, the last one repeating. */
-export const TOPICS_RETRY_MS: readonly number[] = [60_000, 120_000, 240_000, 480_000, 600_000];
+ *  again after a list that failed for a passing reason, the last one repeating. Both desks read
+ *  app/topics_retry.json (seconds). */
+export const TOPICS_RETRY_MS: readonly number[] = topicsRetrySeconds.map((s) => s * 1000);
 const TOPIC_TOO_LONG = "Messages are limited to 32 KB. Send it in parts.";
 export const PROMPT_WAIT = { timeout_ms: 6000, until: ["working", "idle", "blocked", "done", "unknown"] };
 const UNCONFIRMED_CODES = ["timeout", "agent_prompt_unverifiable", "agent_prompt_stalled", "agent_status_unobserved_after_submit", "agent_prompt_unsubmitted"];
