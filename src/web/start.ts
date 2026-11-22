@@ -35,17 +35,13 @@ export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${acce
  *  the last grant this browser held, when it remembers; error is why an invite just failed. */
 export interface WelcomeState { owner: string | null; error?: string }
 
-/** The screen's words for state, now. A browser signed in to a HerdrUp account on its first visit
- *  is an owner: using their own machines from the browser waits on web enrolment (D2), so it
- *  says so rather than asking for an invite. A share left or wiped asks for a new invite either
- *  way. */
-export function welcome(state: WelcomeState, signedIn: boolean): Welcome {
+/** The screen's words for state. A signed-in owner's first visit shows the approval instead
+ *  (main.ts, ownerScreen.ts). */
+export function welcome(state: WelcomeState): Welcome {
  const { owner, error } = state;
  const words = owner !== null
   ? { title: `Ask ${owner} for a new invite`, body: "This browser no longer holds the shared access. Open the new invite link here to use the agent again." }
-  : signedIn
-   ? { title: "Signed in", body: "Using your own machines from this browser is coming soon. For now, use the HerdrUp app, or open an invite link someone sent you." }
-   : { title: "Open the invite link the owner sent you", body: "It opens the agent they share with you here. If you used this page before and this browser's data was cleared, ask them for a new invite." };
+  : { title: "Open the invite link the owner sent you", body: "It opens the agent they share with you here. If you used this page before and this browser's data was cleared, ask them for a new invite." };
  return { ...words, ...(error ? { error } : {}) };
 }
 

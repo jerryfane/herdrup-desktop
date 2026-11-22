@@ -58,5 +58,5 @@ export function createAccountDesk(page: AccountPage) {
    return s;
   },
  };
- return { desk, signInReturned: returned !== null };
+ return { desk, signInReturned: returned !== null, account };
 }

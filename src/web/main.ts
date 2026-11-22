@@ -22,7 +22,10 @@ import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
-import { signInReturned } from "./mygo";
+import { ownerAccess, signInReturned } from "./mygo";
+import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
+import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
+import { browserDeviceName, ownerCard } from "./ownerScreen";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -64,16 +67,76 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
  return e;
 }
 
+// ---- Owner access: approving this browser (ownerApproval.ts, mockup 1) ----
+
+const ownerStore = new IndexedDBOwnerStore();
+const deviceName = browserDeviceName(navigator.userAgent);
+let ownerPhase: OwnerPhase | null = null;
+let ownerRecord: OwnerRecord | undefined;
+let ownerRun: AbortController | null = null;
+/** The person chose "Use a guest invitation instead" on this load. */
+let guestInstead = false;
+
+const redrawWelcome = () => { if (shownWelcome) showWelcome(shownWelcome); };
+
+/** A signed-in browser on its first visit is an owner's: it asks to be approved, or shows what it
+ *  was approved for. A share left or wiped, signed in or not, still asks for a new invite. */
+const ownerWanted = (shown: WelcomeState) => account.signedIn && shown.owner === null && !guestInstead;
+
+/** The kept approvals, refreshed from the service; else a new approval request. */
+async function beginOwner() {
+ ownerPhase = { kind: "starting" };
+ const record = await ownerStore.get().catch(() => undefined);
+ if (record === undefined || record.approvers.length === 0) { startApproval(); return; }
+ ownerRecord = record;
+ ownerPhase = { kind: "approved", approver: record.approvers[0]! };
+ redrawWelcome();
+ const key = await ownerKey(ownerAccess.identities).catch(() => null);
+ if (key === null) return;
+ const fresh = await refreshLists(ownerAccess.account, key, ownerStore).catch(() => undefined);
+ if (fresh !== undefined && ownerPhase?.kind === "approved") { ownerRecord = fresh; redrawWelcome(); }
+}
+
+function startApproval() {
+ ownerRun?.abort();
+ const run = new AbortController();
+ ownerRun = run;
+ ownerPhase = { kind: "starting" };
+ redrawWelcome();
+ const onPhase = async (p: OwnerPhase) => {
+  if (ownerRun !== run) return;
+  if (p.kind === "approved") ownerRecord = await ownerStore.get().catch(() => undefined);
+  ownerPhase = p;
+  redrawWelcome();
+ };
+ runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store: ownerStore, deviceName }, p => void onPhase(p), run.signal)
+  .catch(error => { if (ownerRun === run) { ownerPhase = { kind: "failed", problem: errorText(error) }; redrawWelcome(); } });
+}
+
+function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; }
+
 // ---- The plain screen without a grant ----
 
-/** Shows the screen for shown (null hides it); its words follow the sign-in state at each draw. */
+/** Shows the screen for shown (null hides it): the owner's approval when this browser is signed
+ *  in on its first visit, else the words asking for an invite. */
 function showWelcome(shown: WelcomeState | null) {
  shownWelcome = shown;
- if (shown === null) { welcomeView.hidden = true; render(); return; }
- const w = welcome(shown, account.signedIn);
- const card = el("div", "web-welcome-card");
- card.append(el("h1", "", w.title), el("p", "", w.body));
- if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }
+ if (shown === null) { stopOwner(); welcomeView.hidden = true; render(); return; }
+ let card: HTMLElement;
+ if (ownerWanted(shown)) {
+  if (ownerPhase === null) void beginOwner();
+  card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, ownerRecord, {
+   again: startApproval,
+   guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
+  }, spinnerSVG);
+  if (shown.error) { const error = el("p", "web-welcome-error", shown.error); error.setAttribute("role", "alert"); card.prepend(error); }
+ } else {
+  if (!account.signedIn) stopOwner();
+  const w = welcome(shown);
+  card = el("div", "web-welcome-card");
+  card.append(el("h1", "", w.title), el("p", "", w.body));
+  if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }
+ }
  const signIn = accountRoot();
  if (signIn) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), signIn); card.append(part); }
  welcomeView.replaceChildren(card);

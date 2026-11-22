@@ -50,19 +50,10 @@ test("first visit redeems and connects; a later visit resumes; nothing kept says
 
  const none = fakeDesk([], async () => access("G1"));
  expect(await start(none.desk, "", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null } });
- expect(welcome({ owner: null }, false).title).toBe("Open the invite link the owner sent you");
+ expect(welcome({ owner: null }).title).toBe("Open the invite link the owner sent you");
  expect(await start(none.desk, "", "https://x", () => "Jerry")).toEqual({ kind: "welcome", welcome: { owner: "Jerry" } });
- expect(welcome({ owner: "Jerry" }, false).title).toBe("Ask Jerry for a new invite");
+ expect(welcome({ owner: "Jerry" }).title).toBe("Ask Jerry for a new invite");
  expect(none.log).toEqual([]);
-});
-
-test("a signed-in owner's first visit says own machines aren't here yet; a left share still asks for an invite", () => {
- const first = { owner: null, error: "This invitation was already used." };
- const out = welcome(first, false), signedIn = welcome(first, true);
- expect(signedIn.title).toBe("Signed in");
- expect(signedIn.body).not.toBe(out.body);
- expect(signedIn.error).toBe(first.error);
- expect(welcome({ owner: "Jerry" }, true)).toEqual(welcome({ owner: "Jerry" }, false));
 });
 
 test("a link opened again resumes the kept grant; a failed first redemption says why", async () => {
