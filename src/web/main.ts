@@ -20,7 +20,7 @@ import { animateDisclosures, applyMotions } from "../motion";
 import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
-import { start, takeFragment, welcome, type Welcome } from "./start";
+import { signedInWelcome, start, takeFragment, welcome, type Welcome } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
 import { signInReturned } from "./mygo";
 
@@ -66,9 +66,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 
 // ---- The plain screen without a grant ----
 
-function showWelcome(w: Welcome | null) {
- shownWelcome = w;
- if (w === null) { welcomeView.hidden = true; render(); return; }
+function showWelcome(shown: Welcome | null) {
+ shownWelcome = shown;
+ if (shown === null) { welcomeView.hidden = true; render(); return; }
+ const w = account.signedIn ? signedInWelcome(shown) : shown;
  const card = el("div", "web-welcome-card");
  card.append(el("h1", "", w.title), el("p", "", w.body));
  if (w.error) { const error = el("p", "web-welcome-error", w.error); error.setAttribute("role", "alert"); card.append(error); }

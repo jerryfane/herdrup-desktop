@@ -8,7 +8,8 @@ import { APP_LINK_PREFIX, shortSegment } from "../webguest/invite";
 /** The Desk methods starting needs. */
 type StartDesk = Pick<typeof Desk, "sharedConnections" | "acceptGuestInvitation" | "connectGuest">;
 
-export interface Welcome { title: string; body: string; error?: string }
+/** firstVisit: no share this browser remembers (the screen a signed-in owner gets too). */
+export interface Welcome { title: string; body: string; error?: string; firstVisit?: true }
 export type Started = { kind: "connected"; id: string } | { kind: "welcome"; welcome: Welcome };
 
 /** The fragment's payload, removed from the address bar before anything else runs; "" when none. */
@@ -36,8 +37,16 @@ export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${acce
 export function welcome(owner: string | null, error?: string): Welcome {
  const who = owner ?? "the owner";
  return owner === null
-  ? { title: `Open the invite link ${who} sent you`, body: "It opens the agent they share with you here. If you used this page before and this browser's data was cleared, ask them for a new invite.", ...(error ? { error } : {}) }
+  ? { title: `Open the invite link ${who} sent you`, body: "It opens the agent they share with you here. If you used this page before and this browser's data was cleared, ask them for a new invite.", firstVisit: true, ...(error ? { error } : {}) }
   : { title: `Ask ${who} for a new invite`, body: "This browser no longer holds the shared access. Open the new invite link here to use the agent again.", ...(error ? { error } : {}) };
+}
+
+/** The first-visit screen for a browser signed in to a HerdrUp account. Owners can't use their own
+ *  machines from the browser yet (web enrolment, D2), so it says so rather than asking for an
+ *  invite; a share's "ask for a new invite" stays as it is. */
+export function signedInWelcome(w: Welcome): Welcome {
+ if (!w.firstVisit) return w;
+ return { title: "Signed in", body: "Using your own machines from this browser is coming soon. For now, use the HerdrUp app, or open an invite link someone sent you.", firstVisit: true, ...(w.error ? { error: w.error } : {}) };
 }
 
 /** Redeems the fragment's invitation, or resumes the kept grant. A failed redemption with a grant

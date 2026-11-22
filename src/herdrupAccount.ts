@@ -91,6 +91,7 @@ export class HerdrUpAccountPanel {
 
  /** The index row's value. */
  summary(): string { return this.state?.signedIn ? "Signed in" : "Not signed in"; }
+ get signedIn(): boolean { return !!this.state?.signedIn; }
 
  /** Whether the service offers sign-in, and the session as the app holds it; `check` asks the
   *  service too (a removed device shows signed out). A service that can't be reached keeps the
