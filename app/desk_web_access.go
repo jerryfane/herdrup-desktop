@@ -389,7 +389,8 @@ func (d *Desk) WebAccessDeny(ctx context.Context, id string) error {
 			w.pending = nil
 			return errAlreadyOver
 		case state == account.ApprovalExpired && !final:
-			return fmt.Errorf("the request expired while a report's outcome was unknown, so the access added on %s stays until the account service shows how it ended: Deny to check again", grantLabels(w.pending.grants))
+			return fmt.Errorf("the request expired while a report's outcome was unknown, and the account service may never say how it ended. Unless it does, the access added on %s stays until %s or until it's removed on those machines. Deny only checks again",
+				grantLabels(w.pending.grants), time.UnixMilli(w.pending.expiresMs).Format("2 Jan 2006 15:04"))
 		case !final:
 			return fmt.Errorf("the request is still %s: Deny to try again", state)
 		}

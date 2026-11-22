@@ -45,7 +45,11 @@ type approvalService struct {
 	readStatus   int
 	readState    string
 	finishes     int
-	expiresIn    int
+	// readHeld, when set, holds each state read that long after noting
+	// when it arrived in readAt.
+	readHeld  time.Duration
+	readAt    time.Time
+	expiresIn int
 }
 
 func newApprovalService(t *testing.T) *approvalService {
@@ -71,6 +75,10 @@ func (s *approvalService) serve(w http.ResponseWriter, r *http.Request, body map
 		s.nonceT, _ = base64.RawURLEncoding.DecodeString(body["nonce_t"])
 		reply(w, 200, map[string]any{})
 	case r.URL.Path == "/v1/approvals/req-1" && r.Method == http.MethodGet:
+		if s.readHeld > 0 {
+			s.readAt = time.Now()
+			time.Sleep(s.readHeld)
+		}
 		switch {
 		case s.readBusy > 0:
 			s.readBusy--
@@ -362,14 +370,21 @@ func TestLiveRefusesAnEndedOrEndingRequest(t *testing.T) {
 	if c, _ := a.CheckCode(ctx, s.browserCode(t, approver.PublicKey())); !c.Ok {
 		t.Fatal("code refused")
 	}
-	// The deadline counts from before the read, less the second the
-	// service may have rounded up.
+	// The deadline counts from before the read (here held 50 ms after it
+	// arrived), less the second the service may have rounded up.
+	s.mu.Lock()
+	s.readHeld = 50 * time.Millisecond
+	s.mu.Unlock()
 	deadline, err := a.Live(ctx, time.Minute)
 	if err != nil {
 		t.Fatalf("open request: %v", err)
 	}
-	if latest := time.Now().Add(599 * time.Second); deadline.After(latest) {
-		t.Fatalf("deadline %v is after %v (600 s left, rounded up)", deadline, latest)
+	s.mu.Lock()
+	latest := s.readAt.Add(599 * time.Second)
+	s.readHeld = 0
+	s.mu.Unlock()
+	if deadline.After(latest) {
+		t.Fatalf("deadline %v is after %v (600 s left when the read arrived, rounded up)", deadline, latest)
 	}
 	s.mu.Lock()
 	s.expiresIn = 20
