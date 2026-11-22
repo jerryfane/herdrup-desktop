@@ -28,7 +28,7 @@ export function ownerLink(endpoint: Endpoint, device: string, statements: Statem
    const { jws } = await statements.get(endpoint.hostID, HELLO_MIN_LEFT_MS, signal);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, mode: "owner", account: jws, device })),
-    refused: () => { statements.drop(endpoint.hostID, jws); return true; },
+    refused: () => statements.drop(endpoint.hostID, jws),
    };
   },
   admit(reply) {

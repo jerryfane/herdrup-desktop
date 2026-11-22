@@ -113,6 +113,9 @@ export class WebAccount {
   private readonly locks: AccountLocks | null = browserLocks()) {}
 
  get current(): WebSession | null { return this.session; }
+ /** Changes whenever this page's session ends (sign-out, or a refresh the service refused):
+  *  anything issued for an earlier session, even for the same account, isn't this one's. */
+ get generation(): number { return this.epoch; }
 
  /** A current access token, refreshing through the cookie when the one held is missing or within
   *  a minute of expiry. Callers in this page share one refresh, and tabs take turns (the lock).
