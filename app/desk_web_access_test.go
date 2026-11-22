@@ -637,12 +637,10 @@ func TestWebAccessRefusesASelectionTooLargeForOneReport(t *testing.T) {
 	}
 }
 
-// After a lost answer and an expiry the service may never settle, Deny says
-// the access stays until the machine ends it: the end that machine reported,
-// not one this computer worked out before asking it.
-func TestWebAccessDenyGivesTheMachinesOwnGrantEnd(t *testing.T) {
-	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
-	t.Cleanup(func() { webNow = time.Now })
+// After a lost answer and an expiry the service only computed (no
+// outcome_stored), the approval may still be recorded: Deny reports that and
+// leaves the grants on their machines.
+func TestWebAccessDenyKeepsTheGrantsAfterAnUnsettledExpiry(t *testing.T) {
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
 	ctx := context.Background()
 	typeCode(t, d, w)
@@ -651,13 +649,10 @@ func TestWebAccessDenyGivesTheMachinesOwnGrantEnd(t *testing.T) {
 		t.Fatalf("lost answer: %+v, %v", res, err)
 	}
 	w.set(func() { w.finishStatus, w.readStatus, w.outcome = 0, 0, "expired" })
-	err := d.WebAccessDeny(ctx, "req-1")
-	g := w.grants(t)
-	if len(g) != 1 {
-		t.Fatalf("grants %v", g)
+	if err := d.WebAccessDeny(ctx, "req-1"); err == nil || errors.Is(err, errAlreadyOver) {
+		t.Fatalf("deny after an unsettled expiry: %v, want an unknown outcome", err)
 	}
-	end := time.UnixMilli(int64(g[0]["expires_ms"].(float64))).Format("2 Jan 2006 15:04")
-	if err == nil || !strings.Contains(err.Error(), "stays until "+end+" ") {
-		t.Fatalf("deny after an unsettled expiry: %v, want the machine's end %s", err, end)
+	if live := w.live(t); len(live) != 1 {
+		t.Fatalf("live grants after an unsettled expiry: %v", live)
 	}
 }
