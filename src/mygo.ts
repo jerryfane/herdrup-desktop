@@ -15,6 +15,51 @@ export interface Access {
   acceptedAt: string;
 }
 
+/** AccountDeleteInfo is what the account page needs to offer Delete account. */
+export interface AccountDeleteInfo {
+  /** Offered is true once the service can confirm a deletion in the browser. */
+  offered: boolean;
+  /**
+   * Provider is how this session signed in ("apple", "google"), "" when the
+   * session predates it being kept: the page asks then.
+   */
+  provider: string;
+}
+
+/**
+ * AccountDeleted tells the page how a deletion ended: Deleted with
+ * ManualRevoke (Apple didn't confirm the revoke), or Problem.
+ */
+export interface AccountDeleted {
+  deleted: boolean;
+  manualRevoke?: boolean;
+  problem?: string;
+}
+
+/** AccountDevice is one device as the account page lists it. */
+export interface AccountDevice {
+  id: string;
+  name: string;
+  platform: string;
+  createdMs: number;
+  /** Current is this computer. */
+  current: boolean;
+}
+
+/**
+ * AccountDevices is the page's DEVICES group: the list (this computer
+ * first, then oldest first) and, when this computer isn't in it, why.
+ */
+export interface AccountDevices {
+  devices: AccountDevice[];
+  /**
+   * Enrolment is "" when this computer is a device of the account, else the
+   * service's refusal code (too_many_devices, device_in_other_account) or
+   * "unreachable".
+   */
+  enrolment?: string;
+}
+
 export interface AccountLoginState {
   url: string;
   phase: string;
@@ -1218,6 +1263,30 @@ export const Desk = {
     return call("Desk.AccountCheck");
   },
   /**
+   * AccountDelete starts the deletion: the confirming sign-in with provider
+   * ("apple" or "google") opens in the system browser, which comes back on
+   * herdrup://account#delete_code=… (queueAccountLink).
+   */
+  accountDelete(provider: string): Promise<void> {
+    return call("Desk.AccountDelete", provider);
+  },
+  /** AccountDeleteInfo asks the service whether it offers web deletion. */
+  accountDeleteInfo(): Promise<AccountDeleteInfo> {
+    return call("Desk.AccountDeleteInfo");
+  },
+  /**
+   * AccountDevices lists the account's devices. When this computer isn't
+   * among them (first sign-in raced, or an older version signed in) it is
+   * added first, as the Swift app does.
+   */
+  accountDevices(): Promise<AccountDevices> {
+    return call("Desk.AccountDevices");
+  },
+  /** AccountEnrolAgain retries adding this computer (the page's "Try again"). */
+  accountEnrolAgain(): Promise<AccountDevices> {
+    return call("Desk.AccountEnrolAgain");
+  },
+  /**
    * AccountProviders are the ways the HerdrUp account service can sign in
    * on the web now ("apple", "google"; its /v1/health web_sign_in_* flags):
    * the page shows a button for each, and no account row or first-launch
@@ -1226,6 +1295,18 @@ export const Desk = {
    */
   accountProviders(): Promise<string[]> {
     return call("Desk.AccountProviders");
+  },
+  /**
+   * AccountRemoveDevice removes device id. Removing this computer ends its
+   * session too (the service drops the sessions bound to the device), so it
+   * is signed out here as well.
+   */
+  accountRemoveDevice(id: string, current: boolean): Promise<void> {
+    return call("Desk.AccountRemoveDevice", id, current);
+  },
+  /** AccountRenameDevice renames device id. */
+  accountRenameDevice(id: string, name: string): Promise<void> {
+    return call("Desk.AccountRenameDevice", id, name);
   },
   /**
    * AccountSignIn opens the sign-in for provider ("apple" or "google") in
@@ -2215,6 +2296,8 @@ export const events = {
    * sign-in, a refused session, sign-out).
    */
   accountChanged: event<AccountState>("account:changed"),
+  /** AccountDeletedEvent carries the end of a deletion the browser finished. */
+  accountDeleted: event<AccountDeleted>("account:deleted"),
   /** SyncedMachinesChanged tells the page the account's machines changed. */
   syncedMachinesChanged: event<SyncedMachine[]>("syncedMachines:changed"),
   /** AgentActionRequested asks the page for a row menu item's dialog. */

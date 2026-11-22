@@ -148,6 +148,10 @@ func (d *Desk) queueAccountLink(link string) bool {
 	if !strings.HasPrefix(strings.TrimSpace(link), account.LinkPrefix) {
 		return false
 	}
+	if account.IsDeleteLink(link) {
+		go d.finishAccountDelete(link)
+		return true
+	}
 	go func() {
 		code, ok := account.CodeFromLink(link)
 		problem := ""
@@ -163,7 +167,13 @@ func (d *Desk) queueAccountLink(link string) bool {
 			if err != nil {
 				problem = accountProblem(err)
 			} else {
-				// The account's machines arrive right after sign-in (1B).
+				// This computer joins the account's devices, then the account's
+				// machines arrive (1B), as the Swift app does after sign-in.
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if err := d.enrolThisDevice(ctx); err != nil {
+					log.Printf("account: add this computer: %v", err)
+				}
+				cancel()
 				d.syncMachinesSoon()
 			}
 		}

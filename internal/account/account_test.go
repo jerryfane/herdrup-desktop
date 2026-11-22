@@ -32,6 +32,9 @@ type fakeService struct {
 	n         int
 	down      bool
 	features  []string
+	// extra, when set, answers paths the fake has no case for (devices);
+	// it returns false to fall through.
+	extra func(w http.ResponseWriter, r *http.Request, body map[string]string) bool
 }
 
 func newFake(t *testing.T) (*fakeService, *httptest.Server) {
@@ -66,6 +69,9 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	var body map[string]string
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if f.extra != nil && f.extra(w, r, body) {
+		return
+	}
 	switch r.URL.Path {
 	case "/v1/auth/handoff":
 		// Exactly {code, handoff_verifier}: any other field is a 400

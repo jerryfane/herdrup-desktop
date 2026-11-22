@@ -64,11 +64,11 @@ const drawnOnlyOnMac = [
  "arrow.triangle.2.circlepath", "arrow.up.right", "arrow.uturn.backward.circle.fill",
  "bell", "bell.slash", "bubble.left.and.bubble.right", "chart.bar", "checkmark.circle.fill",
  "checkmark.shield.fill", "chevron.left.forwardslash.chevron.right", "chevron.up.chevron.down", "circle",
- "desktopcomputer", "doc.on.clipboard", "doc.text", "envelope", "exclamationmark.bubble", "exclamationmark.circle",
- "exclamationmark.triangle.fill", "gauge.with.needle",
- "key.horizontal", "keyboard", "lightbulb", "lock.open", "lock.shield", "pause.circle", "person.2", "person.crop.circle", "person.fill",
- "photo.on.rectangle", "plus.circle", "qrcode.viewfinder", "questionmark.circle.fill",
- "shield.lefthalf.filled", "sparkles", "stop.circle", "textformat.size",
+ "desktopcomputer", "doc.on.clipboard", "doc.text", "ellipsis.circle", "envelope", "exclamationmark.bubble", "exclamationmark.circle",
+ "exclamationmark.triangle.fill", "gauge.with.needle", "globe", "ipad", "iphone",
+ "key.horizontal", "keyboard", "laptopcomputer", "lightbulb", "lock.open", "lock.shield", "pause.circle", "person.2", "person.crop.circle", "person.crop.circle.fill", "person.fill",
+ "photo.on.rectangle", "plus.circle", "qrcode.viewfinder", "questionmark.circle.fill", "rectangle.portrait.and.arrow.right",
+ "shield.lefthalf.filled", "sparkles", "stop.circle", "text.bubble", "textformat.size", "trash",
 ];
 
 /** The SF Symbol names src/*.ts passes to a symbol drawer: dotted literals anywhere (no other

@@ -95,6 +95,24 @@ func LoadIdentity(path string) (Identity, error) {
 	return identityFromBytes(raw)
 }
 
+// PublicKey is the identity's X25519 public key (a copy): the device's id in
+// the HerdrUp account (internal/account Enrol).
+func (i Identity) PublicKey() []byte { return append([]byte(nil), i.public...) }
+
+// SharedSecret is X25519 of the identity's private key and peer: the
+// account enrolment's proof of possession. A low-order peer is an error.
+func (i Identity) SharedSecret(peer []byte) ([]byte, error) {
+	key, err := ecdh.X25519().NewPrivateKey(i.private)
+	if err != nil {
+		return nil, err
+	}
+	pub, err := ecdh.X25519().NewPublicKey(peer)
+	if err != nil {
+		return nil, err
+	}
+	return key.ECDH(pub)
+}
+
 func (i Identity) Fingerprint() string {
 	digest := sha256.Sum256(i.public)
 	var encoded [16]byte

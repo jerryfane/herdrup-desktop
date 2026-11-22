@@ -81,6 +81,7 @@
 .guest-device-key > span:last-child { color: var(--color-text); font: 500 calc(13.5px * var(--ui-font-scale, 1))/var(--leading-machine) var(--font-machine); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 /* The HerdrUp account (herdrupAccount.ts), the browser guest's Settings: the panel, 16 by 13. */
 .guest-settings .guest-account { padding: 13px 16px; }
+.guest-settings .guest-account .account-panel { padding: 0; }
 /* The notes (59-62, 73-76): app 13 textFaint, 30 sides. */
 .guest-settings-note { margin: 8px 30px 0; color: var(--color-text-faint); font: 400 calc(13px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); }
 .guest-leave-note { margin-top: 10px; text-align: center; }
