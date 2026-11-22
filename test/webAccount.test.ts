@@ -261,3 +261,44 @@ test("an aborted call sends nothing more: not enrolment's second step, not the r
  await expect(account.requestApproval(new Uint8Array(32), undefined, stop.signal)).rejects.toThrow("left");
  expect(sent).toEqual(["/v1/approvals"]);
 });
+
+test("the page hears its session change when it happens: sign-out before its request completes, another account at its refresh, with no old hint", async () => {
+ let now = 1_000_000;
+ const signOutHeld = Promise.withResolvers<void>();
+ const base = service(undefined, n => n === 1 ? "acct-A" : "acct-B");
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input).endsWith("/v1/auth/signout")) await signOutHeld.promise;
+  return base.fetcher(input, init);
+ }) as typeof fetch;
+ const account = new WebAccount(fetcher, undefined, () => now);
+ const seen: (string | null)[] = [];
+ account.onSessionChange(() => seen.push(account.current ? `${account.current.accountID}:${account.current.displayHint ?? ""}` : null));
+ await account.accessToken();
+ now += 3_600_000; // the cookie now refreshes to acct-B, which sends no display hint
+ await account.accessToken();
+ expect(seen).toEqual(["acct-A:jerry@example.com", "acct-B:"]);
+ const out = account.signOut();
+ expect(seen.at(-1)).toBeNull(); // told before the sign-out request completes
+ signOutHeld.resolve();
+ await out;
+});
+
+test("the web Desk publishes accountChanged the moment the session ends", async () => {
+ const signOutHeld = Promise.withResolvers<void>();
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input).endsWith("/v1/auth/signout")) await signOutHeld.promise;
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const page = { origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} };
+ const { desk } = createAccountDesk(page);
+ await desk.accountCheck();
+ const { events } = await import("../src/web/events");
+ const heard: boolean[] = [];
+ const off = events.accountChanged.on(st => heard.push(st.signedIn));
+ const out = desk.accountSignOut();
+ expect(heard[0]).toBe(false);
+ signOutHeld.resolve();
+ await out;
+ off();
+});

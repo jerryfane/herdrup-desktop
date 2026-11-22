@@ -182,7 +182,7 @@ async function takeApproval(deps: ApprovalDeps, acct: string, devicePub: string,
 /** Binds this sign-in's session to the browser's key as an account device (enrolling it the first
  *  time); a session bound already is fine. The service serves a browser's own endpoints only to a
  *  session bound to its device. */
-export async function bindDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
+async function bindDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
  try { await account.enrol(key, name, acct, signal); }
  catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
 }
