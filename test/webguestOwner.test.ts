@@ -118,9 +118,10 @@ test("before the deadline the session sends a newer statement in-band, as one wh
 
 /** The account service's statements for the cache tests: who is signed in, and each issue. */
 function issuer(clock: () => number) {
- const t = { signedIn: "acct-A" as string | null, asked: [] as string[], hold: null as PromiseWithResolvers<void> | null };
+ const t = { signedIn: "acct-A" as string | null, asked: [] as string[], looked: 0, hold: null as PromiseWithResolvers<void> | null };
  const api = {
-  async currentAccount() { if (t.signedIn === null) throw new Error("Signed out"); return t.signedIn; },
+  get current() { return t.signedIn === null ? null : { accountID: t.signedIn }; },
+  async currentAccount() { t.looked++; if (t.signedIn === null) throw new Error("Signed out"); return t.signedIn; },
   async statements(hosts: string[], acct?: string) {
    t.asked.push(`${acct}:${hosts[0]}`);
    if (t.hold) await t.hold.promise;
@@ -172,4 +173,50 @@ test("a caller stops waiting for a stalled statement when its signal aborts; the
  t.hold.resolve();
  expect((await other).jws).toStartWith("acct-A-");
  expect(t.asked.length).toBe(1);
+});
+
+test("a statement that comes back after sign-out, or after another sign-in, is neither used nor kept", async () => {
+ for (const after of [null, "acct-B"]) {
+  const { t, api } = issuer(Date.now);
+  t.hold = Promise.withResolvers<void>();
+  const cache = statementCache(api);
+  const signal = new AbortController().signal;
+  const pending = cache.get("H", 120_000, signal);
+  await Promise.resolve(); await Promise.resolve();
+  t.signedIn = after; // the session changed while A's statement was being issued
+  t.hold.resolve();
+  await expect(pending).rejects.toMatchObject({ code: "account_changed" });
+  t.hold = null;
+  if (after !== null) expect((await cache.get("H", 120_000, signal)).jws).toStartWith("acct-B-");
+ }
+});
+
+test("an already cancelled call looks nothing up", async () => {
+ const { t, api } = issuer(Date.now);
+ const cache = statementCache(api);
+ const gone = new AbortController(); gone.abort(new Error("closed"));
+ await expect(cache.get("H", 120_000, gone.signal)).rejects.toThrow("closed");
+ expect([t.looked, t.asked.length]).toEqual([0, 0]);
+});
+
+test("a reply that ends an owner session (the grant re-read as expired) isn't followed on that session", async () => {
+ let hellos = 0;
+ const relay = relayWith(async (_conn, handshake) => {
+  hellos++;
+  const session = (await handshake()).reply(ownerReply(Math.floor(Date.now() / 1000) + 660));
+  for (;;) {
+   const line = await session.readLine();
+   if (line === null) return;
+   const req = JSON.parse(line) as { id: string };
+   // The first session's first reply is owner_expired; herdr would close it right after.
+   session.write(JSON.stringify(hellos === 1 ? { id: req.id, error: { code: "owner_expired", message: "ended" } } : { id: req.id, result: { type: "pong" } }) + "\n");
+  }
+ });
+ try {
+  const t = new GuestTransport(ownerLink(endpointOf(relay), "x", statements()), staticKey(await generateIdentity()));
+  await expect(t.call("ping")).rejects.toThrow("owner_expired");
+  expect(await t.call("ping")).toEqual({ type: "pong" });
+  expect(hellos).toBe(2);
+  t.close();
+ } finally { relay.stop(); }
 });

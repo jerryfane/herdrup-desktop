@@ -550,21 +550,20 @@ export function decodeReply(line: string): unknown {
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
 export interface TransportLink {
  endpoint: Endpoint;
- hello(signal: AbortSignal): Promise<Uint8Array>;
+ /** The hello for one connect; refused, when the host refuses its statement, drops that exact
+  *  statement and says whether a fresh one is worth one more connect. */
+ hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => boolean }>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number }>;
- /** The host refused the statement in hello (the bytes that connect sent): whether a fresh one
-  *  is worth one more connect. */
- statementRefused?(hello: Uint8Array): boolean;
 }
 
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation. */
 export function guestLink(access: Access): TransportLink {
- const hello = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));
+ const payload = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));
  return {
   endpoint: access.endpoint,
-  hello: async () => hello,
+  hello: async () => ({ payload }),
   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
  };
 }
@@ -586,8 +585,10 @@ interface IdleSession { session: Session; since: number; timer: ReturnType<typeo
  *  session is still open, or its failure and whether a frame of it went out (so herdr may have it). */
 type RoundTrip = { line: string; open: boolean } | { error: unknown; sent: boolean };
 
-/** guest_gate.rs serve_session (herdr #356) ends the session after these replies. */
-const SESSION_ENDING_CODES = new Set(["guest_paused", "guest_revoked", "invalid_request"]);
+/** guest_gate.rs serve_session (herdr #356) ends the session after these replies; owner_gate.rs
+ *  (herdr #497) re-reads the grant before each request and ends it on owner_not_granted or
+ *  owner_expired. */
+const SESSION_ENDING_CODES = new Set(["guest_paused", "guest_revoked", "invalid_request", "owner_not_granted", "owner_expired"]);
 
 /** Whether herdr serves further requests after a reply that decoded to error (transport.go
  *  keepsSession): not after the codes that end the session, nor after a reply that did not decode. */
@@ -713,15 +714,15 @@ export class GuestTransport {
   if (this.#now() < this.#retryAt) throw rateLimited();
   let session: Session;
   for (let attempt = 0; ; attempt++) {
-   let hello: Uint8Array | null = null;
+   let hello: { payload: Uint8Array; refused?: () => boolean } | null = null;
    try {
     hello = await this.#link.hello(signal);
-    session = await openSession(this.#link.endpoint, this.#identity, hello, signal, this.#factory);
+    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory);
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
     // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && hello !== null && error instanceof GuestError && error.kind === "statement" && this.#link.statementRefused?.(hello)) continue;
+    if (attempt === 0 && error instanceof GuestError && error.kind === "statement" && hello?.refused?.()) continue;
     throw error;
    }
   }
