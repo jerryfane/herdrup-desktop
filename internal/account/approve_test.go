@@ -25,10 +25,10 @@ type approveVector struct {
 
 func loadApproveVector(t *testing.T) (approveVector, x25519Key, x25519Key) {
 	t.Helper()
-	// Made with node:crypto alone from WIRE-PLAN §2.2-2.3 (RFC 7748 §6.1 keys), so the
-	// Go code is checked against a second implementation, as the browser's will be.
-	// AccountService's approve-v1.json replaces it when A1 lands.
-	raw, err := os.ReadFile("testdata/approve-v1-local.json")
+	// AccountService's test/vectors/approve-v1.json, made with node:crypto alone from
+	// WIRE-PLAN §2.2-2.3 (RFC 7748 §6.1 keys), so the Go code is checked against a second
+	// implementation; the browser's (test/webguestApprove.test.ts) reads the same file.
+	raw, err := os.ReadFile("testdata/approve-v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}

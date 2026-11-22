@@ -5,6 +5,10 @@
 // /v1/auth/refresh. The service rotates the cookie on every refresh and revokes the session when a
 // rotated-away token comes back, so refreshes are single-flight.
 
+import { toB64url } from "../webguest/b64url";
+import { enrolProof, type EnrolChallenge } from "../webguest/enrol";
+import type { StaticKey } from "../webguest/noise";
+
 export const ACCOUNT_SERVICE = "https://accounts.herdrup.app";
 /** The only origin the service's CORS lets carry the cookie: the old relay domain is another
  *  site, so it offers no sign-in. */
@@ -64,6 +68,26 @@ export class AccountServiceError extends Error {
 }
 
 export interface WebSession { accountID: string; displayHint?: string }
+
+/** A device of the account as the service lists it (AccountService devices.ts). */
+export interface AccountDevice { id: string; name: string; platform: string; device_pub: string; created_ms: number; current?: boolean }
+
+/** GET /v1/approvals/<id> (approve-v1). The approver and nonce_t appear once a trusted device
+ *  claimed the request; outcome_stored once the service holds its outcome. */
+export interface ApprovalStatus {
+ state: "waiting" | "claimed" | "revealed" | "denied" | "approved" | "expired";
+ expires_in: number;
+ approver?: { device_pub: string; name: string };
+ nonce_t?: string;
+ outcome_stored?: boolean;
+}
+
+/** GET /v1/browsers/self: the access the service shows (a display cache, never authority) and
+ *  the sealed machine lists, one per approver. */
+export interface BrowserSelf {
+ access?: { state: "waiting" | "approved" | "expired"; scope?: string; expires_ms?: number };
+ envelopes: { approver_pub: string; seq: number; sealed: string }[];
+}
 
 const ACCESS = /^a1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
 
@@ -141,6 +165,60 @@ export class WebAccount {
   this.forget();
   const response = await this.exclusive(() => this.fetcher(`${this.service}/v1/auth/signout`, { method: "POST", credentials: "include", mode: "cors" }));
   if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
+ }
+
+ /** One call to the service as this session: the access token as Bearer, and once more with a
+  *  fresh token when the service says the one sent is no longer good (401). Errors are
+  *  AccountServiceError with the service's code, or SignedOutError. */
+ private async authed<T>(method: string, path: string, body?: unknown): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+   const token = await this.accessToken();
+   const response = await this.fetcher(`${this.service}${path}`, {
+    method, mode: "cors", cache: "no-store",
+    headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+   });
+   if (response.status === 401 && attempt === 0) { if (this.access === token) { this.access = ""; this.accessUntil = 0; } continue; }
+   if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
+   return (response.status === 204 ? undefined : await response.json()) as T;
+  }
+ }
+
+ /** Adds this browser to the account as a device with key (the guest identity), or binds this
+  *  session to it when the account already has it. The challenge is single-use and lives 60 s,
+  *  so both calls run together. Refusals: device_in_other_account, session_has_device (409),
+  *  too_many_devices (403). */
+ async enrol(key: StaticKey, name: string): Promise<AccountDevice> {
+  const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge");
+  if (ch.account_id !== this.session?.accountID) throw new AccountServiceError(409, "account_changed");
+  const { devicePub, mac } = await enrolProof(key, ch);
+  const out = await this.authed<{ device: AccountDevice }>("POST", "/v1/devices", { challenge_id: ch.challenge_id, device_pub: devicePub, mac, name, platform: "web" });
+  return out.device;
+ }
+
+ /** Asks the account's trusted devices to approve this browser (approve-v1 step 1); replaces
+  *  any request this browser has open. */
+ requestApproval(commit: Uint8Array): Promise<{ id: string; expires_in: number }> {
+  return this.authed("POST", "/v1/approvals", { commit: toB64url(commit) });
+ }
+
+ approvalState(id: string): Promise<ApprovalStatus> {
+  return this.authed("GET", `/v1/approvals/${encodeURIComponent(id)}`);
+ }
+
+ /** Reveals nonce_b (step 3), once the request is claimed and nonce_t is held. */
+ async reveal(id: string, nonceB: Uint8Array): Promise<void> {
+  await this.authed("POST", `/v1/approvals/${encodeURIComponent(id)}/reveal`, { nonce_b: toB64url(nonceB) });
+ }
+
+ /** This browser's access as the service shows it, and the sealed machine lists it holds. */
+ browserSelf(): Promise<BrowserSelf> {
+  return this.authed("GET", "/v1/browsers/self");
+ }
+
+ /** This device's statements for hosts (relay host ids): what an owner hello carries. */
+ statements(hosts: string[]): Promise<{ statements: { host: string; jws: string }[]; exp: number }> {
+  return this.authed("POST", "/v1/statements", { hosts });
  }
 
  private forget() { this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null; }
