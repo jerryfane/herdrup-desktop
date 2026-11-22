@@ -45,6 +45,8 @@ type webAccessWorld struct {
 	old          bool
 	statements   chan struct{}
 	held         int
+	// statementReqs counts the statement requests the service received.
+	statementReqs int
 	// again opens a new request from the same browser and claims it.
 	again func()
 }
@@ -98,6 +100,7 @@ func (w *webAccessWorld) service(t *testing.T) *httptest.Server {
 				reply(200, map[string]any{"state": "revealed", "expires_in": w.expiresIn, "nonce_b": b64u(w.nonceB)})
 			}
 		case r.URL.Path == "/v1/statements":
+			w.statementReqs++
 			if w.statements != nil {
 				w.held++
 				w.mu.Unlock()
@@ -492,6 +495,11 @@ func TestWebAccessSkipsAnOlderHerdrAsNeedsUpdate(t *testing.T) {
 			}
 			if g := w.grants(t); len(g) != 0 {
 				t.Fatalf("grants written: %v", g)
+			}
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if w.statementReqs != 0 {
+				t.Fatalf("%d statement requests for a machine that can't take the grant", w.statementReqs)
 			}
 		})
 	}
