@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 // Approval states (GET /v1/approvals/<id>).
@@ -69,6 +70,19 @@ type ApprovalGrant struct {
 type Statement struct {
 	Host string `json:"host"`
 	JWS  string `json:"jws"`
+}
+
+// WebApproveFeature is the /v1/health feature that says the service carries
+// browser approvals (herdrup #792).
+const WebApproveFeature = "web_approve"
+
+// WebApproveOffered reports whether the service lists web_approve.
+func (c *Client) WebApproveOffered(ctx context.Context) (bool, error) {
+	features, err := c.healthFeatures(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(features, WebApproveFeature), nil
 }
 
 // Approvals lists the browsers waiting for this account's approval.

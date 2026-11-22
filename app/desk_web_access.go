@@ -95,6 +95,19 @@ var (
 	errWebAccessScope = errors.New("choose chat or chat and terminal")
 )
 
+// WebAccessOffered reports whether the account service carries browser
+// approvals: the page polls for requests and offers approval only then.
+func (d *Desk) WebAccessOffered(ctx context.Context) bool {
+	cur, _ := d.account.Current()
+	if cur == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	offered, _ := d.account.WebApproveOffered(ctx)
+	return offered
+}
+
 // WebAccessRequests lists browsers waiting for approval on the account.
 func (d *Desk) WebAccessRequests(ctx context.Context) ([]WebAccessRequest, error) {
 	cur, err := d.account.Current()
@@ -198,7 +211,7 @@ type WebAccessUpdate struct {
 }
 
 // WebAccessEvent carries approval updates to the page.
-var WebAccessEvent = mygo.NewEvent[WebAccessUpdate]("webaccess:update")
+var WebAccessEvent = mygo.NewEvent[WebAccessUpdate]("web-access:update")
 
 // publishWebAccess sends one update; tests replace it.
 var publishWebAccess = func(u WebAccessUpdate) { WebAccessEvent.Broadcast(u) }
@@ -229,15 +242,21 @@ func (d *Desk) currentApproval(id string) (*webApproval, error) {
 	return w, nil
 }
 
-// WebAccessCheckCode compares the code the user typed. Three wrong codes deny
-// the request (denied true).
-func (d *Desk) WebAccessCheckCode(ctx context.Context, id, typed string) (ok, denied bool, err error) {
+// WebAccessCheck is a typed code's outcome: Ok, or not; Denied after three
+// wrong codes (the request is closed).
+type WebAccessCheck struct {
+	Ok     bool `json:"ok"`
+	Denied bool `json:"denied"`
+}
+
+// WebAccessCheckCode compares the code the user typed.
+func (d *Desk) WebAccessCheckCode(ctx context.Context, id, typed string) (WebAccessCheck, error) {
 	w, err := d.currentApproval(id)
 	if err != nil {
-		return false, false, err
+		return WebAccessCheck{}, err
 	}
-	ok, denied = w.a.CheckCode(ctx, strings.TrimSpace(typed))
-	return ok, denied, nil
+	ok, denied := w.a.CheckCode(ctx, strings.TrimSpace(typed))
+	return WebAccessCheck{Ok: ok, Denied: denied}, nil
 }
 
 // WebAccessDeny denies request id.

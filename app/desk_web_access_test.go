@@ -26,9 +26,7 @@ type webAccessWorld struct {
 	nonceT   []byte
 	approver []byte // the approving device's key, as the service records it
 	finish   map[string]any
-	adds     []map[string]any
-	relay    string
-	hostID   string
+	owner    *fakeherdr.OwnerAccess
 }
 
 func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
@@ -88,28 +86,11 @@ func (w *webAccessWorld) service(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func (w *webAccessWorld) herdr(method string, raw json.RawMessage) (any, *fakeherdr.APIError, bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	switch method {
-	case "owner_access.info":
-		return map[string]any{"type": "owner_access_info", "protocol": 1, "host_id": w.hostID, "node_pub": b64u(make([]byte, 32)),
-			"relay_url": w.relay, "link": map[string]any{"state": "up"}, "max_ttl_secs": 2592000, "scopes": []string{"chat", "terminal"}, "version": "0.9.5"}, nil, true
-	case "owner_access.add":
-		var p map[string]any
-		_ = json.Unmarshal(raw, &p)
-		w.adds = append(w.adds, p)
-		return map[string]any{"type": "owner_access_added", "replaced": []string{}, "grant": map[string]any{
-			"grant_id": "g-1", "device_pub": p["device_pub"], "fingerprint": "SHA256:x", "device": p["device_name"], "scope": p["scope"],
-			"approved_by": p["approved_by"], "created_ms": 1, "expires_ms": 1_000 + uint64(p["ttl_secs"].(float64))*1000, "revoked": false}}, nil, true
-	}
-	return nil, nil, false
-}
-
 func webAccessDesk(t *testing.T, relay string) (*Desk, *webAccessWorld, string) {
 	t.Helper()
+	quietSync(t) // no background account sync reading d.account while signInTo sets it
 	priv, _ := ecdh.X25519().NewPrivateKey(append(make([]byte, 31), 9))
-	w := &webAccessWorld{browser: priv, nonceB: []byte(strings.Repeat("b", 32)), relay: relay, hostID: b64u([]byte("host-id-16-bytes"))}
+	w := &webAccessWorld{browser: priv, nonceB: []byte(strings.Repeat("b", 32)), owner: fakeherdr.NewOwnerAccess(relay)}
 	svc := w.service(t)
 	var published []WebAccessUpdate
 	var pubMu sync.Mutex
@@ -119,7 +100,7 @@ func webAccessDesk(t *testing.T, relay string) (*Desk, *webAccessWorld, string) 
 	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
 		inner := s.Handle
 		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
-			if v, e, ok := w.herdr(method, raw); ok {
+			if v, e, ok := w.owner.Handle(method, raw); ok {
 				return v, e
 			}
 			return inner(method, raw)
@@ -153,27 +134,31 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 	t.Cleanup(func() { webNow = time.Now })
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
 	ctx := context.Background()
-	if _, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "terminal", "7d"); err == nil {
+	if _, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d"); err == nil {
 		t.Fatal("approved before the code was typed")
 	}
-	if ok, denied, err := d.WebAccessCheckCode(ctx, "req-1", w.code(t)); !ok || denied || err != nil {
-		t.Fatalf("browser's code: ok %v denied %v %v", ok, denied, err)
+	if c, err := d.WebAccessCheckCode(ctx, "req-1", w.code(t)); !c.Ok || c.Denied || err != nil {
+		t.Fatalf("browser's code: %+v %v", c, err)
 	}
-	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "terminal", "7d")
+	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d")
 	if err != nil || len(res.Granted) != 1 || len(res.Failed) != 0 || len(res.Skipped) != 0 {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
+	grants := w.grants(t)
+	if len(grants) != 1 {
+		t.Fatalf("grants %v", grants)
+	}
+	g := grants[0]
+	if len(w.owner.Statements) != 1 || w.owner.Statements[0] != "jws-for-"+w.owner.HostID {
+		t.Fatalf("statements sent %v, want this machine's", w.owner.Statements)
+	}
+	if g["scope"] != "chat" || g["device_pub"] != b64u(w.browser.PublicKey().Bytes()) || g["device"] != "Chrome on macOS" ||
+		g["expires_ms"].(float64)-g["created_ms"].(float64) != 7*24*3600*1000 {
+		t.Fatalf("grant %v", g)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.adds) != 1 {
-		t.Fatalf("owner_access.add calls %d", len(w.adds))
-	}
-	add := w.adds[0]
-	if add["account_statement"] != "jws-for-"+w.hostID || add["scope"] != "terminal" || add["ttl_secs"].(float64) != 7*24*3600 ||
-		add["device_pub"] != b64u(w.browser.PublicKey().Bytes()) || add["machine"] != nil {
-		t.Fatalf("owner_access.add %v", add)
-	}
-	if w.finish["outcome"] != "approved" || w.finish["scope"] != "terminal" || w.finish["expires_ms"].(float64) != float64(time.Unix(1_800_000_000, 0).Add(7*24*time.Hour).UnixMilli()) {
+	if w.finish["outcome"] != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(time.Unix(1_800_000_000, 0).Add(7*24*time.Hour).UnixMilli()) {
 		t.Fatalf("finish %v", w.finish)
 	}
 	plain, err := account.OpenEnvelope(x25519Browser{w.browser}, w.approver, 1, w.finish["sealed"].(string))
@@ -181,8 +166,8 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 		t.Fatalf("the browser can't open the list: %v", err)
 	}
 	var env webEnvelope
-	if err := json.Unmarshal(plain, &env); err != nil || len(env.Machines) != 1 || env.Machines[0].HostID != w.hostID ||
-		env.Machines[0].GrantID != "g-1" || env.Machines[0].Relay != "https://guest.herdrup.app" {
+	if err := json.Unmarshal(plain, &env); err != nil || len(env.Machines) != 1 || env.Machines[0].HostID != w.owner.HostID ||
+		env.Machines[0].GrantID != g["grant_id"] || env.Machines[0].Relay != "https://guest.herdrup.app" {
 		t.Fatalf("envelope %s, %v", plain, err)
 	}
 }
@@ -192,18 +177,34 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 func TestWebAccessSkipsAMachineOnAnotherRelay(t *testing.T) {
 	d, w, machine := webAccessDesk(t, "https://relay.example.com")
 	ctx := context.Background()
-	if ok, _, _ := d.WebAccessCheckCode(ctx, "req-1", w.code(t)); !ok {
+	if c, _ := d.WebAccessCheckCode(ctx, "req-1", w.code(t)); !c.Ok {
 		t.Fatal("code refused")
 	}
 	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d")
 	if err != nil || len(res.Granted) != 0 || len(res.Skipped) != 1 || res.Skipped[0].Reason != "relay_not_allowed" {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
+	if g := w.grants(t); len(g) != 0 {
+		t.Fatalf("grants %v", g)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.adds) != 0 || w.finish != nil {
-		t.Fatalf("adds %v finish %v", w.adds, w.finish)
+	if w.finish != nil {
+		t.Fatalf("finish %v", w.finish)
 	}
+}
+
+// grants are the machine's grants, as owner_access.list reports them.
+func (w *webAccessWorld) grants(t *testing.T) []map[string]any {
+	t.Helper()
+	v, e, _ := w.owner.Handle("owner_access.list", nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, _ := json.Marshal(v)
+	var out struct{ Grants []map[string]any }
+	_ = json.Unmarshal(raw, &out)
+	return out.Grants
 }
 
 type x25519Browser struct{ k *ecdh.PrivateKey }

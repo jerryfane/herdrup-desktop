@@ -1,0 +1,24 @@
+/* "Approve a browser?" (webAccess.ts): the folder-naming dialog's neutral surface; no coloured
+   panels, only the app's hairlines. */
+dialog.folder-naming.web-access { width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
+.web-access-lead, .web-access-status { margin: 0 0 var(--space-stack-small); color: var(--color-text-dim); font: 400 13px/1.45 var(--font-app); }
+.web-access-status { color: var(--color-text); }
+.web-access-field { display: flex; flex-direction: column; gap: 6px; margin: var(--space-stack-medium) 0; font: 400 13px var(--font-app); color: var(--color-text-dim); }
+input.web-access-code { width: 8ch; padding: 6px 10px; border: 1px solid var(--color-hairline); border-radius: 8px; background: var(--color-surface); color: var(--color-text); font: 600 22px var(--font-machine); letter-spacing: 0.4em; text-align: center; }
+input.web-access-code:disabled { opacity: 0.5; }
+.web-access-section { margin-top: var(--space-stack-medium); }
+.web-access-section > .settings-section-label { margin: 0 0 6px; }
+.web-access-machines { display: flex; flex-direction: column; border: 1px solid var(--color-hairline); border-radius: 10px; }
+.web-access-machine { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font: 400 14px var(--font-app); }
+.web-access-machine + .web-access-machine { border-top: 1px solid var(--color-hairline-quiet); }
+.web-access-machine-text { display: flex; flex-direction: column; }
+.web-access-dim { margin: 4px 0 0; color: var(--color-text-faint); font: 400 12px/1.4 var(--font-app); }
+.web-access-machines > .web-access-dim { padding: 10px 12px; margin: 0; }
+/* Segments sit 1px apart over the hairline colour, so the dividers are the gaps (no per-segment border). */
+.web-access-segmented { display: inline-flex; gap: 1px; border: 1px solid var(--color-hairline); border-radius: 8px; overflow: hidden; background: var(--color-hairline); }
+.web-access-segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.web-access-segmented label { padding: 5px 12px; background: var(--color-surface-raised); font: 400 13px var(--font-app); color: var(--color-text-dim); cursor: pointer; }
+.web-access-segmented input:checked + label { background: var(--color-surface); color: var(--color-text); }
+.web-access-segmented input:focus-visible + label { outline: 2px solid var(--color-text-faint); outline-offset: -2px; }
+.web-access-problem { margin: var(--space-stack-medium) 0 0; color: var(--color-text); font: 400 13px/1.45 var(--font-app); }
+dialog.folder-naming.web-access .buttons { margin-top: var(--space-stack-large); }

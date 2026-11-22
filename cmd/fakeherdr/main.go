@@ -42,6 +42,7 @@ func main() {
 	machinesFile := flag.String("machines", "", "saved SSH machines for machine.status and `herdr machine federate|unfederate`: a JSON array of objects with herdr's machine.status fields (default: none, and no machine subcommand)")
 	machineFail := flag.String("machine-fail", "", "make `herdr machine federate|unfederate` exit 1 with this stderr")
 	gramsFile := flag.String("grams", "", "seed the Gram store: \"sample\" for the built-in messages (grams.json), or a JSON array of gram messages with optional ago_seconds, file_base64 or file_text (default: empty)")
+	ownerAccess := flag.String("owner-access", "", "serve owner_access.* (herdr #491, web owner access) as a machine on this relay URL, e.g. https://guest.herdrup.app")
 	interactions := flag.Bool("interactions", false, "serve sample transcript and echo terminal (no live commands or model)")
 	askForm := flag.String("ask-form", "", "with -interactions, the pending ask is an omp HTML form (herdr ask-form contract): answerable (ping advertises ask_form), readonly (form_answerable false), moved (agent.answer_form answers ask_form_moved) or old-host (no ask_form capability)")
 	askDismiss := flag.Bool("ask-dismiss", false, "with -interactions, the pending ask is dismissable and agent.dismiss_ask cancels it (herdr #484; ping advertises ask_dismiss); with -guest-relay a guest may dismiss where it may answer")
@@ -219,6 +220,16 @@ func main() {
 	}
 	if *accounts {
 		fixture := fakeherdr.NewAccounts()
+		previous := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if value, err, handled := fixture.Handle(method, params); handled {
+				return value, err
+			}
+			return previous(method, params)
+		}
+	}
+	if *ownerAccess != "" {
+		fixture := fakeherdr.NewOwnerAccess(*ownerAccess)
 		previous := s.Handle
 		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 			if value, err, handled := fixture.Handle(method, params); handled {
