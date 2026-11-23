@@ -6,7 +6,7 @@
 import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestConnection, GuestInvitation, GuestMenuKeyReply,
+ Access as PageAccess, AgentTarget, AgentView, AskFormValue, AvatarPhoto, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestConnection, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
@@ -18,7 +18,7 @@ import { fromB64url } from "../webguest/b64url";
 import { ownerLink, type StatementSource } from "../webguest/owner";
 import type { EnvelopeMachine } from "../webguest/approve";
 import { buildBoard, displayName, isArchived, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
-import { checkTag, ErrUnsupported, GuestClient, untagged } from "./engine";
+import { checkTag, ErrUnsupported, GuestClient, ResultTagError, untagged } from "./engine";
 import { emit } from "./events";
 import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
@@ -901,15 +901,22 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   async gramSenderAvatar(name: string) { return senderFace(name, active?.agents ?? []); },
-  // desk_avatars.go AvatarImage: the agent's photo as a data: URL, fetched over the open link by
-  // its sha256 (agent.avatar.get, which herdr's owner gate allows). avatars.ts caches photos by
-  // sha256 and remembers the ones that fail; "not connected" is asked again later.
-  async avatarImage(target: string, sha256: string): Promise<string> {
+  // desk_avatars.go AvatarImage: the agent's photo, fetched over the open link by its sha256
+  // (agent.avatar.get, which herdr's owner gate allows), or unavailable when herdr's answer is
+  // that there is none to draw for that agent (avatarAnswered, or bytes that are not the photo).
+  // A failure on the way to herdr is an error, which avatars.ts asks again for on its next render.
+  async avatarImage(target: string, sha256: string): Promise<AvatarPhoto> {
    const l = active;
    if (!l) throw new Error("not connected");
-   if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`invalid avatar sha256 ${JSON.stringify(sha256)}`);
-   const image = await l.client.call<{ data_base64?: unknown }>("agent.avatar.get", { target, sha256 }, "agent_avatar_image", "agent_avatar", l.life.signal);
-   return avatarDataURL(typeof image.data_base64 === "string" ? image.data_base64 : "", sha256);
+   if (!/^[0-9a-f]{64}$/.test(sha256)) return { unavailable: true };
+   let image: { data_base64?: unknown };
+   try {
+    image = await l.client.call<{ data_base64?: unknown }>("agent.avatar.get", { target, sha256 }, "agent_avatar_image", "agent_avatar", l.life.signal);
+   } catch (error) {
+    if (avatarAnswered(error)) return { unavailable: true };
+    throw error;
+   }
+   return avatarDataURL(typeof image.data_base64 === "string" ? image.data_base64 : "", sha256).then((url) => ({ url }), () => ({ unavailable: true }));
   },
 
   // ---- Terminal, read-only (desk_interaction.go) ----
@@ -1097,6 +1104,14 @@ export function createGuestDesk(env: DeskEnv) {
  }
 
  return Object.assign(desk, { connectOwner, disconnectOwner });
+}
+
+/** desk_avatars.go definitiveAvatarFailure: whether a failed agent.avatar.get is herdr's answer
+ *  for that agent and photo (its error reply such as not_found, a herdr without agent_avatar, a
+ *  result of another type), remembered for the connection. Anything else, a GuestError of any
+ *  kind among them, failed on the way to herdr and is asked again. */
+export function avatarAnswered(error: unknown): boolean {
+ return error instanceof HerdrAPIError || error instanceof ErrUnsupported || error instanceof ResultTagError;
 }
 
 /** desk_avatars.go loadAvatar + dataURL: agent.avatar.get's bytes as the data: URL the page

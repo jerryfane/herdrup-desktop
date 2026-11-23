@@ -343,6 +343,19 @@ export interface AvatarFace {
   tint: number;
 }
 
+/**
+ * AvatarPhoto is AvatarImage's answer: the photo as a data: URL, or
+ * Unavailable when herdr's answer was that there is none to draw for that
+ * agent and sha256 (definitiveAvatarFailure), which the page remembers for
+ * the connection. A failure on the way to herdr is AvatarImage's error
+ * instead, and the page asks again on its next render: so the page never
+ * reads an error's words to decide.
+ */
+export interface AvatarPhoto {
+  url?: string;
+  unavailable?: boolean;
+}
+
 /** Board is the status board for one machine. */
 export interface Board {
   sections: Section[];
@@ -1530,11 +1543,11 @@ export const Desk = {
     return call("Desk.ArchiveAgent", paneID);
   },
   /**
-   * AvatarImage returns an agent's avatar photo as a data: URL: target is
-   * the row's Avatar.Target and sha256 its Avatar.SHA256. Photos come from
-   * the disk cache, else agent.avatar.get on the current session.
+   * AvatarImage returns an agent's avatar photo: target is the row's
+   * Avatar.Target and sha256 its Avatar.SHA256. Photos come from the disk
+   * cache, else agent.avatar.get on the current session.
    */
-  avatarImage(target: string, sha256: string): Promise<string> {
+  avatarImage(target: string, sha256: string): Promise<AvatarPhoto> {
     return call("Desk.AvatarImage", target, sha256);
   },
   /** Board returns the latest board, or nil before the first list. */

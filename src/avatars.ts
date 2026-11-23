@@ -9,11 +9,12 @@ const photos = new Map<string, string>();
 /** Asks herdr refused, by target and sha256 (photoKey), which herdrup draws as
  * the initial tile: the same photo asked of another agent is asked anew, since
  * a list can move a photo to another pane and herdr answers not_found for the
- * old one. Only herdr's answer is remembered (definitiveAvatarFailure); an ask
- * the way to herdr failed is asked again on the next render. A refusal is
- * remembered for the connection and session only, as Desk's own store does:
- * the connection coming back up, or another session, forgets it
- * (trackPhotoConnections, boardShown) and it is asked again (#36, #42). */
+ * old one. Only herdr's answer is remembered, which Desk.avatarImage says as
+ * its result (unavailable); its error is a failure on the way to herdr, asked
+ * again on the next render. A refusal is remembered for the connection and
+ * session only, as Desk's own store does: the connection coming back up, or
+ * another session, forgets it (trackPhotoConnections, boardShown) and it is
+ * asked again (#36, #42). */
 const failed = new Set<string>();
 /** Asks still out, keyed the same way, so an ask of one agent never waits on
  * another's. A settled ask leaves: its outcome is in photos or failed. */
@@ -70,24 +71,6 @@ export function boardShown(session: string) {
   shownSession = session;
 }
 
-/** herdr's answers to an ask, as either Desk words them (a desktop error
- * reaches the page as its Go text): an API error "herdr: <code>: <message>"
- * (bridge/client.go, webguest/errors.ts HerdrAPIError), such as not_found; a
- * herdr without agent_avatar (ErrUnsupported, engine.go and web/engine.ts); a
- * reply that is not the photo (checkTag, ResultTagError); and bytes that are
- * not an image or not their sha256's (desk_avatars.go, web/desk.ts
- * avatarDataURL), with the desktop's own remembered refusal ("avatar photo
- * unavailable"). */
-const HERDR_ANSWER = /(^|: )herdr: [a-z0-9_.]+: | does not (support|know) |: herdr answered |(^|: )(invalid )?avatar (is|bytes|doesn't|photo|sha256) /;
-
-/** Whether a failed ask is herdr's answer for that agent and photo, kept until
- * the connection or session changes, rather than the way to herdr failing (a
- * socket the relay closed, not connected, a timeout, an abort), which the next
- * render asks again for. */
-export function definitiveAvatarFailure(err: unknown): boolean {
-  return HERDR_ANSWER.test(err instanceof Error ? err.message : String(err));
-}
-
 /** a's photo, asked of a's agent unless that sha has loaded already or herdr
  * refused it this connection. */
 export function loadPhoto(a: Avatar): Promise<string | null> {
@@ -101,17 +84,21 @@ export function loadPhoto(a: Avatar): Promise<string | null> {
     const on = connection;
     const settle = () => { if (loading.get(key) === p) loading.delete(key); };
     p = Desk.avatarImage(a.target ?? "", sha).then(
-      (url) => {
+      (photo) => {
         settle();
-        photos.set(sha, url);
-        return url;
+        if (photo.url) {
+          photos.set(sha, photo.url);
+          return photo.url;
+        }
+        // herdr's answer: remembered for this connection.
+        if (on === connection) failed.add(key);
+        // The same photo may have loaded from another agent meanwhile.
+        return photos.get(sha) ?? null;
       },
       (err) => {
+        // On the way to herdr: asked again on the next render.
         console.error(`avatar ${key}:`, err);
         settle();
-        // Only herdr's answer on this connection is remembered.
-        if (definitiveAvatarFailure(err) && on === connection) failed.add(key);
-        // The same photo may have loaded from another agent meanwhile.
         return photos.get(sha) ?? null;
       },
     );

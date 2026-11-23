@@ -26,10 +26,18 @@ function tagOf(result: unknown): string {
  return typeof result === "object" && result !== null && "type" in result && typeof result.type === "string" ? result.type : "";
 }
 
-/** engine.go checkTag's ResultTagError. */
+/** engine.go ResultTagError: a reply whose result "type" is not the method's. */
+export class ResultTagError extends Error {
+ constructor(readonly method: string, readonly got: string, readonly want: string) {
+  super(`${method}: herdr answered ${JSON.stringify(got)}, want ${want}`);
+  this.name = "ResultTagError";
+ }
+}
+
+/** engine.go checkTag. */
 export function checkTag(method: string, result: unknown, want: string): void {
  const got = tagOf(result);
- if (got !== want) throw new Error(`${method}: herdr answered ${JSON.stringify(got)}, want ${want}`);
+ if (got !== want) throw new ResultTagError(method, got, want);
 }
 
 /** The result without its tag, as Go re-encodes the decoded variant. */

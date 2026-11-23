@@ -158,6 +158,18 @@ func (e *ResultTagError) Error() string {
 	return fmt.Sprintf("%s: herdr answered %q, want %s", e.Method, e.Got, strings.Join(e.Want, " or "))
 }
 
+// DecodeError is a reply herdr sent whole whose result does not decode as
+// the method's (a field of the wrong type, for example): herdr's answer,
+// unlike a failure on the way to it.
+type DecodeError struct {
+	Method string
+	Err    error
+}
+
+func (e *DecodeError) Error() string { return "decode herdr result: " + e.Err.Error() }
+
+func (e *DecodeError) Unwrap() error { return e.Err }
+
 // StreamError is an error envelope herdr wrote on a stream after its
 // acknowledgement, which ends the stream (a guest paused or revoked, for
 // example).
@@ -272,7 +284,7 @@ func (c *Client) doRaw(ctx context.Context, name string, params any) (herdrapi.R
 	}
 	var r herdrapi.ResponseResult
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return nil, nil, fmt.Errorf("decode herdr result: %w", err)
+		return nil, nil, &DecodeError{Method: name, Err: err}
 	}
 	if err := checkTag(m, r); err != nil {
 		return nil, nil, err

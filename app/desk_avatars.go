@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,37 +58,42 @@ type avatarBytesError struct{ error }
 
 // definitiveAvatarFailure reports whether err is herdr's answer for that
 // agent and photo (an API error such as not_found, a herdr without
-// agent_avatar, a reply of another type, bytes that are not the photo), which
-// is remembered for the connection, rather than the way to herdr failing (a
+// agent_avatar, a reply of another type or one that does not decode, bytes
+// that are not the photo, or such an answer remembered), which is
+// remembered for the connection, rather than the way to herdr failing (a
 // dropped connection, a timeout), which the next ask tries again.
 func definitiveAvatarFailure(err error) bool {
 	var api *bridge.APIError
 	var unsupported *engine.ErrUnsupported
 	var tag *engine.ResultTagError
+	var decode *engine.DecodeError
 	var bytes avatarBytesError
-	return errors.As(err, &api) || errors.As(err, &unsupported) || errors.As(err, &tag) || errors.As(err, &bytes)
+	return errors.Is(err, errAvatarFailed) || errors.As(err, &api) || errors.As(err, &unsupported) ||
+		errors.As(err, &tag) || errors.As(err, &decode) || errors.As(err, &bytes)
 }
 
 func avatarDir(dataDir string) string { return filepath.Join(dataDir, "agent-avatars") }
-
-// readAvatarFile reads a cached photo; tests stand in for it to interleave a
-// write with a read.
-var readAvatarFile = os.ReadFile
 
 // readAvatar returns the cached bytes for sha, or nil when they are missing
 // or do not hash to sha. A damaged file is a miss and stays: it is never
 // removed here, since by the time the bytes are checked another ask may have
 // put verified bytes in its place (storeAvatar renames over it), and a path
 // removed then would be theirs (#366).
-func readAvatar(dir, sha string) []byte {
-	data, err := readAvatarFile(filepath.Join(dir, sha))
+func readAvatar(dir, sha string) []byte { return readAvatarWith(os.ReadFile, dir, sha) }
+
+// readAvatarWith is readAvatar reading with read, which a test stands in for
+// to interleave a write with one read.
+func readAvatarWith(read func(string) ([]byte, error), dir, sha string) []byte {
+	data, err := read(filepath.Join(dir, sha))
 	if err != nil || !matchesSHA(data, sha) {
 		return nil
 	}
 	return data
 }
 
-// storeAvatar writes data under sha when it hashes to sha.
+// storeAvatar writes data under sha when it hashes to sha, in place of what
+// is there. A read-only entry (which Windows will not rename over) is made
+// writable first, as well as it can be.
 func storeAvatar(dir, sha string, data []byte) error {
 	if !matchesSHA(data, sha) {
 		return avatarBytesError{fmt.Errorf("avatar bytes do not match sha256 %s", sha)}
@@ -104,7 +110,9 @@ func storeAvatar(dir, sha string, data []byte) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp.Name(), filepath.Join(dir, sha))
+		dst := filepath.Join(dir, sha)
+		_ = os.Chmod(dst, 0o600)
+		err = os.Rename(tmp.Name(), dst)
 	}
 	if err != nil {
 		_ = os.Remove(tmp.Name())
@@ -185,6 +193,11 @@ func (s *avatarStore) get(ctx context.Context, dir string, owner any, target, sh
 	}
 }
 
+// loadAvatar returns sha's photo from the disk cache, else fetches it, checks
+// the bytes are its sha256's and an image, and publishes them to the cache.
+// Publishing is the cache's business: verified bytes are the photo whether or
+// not the file could be written, so a failed write is logged and is no
+// failure of the ask (#375).
 func loadAvatar(ctx context.Context, dir, sha string, fetch func(context.Context) (string, error)) (string, error) {
 	if data := readAvatar(dir, sha); data != nil {
 		return dataURL(data)
@@ -197,20 +210,37 @@ func loadAvatar(ctx context.Context, dir, sha string, fetch func(context.Context
 	if err != nil {
 		return "", avatarBytesError{fmt.Errorf("avatar is not base64: %w", err)}
 	}
+	if !matchesSHA(data, sha) {
+		return "", avatarBytesError{fmt.Errorf("avatar bytes do not match sha256 %s", sha)}
+	}
 	url, err := dataURL(data)
 	if err != nil {
 		return "", err
 	}
 	if err := storeAvatar(dir, sha, data); err != nil {
-		return "", err
+		log.Printf("avatar %s: cache: %v", sha, err)
 	}
 	return url, nil
 }
 
-// AvatarImage returns an agent's avatar photo as a data: URL: target is
-// the row's Avatar.Target and sha256 its Avatar.SHA256. Photos come from
-// the disk cache, else agent.avatar.get on the current session.
-func (d *Desk) AvatarImage(ctx context.Context, target, sha256 string) (string, error) {
+// AvatarPhoto is AvatarImage's answer: the photo as a data: URL, or
+// Unavailable when herdr's answer was that there is none to draw for that
+// agent and sha256 (definitiveAvatarFailure), which the page remembers for
+// the connection. A failure on the way to herdr is AvatarImage's error
+// instead, and the page asks again on its next render: so the page never
+// reads an error's words to decide.
+type AvatarPhoto struct {
+	URL         string `json:"url,omitempty"`
+	Unavailable bool   `json:"unavailable,omitempty"`
+}
+
+// AvatarImage returns an agent's avatar photo: target is the row's
+// Avatar.Target and sha256 its Avatar.SHA256. Photos come from the disk
+// cache, else agent.avatar.get on the current session.
+func (d *Desk) AvatarImage(ctx context.Context, target, sha256 string) (AvatarPhoto, error) {
+	if !herdr.ValidSHA256(sha256) {
+		return AvatarPhoto{Unavailable: true}, nil
+	}
 	d.mu.Lock()
 	l := d.link
 	var at boardSession
@@ -221,12 +251,12 @@ func (d *Desk) AvatarImage(ctx context.Context, target, sha256 string) (string, 
 	}
 	d.mu.Unlock()
 	if at.client == nil {
-		return "", errNotConnected
+		return AvatarPhoto{}, errNotConnected
 	}
 	// Failures belong to this connection and session, as herdrup's
 	// AgentAvatarDirectory does (one per connected home, made anew on each
 	// reconnect or session switch): a reconnect asks again (#36).
-	return d.avatars.get(ctx, avatarDir(d.dir), at, target, sha256, func(ctx context.Context) (string, error) {
+	url, err := d.avatars.get(ctx, avatarDir(d.dir), at, target, sha256, func(ctx context.Context) (string, error) {
 		view, err := at.client.ForSession(session)
 		if err != nil {
 			return "", err
@@ -237,4 +267,12 @@ func (d *Desk) AvatarImage(ctx context.Context, target, sha256 string) (string, 
 		}
 		return img.DataBase64, nil
 	})
+	switch {
+	case err == nil:
+		return AvatarPhoto{URL: url}, nil
+	case definitiveAvatarFailure(err):
+		return AvatarPhoto{Unavailable: true}, nil
+	default:
+		return AvatarPhoto{}, err
+	}
 }
