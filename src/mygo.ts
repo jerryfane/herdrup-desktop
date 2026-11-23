@@ -1302,6 +1302,15 @@ export interface WebAccessCheck {
   problem?: string;
 }
 
+/**
+ * WebAccessLength is one length the sheet offers: the ID it sends back to
+ * WebAccessApprove, and how long a grant made with it lasts.
+ */
+export interface WebAccessLength {
+  id: string;
+  seconds: number;
+}
+
 /** WebAccessMachine is one saved machine as the sheet lists it. */
 export interface WebAccessMachine {
   id: string;
@@ -2419,8 +2428,8 @@ export const Desk = {
   },
   /**
    * WebAccessApprove adds a grant for the browser on each chosen machine and
-   * sends it the sealed list. scope is "chat" or "terminal"; length one of
-   * webAccessTTLs. Machines that fail are reported, not fatal; with none
+   * sends it the sealed list. scope is "chat" or "terminal"; length the ID of
+   * one of webAccessLengths. Machines that fail are reported, not fatal; with none
    * granted the request stays open so the user can retry or deny. After a lost
    * answer it sends the same report again, whatever was chosen.
    */
@@ -2440,6 +2449,10 @@ export const Desk = {
    */
   webAccessDeny(id: string): Promise<void> {
     return call("Desk.WebAccessDeny", id);
+  },
+  /** WebAccessLengths lists the lengths the sheet offers, shortest first. */
+  webAccessLengths(): Promise<WebAccessLength[]> {
+    return call("Desk.WebAccessLengths");
   },
   /** WebAccessMachines lists the saved machines the sheet offers. */
   webAccessMachines(): Promise<WebAccessMachine[]> {

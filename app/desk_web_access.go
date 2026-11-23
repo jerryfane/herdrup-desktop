@@ -38,9 +38,23 @@ import (
 // webNow is the clock for grant expiry and envelope seq; tests replace it.
 var webNow = time.Now
 
-// webAccessTTLs are the lengths the sheet offers, longest first (owner
-// decision: 30 days at most).
-var webAccessTTLs = map[string]time.Duration{"1d": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
+// webAccessLengths are the lengths the sheet offers, shortest first (owner
+// decision: 30 days at most). This is the one place a length's duration is
+// set: the grant takes it, and the sheet shows and previews it from
+// WebAccessLengths.
+var webAccessLengths = []WebAccessLength{{ID: "1d", Seconds: 24 * 3600}, {ID: "7d", Seconds: 7 * 24 * 3600}, {ID: "30d", Seconds: 30 * 24 * 3600}}
+
+// WebAccessLength is one length the sheet offers: the ID it sends back to
+// WebAccessApprove, and how long a grant made with it lasts.
+type WebAccessLength struct {
+	ID      string `json:"id"`
+	Seconds int64  `json:"seconds"`
+}
+
+// WebAccessLengths lists the lengths the sheet offers, shortest first.
+func (d *Desk) WebAccessLengths() []WebAccessLength {
+	return slices.Clone(webAccessLengths)
+}
 
 // WebAccessRequest is one browser waiting for approval, for the sheet.
 type WebAccessRequest struct {
@@ -423,8 +437,8 @@ const (
 var errNoTimeLeft = errors.New("not reached before this request expires")
 
 // WebAccessApprove adds a grant for the browser on each chosen machine and
-// sends it the sealed list. scope is "chat" or "terminal"; length one of
-// webAccessTTLs. Machines that fail are reported, not fatal; with none
+// sends it the sealed list. scope is "chat" or "terminal"; length the ID of
+// one of webAccessLengths. Machines that fail are reported, not fatal; with none
 // granted the request stays open so the user can retry or deny. After a lost
 // answer it sends the same report again, whatever was chosen.
 func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []string, scope, length string) (WebAccessResult, error) {
@@ -447,10 +461,11 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 	if scope != "chat" && scope != "terminal" {
 		return res, errWebAccessScope
 	}
-	ttl, ok := webAccessTTLs[length]
-	if !ok {
+	at := slices.IndexFunc(webAccessLengths, func(l WebAccessLength) bool { return l.ID == length })
+	if at < 0 {
 		return res, fmt.Errorf("unknown length %q", length)
 	}
+	ttl := time.Duration(webAccessLengths[at].Seconds) * time.Second
 	if len(machineIDs) == 0 {
 		return res, errNoMachines
 	}
