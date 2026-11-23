@@ -48,17 +48,48 @@ func startupReport(after time.Duration, answer any, err error) string {
 // watchStartup probes the page every startupWatchEvery, startupWatchTimes at
 // most, until it has rendered, and logs each probe that finds it hasn't.
 func watchStartup(win *mygo.Window) {
-	go func() {
-		for i := 1; i <= startupWatchTimes; i++ {
-			time.Sleep(startupWatchEvery)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			answer, err := win.Page().EvalContext(ctx, startupProbe)
-			cancel()
-			line := startupReport(time.Duration(i)*startupWatchEvery, answer, err)
+	eval := func(ctx context.Context) (any, error) { return win.Page().EvalContext(ctx, startupProbe) }
+	go runStartupWatch(eval, startupWatchEvery, startupAnswerWithin, startupWatchTimes, log.Print)
+}
+
+// startupAnswerWithin is how long a probe's answer is waited for.
+const startupAnswerWithin = 5 * time.Second
+
+// runStartupWatch probes with eval every `every`, `times` at most, until the
+// page has rendered. Each answer is waited for on the watch's own deadline
+// (within), not the evaluation's: mygo waits for the native UI thread before an
+// evaluation sees its context, so a held UI thread would otherwise leave
+// nothing in the log. At most one evaluation is in flight: a tick that finds the
+// last one still out waits on it again instead of starting another.
+func runStartupWatch(eval func(context.Context) (any, error), every, within time.Duration, times int, logf func(...any)) {
+	type result struct {
+		answer any
+		err    error
+	}
+	var pending chan result
+	for i := 1; i <= times; i++ {
+		time.Sleep(every)
+		after := time.Duration(i) * every
+		if pending == nil {
+			ch := make(chan result, 1)
+			pending = ch
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), within)
+				defer cancel()
+				answer, err := eval(ctx)
+				ch <- result{answer, err}
+			}()
+		}
+		select {
+		case r := <-pending:
+			pending = nil
+			line := startupReport(after, r.answer, r.err)
 			if line == "" {
 				return
 			}
-			log.Print(line)
+			logf(line)
+		case <-time.After(within):
+			logf(fmt.Sprintf("startup: no first render after %s; no answer within %s (the window's UI thread or the page is held)", after, within))
 		}
-	}()
+	}
 }
