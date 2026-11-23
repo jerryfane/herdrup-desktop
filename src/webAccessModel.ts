@@ -62,16 +62,6 @@ export function canApprove(code: string, machines: number): boolean {
  return code.length === 4 && machines > 0;
 }
 
-/** The choices an approval is sent with. */
-export interface SentChoices { machines: readonly string[]; scope: string; length: string }
-
-/** What Approve sends, from its one piece of state: unsettled, the choices of an approval whose
- *  answer was lost. Try again resends exactly those (Go resends that report) without checking the
- *  code again; otherwise it's a fresh approval of the choices on screen, after the code check. */
-export function approveSend(unsettled: SentChoices | null, onScreen: () => SentChoices): { choices: SentChoices; fresh: boolean } {
- return unsettled ? { choices: unsettled, fresh: false } : { choices: onScreen(), fresh: true };
-}
-
 const SKIP_REASONS: Record<string, string> = {
  needs_update: "needs a newer herdr",
  unsupported: "can't share with the web (Windows)",

@@ -11,8 +11,8 @@ import type { WebAccessLength, WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
-import { ACCESS_CHOICES, approveSend, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines,
- skipReason, slotSelection, timeSummary, wrongCode, type SentChoices, type WebAccessRequestView } from "./webAccessModel";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
+ slotSelection, timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
  *  calls a minute per account, and a request lasts 10 minutes. */
@@ -110,8 +110,10 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
  *  every pointer event in the window lands in it). The pointer that pressed keeps the press through
  *  its release and its click: only its moves count, its release stops following, and its cancel,
  *  or a close, forgets the press, which then isn't a click. Another pointer, even another device's
- *  primary one, can't take the press over or end it, and its click isn't this press's. */
-export function followPresses(owner: EventTarget) {
+ *  primary one, can't take the press over or end it, and its click isn't this press's. The code
+ *  captures the pressing pointer, so its release and cancel arrive even off the window; if the
+ *  capture is lost before the release, or win loses focus, the press is over. */
+export function followPresses(owner: EventTarget, win: EventTarget) {
  let press: { pointer: number; gesture: CodePress; down: boolean } | null = null;
  const ours = (event: Event): PointerEvent | null => {
   const e = event as PointerEvent;
@@ -125,6 +127,8 @@ export function followPresses(owner: EventTarget) {
  const drop = () => { stop(); press = null; };
  owner.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } });
  owner.addEventListener("pointercancel", event => { if (ours(event)) drop(); });
+ owner.addEventListener("lostpointercapture", event => { if (ours(event)) drop(); });
+ win.addEventListener("blur", drop);
  return {
   down(e: PointerEvent): void {
    // A press still down belongs to its pointer; the same pointer pressing again means its release
@@ -132,6 +136,7 @@ export function followPresses(owner: EventTarget) {
    if (!e.isPrimary || e.button !== 0 || (press?.down && press.pointer !== e.pointerId)) return;
    press = { pointer: e.pointerId, gesture: new CodePress(e.clientX, e.clientY), down: true };
    owner.addEventListener("pointermove", follow);
+   (e.target as Element | null)?.setPointerCapture(e.pointerId);
   },
   /** Whether this click ends a plain click on the code; the press is done either way. A click the
    *  browser says came from another pointer (pointerId) leaves the press alone. */
@@ -141,7 +146,7 @@ export function followPresses(owner: EventTarget) {
    drop();
    return plain;
   },
-  close: drop,
+  close: () => { drop(); win.removeEventListener("blur", drop); },
  };
 }
 
@@ -199,7 +204,7 @@ export function initWebAccess(): void {
   // (followPresses). The second press of a double click lands on the digit the first one took,
   // which would start dragging that selection, so it's dropped first and the press selects the
   // code as in any field.
-  const presses = followPresses(dialog);
+  const presses = followPresses(dialog, window);
   code.addEventListener("pointerdown", event => presses.down(event));
   code.addEventListener("mousedown", event => {
    if (event.detail > 1) code.setSelectionRange(code.selectionStart, code.selectionStart);
@@ -230,8 +235,9 @@ export function initWebAccess(): void {
   const choices = choiceRows(list, ticked.size === 0, lengths);
   // While an approval is out, and after a lost answer until it settles, Machines, Access and For
   // are held. unsettled is the choices of an approval whose answer was lost: Try again resends
-  // exactly those (Go resends that report), the button says so, and For describes them.
-  let unsettled: SentChoices | null = null;
+  // exactly those (Go resends that report) without checking the code again, the button says so,
+  // and For describes them.
+  let unsettled: { machines: string[]; scope: string; length: string } | null = null;
   const freeze = (on: boolean) => {
    choices.freeze(on);
    for (const [box, m] of machineBoxes) box.disabled = on || !m.available;
@@ -279,12 +285,13 @@ export function initWebAccess(): void {
   };
   close.onclick = () => { finished = true; dialog.close(); };
   approve.onclick = () => {
-   const { choices: out, fresh } = approveSend(unsettled, () => ({ machines: [...ticked], ...choices.choice }));
-   if (fresh) freeze(true);
+   const again = unsettled;
+   const out = again ?? { machines: [...ticked], ...choices.choice };
+   if (!again) freeze(true);
    void run(async () => {
     try {
      say("");
-     if (fresh) {
+     if (!again) {
       const check = await Desk.webAccessCheckCode(req.id, code.value);
       if (!check.ok) {
        say(wrongCode(check));
@@ -297,7 +304,7 @@ export function initWebAccess(): void {
      approve.textContent = "Approving…";
      unsettled = null;
      try {
-      const result = await Desk.webAccessApprove(req.id, [...out.machines], out.scope, out.length);
+      const result = await Desk.webAccessApprove(req.id, out.machines, out.scope, out.length);
       const { done: approved, unsure, lines } = resultLines(result);
       say(lines.join(" "));
       if (unsure) unsettled = out;

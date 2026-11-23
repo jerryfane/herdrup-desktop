@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { choiceRows, followPresses, type SheetClock } from "../src/webAccess";
-import { ACCESS_CHOICES, approveSend, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
+import { choiceRows, followPresses, initWebAccess, type SheetClock } from "../src/webAccess";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 
 const req = (id: string, claimed = "no", expiresIn = 600) => ({ id, browserName: "Chrome on macOS", claimed, expiresIn });
@@ -215,29 +215,33 @@ test("once grants exist For says the length sent and the machines' recorded expi
  expect(radios.some(r => r.disabled)).toBe(false);
 });
 
-/** An owner that keeps the pointermove listeners it holds, to see the press stop being followed. */
+/** A target that keeps the listeners it holds, to see the press stop being followed. */
 class Owner extends EventTarget {
- readonly moves = new Set<unknown>();
+ readonly held = new Map<string, Set<unknown>>();
+ count(type: string) { return this.held.get(type)?.size ?? 0; }
  override addEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: AddEventListenerOptions | boolean) {
-  if (type === "pointermove") this.moves.add(l);
+  if (!this.held.has(type)) this.held.set(type, new Set());
+  this.held.get(type)!.add(l);
   super.addEventListener(type, l, o);
  }
  override removeEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: EventListenerOptions | boolean) {
-  if (type === "pointermove") this.moves.delete(l);
+  this.held.get(type)?.delete(l);
   super.removeEventListener(type, l, o);
  }
 }
 
 test("the dialog follows one primary press until release, cancel or close; a cancelled or closed press is no click", () => {
- const owner = new Owner();
- const presses = followPresses(owner);
+ const owner = new Owner(), win = new Owner();
+ const presses = followPresses(owner, win);
+ const captured: number[] = [];
+ const code = { setPointerCapture: (id: number) => captured.push(id) };
  const pointer = (type: string, x: number, more = {}) => Object.assign(new Event(type), { clientX: x, clientY: 40, isPrimary: true, button: 0, pointerId: 1, ...more });
  const at = (type: string, x: number, more = {}) => owner.dispatchEvent(pointer(type, x, more));
- const down = (x: number, more = {}) => presses.down(pointer("pointerdown", x, more) as unknown as PointerEvent);
+ const down = (x: number, more = {}) => presses.down({ clientX: x, clientY: 40, isPrimary: true, button: 0, pointerId: 1, target: code, ...more } as unknown as PointerEvent);
  const click = { detail: 1, shiftKey: false };
  // Out and back from where it went down is a drag (#362).
  down(200); at("pointermove", 60); at("pointermove", 200); at("pointerup", 200);
- expect(owner.moves.size).toBe(0);
+ expect(owner.count("pointermove")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
  // Moves after the release aren't this press's.
  down(200); at("pointerup", 200); at("pointermove", 60);
@@ -245,7 +249,7 @@ test("the dialog follows one primary press until release, cancel or close; a can
  // Another pointer's moves, release and cancel don't touch the press (#376 review): it's still
  // followed, and released where it went down it's a plain click.
  down(200); at("pointermove", 60, { pointerId: 2 }); at("pointerup", 60, { pointerId: 2 }); at("pointercancel", 60, { pointerId: 2 });
- expect(owner.moves.size).toBe(1);
+ expect(owner.count("pointermove")).toBe(1);
  at("pointerup", 200);
  expect(presses.plainClick(click)).toBe(true);
  // Another device's primary pointer (a pen or a touch while the mouse is held) can't take the
@@ -261,24 +265,136 @@ test("the dialog follows one primary press until release, cancel or close; a can
  // The same pointer pressing again (its release never reached the sheet) starts a new press.
  down(200); at("pointermove", 60); down(200); at("pointerup", 200);
  expect(presses.plainClick(click)).toBe(true);
- // A press that was cancelled, or that the sheet closed on, stops being followed and is no click.
+ // A press that was cancelled stops being followed and is no click.
  down(200); at("pointercancel", 200);
- expect(owner.moves.size).toBe(0);
- expect(presses.plainClick(click)).toBe(false);
- down(200); presses.close();
- expect(owner.moves.size).toBe(0);
+ expect(owner.count("pointermove")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
  // Only the primary pointer's primary button presses.
  down(200, { button: 2 }); down(200, { isPrimary: false });
- expect(owner.moves.size).toBe(0);
+ expect(owner.count("pointermove")).toBe(0);
+ expect(presses.plainClick(click)).toBe(false);
+ // The code captures the pressing pointer, so its release arrives even off the window (#389 review).
+ expect(captured.length).toBeGreaterThan(0);
+ expect(captured.every(id => id === 1)).toBe(true);
+ // Capture lost before the release (the window took the pointer): the press is over, and a touch
+ // pressing next is followed and its tap is a click.
+ down(200); at("lostpointercapture", 200);
+ expect(owner.count("pointermove")).toBe(0);
+ down(200, { pointerId: 3 }); at("pointerup", 200, { pointerId: 3 });
+ expect(presses.plainClick({ ...click, pointerId: 3 })).toBe(true);
+ // Capture is always lost after the release; that keeps the press for its click.
+ down(200); at("pointerup", 200); at("lostpointercapture", 200);
+ expect(presses.plainClick(click)).toBe(true);
+ // The window losing focus ends a press still down.
+ down(200); win.dispatchEvent(new Event("blur"));
+ down(200, { pointerId: 3 }); at("pointerup", 200, { pointerId: 3 });
+ expect(presses.plainClick({ ...click, pointerId: 3 })).toBe(true);
+ // A press the sheet closed on stops being followed and is no click, and the window isn't watched.
+ expect(win.count("blur")).toBe(1);
+ down(200); presses.close();
+ expect(owner.count("pointermove")).toBe(0);
+ expect(win.count("blur")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
 });
 
-test("Try again resends the choices of the approval whose answer was lost; otherwise Approve sends what's on screen, after the code check", () => {
- const sent = { machines: ["a", "b"], scope: "terminal", length: "30d" };
- const onScreen = { machines: ["a"], scope: "chat", length: "1d" };
- expect(approveSend(null, () => onScreen)).toEqual({ choices: onScreen, fresh: true });
- expect(approveSend(sent, () => onScreen)).toEqual({ choices: sent, fresh: false });
+// ---- The sheet itself (initWebAccess) on a fake document and app runtime ----
+
+/** The DOM the sheet uses: elements with plain properties, attributes, children, class toggles,
+ *  listeners, the dialog's showModal and close, and querySelectorAll("input"). */
+class SheetElement {
+ className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
+ inputMode = ""; autocomplete = ""; maxLength = 0; placeholder = ""; selectionStart = 0; selectionEnd = 0;
+ onclick: (() => void) | null = null; onchange: (() => void) | null = null; oninput: (() => void) | null = null;
+ parent: SheetElement | null = null;
+ children: SheetElement[] = [];
+ readonly attributes = new Map<string, string>();
+ readonly listeners = new Map<string, ((e: unknown) => void)[]>();
+ readonly classList = { toggle: () => {} };
+ constructor(readonly tagName: string) {}
+ setAttribute(n: string, v: string) { this.attributes.set(n, String(v)); }
+ getAttribute(n: string) { return this.attributes.get(n) ?? null; }
+ append(...nodes: SheetElement[]) { for (const n of nodes) { n.parent = this; this.children.push(n); } }
+ appendChild(n: SheetElement) { this.append(n); return n; }
+ remove() { if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); this.parent = null; }
+ addEventListener(type: string, l: (e: unknown) => void) { this.listeners.set(type, [...this.listeners.get(type) ?? [], l]); }
+ removeEventListener() {}
+ focus() {}
+ setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }
+ getBoundingClientRect() { return { right: 0 }; }
+ showModal() {}
+ close() { for (const l of this.listeners.get("close") ?? []) l({}); }
+ all(): SheetElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
+ querySelectorAll(selector: string) { return this.all().filter(n => n !== this && n.tagName === selector); }
+}
+
+test("Approve checks the code and sends the choices; after a lost answer Try again resends them without a code check (#389 review)", async () => {
+ const swap: Record<string, unknown> = {};
+ const set = (k: string, v: unknown) => { swap[k] = (globalThis as Record<string, unknown>)[k]; (globalThis as Record<string, unknown>)[k] = v; };
+ const body = new SheetElement("body");
+ const onDocument = new Map<string, () => void>();
+ const runtime = new Map<string, (p: unknown) => void>();
+ const calls: [string, ...unknown[]][] = [];
+ let approvals = 0;
+ set("document", { createElement: (t: string) => new SheetElement(t), body, visibilityState: "visible", addEventListener: (t: string, l: () => void) => onDocument.set(t, l) });
+ set("window", new EventTarget());
+ set("devicePixelRatio", 1);
+ // The sheet's poll and the For row's clock: held, not run.
+ set("setTimeout", () => 0);
+ set("clearTimeout", () => {});
+ set("mygo", {
+  on: (name: string, l: (p: unknown) => void) => { runtime.set(name, l); return () => runtime.delete(name); },
+  call: async (method: string, ...args: unknown[]) => {
+   calls.push([method, ...args]);
+   switch (method) {
+    case "Desk.AccountState": return { signedIn: true };
+    case "Desk.WebAccessOffered": return true;
+    case "Desk.WebAccessRequests": return [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
+    case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }];
+    case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
+    case "Desk.WebAccessStart": return undefined;
+    case "Desk.WebAccessCheckCode": return { ok: true, left: 3, denied: false };
+    case "Desk.WebAccessApprove": return ++approvals === 1
+     ? { granted: ["hetzner"], skipped: [], failed: [], unsure: true, problem: "account service: 503", expires: [Date.UTC(2026, 11, 22)] }
+     : { granted: ["hetzner"], skipped: [], failed: [], expires: [Date.UTC(2026, 11, 22)] };
+    default: return new Promise(() => {});
+   }
+  },
+ });
+ const settle = async () => {
+  for (let i = 0; i < 20; i++) { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
+ };
+ try {
+  initWebAccess();
+  onDocument.get("visibilitychange")!();
+  await settle();
+  runtime.get("web-access:update")!({ id: "r1", state: "ready" });
+  const dialog = body.children.find(c => c.tagName === "dialog")!;
+  const nodes = () => dialog.all();
+  const code = nodes().find(n => n.className === "web-access-code")!;
+  const main = () => nodes().find(n => n.tagName === "button" && n.className === "")!;
+  const sent = (method: string) => calls.filter(c => c[0] === method).map(c => c.slice(1));
+  code.value = "1234"; code.oninput!();
+  expect(main().textContent).toBe("Approve");
+  main().onclick!();
+  await settle();
+  expect(sent("Desk.WebAccessCheckCode")).toEqual([["r1", "1234"]]);
+  expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"]]);
+  // The answer was lost: Try again, the choices held.
+  expect(main().textContent).toBe("Try again");
+  expect(main().disabled).toBe(false);
+  expect(nodes().filter(n => n.type === "radio" || n.type === "checkbox").every(n => n.disabled)).toBe(true);
+  // Even were For moved on screen meanwhile, Try again resends what the lost approval sent, and
+  // doesn't check the code again.
+  const oneDay = nodes().find(n => n.type === "radio" && n.value === "1d")!; oneDay.checked = true; oneDay.onchange!();
+  main().onclick!();
+  await settle();
+  expect(sent("Desk.WebAccessCheckCode")).toHaveLength(1);
+  expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"], ["r1", ["a"], "terminal", "30d"]]);
+  expect(nodes().find(n => n.className === "web-access-status")!.textContent).toBe("Approved. The browser can open your machines now.");
+  expect(main().hidden).toBe(true);
+ } finally {
+  for (const [k, v] of Object.entries(swap)) (globalThis as Record<string, unknown>)[k] = v;
+ }
 });
 
 test("the line under the rows says what Approve turns on and why a machine can't be ticked, with Machines closed", () => {
