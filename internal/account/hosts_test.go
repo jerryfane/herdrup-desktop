@@ -2,6 +2,7 @@ package account
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
 	"slices"
 	"testing"
@@ -84,17 +85,20 @@ func TestAForkKeepsTheLowerRev(t *testing.T) {
 // A machine deleted on another device leaves this one; a mirror built from
 // pulls applies tombstones and full pulls replace it.
 func TestDeletedElsewhereIsGoneAndTheMirrorFollowsPulls(t *testing.T) {
-	m := Mirror{}.Apply(Pull{Rev: 2, Full: true, Items: []Item{hostItem(1, "a", false), hostItem(2, "b", false)}})
-	m = m.Apply(Pull{Rev: 3, Items: []Item{hostItem(1, "", true)}})
+	m, _ := Mirror{}.Apply(Pull{Rev: 2, Full: true, Items: []Item{hostItem(1, "a", false), hostItem(2, "b", false)}})
+	m, gone := m.Apply(Pull{Rev: 3, Items: []Item{hostItem(1, "", true)}})
+	if !maps.Equal(gone.Hosts, map[string]int64{hostItem(1, "", true).ID: 1}) || len(gone.Prompts) != 0 {
+		t.Fatalf("tombstones %+v", gone)
+	}
 	if m.Rev != 3 || len(m.Hosts) != 1 || m.Hosts[0].Body.Host != "b" {
 		t.Fatalf("mirror %+v", m)
 	}
-	gone := hostItem(1, "a", false).ID
-	plan, _ := PlanHosts([]LocalHost{{SyncID: gone, Body: HostBody{Username: "root", Host: "a"}}}, m.Hosts, map[string]bool{gone: true})
+	id := hostItem(1, "a", false).ID
+	plan, _ := PlanHosts([]LocalHost{{SyncID: id, Body: HostBody{Username: "root", Host: "a"}}}, m.Hosts, map[string]bool{id: true})
 	if !slices.Equal(plan.Gone, []int{0}) || len(plan.Push) != 0 {
 		t.Fatalf("%+v", plan)
 	}
-	full := m.Apply(Pull{Rev: 7, Full: true, Items: []Item{hostItem(5, "e", false)}})
+	full, _ := m.Apply(Pull{Rev: 7, Full: true, Items: []Item{hostItem(5, "e", false)}})
 	if len(full.Hosts) != 1 || full.Hosts[0].Body.Host != "e" {
 		t.Fatalf("a full pull replaces the mirror: %+v", full)
 	}
@@ -143,15 +147,57 @@ func TestAPullAppliesItsItemsInRevisionOrder(t *testing.T) {
 	slices.Reverse(listed)
 	for _, items := range [][]Item{pages, listed} {
 		for _, full := range []bool{true, false} {
-			if m := (Mirror{}).Apply(Pull{Rev: 4, Full: full, Items: items}); len(m.Hosts) != 0 || len(m.Prompts) != 0 {
+			if m, gone := (Mirror{}).Apply(Pull{Rev: 4, Full: full, Items: items}); len(m.Hosts) != 0 || len(m.Prompts) != 0 ||
+				!maps.Equal(gone.Hosts, map[string]int64{idA: 3}) || !maps.Equal(gone.Prompts, map[string]int64{idB: 4}) {
 				t.Fatalf("full %v, items %+v: %+v; want both deletes to stand", full, items, m)
 			}
 		}
 	}
 	held := Mirror{Rev: 9, Hosts: []RemoteHost{{ID: idA, Rev: 9, Body: HostBody{Host: "new", Username: "root"}}},
 		Prompts: []RemotePrompt{{ID: idB, Rev: 9, Body: PromptBody{Text: "new"}}}}
-	m := held.Apply(Pull{Rev: 9, Items: []Item{host(5, ""), prompt(6, "old")}})
+	m, gone := held.Apply(Pull{Rev: 9, Items: []Item{host(5, ""), prompt(6, "old")}})
 	if len(m.Hosts) != 1 || m.Hosts[0].Body.Host != "new" || len(m.Prompts) != 1 || m.Prompts[0].Body.Text != "new" {
 		t.Fatalf("older items over newer ones: %+v; want the held ones", m)
+	}
+	// A tombstone older than the held item still says the account held it.
+	if !maps.Equal(gone.Hosts, map[string]int64{idA: 5}) || len(gone.Prompts) != 0 {
+		t.Fatalf("tombstones %+v; want the skipped host's", gone)
+	}
+}
+
+// A machine whose id the account held and doesn't now goes when unchanged
+// here, and is pushed again under its id when edited here since.
+func TestAnEditedMachineTheAccountLostIsPushedAgain(t *testing.T) {
+	local := []LocalHost{
+		{SyncID: idA, Body: HostBody{Username: "root", Host: "a"}},
+		{SyncID: idB, Body: HostBody{Username: "root", Host: "b"}, Edited: true},
+	}
+	plan, _ := PlanHosts(local, nil, map[string]bool{idA: true, idB: true})
+	if !slices.Equal(plan.Gone, []int{0}) || len(plan.Push) != 1 || plan.Push[1] != idB {
+		t.Fatalf("%+v; want the unchanged one gone and the edited one pushed as %s", plan, idB)
+	}
+}
+
+// The service's copies of turned-down changes replace the mirror's, all
+// in one go (none: the item goes; a tombstone: the item goes; a live row:
+// it replaces the copy held), and a collection no conflict names is left
+// as it is.
+func TestAdoptTakesTheServicesCopiesAndLeavesOtherCollectionsAlone(t *testing.T) {
+	m := Mirror{
+		Hosts:   []RemoteHost{{ID: idA, Rev: 1, Body: HostBody{Host: "a", Username: "root"}}},
+		Prompts: []RemotePrompt{{ID: idA, Rev: 1, Body: PromptBody{Text: "old"}}, {ID: idB, Rev: 1, Body: PromptBody{Text: "gone"}}},
+	}
+	live := Item{Collection: "prompts", ID: idA, Rev: 5, Body: json.RawMessage(`{"text":"new"}`)}
+	tomb := Item{Collection: "prompts", ID: idB, Rev: 6, Deleted: true}
+	got := m.Adopt([]Conflict{
+		{Collection: "prompts", ID: idA, Server: &live},
+		{Collection: "prompts", ID: idB, Server: &tomb},
+		{Collection: "prompts", ID: idC, Server: nil},
+	})
+	if len(got.Prompts) != 1 || got.Prompts[0].ID != idA || got.Prompts[0].Rev != 5 || got.Prompts[0].Body.Text != "new" {
+		t.Fatalf("prompts %+v; want only the service's copy of %s", got.Prompts, idA)
+	}
+	if len(got.Hosts) != 1 || &got.Hosts[0] != &m.Hosts[0] {
+		t.Fatalf("hosts %+v; want the mirror's own, untouched", got.Hosts)
 	}
 }

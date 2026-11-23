@@ -29,10 +29,12 @@ func IdentityOf(b HostBody) HostIdentity {
 }
 
 // LocalHost is one saved machine as the merge sees it: its sync id ("" when
-// it has none yet) and its synced fields.
+// it has none yet), its synced fields, and whether they were edited here
+// since this device last agreed them with the account.
 type LocalHost struct {
 	SyncID string
 	Body   HostBody
+	Edited bool
 }
 
 // RemoteHost is a live (not deleted) hosts item.
@@ -68,8 +70,9 @@ type HostsPlan struct {
 //   - a machine otherwise matching an item's identity takes its id, the
 //     account's id winning over a different local one;
 //   - a machine whose id the account held and doesn't now was deleted
-//     elsewhere; one whose id it never acknowledged is pushed again; one
-//     without an id gets a new one to push.
+//     elsewhere, unless it was edited here since: then the edit stands and
+//     is pushed again, as is a machine whose id the account never
+//     acknowledged; one without an id gets a new one to push.
 func PlanHosts(local []LocalHost, mirror []RemoteHost, known map[string]bool) (HostsPlan, error) {
 	plan := HostsPlan{Adopt: map[int]string{}, Push: map[int]string{}}
 	sorted := append([]RemoteHost(nil), mirror...)
@@ -115,7 +118,7 @@ func PlanHosts(local []LocalHost, mirror []RemoteHost, known map[string]bool) (H
 			continue
 		}
 		switch {
-		case l.SyncID != "" && known[l.SyncID]:
+		case l.SyncID != "" && known[l.SyncID] && !l.Edited:
 			plan.Gone = append(plan.Gone, i)
 		case l.SyncID != "":
 			plan.Push[i] = l.SyncID
@@ -139,33 +142,79 @@ type Mirror struct {
 	Prompts []RemotePrompt `json:"prompts,omitempty"`
 }
 
-// Apply folds a pull into the mirror.
-func (m Mirror) Apply(p Pull) Mirror {
-	return Mirror{
-		Rev:     p.Rev,
-		Hosts:   fold(m.Hosts, p, "hosts", hostRow, func(h RemoteHost) (string, int64) { return h.ID, h.Rev }),
-		Prompts: fold(m.Prompts, p, "prompts", promptRow, func(h RemotePrompt) (string, int64) { return h.ID, h.Rev }),
+// Tombstones are the items a pull deleted, by collection: id to the
+// tombstone's revision (the newest, when the pull holds more). The account
+// held each of them.
+type Tombstones struct {
+	Hosts   map[string]int64
+	Prompts map[string]int64
+}
+
+// Apply folds a pull into the mirror, in revision order (the pull is
+// ordered once for both collections), and returns the pull's tombstones.
+func (m Mirror) Apply(p Pull) (Mirror, Tombstones) {
+	items := slices.Clone(p.Items)
+	slices.SortStableFunc(items, func(a, b Item) int { return cmp.Compare(a.Rev, b.Rev) })
+	next, gone := Mirror{Rev: p.Rev}, Tombstones{}
+	next.Hosts, gone.Hosts = fold(m.Hosts, p.Full, items, "hosts", hostRow, func(h RemoteHost) (string, int64) { return h.ID, h.Rev })
+	next.Prompts, gone.Prompts = fold(m.Prompts, p.Full, items, "prompts", promptRow, func(h RemotePrompt) (string, int64) { return h.ID, h.Rev })
+	return next, gone
+}
+
+// Adopt makes each conflict's Server row the account's copy of its item,
+// whatever the mirror held: the service's answer to changes it turned
+// down. nil (no such item) and a tombstone leave the item out. A
+// collection no conflict names is left as it is.
+func (m Mirror) Adopt(conflicts []Conflict) Mirror {
+	m.Hosts = adoptRows(m.Hosts, conflicts, "hosts", hostRow, func(h RemoteHost) string { return h.ID })
+	m.Prompts = adoptRows(m.Prompts, conflicts, "prompts", promptRow, func(p RemotePrompt) string { return p.ID })
+	return m
+}
+
+// adoptRows is Adopt for one collection.
+func adoptRows[T any](held []T, conflicts []Conflict, collection string, row func(Item) (T, bool), id func(T) string) []T {
+	rows := map[string]*Item{}
+	for _, c := range conflicts {
+		if c.Collection == collection {
+			rows[c.ID] = c.Server
+		}
 	}
+	if len(rows) == 0 {
+		return held
+	}
+	out := slices.DeleteFunc(slices.Clone(held), func(it T) bool { _, ok := rows[id(it)]; return ok })
+	for _, it := range rows {
+		if it == nil || it.Deleted {
+			continue
+		}
+		if r, ok := row(*it); ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // fold patches one collection's held items with a pull's (all of them when
-// full) in revision order, each replacing the one held: a pull's pages are
-// read one at a time, so an item can show live on one page and deleted, at
-// a newer revision, on a later one. An item older than the one held is
-// skipped; a live one row can't read leaves the held one as it is.
-func fold[T any](held []T, p Pull, collection string, row func(Item) (T, bool), key func(T) (string, int64)) []T {
+// full), given in revision order, each replacing the one held: a pull's
+// pages are read one at a time, so an item can show live on one page and
+// deleted, at a newer revision, on a later one. An item older than the one
+// held is skipped; a live one row can't read leaves the held one as it is.
+// deleted are the collection's tombstones in the pull, skipped ones too.
+func fold[T any](held []T, full bool, items []Item, collection string, row func(Item) (T, bool), key func(T) (string, int64)) (out []T, deleted map[string]int64) {
+	deleted = map[string]int64{}
 	byID := map[string]T{}
-	if !p.Full {
+	if !full {
 		for _, it := range held {
 			id, _ := key(it)
 			byID[id] = it
 		}
 	}
-	items := slices.Clone(p.Items)
-	slices.SortStableFunc(items, func(a, b Item) int { return cmp.Compare(a.Rev, b.Rev) })
 	for _, it := range items {
 		if it.Collection != collection {
 			continue
+		}
+		if it.Deleted {
+			deleted[it.ID] = it.Rev
 		}
 		if h, ok := byID[it.ID]; ok {
 			if _, rev := key(h); rev > it.Rev {
@@ -178,7 +227,6 @@ func fold[T any](held []T, p Pull, collection string, row func(Item) (T, bool), 
 			byID[it.ID] = r
 		}
 	}
-	var out []T
 	for _, it := range byID {
 		out = append(out, it)
 	}
@@ -187,7 +235,7 @@ func fold[T any](held []T, p Pull, collection string, row func(Item) (T, bool), 
 		_, b := key(out[j])
 		return a < b
 	})
-	return out
+	return out, deleted
 }
 
 // NewHostID is a random version-4 UUID, lowercase as the service requires.
@@ -199,23 +247,6 @@ func NewHostID() (string, error) {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
-}
-
-// RemoteHosts splits pulled hosts items into live ones and deleted ids.
-func RemoteHosts(items []Item) (live []RemoteHost, deleted []string) {
-	for _, it := range items {
-		if it.Collection != "hosts" {
-			continue
-		}
-		if it.Deleted {
-			deleted = append(deleted, it.ID)
-			continue
-		}
-		if h, ok := hostRow(it); ok {
-			live = append(live, h)
-		}
-	}
-	return live, deleted
 }
 
 // hostRow reads a live hosts item; one without a host or username is none

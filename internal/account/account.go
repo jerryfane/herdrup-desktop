@@ -26,10 +26,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -139,6 +141,9 @@ type Client struct {
 	access        string
 	accessAt      time.Time // when the access token stops working
 	flight        *refresh
+
+	nowMu sync.Mutex
+	nowMs int64 // the newest now_ms of a sync answer (sync.go noteNow)
 }
 
 // refresh is one refresh in flight; done closes when it has an answer.
@@ -515,17 +520,51 @@ func (c *Client) expiry(seconds int64) time.Time {
 // request was made for: its work is stale and is not sent.
 var ErrAccountChanged = errors.New("account: the signed-in account changed")
 
-// accessTokenFor is AccessToken, for account acct only: a token is returned
-// only while acct's session is the current one, so work planned for one
-// account never reaches another.
-func (c *Client) accessTokenFor(ctx context.Context, acct string) (string, error) {
+// Round is one session of an account: work a sync round does for it is
+// bound to it (Client.Round). A refreshed credential is the same session;
+// a sign-out, or a sign-in again (even to the same account), ends it.
+type Round struct {
+	Account string
+	epoch   uint64
+	pinned  bool // false: any session of Account (the other requests)
+}
+
+// Round is the current session, for work bound to it; false when signed
+// out.
+func (c *Client) Round() (Round, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.loadLocked(); err != nil {
+		return Round{}, false, err
+	}
+	if c.saved == nil {
+		return Round{}, false, nil
+	}
+	return Round{Account: c.saved.AccountID, epoch: c.epoch, pinned: true}, true, nil
+}
+
+// Holds is whether r's session is still the current one.
+func (c *Client) Holds(r Round) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.holdsLocked(r)
+}
+
+func (c *Client) holdsLocked(r Round) bool {
+	return c.saved != nil && c.saved.AccountID == r.Account && (!r.pinned || c.epoch == r.epoch)
+}
+
+// accessTokenFor is AccessToken, for r only: a token is returned only
+// while r's session is the current one, so work planned for one session
+// never reaches another.
+func (c *Client) accessTokenFor(ctx context.Context, r Round) (string, error) {
 	token, err := c.AccessToken(ctx)
 	if err != nil {
 		return "", err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.saved == nil || c.saved.AccountID != acct || c.access != token {
+	if !c.holdsLocked(r) || c.access != token {
 		return "", ErrAccountChanged
 	}
 	return token, nil
@@ -536,12 +575,37 @@ func (c *Client) accessTokenFor(ctx context.Context, acct string) (string, error
 // refreshed elsewhere in this process, or revoked): it is dropped and the
 // request retried once with a fresh one, still for acct only.
 func (c *Client) authed(ctx context.Context, acct, method, path string, body, out any) error {
+	return c.authedEach(ctx, Round{Account: acct}, method, path, func() (any, error) { return body, nil }, nil, out)
+}
+
+// authedEach is authed for r (Round) with the request's body made by body
+// just before each dispatch, the replay after a 401 included; an error
+// from body ends the request unsent. wroteNothing, when set, hears of each
+// dispatch that provably wrote nothing (exchange): a refusal as soon as
+// its status line is read, before its body and before any refresh or
+// replay. An error from it ends the request. body may wait (on a lock):
+// the session is checked again after it, and a dispatch whose session
+// ended meanwhile is not sent, and wrote nothing. The replay after a 401
+// stays in r's session: a refresh is, a sign-in again is not.
+func (c *Client) authedEach(ctx context.Context, r Round, method, path string, body func() (any, error), wroteNothing func() error, out any) error {
 	for attempt := 0; ; attempt++ {
-		token, err := c.accessTokenFor(ctx, acct)
+		token, err := c.accessTokenFor(ctx, r)
 		if err != nil {
 			return err
 		}
-		err = c.send(ctx, method, path, token, body, out)
+		b, err := body()
+		if err != nil {
+			return err
+		}
+		if !c.Holds(r) {
+			if wroteNothing != nil {
+				if err := wroteNothing(); err != nil {
+					return err
+				}
+			}
+			return ErrAccountChanged
+		}
+		err = c.exchange(ctx, method, path, token, b, wroteNothing, out)
 		var api *APIError
 		if attempt == 0 && errors.As(err, &api) && api.Status == http.StatusUnauthorized {
 			c.mu.Lock()
@@ -562,6 +626,27 @@ func (c *Client) post(ctx context.Context, path, bearer string, body any, out an
 }
 
 func (c *Client) send(ctx context.Context, method, path, bearer string, body any, out any) error {
+	return c.exchange(ctx, method, path, bearer, body, nil, out)
+}
+
+// exchange is send, with wroteNothing (when set) called when the request
+// provably wrote nothing: on a 4xx status line, before the answer's body
+// is read (a refusal stalled or cut in its body is still known as one),
+// on any exit before the request is handed to the transport (its encoding
+// or building failed), or on a failure before the request had a
+// connection (httptrace GotConn never fired: ctx done before it went out,
+// a dial or TLS failure). Once it has a connection, Go can't tell whether
+// any of it was written, so a failure then proves nothing. An error from
+// wroteNothing is returned in place of the request's.
+func (c *Client) exchange(ctx context.Context, method, path, bearer string, body any, wroteNothing func() error, out any) (err error) {
+	handed := false
+	defer func() {
+		if !handed && wroteNothing != nil {
+			if hookErr := wroteNothing(); hookErr != nil {
+				err = hookErr
+			}
+		}
+	}()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -569,6 +654,10 @@ func (c *Client) send(ctx context.Context, method, path, bearer string, body any
 			return err
 		}
 		reader = bytes.NewReader(raw)
+	}
+	var connected atomic.Bool
+	if wroteNothing != nil {
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.service+path, reader)
 	if err != nil {
@@ -580,23 +669,38 @@ func (c *Client) send(ctx context.Context, method, path, bearer string, body any
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
+	handed = true
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if wroteNothing != nil && !connected.Load() {
+			if hookErr := wroteNothing(); hookErr != nil {
+				return hookErr
+			}
+		}
 		return err
 	}
 	defer resp.Body.Close()
+	if wroteNothing != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		if err := wroteNothing(); err != nil {
+			return err
+		}
+	}
 	// A sync page holds up to 500 items of the account's 1 MB of bodies
 	// (prompts are up to 8 KB each), so an answer may run past a megabyte.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return err
-	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// The status decides; the code only when the body could be read
+		// (Code "" for a body cut short).
 		var answer struct {
 			Error string `json:"error"`
 		}
-		_ = json.Unmarshal(raw, &answer)
+		if err == nil {
+			_ = json.Unmarshal(raw, &answer)
+		}
 		return &APIError{Status: resp.StatusCode, Code: answer.Error}
+	}
+	if err != nil {
+		return err
 	}
 	if out == nil {
 		return nil

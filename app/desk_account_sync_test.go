@@ -7,14 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,7 +27,8 @@ import (
 // syncWorker is the account service's sync as AccountService src/sync.ts
 // keeps it: one revision per write, last write wins, tombstones for deletes,
 // the hosts and prompts allowlists and field rules (a bad change refuses the
-// whole push, 400), and the prompts cap (403).
+// whole push, 400), base_rev (a stale change is not written and comes back
+// in conflicts) and the account's caps (403 quota, the push rolled back).
 type syncWorker struct {
 	mu      sync.Mutex
 	rev     int64
@@ -37,8 +41,16 @@ type syncWorker struct {
 	onPull func()
 	// onPush, when set, runs once inside the next push, before it is applied.
 	onPush func()
-	// pushes counts the pushes the service took.
-	pushes int
+	// pushes counts the pushes the service took; posts every push asked,
+	// taken or not.
+	pushes, posts int
+	// rateLimit, when set, is the most pushes asked in one window
+	// (windowPosts; a test starts the next by zeroing it): more get 429,
+	// as the service's 30 a minute.
+	rateLimit, windowPosts int
+	// afterPush, when set, runs once after the next push is applied and
+	// before it is answered.
+	afterPush func()
 	// pageSize, when set, is the most changes one pull page holds; a page
 	// with more after it carries a cursor (the last change's rev).
 	pageSize int
@@ -52,14 +64,187 @@ type syncWorker struct {
 	// ends; stalled hears of each held pull.
 	stall, stalled chan struct{}
 	// quotaBytes, when set, is the account's storage quota in prompt-body
-	// bytes: a push past it is refused whole (403 quota).
-	quotaBytes int
+	// bytes, and maxItems its cap on live items: a push past either is
+	// refused whole (403 quota).
+	quotaBytes, maxItems int
+	// floor is the highest revision whose tombstones were pruned (sync.ts
+	// sync_floor): a pull from below it is told to start over (410).
+	floor int64
+	// asSecond counts requests made with the second account's bearer
+	// (acct-2, signed in by /v1/auth/handoff).
+	asSecond int
+	// unauthorizeNextPush answers the next push 401 (an access token that
+	// stopped working), as the service does; onRefresh, when set, runs
+	// once inside the next credential refresh.
+	unauthorizeNextPush bool
+	onRefresh           func()
+	// failNextRefresh answers the next credential refresh 503.
+	failNextRefresh bool
+	// maxPushBytes, when set, is a push body limit below the service's
+	// 256 KiB.
+	maxPushBytes int
+	// serverAhead sets the service's clock (its answers' now_ms) this far
+	// from the device's; noNow leaves now_ms out (a service without
+	// themartianapp/herdrup#826). A push past its not_after is refused
+	// (409 expired) before anything is written.
+	serverAhead time.Duration
+	noNow       bool
+	// breakNextRefusal, when set, answers the next push with that status
+	// and cuts the answer off inside its body; cutRefusals cuts every
+	// refusal so.
+	breakNextRefusal int
+	cutRefusals      bool
+	// handoffAccount is the account a sign-in redeemed here opens (acct-2
+	// when ""; "acct" is a sign-in again to the first one).
+	handoffAccount string
+	// holdNext, when set, makes the next push a late one: the worker keeps
+	// it unapplied (held, oldest first), closes holdNext once it has it,
+	// and answers nothing until the request ends; landHeld applies it
+	// later.
+	holdNext chan struct{}
+	held     [][]byte
 }
 
 // startOver begins the account's history again, as after a restored
 // database. w.mu must be held (as in a hook).
 func (w *syncWorker) startOver() {
-	w.items, w.rev = map[string]account.Item{}, 0
+	w.restoreTo(0)
+}
+
+// restoreTo takes the account back to revision rev, as after a database
+// restored from then: what was written after it is gone. w.mu must be held
+// (as in a hook).
+func (w *syncWorker) restoreTo(rev int64) {
+	for id, it := range w.items {
+		if it.Rev > rev {
+			delete(w.items, id)
+		}
+	}
+	w.rev = rev
+}
+
+// holdNextPush makes the next push a late one (holdNext); the channel
+// closes once the worker has it.
+func (w *syncWorker) holdNextPush() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.holdNext = make(chan struct{})
+	return w.holdNext
+}
+
+// landHeld applies the oldest push holdNextPush kept, as a write that
+// reaches the service late.
+func (w *syncWorker) landHeld() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.landHeldLocked()
+}
+
+// landHeldLocked is landHeld with w.mu held (as in a hook). A push past
+// its not_after is refused, unwritten.
+func (w *syncWorker) landHeldLocked() {
+	var body struct {
+		Changes  []pushChange
+		NotAfter int64 `json:"not_after"`
+	}
+	_ = json.Unmarshal(w.held[0], &body)
+	if !w.expired(body.NotAfter) {
+		w.write(body.Changes)
+	}
+	w.held = w.held[1:]
+}
+
+// nowMs is the service's clock (serverAhead). w.mu must be held.
+func (w *syncWorker) nowMs() int64 { return time.Now().Add(w.serverAhead).UnixMilli() }
+
+// expired is whether a push with notAfter (0: none) is past it, as the
+// service judges inside the write. w.mu must be held.
+func (w *syncWorker) expired(notAfter int64) bool { return notAfter != 0 && w.nowMs() > notAfter }
+
+// withNow adds the service's clock as of now (read before the answer's
+// rows) to a sync answer, unless noNow. w.mu must be held.
+func (w *syncWorker) withNow(answer map[string]any, now int64) map[string]any {
+	if !w.noNow {
+		answer["now_ms"] = now
+	}
+	return answer
+}
+
+// cutAnswer answers r with status and an error body cut off midway.
+func cutAnswer(rw http.ResponseWriter, r *http.Request, status int) {
+	_, _ = io.Copy(io.Discard, r.Body)
+	conn, buf, err := rw.(http.Hijacker).Hijack()
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(buf, "HTTP/1.1 %d Refused\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"err", status)
+	_ = buf.Flush()
+	_ = conn.Close()
+}
+
+// pushChange is one change of a push as the worker reads it.
+type pushChange struct {
+	Collection string          `json:"collection"`
+	ID         string          `json:"id"`
+	BaseRev    *int64          `json:"base_rev"`
+	Deleted    bool            `json:"deleted"`
+	Body       json.RawMessage `json:"body"`
+}
+
+// write applies changes as sync.ts does: deletes first; one with base_rev
+// only while its item is still at that revision (0: no item, not even a
+// tombstone); a delete only of an item held; an unchanged item is not
+// written again. Past a cap nothing is written (ok false). Each change is
+// applied when the account now holds what it asked for, otherwise it is a
+// conflict with the account's copy. w.mu must be held.
+func (w *syncWorker) write(changes []pushChange) (applied, conflicts []map[string]any, ok bool) {
+	next, rev := maps.Clone(w.items), w.rev
+	ordered := slices.Concat(
+		slices.DeleteFunc(slices.Clone(changes), func(c pushChange) bool { return !c.Deleted }),
+		slices.DeleteFunc(slices.Clone(changes), func(c pushChange) bool { return c.Deleted }))
+	for _, c := range ordered {
+		held, exists := next[c.ID]
+		if c.BaseRev != nil && *c.BaseRev != held.Rev {
+			continue
+		}
+		if c.Deleted && !exists || exists && held.Deleted == c.Deleted && bytes.Equal(held.Body, c.Body) {
+			continue
+		}
+		rev++
+		it := account.Item{Collection: c.Collection, ID: c.ID, Rev: rev, UpdatedMs: w.nowMs(), Deleted: c.Deleted}
+		if !c.Deleted {
+			it.Body = c.Body
+		}
+		next[c.ID] = it
+	}
+	prompts, items, stored := 0, 0, 0
+	for _, it := range next {
+		if it.Deleted {
+			continue
+		}
+		items++
+		if it.Collection == "prompts" {
+			prompts++
+			stored += len(it.Body)
+		}
+	}
+	if prompts > account.PromptsCap || w.maxItems > 0 && items > w.maxItems || w.quotaBytes > 0 && stored > w.quotaBytes {
+		return nil, nil, false
+	}
+	w.items, w.rev = next, rev
+	for _, c := range changes {
+		it, exists := next[c.ID]
+		if c.Deleted && (!exists || it.Deleted) || !c.Deleted && exists && !it.Deleted && bytes.Equal(it.Body, c.Body) {
+			applied = append(applied, map[string]any{"collection": c.Collection, "id": c.ID, "rev": it.Rev})
+			continue
+		}
+		var server any
+		if exists {
+			server = it
+		}
+		conflicts = append(conflicts, map[string]any{"collection": c.Collection, "id": c.ID, "server": server})
+	}
+	return applied, conflicts, true
 }
 
 // stallPulls holds pulls from now until release (at the latest, when the
@@ -88,6 +273,13 @@ func (w *syncWorker) tombstone(id string) {
 	w.rev++
 	it := w.items[id]
 	w.items[id] = account.Item{Collection: it.Collection, ID: id, Rev: w.rev, Deleted: true}
+}
+
+// prune drops item id's tombstone and raises the floor past it, as the
+// service's hourly prune does (sync.ts pruneTombstones). w.mu must be held.
+func (w *syncWorker) prune(id string) {
+	w.floor = max(w.floor, w.items[id].Rev)
+	delete(w.items, id)
 }
 
 func (w *syncWorker) live() map[string]account.Item {
@@ -119,23 +311,75 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.URL.Path == "/v1/sync" && r.Method == http.MethodPost {
+		w.mu.Lock()
+		hold := w.holdNext
+		w.holdNext = nil
+		w.mu.Unlock()
+		if hold != nil {
+			raw, _ := io.ReadAll(r.Body)
+			w.mu.Lock()
+			w.held = append(w.held, raw)
+			w.mu.Unlock()
+			close(hold)
+			<-r.Context().Done()
+			return
+		}
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	reply := func(status int, v any) {
+		if w.cutRefusals && status >= 400 {
+			cutAnswer(rw, r, status)
+			return
+		}
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(status)
 		_ = json.NewEncoder(rw).Encode(v)
 	}
+	// A request carrying the second account's bearer (signed in by the
+	// handoff below) is counted: this account's data never goes to it.
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer a1."+fmt.Sprintf("%022d", 2)+".") {
+		w.asSecond++
+	}
 	switch {
 	case r.URL.Path == "/v1/auth/refresh":
 		w.n++
-		acct := w.account
+		if hook := w.onRefresh; hook != nil {
+			w.onRefresh = nil
+			hook()
+		}
+		if w.failNextRefresh {
+			w.failNextRefresh = false
+			reply(503, map[string]string{"error": "unavailable"})
+			return
+		}
+		acct, marker := w.account, 1
 		if acct == "" {
 			acct = "acct"
 		}
-		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", 1, w.n), "access_expires_in": 3600,
-			"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, w.n), "refresh_expires_in": 1})
+		var body struct {
+			Refresh string `json:"refresh_token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.HasPrefix(body.Refresh, "r1."+fmt.Sprintf("%022d", 2)+".") {
+			acct, marker = "acct-2", 2
+		}
+		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", marker, w.n), "access_expires_in": 3600,
+			"refresh_token": fmt.Sprintf("r1.%022d.%043d", marker, w.n), "refresh_expires_in": 1})
+	case r.URL.Path == "/v1/auth/handoff":
+		// A sign-in redeemed here: to another account (acct-2), unless
+		// handoffAccount says this one again.
+		w.n++
+		acct, marker := "acct-2", 2
+		if w.handoffAccount == "acct" {
+			acct, marker = "acct", 1
+		}
+		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", marker, w.n), "access_expires_in": 3600,
+			"refresh_token": fmt.Sprintf("r1.%022d.%043d", marker, w.n), "refresh_expires_in": 1})
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet:
+		// sync.ts reads now_ms before the snapshot it pages.
+		now := w.nowMs()
 		if hook := w.onPull; hook != nil {
 			w.onPull = nil
 			hook()
@@ -148,9 +392,11 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			}
 			since, _ = strconv.ParseInt(cursor, 10, 64)
 		}
-		if since > w.rev {
-			// A revision past the account's is another history (a
-			// restored database): start over.
+		if since > w.rev || since > 0 && since < w.floor {
+			// sync.ts handlePull: a revision past the account's is another
+			// history (a restored database), and one below the floor may
+			// have missed a pruned delete: start over. A client at the floor
+			// or above gets an incremental pull.
 			reply(410, map[string]string{"error": "reset_required"})
 			return
 		}
@@ -167,19 +413,34 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			answer["more"], answer["cursor"] = true, strconv.FormatInt(changes[len(changes)-1].Rev, 10)
 		}
 		answer["changes"] = changes
-		reply(200, answer)
+		reply(200, w.withNow(answer, now))
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodPost:
+		w.posts++
+		if status := w.breakNextRefusal; status != 0 {
+			w.breakNextRefusal = 0
+			cutAnswer(rw, r, status)
+			return
+		}
+		if w.unauthorizeNextPush {
+			w.unauthorizeNextPush = false
+			reply(401, map[string]string{"error": "invalid_token"})
+			return
+		}
+		if w.windowPosts++; w.rateLimit > 0 && w.windowPosts > w.rateLimit {
+			reply(429, map[string]string{"error": "rate_limited"})
+			return
+		}
 		var body struct {
-			Changes []struct {
-				Collection string          `json:"collection"`
-				ID         string          `json:"id"`
-				Deleted    bool            `json:"deleted"`
-				Body       json.RawMessage `json:"body"`
-			}
+			Changes  []pushChange
+			NotAfter int64 `json:"not_after"`
 		}
 		raw, _ := io.ReadAll(r.Body)
 		// sync.ts MAX_SYNC_BODY_BYTES and MAX_CHANGES: a bigger push is refused whole.
-		if len(raw) > 256*1024 {
+		limit := 256 * 1024
+		if w.maxPushBytes > 0 {
+			limit = w.maxPushBytes
+		}
+		if len(raw) > limit {
 			reply(413, map[string]string{"error": "too_large"})
 			return
 		}
@@ -225,53 +486,27 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		prompts := 0
-		for id, it := range w.items {
-			if it.Collection == "prompts" && !it.Deleted && !ids["prompts/"+id] {
-				prompts++
-			}
+		// The deadline is checked inside the write itself (#826).
+		if w.expired(body.NotAfter) {
+			reply(409, map[string]string{"error": "expired"})
+			return
 		}
-		for _, c := range body.Changes {
-			if c.Collection == "prompts" && !c.Deleted {
-				prompts++
-			}
-		}
-		if prompts > account.PromptsCap {
+		applied, conflicts, ok := w.write(body.Changes)
+		if !ok {
 			reply(403, map[string]string{"error": "quota"})
 			return
 		}
-		if w.quotaBytes > 0 {
-			stored := 0
-			for id, it := range w.items {
-				if it.Collection == "prompts" && !it.Deleted && !ids["prompts/"+id] {
-					stored += len(it.Body)
-				}
-			}
-			for _, c := range body.Changes {
-				if c.Collection == "prompts" && !c.Deleted {
-					stored += len(c.Body)
-				}
-			}
-			if stored > w.quotaBytes {
-				reply(403, map[string]string{"error": "quota"})
-				return
-			}
-		}
-		for _, c := range body.Changes {
-			w.rev++
-			it := account.Item{Collection: c.Collection, ID: c.ID, Rev: w.rev, Deleted: c.Deleted}
-			if !c.Deleted {
-				it.Body = c.Body
-			}
-			w.items[c.ID] = it
-		}
 		w.pushes++
+		if hook := w.afterPush; hook != nil {
+			w.afterPush = nil
+			hook()
+		}
 		if w.losePush {
 			w.losePush = false
 			reply(503, map[string]string{"error": "unavailable"})
 			return
 		}
-		reply(200, map[string]any{"rev": w.rev, "applied": []any{}, "conflicts": []any{}})
+		reply(200, w.withNow(map[string]any{"rev": w.rev, "applied": applied, "conflicts": conflicts}, w.nowMs()))
 	default:
 		reply(404, map[string]string{"error": "not_found"})
 	}
@@ -1045,7 +1280,15 @@ func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
 	mac := device(t, srv)
 	long := savePrompt(t, mac, "", "", strings.Repeat("x", 8193))
 	good := savePrompt(t, mac, "", "", "fits")
-	syncEach(t, mac)
+	// The prompt the service would refuse stays here, unsent, and the round
+	// says so (it doesn't count as a good sync).
+	before, _ := mac.AccountSyncStatus()
+	if err := mac.SyncMachines(context.Background()); !errors.Is(err, errUnsendable) {
+		t.Fatalf("%v; want the round to report the prompt it can't send", err)
+	}
+	if after, _ := mac.AccountSyncStatus(); after != before || !mac.AccountState().SyncFailed {
+		t.Fatalf("last sync %+v (was %+v), needs attention %v; want unchanged, true", after, before, mac.AccountState().SyncFailed)
+	}
 	live := w.livePrompts()
 	if _, sent := live[long.ID]; sent || live[good.ID] == "" {
 		t.Fatalf("the account holds %v; want only the prompt that fits", live)
@@ -1054,7 +1297,7 @@ func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
 		t.Fatalf("mac's prompts after the sync: %+v; want both kept", got)
 	}
 	empty := SavedPrompt{ID: "00000000-0000-4000-8000-000000000009"}
-	if _, changes, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
+	if _, changes, _, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
 		t.Fatalf("an empty prompt was sent: %+v", changes)
 	}
 
@@ -1062,7 +1305,7 @@ func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
 		w.seedPrompt(fmt.Sprintf("00000000-0000-4000-9000-%012d", i), `{"text":"seeded"}`)
 	}
 	over := savePrompt(t, mac, "", "", "one too many")
-	syncEach(t, mac)
+	syncRefusedForQuota(t, mac)
 	if _, sent := w.livePrompts()[over.ID]; sent || len(w.livePrompts()) != account.PromptsCap {
 		t.Fatalf("the account holds %d prompts (the last one sent: %v); want the cap", len(w.livePrompts()), sent)
 	}
@@ -1157,14 +1400,16 @@ func TestManyLongPromptsFitTheServicesPushLimit(t *testing.T) {
 
 // #273 review: a prompt within 8 KB of text whose stored body passes the
 // service's 16 KiB item limit (quotes take two bytes each) stays here and
-// doesn't stop the rest of the push.
+// doesn't stop the rest of the push; the round reports it.
 func TestAPromptTooBigToStoreStaysHere(t *testing.T) {
 	quietSync(t)
 	w, srv := newWorker(t, "")
 	mac := device(t, srv)
 	quotes := savePrompt(t, mac, "", "", "x"+strings.Repeat(`"`, 8191))
 	good := savePrompt(t, mac, "", "", "fits")
-	syncEach(t, mac)
+	if err := mac.SyncMachines(context.Background()); !errors.Is(err, errUnsendable) {
+		t.Fatalf("%v; want the round to report the prompt it can't send", err)
+	}
 	live := w.livePrompts()
 	if _, sent := live[quotes.ID]; sent || live[good.ID] == "" {
 		t.Fatalf("the account holds %v; want only the prompt that fits", live)
@@ -1527,6 +1772,2932 @@ func TestAPromptPastTheQuotaStaysHereWhileADeletionAndAPromptThatFitGo(t *testin
 		state, err := mac.loadSyncState()
 		if err != nil || len(state.PromptDeletes) != 0 || !mac.AccountState().SyncFailed {
 			t.Fatalf("round %d: pending deletes %v (%v), needs attention %v", round, state.PromptDeletes, err, mac.AccountState().SyncFailed)
+		}
+	}
+}
+
+// #390 review: an upload of v1 the service received lands late, after v2,
+// saved since, was acknowledged. v1 was based on the account holding no
+// such prompt, so it is not written: both here and in the account the
+// prompt stays v2.
+func TestALateUploadDoesNotEraseANewerAcknowledgedEdit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	v2 := savePrompt(t, mac, p.ID, "", "v2")
+	syncEach(t, mac)
+	w.landHeld()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != v2 || !strings.Contains(body, `"v2"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want v2 in both", got, body)
+	}
+}
+
+// #390 review: the same when v2's answer was lost and a pull showed it
+// landed before v1 did.
+func TestALateUploadDoesNotEraseANewerEditAPullShowed(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	v2 := savePrompt(t, mac, p.ID, "", "v2")
+	w.mu.Lock()
+	w.losePush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a sync whose push answer was lost reported success")
+	}
+	syncEach(t, mac)
+	w.landHeld()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != v2 || !strings.Contains(body, `"v2"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want v2 in both", got, body)
+	}
+}
+
+// #390 review: two devices take in the same prompt id (kept from the
+// page's localStorage). The mac's create lands late, after linux's: it is
+// not written, and the mac takes the account's copy.
+func TestALateCreateAfterAnotherDeviceCreatedTheSameID(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac, linux := device(t, srv), device(t, srv)
+	const id = "00000000-0000-4000-8000-000000000001"
+	if _, err := mac.ImportSavedPrompts([]SavedPrompt{{ID: id, Text: "from the mac"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := linux.ImportSavedPrompts([]SavedPrompt{{ID: id, Text: "from linux"}}); err != nil {
+		t.Fatal(err)
+	}
+	syncGivingUpTheUpload(t, w, mac)
+	syncEach(t, linux)
+	w.landHeld()
+	syncEach(t, mac, linux)
+	if body := w.livePrompts()[id]; !strings.Contains(body, `"from linux"`) {
+		t.Fatalf("the account's copy: %s; want linux's, the first create", body)
+	}
+	for name, d := range map[string]*Desk{"mac": mac, "linux": linux} {
+		if got := promptsOf(t, d)[id]; got.Text != "from linux" {
+			t.Fatalf("%s's prompt: %+v; want the account's", name, got)
+		}
+	}
+}
+
+// An edit here that the service turns down (another device's edit landed
+// since this device's pull) is not taken as agreed: the same sync takes
+// the account's copy, keeps the edit and sends it again over it, the last
+// write to reach the service winning.
+func TestAnEditTheServiceTurnsDownIsKeptAndSentAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncEach(t, mac)
+	edited := savePrompt(t, mac, p.ID, "", "from the mac")
+	w.mu.Lock()
+	w.onPush = func() { w.otherDeviceWritesLocked(p.ID, "from linux") }
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != edited || !strings.Contains(body, "from the mac") {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the mac's edit in both", got, body)
+	}
+}
+
+// anotherDeviceWrites writes prompt id's text as another device would.
+func (w *syncWorker) anotherDeviceWrites(id, text string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.otherDeviceWritesLocked(id, text)
+}
+
+// A write sent here whose fate was unknown, and which can no longer land
+// (the account moved past its base), is forgotten: a later copy from
+// another device that happens to match it is that device's edit, taken
+// here, not this device's write landing over an unedited copy.
+func TestAWriteThatCanNoLongerLandIsForgotten(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "B")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "X")
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a failed upload reported success")
+	}
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "B")
+	w.anotherDeviceWrites(p.ID, "Y")
+	syncEach(t, mac)
+	w.anotherDeviceWrites(p.ID, "X")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "X" || !strings.Contains(body, `"X"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's X in both", got, body)
+	}
+}
+
+// A write the service refused whole (here for the quota) can't land: it
+// is forgotten at once, so another device's matching edit later is taken
+// here, not mistaken for this device's write over an unedited copy.
+func TestARefusedWriteIsForgotten(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "B")
+	syncEach(t, mac)
+	quota := w.usedBytes() + 5
+	w.mu.Lock()
+	w.quotaBytes = quota
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "B, but much longer")
+	syncRefusedForQuota(t, mac)
+	savePrompt(t, mac, p.ID, "", "B")
+	w.mu.Lock()
+	w.quotaBytes = 0
+	w.mu.Unlock()
+	w.anotherDeviceWrites(p.ID, "B, but much longer")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "B, but much longer" || !strings.Contains(body, "much longer") {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's edit in both", got, body)
+	}
+}
+
+// syncGivingUpTheUpload runs a sync on d that gives its upload up once the
+// service has received it (the service keeps it, to land late).
+func syncGivingUpTheUpload(t *testing.T, w *syncWorker, d *Desk) {
+	t.Helper()
+	received := w.holdNextPush()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { <-received; cancel() }()
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a given-up upload reported success")
+	}
+}
+
+// #384: the first upload of v1 is given up after the service received it;
+// v2 is saved and its upload refused; then v1 lands late. The next sync
+// keeps v2 here (v1 is a write that landed, not this device's copy) and
+// sends it.
+func TestALateFirstUploadDoesNotOverwriteANewerSavedEdit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	v2 := savePrompt(t, mac, p.ID, "", "v2")
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a refused upload reported success")
+	}
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	w.landHeld()
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v1"`) {
+		t.Fatalf("the account's copy: %s; want v1 landed late", body)
+	}
+	syncEach(t, mac)
+	if got := promptsOf(t, mac)[p.ID]; got != v2 {
+		t.Fatalf("mac's prompt: %+v; want the newer edit %+v", got, v2)
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v2"`) {
+		t.Fatalf("the account's copy: %s; want the newer edit", body)
+	}
+}
+
+// #384: account-sync.json from before every unsettled write was kept holds
+// the newest one under promptsSent; it still tells an edit made since.
+func TestAnUpgradedStatesSentFieldsStillTellAnEdit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	old := fmt.Sprintf(`{"accountId":"acct","mirror":{"rev":0,"hosts":null},"promptsPulled":true,"promptsSent":{%q:{"text":"v1"}}}`, p.ID)
+	if err := os.WriteFile(mac.syncStatePath(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The upload was taken; its answer was lost.
+	w.seedPrompt(p.ID, `{"text":"v1","order":0}`)
+	v2 := savePrompt(t, mac, p.ID, "", "v2")
+	syncEach(t, mac)
+	if got := promptsOf(t, mac)[p.ID]; got != v2 {
+		t.Fatalf("mac's prompt: %+v; want the edit %+v", got, v2)
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v2"`) {
+		t.Fatalf("the account's copy: %s; want the edit", body)
+	}
+}
+
+// #385 (a regression guard; #372 item 6 fixed it): the account is restored
+// to an earlier revision while this device pushes, so the readback is told
+// to start over and pulls the account whole. A prompt and a machine the
+// restored account no longer holds go here too, instead of being uploaded
+// again.
+func TestAFullReadbackAfterARestoreKeepsTheRemovalsWithoutTombstones(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	const keep, old = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	w.seedPrompt(keep, `{"text":"keep","order":0}`)
+	w.seedPrompt(old, `{"text":"old","order":1}`)
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, mac)
+	n := savePrompt(t, mac, "", "", "new")
+	w.mu.Lock()
+	w.onPush = func() { w.restoreTo(1) }
+	w.mu.Unlock()
+	syncEach(t, mac, mac)
+	if got := promptsOf(t, mac); len(got) != 2 || got[keep].Text != "keep" || got[n.ID] != n {
+		t.Fatalf("mac's prompts: %+v; want keep and new", got)
+	}
+	if live := w.livePrompts(); len(live) != 2 || live[keep] == "" || live[n.ID] == "" {
+		t.Fatalf("the account holds %v; want keep and new", live)
+	}
+	if ids := syncIDs(t, mac); len(ids) != 0 {
+		t.Fatalf("mac's machines: %v; want the restored account's (none)", ids)
+	}
+	for _, it := range w.live() {
+		if it.Collection == "hosts" {
+			t.Fatalf("the machine was uploaded again: %+v", it)
+		}
+	}
+}
+
+// An older form of the unsettled writes of the wrong type is a damaged
+// state like any other: a delete is refused (its tombstone couldn't be
+// kept) and the sync stops, instead of the pending ids being dropped.
+func TestALegacySendingListOfTheWrongTypeIsADamagedState(t *testing.T) {
+	quietSync(t)
+	_, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "on its way")
+	damaged := fmt.Sprintf(`{"accountId":"acct","mirror":{"rev":0,"hosts":null},"promptsPulled":true,"promptsSending":[%q,5]}`, p.ID)
+	if err := os.WriteFile(mac.syncStatePath(), []byte(damaged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mac.DeletePrompt(p.ID); err == nil {
+		t.Fatal("a delete over a damaged state was taken")
+	}
+	if _, kept := promptsOf(t, mac)[p.ID]; !kept {
+		t.Fatal("the prompt went without its tombstone")
+	}
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a sync over a damaged state reported success")
+	}
+}
+
+// #386: a restore during the readback leaves out a saved machine and a
+// saved prompt; both are edited here before the next sync. Edits outlive
+// the absence: both stay here and are uploaded again.
+func TestEditsAfterARestoreLeftThemOutAreUploadedAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Nickname: "pi", Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	a := savePrompt(t, mac, "", "", "a")
+	syncEach(t, mac)
+	id := syncIDs(t, mac)["root@pi:22"]
+	savePrompt(t, mac, "", "", "c")
+	w.mu.Lock()
+	w.onPush = w.startOver
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if err := mac.SaveMachine(Machine{Nickname: "Pi 4", Host: "pi", User: "root", KeyPath: "/k"}, "root@pi:22"); err != nil {
+		t.Fatal(err)
+	}
+	edited := savePrompt(t, mac, a.ID, "", "a, edited")
+	syncEach(t, mac)
+	if got := syncIDs(t, mac)["root@pi:22"]; got != id {
+		t.Fatalf("mac's machines: %v; want the edited one kept as %s", syncIDs(t, mac), id)
+	}
+	if body := string(w.live()[id].Body); !strings.Contains(body, `"Pi 4"`) {
+		t.Fatalf("the account's machine: %q; want the edit uploaded again", body)
+	}
+	if got := promptsOf(t, mac)[a.ID]; got != edited {
+		t.Fatalf("mac's prompt: %+v; want the edit %+v", got, edited)
+	}
+	if body := w.livePrompts()[a.ID]; !strings.Contains(body, `"a, edited"`) {
+		t.Fatalf("the account's prompt: %q; want the edit uploaded again", body)
+	}
+}
+
+// usedBytes is what the account's prompts weigh against its quota.
+func (w *syncWorker) usedBytes() int {
+	n := 0
+	for _, body := range w.livePrompts() {
+		n += len(body)
+	}
+	return n
+}
+
+// syncRefusedForQuota syncs d and wants the quota refusal back.
+func syncRefusedForQuota(t *testing.T, d *Desk) {
+	t.Helper()
+	var api *account.APIError
+	if err := d.SyncMachines(context.Background()); !errors.As(err, &api) || api.Code != "quota" {
+		t.Fatalf("%v; want the quota refusal", err)
+	}
+}
+
+// Item F: one prompt past the quota can't be made smaller: each round
+// sends it once.
+func TestOnePromptPastTheQuotaIsSentOncePerRound(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	savePrompt(t, mac, "", "", "kept")
+	syncEach(t, mac)
+	quota := w.usedBytes() + 10
+	w.mu.Lock()
+	w.quotaBytes, w.posts = quota, 0
+	w.mu.Unlock()
+	big := savePrompt(t, mac, "", "", strings.Repeat("b", 100))
+	for range 2 {
+		syncRefusedForQuota(t, mac)
+	}
+	_, kept := promptsOf(t, mac)[big.ID]
+	_, sent := w.livePrompts()[big.ID]
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.posts != 2 || !kept || sent {
+		t.Fatalf("asked %d times in 2 rounds, kept here %v, in the account %v; want twice, kept, not sent", w.posts, kept, sent)
+	}
+}
+
+// Item F: 29 drafts past the quota before a small prompt that fits, with
+// the service's 30 pushes a minute. A round stops at the rate limit, and
+// the next starts where it stopped: the small prompt gets in.
+func TestAPromptThatFitsGetsInPast29ThatDont(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	savePrompt(t, mac, "", "", "kept")
+	syncEach(t, mac)
+	quota := w.usedBytes() + 81
+	w.mu.Lock()
+	w.quotaBytes, w.rateLimit = quota, 30
+	w.mu.Unlock()
+	var drafts []SavedPrompt
+	for i := range 29 {
+		drafts = append(drafts, savePrompt(t, mac, "", "", fmt.Sprintf("%02d", i)+strings.Repeat("d", 498)))
+	}
+	small := savePrompt(t, mac, "", "", "small")
+	for round := 0; ; round++ {
+		if round == 3 {
+			t.Fatal("the small prompt is still not in the account after 3 rounds")
+		}
+		w.mu.Lock()
+		w.windowPosts = 0
+		w.mu.Unlock()
+		var api *account.APIError
+		if err := mac.SyncMachines(context.Background()); !errors.As(err, &api) || api.Status != http.StatusTooManyRequests && api.Code != "quota" {
+			t.Fatalf("round %d: %v; want the rate limit or the quota", round, err)
+		}
+		live := w.livePrompts()
+		w.mu.Lock()
+		window := w.windowPosts
+		w.mu.Unlock()
+		if window > 31 {
+			t.Fatalf("round %d: %d pushes asked; want the round to stop at the first one past 30", round, window)
+		}
+		for _, d := range drafts {
+			if live[d.ID] != "" {
+				t.Fatalf("round %d: a draft past the quota is in the account", round)
+			}
+		}
+		if live[small.ID] != "" {
+			break
+		}
+	}
+	if got := promptsOf(t, mac); len(got) != 31 {
+		t.Fatalf("mac holds %d prompts; want all 31", len(got))
+	}
+}
+
+// #390 review: at the account's item limit a new prompt is refused; an
+// edit of a prompt the account holds adds no item, and still goes in,
+// larger as it is.
+func TestAnEditGoesInAtTheItemLimit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "short")
+	syncEach(t, mac)
+	w.mu.Lock()
+	for i := range 1999 {
+		w.rev++
+		id := fmt.Sprintf("setting.%d", i)
+		w.items[id] = account.Item{Collection: "settings", ID: id, Rev: w.rev, Body: json.RawMessage(`1`)}
+	}
+	w.maxItems = 2000
+	w.mu.Unlock()
+	savePrompt(t, mac, "", "", "new")
+	syncRefusedForQuota(t, mac)
+	savePrompt(t, mac, p.ID, "", "short, now "+strings.Repeat("longer ", 20))
+	w.mu.Lock()
+	before := w.posts
+	w.mu.Unlock()
+	syncRefusedForQuota(t, mac)
+	w.mu.Lock()
+	asked := w.posts - before
+	w.mu.Unlock()
+	if body := w.livePrompts()[p.ID]; asked == 0 || !strings.Contains(body, "longer") {
+		t.Fatalf("%d pushes asked, the account's copy %s; want the edit in", asked, body)
+	}
+}
+
+// #390 review: at the account's item limit a draft is refused; another
+// device's delete (of an item that is no prompt, so the account's prompts
+// weigh as much as before) frees room, and the draft goes in at the next
+// sync.
+func TestSpaceAnotherDeviceFreesLetsADraftIn(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	savePrompt(t, mac, "", "", "kept")
+	syncEach(t, mac)
+	w.mu.Lock()
+	for i := range 1999 {
+		w.rev++
+		id := fmt.Sprintf("setting.%d", i)
+		w.items[id] = account.Item{Collection: "settings", ID: id, Rev: w.rev, Body: json.RawMessage(`1`)}
+	}
+	w.maxItems = 2000
+	w.mu.Unlock()
+	draft := savePrompt(t, mac, "", "", "draft")
+	syncRefusedForQuota(t, mac)
+	w.mu.Lock()
+	w.tombstone("setting.0")
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if _, in := w.livePrompts()[draft.ID]; !in {
+		t.Fatal("the draft is not in the account after another device made room")
+	}
+}
+
+// #390 review: a delete made here frees room in the same round a draft
+// that didn't fit goes again: the deletes go first, and the writes that
+// fit then go in while one that still doesn't stays here.
+func TestADeleteHereMakesRoomInTheSameRound(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	savePrompt(t, mac, "", "", "kept")
+	k := savePrompt(t, mac, "", "", strings.Repeat("k", 200))
+	syncEach(t, mac)
+	quota := w.usedBytes() + 10
+	w.mu.Lock()
+	w.quotaBytes = quota
+	w.mu.Unlock()
+	draft := savePrompt(t, mac, "", "", strings.Repeat("d", 100))
+	syncRefusedForQuota(t, mac)
+	if _, err := mac.DeletePrompt(k.ID); err != nil {
+		t.Fatal(err)
+	}
+	huge := savePrompt(t, mac, "", "", strings.Repeat("h", 300))
+	syncRefusedForQuota(t, mac)
+	live := w.livePrompts()
+	_, kIn := live[k.ID]
+	_, draftIn := live[draft.ID]
+	_, hugeIn := live[huge.ID]
+	if kIn || !draftIn || hugeIn {
+		t.Fatalf("in the account: k %v, the draft %v, the huge one %v; want only the draft", kIn, draftIn, hugeIn)
+	}
+}
+
+// Item E, #390 r15: the service takes a prompt's and a machine's delete,
+// then its history is restored to one that still holds both. The deletes
+// stay pending, the round that found them back is incomplete (no new good
+// sync), and the next sync deletes them there again.
+func TestWhatWasDeletedHereThatARestoredHistoryHoldsIsDeletedThereAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	a := savePrompt(t, mac, "", "", "a")
+	savePrompt(t, mac, "", "", "b")
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, mac)
+	id := syncIDs(t, mac)["root@pi:22"]
+	prompt, host := w.live()[a.ID], w.live()[id]
+	if _, err := mac.DeletePrompt(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.RemoveMachine("root@pi:22"); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.afterPush = func() {
+		w.startOver()
+		for _, it := range []account.Item{prompt, host} {
+			w.rev++
+			it.Rev = w.rev
+			w.items[it.ID] = it
+		}
+	}
+	w.mu.Unlock()
+	before, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); !errors.Is(err, errDeleteUndone) {
+		t.Fatalf("%v; want the round incomplete while the restored deletes wait", err)
+	}
+	if state, _ := mac.loadSyncState(); *state.LastSync != *before.LastSync {
+		t.Fatalf("last good sync %+v; want it left at %+v", *state.LastSync, *before.LastSync)
+	}
+	syncEach(t, mac)
+	if _, back := promptsOf(t, mac)[a.ID]; back {
+		t.Fatal("the deleted prompt is back here")
+	}
+	live := w.live()
+	if _, held := live[a.ID]; held {
+		t.Fatal("the restored account still holds the deleted prompt")
+	}
+	if _, held := live[id]; held {
+		t.Fatal("the restored account still holds the removed machine")
+	}
+}
+
+// otherDeviceWritesLocked is anotherDeviceWrites with w.mu held (as in a
+// hook).
+func (w *syncWorker) otherDeviceWritesLocked(id, text string) {
+	w.otherDeviceWritesBodyLocked(id, fmt.Sprintf(`{"text":%q,"order":0}`, text))
+}
+
+// otherDeviceWritesBodyLocked is another device writing prompt id's body
+// as is (its JSON text, byte for byte). w.mu must be held.
+func (w *syncWorker) otherDeviceWritesBodyLocked(id, body string) {
+	w.rev++
+	it := w.items[id]
+	it.Collection, it.ID, it.Deleted = "prompts", id, false
+	it.Rev, it.UpdatedMs, it.Body = w.rev, w.nowMs(), json.RawMessage(body)
+	w.items[id] = it
+}
+
+// #359 round 5: an edit here of a prompt another device deleted is pushed
+// back against the tombstone's revision; the service's rate limit stops
+// it, and the tombstone is pruned meanwhile (the floor rises to it, so the
+// next pull is an empty incremental one, not a reset). The service turns
+// the stale base down with no copy: the same sync takes that as the
+// account holding nothing, and sends the edit again as a new item.
+func TestAnEditAgainstAPrunedTombstoneGetsIn(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncEach(t, mac)
+	edited := savePrompt(t, mac, p.ID, "", "edited here")
+	w.mu.Lock()
+	w.tombstone(p.ID)
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	var api *account.APIError
+	if err := mac.SyncMachines(context.Background()); !errors.As(err, &api) || api.Status != http.StatusTooManyRequests {
+		t.Fatalf("%v; want the rate limit", err)
+	}
+	w.mu.Lock()
+	w.prune(p.ID)
+	w.rateLimit = 0
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != edited || !strings.Contains(body, "edited here") {
+		t.Fatalf("mac's prompt %+v, the account's %q; want the edit in both", got, body)
+	}
+}
+
+// #359 round 5: an upload of v1 the service received lands late, while an
+// unrelated prompt uploads, after v0 was saved here again. The readback
+// shows v1; the next sync still knows v1 was this device's write, so v0
+// (the newer edit) stays here and goes to the account.
+func TestALateUploadSeenOnReadbackDoesNotEraseARevert(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	reverted := savePrompt(t, mac, p.ID, "", "v0")
+	savePrompt(t, mac, "", "", "unrelated")
+	w.mu.Lock()
+	w.onPush = w.landHeldLocked
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v1"`) {
+		t.Fatalf("the account's copy: %s; want v1 landed late", body)
+	}
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != reverted || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want v0 in both", got, body)
+	}
+}
+
+// #359 round 5, #390 r9: a prompt deleted here after its first upload
+// reached the service, and before it committed, stays deleted when the
+// upload lands later: the delete waits for a copy to delete, and the round
+// that leaves it waiting is incomplete.
+func TestALateFirstUploadDoesNotBringBackAPromptDeletedHere(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "short-lived")
+	syncGivingUpTheUpload(t, w, mac)
+	if _, err := mac.DeletePrompt(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); !errors.Is(err, errDeleteHeldBack) {
+		t.Fatalf("%v; want the round incomplete while the delete waits", err)
+	}
+	w.landHeld()
+	syncEach(t, mac)
+	if _, back := promptsOf(t, mac)[p.ID]; back {
+		t.Fatal("the deleted prompt is back here")
+	}
+	if _, held := w.livePrompts()[p.ID]; held {
+		t.Fatal("the account still holds the deleted prompt")
+	}
+}
+
+// #359 round 5: with one prompt slot and 81 bytes left, a draft too large
+// for the bytes doesn't keep the slot from a later one that fits both.
+func TestADraftPastTheQuotaDoesNotHoldTheLastSlot(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	for i := range account.PromptsCap - 1 {
+		w.seedPrompt(fmt.Sprintf("00000000-0000-4000-9000-%012d", i), fmt.Sprintf(`{"text":"seeded","order":%d}`, i))
+	}
+	mac := device(t, srv)
+	syncEach(t, mac)
+	quota := w.usedBytes() + 81
+	w.mu.Lock()
+	w.quotaBytes = quota
+	w.mu.Unlock()
+	draft := savePrompt(t, mac, "", "", strings.Repeat("d", 500))
+	small := savePrompt(t, mac, "", "", "small")
+	syncRefusedForQuota(t, mac)
+	live := w.livePrompts()
+	if _, in := live[small.ID]; !in {
+		t.Fatal("the prompt that fits is not in the account")
+	}
+	if _, in := live[draft.ID]; in {
+		t.Fatal("the draft past the quota is in the account")
+	}
+}
+
+// #359 round 5: another device edits the prompt between this device's
+// pull and every push: the round sends at most syncPasses times, then
+// fails, leaving the last good sync as it was.
+func TestARoundThatStaysConflictedFails(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncEach(t, mac)
+	before, _ := mac.AccountSyncStatus()
+	savePrompt(t, mac, p.ID, "", "from the mac")
+	n := 0
+	var bump func()
+	bump = func() {
+		n++
+		w.otherDeviceWritesLocked(p.ID, fmt.Sprintf("from linux %d", n))
+		w.onPush = bump
+	}
+	w.mu.Lock()
+	w.onPush, w.posts = bump, 0
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); !errors.Is(err, errSyncConflicted) {
+		t.Fatalf("%v; want the round to fail as conflicted", err)
+	}
+	w.mu.Lock()
+	posts := w.posts
+	w.mu.Unlock()
+	if after, _ := mac.AccountSyncStatus(); posts != syncPasses || after != before || !mac.AccountState().SyncFailed {
+		t.Fatalf("%d pushes, last sync %+v (was %+v), needs attention %v; want %d, unchanged, true", posts, after, before, mac.AccountState().SyncFailed, syncPasses)
+	}
+}
+
+// A batch with no prompt write, or an answer that changes nothing (a
+// host-only delete, a refusal of no records), doesn't touch the sync
+// state: not even a damaged one, which a real change would stop at.
+func TestNoOpJournalUpdatesLeaveTheStateAlone(t *testing.T) {
+	d := newDesk(t.TempDir())
+	if err := os.WriteFile(d.syncStatePath(), []byte("{damaged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deletes := []account.Change{{Collection: "prompts", ID: "00000000-0000-4000-8000-000000000001", Base: 3, Deleted: true}}
+	hosts := []account.Change{{Collection: "hosts", ID: "00000000-0000-4000-8000-000000000002", Base: 3, Deleted: true}}
+	part, sent, _, err := d.recordAttempts(context.Background(), "acct", deletes, 0)
+	if err != nil || len(sent) != 0 || len(part) != 1 {
+		t.Fatalf("recording a delete-only batch: %v, %v, %v", part, sent, err)
+	}
+	if err := d.settleSend(context.Background(), "acct", sent, nil, nil); err != nil {
+		t.Fatalf("a refusal of no records: %v", err)
+	}
+	if err := d.settleSend(context.Background(), "acct", nil, hosts, nil); err != nil {
+		t.Fatalf("an answer to a host-only delete: %v", err)
+	}
+}
+
+// #390 review: an upload of v1 is held past cancellation; the identical
+// retry (same fields, same base) is refused (429), and v0 is saved again.
+// The refusal retires only the retry's own record: when the held request
+// commits v1, the next sync still knows it was this device's write, and
+// keeps v0 here and in the account.
+func TestARefusedRetryKeepsTheRecordOfAnOlderRequest(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	var api *account.APIError
+	if err := mac.SyncMachines(context.Background()); !errors.As(err, &api) || api.Status != http.StatusTooManyRequests {
+		t.Fatalf("%v; want the rate limit", err)
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+	reverted := savePrompt(t, mac, p.ID, "", "v0")
+	w.landHeld()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != reverted || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want v0 in both", got, body)
+	}
+}
+
+// #390 review: while a new prompt's first upload is on its way, another
+// device creates the same id and a newer version is saved here. The
+// service turns the create down; the newer version, not the one sent, is
+// what this device holds, so it is kept and sent over the other device's.
+// One still equal to the version sent takes the other device's copy.
+func TestAFirstCreateConflictKeepsANewerEditSavedMeanwhile(t *testing.T) {
+	for _, saveNewer := range []bool{true, false} {
+		quietSync(t)
+		w, srv := newWorker(t, "")
+		mac := device(t, srv)
+		const id = "00000000-0000-4000-8000-000000000001"
+		if _, err := mac.ImportSavedPrompts([]SavedPrompt{{ID: id, Text: "v1"}}); err != nil {
+			t.Fatal(err)
+		}
+		w.mu.Lock()
+		w.onPush = func() {
+			w.otherDeviceWritesLocked(id, "from linux")
+			if saveNewer {
+				savePrompt(t, mac, id, "", "v2")
+			}
+		}
+		w.mu.Unlock()
+		syncEach(t, mac)
+		want := "from linux"
+		if saveNewer {
+			want = "v2"
+		}
+		if got, body := promptsOf(t, mac)[id], w.livePrompts()[id]; got.Text != want || !strings.Contains(body, want) {
+			t.Fatalf("saved a newer version %v: mac's prompt %+v, the account's %s; want %q in both", saveNewer, got, body, want)
+		}
+	}
+}
+
+// #390 review: a batch is refused for the quota, another device frees
+// room before its halves go, and both land: the round finished well.
+func TestAQuotaSplitWhosePartsAllLandCompletesTheRound(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	k := savePrompt(t, mac, "", "", strings.Repeat("k", 300))
+	syncEach(t, mac)
+	quota := w.usedBytes() + 10
+	w.mu.Lock()
+	w.quotaBytes = quota
+	w.onPush = func() {
+		w.onPush = func() { w.tombstone(k.ID) }
+	}
+	w.mu.Unlock()
+	a := savePrompt(t, mac, "", "", strings.Repeat("a", 100))
+	b := savePrompt(t, mac, "", "", strings.Repeat("b", 100))
+	syncEach(t, mac)
+	live := w.livePrompts()
+	if _, in := live[a.ID]; !in {
+		t.Fatal("a is not in the account")
+	}
+	if _, in := live[b.ID]; !in {
+		t.Fatal("b is not in the account")
+	}
+	if mac.AccountState().SyncFailed {
+		t.Fatal("a round whose writes all landed needs attention")
+	}
+}
+
+// #390 round 2: a new prompt deleted here between the merge that planned
+// its first upload and the upload itself is not sent, and stays deleted.
+func TestAPromptDeletedBetweenPlanningAndPostIsNotSent(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("00000000-0000-4000-8000-000000000001", `{"text":"from the phone","order":0}`)
+	mac := device(t, srv)
+	draft := savePrompt(t, mac, "", "", "draft")
+	deleted := false
+	publishSavedPrompts = func([]SavedPrompt) {
+		// The merge took in the phone's prompt and is about to push. (The
+		// delete publishes too: only the first call deletes.)
+		if !deleted {
+			deleted = true
+			if _, err := mac.DeletePrompt(draft.ID); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	syncEach(t, mac, mac)
+	if _, held := w.livePrompts()[draft.ID]; held {
+		t.Fatal("the deleted draft was uploaded")
+	}
+	if _, back := promptsOf(t, mac)[draft.ID]; back {
+		t.Fatal("the deleted draft is back here")
+	}
+}
+
+// #390 round 2: an edit here (B) is turned down against another device's
+// (L); the user saves the agreed text (A) again meanwhile, and another
+// device then saves B on its own. The turned-down send is no proof this
+// device's B landed: the account's B is the other device's edit, taken
+// here, not overwritten with A.
+func TestATurnedDownSendIsNotTakenForALandedWrite(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "A")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "B")
+	w.mu.Lock()
+	w.onPush = func() {
+		w.otherDeviceWritesLocked(p.ID, "L")
+		savePrompt(t, mac, p.ID, "", "A")
+		w.onPull = func() { w.otherDeviceWritesLocked(p.ID, "B") }
+	}
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "B" || !strings.Contains(body, `"B"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's B in both", got, body)
+	}
+}
+
+// #390 round 2: a sign-in to another account completes between two passes
+// of a round (a real handoff redeemed here). The round was the first
+// account's: it is abandoned, nothing goes to the second account, and the
+// first account's sync state is left as it was.
+func TestARoundStaysWithTheAccountItBeganOn(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "edited on the mac")
+	w.mu.Lock()
+	w.onPush = func() { w.otherDeviceWritesLocked(p.ID, "from linux") }
+	w.mu.Unlock()
+	var once sync.Once
+	publishSyncedMachines = func([]SyncedMachine) {
+		// The first pass ended (turned down); before the next one starts,
+		// another account's sign-in completes.
+		once.Do(func() {
+			if _, err := mac.account.StartSignIn("google"); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := mac.account.FinishSignIn(context.Background(), strings.Repeat("c", 43)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatalf("an abandoned round: %v; want nothing to report", err)
+	}
+	if cur, _ := mac.account.Current(); cur == nil || cur.AccountID != "acct-2" {
+		t.Fatalf("the session: %+v; want the second account's", cur)
+	}
+	w.mu.Lock()
+	asSecond := w.asSecond
+	w.mu.Unlock()
+	state, err := mac.loadSyncState()
+	if err != nil || asSecond != 0 || state.AccountID != "acct" {
+		t.Fatalf("%d requests as the second account, sync state of %q (%v); want none, the first account's", asSecond, state.AccountID, err)
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, "from linux") {
+		t.Fatalf("the first account's copy: %s; want linux's, untouched by the abandoned round", body)
+	}
+}
+
+// #390 round 2: a tombstone revision is kept only while something here
+// may write the item again: once a prompt deleted elsewhere is gone here
+// too, its revision goes as well.
+func TestATombstoneNothingHereUsesIsNotKept(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	a := savePrompt(t, mac, "", "", "a")
+	savePrompt(t, mac, "", "", "b")
+	syncEach(t, mac)
+	w.mu.Lock()
+	w.tombstone(a.ID)
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if _, kept := promptsOf(t, mac)[a.ID]; kept {
+		t.Fatal("the prompt deleted elsewhere is still here")
+	}
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev, kept := state.Removed["prompts/"+a.ID]; kept {
+		t.Fatalf("the tombstone's revision %d is kept for a prompt nothing here holds", rev)
+	}
+}
+
+// #359 round 6, #390 rounds 3 and 4: forty edits of each of five prompts,
+// each round's upload failing with no answer, keep the journal bounded (at
+// most maxVariants entries per prompt, a few open sends each, no body),
+// and once the service answers again, and the sends are too old to land,
+// the newest edits go.
+func TestRepeatedFailedUploadsKeepTheJournalBounded(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	ps := make([]SavedPrompt, 5)
+	for i := range ps {
+		ps[i] = savePrompt(t, mac, "", "", fmt.Sprintf("secret body %d edit 0", i))
+	}
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	for edit := range 40 {
+		for i := range ps {
+			ps[i] = savePrompt(t, mac, ps[i].ID, "", fmt.Sprintf("secret body %d edit %d", i, edit+1))
+		}
+		if err := mac.SyncMachines(context.Background()); err == nil {
+			t.Fatal("a failed upload reported success")
+		}
+	}
+	raw, err := os.ReadFile(mac.syncStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _ := mac.loadSyncState()
+	for i, p := range ps {
+		if n := strings.Count(string(raw), fmt.Sprintf("secret body %d edit", i)); n > 0 {
+			t.Fatalf("the journal keeps %d bodies of %s; want none", n, p.ID)
+		}
+		entries := state.PromptAttempts[p.ID]
+		if len(entries) > maxVariants {
+			t.Fatalf("journal of %s: %d entries; want at most %d", p.ID, len(entries), maxVariants)
+		}
+		for _, e := range entries {
+			if len(e.Open) > maxOpenSends {
+				t.Fatalf("journal of %s: %d open sends; want at most %d", p.ID, len(e.Open), maxOpenSends)
+			}
+		}
+	}
+	w.mu.Lock()
+	w.failPush, w.serverAhead = false, pastDeadline
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds after the service came back")
+		}
+	}
+	for _, p := range ps {
+		if body := w.livePrompts()[p.ID]; !strings.Contains(body, p.Text) {
+			t.Fatalf("the account's copy of %s: %s; want the newest edit %q", p.ID, body, p.Text)
+		}
+	}
+}
+
+// #359 round 6: a new prompt whose body is exactly the service's item
+// limit without an order goes without one, rather than never.
+func TestANewPromptTheOrderWouldMakeTooLargeGoesWithoutOne(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	// 8,186 quotes (2 bytes each as JSON) and a letter: {"text":"…"} is
+	// exactly 16 KiB.
+	text := strings.Repeat(`"`, 8186) + "a"
+	if b := (account.PromptBody{Text: text}); !account.ValidPrompt(b) {
+		t.Fatal("the fixture's body is past the limit on its own")
+	}
+	p := savePrompt(t, mac, "", "", text)
+	syncEach(t, mac)
+	body, in := w.livePrompts()[p.ID]
+	if !in || strings.Contains(body, `"order"`) {
+		t.Fatalf("the account's copy (held %v): %.40s…; want it without an order", in, body)
+	}
+}
+
+// #359 r7, #390 r3: A and then B are sent, both failing with no answer; A
+// is saved again and sent (the journal's A entry, reused), and another
+// device creates the same id first. The last send was A, not B: with A
+// still saved here the other device's copy is taken; with B saved while
+// that POST was out, B is a newer edit, kept and sent.
+func TestTheLastSendTellsANewerEditFromTheSentCopy(t *testing.T) {
+	for _, saveDuring := range []bool{false, true} {
+		quietSync(t)
+		w, srv := newWorker(t, "")
+		mac := device(t, srv)
+		p := savePrompt(t, mac, "", "", "A")
+		w.mu.Lock()
+		w.failPush = true
+		w.mu.Unlock()
+		for _, text := range []string{"B", "A"} {
+			if err := mac.SyncMachines(context.Background()); err == nil {
+				t.Fatal("a failed upload reported success")
+			}
+			savePrompt(t, mac, p.ID, "", text)
+		}
+		w.mu.Lock()
+		w.failPush = false
+		w.onPush = func() {
+			w.otherDeviceWritesLocked(p.ID, "X")
+			if saveDuring {
+				savePrompt(t, mac, p.ID, "", "B")
+			}
+		}
+		w.mu.Unlock()
+		syncEach(t, mac)
+		want := "X"
+		if saveDuring {
+			want = "B"
+		}
+		if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != want || !strings.Contains(body, `"`+want+`"`) {
+			t.Fatalf("saved B during the POST %v: mac's prompt %+v, the account's %s; want %s in both", saveDuring, got, body, want)
+		}
+	}
+}
+
+// #390 r3: an upload of T is held; the agreed text is saved again here;
+// then the account is restored to an older revision where the prompt was
+// T. That older row is no upload landing (its revision is not past the
+// send's base): it is taken here, not overwritten with the agreed text.
+func TestAnOlderRestoredRowIsNotTakenForALandedUpload(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	const id = "00000000-0000-4000-8000-000000000001"
+	w.seedPrompt(id, `{"text":"T","order":0}`)
+	w.mu.Lock()
+	backup := w.items[id]
+	w.mu.Unlock()
+	mac := device(t, srv)
+	syncEach(t, mac)
+	w.anotherDeviceWrites(id, "agreed")
+	syncEach(t, mac)
+	savePrompt(t, mac, id, "", "T")
+	syncGivingUpTheUpload(t, w, mac)
+	savePrompt(t, mac, id, "", "agreed")
+	w.mu.Lock()
+	w.restoreTo(backup.Rev)
+	w.items[id] = backup
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[id], w.livePrompts()[id]; got.Text != "T" || !strings.Contains(body, `"T"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the restored T in both", got, body)
+	}
+}
+
+// #390 r3: an answer applied at the send's own base (the account already
+// held that copy, and kept its revision) settles only that send; one
+// applied at a new revision settles every send at that base.
+func TestOnlyAnAnswerAtANewRevisionSettlesEarlierSends(t *testing.T) {
+	d := newDesk(t.TempDir())
+	const id = "00000000-0000-4000-8000-000000000001"
+	if err := d.storeSyncState(syncState{AccountID: "acct", PromptAttempts: map[string][]promptAttempt{id: {
+		{Base: 5, Hash: "A", Open: []string{"a1"}},
+		{Base: 5, Hash: "B", Open: []string{"b1", "b2"}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	answer := func(send string, rev int64) {
+		t.Helper()
+		var res account.PushResult
+		_ = json.Unmarshal(fmt.Appendf(nil, `{"applied":[{"collection":"prompts","id":%q,"rev":%d}]}`, id, rev), &res)
+		applied := []account.Change{{Collection: "prompts", ID: id, Body: account.PromptBody{Text: "B"}}}
+		if err := d.settleSend(context.Background(), "acct", map[string]sentAttempt{id: {ID: send, Base: 5}}, applied, &res); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answer("b2", 5)
+	state, _ := d.loadSyncState()
+	if entries := state.PromptAttempts[id]; len(entries) != 2 || !slices.Equal(entries[0].Open, []string{"a1"}) || !slices.Equal(entries[1].Open, []string{"b1"}) {
+		t.Fatalf("after an answer at the base: %+v; want only b2 settled", entries)
+	}
+	answer("b1", 6)
+	state, _ = d.loadSyncState()
+	if entries := state.PromptAttempts[id]; len(entries) != 0 {
+		t.Fatalf("after an answer at a new revision: %+v; want every send at the base settled", entries)
+	}
+}
+
+// #390 r3: a restore (410) brings a prompt's row back to the base of a
+// held upload, which therefore stays unsettled; when it lands late, it is
+// recognised as this device's write, and the text saved here since (a
+// revert) is kept and sent.
+func TestARestoreBackToASendsBaseKeepsItUnsettled(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "A")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backup := w.items[p.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "B")
+	syncGivingUpTheUpload(t, w, mac)
+	savePrompt(t, mac, p.ID, "", "A")
+	w.seedPrompt("00000000-0000-4000-8000-000000000002", `{"text":"other","order":5}`)
+	syncEach(t, mac)
+	w.anotherDeviceWrites(p.ID, "C")
+	w.mu.Lock()
+	w.restoreTo(backup.Rev)
+	w.items[p.ID] = backup
+	w.mu.Unlock()
+	syncEach(t, mac)
+	w.landHeld()
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"B"`) {
+		t.Fatalf("the account's copy: %s; want the held B landed", body)
+	}
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "A" || !strings.Contains(body, `"A"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the revert A in both", got, body)
+	}
+}
+
+// #359 r7, #390 r3: the push is refused for a stale credential (401) and
+// the prompt is deleted here while the credential refreshes. The replay
+// reads the saved prompts again: the deleted prompt is not uploaded.
+func TestADeleteDuringACredentialRefreshIsNotUploaded(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	syncEach(t, mac)
+	p := savePrompt(t, mac, "", "", "short-lived")
+	w.mu.Lock()
+	w.unauthorizeNextPush = true
+	w.onRefresh = func() {
+		if _, err := mac.DeletePrompt(p.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	w.mu.Unlock()
+	syncEach(t, mac, mac)
+	w.mu.Lock()
+	_, uploaded := w.items[p.ID]
+	w.mu.Unlock()
+	if uploaded {
+		t.Fatal("the prompt deleted during the refresh was uploaded")
+	}
+	if _, back := promptsOf(t, mac)[p.ID]; back {
+		t.Fatal("the deleted prompt is back here")
+	}
+}
+
+// #359 r7, #390 r3: an edit of a synced prompt whose body is exactly the
+// service's item limit without its order goes without one.
+func TestAnEditTheOrderWouldMakeTooLargeGoesWithoutOne(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "short")
+	syncEach(t, mac)
+	text := strings.Repeat(`"`, 8186) + "a"
+	savePrompt(t, mac, p.ID, "", text)
+	syncEach(t, mac)
+	body := w.livePrompts()[p.ID]
+	if !strings.Contains(body, `\"a`) || strings.Contains(body, `"order"`) {
+		t.Fatalf("the account's copy: %.40s…; want the edit without an order", body)
+	}
+}
+
+// #359 r7 and r11, #390 r3, r6 and r7: which sends may have written a row
+// (promptAttempt.mayHaveWritten), the rule the one matcher applies before
+// it hashes anything (landedEntry): an open send other than the one turned
+// down, or the trimmed ones, based below the row, with no deadline or one
+// the row's stamp is not past (or no stamp).
+func TestWhichSendsMayHaveWrittenARow(t *testing.T) {
+	a := promptAttempt{Base: 3, Open: []string{"s1", "s2"}, Deadlines: map[string]int64{"s1": 1000, "s2": 2000}}
+	for _, c := range []struct {
+		name           string
+		a              promptAttempt
+		rev, updatedMs int64
+		except         string
+		want           bool
+	}{
+		{"a row past the base, within a deadline", a, 4, 1500, "", true},
+		{"a row at the base", a, 3, 500, "", false},
+		{"a row stamped past every deadline", a, 4, 2500, "", false},
+		{"a row with no stamp", a, 4, 0, "", true},
+		{"within only the turned-down send's deadline", a, 4, 1500, "s2", false},
+		{"a send with no deadline", promptAttempt{Base: 3, Open: []string{"s"}}, 4, 9000, "", true},
+		{"only the turned-down send open", promptAttempt{Base: 3, Open: []string{"s"}}, 4, 0, "s", false},
+		{"a trimmed send within its deadline", promptAttempt{Base: 3, Open: []string{"s"}, Deadlines: map[string]int64{"s": 1000, "": 3000}}, 4, 2500, "", true},
+	} {
+		if got := c.a.mayHaveWritten(c.rev, c.updatedMs, c.except); got != c.want {
+			t.Errorf("%s: %v; want %v", c.name, got, c.want)
+		}
+	}
+	row := account.RemotePrompt{ID: "p", Rev: 4, Body: account.PromptBody{Text: "t"}}
+	entries := []promptAttempt{{Base: 3, Hash: "another", Open: []string{"s"}}, {Base: 3, Hash: sendHash(row.Body), Open: []string{"s"}}}
+	if got := landedEntry(row, entries, ""); got != 1 {
+		t.Fatalf("landed entry %d; want the one with the row's body", got)
+	}
+}
+
+// BenchmarkMergeWithoutLandings measures a merge of 50 prompts none of whose
+// sends may have written the account's row (nothing to hash).
+func BenchmarkMergeWithoutLandings(b *testing.B) {
+	var mirror []account.RemotePrompt
+	var local []SavedPrompt
+	baseline := map[string]promptFields{}
+	attempts := map[string][]promptAttempt{}
+	for i := range 50 {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
+		mirror = append(mirror, account.RemotePrompt{ID: id, Rev: int64(i + 1), Body: account.PromptBody{Text: "t"}})
+		local = append(local, SavedPrompt{ID: id, Text: "t"})
+		baseline[id] = promptFields{Text: "t"}
+		attempts[id] = []promptAttempt{{Base: int64(i + 1), Hash: "another", Open: []string{"s"}}}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		mergePrompts(local, mirror, mirror, nil, nil, baseline, attempts, nil)
+	}
+}
+
+// cancelAfterPull is a transport that ends the round (cancel) once a pull
+// has been answered and read in full.
+type cancelAfterPull struct {
+	base   http.RoundTripper
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterPull) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.base.RoundTrip(r)
+	if err != nil || r.Method != http.MethodGet || r.URL.Path != "/v1/sync" {
+		return resp, err
+	}
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+	c.mu.Lock()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	c.mu.Unlock()
+	return resp, err
+}
+
+// #359 r10: a round whose deadline passes after its pull, while it waits
+// for the store, applies none of it: the account's v1 is not taken here.
+func TestARoundPastItsDeadlineAppliesNoMerge(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	transport := &cancelAfterPull{base: srv.Client().Transport}
+	raw, _ := json.Marshal(map[string]string{"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, 0), "account_id": "acct"})
+	mac.account = account.New(srv.URL, "linux", &signedInStore{raw: raw}, &http.Client{Transport: transport})
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	w.anotherDeviceWrites(p.ID, "v1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport.mu.Lock()
+	transport.cancel = cancel
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want the round ended", err)
+	}
+	if got := promptsOf(t, mac)[p.ID]; got.Text != "v0" {
+		t.Fatalf("mac's prompt %+v; want v0, the merge not applied", got)
+	}
+}
+
+// #359 r8: a push the service refuses for its size (413) is halved like
+// one past the quota, and what fits goes in; a lone prompt it still
+// refuses stays here and leaves the round incomplete.
+func TestAPushTooLargeIsHalved(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	w.mu.Lock()
+	w.maxPushBytes = 15 * 1024 // under one 16 KiB prompt, over one 8 KB one
+	w.mu.Unlock()
+	var ps []SavedPrompt
+	for i := range 5 {
+		ps = append(ps, savePrompt(t, mac, "", "", fmt.Sprintf("%d", i)+strings.Repeat("x", 8000)))
+	}
+	huge := savePrompt(t, mac, "", "", "h"+strings.Repeat(`"`, 8100))
+	var api *account.APIError
+	if err := mac.SyncMachines(context.Background()); !errors.As(err, &api) || api.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("%v; want the round incomplete with the lone refusal", err)
+	}
+	live := w.livePrompts()
+	for _, p := range ps {
+		if _, in := live[p.ID]; !in {
+			t.Fatalf("%.10s… is not in the account", p.Text)
+		}
+	}
+	if _, in := live[huge.ID]; in {
+		t.Fatal("the prompt past the size limit is in the account")
+	}
+	if _, kept := promptsOf(t, mac)[huge.ID]; !kept {
+		t.Fatal("the prompt past the size limit was dropped here")
+	}
+}
+
+// #359 r8: an upload of v1 is refused for its credential (401) and the
+// refresh then fails (503). The refusal wrote nothing: when another device
+// later saves v1 on its own, it is that device's edit, taken here (where
+// v0 was saved again since), not this device's upload landing.
+func TestACredentialRefusalLeavesNoSendOpenWhenTheRefreshFails(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.unauthorizeNextPush, w.failNextRefresh = true, true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a sync whose refresh failed reported success")
+	}
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #359 r8: a state from before keeps a send id, sequence number, base and
+// body with each prompt's last send, and a global counter; it still loads,
+// and the last send keeps what the merge reads (its hash).
+func TestAStateWithTheOldLastSendFieldsLoads(t *testing.T) {
+	d := newDesk(t.TempDir())
+	const id = "00000000-0000-4000-8000-000000000001"
+	old := fmt.Sprintf(`{"accountId":"acct","mirror":{"rev":0,"hosts":null},"sendSeq":7,"promptLastSent":{%q:{"hash":"h","id":"s1","seq":3,"base":2,"body":{"text":"t"}}}}`, id)
+	if err := os.WriteFile(d.syncStatePath(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := d.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := state.PromptLastSent[id]; last.Hash != "h" {
+		t.Fatalf("last send %+v; want its hash kept", last)
+	}
+}
+
+// failEdits saves each text over p and syncs it with the service answering
+// no push (503): each stays an unanswered send.
+func failEdits(t *testing.T, w *syncWorker, d *Desk, p SavedPrompt, texts ...string) {
+	t.Helper()
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	for _, text := range texts {
+		savePrompt(t, d, p.ID, "", text)
+		if err := d.SyncMachines(context.Background()); err == nil {
+			t.Fatalf("an unanswered upload of %.10s… reported success", text)
+		}
+	}
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+}
+
+// heldBack syncs d, which has an edit waiting for a slot in the journal.
+func heldBack(t *testing.T, w *syncWorker, d *Desk, id, want string) {
+	t.Helper()
+	if err := d.SyncMachines(context.Background()); !errors.Is(err, errEditHeldBack) {
+		t.Fatalf("%v; want the edit held back", err)
+	}
+	if body := w.livePrompts()[id]; !strings.Contains(body, want) {
+		t.Fatalf("the account's copy: %.40s; want %q still", body, want)
+	}
+}
+
+// serverClock sets the service's clock ahead of the device's by ahead.
+func serverClock(w *syncWorker, ahead time.Duration) {
+	w.mu.Lock()
+	w.serverAhead = ahead
+	w.mu.Unlock()
+}
+
+// pastDeadline is a service clock past the not_after of sends made at 0
+// (two minutes past the newest now_ms seen).
+const pastDeadline = 2*time.Minute + 5*time.Second
+
+// #390 r4 and r5, themartianapp/herdrup#826: v1's upload is held and v2's
+// goes unanswered, filling the journal; v3, saved since, waits while they
+// might still land. Past their not_after the held push is refused when it
+// arrives, a pull settles both, and v3 goes; no older body is sent again.
+func TestAHeldPushPastItsDeadlineIsRefusedAndFreesItsSlot(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", strings.Repeat("1", 6000))
+	syncGivingUpTheUpload(t, w, mac)
+	failEdits(t, w, mac, p, strings.Repeat("2", 6000))
+	savePrompt(t, mac, p.ID, "", "v3")
+	heldBack(t, w, mac, p.ID, `"v0"`)
+	serverClock(w, time.Minute)
+	heldBack(t, w, mac, p.ID, `"v0"`)
+	serverClock(w, pastDeadline)
+	w.landHeld()
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v0"`) {
+		t.Fatalf("the account's copy: %.40s; want the held push past its not_after refused", body)
+	}
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v3" || !strings.Contains(body, `"v3"`) {
+		t.Fatalf("mac's prompt %+v, the account's %.40s; want v3 in both", got, body)
+	}
+}
+
+// #390 r5: an entry's deadline is its newest send's: v1 sent again a
+// minute and a half on (unanswered again) may land until two minutes
+// after that.
+func TestAnIdenticalResendMovesItsDeadline(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	failEdits(t, w, mac, p, "v1")
+	serverClock(w, 90*time.Second)
+	failEdits(t, w, mac, p, "v1", "v2")
+	savePrompt(t, mac, p.ID, "", "v3")
+	serverClock(w, pastDeadline+30*time.Second)
+	heldBack(t, w, mac, p.ID, `"v0"`)
+}
+
+// #390 r5: deadlines run on the service's clock alone: with the device's
+// clock half an hour ahead of it, or behind it, no time has passed for the
+// sends, and the edit still waits.
+func TestTheDeadlineRunsOnTheServicesClock(t *testing.T) {
+	for _, ahead := range []time.Duration{-30 * time.Minute, 30 * time.Minute} {
+		quietSync(t)
+		w, srv := newWorker(t, "")
+		w.serverAhead = ahead
+		mac := device(t, srv)
+		p := savePrompt(t, mac, "", "", "v0")
+		syncEach(t, mac)
+		failEdits(t, w, mac, p, "v1", "v2")
+		savePrompt(t, mac, p.ID, "", "v3")
+		heldBack(t, w, mac, p.ID, `"v0"`)
+	}
+}
+
+// #390 r5: without now_ms (a service without #826) nothing settles by
+// time and the round stays incomplete: a pull without it settles no send
+// (and the device's clock, half an hour ahead, is not taken in its
+// place); a send that went without a not_after can land at any time, so
+// its entry never settles by time, even once a later identical send
+// carries one.
+func TestWithoutTheServicesClockNothingSettlesByTime(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.serverAhead = -30 * time.Minute
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	failEdits(t, w, mac, p, "v1", "v2")
+	savePrompt(t, mac, p.ID, "", "v3")
+	w.mu.Lock()
+	w.noNow, w.serverAhead = true, -30*time.Minute+pastDeadline
+	w.mu.Unlock()
+	heldBack(t, w, mac, p.ID, `"v0"`)
+
+	w, srv = newWorker(t, "")
+	w.noNow = true
+	mac = device(t, srv)
+	p = savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	failEdits(t, w, mac, p, "v1", "v2")
+	w.mu.Lock()
+	w.noNow = false
+	w.mu.Unlock()
+	failEdits(t, w, mac, p, "v1", "v2")
+	savePrompt(t, mac, p.ID, "", "v3")
+	serverClock(w, pastDeadline)
+	heldBack(t, w, mac, p.ID, `"v0"`)
+}
+
+// #390 r5 and r6: an upload refused for its credential (401), the answer
+// cut off inside its body, still refreshes the credential by its status
+// and goes again.
+func TestACredentialRefusalCutInItsBodyIsReplayed(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.breakNextRefusal = http.StatusUnauthorized
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v1"`) {
+		t.Fatalf("the account's copy: %s; want v1 replayed", body)
+	}
+}
+
+// #359 r9, #390 r5: an upload of v1 is refused, and the answer is cut off
+// inside its body. The status line said nothing was written: when another
+// device later saves v1, it is that device's edit, taken here (where v0
+// was saved again since).
+func TestARefusalCutInItsBodyLeavesNoSendOpen(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.breakNextRefusal = http.StatusForbidden
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a sync whose refusal was cut off reported success")
+	}
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #390 r5: a round canceled after its pull and before its upload sends
+// nothing and keeps no send: when another device saves v1, it is that
+// device's edit, taken here (where v0 was saved again since).
+func TestACanceledRoundKeepsNoSend(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	q := savePrompt(t, mac, "", "", "q0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.anotherDeviceWrites(q.ID, "q1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previous := publishSavedPrompts
+	publishSavedPrompts = func([]SavedPrompt) { cancel() } // the merge took q1: after the pull
+	t.Cleanup(func() { publishSavedPrompts = previous })
+	w.mu.Lock()
+	posts := w.posts
+	w.mu.Unlock()
+	if err := mac.SyncMachines(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want the round canceled", err)
+	}
+	publishSavedPrompts = previous
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("%d uploads after the cancel; want none", sent)
+	}
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #359 r9, #390 r5: a push of deletes alone that the service refuses for
+// its size is halved too, until each part fits.
+func TestASizeRefusalHalvesADeleteOnlyPush(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	var ids []string
+	for i := range 6 {
+		ids = append(ids, savePrompt(t, mac, "", "", fmt.Sprintf("p%d", i)).ID)
+	}
+	syncEach(t, mac)
+	for _, id := range ids {
+		if _, err := mac.DeletePrompt(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.mu.Lock()
+	w.maxPushBytes = 250 // two deletes, not six
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if live := w.livePrompts(); len(live) != 0 {
+		t.Fatalf("the account still holds %d prompts; want every delete in", len(live))
+	}
+}
+
+// #390 r5: v1's upload is held; v2's is in flight when v1 commits and
+// v0 is saved again here, so v2 conflicts with v1; another device saves
+// v3 before the next pull. The conflict recorded v1 as this device's
+// landed write at once, so the revert to v0 is an edit against it: kept,
+// and sent over v3.
+func TestAConflictRecordsALandedUploadAtOnce(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	savePrompt(t, mac, p.ID, "", "v2")
+	w.mu.Lock()
+	w.onPush = func() {
+		w.landHeldLocked()
+		savePrompt(t, mac, p.ID, "", "v0")
+	}
+	w.afterPush = func() { w.otherDeviceWritesLocked(p.ID, "v3") }
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the revert to v0 in both", got, body)
+	}
+}
+
+// #390 r4: an upload of v1 is held (a new prompt's create, or an edit of
+// one synced at v0); v2 is saved and sent, and v1 commits before v2 is
+// applied, so v2 conflicts with v1. The conflict retires only v2's send:
+// v1 is recognised as this device's write that landed, and v2, the newer
+// edit, is kept and sent.
+func TestAConflictKeepsTheEvidenceOfAnOlderUploadThatLanded(t *testing.T) {
+	for _, synced := range []bool{false, true} {
+		quietSync(t)
+		w, srv := newWorker(t, "")
+		mac := device(t, srv)
+		p := savePrompt(t, mac, "", "", "v0")
+		if synced {
+			syncEach(t, mac)
+		}
+		savePrompt(t, mac, p.ID, "", "v1")
+		syncGivingUpTheUpload(t, w, mac)
+		savePrompt(t, mac, p.ID, "", "v2")
+		w.mu.Lock()
+		w.onPush = w.landHeldLocked
+		w.mu.Unlock()
+		for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+			if round == 3 {
+				t.Fatalf("synced at v0 %v: still failing three rounds on", synced)
+			}
+		}
+		if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v2" || !strings.Contains(body, `"v2"`) {
+			t.Fatalf("synced at v0 %v: mac's prompt %+v, the account's %s; want v2 in both", synced, got, body)
+		}
+	}
+}
+
+// #390 r6: two prompts fit the service's size limit alone, not together,
+// and every refusal's answer is cut off inside its body: the status alone
+// still halves the push, and both go in.
+func TestASizeRefusalCutInItsBodyStillHalves(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	a := savePrompt(t, mac, "", "", strings.Repeat("a", 6000))
+	b := savePrompt(t, mac, "", "", strings.Repeat("b", 6000))
+	w.mu.Lock()
+	w.maxPushBytes, w.cutRefusals = 9000, true
+	w.mu.Unlock()
+	syncEach(t, mac)
+	live := w.livePrompts()
+	if _, in := live[a.ID]; !in {
+		t.Fatal("the first prompt is not in the account")
+	}
+	if _, in := live[b.ID]; !in {
+		t.Fatal("the second prompt is not in the account")
+	}
+}
+
+// #390 r6: the only upload in flight sends v1; another device saves v1
+// too (the same content, its JSON written otherwise), and v0 is saved
+// again here. The service turns the upload down with that copy: the
+// rejected upload is not taken for a landed one, so the other device's v1
+// is taken here and stays in the account.
+func TestAConflictIsNotTakenForItsOwnUploadLanding(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1<")
+	w.mu.Lock()
+	w.onPush = func() {
+		w.otherDeviceWritesBodyLocked(p.ID, `{"text":"v1<","order":0}`)
+		savePrompt(t, mac, p.ID, "", "v0")
+	}
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1<" || !strings.Contains(body, `"v1<"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1< in both", got, body)
+	}
+}
+
+// #390 r6: an older upload of v1 (at order 0) is held; v2's upload is
+// turned down because another device saved v1 at order 7, and v0 was
+// saved again here. The copy is not this device's held body, so it is the
+// other device's edit: taken here, not overwritten with v0.
+func TestALandedMatchComparesTheWholeBodySent(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	savePrompt(t, mac, p.ID, "", "v2")
+	w.mu.Lock()
+	w.onPush = func() {
+		w.otherDeviceWritesBodyLocked(p.ID, `{"text":"v1","order":7}`)
+		savePrompt(t, mac, p.ID, "", "v0")
+	}
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"order":7`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #390 r6: prompt a is at the journal's bound with a new edit waiting, and
+// b alone is past the quota. The dispatch sends only b and is refused;
+// recovery splits what was sent, so b is not asked again.
+func TestAQuotaRefusalSplitsWhatWasSent(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	a := savePrompt(t, mac, "", "", "a0")
+	syncEach(t, mac)
+	failEdits(t, w, mac, a, "a1", "a2")
+	savePrompt(t, mac, a.ID, "", "a3")
+	quota := w.usedBytes() + 10
+	w.mu.Lock()
+	w.quotaBytes = quota
+	posts := w.posts
+	w.mu.Unlock()
+	savePrompt(t, mac, "", "", strings.Repeat("b", 100))
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round with a refused write reported success")
+	}
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("%d uploads; want b's one, not asked again", sent)
+	}
+}
+
+// refusedEdits saves each text over p and syncs it with the service out of
+// pushes (429): each send is refused.
+func refusedEdits(t *testing.T, w *syncWorker, d *Desk, p SavedPrompt, texts ...string) {
+	t.Helper()
+	for _, text := range texts {
+		w.mu.Lock()
+		w.rateLimit, w.windowPosts = 1, 1
+		w.mu.Unlock()
+		savePrompt(t, d, p.ID, "", text)
+		if err := d.SyncMachines(context.Background()); err == nil {
+			t.Fatalf("a refused upload of %q reported success", text)
+		}
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+}
+
+// #390 r6: v1 and v2 go unanswered; a minute and a half on, identical
+// retries are refused (429). The refusals take their own deadlines with
+// them: once the unanswered sends' deadlines pass, v3 goes.
+func TestRefusedRetriesKeepOlderSendsDeadlines(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	failEdits(t, w, mac, p, "v1", "v2")
+	serverClock(w, 90*time.Second)
+	refusedEdits(t, w, mac, p, "v1", "v2")
+	savePrompt(t, mac, p.ID, "", "v3")
+	serverClock(w, pastDeadline)
+	syncEach(t, mac)
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v3"`) {
+		t.Fatalf("the account's copy: %s; want v3 once the unanswered sends' deadlines passed", body)
+	}
+}
+
+// #390 r6: a send that went without a deadline stays a send that can land
+// at any time when more than maxOpenSends identical ones push it out of
+// the entry's open ids: v1's and v2's entries never settle by time, and
+// v3 waits.
+func TestASendTrimmedFromTheJournalKeepsItsMissingDeadline(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.noNow = true
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	failEdits(t, w, mac, p, "v1", "v2")
+	w.mu.Lock()
+	w.noNow = false
+	w.mu.Unlock()
+	for range maxOpenSends {
+		failEdits(t, w, mac, p, "v1", "v2")
+	}
+	savePrompt(t, mac, p.ID, "", "v3")
+	serverClock(w, pastDeadline)
+	heldBack(t, w, mac, p.ID, `"v0"`)
+}
+
+// #359 r10: a held upload of v1 lands while another prompt uploads, after
+// v0 was saved here again; the readback shows v1, and another device
+// saves v3 before the next pull. The readback recorded v1 as this
+// device's landed write, so v0 is an edit against it: kept, and sent.
+func TestALandingSeenOnReadbackIsRecordedAtOnce(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	reverted := savePrompt(t, mac, p.ID, "", "v0")
+	savePrompt(t, mac, "", "", "unrelated")
+	w.mu.Lock()
+	w.onPush = w.landHeldLocked
+	w.mu.Unlock()
+	syncEach(t, mac)
+	w.anotherDeviceWrites(p.ID, "v3")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != reverted || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the revert to v0 in both", got, body)
+	}
+}
+
+// #359 r10: a dispatch whose round ended while it waited for the store
+// lock journals nothing.
+func TestACanceledDispatchJournalsNothing(t *testing.T) {
+	d := newDesk(t.TempDir())
+	if err := d.storeSyncState(syncState{AccountID: "acct"}); err != nil {
+		t.Fatal(err)
+	}
+	p := savePrompt(t, d, "", "", "v1")
+	part := []account.Change{{Collection: "prompts", ID: p.ID, Body: promptBody(p, nil)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, err := d.recordAttempts(ctx, "acct", part, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want the dispatch stopped", err)
+	}
+	if state, _ := d.loadSyncState(); len(state.PromptAttempts) != 0 {
+		t.Fatalf("journal %+v; want nothing recorded", state.PromptAttempts)
+	}
+}
+
+// #359 r11: a merge commits machines.json, prompts.json and
+// account-sync.json as one. When its commit record can't be written,
+// nothing changes; when a file can't be written after it, the next load
+// finishes the commit, so no reader sees one file from after the merge
+// and another from before it.
+func TestAMergeCommitsItsFilesAsOne(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Nickname: "v0", Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	pi := syncIDs(t, mac)["root@pi:22"]
+	w.mu.Lock()
+	w.rev++
+	w.items[pi] = account.Item{Collection: "hosts", ID: pi, Rev: w.rev, Body: json.RawMessage(`{"nickname":"v1","host":"pi","port":22,"username":"root"}`)}
+	w.otherDeviceWritesLocked(p.ID, "v1")
+	w.mu.Unlock()
+	files := []string{mac.machinesPath(), mac.promptsPath(), mac.syncStatePath()}
+	read := func() [][]byte {
+		var out [][]byte
+		for _, f := range files {
+			raw, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, raw)
+		}
+		return out
+	}
+	blocked := func(path string) func() {
+		if err := os.Mkdir(path+".tmp", 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return func() { _ = os.Remove(path + ".tmp") }
+	}
+
+	before := read()
+	unblock := blocked(mac.commitPath())
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a merge whose commit couldn't be written reported success")
+	}
+	unblock()
+	for i, raw := range read() {
+		if !bytes.Equal(raw, before[i]) {
+			t.Fatalf("%s changed though the commit failed:\n%s", files[i], raw)
+		}
+	}
+
+	unblock = blocked(mac.promptsPath())
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a merge whose prompts couldn't be written reported success")
+	}
+	unblock()
+	ms, err := mac.Machines()
+	if err != nil || len(ms) != 1 || ms[0].Nickname != "v1" {
+		t.Fatalf("mac's machines %+v (%v); want pi as v1", ms, err)
+	}
+	if got := promptsOf(t, mac)[p.ID]; got.Text != "v1" {
+		t.Fatalf("mac's prompt %+v; want v1, the commit finished", got)
+	}
+	state, err := mac.loadSyncState()
+	if err != nil || state.PromptBaseline[p.ID].Text != "v1" || state.Baseline[pi].Nickname != "v1" {
+		t.Fatalf("baselines %+v, %+v (%v); want v1 for both", state.PromptBaseline[p.ID], state.Baseline[pi], err)
+	}
+	if _, err := os.Stat(mac.commitPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the commit record is still there (%v)", err)
+	}
+}
+
+// #359 r11: a pull in pages. The first shows this device's held upload of
+// v1 landed; another device saves v3 before the second. v0 was saved here
+// again meanwhile: the landing is recorded as the pages came, so v0 is an
+// edit against v1, kept and sent over v3.
+func TestALandingOnAnEarlierPageIsKept(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	q := savePrompt(t, mac, "", "", "q0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	reverted := savePrompt(t, mac, p.ID, "", "v0")
+	w.landHeld()
+	w.mu.Lock()
+	w.otherDeviceWritesLocked(q.ID, "q1")
+	w.pageSize = 1
+	w.onNextPage = func() { w.otherDeviceWritesLocked(p.ID, "v3") }
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got != reverted || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the revert to v0 in both", got, body)
+	}
+}
+
+// #390 r7: an upload of v1 is held past its not_after and refused when it
+// arrives; another device then saves the same v1, stamped after that
+// deadline. It can't be this device's upload: it is taken here (where v0
+// was saved again), not overwritten with v0.
+func TestARowWrittenAfterTheDeadlineIsNotTheUpload(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	savePrompt(t, mac, p.ID, "", "v0")
+	serverClock(w, pastDeadline)
+	w.landHeld()
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #390 r7: an upgrade from main, whose state kept only the title and text
+// of a prompt's unanswered upload (promptsSent). v0 was agreed, v1 was
+// uploaded (it landed, at order 0) and its reply lost, and v0 was saved
+// again here. The migrated record matches v1 on title and text, so v0 is an
+// edit against it: kept, and sent, as main did.
+func TestAnUpgradeKeepsARevertOverAnOldUnansweredUpload(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// main's form of the state (git show origin/main:app/desk_account_sync.go):
+	// no journal, the upload in flight in promptsSent.
+	old, _ := json.Marshal(map[string]any{"accountId": "acct", "mirror": state.Mirror, "promptsPulled": true,
+		"promptBaseline": state.PromptBaseline, "promptsSent": map[string]any{p.ID: map[string]string{"text": "v1"}}})
+	if err := os.WriteFile(mac.syncStatePath(), old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.anotherDeviceWrites(p.ID, "v1") // the upload, landed
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the revert to v0 in both", got, body)
+	}
+}
+
+// cancelOn is a transport that ends the round (cancel) once the nth answer
+// to a method's requests has arrived and been read in full, running then
+// first (on the round's side).
+type cancelOn struct {
+	base   http.RoundTripper
+	method string
+	mu     sync.Mutex
+	nth    int
+	seen   int
+	cancel context.CancelFunc
+	then   func()
+}
+
+func (c *cancelOn) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.base.RoundTrip(r)
+	if err != nil || r.Method != c.method || r.URL.Path != "/v1/sync" {
+		return resp, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancel == nil {
+		return resp, nil
+	}
+	if c.seen++; c.seen != c.nth {
+		return resp, nil
+	}
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+	if c.then != nil {
+		c.then()
+	}
+	c.cancel()
+	return resp, err
+}
+
+// deviceVia is a device signed in to srv whose requests go through rt.
+func deviceVia(t *testing.T, srv *httptest.Server, rt http.RoundTripper) *Desk {
+	t.Helper()
+	d := device(t, srv)
+	raw, _ := json.Marshal(map[string]string{"refresh_token": fmt.Sprintf("r1.%022d.%043d", 1, 0), "account_id": "acct"})
+	d.account = account.New(srv.URL, "linux", &signedInStore{raw: raw}, &http.Client{Transport: rt})
+	return d
+}
+
+// #390 r7: a round canceled once its readback has arrived, before it is
+// applied, applies none of it and doesn't count as a good sync.
+func TestACanceledReadbackIsNotApplied(t *testing.T) {
+	quietSync(t)
+	_, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodGet}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	state, _ := mac.loadSyncState()
+	before := *state.LastSync
+	savePrompt(t, mac, p.ID, "", "v1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport.mu.Lock()
+	transport.nth, transport.seen, transport.cancel = 2, 0, cancel // the pull, then the readback
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want the round ended", err)
+	}
+	state, _ = mac.loadSyncState()
+	if *state.LastSync != before {
+		t.Fatalf("last good sync %+v; want it left at %+v", *state.LastSync, before)
+	}
+}
+
+// #359 r11: an upload refused (429) as the round ends, while the store is
+// busy: the round lets go at once, the refusal owed, and the next round
+// writes it first.
+func TestARefusalOwedByAnEndedRoundIsWrittenNextRound(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport.mu.Lock()
+	transport.cancel, transport.then = cancel, mac.storeMu.Lock // the store busy as the refusal comes
+	transport.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- mac.SyncMachines(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("%v; want the round ended", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ended round still waits for the store")
+	}
+	mac.storeMu.Unlock()
+	state, _ := mac.loadSyncState()
+	open := slices.Concat(func() [][]string {
+		var out [][]string
+		for _, a := range state.PromptAttempts[p.ID] {
+			out = append(out, a.Open)
+		}
+		return out
+	}()...)
+	if len(open) != 1 {
+		t.Fatalf("open sends %v; want the refused one, its answer owed", open)
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+	transport.mu.Lock()
+	transport.cancel = nil
+	transport.mu.Unlock()
+	syncEach(t, mac)
+	owed := len(mac.accountSync.owed)
+	if owed != 0 {
+		t.Fatalf("%d answers still owed; want the next round to have written them", owed)
+	}
+	state, _ = mac.loadSyncState()
+	for _, a := range state.PromptAttempts[p.ID] {
+		if slices.Contains(a.Open, open[0]) {
+			t.Fatalf("journal %+v; want the refused send settled", state.PromptAttempts[p.ID])
+		}
+	}
+}
+
+// #390 r7, #359 r11: a sign-out and a sign-in again to the same account
+// (a real handoff) while a round runs: the round was the old session's,
+// and sends nothing under the new one.
+func TestARoundStaysInTheSessionItBeganIn(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.handoffAccount = "acct"
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	q := savePrompt(t, mac, "", "", "q0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.anotherDeviceWrites(q.ID, "q1")
+	var once sync.Once
+	publishSavedPrompts = func([]SavedPrompt) { // after the merge took q1, before the upload
+		once.Do(func() {
+			_ = mac.account.SignOut(context.Background())
+			if _, err := mac.account.StartSignIn("google"); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := mac.account.FinishSignIn(context.Background(), strings.Repeat("c", 43)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	w.mu.Lock()
+	posts := w.posts
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err != nil {
+		t.Fatalf("an abandoned round: %v; want nothing to report", err)
+	}
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("%d uploads under the new session; want none from the old round", sent)
+	}
+}
+
+// #359 r12: the first page of a pull shows this device's held upload of v1
+// landed; the account is then restored to before it, so the next page is
+// told to start over (410). The full pull finds the restored prompt (old):
+// the discarded history's landing is not recorded, so v0 (agreed, and
+// saved here again) is no edit, and old is taken, not overwritten.
+func TestALandingFromAHistoryAResetDiscardedIsNotKept(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "old")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backup := w.items[p.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac)
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.landHeld()
+	w.mu.Lock()
+	w.otherDeviceWritesBodyLocked("00000000-0000-4000-8000-0000000000aa", `{"text":"q","order":1}`)
+	w.pageSize = 1
+	w.onNextPage = func() {
+		w.restoreTo(backup.Rev)
+		w.items[p.ID] = backup
+	}
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "old" || !strings.Contains(body, `"old"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the restored old in both", got, body)
+	}
+}
+
+// #359 r12: an answer's baseline goes in only while it is the newest news of
+// its item: not when the mirror already holds the item at a later revision,
+// nor when the send it answers was settled since (a late, owed answer).
+// A baseline is never put back.
+func TestAStaleAnswerNeverPutsABaselineBack(t *testing.T) {
+	const p, h = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	state := func() *syncState {
+		return &syncState{
+			Mirror: account.Mirror{Prompts: []account.RemotePrompt{{ID: p, Rev: 7, Body: account.PromptBody{Text: "v2"}}},
+				Hosts: []account.RemoteHost{{ID: h, Rev: 9, Body: account.HostBody{Host: "new", Username: "root"}}}},
+			PromptBaseline: map[string]promptFields{p: {Text: "v2"}},
+			Baseline:       map[string]account.HostBody{h: {Host: "new", Username: "root"}},
+			PromptAttempts: map[string][]promptAttempt{p: {{Base: 5, Hash: "h", Open: []string{"s1"}}}},
+		}
+	}
+	answer := func(send string, prompt, host int64) owedAnswer {
+		var res account.PushResult
+		_ = json.Unmarshal(fmt.Appendf(nil, `{"applied":[{"collection":"prompts","id":%q,"rev":%d},{"collection":"hosts","id":%q,"rev":%d}]}`, p, prompt, h, host), &res)
+		return owedAnswer{acct: "acct", sent: map[string]sentAttempt{p: {ID: send, Base: 5}}, res: &res, applied: []account.Change{
+			{Collection: "prompts", ID: p, Body: account.PromptBody{Text: "v1"}},
+			{Collection: "hosts", ID: h, Body: account.HostBody{Host: "old", Username: "root"}},
+		}}
+	}
+	for _, c := range []struct {
+		name         string
+		ans          owedAnswer
+		prompt, host string
+	}{
+		{"older than the mirror", answer("s1", 6, 8), "v2", "new"},
+		{"its send settled since", answer("gone", 8, 10), "v2", "old"},
+		{"the newest news", answer("s1", 8, 10), "v1", "old"},
+	} {
+		s := state()
+		c.ans.apply(s)
+		if got, host := s.PromptBaseline[p].Text, s.Baseline[h].Host; got != c.prompt || host != c.host {
+			t.Errorf("%s: baselines %q and %q; want %q and %q", c.name, got, host, c.prompt, c.host)
+		}
+	}
+}
+
+// #390 r8: an owed answer the next merge applies is let go as soon as that
+// merge's commit record is in place: its files may fail to be written
+// after it, and the replay finishes them, but the answer is not applied a
+// second time later.
+func TestAnOwedAnswerGoesWithTheCommitThatHoldsIt(t *testing.T) {
+	quietSync(t)
+	_, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := state.Mirror.Prompts[0].Rev
+	state.PromptAttempts = map[string][]promptAttempt{p.ID: {{Base: base, Hash: "x", Open: []string{"s1"}}}}
+	if err := mac.storeSyncState(state); err != nil {
+		t.Fatal(err)
+	}
+	mac.accountSync.owed = []owedAnswer{{acct: "acct", sent: map[string]sentAttempt{p.ID: {ID: "s1", Base: base}}}} // a refusal
+	if err := os.Mkdir(mac.syncStatePath()+".tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a merge whose state couldn't be written reported success")
+	}
+	_ = os.Remove(mac.syncStatePath() + ".tmp")
+	owed := len(mac.accountSync.owed)
+	if owed != 0 {
+		t.Fatalf("%d answers still owed; want the one the commit record holds let go", owed)
+	}
+	if state, err := mac.loadSyncState(); err != nil || len(state.PromptAttempts[p.ID]) != 0 {
+		t.Fatalf("journal %+v (%v); want the refused send settled by the replayed commit", state.PromptAttempts[p.ID], err)
+	}
+}
+
+// #390 r8: an upload of v1 is refused (429), and the journal write that
+// would record it fails. The answer is kept, and the next round writes it:
+// when another device then saves the same v1, it is that device's, taken
+// here (where v0 was saved again), not the refused upload landing.
+func TestARefusalWhoseWriteFailedIsKept(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	transport.mu.Lock()
+	transport.cancel = nil
+	transport.mu.Unlock()
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #390 r8: a pull in pages. The first row of the prompt past the held
+// upload's base is another device's x: it decides that upload did not
+// land, so a later page's v1 (the same text, saved by a third device) is
+// that device's, taken here (where v0 was saved again).
+func TestTheFirstRowPastASendsBaseDecidesIt(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never applied
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.mu.Lock()
+	w.otherDeviceWritesLocked(p.ID, "x")
+	w.otherDeviceWritesBodyLocked("00000000-0000-4000-8000-0000000000aa", `{"text":"q","order":1}`)
+	w.pageSize = 1
+	w.onNextPage = func() { w.otherDeviceWritesLocked(p.ID, "v1") } // after the first page
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the third device's v1 in both", got, body)
+	}
+}
+
+// #390 r8: a conflict's row (another device's x) is the first past the
+// held upload's base, so it decides that upload did not land; the retry's
+// pull then shows a third device's v1, which is taken here (where v0 was
+// saved again), not taken for the held upload.
+func TestAConflictsRowDecidesBeforeTheRetryPull(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never applied
+	savePrompt(t, mac, p.ID, "", "v2")
+	w.mu.Lock()
+	w.onPush = func() {
+		w.otherDeviceWritesLocked(p.ID, "x")
+		savePrompt(t, mac, p.ID, "", "v0")
+	}
+	w.afterPush = func() { w.otherDeviceWritesLocked(p.ID, "v1") }
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the third device's v1 in both", got, body)
+	}
+}
+
+// #390 r8: a store wait ends with its round and leaves no waiter behind:
+// once the holder lets go, the lock is free at once.
+func TestAStoreWaitEndsWithItsRound(t *testing.T) {
+	var l storeLock
+	l.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	go cancel()
+	if l.LockCtx(ctx) {
+		t.Fatal("a wait whose round ended took the lock")
+	}
+	l.Unlock()
+	select {
+	case l.ch() <- struct{}{}:
+	default:
+		t.Fatal("the lock is taken by a wait that ended")
+	}
+}
+
+// signInAgainOnPost is a transport that signs d out and in again to the
+// same account once, just as d's first push goes out.
+type signInAgainOnPost struct {
+	base http.RoundTripper
+	d    *Desk
+	t    *testing.T
+	once sync.Once
+}
+
+func (s *signInAgainOnPost) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/sync" {
+		s.once.Do(func() {
+			_ = s.d.account.SignOut(context.Background())
+			if _, err := s.d.account.StartSignIn("google"); err != nil {
+				s.t.Error(err)
+				return
+			}
+			if _, err := s.d.account.FinishSignIn(context.Background(), strings.Repeat("c", 43)); err != nil {
+				s.t.Error(err)
+			}
+		})
+	}
+	return s.base.RoundTrip(r)
+}
+
+// #390 r8: the old session's upload goes out as a sign-in again to the
+// same account completes, and gets no answer (503): that round's failure
+// is not the new session's.
+func TestAnOldRoundDoesNotMarkTheNewSessionFailed(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.handoffAccount = "acct"
+	transport := &signInAgainOnPost{base: srv.Client().Transport, t: t}
+	mac := deviceVia(t, srv, transport)
+	transport.d = mac
+	savePrompt(t, mac, "", "", "v0")
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	_ = mac.SyncMachines(context.Background())
+	if mac.syncFailed("acct") {
+		t.Fatal("the new session shows the old round's failure")
+	}
+}
+
+// #359 r13: one upload writes p and is turned down for q (another device's
+// copy), and the round ends while the answer waits for the store. The
+// whole answer is owed as one, the write and the conflict, and the next
+// round writes all of it.
+func TestAMixedAnswerIsOwedWhole(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "p0")
+	q := savePrompt(t, mac, "", "", "q0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "p1")
+	savePrompt(t, mac, q.ID, "", "q1")
+	w.mu.Lock()
+	w.onPush = func() { w.otherDeviceWritesLocked(q.ID, "from linux") }
+	w.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport.mu.Lock()
+	transport.cancel, transport.then = cancel, mac.storeMu.Lock // the store busy as the answer comes
+	transport.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- mac.SyncMachines(ctx) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ended round still waits for the store")
+	}
+	owed := slices.Clone(mac.accountSync.owed)
+	mac.storeMu.Unlock()
+	if len(owed) != 1 || owed[0].res == nil || len(owed[0].applied) != 1 || owed[0].applied[0].ID != p.ID ||
+		len(owed[0].res.Conflicts) != 1 || owed[0].res.Conflicts[0].ID != q.ID {
+		t.Fatalf("owed %+v; want one answer with p's write and q's conflict", owed)
+	}
+	transport.mu.Lock()
+	transport.cancel = nil
+	transport.mu.Unlock()
+	syncEach(t, mac)
+	left := len(mac.accountSync.owed)
+	if left != 0 {
+		t.Fatalf("%d answers still owed; want the next round to have written them", left)
+	}
+}
+
+// endedRoundOwing runs a round its transport ends (cancel) once the first
+// upload's answer has arrived, while the store is busy: the answer is owed.
+func endedRoundOwing(t *testing.T, mac *Desk, transport *cancelOn) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport.mu.Lock()
+	transport.nth, transport.seen, transport.cancel, transport.then = 1, 0, cancel, mac.storeMu.Lock
+	transport.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- mac.SyncMachines(ctx) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ended round still waits for the store")
+	}
+	mac.storeMu.Unlock()
+	transport.mu.Lock()
+	transport.cancel = nil
+	transport.mu.Unlock()
+	if owed := len(mac.accountSync.owed); owed != 1 {
+		t.Fatalf("%d answers owed; want the ended round's one", owed)
+	}
+}
+
+// #359 r14: the upload of v2 is turned down (another device's x) as its
+// round ends, the answer owed; the account is then restored to before x,
+// and the held upload of v1 lands in the restored history. The owed answer
+// is of the history that is gone, so it settles only its own send: v1 is
+// still this device's landing, and v0, saved here since, goes.
+func TestAnOwedConflictFromAGoneHistorySettlesOnlyItsSend(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backup := w.items[p.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never applied
+	savePrompt(t, mac, p.ID, "", "v2")
+	w.mu.Lock()
+	w.onPush = func() { w.otherDeviceWritesLocked(p.ID, "x") }
+	w.mu.Unlock()
+	endedRoundOwing(t, mac, transport)
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.mu.Lock()
+	w.restoreTo(backup.Rev)
+	w.items[p.ID] = backup
+	w.floor = backup.Rev + 1 // the next pull is told to start over
+	w.mu.Unlock()
+	w.landHeld()
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want v0, saved here after v1 landed, in both", got, body)
+	}
+}
+
+// #359 r14-1: the upload of v1 is turned down (another device's x) as its
+// round ends with the store busy. Its send is settled before any store
+// wait, so when another device then saves the same v1, the next merge
+// takes it as that device's (here, where v0 was saved again), not as the
+// turned-down upload landing.
+func TestATurnedDownUploadIsSettledBeforeAnyStoreWait(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.onPush = func() { w.otherDeviceWritesLocked(p.ID, "x") }
+	w.mu.Unlock()
+	endedRoundOwing(t, mac, transport)
+	savePrompt(t, mac, p.ID, "", "v0")
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+}
+
+// #390 r9: an upload of v1 is refused (429) and only the journal write
+// that would record it fails; the app is then closed and opened again on
+// the same data, the answer owed in memory gone. The send's marker kept
+// the refusal: when another device saves the same v1, it is taken here
+// (where v0 was saved again), not mistaken for the refused upload landing
+// and overwritten. The marker goes with the send.
+func TestARefusalWhoseWriteFailedOutlivesARestart(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+	reopened := reopen(t, srv, mac)
+	savePrompt(t, reopened, p.ID, "", "v0")
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, reopened)
+	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "v1" || !strings.Contains(body, `"v1"`) {
+		t.Fatalf("the reopened app's prompt %+v, the account's %s; want the other device's v1 in both", got, body)
+	}
+	if markers, err := os.ReadDir(reopened.sendMarkersDir()); err != nil || len(markers) != 0 {
+		t.Fatalf("send markers %v (%v); want none once no send is open", markers, err)
+	}
+}
+
+// #390 r9: a merge that changes no machine leaves machines.json as it is.
+func TestAMergeLeavesMachinesAloneWhenNoneChanged(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Nickname: "pi", Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	before, err := os.Stat(mac.machinesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.anotherDeviceWrites(p.ID, "v1")
+	syncEach(t, mac)
+	if promptsOf(t, mac)[p.ID].Text != "v1" {
+		t.Fatal("the merge did not take the other device's v1")
+	}
+	after, err := os.Stat(mac.machinesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("machines.json was written again by a merge that changed no machine")
+	}
+}
+
+// reopen is the app opened again on d's data (d's memory gone), signed in
+// to srv's account.
+func reopen(t *testing.T, srv *httptest.Server, d *Desk) *Desk {
+	t.Helper()
+	again := newDesk(d.dir)
+	signInTo(again, srv, "acct")
+	again.accountStore = account.NewSecretsStore(noSecrets{}, errors.New("not found"))
+	return again
+}
+
+// #390 r15: the service takes the upload of v1 while v0 is saved here
+// again (a revert), and only the journal write recording its answer
+// fails; the app is then opened again on the same data, and another
+// device edits the prompt (x). The send's marker kept the acknowledgement:
+// v0 is an edit of the v1 the account took, so it goes over x, not x
+// over it.
+func TestAnAcceptedUploadOutlivesARestart(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.onPush = func() { savePrompt(t, mac, p.ID, "", "v0") } // the revert, as v1 goes
+	w.mu.Unlock()
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	reopened := reopen(t, srv, mac)
+	w.anotherDeviceWrites(p.ID, "x")
+	syncEach(t, reopened)
+	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("the reopened app's prompt %+v, the account's %s; want the revert v0 in both", got, body)
+	}
+}
+
+// #390 r15: the held upload of v1 lands just before the upload of v2,
+// which is turned down with v1's row; v0 is saved here again meanwhile,
+// and the account is restored (to a backup holding old) before the
+// readback. The conflict's row is of the history the restore discarded,
+// so it decides nothing: v0, agreed before the push, is no edit, and the
+// restored old is taken, not overwritten.
+func TestAConflictsRowFromAHistoryTheReadbackFindsGoneDecidesNothing(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "old")
+	q := savePrompt(t, mac, "", "", "q0")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backupRev, backupP, backupQ := w.rev, w.items[p.ID], w.items[q.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never answered
+	savePrompt(t, mac, p.ID, "", "v2")
+	savePrompt(t, mac, q.ID, "", "q1") // taken, so the round reads back
+	w.mu.Lock()
+	w.onPush = func() {
+		w.landHeldLocked()
+		savePrompt(t, mac, p.ID, "", "v0")
+	}
+	w.afterPush = func() {
+		w.restoreTo(backupRev)
+		w.items[p.ID], w.items[q.ID] = backupP, backupQ
+	}
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "old" || !strings.Contains(body, `"old"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the restored old in both", got, body)
+	}
+}
+
+// #390 r15: a draft held back at the journal's bound (two unanswered
+// uploads of it) is never dispatched, so a round the rate limit stops
+// resumes from the next write that can go, not from the held draft.
+func TestAHeldDraftDoesNotPinTheRateLimitCursor(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.noNow = true
+	mac := device(t, srv)
+	d := savePrompt(t, mac, "", "", "d0")
+	s := savePrompt(t, mac, "", "", "s0")
+	syncEach(t, mac)
+	for _, text := range []string{"d1", "d2"} {
+		savePrompt(t, mac, d.ID, "", text)
+		syncGivingUpTheUpload(t, w, mac) // held, never answered
+	}
+	savePrompt(t, mac, d.ID, "", "d3") // a third variant waits for a slot
+	savePrompt(t, mac, s.ID, "", "s1")
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	var api *account.APIError
+	if err := mac.SyncMachines(context.Background()); !errors.As(err, &api) || api.Status != http.StatusTooManyRequests {
+		t.Fatalf("%v; want the round stopped by the rate limit", err)
+	}
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "prompts/" + s.ID; state.PushFrom != want {
+		t.Fatalf("next round starts from %q; want %q, the write the rate limit stopped", state.PushFrom, want)
+	}
+}
+
+// #390 r15: a machine renamed on another device, in a merge whose commit
+// a failed write leaves to the replay: the replay moves the board cache
+// with the machine, as the commit would have.
+func TestAReplayedRenameMovesTheBoardCache(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	m := Machine{Host: "pi", User: "root", KeyPath: "/k"}
+	if err := mac.SaveMachine(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, mac)
+	b := BoardUpdate{MachineID: machineID(m), ListedAt: "2026-11-13T00:00:00Z"}
+	b.Board.Total = 1
+	mac.boards.store(b)
+	if mac.boards.load(machineID(m), "") == nil {
+		t.Fatal("no board cached")
+	}
+	pi := syncIDs(t, mac)["root@pi:22"]
+	w.mu.Lock()
+	w.rev++
+	w.items[pi] = account.Item{Collection: "hosts", ID: pi, Rev: w.rev, Body: json.RawMessage(`{"nickname":"","host":"pi2","port":22,"username":"root"}`)}
+	w.mu.Unlock()
+	blocked := mac.syncStatePath() + ".tmp"
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a merge whose state couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	syncEach(t, mac) // replays the commit first
+	if _, renamed := syncIDs(t, mac)["root@pi2:22"]; !renamed {
+		t.Fatalf("machines %v; want pi renamed to pi2", syncIDs(t, mac))
+	}
+	if mac.boards.load(machineID(m), "") != nil {
+		t.Fatal("the renamed machine's old board is still cached")
+	}
+}
+
+// #390 r15: a folder sync that fails is an error, unless the system
+// doesn't sync folders.
+func TestOnlyAnUnsupportedFolderSyncIsIgnored(t *testing.T) {
+	if err := syncDir(filepath.Join(t.TempDir(), "gone")); err == nil && runtime.GOOS != "windows" {
+		t.Fatal("a folder that can't be opened synced")
+	}
+	for _, c := range []struct {
+		err         error
+		unsupported bool
+	}{
+		{syscall.EINVAL, true},
+		{&os.PathError{Op: "sync", Path: "d", Err: syscall.ENOTSUP}, true},
+		{&os.PathError{Op: "sync", Path: "d", Err: syscall.EIO}, false},
+		{nil, false},
+	} {
+		if got := dirSyncUnsupported(c.err); got != c.unsupported {
+			t.Errorf("%v: unsupported %v; want %v", c.err, got, c.unsupported)
+		}
+	}
+}
+
+// #390 r15: an acknowledgement a marker holds is applied with an owed
+// answer's guards: in the history it was sent in, it retires the sends at
+// its base and makes its write what the saved copy is judged against,
+// unless the mirror holds the prompt past it; in another history it
+// retires only its own send.
+func TestAMarkersAcknowledgementKeepsTheGuards(t *testing.T) {
+	const p = "00000000-0000-4000-8000-000000000001"
+	for _, c := range []struct {
+		name     string
+		history  int64
+		mirror   int64
+		judgedBy string // "hash": the acknowledged write; "baseline": the old copy
+		left     int
+	}{
+		{"its history", 0, 5, "hash", 0},
+		{"the mirror past it", 0, 7, "baseline", 0},
+		{"another history", 1, 5, "baseline", 1},
+	} {
+		d := newDesk(t.TempDir())
+		state := &syncState{
+			History:        c.history,
+			Mirror:         account.Mirror{Prompts: []account.RemotePrompt{{ID: p, Rev: c.mirror, Body: account.PromptBody{Text: "v0"}}}},
+			PromptBaseline: map[string]promptFields{p: {Text: "v0"}},
+			PromptAttempts: map[string][]promptAttempt{p: {{Base: 5, Hash: "h", Open: []string{"s1", "s2"}}}},
+		}
+		if err := os.MkdirAll(d.sendMarkersDir(), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d.sendMarkersDir(), "s1"), []byte("a:6:H:0"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.foldMarkers(state)
+		judgedBy := "baseline"
+		if _, kept := state.PromptBaseline[p]; !kept && state.PromptLastSent[p].Hash == "H" {
+			judgedBy = "hash"
+		}
+		left := 0
+		for _, a := range state.PromptAttempts[p] {
+			left += len(a.Open)
+		}
+		if judgedBy != c.judgedBy || left != c.left {
+			t.Errorf("%s: judged by the %s, %d sends open; want the %s, %d", c.name, judgedBy, left, c.judgedBy, c.left)
 		}
 	}
 }

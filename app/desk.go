@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -114,12 +115,47 @@ var (
 	MachineStatusChanged = mygo.NewEvent[[]SavedMachineStatus]("machine-status:changed")
 )
 
+// storeLock serialises reads and writes of the desk's files (machines.json,
+// prompts.json, account-sync.json). It is one slot: a wait for it can end
+// with a ctx (LockCtx), leaving nothing behind.
+type storeLock struct {
+	once sync.Once
+	slot chan struct{}
+}
+
+func (l *storeLock) ch() chan struct{} {
+	l.once.Do(func() { l.slot = make(chan struct{}, 1) })
+	return l.slot
+}
+
+func (l *storeLock) Lock()   { l.ch() <- struct{}{} }
+func (l *storeLock) Unlock() { <-l.ch() }
+
+// LockCtx takes the lock, waiting only while ctx lives; false (not held)
+// once ctx ended first.
+func (l *storeLock) LockCtx(ctx context.Context) bool {
+	select {
+	case l.ch() <- struct{}{}:
+		return true
+	default:
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case l.ch() <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Desk keeps a set of saved machines, connects to the active one and keeps
 // its board current. One machine is connected at a time.
 type Desk struct {
 	dir string // per-user data directory
 
-	storeMu       sync.Mutex // serialises reads and writes of machines.json
+	storeMu       storeLock // serialises reads and writes of the desk's files
 	notifications notificationSettings
 	pairingMu     sync.Mutex
 	guestAcceptMu sync.Mutex
@@ -284,9 +320,13 @@ func (d *Desk) machinesPath() string { return filepath.Join(d.dir, "machines.jso
 func (d *Desk) legacyMachinePath() string { return filepath.Join(d.dir, "machine.json") }
 
 // load reads the saved machines. Before machines.json exists it imports the
-// single machine.json as the active machine. d.storeMu must be held.
+// single machine.json as the active machine. A merge's commit a failure
+// left is finished first (replayCommit). d.storeMu must be held.
 func (d *Desk) load() (machineStore, error) {
 	var st machineStore
+	if err := d.replayCommit(); err != nil {
+		return st, err
+	}
 	data, err := os.ReadFile(d.machinesPath())
 	if err == nil {
 		err = json.Unmarshal(data, &st)
@@ -312,24 +352,85 @@ func (d *Desk) load() (machineStore, error) {
 	return machineStore{Active: machineID(m), Machines: []Machine{m}}, nil
 }
 
-// store writes the saved machines. d.storeMu must be held. machine.json is
-// left as it was, so an older build still finds its machine.
+// store writes the saved machines (atomically, after any commit a failure
+// left). d.storeMu must be held. machine.json is left as it was, so an
+// older build still finds its machine.
 func (d *Desk) store(st machineStore) error {
-	if st.Machines == nil {
-		st.Machines = []Machine{}
+	if err := d.replayCommit(); err != nil {
+		return err
 	}
-	data, err := json.MarshalIndent(st, "", "  ")
+	data, err := encodeMachines(st)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(d.dir, 0o700); err != nil {
+	return writeFileAtomic(d.machinesPath(), data)
+}
+
+// encodeMachines is machines.json's content for st.
+func encodeMachines(st machineStore) ([]byte, error) {
+	if st.Machines == nil {
+		st.Machines = []Machine{}
+	}
+	return json.MarshalIndent(st, "", "  ")
+}
+
+// writeFileAtomic replaces path with data: a temp file beside it, synced,
+// renamed over it, and the folder synced (syncDir). A reader finds the old
+// file or the new one, never a torn one; a failure before the rename
+// leaves the old one. An error after it (the folder's sync) means the new
+// file is in place but may not outlive a crash.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := d.machinesPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, d.machinesPath())
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return syncDir(dir)
+}
+
+// syncDir makes the names written in dir durable (an fsync of the folder).
+// A system that doesn't sync folders is not an error (dirSyncUnsupported);
+// any other failure, to open the folder or to sync it, is.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil // a folder can't be opened for a sync there
+	}
+	folder, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = folder.Sync()
+	if closeErr := folder.Close(); err == nil {
+		err = closeErr
+	}
+	if dirSyncUnsupported(err) {
+		return nil
+	}
+	return err
+}
+
+// dirSyncUnsupported is whether err is how a system says it doesn't sync a
+// folder: EINVAL, or ENOTSUP and its kin (errors.ErrUnsupported).
+func dirSyncUnsupported(err error) bool {
+	return errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.EINVAL)
 }
 
 // Machine returns the active saved machine, if any.

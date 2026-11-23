@@ -24,11 +24,15 @@ type Item struct {
 	Body       json.RawMessage `json:"body"`
 }
 
-// Change is one write in a push. Body is nil for a delete.
+// Change is one write in a push. Body is nil for a delete. Base is the
+// revision it is based on, always sent (the service's optional base_rev):
+// the service writes it only while the item is still at that revision (0:
+// it holds no such item, not even a tombstone); otherwise it comes back in
+// the answer's Conflicts, unwritten (AccountService src/sync.ts).
 type Change struct {
 	Collection string `json:"collection"`
 	ID         string `json:"id"`
-	BaseRev    *int64 `json:"base_rev,omitempty"`
+	Base       int64  `json:"base_rev"`
 	Deleted    bool   `json:"deleted,omitempty"`
 	Body       any    `json:"body,omitempty"`
 }
@@ -61,6 +65,10 @@ type Pull struct {
 	// Full means Items is the whole account: anything held locally that it
 	// does not list is gone (a since=0 pull, or a reset_required restart).
 	Full bool
+	// NowMs is the service's clock as of the pull (themartianapp/herdrup
+	// #826): the earliest of its pages' now_ms, 0 when a page had none (a
+	// service without it).
+	NowMs int64
 }
 
 // ErrResetRequired is the service's 410: the caller may have missed a
@@ -71,36 +79,48 @@ const maxPullPages = 64 // 64 × 500 items, past the 2,000-item account cap
 
 // PullSince reads every change after since, following the cursor. A 410
 // restarts from 0 and the result is Full.
-// Every request is for account acct: ErrAccountChanged once another
-// account is signed in.
-func (c *Client) PullSince(ctx context.Context, acct string, since int64) (Pull, error) {
-	p, err := c.pull(ctx, acct, since)
+// Every request (each page) is for r's session (Round): ErrAccountChanged
+// once it ended, a sign-in again to the same account included.
+func (c *Client) PullSince(ctx context.Context, r Round, since int64) (Pull, error) {
+	p, err := c.pull(ctx, r, since)
 	if errors.Is(err, ErrResetRequired) && since != 0 {
-		return c.pull(ctx, acct, 0)
+		return c.pull(ctx, r, 0)
 	}
 	return p, err
 }
 
-func (c *Client) pull(ctx context.Context, acct string, since int64) (Pull, error) {
+func (c *Client) pull(ctx context.Context, r Round, since int64) (Pull, error) {
 	out := Pull{Full: since == 0}
 	query := url.Values{"since": {strconv.FormatInt(since, 10)}}
+	nowless := false
 	for page := 0; page < maxPullPages; page++ {
 		var answer struct {
 			Rev     int64  `json:"rev"`
 			Changes []Item `json:"changes"`
 			More    bool   `json:"more"`
 			Cursor  string `json:"cursor"`
+			NowMs   int64  `json:"now_ms"`
 		}
-		if err := c.authed(ctx, acct, http.MethodGet, "/v1/sync?"+query.Encode(), nil, &answer); err != nil {
+		if err := c.authedEach(ctx, r, http.MethodGet, "/v1/sync?"+query.Encode(), func() (any, error) { return nil, nil }, nil, &answer); err != nil {
 			var api *APIError
 			if errors.As(err, &api) && api.Status == http.StatusGone {
 				return Pull{}, ErrResetRequired
 			}
 			return Pull{}, err
 		}
+		c.noteNow(answer.NowMs)
+		switch {
+		case answer.NowMs <= 0:
+			nowless = true
+		case out.NowMs == 0 || answer.NowMs < out.NowMs:
+			out.NowMs = answer.NowMs
+		}
 		out.Items = append(out.Items, answer.Changes...)
 		out.Rev = answer.Rev
 		if !answer.More {
+			if nowless {
+				out.NowMs = 0
+			}
 			return out, nil
 		}
 		if answer.Cursor == "" {
@@ -118,8 +138,9 @@ const (
 	MaxPushBytes   = 256 * 1024
 )
 
-// pushOverhead is `{"changes":[` and `]}` around the changes.
-const pushOverhead = len(`{"changes":[]}`)
+// pushOverhead is the push body around the changes: `{"changes":[`, and
+// `],"not_after":` with its milliseconds (up to 16 digits) and `}`.
+const pushOverhead = len(`{"changes":[],"not_after":}`) + 16
 
 // Batches splits changes into pushes the service takes: at most
 // MaxPushChanges each, and each request body (as Push encodes it) at most
@@ -148,28 +169,96 @@ func Batches(changes []Change) ([][]Change, error) {
 	return out, nil
 }
 
-// Push writes changes (one of Batches) to account acct and returns the
-// service's answer; ErrAccountChanged once another account is signed in.
-func (c *Client) Push(ctx context.Context, acct string, changes []Change) (PushResult, error) {
-	var out PushResult
-	if len(changes) == 0 {
-		return out, nil
+// errNothingToPush is a dispatch whose prepare left no change to send.
+var errNothingToPush = errors.New("account: nothing to push")
+
+// notAfterMargin is how long past the newest now_ms seen a push may still
+// be applied (themartianapp/herdrup#826).
+const notAfterMargin = 120_000
+
+// noteNow keeps the newest now_ms the sync answers carried (0: none). An
+// answer without one (a service rolled back from #826) forgets it, so
+// later pushes carry no not_after until an answer carries one again.
+func (c *Client) noteNow(ms int64) {
+	c.nowMu.Lock()
+	defer c.nowMu.Unlock()
+	if ms <= 0 {
+		c.nowMs = 0
+		return
 	}
-	err := c.authed(ctx, acct, http.MethodPost, "/v1/sync", map[string]any{"changes": changes}, &out)
+	c.nowMs = max(c.nowMs, ms)
+}
+
+// notAfter is the deadline a push dispatched now carries: the newest
+// now_ms seen plus notAfterMargin, 0 (none) while no answer carried one.
+func (c *Client) notAfter() int64 {
+	c.nowMu.Lock()
+	defer c.nowMu.Unlock()
+	if c.nowMs == 0 {
+		return 0
+	}
+	return c.nowMs + notAfterMargin
+}
+
+// Push writes the changes prepare returns (one of Batches) to account acct
+// and returns the service's answer; ErrAccountChanged once another account
+// is signed in. prepare runs just before each dispatch, the replay after a
+// refused credential included, so what goes is what holds then; none is
+// no request (an empty answer). It is given the dispatch's not_after (0
+// for none): the service refuses the push once its clock is past it
+// (themartianapp/herdrup#826). A canceled ctx stops the push before
+// prepare. wroteNothing hears of a dispatch that provably wrote nothing:
+// refused (any 4xx, as soon as its status line is read: before its body,
+// and before a refreshed credential's replay), or failed before it had a
+// connection (exchange). Past that a failure proves nothing, and the send
+// stays open.
+func (c *Client) Push(ctx context.Context, r Round, prepare func(notAfter int64) ([]Change, error), wroteNothing func() error) (PushResult, error) {
+	var out PushResult
+	err := c.authedEach(ctx, r, http.MethodPost, "/v1/sync", func() (any, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		notAfter := c.notAfter()
+		changes, err := prepare(notAfter)
+		if err == nil && len(changes) == 0 {
+			err = errNothingToPush
+		}
+		return pushBody{Changes: changes, NotAfter: notAfter}, err
+	}, wroteNothing, &out)
+	if errors.Is(err, errNothingToPush) {
+		return PushResult{}, nil
+	}
+	if err == nil {
+		c.noteNow(out.NowMs)
+	}
 	return out, err
 }
 
-// PushResult is POST /v1/sync's answer.
+// pushBody is POST /v1/sync's request.
+type pushBody struct {
+	Changes  []Change `json:"changes"`
+	NotAfter int64    `json:"not_after,omitempty"`
+}
+
+// PushResult is POST /v1/sync's answer: each change is either Applied (the
+// service now holds what it asked for) or in Conflicts.
 type PushResult struct {
-	Rev     int64 `json:"rev"`
+	Rev int64 `json:"rev"`
+	// NowMs is the service's clock as it answered, 0 for none (#826).
+	NowMs   int64 `json:"now_ms"`
 	Applied []struct {
 		Collection string `json:"collection"`
 		ID         string `json:"id"`
 		Rev        int64  `json:"rev"`
 	} `json:"applied"`
-	Conflicts []struct {
-		Collection string `json:"collection"`
-		ID         string `json:"id"`
-		Server     *Item  `json:"server"`
-	} `json:"conflicts"`
+	Conflicts []Conflict `json:"conflicts"`
+}
+
+// Conflict is a change the service didn't write because its Base was
+// stale: Server is the item it holds (perhaps a tombstone), or nil for
+// none.
+type Conflict struct {
+	Collection string `json:"collection"`
+	ID         string `json:"id"`
+	Server     *Item  `json:"server"`
 }
