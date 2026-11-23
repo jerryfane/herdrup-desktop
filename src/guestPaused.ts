@@ -24,11 +24,13 @@ export function guestPausedPage(availability: string | undefined, agent: string)
 }
 
 /** herdr's guest_paused refusal, as both Desks word a herdr error ("herdr: guest_paused: …"; Go
- *  bridge.APIError, web HerdrAPIError). Only the code counts, not the words after it: another
- *  error whose message mentions a pause stays that error. */
+ *  bridge.APIError, web HerdrAPIError). Only the error's own code counts: the first "herdr: <code>"
+ *  after any wrapper. Words after it, even a pause-shaped "herdr: …_paused" quoted in the message,
+ *  leave another error that error. */
 export function isGuestPaused(message: string): boolean {
  // owner_paused: a web owner's chat scope while the pane runs no local agent (herdr #497).
- return /(?:^|[\s:])herdr: (?:guest|owner)_paused(?::|$)/.test(message);
+ const code = /(?:^|[\s:])herdr: ([a-z_]+)(?::|$)/.exec(message)?.[1];
+ return code === "guest_paused" || code === "owner_paused";
 }
 
 /** failureNote for a send the host refused while paused (GuestPaneView.swift:918-920). */
