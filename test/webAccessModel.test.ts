@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { choiceRows, followPresses, type SheetClock } from "../src/webAccess";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
+import { ACCESS_CHOICES, approveSend, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 
 const req = (id: string, claimed = "no", expiresIn = 600) => ({ id, browserName: "Chrome on macOS", claimed, expiresIn });
@@ -248,6 +248,19 @@ test("the dialog follows one primary press until release, cancel or close; a can
  expect(owner.moves.size).toBe(1);
  at("pointerup", 200);
  expect(presses.plainClick(click)).toBe(true);
+ // Another device's primary pointer (a pen or a touch while the mouse is held) can't take the
+ // press over (#383 review): the mouse's out and back stays a drag.
+ down(200); at("pointermove", 60); at("pointermove", 200);
+ down(200, { pointerId: 2 }); at("pointerup", 200, { pointerId: 2 });
+ at("pointerup", 200);
+ expect(presses.plainClick(click)).toBe(false);
+ // A click the browser says came from another pointer isn't the press's ending; its own is.
+ down(200); at("pointerup", 200);
+ expect(presses.plainClick({ ...click, pointerId: 2 })).toBe(false);
+ expect(presses.plainClick({ ...click, pointerId: 1 })).toBe(true);
+ // The same pointer pressing again (its release never reached the sheet) starts a new press.
+ down(200); at("pointermove", 60); down(200); at("pointerup", 200);
+ expect(presses.plainClick(click)).toBe(true);
  // A press that was cancelled, or that the sheet closed on, stops being followed and is no click.
  down(200); at("pointercancel", 200);
  expect(owner.moves.size).toBe(0);
@@ -259,6 +272,13 @@ test("the dialog follows one primary press until release, cancel or close; a can
  down(200, { button: 2 }); down(200, { isPrimary: false });
  expect(owner.moves.size).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
+});
+
+test("Try again resends the choices of the approval whose answer was lost; otherwise Approve sends what's on screen, after the code check", () => {
+ const sent = { machines: ["a", "b"], scope: "terminal", length: "30d" };
+ const onScreen = { machines: ["a"], scope: "chat", length: "1d" };
+ expect(approveSend(null, () => onScreen)).toEqual({ choices: onScreen, fresh: true });
+ expect(approveSend(sent, () => onScreen)).toEqual({ choices: sent, fresh: false });
 });
 
 test("the line under the rows says what Approve turns on and why a machine can't be ticked, with Machines closed", () => {

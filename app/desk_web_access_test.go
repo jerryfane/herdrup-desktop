@@ -216,6 +216,8 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
 	t.Cleanup(func() { webNow = time.Now })
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	// The machine's clock, off a whole second, so its recorded expiry has milliseconds.
+	w.owner.Now = func() time.Time { return time.UnixMilli(1_900_000_000_123) }
 	ctx := context.Background()
 	week := d.WebAccessLengths()[1]
 	if _, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", week.ID); err == nil {
@@ -240,9 +242,11 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 		g["expires_ms"].(float64)-g["created_ms"].(float64) != float64(week.Seconds*1000) {
 		t.Fatalf("grant %v", g)
 	}
-	// The result says the expiry the machine recorded, not one from this computer's clock.
-	if len(res.Expires) != 1 || res.Expires[0] != int64(g["expires_ms"].(float64))/1000*1000 {
-		t.Fatalf("expires %v, want the machine's %v", res.Expires, g["expires_ms"])
+	// The result says the expiry the machine recorded, to the millisecond, not one from this
+	// computer's clock; the envelope says it in whole seconds.
+	machineExpiry := int64(1_900_000_000_123 + week.Seconds*1000)
+	if len(res.Expires) != 1 || res.Expires[0] != machineExpiry {
+		t.Fatalf("expires %v, want the machine's %v", res.Expires, machineExpiry)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -255,7 +259,7 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 	}
 	var env webEnvelope
 	if err := json.Unmarshal(plain, &env); err != nil || env.Seq != uint64(w.finish["seq"].(float64)) || len(env.Machines) != 1 || env.Machines[0].HostID != w.owner.HostID ||
-		env.Machines[0].GrantID != g["grant_id"] || env.Machines[0].Relay != "https://guest.herdrup.app" {
+		env.Machines[0].GrantID != g["grant_id"] || env.Machines[0].Relay != "https://guest.herdrup.app" || env.Machines[0].ExpiresUnix != machineExpiry/1000 {
 		t.Fatalf("envelope %s, %v", plain, err)
 	}
 }
@@ -413,13 +417,14 @@ func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
 	t.Cleanup(func() { webNow = time.Now })
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+	w.owner.Now = func() time.Time { return time.UnixMilli(1_900_000_000_123) }
 	ctx := context.Background()
 	typeCode(t, d, w)
 	w.set(func() { w.finishStatus, w.readStatus = http.StatusServiceUnavailable, http.StatusServiceUnavailable })
 	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d")
 	report := time.Unix(1_800_000_000, 0).Add(7 * 24 * time.Hour).UnixMilli()
-	recorded := func() []int64 { return []int64{int64(w.grants(t)[0]["expires_ms"].(float64)) / 1000 * 1000} }
-	if err != nil || !res.Unsure || res.Problem == "" || fmt.Sprint(res.Expires) != fmt.Sprint(recorded()) {
+	recorded := []int64{1_900_000_000_123 + 7*24*3600*1000}
+	if err != nil || !res.Unsure || res.Problem == "" || fmt.Sprint(res.Expires) != fmt.Sprint(recorded) {
 		t.Fatalf("lost answer: %+v, %v", res, err)
 	}
 	if live := w.live(t); len(live) != 1 {
@@ -428,7 +433,7 @@ func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	w.set(func() { w.finishStatus, w.readStatus = 0, 0 })
 	webNow = func() time.Time { return time.Unix(1_800_000_000, 0).Add(time.Hour) }
 	res, err = d.WebAccessApprove(ctx, "req-1", []string{machine}, "terminal", "1d")
-	if err != nil || res.Unsure || len(res.Granted) != 1 || fmt.Sprint(res.Expires) != fmt.Sprint(recorded()) {
+	if err != nil || res.Unsure || len(res.Granted) != 1 || fmt.Sprint(res.Expires) != fmt.Sprint(recorded) {
 		t.Fatalf("retry: %+v, %v", res, err)
 	}
 	if g := w.grants(t); len(g) != 1 || g[0]["scope"] != "chat" {
