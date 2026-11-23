@@ -9,7 +9,11 @@ import { statusText, type MachineStatus } from "./ownerProbe";
 /** What this browser is called on the account's devices and on the approval sheet: "Chrome on
  *  macOS", from the user agent; "Web browser" when it can't tell. */
 export function browserDeviceName(ua: string): string {
- const { browser, os } = parseUserAgent(ua);
+ return deviceLabel(parseUserAgent(ua));
+}
+
+/** The account's name for a parsed browser ("Chrome on macOS"). */
+function deviceLabel({ browser, os }: { browser: string; os: string }): string {
  if (browser && os) return `${browser} on ${os}`;
  return browser || (os ? `Browser on ${os}` : "Web browser");
 }
@@ -26,8 +30,8 @@ function parseUserAgent(ua: string): { browser: string; os: string } {
  *  key storage (Safari, or any browser on iPhone and iPad), from the same parse of the agent. */
 export interface ThisBrowser { name: string; webKitOnly: boolean }
 export function thisBrowser(ua: string): ThisBrowser {
- const { browser, os } = parseUserAgent(ua);
- return { name: browserDeviceName(ua), webKitOnly: browser === "Safari" || os === "iOS" };
+ const parsed = parseUserAgent(ua);
+ return { name: deviceLabel(parsed), webKitOnly: parsed.browser === "Safari" || parsed.os === "iOS" };
 }
 
 /** Why this browser can't be approved (webKitOnly: thisBrowser). Safari, and every
