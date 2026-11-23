@@ -36,11 +36,13 @@ export function rowPreview(r: Row, detail: string): HTMLElement {
   return line;
 }
 
-/** The guest list's second line as plain text, or null where it is the status line (rowPreview):
- *  "Agent unavailable" with no listed agent or one the host says isn't running; "<kind> · <note>"
- *  for an archived agent. `archivedNote` is undefined for a live agent ("" archived without one). */
-export function guestRowText(row: Pick<Row, "agent"> | undefined, running: boolean, archivedNote: string | undefined): string | null {
-  if (!row || !running) return "Agent unavailable";
-  if (archivedNote === undefined) return null;
-  return [row.agent, archivedNote].filter(Boolean).join(" · ");
+/** The guest list's second line, by which of three rows it is: "unavailable" with no listed agent
+ *  or one the host says isn't running; "archived" with "<kind> · <note>"; "live" with the row,
+ *  drawn as the status line (rowPreview). `archivedNote` is undefined for a live agent ("" for an
+ *  archived one without a note). */
+export type GuestRowLine<R> = { kind: "unavailable" } | { kind: "archived"; text: string } | { kind: "live"; row: R };
+export function guestRowLine<R extends Pick<Row, "agent">>(row: R | undefined, running: boolean, archivedNote: string | undefined): GuestRowLine<R> {
+  if (!row || !running) return { kind: "unavailable" };
+  if (archivedNote === undefined) return { kind: "live", row };
+  return { kind: "archived", text: [row.agent, archivedNote].filter(Boolean).join(" · ") };
 }
