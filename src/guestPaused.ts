@@ -29,7 +29,9 @@ export function guestPausedPage(availability: string | undefined, agent: string)
  *  leave another error that error. */
 export function isGuestPaused(message: string): boolean {
  // owner_paused: a web owner's chat scope while the pane runs no local agent (herdr #497).
- const code = /(?:^|[\s:])herdr: ([a-z_]+)(?::|$)/.exec(message)?.[1];
+ // The first envelope's code, whatever its characters, up to its delimiter: an unfamiliar one
+ // (internal_error_v2) is still that error's code, never a reason to look further along.
+ const code = /(?:^|[\s:])herdr: ([^\s:]+)/.exec(message)?.[1];
  return code === "guest_paused" || code === "owner_paused";
 }
 

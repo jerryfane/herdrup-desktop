@@ -29,6 +29,9 @@ test("a web owner's owner_paused reads as paused, as guest_paused does", () => {
  // The outer envelope's code, even when the message quotes a whole pause refusal.
  expect(isGuestPaused("pane.stream: herdr: internal_error: gate failed after herdr: owner_paused: cached refusal")).toBe(false);
  expect(isGuestPaused("send: herdr: guest_paused: the owner paused sharing")).toBe(true);
+ // Any code the wire allows is the error's own; a digit doesn't send the matcher further along.
+ expect(isGuestPaused("pane.stream: herdr: internal_error_v2: gate failed after herdr: owner_paused: cached")).toBe(false);
+ expect(isGuestPaused("herdr: owner_paused")).toBe(true);
 });
 
 test("a published connection applies to a guest's agent page and to a web owner's on that machine, no other", () => {
