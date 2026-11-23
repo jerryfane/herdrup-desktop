@@ -37,6 +37,9 @@ const searchField = $("search-field");
 const searchInput = $<HTMLInputElement>("search");
 const connectView = $("connect");
 const form = $<HTMLFormElement>("connect-form");
+// The form never submits as a page would (a GET with the password in the URL): before
+// initHosts takes it over, submitting does nothing.
+form.addEventListener("submit", event => event.preventDefault());
 const select = $("select");
 const field = $<HTMLCanvasElement>("field");
 // herdrup's DesktopReferenceMock.holdsStill: set by the reference captures (refshot.go).
@@ -62,6 +65,9 @@ let tab: "agents" | "gram" | "settings" = "agents";
 let choosingHost = false;
 // The host home holds a connecting row until the first list (ConnectView #377).
 let hostsHold = () => false;
+/** initHosts has run: the host screen works. Before, a fallback render shows startupError. */
+let hostsReady = false;
+let startupError: HTMLElement | null = null;
 let settings: ReturnType<typeof initSettings> | null = null;
 let rail: Awaited<ReturnType<typeof initSidebarRail>> | null = null;
 let starAsk: ReturnType<typeof initStarAsk> | null = null;
@@ -712,7 +718,7 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-async function init() {
+async function init(rendered: () => void) {
   document.documentElement.style.setProperty("--pixel", `${1 / devicePixelRatio}px`);
   // The composer draft's line pitch and first-line offset (composerMetrics.ts).
   document.documentElement.style.setProperty("--composer-text-pitch", `${COMPOSER_TEXT_PITCH}px`);
@@ -775,6 +781,7 @@ async function init() {
   });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
   hostsHold = hosts.holdsHome;
+  hostsReady = true;
   // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
   // connection, not the bar last drawn: from the host chooser over a share there is no guest bar
   // yet, and the account avatar still opens the share's Settings (#270).
@@ -831,8 +838,10 @@ async function init() {
   await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
   drawField();
+  startupError?.remove(); startupError = null;
   renderReady = true;
   render();
+  rendered();
   // An App updates request from before the page was ready (desk openAppUpdates).
   void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
   const version = activationVersion;
@@ -875,6 +884,24 @@ const reportPageError = (message: string) => { void Desk.reportPageError(message
 window.addEventListener("error", event => reportPageError(`uncaught: ${errorDetail(event.error ?? event.message)}`));
 window.addEventListener("unhandledrejection", event => reportPageError(`unhandled rejection: ${errorDetail(event.reason)}`));
 void startWithFallback(init, {
-  firstRender: () => { if (renderReady) return; renderReady = true; render(); },
+  firstRender: () => {
+    if (renderReady) return;
+    if (hostsReady) { renderReady = true; render(); } else showStartupError();
+  },
   report: reportPageError,
 });
+
+/** Startup stopped before the host screen could work: say so in place of the screen, with a
+ *  way to start again. The cause is in the app's log (reportPageError). A startup that still
+ *  finishes replaces it (init). */
+function showStartupError() {
+  if (startupError) return;
+  startupError = el("section", "startup-error");
+  startupError.setAttribute("role", "alert");
+  const again = el("button", "", "Try again");
+  again.type = "button";
+  again.onclick = () => location.reload();
+  startupError.append(el("h1", "", "HerdrUp couldn't finish starting"), el("p", "dim", "The reason is in the app's log."), again);
+  connectView.hidden = true;
+  document.body.append(startupError);
+}

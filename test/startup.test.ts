@@ -30,3 +30,30 @@ test("a startup that never finishes renders after the limit and says it is stuck
  expect(h.renders).toBe(1);
  expect(h.reports[0]).toContain("no first render");
 });
+
+// Real time on purpose: the limit passing after the first render is what is under test.
+test("once the first render is up, the limit no longer applies and a later failure is only reported", async () => {
+ const { h, hooks: k } = hooks();
+ const later = Promise.withResolvers<void>();
+ const run = startWithFallback(async rendered => { rendered(); await later.promise; }, k, 20);
+ await Bun.sleep(50);
+ expect(h).toEqual({ renders: 0, reports: [] });
+ later.reject(new Error("pending agent lost"));
+ await run;
+ expect(h.renders).toBe(0);
+ expect(h.reports).toHaveLength(1);
+ expect(h.reports[0]).toContain("after the first render: Error: pending agent lost");
+});
+
+test("a rejection that can't be turned into text still renders and is reported", async () => {
+ const { h, hooks: k } = hooks();
+ await startWithFallback(() => Promise.reject(Object.create(null)), k, 10_000);
+ expect(h.renders).toBe(1);
+ expect(h.reports[0]).toContain("startup failed: (an error that can't be shown as text)");
+});
+
+test("reporting that throws doesn't stop the render", async () => {
+ let renders = 0;
+ await startWithFallback(async () => { throw new Error("x"); }, { firstRender: () => { renders++; }, report: () => { throw new Error("bridge gone"); } }, 10_000);
+ expect(renders).toBe(1);
+});
