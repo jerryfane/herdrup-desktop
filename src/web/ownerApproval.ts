@@ -22,8 +22,9 @@ export type OwnerPhase =
  | { kind: "starting" }
  /** Asked; no trusted device has opened the request yet, so there is no code. */
  | { kind: "waiting" }
- /** A trusted device opened it: the person types these digits there. */
- | { kind: "code"; code: string; approver: string }
+ /** A trusted device opened it: the person types these digits there, until expiresAt (ms since
+  *  the epoch on this browser's clock), when the request ends. */
+ | { kind: "code"; code: string; approver: string; expiresAt: number }
  | { kind: "approved"; record: OwnerRecord }
  | { kind: "denied" }
  | { kind: "expired" }
@@ -146,7 +147,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
     if (!(error instanceof AccountServiceError && error.code === "already_revealed")) { onPhase({ kind: "failed", problem: problemOf(error) }); return; }
    }
    approver = { pub, name: st.approver!.name };
-   onPhase({ kind: "code", code: approveCode(key.publicKey, pub, nonceB, nonceT), approver: approver.name });
+   onPhase({ kind: "code", code: approveCode(key.publicKey, pub, nonceB, nonceT), approver: approver.name, expiresAt });
    continue;
   }
   if (st.state === "approved") {

@@ -80,7 +80,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 // ---- Owner access: approving this browser (ownerApproval.ts, mockup 1) ----
 
 const ownerStore = new IndexedDBOwnerStore();
-const browser = thisBrowser(navigator.userAgent);
+const browser = thisBrowser(navigator.userAgent, navigator.maxTouchPoints);
 const deviceName = browser.name;
 let ownerPhase: OwnerPhase | null = null;
 const ownerRuns = new OwnerRuns();
