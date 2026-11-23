@@ -875,20 +875,26 @@ export function createGuestDesk(env: DeskEnv) {
    // machine or page since (a slow ping, a choice made later) drops it, or its pane id would name
    // a pane there.
    const still = () => active === l && mounted === view;
-   // Avatar… (a host that stores avatars) and Close agent write (herdr#510): a terminal-scope link's.
-   const writes = !!l.owner && l.transport.scope === "terminal";
-   const avatar = writes && !o.plain && (await l.client.ping(l.life.signal).catch(() => null))?.capabilities?.agent_avatar === true;
-   const entries = webPaneMenu(o, l.owner ? await desk.paneMuted(o.paneID) : null, { avatar, close: writes });
+   // Share, Avatar… (a host that stores avatars) and Close agent write (herdr#510): a link under
+   // terminal scope. The menu offers them as the link is once its answers are in (a renewal may
+   // have admitted it under chat meanwhile), and drops them if that changes before the choice.
+   const writes = () => !!l.owner && l.transport.scope === "terminal";
+   const pong = writes() && !o.plain ? await l.client.ping(l.life.signal).catch(() => null) : null;
+   const muted = l.owner ? await desk.paneMuted(o.paneID) : null;
    if (!still()) return false;
+   const entries = webPaneMenu({ ...o, canShare: o.canShare && writes() }, muted, { avatar: writes() && pong?.capabilities?.agent_avatar === true, close: writes() });
    void showMenu(entries).then(async (item) => {
     const action = item?.action;
     if (!action || !still()) return;
+    if ((action === "share" || action === "avatar" || action === "close") && !writes()) return;
     // Go flips the stored mute before the page hears the choice.
     if (action === "mute" || action === "unmute") await desk.setPaneMuted(o.paneID, action === "mute");
     // Close agent is sent once the pane closed (choosePaneAction), on the menu's own link.
     if (action === "close" && !await closeAgent(link, o.paneID)) return;
+    // The page acts on the pane id: once the page was mounted again meanwhile, this isn't its choice.
+    if (!still()) return;
     // The avatar sheet it opens belongs to this link.
-    if (action === "avatar" && link) sheetOpened(link, { paneID: o.paneID });
+    if (action === "avatar" && link) sheetOpened(link, "avatar", o.paneID);
     emit("paneActionChosen", { paneID: o.paneID, action });
    });
    return true;

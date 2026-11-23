@@ -12,11 +12,12 @@
 // checks: herdr#510's owner gate serves neither yet and strips both from an owner's pong.
 //
 // A menu belongs to the link it was asked on: once another machine is open it is not shown, and a
-// choice made in it is dropped. So does the sheet or prompt an item opens (sheetOpened): its calls
-// go to its own link and are refused once another machine is open.
+// choice made in it is dropped. So does the sheet or prompt an item opens (sheetOpened, by kind and
+// pane): every call it makes goes to its own record's link, and is refused once another machine is
+// open or without a record; it never falls back to the open link.
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
-import { harnessDisplayName, normalizeAgentName, transferPhaseIsConclusive } from "../agentActionsModel";
+import { harnessDisplayName, normalizeAgentName, SheetStaleError, transferPhaseIsConclusive } from "../agentActionsModel";
 import { ompHarness } from "../topicsModel";
 import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
@@ -97,16 +98,19 @@ export function transferHarnesses(caps: Record<string, unknown> | null): string[
  return listed.filter((h): h is string => typeof h === "string" && HARNESSES.includes(h));
 }
 
-/** desk_agent_actions.go sessionTransferSource and Targets: an unfinished transfer's own, else the
- *  agent's native harness and every other one the host transfers between. */
-export function sessionTransfer(a: ActionAgent, caps: Record<string, unknown> | null): { source: string | null; targets: string[]; active: boolean } {
+/** desk_agent_actions.go sessionTransferSource and Targets, as the browser may offer them: none
+ *  unless the host's pong says agent_session_transfer (an owner link's pong reports only what its
+ *  gate serves the browser, so unlike Go an unfinished transfer needs it too); then an unfinished
+ *  transfer's own source and target, else the agent's native harness and every other one the host
+ *  transfers between. */
+export function sessionTransfer(a: ActionAgent, caps: Record<string, unknown> | null): { source: string; targets: string[] } | null {
+ if (!supported(caps, "agent_session_transfer")) return null;
  const t = a.session_transfer;
- if (t && !transferPhaseIsConclusive(t.phase)) return { source: t.source, targets: [t.target], active: true };
- const own = (a.agent ?? "").toLowerCase();
- const source = HARNESSES.includes(own) ? own : null;
+ if (t && !transferPhaseIsConclusive(t.phase)) return { source: t.source, targets: [t.target] };
+ const source = (a.agent ?? "").toLowerCase();
  const harnesses = transferHarnesses(caps);
- const targets = source !== null && harnesses.includes(source) ? HARNESSES.filter((h) => h !== source && harnesses.includes(h)) : [];
- return { source, targets, active: false };
+ if (!harnesses.includes(source)) return null;
+ return { source, targets: HARNESSES.filter((h) => h !== source && harnesses.includes(h)) };
 }
 
 export interface RowMenuInput {
@@ -133,13 +137,11 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
  if (typeof enabled === "boolean" && supported(caps, "agent_topics_switch") && ompHarness(a.agent ?? "")) {
   out.push({ label: enabled ? "Turn off topics" : "Turn on topics", action: { ...action("topics"), enable: !enabled } });
  }
- // Go also offers an unfinished transfer on a host that no longer says agent_session_transfer;
- // an owner link's pong reports only what its gate serves the browser, so the flag decides.
  const transfer = sessionTransfer(a, caps);
- if (transfer.source !== null && a.machine_id == null && transfer.targets.length > 0 && supported(caps, "agent_session_transfer")) {
+ if (transfer !== null && a.machine_id == null && transfer.targets.length > 0) {
   const sub = transfer.targets.map((t): MenuItem => ({
    label: harnessDisplayName(t),
-   action: { ...action("transfer"), source: transfer.source!, target: { id: t, displayName: harnessDisplayName(t) } },
+   action: { ...action("transfer"), source: transfer.source, target: { id: t, displayName: harnessDisplayName(t) } },
   }));
   out.push({ label: transfer.targets.length === 1 ? "Switch to " + harnessDisplayName(transfer.targets[0]!) : "Switch harness", sub });
  }
@@ -159,60 +161,75 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 
 // ---- Carrying them out ----
 
-/** What a sheet answers when the machine it was opened on is no longer the open one. */
-export const SHEET_STALE = "the machine changed since this was opened";
+/** The sheet an agent item opens, as the Desk calls it makes are told apart: by kind and pane. */
+export type SheetKind = "rename" | "restart" | "swap" | "avatar" | "topics" | "transfer";
 
-/** The one sheet the page has open (they are modal) and the link it was opened from: an agent
- *  action's (Rename, Restart, Swap, Avatar…, Topics, Switch harness) by its pane, or a folder
- *  name's by its request. Its Desk calls go to that link, and are refused once another is open. */
-let sheet: { link: OwnerLink; paneID?: string; naming?: FolderNaming } | null = null;
+/** The sheet each item chose, by kind and pane: the link it was chosen on. Sheets are modal, so per
+ *  kind and pane one is pending; choosing it again (on any machine) retires the older record. */
+interface SheetRecord { readonly link: OwnerLink }
+const sheets = new Map<string, SheetRecord>();
+/** The pane of the newest Switch harness chosen: its sheet's account lookup names none. */
+let transferPane: string | null = null;
+/** A folder name prompt's link, by its request. */
+const prompts = new WeakMap<FolderNaming, OwnerLink>();
 
-/** A sheet opened from link: a menu item's request for paneID, or for a folder name. */
-export function sheetOpened(link: OwnerLink, on: { paneID: string } | { naming: FolderNaming }): void {
- sheet = { link, ...on };
+/** A sheet of kind for paneID chosen on link (a row menu item, or the ••• menu's Avatar…). */
+export function sheetOpened(link: OwnerLink, kind: SheetKind, paneID: string): void {
+ sheets.set(kind + "\u0000" + paneID, { link });
+ if (kind === "transfer") transferPane = paneID;
 }
 
-/** The link a sheet's call on paneID belongs to: its sheet's, which must still be the open one;
- *  else the open link. */
-function sheetLink(paneID: string): OwnerLink | null {
- if (sheet?.paneID !== paneID) return currentOwnerLink();
- if (sheet.link !== currentOwnerLink()) throw new Error(SHEET_STALE);
- return sheet.link;
+/** One step of a sheet (a lookup, a poll, a write): it runs on the link of the record current for
+ *  its kind and pane, refused without one or once that link is no longer the open one; it never
+ *  falls back to the open link. How it ends counts only while that record is still current and its
+ *  link still open: a newer choice of the sheet meanwhile (on any machine), or another machine,
+ *  turns its answer or its failure into SheetStaleError, and the page stops that sheet. */
+async function sheetStep<T>(kind: SheetKind, paneID: string, step: (link: OwnerLink) => Promise<T>): Promise<T> {
+ if (paneID === "") throw new Error("no agent");
+ const key = kind + "\u0000" + paneID, record = sheets.get(key);
+ const current = () => sheets.get(key) === record && record?.link === currentOwnerLink();
+ if (record === undefined || !current()) throw new SheetStaleError();
+ let result: T;
+ try { result = await step(record.link); } catch (error) { throw current() ? error : new SheetStaleError(); }
+ if (!current()) throw new SheetStaleError();
+ return result;
 }
 
-/** desk_agent_actions.go agentLink: the link (a menu's own, a sheet's, or the open one) and the
- *  agent as last listed there (only its pane id when it isn't). */
-function agentLink(paneID: string, link = sheetLink(paneID)): { link: OwnerLink; info: ActionAgent } {
+/** desk_agent_actions.go agentLink, without the roster: the link a menu brought, or the open one,
+ *  for an action on paneID. */
+function paneLink(paneID: string, link: OwnerLink | null): OwnerLink {
  if (link === null) throw new Error("not connected");
  if (paneID === "") throw new Error("no agent");
- return { link, info: link.agents().find((a) => a.pane_id === paneID) ?? { pane_id: paneID } };
+ return link;
 }
 
 /** desk_agent_actions.go StopAgent: closes the agent's pane (Stop agent, Close agent), on the
  *  link a menu was shown for, or the open one. */
 async function stopAgent(paneID: string, on = currentOwnerLink()): Promise<void> {
- const { link } = agentLink(paneID, on);
+ const link = paneLink(paneID, on);
  await ownerCall("pane.close", { pane_id: paneID }, "ok", { link });
  link.relist();
 }
 
 /** desk_agent_actions.go ArchiveAgent: archived, attributed to herdrup. */
 async function archiveAgent(paneID: string, on = currentOwnerLink()): Promise<void> {
- const { link } = agentLink(paneID, on);
+ const link = paneLink(paneID, on);
  await ownerCall("agent.archive", { target: paneID, reason: ARCHIVE_REASON, by: ARCHIVE_BY }, "agent_info", { link });
  link.relist();
 }
 
 /** desk_agent_actions.go choosePaneAction's close: the pane closed on link (the ••• menu's own,
- *  desk.ts paneMenu), or why not said as Go's alert (unless the link ended). */
+ *  desk.ts paneMenu), or why not said as Go's alert (unless the link ended), titled as the pane's
+ *  row (agentTitle: its pane id once it is off the list). */
 export async function closeAgent(link: OwnerLink | null, paneID: string): Promise<boolean> {
- const listed = link?.agents().find((a) => a.pane_id === paneID);
- const title = listed ? displayName(listed) : paneID;
  try {
   await stopAgent(paneID, link);
   return true;
  } catch (error) {
-  if (link !== null && !link.signal.aborted) showWarning("Couldn't close " + title, errorText(error));
+  if (link !== null && !link.signal.aborted) {
+   const listed = link.agents().find((a) => a.pane_id === paneID);
+   showWarning("Couldn't close " + (listed ? displayName(listed) : paneID), errorText(error));
+  }
   return false;
  }
 }
@@ -220,26 +237,28 @@ export async function closeAgent(link: OwnerLink | null, paneID: string): Promis
 /** desk_agent_actions.go chooseAgentAction: stop and archive here, the rest in the page's sheets. */
 function chooseAgentAction(link: OwnerLink, a: AgentAction) {
  const run = a.kind === "stop" ? stopAgent : a.kind === "archive" ? archiveAgent : null;
- if (run === null) { sheetOpened(link, { paneID: a.paneID }); emit("agentActionRequested", a); return; }
+ if (run === null) { sheetOpened(link, a.kind as SheetKind, a.paneID); emit("agentActionRequested", a); return; }
  run(a.paneID, link).catch((error) => { if (!link.signal.aborted) showWarning(`Couldn't ${a.kind} ${a.title}`, errorText(error)); });
 }
 
 /** desk_groups.go choose. */
 function choose(link: OwnerLink, e: MenuItem) {
  if (e.edit) link.groups?.apply(e.edit);
- else if (e.naming) { sheetOpened(link, { naming: e.naming }); emit("folderNamingRequested", e.naming); }
+ else if (e.naming) { prompts.set(e.naming, link); emit("folderNamingRequested", e.naming); }
  else if (e.action) chooseAgentAction(link, e.action);
 }
 
 /** desk_groups.go popup: entries as a menu, false when there is nothing to show. The page's menu
  *  has no cascades: a submenu opens as its own menu where its item was. A choice is the entry
  *  itself (two folders may share a name), and it belongs to link: once another machine is open it
- *  is dropped. */
+ *  is dropped, and so is a write (anything but the Topics switch) once the link's scope is no
+ *  longer terminal (a renewal admitted it under chat). */
 function popup(link: OwnerLink, entries: MenuItem[]): boolean {
  if (entries.length === 0) return false;
  const show = async (items: MenuItem[]): Promise<void> => {
   const chosen = await showMenu(items);
   if (!chosen || currentOwnerLink() !== link) return;
+  if (chosen.action?.kind !== "topics" && link.scope() !== "terminal") return;
   if (chosen.sub) await show(chosen.sub);
   else choose(link, chosen);
  };
@@ -287,12 +306,13 @@ export function topicsSwitchProblem(error: unknown): string {
 
 async function transferSession(paneID: string, to: string, accountID: string, transferID: string): Promise<string> {
  if (to === "") throw new Error("no target harness");
- const { link } = agentLink(paneID);
- const result = await ownerCall<{ agent: AgentInfo }>("agent.transfer_session", {
-  target: paneID, to, ...accountID !== "" ? { account: accountID } : {}, ...transferID !== "" ? { transfer_id: transferID, confirm: true } : {},
- }, "agent_info", { capability: "agent_session_transfer" });
- link.relist();
- return JSON.stringify(result);
+ return sheetStep("transfer", paneID, async (link) => {
+  const result = await ownerCall<{ agent: AgentInfo }>("agent.transfer_session", {
+   target: paneID, to, ...accountID !== "" ? { account: accountID } : {}, ...transferID !== "" ? { transfer_id: transferID, confirm: true } : {},
+  }, "agent_info", { capability: "agent_session_transfer", link });
+  link.relist();
+  return JSON.stringify(result);
+ });
 }
 
 export const agentActionsDesk = {
@@ -301,14 +321,15 @@ export const agentActionsDesk = {
   const link = currentOwnerLink();
   const info = link?.agents().find((a) => a.pane_id === paneID);
   if (!link || !info || isArchived(info)) return false;
-  const writes = link.scope() === "terminal";
+  // Swap's accounts are a write's (terminal scope); what the menu offers is the scope the link
+  // has once the pong is back (a renewal may have admitted it under chat meanwhile).
   const [pong, accounts] = await Promise.all([
    link.client.ping(link.signal).catch(() => null),
-   writes ? ownerCall<{ accounts: AccountInfo[] }>("accounts.list", {}, "accounts_list", { link }).then((r) => r.accounts, () => []) : [],
+   link.scope() === "terminal" ? ownerCall<{ accounts: AccountInfo[] }>("accounts.list", {}, "accounts_list", { link }).then((r) => r.accounts, () => []) : [],
   ]);
   // Another machine opened while its pong was on its way: this menu would name its panes.
   if (currentOwnerLink() !== link) return false;
-  return popup(link, agentRowMenu({ info, caps: pong?.capabilities ?? null, groups: link.groups?.document() ?? null, accounts }, writes));
+  return popup(link, agentRowMenu({ info, caps: pong?.capabilities ?? null, groups: link.groups?.document() ?? null, accounts }, link.scope() === "terminal"));
  },
 
  /** desk_groups.go FolderMenu: a folder row's menu; every item writes. */
@@ -321,10 +342,10 @@ export const agentActionsDesk = {
  /** desk_groups.go NameFolder: creates the folder or renames it; a name with nothing left once
   *  trimmed does nothing. */
  async nameFolder(n: FolderNaming, text: string): Promise<void> {
-  // The prompt's own link: once another machine is open its queue ended with it, so nothing goes
-  // to the new one.
-  const link = sheet?.naming === n ? sheet.link : currentOwnerLink();
-  if (!link?.groups) return;
+  // The prompt's own link, and only while it is the open one: a refused name changes nothing,
+  // here (the open folders) or there.
+  const link = prompts.get(n);
+  if (!link?.groups || link !== currentOwnerLink()) return;
   if (n.kind === "new") link.groups.createFolder(text, n.member);
   else if (n.kind === "rename") {
    const name = folderName(text);
@@ -340,44 +361,50 @@ export const agentActionsDesk = {
  async renameAgent(paneID: string, name: string): Promise<string> {
   const trimmed = trimSpace(name);
   if (trimmed === "") throw new Error("enter a name");
-  const { link } = agentLink(paneID);
   const saved = normalizeAgentName(trimmed);
-  let result: { agent: AgentInfo };
-  try {
-   result = await ownerCall<{ agent: AgentInfo }>("agent.rename", { target: paneID, name: saved }, "agent_info");
-  } finally {
-   if (currentOwnerLink() === link) await link.groups?.refresh(true);
-  }
-  link.relist();
-  return result.agent.name ?? saved;
+  return sheetStep("rename", paneID, async (link) => {
+   let result: { agent: AgentInfo };
+   try {
+    result = await ownerCall<{ agent: AgentInfo }>("agent.rename", { target: paneID, name: saved }, "agent_info", { link });
+   } finally {
+    if (currentOwnerLink() === link) await link.groups?.refresh(true);
+   }
+   link.relist();
+   return result.agent.name ?? saved;
+  });
  },
 
  /** desk_agent_actions.go RestartAgent: --resume in place for accountID "", else on that account. */
  async restartAgent(paneID: string, accountID: string): Promise<void> {
-  const { link } = agentLink(paneID);
-  await ownerCall("agent.restart", { target: paneID, ...accountID !== "" ? { account: accountID } : {} }, "agent_info");
-  link.relist();
+  await sheetStep(accountID === "" ? "restart" : "swap", paneID, async (link) => {
+   await ownerCall("agent.restart", { target: paneID, ...accountID !== "" ? { account: accountID } : {} }, "agent_info", { link });
+   link.relist();
+  });
  },
 
  /** desk_agent_actions.go SetAgentAvatar: the picture on the agent's avatar target. */
  async setAgentAvatar(paneID: string, c: AvatarChoice): Promise<void> {
   const params = avatarParams(c);
-  const { link, info } = agentLink(paneID);
-  try {
-   await ownerCall("agent.avatar.set", { ...params, target: avatarTarget(info) }, "agent_avatar_set", { capability: "agent_avatar" });
-  } catch (error) { throw avatarProblem(error); }
-  link.relist();
+  await sheetStep("avatar", paneID, async (link) => {
+   // avatarTarget: the agent as last listed there, only its pane id when it isn't.
+   const info: AgentInfo = link.agents().find((a) => a.pane_id === paneID) ?? { pane_id: paneID };
+   try {
+    await ownerCall("agent.avatar.set", { ...params, target: avatarTarget(info) }, "agent_avatar_set", { capability: "agent_avatar", link });
+   } catch (error) { throw avatarProblem(error); }
+   link.relist();
+  });
  },
 
  /** desk_topics.go TopicsSetEnabled: herdr restarts the omp agent with topics on or off. */
  async topicsSetEnabled(paneID: string, enabled: boolean): Promise<TopicsSwitched> {
-  const { link } = agentLink(paneID);
-  let switched: { changed: boolean; topics_enabled: boolean };
-  try {
-   switched = await ownerCall("agent.topics.set_enabled", { target: paneID, enabled }, "agent_topics_switched", { capability: "agent_topics_switch" });
-  } catch (error) { throw new Error(topicsSwitchProblem(error)); }
-  link.relist();
-  return { changed: switched.changed, topicsEnabled: switched.topics_enabled };
+  return sheetStep("topics", paneID, async (link) => {
+   let switched: { changed: boolean; topics_enabled: boolean };
+   try {
+    switched = await ownerCall("agent.topics.set_enabled", { target: paneID, enabled }, "agent_topics_switched", { capability: "agent_topics_switch", link });
+   } catch (error) { throw new Error(topicsSwitchProblem(error)); }
+   link.relist();
+   return { changed: switched.changed, topicsEnabled: switched.topics_enabled };
+  });
  },
 
  /** desk_agent_actions.go PrepareSessionTransfer: the reply, {"agent": AgentInfo}, as JSON. */
@@ -394,17 +421,19 @@ export const agentActionsDesk = {
  /** desk_agent_actions.go TransferAgentInfo: the agent on paneID or, as a transfer may move it,
   *  with terminalID, listed again, as JSON; "" when neither is listed. */
  async transferAgentInfo(paneID: string, terminalID: string): Promise<string> {
-  agentLink(paneID);
-  const { agents } = await ownerCall<{ agents: AgentInfo[] }>("agent.list", {}, "agent_list");
-  const found = agents.find((a) => a.pane_id === paneID || (terminalID !== "" && a.terminal_id === terminalID));
-  return found ? JSON.stringify(found) : "";
+  return sheetStep("transfer", paneID, async (link) => {
+   const { agents } = await ownerCall<{ agents: AgentInfo[] }>("agent.list", {}, "agent_list", { link });
+   const found = agents.find((a) => a.pane_id === paneID || (terminalID !== "" && a.terminal_id === terminalID));
+   return found ? JSON.stringify(found) : "";
+  });
  },
 
  /** desk_agent_actions.go TransferAccounts: accounts.list, {"accounts": […]}, as JSON. */
  async transferAccounts(): Promise<string> {
-  // The Switch harness sheet's account picker: refused once its machine is no longer open.
-  if (sheet?.paneID !== undefined) sheetLink(sheet.paneID);
-  return JSON.stringify(await ownerCall("accounts.list", {}, "accounts_list"));
+  // The Switch harness sheet's account picker: the newest one chosen, whose lookup this is (the
+  // page asks it as the sheet opens).
+  if (transferPane === null) throw new SheetStaleError();
+  return sheetStep("transfer", transferPane, async (link) => JSON.stringify(await ownerCall("accounts.list", {}, "accounts_list", { link })));
  },
 
  /** desk_agent_actions.go AlertAgentFailure: Go's warning, title and detail apart. */

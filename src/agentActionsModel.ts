@@ -155,3 +155,33 @@ export function existingTransfer(agent: TransferAgent | null, source: string, ta
   if (!info || transferPhaseIsConclusive(info.phase) || info.source !== source || info.target !== target) return null;
   return info;
 }
+
+/** What a browser sheet's step is refused with once the machine it was opened on is no longer
+ *  open, or the same sheet was chosen again since (web/agentActionsDesk.ts). */
+export const SHEET_STALE = "the machine changed since this was opened";
+
+/** A browser sheet's step refused as stale: the sheet stops (no dialog, nothing more asked). The
+ *  desktop's Desk never throws it: its sheets act on the one open machine. */
+export class SheetStaleError extends Error {
+  constructor() {
+    super(SHEET_STALE);
+    this.name = "SheetStaleError";
+  }
+}
+
+/** The Switch harness sheet's opening lookups (AgentSessionTransferSheet init): the accounts,
+ * then the agent, either failing reads as none, as before. A step refused as stale stops the sheet
+ * instead: null, and the agent isn't asked. The account lookup starts at once (the browser Desk
+ * binds it to the newest Switch harness chosen). */
+export async function transferSheetOpening(desk: { transferAccounts(): Promise<string>; transferAgentInfo(paneID: string, terminalID: string): Promise<string> },
+  paneID: string, terminalID: string): Promise<{ accountsJSON: string; agentJSON: string } | null> {
+  const orNone = (error: unknown) => { if (error instanceof SheetStaleError) throw error; return ""; };
+  try {
+    const accountsJSON = await desk.transferAccounts().catch(orNone);
+    const agentJSON = await desk.transferAgentInfo(paneID, terminalID).catch(orNone);
+    return { accountsJSON, agentJSON };
+  } catch (error) {
+    if (error instanceof SheetStaleError) return null;
+    throw error;
+  }
+}
