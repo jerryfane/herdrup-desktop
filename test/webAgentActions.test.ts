@@ -1085,3 +1085,18 @@ test("#396: a new folder collapsed while its save is on its way stays closed onc
  await s.more(1);
  expect([s.open.get(), s.g.view().open]).toEqual([undefined, {}]);
 });
+
+test("the row menu's Swap lists the accounts its link reads as the menu opens", async () => {
+ // The host answers accounts.list only once the menu is asked for, so no earlier read (the
+ // account labels' poll) can have filled it.
+ let menuAsked = false;
+ const relay = host("terminal", { other: (req) => req.method === "accounts.list" && menuAsked ? { result: { type: "accounts_list", accounts: [{ id: "w", kind: "claude", label: "Work", config_dir: "/c", active: true }] } } : undefined });
+ const desk = await newDesk();
+ const p = page();
+ try {
+  await open(desk, relay, "terminal");
+  menuAsked = true;
+  expect(await agentActionsDesk.agentMenu("p2")).toBe(true);
+  expect(p.labels()).toContain("Swap subscription");
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});

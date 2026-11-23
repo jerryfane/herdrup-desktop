@@ -24,7 +24,7 @@ import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
-import { currentOwnerLink, setOwnerLink, setOwnerSettings, settingsLink } from "./ownerLink";
+import { currentOwnerLink, linkClosing, setOwnerLink, setOwnerSettings, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
 import { closeAgent, sheetChosen } from "./agentActionsDesk";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
@@ -238,6 +238,10 @@ interface Active {
  groups?: OwnerGroups;
  /** When the last list answered, as the board says (BoardUpdate.listedAt); "" before it. */
  listedAt: string;
+ /** An owner link as its groups know it (ownerLink.ts). */
+ ownerLink?: OwnerLink;
+ /** shutdown's one run: the groups' cleanup, then the transport's close. */
+ ended?: Promise<void>;
 }
 
 interface MountedView extends GuestView {
@@ -386,9 +390,19 @@ export function createGuestDesk(env: DeskEnv) {
   setView(null);
  }
 
+ /** The one end of l's connection, whoever asks first (disconnect, or runGuest returning): an owner
+  *  link's groups clean up (linkClosing, while the connection still carries requests), then the
+  *  transport closes, once. */
+ function shutdown(l: Active): Promise<void> {
+  return l.ended ??= (l.ownerLink ? linkClosing(l.ownerLink) : Promise.resolve()).then(() => l.transport.close());
+ }
+
  function disconnect() {
   unmount();
-  if (active) { active.life.abort(); active.transport.close(); }
+  if (active) {
+   void shutdown(active);
+   active.life.abort();
+  }
   active = null;
   board = null;
   setSharedAgents([]);
@@ -504,7 +518,7 @@ export function createGuestDesk(env: DeskEnv) {
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
    active = l;
    setLink(link);
-   void runGuest(l, print).finally(() => transport.close());
+   void runGuest(l, print).finally(() => shutdown(l));
   },
 
   async forgetGuestConnection(id: string): Promise<void> {
@@ -561,8 +575,8 @@ export function createGuestDesk(env: DeskEnv) {
   /** desk_settings.go SettingsMachineVersion: "herdr <version>" from the link's ping ("" when it
    *  says none). */
   async settingsMachineVersion(token: string): Promise<string> {
-   const link = settingsLink(token);
-   const version = (await link.client.ping(link.signal)).version ?? "";
+   // A Settings call: never sent once Settings closes while it waits for the relay.
+   const version = (await settingsPing(settingsScope(token))).version ?? "";
    settingsLink(token);
    return version === "" ? "" : `herdr ${version}`;
   },
@@ -1097,10 +1111,11 @@ export function createGuestDesk(env: DeskEnv) {
    l.groups = new OwnerGroups(client, m.hostID, l.life.signal, () => publishBoard(l), now, env.openFolders);
    active = l;
    setLink(link);
-   setOwnerLink({ machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups });
+   l.ownerLink = { machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups };
+   setOwnerLink(l.ownerLink);
    // The session ending ends the link too: its board and agent view go, the page goes idle.
    session.addEventListener("abort", () => { if (active === l) disconnectOwner(); }, { once: true, signal: l.life.signal });
-   void runGuest(l, print).finally(() => transport.close());
+   void runGuest(l, print).finally(() => shutdown(l));
   } finally {
    if (ownerPending === pending) ownerPending = null;
   }

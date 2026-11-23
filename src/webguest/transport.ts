@@ -591,7 +591,10 @@ export interface TransportOptions {
  callLimitMs?: number;
 }
 
-export interface RequestOptions { signal?: AbortSignal }
+/** signal ends the request at any point. sendSignal ends it only while it is unsent (waiting for a
+ *  connection, the relay's admission and the handshake included): once its frame is handed to the
+ *  socket herdr may act on it, so its reply is still awaited (within signal) whatever sendSignal does. */
+export interface RequestOptions { signal?: AbortSignal; sendSignal?: AbortSignal }
 
 /** The idle session a call left for the next one, since `since`, with its expiry timer. */
 interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout>; unpark: () => void }
@@ -687,8 +690,9 @@ export class GuestTransport {
   *  did: it could be an agent.prompt (herdrup#612 review). */
  async call(method: string, params?: unknown, options: RequestOptions = {}): Promise<unknown> {
   const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
+  const { signal: unsent, dispose: disposeUnsent } = linkSignals([signal, options.sendSignal]);
   try {
-   if (signal.aborted) throw signal.reason;
+   if (unsent.aborted) throw unsent.reason;
    const request = this.#request(method, params);
    const reused = this.#takeIdle();
    if (reused !== null) {
@@ -696,11 +700,16 @@ export class GuestTransport {
     if ("line" in outcome) return this.#decode(reused, outcome);
     if (outcome.sent || signal.aborted) throw outcome.error;
    }
-   const session = await this.#connect(signal);
+   // The connection is made under sendSignal too (the relay's admission and the handshake), then
+   // unlinked from it: the frame goes out next, and from then on only signal ends the request.
+   const session = await this.#connect(unsent);
+   disposeUnsent();
+   if (unsent.aborted) { session.close(); throw unsent.reason; }
    const outcome = await roundTrip(session, request, signal);
    if (!("line" in outcome)) throw outcome.error;
    return this.#decode(session, outcome);
   } finally {
+   disposeUnsent();
    dispose();
   }
  }

@@ -4,6 +4,7 @@
 // gram.upload_chunk pieces, one relay connect each.
 
 import type { GramAttachment } from "../mygo";
+import { abortError, sleep } from "../webguest/abort";
 import { GuestError, HerdrAPIError } from "../webguest/errors";
 
 /** gramstore.MaxFileBytes and MaxAttachments (composer.go:17-20). */
@@ -42,19 +43,6 @@ export function isStaleUpload(error: unknown): boolean {
 }
 const isUploadInProgress = (error: unknown) => apiCode(error) === "upload_in_progress";
 export const isRateLimited = (error: unknown) => error instanceof GuestError && error.kind === "rate_limited";
-
-export function abortError(signal?: AbortSignal): unknown {
- return signal?.reason ?? new DOMException("The operation was aborted.", "AbortError");
-}
-/** ms, or less when signal aborts (then rejecting with its reason). */
-export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
- const { promise, resolve, reject } = Promise.withResolvers<void>();
- if (signal?.aborted) { reject(abortError(signal)); return promise; }
- const stop = () => { clearTimeout(timer); reject(abortError(signal)); };
- const timer = setTimeout(() => { signal?.removeEventListener("abort", stop); resolve(); }, ms);
- signal?.addEventListener("abort", stop, { once: true });
- return promise;
-}
 
 /** gramstore.DisplaySize: "N B", "N KB" or "N.N MB". */
 export function displaySize(size: number): string {

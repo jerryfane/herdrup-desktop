@@ -12,6 +12,9 @@ import { gramDesk, guestGramDesk } from "./gram";
 import { browserAccountPage, createAccountDesk } from "./accountDesk";
 import { createPromptsDesk } from "./prompts";
 import { agentActionsDesk } from "./agentActionsDesk";
+import { createSettingsAccountsDesk, startAccountLabels } from "./settingsAccountsDesk";
+import { guestsDesk } from "./guestsDesk";
+import { createServerUpdateDesk } from "./serverUpdateDesk";
 
 export type * from "../mygo";
 export { events } from "./events";
@@ -23,7 +26,9 @@ const notAvailable = () => Promise.reject(new Error("Not available in the browse
 const account = createAccountDesk(browserAccountPage());
 const env = browserEnv();
 const guest = createGuestDesk(env);
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...createPromptsDesk(), ...agentActionsDesk };
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...createPromptsDesk(), ...agentActionsDesk, ...createSettingsAccountsDesk(), ...guestsDesk, ...createServerUpdateDesk() };
+// The agent rows' account labels (the `accounts` method, accountsChanged) follow the open owner link.
+startAccountLabels();
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
 export const signInReturned = account.signInReturned;
 /** What owner access (ownerApproval.ts) works with: this page's account session and the browser's key. */

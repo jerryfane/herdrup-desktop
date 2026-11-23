@@ -48,3 +48,10 @@ export function shareShown(state: Pick<ConnState, "guest">, browser = webGuest):
 export function ownerWrites(state: Pick<ConnState, "guest">, browser = webGuest): boolean {
   return !browser || state.guest?.ownerScope === "terminal";
 }
+
+/** Whether the agent page offers "Share with someone" (guest.invite.create): on the desktop for the
+ *  owner's agents, never in a share; in the browser (where every agent page is an owner link's,
+ *  `guest` true) under a terminal-scope grant once the guests group is registered (herdr#510). */
+export function sharesAgent(guest: boolean, ownerScope: string | undefined, browser = webGuest): boolean {
+  return browser ? ownerScope === "terminal" && deskOffers("createGuestInvite") : !guest;
+}

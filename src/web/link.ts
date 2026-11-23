@@ -13,8 +13,9 @@ export interface WebLink {
  /** The host's features from the last admission (Transport.Features). */
  features(): Features;
  /** One herdr request and its result. Errors are the transport's, worded as Go's guest client words
-  *  them (webguest/errors.ts), herdr's API errors as HerdrAPIError ("herdr: code: message"). */
- call<T = unknown>(method: string, params?: unknown, signal?: AbortSignal): Promise<T>;
+  *  them (webguest/errors.ts), herdr's API errors as HerdrAPIError ("herdr: code: message").
+  *  sendSignal ends it only while it is unsent (RequestOptions.sendSignal). */
+ call<T = unknown>(method: string, params?: unknown, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T>;
  /** A request whose reply lines are read until the host closes (pane.stream): each line as parsed
   *  JSON, the acknowledgement first. Aborting signal closes the connection. */
  stream(method: string, params: unknown, signal: AbortSignal): AsyncIterable<unknown>;
@@ -43,7 +44,7 @@ export function transportLink(access: GuestAccess, transport: GuestTransport): W
  return {
   access,
   features: () => transport.features,
-  call: async <T>(method: string, params?: unknown, signal?: AbortSignal) => await transport.call(method, params, { signal }) as T,
+  call: async <T>(method: string, params?: unknown, signal?: AbortSignal, sendSignal?: AbortSignal) => await transport.call(method, params, { signal, sendSignal }) as T,
   async *stream(method: string, params: unknown, signal: AbortSignal) {
    const lines = await transport.openStream(method, params, { signal });
    const close = () => lines.close();

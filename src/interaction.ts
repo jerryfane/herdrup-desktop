@@ -53,6 +53,7 @@ import { parseAttachmentPrompt, type PromptFile } from "./chatAttachments";
 import arrowCircleDownIcon from "../third_party/phosphor/web/arrow-circle-down.svg?url";
 import fileTextIcon from "../third_party/phosphor/web/file-text.svg?url";
 import { appleSymbols } from "./platform";
+import { sharesAgent } from "./shellModel";
 
 const noteStyles: Record<string, { label: string; symbol: string; icon?: string }> = {
  gitmoot: { label: "Gitmoot", symbol: "envelope", icon: envelopeIcon },
@@ -732,7 +733,7 @@ class Detail {
   void Desk.paneMenu({
    paneID: view.paneID, plain: this.plainTerminal,
    hasSelection: this.mode === "terminal" && !!this.terminal?.hasSelection(),
-   canShare: !this.plainTerminal && !view.guest,
+   canShare: !this.plainTerminal && sharesAgent(view.guest, this.ownerScope),
   }).catch(error => { if (!this.disposed) this.status.textContent = errorText(error); });
  }
  /** Carries out the ••• item Go reports (HerdrApp.swift 6227-6281). */
@@ -750,7 +751,7 @@ class Detail {
    case "text-decrease": this.changeTextSize(this.textSurface(), -1); break;
    case "text-reset": this.changeTextSize(this.textSurface(), "reset"); break;
    case "share":
-    if (view.guest) return;
+    if (!sharesAgent(view.guest, this.ownerScope)) return;
     this.guestShareSheet?.close();
     this.guestShareSheet = openGuestShare(this.token, view.name);
     break;
