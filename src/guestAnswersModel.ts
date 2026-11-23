@@ -65,10 +65,24 @@ export interface GuestQuestion {
  *  when it is blocked or reports input_pending (herdr.GroupOf), which is herdrup's
  *  AgentInfo.isAwaitingMenuInput (Wire.swift:407) and GuestPaneView.isBlocked (:424-427). A stopped
  *  agent is not running (GuestPaneView availability .paused) and gets no line. `resizeRefused`: the
- *  host refused the guest's terminal size (onResizeRefused, :449). */
-export function guestQuestion(agent: string, owner: string, group: string, answersRefused: boolean, terminal: boolean, resizeRefused = false): GuestQuestion {
+ *  host refused the guest's terminal size (onResizeRefused, :449). `typing`: the page types into
+ *  the terminal (typesInTerminal), so it is not view-only. */
+export function guestQuestion(agent: string, owner: string, group: string, answersRefused: boolean, terminal: boolean, resizeRefused = false, typing = false): GuestQuestion {
  if (group === "needsYou" && answersRefused) return { banner: `${agent} is asking a question only ${owner} can answer`, tone: "waiting", menuKeys: false, label: `needs ${owner}` };
  if (group === "needsYou") return { banner: terminal ? `${agent} is asking a question · answer with the keys below` : `${agent} is asking a question`, tone: "waiting", menuKeys: terminal, label: null };
- if (group === "stopped") return { banner: null, tone: "faint", menuKeys: false, label: null };
+ if (group === "stopped" || typing) return { banner: null, tone: "faint", menuKeys: false, label: null };
  return { banner: resizeRefused ? "View-only · this host doesn't support guest resizing" : "Terminal is view-only · send messages below", tone: "faint", menuKeys: false, label: null };
+}
+
+/** Whether the page types into the terminal: the owner's own, or a web owner's under a
+ *  terminal-scope grant (herdr owner_gate.rs takes pane.send_text from it). A guest and a
+ *  chat-scope owner only watch it. */
+export function typesInTerminal(view: { guest: boolean }, connection: { ownerScope?: string } | undefined): boolean {
+ return !view.guest || connection?.ownerScope === "terminal";
+}
+
+/** A refused terminal size the page answers by keeping the host's grid (GuestPaneView
+ *  onResizeRefused): a guest's (guest_forbidden), or a web owner's scope's (owner_forbidden). */
+export function refusesResize(message: string): boolean {
+ return message.includes("guest_forbidden") || message.includes("owner_forbidden");
 }

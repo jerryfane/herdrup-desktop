@@ -4,12 +4,11 @@
 // shows, once a minute, well under the relay's 30 connects a minute.
 
 import type { EnvelopeMachine } from "../webguest/approve";
-import { fromB64url } from "../webguest/b64url";
 import { GuestError } from "../webguest/errors";
 import type { StaticKey } from "../webguest/noise";
-import { ownerLink, type StatementSource } from "../webguest/owner";
-import { GuestTransport, type WebSocketFactory } from "../webguest/transport";
-import { guestList } from "./desk";
+import type { StatementSource } from "../webguest/owner";
+import type { WebSocketFactory } from "../webguest/transport";
+import { listAgents, ownerConnection, type OwnerConnection } from "./desk";
 
 export const PROBE_EVERY_MS = 60_000;
 
@@ -21,21 +20,50 @@ export type MachineStatus =
  | { kind: "ended"; message: string }
  | { kind: "problem"; message: string };
 
+/** One machine's status, over the owner link the Desk opens (ownerConnection) and its agent list
+ *  read as the Desk reads it (listAgents): a reply that isn't an agent list is a problem. */
 export async function probeMachine(m: EnvelopeMachine, key: StaticKey, statements: StatementSource, device: string,
  options: { webSocket?: WebSocketFactory; signal?: AbortSignal } = {}): Promise<MachineStatus> {
- const hostPublicKey = fromB64url(m.nodePub, 32);
- if (hostPublicKey === null) return { kind: "problem", message: "The approved machine's key is damaged." };
- const transport = new GuestTransport(ownerLink({ relay: m.relay, hostID: m.hostID, hostPublicKey }, device, statements), key, { webSocket: options.webSocket });
+ let owner: OwnerConnection;
+ try { owner = ownerConnection(m, key, statements, device, { webSocket: options.webSocket }); }
+ catch (error) { return { kind: "problem", message: error instanceof Error ? error.message : String(error) }; }
  try {
-  const list = guestList(await transport.call("agent.list", {}, { signal: options.signal }));
+  const list = await listAgents(owner.client, options.signal);
   return { kind: "online", agents: list.agents.length };
  } catch (error) {
   if (error instanceof GuestError && error.kind === "host_offline") return { kind: "offline" };
   if (error instanceof GuestError && error.kind === "revoked") return { kind: "ended", message: error.message };
   return { kind: "problem", message: error instanceof Error ? error.message : String(error) };
  } finally {
-  transport.close();
+  owner.transport.close();
  }
+}
+
+/** The probes of one displayed machine list: every machine now and every PROBE_EVERY_MS, each
+ *  status handed to publish. machines says, per round, what to ask with (null: nothing now).
+ *  The returned stop (the list left, or the account session ended: options.signal) cancels the
+ *  probes still out, and nothing of this list is published after it; its promise settles once
+ *  they have ended. */
+export function probeList(machines: () => Promise<{ machines: readonly EnvelopeMachine[]; key: StaticKey } | null>, statements: StatementSource, device: string,
+ publish: (hostID: string, status: MachineStatus) => void, options: { webSocket?: WebSocketFactory; signal?: AbortSignal; everyMs?: number } = {}): () => Promise<void> {
+ const life = new AbortController();
+ const rounds = new Set<Promise<void>>();
+ const round = () => {
+  const run = (async () => {
+   const ask = await machines();
+   if (ask === null || life.signal.aborted) return;
+   await Promise.all(ask.machines.map(async m => {
+    const status = await probeMachine(m, ask.key, statements, device, { webSocket: options.webSocket, signal: life.signal });
+    if (!life.signal.aborted) publish(m.hostID, status);
+   }));
+  })().finally(() => rounds.delete(run));
+  rounds.add(run);
+ };
+ const timer = setInterval(round, options.everyMs ?? PROBE_EVERY_MS);
+ const stop = () => { clearInterval(timer); life.abort(); return Promise.all(rounds).then(() => undefined); };
+ options.signal?.addEventListener("abort", () => void stop(), { once: true, signal: life.signal });
+ if (options.signal?.aborted) void stop(); else round();
+ return stop;
 }
 
 /** The line under a machine's name. */

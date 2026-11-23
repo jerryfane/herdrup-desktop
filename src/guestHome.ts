@@ -1,4 +1,4 @@
-import { Desk, type AgentTarget, type BoardUpdate, type ConnState, type Row } from "./mygo";
+import { Desk, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row } from "./mygo";
 import type { ShareSettings } from "./settings";
 import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
@@ -15,6 +15,20 @@ type GuestState = NonNullable<ConnState["guest"]>;
 export interface OwnerHome { scope: "chat" | "terminal"; expiresUnix: number }
 
 const ownerScope = (o: OwnerHome) => `${o.scope === "terminal" ? "Chat and terminal" : "Chat"} until ${new Date(o.expiresUnix * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+
+/** One agent of an owner's machine in the guest home: its display title (the board's: name, else
+ *  terminal title, else pane id), its row and the state under it. */
+export interface OwnerHomeRow { name: string; row: Row; state: string }
+
+/** An owner's machine in the guest home: every agent the machine listed, live ones with the
+ *  section they are listed under, then archived ones with their archived note. The machine list
+ *  (ownerProbe.ts) counts the same agents. */
+export function ownerHomeRows(board: Board): OwnerHomeRow[] {
+ return [
+  ...board.sections.flatMap(s => s.rows.map(row => ({ name: row.title, row, state: s.label }))),
+  ...board.archived.map(row => ({ name: row.title, row, state: row.archivedNote ?? "archived" })),
+ ];
+}
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the
  * roster's avatar with its status badge, the initial placement and the loading spinner. */
@@ -107,8 +121,8 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const section = board?.board.sections.find(s => s.rows.length > 0);
   const row = section?.rows[0] ?? board?.board.archived[0];
   const rowState = section ? section.label : row?.archivedNote;
-  // An owner's machine: every agent, with the section it is listed under.
-  const ownerRows = owner && board ? board.board.sections.flatMap(s => s.rows.map(r => ({ row: r, state: s.label }))) : [];
+  // An owner's machine: every agent, live and archived (ownerHomeRows).
+  const ownerRows = owner && board ? ownerHomeRows(board.board) : [];
   // The account panel's presence too: the service's answer can come after Settings was drawn.
   const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, rowState, selected, openPane === row?.id, !!options.account?.(), owner, ownerRows, openPane]);
   if (signature === last) return; last = signature;
@@ -152,7 +166,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     content = node("div", "guest-owner-agents");
     for (const r of ownerRows) {
      const open = () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: r.row.id });
-     content.append(await agentRow(r.row.name, r.row, r.state, true, openPane === r.row.id, open));
+     content.append(await agentRow(r.name, r.row, r.state, true, openPane === r.row.id, open));
     }
    } else {
     const open = row ? () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: row.id }) : null;

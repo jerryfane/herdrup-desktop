@@ -27,7 +27,7 @@ import { AccountServiceError, SignedOutError } from "./account";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
 import { approvedMachines, browserDeviceName, ownerCard } from "./ownerScreen";
-import { probeMachine, PROBE_EVERY_MS, type MachineStatus } from "./ownerProbe";
+import { probeList, type MachineStatus } from "./ownerProbe";
 import { statementCache } from "./statements";
 import type { EnvelopeMachine } from "../webguest/approve";
 
@@ -88,33 +88,51 @@ let guestInstead = false;
 let ownerOpen: EnvelopeMachine | null = null;
 const statements = statementCache(ownerAccess.account);
 const statuses = new Map<string, MachineStatus>();
-let probing: ReturnType<typeof setInterval> | null = null;
+/** The displayed machine list's probes (probeList): stopping them cancels the ones still out. */
+let probing: (() => Promise<void>) | null = null;
+/** The account session owner links and probes belong to: a sign-out or another sign-in ends it,
+ *  and with it the machine open or opening (desk.ts connectOwner) and the list's probes. */
+let ownerSession = new AbortController();
 
-/** Asks every approved machine how it is, while the machine list shows. */
-async function probeAll() {
- if (ownerPhase?.kind !== "approved") return;
- const record = ownerPhase.record;
- const key = await ownerKey(ownerAccess.identities).catch(() => null);
- if (key === null) return;
- await Promise.all(approvedMachines(record).machines.map(async m => {
-  statuses.set(m.hostID, await probeMachine(m, key, statements, deviceName));
-  if (probing !== null) redrawWelcome();
- }));
+/** Asks every approved machine how it is, while the machine list shows: one probeList per list
+ *  shown, so nothing a left list (or an ended session) asked for draws here. */
+function startProbes() {
+ if (probing !== null) return;
+ probing = probeList(async () => {
+  if (ownerPhase?.kind !== "approved") return null;
+  const record = ownerPhase.record;
+  const key = await ownerKey(ownerAccess.identities).catch(() => null);
+  return key === null ? null : { machines: approvedMachines(record).machines, key };
+ }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); redrawWelcome(); }, { signal: ownerSession.signal });
 }
-function startProbes() { if (probing !== null) return; probing = setInterval(() => void probeAll(), PROBE_EVERY_MS); void probeAll(); }
-function stopProbes() { if (probing !== null) { clearInterval(probing); probing = null; } }
+function stopProbes() { if (probing !== null) { void probing(); probing = null; } }
 
 /** Opens an approved machine: its agents in the guest home, chat on the agent page. */
 function openMachine(m: EnvelopeMachine) {
  stopProbes();
  ownerOpen = m;
  guestTab = "agents";
- ownerDesk.connectOwner(m, statements, deviceName).then(() => showWelcome(null), (error: unknown) => {
+ // A connect another one, a sign-out or Machines replaced meanwhile says nothing here.
+ ownerDesk.connectOwner(m, statements, deviceName, ownerSession.signal).then(() => { if (ownerOpen === m) showWelcome(null); }, (error: unknown) => {
+  if (ownerOpen !== m) return;
   ownerOpen = null;
   statuses.set(m.hostID, { kind: "problem", message: errorText(error) });
   redrawWelcome();
  });
 }
+
+// The session ends (sign-out) or becomes another account's: the Desk drops the owner link, its
+// board and agent view (connectOwner's session), and the page goes back to the welcome screen,
+// which starts over for whoever is signed in now.
+ownerAccess.account.onSessionChange(() => {
+ ownerSession.abort();
+ ownerSession = new AbortController();
+ stopProbes();
+ if (ownerOpen === null) return;
+ ownerOpen = null;
+ closeWriter(); closeInteraction();
+ showWelcome({ owner: null });
+});
 
 const redrawWelcome = () => { if (shownWelcome) showWelcome(shownWelcome); };
 

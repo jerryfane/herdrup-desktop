@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "../src/guestAnswersModel";
+import { canAnswer, chooser, guestQuestion, promptByline, refusesResize, typesInTerminal, waitingForOwner, withheldFromCaller } from "../src/guestAnswersModel";
 
 // herdrup f2df68b ChatView.swift (ChatAskCard) and GuestPaneView.swift (noteRow, showsMenuKeys).
 const single = (answerable: boolean, options = ["Yes", "No"], multi = false) =>
@@ -41,6 +41,29 @@ describe("guest answers", () => {
     expect(guestQuestion("docs", "Jerry", "working", false, true).banner).toBe("Terminal is view-only · send messages below");
     expect(guestQuestion("docs", "Jerry", "idle", false, false, true)).toEqual({ banner: "View-only · this host doesn't support guest resizing", tone: "faint", menuKeys: false, label: null });
     expect(guestQuestion("docs", "Jerry", "stopped", false, true).banner).toBeNull();
+  });
+
+  test("a page that types into the terminal is not told it is view-only", () => {
+    expect(guestQuestion("docs", "Jerry", "working", false, true, false, true).banner).toBeNull();
+    expect(guestQuestion("docs", "Jerry", "needsYou", false, true, false, true).menuKeys).toBe(true);
+  });
+});
+
+// PR #308 review P2-2, P3-3: a web owner's grant scope decides terminal input, and its refusals of
+// a resize go the way a guest's do.
+describe("web owner terminal", () => {
+  test("only the owner's own page and a terminal-scope web owner's type into the terminal", () => {
+    expect(typesInTerminal({ guest: false }, undefined)).toBe(true);
+    expect(typesInTerminal({ guest: true }, { ownerScope: "terminal" })).toBe(true);
+    expect(typesInTerminal({ guest: true }, { ownerScope: "chat" })).toBe(false);
+    expect(typesInTerminal({ guest: true }, {})).toBe(false);
+    expect(typesInTerminal({ guest: true }, undefined)).toBe(false);
+  });
+
+  test("a resize refused for a guest or for an owner's scope keeps the host's grid; anything else is an error", () => {
+    expect(refusesResize("Error: herdr: guest_forbidden: guests can't resize")).toBe(true);
+    expect(refusesResize("Error: herdr: owner_forbidden: not in this scope")).toBe(true);
+    expect(refusesResize("Error: herdr: pane_not_found: gone")).toBe(false);
   });
 });
 

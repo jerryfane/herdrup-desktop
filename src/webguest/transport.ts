@@ -260,6 +260,8 @@ export interface HelloReply {
  mode: string;
  /** When the host ends an account-bound session unless a newer statement arrives in-band; 0 for none. */
  deadlineUnix: number;
+ /** An owner session's grant scope, "chat" or "terminal" (herdr guest/owner.rs admit_in); "" for a guest's. */
+ scope: string;
  guestID: string;
  name: string;
  machineLabel: string;
@@ -303,7 +305,7 @@ function parseHelloReply(plaintext: Uint8Array): HelloReply {
  const agent = record(object.agent);
  const features = record(object.features) ?? {};
  const reply: HelloReply = {
-  ok: object.ok, error: text("error"), mode: text("mode"), deadlineUnix: whole(record(object.account) ?? {}, "deadline_unix"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
+  ok: object.ok, error: text("error"), mode: text("mode"), deadlineUnix: whole(record(object.account) ?? {}, "deadline_unix"), scope: text("scope"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
   agent: null, features: { gram: flag(features, "gram"), push: flag(features, "push"), multiRequest: flag(features, "multi_request") },
  };
  if (agent !== null) {
@@ -622,6 +624,7 @@ export class GuestTransport {
  #life = new AbortController();
  #seq = 0;
  #features: Features = { gram: false, push: false, multiRequest: false };
+ #scope = "";
  // backoffMs is the wait after the last refusal and retryAt its end; both 0 once a connect goes
  // through. refusals counts the refusals that started a backoff, so a connect that began before one
  // cannot end it.
@@ -639,6 +642,9 @@ export class GuestTransport {
  }
 
  get features(): Features { return { ...this.#features }; }
+ /** The grant scope the newest admitted session came with (an owner link's; herdr reads the
+  *  grant again per request, so a renewal's new scope shows on the next connect). "" before any. */
+ get scope(): string { return this.#scope; }
  get closed(): boolean { return this.#life.signal.aborted; }
  close() {
   if (!this.closed) this.#life.abort(closed());
@@ -740,6 +746,7 @@ export class GuestTransport {
    session.keepAccount(session.reply.deadlineUnix * 1000, statement, this.#now);
   }
   this.#admitted(refusals, session.reply.features);
+  this.#scope = session.reply.scope;
   session.handshook = this.#now();
   return session;
  }

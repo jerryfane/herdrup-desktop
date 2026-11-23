@@ -675,6 +675,12 @@ export interface GuestConnection {
    * (App/GuestPaneView.swift:737-753).
    */
   availability?: string;
+  /**
+   * OwnerScope is a web owner link's admitted grant scope, "chat" or
+   * "terminal" (herdr owner_gate.rs): only "terminal" types into the
+   * terminal. The browser Desk sets it; a guest's share never has one.
+   */
+  ownerScope?: string;
 }
 
 /** GuestGramGrant is one shared agent of the combined guest Gram. */
