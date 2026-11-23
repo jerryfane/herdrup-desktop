@@ -86,7 +86,7 @@
 .wod-row { display: flex; align-items: center; gap: 1em; }
 .wod-face { flex: none; width: 2.2em; height: 2.2em; border-radius: 50%; background: var(--color-surface-raised); }
 .wod-lines { flex: 1; height: 1.3em; background: linear-gradient(var(--color-hairline), var(--color-hairline)) 0 0 / 60% 0.5em no-repeat, linear-gradient(var(--color-hairline-quiet), var(--color-hairline-quiet)) 0 100% / 90% 0.5em no-repeat; }
-.wod-pane { position: absolute; left: 17em; right: 0; top: 0; bottom: 0; border-left: 1px solid var(--color-hairline-quiet); background: var(--color-ground-machine); }
+.wod-pane { position: absolute; left: 17em; right: 0; top: 0; bottom: 0; background: var(--color-ground-machine); }
 .wod-dim { position: absolute; inset: 0; background: color-mix(in srgb, var(--color-ground) 55%, transparent); }
 .wod-sheet { position: absolute; left: 15em; top: 3em; width: 25em; box-sizing: border-box; display: flex; flex-direction: column; gap: 0.7em; padding: 1.4em; border-radius: 1.2em; background: var(--color-surface-raised); box-shadow: 0 0 0 1px var(--color-hairline), 0 1.6em 4em color-mix(in srgb, var(--color-ground-machine) 70%, transparent); }
 .wod-sheet b { font: 600 1.2em var(--font-app); color: var(--color-text); }
