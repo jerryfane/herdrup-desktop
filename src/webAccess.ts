@@ -106,14 +106,15 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
  };
 }
 
-/** Follows one primary-pointer press on the code for its owner, the sheet's dialog (modal, so
- *  every pointer event in the window lands in it). The pointer that pressed keeps the press through
- *  its release and its click: only its moves count, its release stops following, and its cancel,
- *  or a close, forgets the press, which then isn't a click. Another pointer, even another device's
- *  primary one, can't take the press over or end it, and its click isn't this press's. The code
- *  captures the pressing pointer, so its release and cancel arrive even off the window; if the
- *  capture is lost before the release, or win loses focus, the press is over. */
-export function followPresses(owner: EventTarget, win: EventTarget) {
+/** Follows one primary-pointer press on input, the code field. Its pointerdown starts the press and
+ *  captures that pointer on input, so the pointer's moves, release and cancel all come to input,
+ *  even off the window. The pointer that pressed keeps the press through its release and its
+ *  click: only its moves count, its release stops following, and its cancel, or a close, forgets
+ *  the press, which then isn't a click. Another pointer, even another device's primary one, can't
+ *  take the press over or end it, and its click isn't this press's. If the capture is lost before
+ *  the release, or input's window loses focus, the press is over. */
+export function followPresses(input: HTMLInputElement) {
+ const win = input.ownerDocument.defaultView;
  let press: { pointer: number; gesture: CodePress; down: boolean } | null = null;
  const ours = (event: Event): PointerEvent | null => {
   const e = event as PointerEvent;
@@ -123,21 +124,22 @@ export function followPresses(owner: EventTarget, win: EventTarget) {
   const e = ours(event);
   if (e && press) press.gesture.move(e.clientX, e.clientY);
  };
- const stop = () => owner.removeEventListener("pointermove", follow);
+ const stop = () => input.removeEventListener("pointermove", follow);
  const drop = () => { stop(); press = null; };
- owner.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } });
- owner.addEventListener("pointercancel", event => { if (ours(event)) drop(); });
- owner.addEventListener("lostpointercapture", event => { if (ours(event)) drop(); });
- win.addEventListener("blur", drop);
+ input.addEventListener("pointerdown", event => {
+  const e = event as PointerEvent;
+  // A press still down belongs to its pointer; the same pointer pressing again means its release
+  // never reached the sheet, so that press is over.
+  if (!e.isPrimary || e.button !== 0 || (press?.down && press.pointer !== e.pointerId)) return;
+  press = { pointer: e.pointerId, gesture: new CodePress(e.clientX, e.clientY), down: true };
+  input.addEventListener("pointermove", follow);
+  input.setPointerCapture(e.pointerId);
+ });
+ input.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } });
+ input.addEventListener("pointercancel", event => { if (ours(event)) drop(); });
+ input.addEventListener("lostpointercapture", event => { if (ours(event)) drop(); });
+ win?.addEventListener("blur", drop);
  return {
-  down(e: PointerEvent): void {
-   // A press still down belongs to its pointer; the same pointer pressing again means its release
-   // never reached the sheet, so that press is over.
-   if (!e.isPrimary || e.button !== 0 || (press?.down && press.pointer !== e.pointerId)) return;
-   press = { pointer: e.pointerId, gesture: new CodePress(e.clientX, e.clientY), down: true };
-   owner.addEventListener("pointermove", follow);
-   (e.target as Element | null)?.setPointerCapture(e.pointerId);
-  },
   /** Whether this click ends a plain click on the code; the press is done either way. A click the
    *  browser says came from another pointer (pointerId) leaves the press alone. */
   plainClick(click: { detail: number; shiftKey: boolean; pointerId?: number }): boolean {
@@ -146,7 +148,7 @@ export function followPresses(owner: EventTarget, win: EventTarget) {
    drop();
    return plain;
   },
-  close: () => { drop(); win.removeEventListener("blur", drop); },
+  close: () => { drop(); win?.removeEventListener("blur", drop); },
  };
 }
 
@@ -200,12 +202,10 @@ export function initWebAccess(): void {
    });
   };
   // A plain click on a box takes its digit; a drag (even one that came back to its start), a
-  // double click or a shift-click keeps the selection the field made. The dialog follows the press
-  // (followPresses). The second press of a double click lands on the digit the first one took,
-  // which would start dragging that selection, so it's dropped first and the press selects the
-  // code as in any field.
-  const presses = followPresses(dialog, window);
-  code.addEventListener("pointerdown", event => presses.down(event));
+  // double click or a shift-click keeps the selection the field made (followPresses). The second
+  // press of a double click lands on the digit the first one took, which would start dragging that
+  // selection, so it's dropped first and the press selects the code as in any field.
+  const presses = followPresses(code);
   code.addEventListener("mousedown", event => {
    if (event.detail > 1) code.setSelectionRange(code.selectionStart, code.selectionStart);
   });
