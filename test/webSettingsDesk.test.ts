@@ -2,7 +2,7 @@
 // serverUpdateDesk.ts) on an owner link: the desktop's Go logic (desk_settings*.go,
 // desk_guest_invite.go, desk_updates.go) against a fake herdr behind the link's real engine client,
 // and once over a real owner link to a relay host refusing the method (an older herdr).
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { HerdrAPIError } from "../src/webguest/errors";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,7 +24,7 @@ import { createGuestDesk } from "../src/web/desk";
 import { accountLabel } from "../src/listExtras";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { AgentInfo } from "../src/web/board";
-import { accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
+import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
 import { guestsDesk } from "../src/web/guestsDesk";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
@@ -1093,6 +1093,85 @@ test("an account whose id is constructor keeps its label on the rows", async () 
  ownerLink(undefined, { accounts: [{ ...claude, id: "constructor", label: "Work" }, { ...claude, id: "constructor", label: "later" }] });
  await tick(); await tick();
  expect(accountLabel("constructor", await createSettingsAccountsDesk().accounts())).toBe("Work");
+});
+
+// ---- #360 post-merge review ----
+
+test("a sign-in closed before its first step runs makes no pane (its dialog's controller is made closed)", async () => {
+ const lookup = Promise.withResolvers<void>();
+ let hold = false;
+ const host = ownerLink(async (method) => {
+  if (method === "accounts.list" && hold) { hold = false; await lookup.promise; return { type: "accounts_list", accounts: [claude] }; }
+  if (method === "pane.split") return { type: "pane_info", pane: { pane_id: "pane-1" } };
+  if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+ });
+ await tick(); await tick();
+ hold = true;
+ const desk = createSettingsAccountsDesk();
+ const first = desk.startAccountLogin("tok", "L0", "a1", false);
+ await tick();
+ // L1's step waits behind L0's (held in its lookup) when the page closes L1.
+ const second = desk.startAccountLogin("tok", "L1", "a1", false).catch((error: Error) => error.message);
+ const closing = desk.closeAccountLogin("tok", "L1");
+ lookup.resolve();
+ await first;
+ expect(await second).toBe("sign-in was closed");
+ await closing;
+ // L0's split only, and L0's pane left open: a closed sign-in's step doesn't even start.
+ expect([host.of("pane.split").length, host.of("pane.close")]).toEqual([1, []]);
+});
+
+test("a call's sendSignal ends the capability ping before it, and the call is never sent; a call without one pings on its own signal", async () => {
+ const sent: string[] = [], pinged: (AbortSignal | undefined)[] = [];
+ const web = {
+  access: {}, features: () => ({}),
+  async call(method: string, _params?: unknown, signal?: AbortSignal) {
+   sent.push(method);
+   if (method !== "ping") return { type: "pane_info", pane: { pane_id: "made" } }; // a link that would send it
+   pinged.push(signal);
+   return await new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  },
+  stream() { throw new Error("no streams"); },
+ } as unknown as WebLink;
+ const unsent = new AbortController();
+ const calling = new GuestClient(web).call("pane.split", {}, "pane_info", "pane_split", undefined, unsent.signal);
+ await tick();
+ unsent.abort(new Error("Settings changed"));
+ await expect(withinSeconds(1, calling)).rejects.toThrow("Settings changed");
+ expect(sent).toEqual(["ping"]);
+
+ const life = new AbortController();
+ const plain = new GuestClient(web).call("pane.split", {}, "pane_info", "pane_split", life.signal).catch(() => "ended");
+ await tick();
+ expect(pinged.at(-1)).toBe(life.signal);
+ life.abort();
+ await plain;
+});
+
+test("an accounts.list refusal clears the row labels, and the poll asks again at its pace while the link is terminal", async () => {
+ jest.useFakeTimers();
+ const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+ const poll = async () => { jest.advanceTimersByTime(ACCOUNTS_POLL_MS); await settle(); };
+ try {
+  let refuse = true;
+  const host = ownerLink((method) => { if (method === "accounts.list" && refuse) throw refused(); });
+  const desk = createSettingsAccountsDesk();
+  await settle();
+  expect([host.of("accounts.list").length, await desk.accounts()]).toEqual([1, {}]);
+  refuse = false; // the same terminal link now lets the browser in
+  jest.advanceTimersByTime(ACCOUNTS_POLL_MS - 1); await settle();
+  expect(host.of("accounts.list")).toHaveLength(1);
+  jest.advanceTimersByTime(1); await settle();
+  expect(await desk.accounts()).toEqual({ a1: "work" });
+  refuse = true;
+  await poll();
+  expect(await desk.accounts()).toEqual({});
+  refuse = false;
+  await poll();
+  expect([host.of("accounts.list").length, await desk.accounts()]).toEqual([4, { a1: "work" }]);
+ } finally {
+  jest.useRealTimers();
+ }
 });
 
 // The transport itself (round 8): sendSignal ends a request while it waits for a connection, never

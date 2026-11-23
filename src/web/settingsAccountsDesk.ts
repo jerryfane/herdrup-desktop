@@ -73,14 +73,17 @@ function clearLabels() {
 }
 
 /** desk_sessions.go watchSessions' accounts.list, for one owner link while its terminal scope lasts
- *  (roster at): a host refusing it (an older herdr) is asked no more. */
+ *  (roster at). A refusal clears the labels and the poll goes on at its pace (herdr may admit the
+ *  browser again on the same link); a host without the method (an older herdr) is asked no more. */
 async function watchAccounts(link: OwnerLink, at: number): Promise<void> {
  while (roster === at && currentOwnerLink() === link && !link.signal.aborted) {
   try {
    const list = (await ownerCall<AccountsList>("accounts.list", {}, "accounts_list", { signal: link.signal, link })).accounts ?? [];
    if (roster === at) setLabels(list);
   } catch (error) {
-   if (error instanceof OwnerRefusedError || error instanceof ErrUnsupported) { if (roster === at) setLabels([]); return; }
+   const refused = error instanceof OwnerRefusedError || error instanceof ErrUnsupported;
+   if (refused && roster === at) setLabels([]);
+   if (error instanceof ErrUnsupported) return;
   }
   try { await sleep(ACCOUNTS_POLL_MS, link.signal); } catch { return; }
  }
@@ -178,13 +181,13 @@ interface Login {
  started: number; submitted: number; state: AccountLoginState;
 }
 
-/** desk_settings.go settingsSession: one Settings scope's sign-in pane on its link, the sign-ins its
- *  page closed, and the lock its sign-in steps take turns on (view.mu). settings: its calls' scope
- *  (settingsCall). dialogs: each sign-in's cancellation, aborted when its dialog closes. closes: the
- *  pane.close calls in flight. ending: once it ended, its last step and every close; its link
- *  cleanup stays registered until then. */
+/** desk_settings.go settingsSession: one Settings scope's sign-in pane on its link, and the lock its
+ *  sign-in steps take turns on (view.mu). settings: its calls' scope (settingsCall). dialogs: each
+ *  sign-in's one liveness record, a controller aborted when its dialog closes (made then if its
+ *  first step hasn't run) or the scope ends. closes: the pane.close calls in flight. ending: once
+ *  it ended, its last step and every close; its link cleanup stays registered until then. */
 interface Scope {
- token: string; link: OwnerLink; settings: SettingsScope; login: Login | null; closed: Set<string>; queue: Promise<unknown>; ended: boolean;
+ token: string; link: OwnerLink; settings: SettingsScope; login: Login | null; queue: Promise<unknown>; ended: boolean;
  dialogs: Map<string, AbortController>; closes: Set<Promise<unknown>>; ending: Promise<unknown> | null; offClosing: () => void;
 }
 
@@ -278,17 +281,16 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   for (const dialog of s.dialogs.values()) dialog.abort(new Error(LINK_CHANGED));
   return s.ending ??= s.queue.then(() => closeLogin(s)).then(() => Promise.allSettled([...s.closes])).finally(() => s.offClosing());
  }
- /** A sign-in dialog's cancellation (aborted by closeAccountLogin or the scope's end): what its
-  *  reads and sends carry, besides the Settings scope's. */
+ /** A sign-in dialog's cancellation and its one liveness record (aborted by closeAccountLogin or the
+  *  scope's end): what its reads and sends carry, besides the Settings scope's. */
  function dialog(s: Scope, loginID: string): AbortSignal {
   let controller = s.dialogs.get(loginID);
   if (controller === undefined) s.dialogs.set(loginID, controller = new AbortController());
   return controller.signal;
  }
- /** A sign-in's live (the auth pane rule): its dialog still open, its scope still Settings' on the
-  *  open link. */
- function signInLive(s: Scope, loginID: string) {
-  if (s.closed.has(loginID)) throw new Error("sign-in was closed");
+ /** A sign-in's scope live (the auth pane rule): still Settings' on the open link. Its dialog's
+  *  closure travels in the dialog signal every one of its calls carries, the split's included. */
+ function signInLive(s: Scope) {
   if (s.ended || currentOwnerLink() !== s.link || settingsLink(s.token) !== s.link) throw new Error(LINK_CHANGED);
  }
  onOwnerLinkChanged(() => { if (scope !== null) { void endScope(scope); scope = null; } });
@@ -298,7 +300,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   const settings = settingsScope(token), link = settings.link;
   if (scope?.token === token && scope.link === link) return scope;
   if (scope !== null) void endScope(scope);
-  const s: Scope = { token, link, settings, login: null, closed: new Set(), queue: Promise.resolve(), ended: false, dialogs: new Map(), closes: new Set(), ending: null, offClosing: () => {} };
+  const s: Scope = { token, link, settings, login: null, queue: Promise.resolve(), ended: false, dialogs: new Map(), closes: new Set(), ending: null, offClosing: () => {} };
   s.offClosing = onLinkClosing(link, () => endScope(s));
   return scope = s;
  }
@@ -377,12 +379,12 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   async startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
    const s = scopeOf(token);
    return serial(s, async () => {
-    if (loginID === "" || loginID.length > 128 || s.closed.has(loginID)) throw new Error("sign-in was closed");
+    if (loginID === "" || loginID.length > 128 || dialog(s, loginID).aborted) throw new Error("sign-in was closed");
     await closeLogin(s);
     const account = await findAccount(s.settings, id, dialog(s, loginID));
     const { line } = accountCommand(account, setupToken ? "setup-token" : "login");
     // Closed (or Settings or the link gone) during the lookup: no pane is made.
-    signInLive(s, loginID);
+    signInLive(s);
     const pane = await backgroundPane(s.settings, dialog(s, loginID));
     const login: Login = {
      id: loginID, pane, account: id, baselineEmail: account.email ?? "", submitBaseline: "", started: now(), submitted: 0,
@@ -391,7 +393,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
     s.login = login;
     // The dialog, scope or link may have ended while herdr answered the split: the pane then
     // closes untyped (the auth pane rule).
-    try { await sendLine(s.settings, pane, line, () => signInLive(s, loginID), dialog(s, loginID)); } catch (error) { await closeLogin(s); throw error; }
+    try { await sendLine(s.settings, pane, line, () => signInLive(s), dialog(s, loginID)); } catch (error) { await closeLogin(s); throw error; }
     return { ...login.state };
    });
   },
@@ -451,7 +453,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
     if (login.state.phase === "submitting" || login.state.phase === "signedIn") throw new Error("a sign-in is already in progress");
     login.submitBaseline = await readText(s.settings, login.pane, dialog(s, loginID));
     // Closed while the screen was read: no code goes (the auth pane rule).
-    await sendLine(s.settings, login.pane, code, () => { signInLive(s, loginID); if (s.login !== login) throw new Error("sign-in is no longer open"); }, dialog(s, loginID));
+    await sendLine(s.settings, login.pane, code, () => { signInLive(s); if (s.login !== login) throw new Error("sign-in is no longer open"); }, dialog(s, loginID));
     login.submitted = now();
     login.state.phase = "submitting";
     login.state.message = "Signing you in…";
@@ -463,9 +465,10 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   async closeAccountLogin(token: string, loginID: string): Promise<void> {
    const s = scope;
    if (s === null || s.token !== token) return;
-   s.closed.add(loginID);
-   dialog(s, loginID); // made if its first step hasn't run yet
-   s.dialogs.get(loginID)!.abort(new Error("sign-in was closed")); // its reads and sends not yet out are dropped
+   // Its controller is made here if its first step hasn't run yet; its reads and sends not yet out
+   // are dropped, and no step of it starts again.
+   dialog(s, loginID);
+   s.dialogs.get(loginID)!.abort(new Error("sign-in was closed"));
    await s.queue;
    if (s.login?.id === loginID) await closeLogin(s);
   },

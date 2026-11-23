@@ -62,20 +62,23 @@ export class GuestClient {
   return pong;
  }
 
- /** engine.go gate: refuses a call the host's pong says it lacks; an unanswered ping lets it through. */
- async gate(method: string, capability: string, signal?: AbortSignal): Promise<void> {
+ /** engine.go gate: refuses a call the host's pong says it lacks; an unanswered ping lets it through.
+  *  The ping is the call's pre-send work, so sendSignal (the call's, if it has one) ends it too, and
+  *  then the call, unsent. */
+ async gate(method: string, capability: string, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<void> {
   if (capability === "") return;
   let pong = this.#probed;
   if (pong === null) {
-   try { pong = await this.ping(signal); } catch { return; }
+   const probe = sendSignal === undefined ? signal : signal === undefined ? sendSignal : AbortSignal.any([signal, sendSignal]);
+   try { pong = await this.ping(probe); } catch { if (sendSignal?.aborted) throw sendSignal.reason; return; }
   }
   if (pong.capabilities?.[capability] !== true) throw new ErrUnsupported(method, capability, pong.version ?? "");
  }
 
  /** engine.go doRaw: gate, call, map the error, check the result's tag; the result keeps its tag.
-  *  sendSignal ends the call only while it is unsent (WebLink.call). */
+  *  sendSignal ends the call only while it is unsent (WebLink.call), its gate's ping included. */
  async call<T>(method: string, params: unknown, tag: string, capability = "", signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T> {
-  await this.gate(method, capability, signal);
+  await this.gate(method, capability, signal, sendSignal);
   let result: unknown;
   try { result = await this.link.call(method, params, signal, sendSignal); } catch (error) { throw this.mapError(method, error); }
   checkTag(method, result, tag);
