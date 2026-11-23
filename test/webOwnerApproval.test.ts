@@ -92,6 +92,8 @@ test("the browser shows no code until a device claims, reveals only then, and ke
  expect(phases.map(p => p.kind)).toEqual(["starting", "waiting", "code", "approved"]);
  const code = phases.find(p => p.kind === "code") as Extract<OwnerPhase, { kind: "code" }>;
  expect(code.code).toBe(w.typed!);
+ // The code shows until the request ends: asked at 0, the service gives it 600 s.
+ expect(code.expiresAt).toBe(600_000);
  expect(w.calls).toEqual(["enrol", "request", "reveal", "self"]);
  expect(new Set(w.accounts)).toEqual(new Set(["acct-1"]));
  expect((await kept())?.approvers).toEqual([{ pub: toB64url(w.T), name: "Jerry's Mac", envelope: expect.objectContaining({ seq: 7, machines: [expect.objectContaining({ label: "dev2306", hostID })] }) }]);
@@ -247,28 +249,4 @@ test("a cached approval refreshes on a new sign-in: the session is bound to the 
  await refreshLists(account, "acct-1", key, store, "Chrome on macOS");
  expect(asked).toEqual(["self", "enrol", "self"]);
  expect((await kept())!.approvers.map(a => a.envelope.seq)).toEqual([8]);
-});
-
-test("a browser that can't be approved is told why: WebKit only on Safari and iOS, no platform limit elsewhere", async () => {
- const { thisBrowser, unsupportedText, unsupportedCard } = await import("../src/web/ownerScreen");
- const ipadChrome = thisBrowser("Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0 Mobile/15E148 Safari/604.1");
- const macSafari = thisBrowser("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15");
- const androidChrome = thisBrowser("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36");
- const macChrome = thisBrowser("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
- expect([ipadChrome, macSafari, androidChrome, macChrome].map(b => b.webKitOnly)).toEqual([true, true, false, false]);
- expect(ipadChrome.name).toBe("Chrome on iOS");
- expect(unsupportedText(true)).toContain("Chrome, Edge or Firefox on a computer");
- expect(unsupportedText(true)).toContain("Safari and the browsers on iPhone and iPad");
- const other = unsupportedText(false);
- expect(other).not.toContain("Safari");
- expect(other).not.toContain("computer");
- expect(other).toContain("site data");
- // The card ownerCard draws: WebKit gets the computer-browser title and the App Store link;
- // any other browser gets neither.
- const webkit = unsupportedCard(ipadChrome.webKitOnly);
- expect(webkit.title).toBe("Use a computer browser");
- expect(webkit.app).toEqual({ href: "https://apps.apple.com/app/id6798087089", label: "Get HerdrUp for iPhone and iPad" });
- const generic = unsupportedCard(androidChrome.webKitOnly);
- expect(generic.title).toBe("This browser can't be approved");
- expect(generic.app).toBeUndefined();
 });
