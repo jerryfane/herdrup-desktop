@@ -7,6 +7,8 @@ import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/owner";
 import { createGuestDesk, avatarDataURL } from "../src/web/desk";
+import { avatarFace, loadPhoto, noteConnection } from "../src/avatars";
+import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
@@ -27,22 +29,26 @@ const scopeChanged = (session: HostSession, req: Request) => {
 
 /** A host that admits owner hellos under scope (or refuses with refuse), lists agents (or answers
  *  agent.list as list does), runs pane.stream as stream does, and refuses anything else with
- *  owner_forbidden. */
+ *  owner_forbidden. While ends returns a close code, the relay ends every connection with it, an
+ *  open one at its next request: 4503 host_offline, 4429 rate_limited. */
 function host(script: {
  hellos?: Record<string, unknown>[]; refuse?: string; scope?: () => string; agents?: () => unknown[];
  list?: (session: HostSession, req: Request) => void | Promise<void>; stream?: (session: HostSession, req: Request) => void;
  /** Any other method (default: refused with owner_forbidden). */
  other?: (session: HostSession, req: Request) => void;
+ ends?: () => [code: number, reason: string] | null;
 } = {}): TestRelay {
  return startRelay({
-  async serve(_conn, handshake) {
+  async serve(conn, handshake) {
+   const end = () => { const close = script.ends?.(); if (close) conn.close(...close); return close; };
+   if (end()) return;
    const h = await handshake();
    script.hellos?.push(h.hello);
    if (script.refuse) { h.reply({ ok: false, error: script.refuse }); return; }
    const session = h.reply({ ok: true, mode: "owner", grant_id: "g1", scope: script.scope?.() ?? "chat", expires_unix: 1_800_000_000, account: { deadline_unix: Math.floor(Date.now() / 1000) + 660 }, features: { owner: 2, multi_request: true } });
    for (;;) {
     const line = await session.readLine();
-    if (line === null) return;
+    if (line === null || end()) return;
     const req = JSON.parse(line) as Request;
     if (req.method === "pane.stream") (script.stream ?? scopeChanged)(session, req);
     else if (req.method === "agent.list" && script.list) await script.list(session, req);
@@ -56,9 +62,9 @@ function host(script: {
 
 const machineOn = (relay: TestRelay): EnvelopeMachine => ({ hostItemID: "H1", label: "dev2306", relay: relay.url, hostID: relay.hostID, nodePub: toB64url(relay.hostPublic), grantID: "g1", scope: "chat", expiresUnix: 1_800_000_000 });
 
-async function deskWithKey(identities: IdentityStore = new MemoryIdentityStore()) {
+async function deskWithKey(identities: IdentityStore = new MemoryIdentityStore(), now?: () => number) {
  await identities.add(await generateIdentity());
- return createGuestDesk({ identities, grants: new MemoryGrantStore(), owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ return createGuestDesk({ identities, grants: new MemoryGrantStore(), owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url), ...(now ? { now } : {}) });
 }
 const boardOf = (relay: TestRelay) => {
  const got = Promise.withResolvers<BoardUpdate>();
@@ -392,4 +398,92 @@ test("a host that doesn't say it serves pictures isn't asked for one", async () 
   await expect(desk.avatarImage("p1", await sha256Hex(PNG_B64))).rejects.toThrow();
   expect(asked).toBe(0);
  } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+// Another picture, so a failed one and a loaded one can be told apart.
+const PNG_B64_B = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQSDjwHwAEJAJA6qdhxgAAAABJRU5ErkJggg==";
+
+/** What avatarFace builds, in a test without a DOM: its class, an image's src, and what replaced it
+ *  once its photo arrived. */
+type Face = { className: string; src: string; alt: string; children: Face[]; parentNode: object; now?: Face; append(...c: Face[]): void; replaceWith(f: Face): void };
+const element = (): Face => ({ className: "", src: "", alt: "", children: [], parentNode: {}, append(...c) { this.children.push(...c); }, replaceWith(f) { this.now = f; } });
+/** What a face shows: its photo's URL, "initial" or "loading". */
+const shows = (f: Face): string => f.now ? shows(f.now) : f.className === "face photo" ? f.children[0]!.src : f.className === "face loading" ? "loading" : f.className;
+
+// #335 review: a picture that failed is asked for again on the first list after an outage, also
+// when the relay's backoff came between: a fetch the backoff refused is no fault of the picture.
+test("an owner link back up after an outage and the relay's backoff draws the picture that failed; the one that loaded isn't fetched again", async () => {
+ const shaA = await sha256Hex(PNG_B64), shaB = await sha256Hex(PNG_B64_B);
+ let ends: [number, string] | null = null, servesB = false, clock = Date.now();
+ const fetched: Record<string, number> = {};
+ const relay = host({
+  agents: () => [{ ...agents[0], avatar: { style: "image", sha256: shaA } }, { ...agents[1], avatar: { style: "image", sha256: shaB } }],
+  ends: () => ends,
+  other: (session, req) => {
+   const sha = (req as Request & { params?: { sha256?: string } }).params?.sha256 ?? "";
+   if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.5", capabilities: { agent_avatar: true } } });
+   else if (req.method !== "agent.avatar.get") answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+   else {
+    fetched[sha] = (fetched[sha] ?? 0) + 1;
+    if (sha === shaA || (sha === shaB && servesB)) answer(session, req, { result: { type: "agent_avatar_image", data_base64: sha === shaA ? PNG_B64 : PNG_B64_B } });
+    else answer(session, req, { error: { code: "not_found", message: "avatar not found" } });
+   }
+  },
+ });
+ const desk = await deskWithKey(undefined, () => clock);
+ // The page as web/main.ts draws it: each state noted before the page draws again, with the board
+ // it has; each board drawn as it arrives. drawn holds the fetches its faces wait for.
+ const page = globalThis as unknown as { document?: { createElement: () => Face } };
+ page.document = { createElement: element };
+ const avatarImage = Desk.avatarImage;
+ Desk.avatarImage = (target, sha256) => desk.avatarImage(target, sha256);
+ let board: BoardUpdate | null = null, faces: Record<string, Face> = {};
+ const drawn: Promise<unknown>[] = [];
+ const draw = () => Object.fromEntries((board?.board.sections ?? []).flatMap(s => s.rows).map(row => {
+  const face = avatarFace(row.avatar, () => Object.assign(element(), { className: "initial" }) as unknown as HTMLElement) as unknown as Face;
+  // The fetch avatarFace started, to wait for.
+  if (face.className === "face loading") drawn.push(loadPhoto(row.avatar));
+  return [row.name, face];
+ }));
+ const settle = () => Promise.all(drawn.splice(0));
+ const offState = events.stateChanged.on(s => { noteConnection(s); draw(); });
+ const offBoard = events.boardChanged.on(b => { board = b; faces = draw(); });
+ const urlA = `data:image/png;base64,${PNG_B64}`, urlB = `data:image/png;base64,${PNG_B64_B}`;
+ try {
+  await openP1(desk, relay);
+  await settle();
+  expect([shows(faces["herdr-app"]!), shows(faces["web-owner"]!)]).toEqual([urlA, "initial"]);
+  expect(fetched).toEqual({ [shaA]: 1, [shaB]: 1 });
+
+  // The machine goes offline: the relay ends the open session and every new one.
+  const down = stateWhere(s => s.phase === "error");
+  ends = [4503, "host_offline"];
+  await listAgain(desk).catch(() => {});
+  await down;
+  await settle();
+  // Then the relay holds this network's connects back: having listed, the link stays "connected"
+  // while it waits, and a picture asked for meanwhile fails without reaching the machine.
+  const held = stateWhere(s => s.guest?.availability === "reconnecting");
+  ends = [4429, "rate_limited"];
+  await listAgain(desk).catch(() => {});
+  expect((await held).phase).toBe("connected");
+  await settle();
+
+  // The backoff ends and the machine serves the picture now: a fresh session lists the agents, and
+  // that list's board fetches it at once and draws it; the loaded one is drawn as it was.
+  const back = boardOf(relay);
+  ends = null;
+  servesB = true;
+  clock += 15_000;
+  await listAgain(desk).catch(() => {});
+  await back;
+  await settle();
+  expect([shows(faces["herdr-app"]!), shows(faces["web-owner"]!)]).toEqual([urlA, urlB]);
+  expect(fetched).toEqual({ [shaA]: 1, [shaB]: 2 });
+ } finally {
+  offState(); offBoard();
+  Desk.avatarImage = avatarImage;
+  delete page.document;
+  desk.disconnectOwner(); relay.stop();
+ }
 });

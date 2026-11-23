@@ -7,7 +7,7 @@ import { loadGlyphFieldFonts } from "./glyphField";
 import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { initAgentActions } from "./agentActions";
-import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
+import { avatarFace, boardShown, noteConnection } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 import { rowPreview } from "./rowStatus";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
@@ -596,9 +596,9 @@ events.stateChanged.on((s) => {
   if (writesChanged) void buildTopBar();
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
-  // Each connection attempt is a new connection: photos that failed on the
-  // last one are asked for again, as Desk's own store does.
-  if (s.phase === "connecting") forgetFailedPhotos();
+  // Before the render below: a connection back up asks again for the photos
+  // that failed while it was down, as Desk's own store does per connection.
+  noteConnection(s);
   render();
 });
 events.boardChanged.on((b) => {

@@ -1,13 +1,13 @@
 // Agent avatars as herdrup draws them (App/AgentAvatarViews.swift
 // AgentAvatarView): a bundled mascot, a photo fetched by sha256, or the
 // initial tile. The status badge goes on top of any of them (main.ts).
-import { Desk, type Avatar } from "./mygo";
+import { Desk, type Avatar, type ConnState } from "./mygo";
 
 /** Photos by sha256: the data: URL once fetched, null after a failure, which
  * herdrup draws as the initial tile. Desk caches the bytes on disk. A failure
  * is remembered for the connection and session only, as Desk's own store
- * does: a new connection or another session forgets it (forgetFailedPhotos,
- * boardShown) and the photo is asked for again (#36, #42). */
+ * does: a connection coming up again or another session forgets it
+ * (noteConnection, boardShown) and the photo is asked for again (#36, #42). */
 const photos = new Map<string, string | null>();
 const loading = new Map<string, Promise<string | null>>();
 /** Counts connections and sessions, so a fetch begun on an older one
@@ -15,6 +15,8 @@ const loading = new Map<string, Promise<string | null>>();
 let connection = 0;
 /** The session of the last board shown, undefined before the first. */
 let shownSession: string | undefined;
+/** Whether the last state noted had the connection up (noteConnection). */
+let up = false;
 
 /** What is known of sha's photo: its URL, null after a failure on this
  * connection, undefined before it is fetched. */
@@ -29,14 +31,19 @@ export function forgetFailedPhotos() {
   loading.clear();
 }
 
-/** Whether a state change starts a new connection, whose photos that failed
- * on the last one are asked for again. The desktop goes through "connecting"
- * on every attempt; the web desk's own retry goes from "error" straight back
- * to "connected". Connecting to connected is the same connection: photos
- * already asked for while it was connecting are kept. */
-export function newConnection(before: string, after: string): boolean {
-  if (after === before) return false;
-  return after === "connecting" || (after === "connected" && before === "error");
+/** Notes each connection state, before the page draws it. The connection is
+ * up once a list goes through: "connected", unless it is waiting out the
+ * relay's backoff ("reconnecting", which the web desk and a desktop guest
+ * publish as "connected" once they have listed). Photos that failed are asked
+ * for again when it comes up after connecting, an error or that backoff: a
+ * fetch refused while it was down failed for no fault of the photo. The desk
+ * publishes this state before the board of the list that brought it up, so
+ * that board asks at once. A republish while up (availability, scope) keeps
+ * them; photos that loaded always stay. */
+export function noteConnection(s: ConnState) {
+  const now = s.phase === "connected" && s.guest?.availability !== "reconnecting";
+  if (now && !up) forgetFailedPhotos();
+  up = now;
 }
 
 /** Notes the session a board shows. A switch keeps the SSH connection, so
