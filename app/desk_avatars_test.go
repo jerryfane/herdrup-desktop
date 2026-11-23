@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 )
 
@@ -101,7 +104,10 @@ func TestAvatarGetRemembersFailuresPerConnection(t *testing.T) {
 	sha := shaOf(pngBytes)
 	var s avatarStore
 	calls := 0
-	failing := func(context.Context) (string, error) { calls++; return "", errors.New("boom") }
+	failing := func(context.Context) (string, error) {
+		calls++
+		return "", &bridge.APIError{Code: "not_found", Message: "avatar not found"}
+	}
 	conn1, conn2 := new(int), new(int)
 	for range 2 {
 		if _, err := s.get(context.Background(), dir, conn1, "t1", sha, failing); err == nil {
@@ -114,13 +120,39 @@ func TestAvatarGetRemembersFailuresPerConnection(t *testing.T) {
 	if _, err := s.get(context.Background(), dir, conn2, "t1", sha, failing); err == nil || calls != 2 {
 		t.Fatalf("a new connection did not retry (calls %d)", calls)
 	}
-	// Not being connected is not remembered.
-	offline := func(context.Context) (string, error) { calls++; return "", errNotConnected }
-	other := shaOf([]byte("x"))
-	s.get(context.Background(), dir, conn2, "t1", other, offline)
-	s.get(context.Background(), dir, conn2, "t1", other, offline)
-	if calls != 4 {
-		t.Fatalf("not connected was remembered as a failure (calls %d)", calls)
+	// A failure on the way to herdr is not remembered: not being connected,
+	// a dropped connection, a timeout.
+	for _, cause := range []error{errNotConnected, errors.New("ssh: unexpected EOF"), context.DeadlineExceeded} {
+		other := shaOf([]byte(cause.Error()))
+		before := calls
+		transient := func(context.Context) (string, error) { calls++; return "", cause }
+		s.get(context.Background(), dir, conn2, "t1", other, transient)
+		s.get(context.Background(), dir, conn2, "t1", other, transient)
+		if calls != before+2 {
+			t.Fatalf("%v was remembered as a failure", cause)
+		}
+	}
+}
+
+func TestDefinitiveAvatarFailure(t *testing.T) {
+	api := &bridge.APIError{Code: "not_found", Message: "avatar not found"}
+	_, notImage := dataURL([]byte("hello, not an image"))
+	for _, err := range []error{
+		api,
+		fmt.Errorf("agent.avatar.get: %w", api),
+		&engine.ErrUnsupported{Method: "agent.avatar.get", Capability: "agent_avatar"},
+		&engine.ResultTagError{Method: "agent.avatar.get", Got: "pong", Want: []string{"agent_avatar_image"}},
+		notImage,
+		storeAvatar(t.TempDir(), shaOf([]byte("other")), pngBytes),
+	} {
+		if !definitiveAvatarFailure(err) {
+			t.Errorf("%v is herdr's answer", err)
+		}
+	}
+	for _, err := range []error{errNotConnected, errors.New("ssh: unexpected EOF"), context.DeadlineExceeded, context.Canceled, os.ErrPermission} {
+		if definitiveAvatarFailure(err) {
+			t.Errorf("%v is not herdr's answer", err)
+		}
 	}
 }
 
@@ -156,7 +188,7 @@ func TestAvatarGetAsksEachAgentAndSharesWhatLoaded(t *testing.T) {
 	sha := shaOf(pngBytes)
 	var s avatarStore
 	owner := new(int)
-	notFound := errors.New("herdr: not_found: avatar not found")
+	notFound := &bridge.APIError{Code: "not_found", Message: "avatar not found"}
 	var asked []string
 	ask := func(target string, answer func() (string, error)) (string, error) {
 		return s.get(context.Background(), dir, owner, target, sha, func(context.Context) (string, error) {
@@ -201,7 +233,7 @@ func TestAvatarGetDoesNotJoinAnotherAgentsAsk(t *testing.T) {
 		_, _ = s.get(context.Background(), dir, owner, "t2", sha, func(context.Context) (string, error) {
 			close(started)
 			<-hang
-			return "", errors.New("herdr: not_found: avatar not found")
+			return "", &bridge.APIError{Code: "not_found", Message: "avatar not found"}
 		})
 	}()
 	<-started

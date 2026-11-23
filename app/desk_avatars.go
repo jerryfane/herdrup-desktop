@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
@@ -50,6 +51,23 @@ var (
 	errNotConnected = errors.New("not connected")
 )
 
+// avatarBytesError is a reply that is not the photo asked for: not base64,
+// not an image, or not the bytes of its sha256. Its text is unchanged.
+type avatarBytesError struct{ error }
+
+// definitiveAvatarFailure reports whether err is herdr's answer for that
+// agent and photo (an API error such as not_found, a herdr without
+// agent_avatar, a reply of another type, bytes that are not the photo), which
+// is remembered for the connection, rather than the way to herdr failing (a
+// dropped connection, a timeout), which the next ask tries again.
+func definitiveAvatarFailure(err error) bool {
+	var api *bridge.APIError
+	var unsupported *engine.ErrUnsupported
+	var tag *engine.ResultTagError
+	var bytes avatarBytesError
+	return errors.As(err, &api) || errors.As(err, &unsupported) || errors.As(err, &tag) || errors.As(err, &bytes)
+}
+
 func avatarDir(dataDir string) string { return filepath.Join(dataDir, "agent-avatars") }
 
 // readAvatar returns the cached bytes for sha, or nil when they are missing
@@ -70,7 +88,7 @@ func readAvatar(dir, sha string) []byte {
 // storeAvatar writes data under sha when it hashes to sha.
 func storeAvatar(dir, sha string, data []byte) error {
 	if !matchesSHA(data, sha) {
-		return fmt.Errorf("avatar bytes do not match sha256 %s", sha)
+		return avatarBytesError{fmt.Errorf("avatar bytes do not match sha256 %s", sha)}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -102,7 +120,7 @@ func matchesSHA(data []byte, sha string) bool {
 func dataURL(data []byte) (string, error) {
 	mime := http.DetectContentType(data)
 	if !strings.HasPrefix(mime, "image/") {
-		return "", fmt.Errorf("avatar is %s, not an image", mime)
+		return "", avatarBytesError{fmt.Errorf("avatar is %s, not an image", mime)}
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
@@ -146,7 +164,9 @@ func (s *avatarStore) get(ctx context.Context, dir string, owner any, target, sh
 		}
 		s.mu.Lock()
 		delete(s.inflight, key)
-		if f.err != nil && !errors.Is(f.err, errNotConnected) && s.owner == owner {
+		// Only herdr's answer is remembered; a failure on the way to it
+		// (errNotConnected among them) is asked again.
+		if f.err != nil && definitiveAvatarFailure(f.err) && s.owner == owner {
 			if s.failed == nil {
 				s.failed = map[string]bool{}
 			}
@@ -173,7 +193,7 @@ func loadAvatar(ctx context.Context, dir, sha string, fetch func(context.Context
 	}
 	data, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return "", fmt.Errorf("avatar is not base64: %w", err)
+		return "", avatarBytesError{fmt.Errorf("avatar is not base64: %w", err)}
 	}
 	url, err := dataURL(data)
 	if err != nil {
