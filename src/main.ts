@@ -838,9 +838,7 @@ async function init(rendered: () => void) {
   await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
   drawField();
-  startupError?.remove(); startupError = null;
-  renderReady = true;
-  render();
+  showHostScreen();
   rendered();
   // An App updates request from before the page was ready (desk openAppUpdates).
   void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
@@ -886,10 +884,18 @@ window.addEventListener("unhandledrejection", event => reportPageError(`unhandle
 void startWithFallback(init, {
   firstRender: () => {
     if (renderReady) return;
-    if (hostsReady) { renderReady = true; render(); } else showStartupError();
+    if (hostsReady) showHostScreen(); else showStartupError();
   },
   report: reportPageError,
 });
+
+/** The first render: whatever startup has drawn, with no startup-error page left over it (one an
+ *  earlier fallback showed before the host screen could work). */
+function showHostScreen() {
+  startupError?.remove(); startupError = null;
+  renderReady = true;
+  render();
+}
 
 /** Startup stopped before the host screen could work: say so in place of the screen, with a
  *  way to start again. The cause is in the app's log (reportPageError). A startup that still

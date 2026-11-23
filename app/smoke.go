@@ -91,15 +91,10 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	}()
 	// HERDRUP_SMOKE_FIRSTRUN=1: a first launch with no machine (RoverOS's first boot). The
 	// page must reach a working host screen ("connect to your machine") with no startup
-	// error, caught or not; nothing is connected. One deadline from launch bounds the load,
-	// every probe and the exit.
+	// error, caught or not; nothing is connected. The deadline armed at launch
+	// (armFirstRunDeadline) bounds the load, every probe and the exit.
 	if os.Getenv("HERDRUP_SMOKE_FIRSTRUN") == "1" {
-		deadline := time.Now().Add(90 * time.Second)
-		time.AfterFunc(time.Until(deadline)+10*time.Second, func() {
-			log.Print("smoke: first run: still running past its deadline")
-			os.Exit(1)
-		})
-		go smokeFirstRun(win, loaded, os.Getenv("HERDRUP_SMOKE_CAPTURE"), deadline, os.Getenv("HERDRUP_SMOKE_PHONE") == "1")
+		go smokeFirstRun(win, loaded, os.Getenv("HERDRUP_SMOKE_CAPTURE"), firstRunDeadline, os.Getenv("HERDRUP_SMOKE_PHONE") == "1")
 		return
 	}
 	port, _ := strconv.Atoi(os.Getenv("HERDRUP_SMOKE_PORT"))
@@ -200,28 +195,54 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	time.AfterFunc(90*time.Second, func() { finish(false, "timed out without a board") })
 }
 
+// firstRunDeadline is the first-run smoke's one deadline (armFirstRunDeadline).
+var firstRunDeadline time.Time
+
+// armFirstRunDeadline starts the first-run smoke's deadline at launch, before
+// the window is made, navigated or sized: a stall in any of those, as in the
+// page's load and probes, fails the run instead of waiting for the CI job's
+// timeout. A hard exit 10 s after it covers capture and quit.
+func armFirstRunDeadline() {
+	if !smokeEnabled() || os.Getenv("HERDRUP_SMOKE_FIRSTRUN") != "1" {
+		return
+	}
+	firstRunDeadline = time.Now().Add(90 * time.Second)
+	time.AfterFunc(time.Until(firstRunDeadline)+10*time.Second, func() {
+		log.Print("smoke: first run: still running past its deadline")
+		os.Exit(1)
+	})
+}
+
 // smokeFirstRunProbe reads whether the page shows the host screen (render adds
-// host-home-visible to the body), how many of its controls are visible inside
-// the window, the window's width, and the errors the preload captured.
+// host-home-visible to the body) and how many of its host actions (Add host,
+// Scan pairing code) a click would reach: visible, inside the window, and not
+// covered (the hit test at its centre lands on it). The account welcome of a
+// first launch is dismissed first ("Set up without an account"), as a person
+// would. phone is the stylesheet's own phone-layout marker; width is for the log.
 const smokeFirstRunProbe = `(() => {
- const connect = document.getElementById("connect");
- const controls = connect && !connect.hidden ? Array.from(connect.querySelectorAll("button, input")).filter(e => {
+ const welcome = document.querySelector(".account-welcome");
+ const welcomed = !!welcome && !welcome.hidden;
+ if (welcomed) document.querySelector(".account-welcome-skip")?.click();
+ const reachable = e => {
   const r = e.getBoundingClientRect();
-  return r.width > 0 && r.height > 0 && r.left >= -1 && r.right <= innerWidth + 1 && getComputedStyle(e).visibility !== "hidden";
- }).length : 0;
+  if (r.width <= 0 || r.height <= 0 || r.left < -1 || r.right > innerWidth + 1 || getComputedStyle(e).visibility === "hidden") return false;
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return !!hit && (hit === e || e.contains(hit));
+ };
+ const connect = document.getElementById("connect");
+ const actions = connect && !connect.hidden ? Array.from(connect.querySelectorAll(".host-add, .host-pair")).filter(reachable).length : 0;
  return {
   hostHome: document.body?.classList.contains("host-home-visible") === true,
-  controls, width: innerWidth,
+  welcome: welcomed, actions, width: innerWidth,
+  phone: getComputedStyle(document.documentElement).getPropertyValue("--phone-layout").trim() === "1",
   text: document.body?.innerText.slice(0,300), errors: window.__herdrupSmokeErrors,
  };
 })()`
 
-// phoneMaxWidth is the widest window the phone layout starts in (style.css).
-const phoneMaxWidth = 700
-
 // firstRunVerdict judges one probe: done with ok when the host screen works
-// (shown, a control visible, at phone width when phone is asked) and no error
-// was reported or caught; done and failed on any error; not done otherwise.
+// (shown, a host action a click reaches, in the phone layout when phone is
+// asked) and no error was reported or caught; done and failed on any error;
+// not done otherwise (still loading, or the welcome was just dismissed).
 func firstRunVerdict(probe map[string]any, reported int64, phone bool) (done, ok bool, why string) {
 	if errs, _ := probe["errors"].([]any); len(errs) > 0 {
 		return true, false, "uncaught startup errors: " + fmt.Sprint(errs)
@@ -230,15 +251,16 @@ func firstRunVerdict(probe map[string]any, reported int64, phone bool) (done, ok
 		return true, false, fmt.Sprintf("the page reported %d error(s); see \"page error\" above", reported)
 	}
 	home, _ := probe["hostHome"].(bool)
-	controls, _ := probe["controls"].(float64)
-	if !home || controls < 1 {
+	welcome, _ := probe["welcome"].(bool)
+	actions, _ := probe["actions"].(float64)
+	if !home || welcome || actions < 1 {
 		return false, false, ""
 	}
 	width, _ := probe["width"].(float64)
-	if phone && (width <= 0 || width > phoneMaxWidth) {
-		return true, false, fmt.Sprintf("the host screen shows at %v px, not at phone width", width)
+	if inPhone, _ := probe["phone"].(bool); phone && !inPhone {
+		return true, false, fmt.Sprintf("the host screen shows at %v px, not in the phone layout", width)
 	}
-	return true, true, fmt.Sprintf("the host screen shows with %v controls at %v px", controls, width)
+	return true, true, fmt.Sprintf("the host screen shows with %v host actions at %v px", actions, width)
 }
 
 // smokeFirstRun passes once the page shows a working host screen with no
