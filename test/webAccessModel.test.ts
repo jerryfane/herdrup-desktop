@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { choiceRows } from "../src/webAccess";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS, plainClick, resultLines,
- slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
+import { choiceRows, type SheetClock } from "../src/webAccess";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
+ resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 
 const req = (id: string, claimed = "no", expiresIn = 600) => ({ id, browserName: "Chrome on macOS", claimed, expiresIn });
 
@@ -30,13 +30,22 @@ test("the code boxes follow the one input's caret and selection, and a click on 
  expect(codeSlots(2, 2, 2).map(s => [s.filled, s.active])).toEqual([[true, false], [true, false], [false, true], [false, false]]);
 });
 
-test("only a plain click takes a box's digit; a drag, double click or shift-click keeps its own selection", () => {
- expect(plainClick({ detail: 1, shiftKey: false }, 2, 2)).toBe(true);
- // Dragging across 12 of 1234 selected [0, 2]: releasing keeps it, so Backspace leaves 34.
- expect(plainClick({ detail: 1, shiftKey: false }, 0, 2)).toBe(false);
- expect(plainClick({ detail: 2, shiftKey: false }, 0, 4)).toBe(false);
- expect(plainClick({ detail: 2, shiftKey: false }, 4, 4)).toBe(false);
- expect(plainClick({ detail: 1, shiftKey: true }, 1, 1)).toBe(false);
+test("only a plain click takes a box's digit; a press that moved, even back to its start, a double click or a shift-click doesn't", () => {
+ const click = { detail: 1, shiftKey: false };
+ // A press at x 200 (the third box), moved through each point, then released.
+ const plain = (moves: readonly (readonly [number, number])[], release = click) => {
+  const press = new CodePress(200, 40);
+  for (const [x, y] of moves) press.move(x, y);
+  return press.plainClick(release);
+ };
+ expect(plain([])).toBe(true);
+ expect(plain([[202, 41], [199, 39]])).toBe(true);
+ expect(plain([[200 + DRAG_PX, 40]])).toBe(true);
+ expect(plain([[200 + DRAG_PX + 1, 40]])).toBe(false);
+ // From the third box across 12 and back to where it started before release (#362): a drag.
+ expect(plain([[150, 40], [60, 40], [130, 40], [200, 40]])).toBe(false);
+ expect(plain([], { detail: 2, shiftKey: false })).toBe(false);
+ expect(plain([], { detail: 1, shiftKey: true })).toBe(false);
 });
 
 test("an approval with no machine granted leaves the request open and says why", () => {
@@ -109,24 +118,50 @@ const G = globalThis as { document?: unknown; devicePixelRatio?: unknown; mygo?:
 const saved = { document: G.document, devicePixelRatio: G.devicePixelRatio, mygo: G.mygo };
 afterEach(() => { G.document = saved.document; G.devicePixelRatio = saved.devicePixelRatio; G.mygo = saved.mygo; });
 
-test("the rows repaint their own choice and the terminal warning: shown with Access closed, not with Chat only", () => {
+/** A clock the test moves by hand: after() queues a call, to() moves the time and runs what's due. */
+function handClock(start: number) {
+ let now = start;
+ const queued: { at: number; f: () => void }[] = [];
+ const clock: SheetClock & { queued: typeof queued; to(t: number): void } = {
+  queued,
+  now: () => now,
+  after(ms, f) {
+   const q = { at: now + ms, f }; queued.push(q);
+   return () => { const i = queued.indexOf(q); if (i >= 0) queued.splice(i, 1); };
+  },
+  to(t) {
+   now = t;
+   for (const q of queued.filter(q => q.at <= now)) { queued.splice(queued.indexOf(q), 1); q.f(); }
+  },
+ };
+ return clock;
+}
+
+function drawRows(clock: SheetClock) {
  G.document = { createElement: (tag: string) => new FakeElement(tag) };
  // The rows' chevron glyph asks the app for an image; here that answer never comes.
  G.devicePixelRatio = 1;
  G.mygo = { call: () => new Promise(() => {}) };
- const rows = choiceRows(new FakeElement("div") as unknown as HTMLElement, false, [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }]);
- rows.showMachines("hetzner");
+ const rows = choiceRows(new FakeElement("div") as unknown as HTMLElement, false, [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }], clock);
  const all = (rows.rows as unknown as FakeElement).all();
+ const value = (key: string) => all.find(n => n.tagName === "button" && n.children[0]?.textContent === key)!.children[1]!.textContent;
+ return { rows, all, value };
+}
+
+test("the rows repaint their own choice and the terminal warning: shown with Access closed, not with Chat only", () => {
+ const clock = handClock(Date.UTC(2026, 10, 23, 12));
+ const { rows, all, value } = drawRows(clock);
+ rows.showMachines("hetzner");
  const warning = all.find(n => n.className === "web-access-warning")!;
  const access = all.find(n => n.tagName === "button" && n.children[0]?.textContent === "Access")!;
- const pick = (value: string) => { const radio = all.find(n => n.type === "radio" && n.value === value)!; radio.checked = true; radio.onchange!(); };
- const value = (key: string) => all.find(n => n.tagName === "button" && n.children[0]?.textContent === key)!.children[1]!.textContent;
+ const pick = (v: string) => { const radio = all.find(n => n.type === "radio" && n.value === v)!; radio.checked = true; radio.onchange!(); };
  expect(rows.choice.length).toBe("30d");
  expect(value("Machines")).toBe("hetzner");
  expect(value("For")).toStartWith("30 days, until ");
  pick("1d");
  expect(rows.choice.length).toBe("1d");
  expect(value("For")).toStartWith("1 day, until ");
+ expect(clock.queued).toHaveLength(1);
  access.onclick!();
  expect(access.getAttribute("aria-expanded")).toBe("false");
  expect(warning.shown()).toBe(true);
@@ -136,6 +171,20 @@ test("the rows repaint their own choice and the terminal warning: shown with Acc
  expect(warning.shown()).toBe(false);
  pick("terminal");
  expect(warning.shown()).toBe(true);
+});
+
+test("For's end date follows the clock past midnight while the sheet is open, and stops with it", () => {
+ const evening = new Date(2026, 11, 22, 23, 59, 30).getTime(), midnight = new Date(2026, 11, 23).getTime();
+ const clock = handClock(evening);
+ const { rows, value } = drawRows(clock);
+ const until = (from: number) => `30 days, until ${new Date(from + 30 * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+ expect(until(midnight)).not.toBe(until(evening));
+ expect(value("For")).toBe(until(evening));
+ clock.to(midnight + 1000);
+ expect(value("For")).toBe(until(midnight));
+ expect(clock.queued).toHaveLength(1);
+ rows.stop();
+ expect(clock.queued).toHaveLength(0);
 });
 
 test("the line under the rows says what Approve turns on and why a machine can't be ticked, with Machines closed", () => {

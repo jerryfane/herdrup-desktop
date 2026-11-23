@@ -39,11 +39,22 @@ export function slotSelection(slot: number, length: number): [number, number] {
  return slot < length ? [slot, slot + 1] : [length, length];
 }
 
-/** Whether a click on the code takes a box's digit (slotSelection): only a plain single click,
- *  which leaves the caret collapsed. A drag, a double click or a shift-click made a selection of
- *  its own, and keeps it. */
-export function plainClick(click: { detail: number; shiftKey: boolean }, start: number, end: number): boolean {
- return click.detail === 1 && !click.shiftKey && start === end;
+/** How far, in CSS pixels, the pointer may wander during a press that still counts as a click. */
+export const DRAG_PX = 4;
+
+/** One press on the code, followed from mousedown through each move to the click. Only a plain
+ *  click takes a box's digit (slotSelection). A press that moved past DRAG_PX at any point is a
+ *  drag, even one that came back to where it started, and keeps what the field selected, as do a
+ *  double click and a shift-click. */
+export class CodePress {
+ private dragged = false;
+ constructor(private readonly x: number, private readonly y: number) {}
+ move(x: number, y: number): void {
+  if (Math.hypot(x - this.x, y - this.y) > DRAG_PX) this.dragged = true;
+ }
+ plainClick(click: { detail: number; shiftKey: boolean }): boolean {
+  return !this.dragged && click.detail === 1 && !click.shiftKey;
+ }
 }
 
 /** Approve needs 4 digits and at least one machine (the sheet also waits for calls in flight). */
