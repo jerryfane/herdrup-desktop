@@ -1,6 +1,7 @@
 package account
 
 import (
+	"encoding/json"
 	"regexp"
 	"slices"
 	"testing"
@@ -115,5 +116,42 @@ func TestRenamesKeepTheMachineAndUnacknowledgedIDsArePushedAgain(t *testing.T) {
 	plan, _ = PlanHosts([]LocalHost{{SyncID: idC, Body: HostBody{Username: "root", Host: "x"}}}, nil, map[string]bool{idC: true})
 	if !slices.Equal(plan.Gone, []int{0}) {
 		t.Fatalf("an id the account deleted: %+v; want gone", plan)
+	}
+}
+
+// A pull's pages are read one at a time, so an item can show live on one
+// page and deleted, at a newer revision, on a later one: the pull is applied
+// in revision order, hosts and prompts alike, and an item older than the one
+// held changes nothing.
+func TestAPullAppliesItsItemsInRevisionOrder(t *testing.T) {
+	host := func(rev int64, h string) Item {
+		it := Item{Collection: "hosts", ID: idA, Rev: rev, Deleted: h == ""}
+		if h != "" {
+			it.Body, _ = json.Marshal(HostBody{Host: h, Username: "root"})
+		}
+		return it
+	}
+	prompt := func(rev int64, text string) Item {
+		it := Item{Collection: "prompts", ID: idB, Rev: rev, Deleted: text == ""}
+		if text != "" {
+			it.Body, _ = json.Marshal(PromptBody{Text: text})
+		}
+		return it
+	}
+	pages := []Item{host(1, "a"), prompt(2, "p"), host(3, ""), prompt(4, "")}
+	listed := slices.Clone(pages)
+	slices.Reverse(listed)
+	for _, items := range [][]Item{pages, listed} {
+		for _, full := range []bool{true, false} {
+			if m := (Mirror{}).Apply(Pull{Rev: 4, Full: full, Items: items}); len(m.Hosts) != 0 || len(m.Prompts) != 0 {
+				t.Fatalf("full %v, items %+v: %+v; want both deletes to stand", full, items, m)
+			}
+		}
+	}
+	held := Mirror{Rev: 9, Hosts: []RemoteHost{{ID: idA, Rev: 9, Body: HostBody{Host: "new", Username: "root"}}},
+		Prompts: []RemotePrompt{{ID: idB, Rev: 9, Body: PromptBody{Text: "new"}}}}
+	m := held.Apply(Pull{Rev: 9, Items: []Item{host(5, ""), prompt(6, "old")}})
+	if len(m.Hosts) != 1 || m.Hosts[0].Body.Host != "new" || len(m.Prompts) != 1 || m.Prompts[0].Body.Text != "new" {
+		t.Fatalf("older items over newer ones: %+v; want the held ones", m)
 	}
 }

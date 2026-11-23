@@ -39,6 +39,46 @@ type syncWorker struct {
 	onPush func()
 	// pushes counts the pushes the service took.
 	pushes int
+	// pageSize, when set, is the most changes one pull page holds; a page
+	// with more after it carries a cursor (the last change's rev).
+	pageSize int
+	// onNextPage, when set, runs once inside the next pull of a later page
+	// (one with a cursor), before it answers.
+	onNextPage func()
+	// losePush applies the next push and then answers it 503, as if the
+	// answer was lost on its way.
+	losePush bool
+	// stall, while set, holds every pull until it is closed or the request
+	// ends; stalled hears of each held pull.
+	stall, stalled chan struct{}
+}
+
+// stallPulls holds pulls from now until release (at the latest, when the
+// test ends); stalled hears of each held pull.
+func (w *syncWorker) stallPulls(t *testing.T) (stalled <-chan struct{}, release func()) {
+	w.mu.Lock()
+	w.stall, w.stalled = make(chan struct{}), make(chan struct{}, 8)
+	stall, out := w.stall, w.stalled
+	w.mu.Unlock()
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			w.mu.Lock()
+			w.stall = nil
+			w.mu.Unlock()
+			close(stall)
+		})
+	}
+	t.Cleanup(release)
+	return out, release
+}
+
+// tombstone deletes the item with id as another device would. w.mu must be
+// held (as in a hook).
+func (w *syncWorker) tombstone(id string) {
+	w.rev++
+	it := w.items[id]
+	w.items[id] = account.Item{Collection: it.Collection, ID: id, Rev: w.rev, Deleted: true}
 }
 
 func (w *syncWorker) live() map[string]account.Item {
@@ -54,6 +94,22 @@ func (w *syncWorker) live() map[string]account.Item {
 }
 
 func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/sync" && r.Method == http.MethodGet {
+		w.mu.Lock()
+		stall, stalled := w.stall, w.stalled
+		w.mu.Unlock()
+		if stall != nil {
+			select {
+			case stalled <- struct{}{}:
+			default:
+			}
+			select {
+			case <-stall:
+			case <-r.Context().Done():
+			}
+			return
+		}
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	reply := func(status int, v any) {
@@ -76,13 +132,27 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			hook()
 		}
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			if hook := w.onNextPage; hook != nil {
+				w.onNextPage = nil
+				hook()
+			}
+			since, _ = strconv.ParseInt(cursor, 10, 64)
+		}
 		var changes []account.Item
 		for _, it := range w.items {
 			if it.Rev > since {
 				changes = append(changes, it)
 			}
 		}
-		reply(200, map[string]any{"rev": w.rev, "changes": changes, "more": false})
+		slices.SortFunc(changes, func(a, b account.Item) int { return int(a.Rev - b.Rev) })
+		answer := map[string]any{"rev": w.rev, "more": false}
+		if w.pageSize > 0 && len(changes) > w.pageSize {
+			changes = changes[:w.pageSize]
+			answer["more"], answer["cursor"] = true, strconv.FormatInt(changes[len(changes)-1].Rev, 10)
+		}
+		answer["changes"] = changes
+		reply(200, answer)
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodPost:
 		var body struct {
 			Changes []struct {
@@ -164,6 +234,11 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			w.items[c.ID] = it
 		}
 		w.pushes++
+		if w.losePush {
+			w.losePush = false
+			reply(503, map[string]string{"error": "unavailable"})
+			return
+		}
 		reply(200, map[string]any{"rev": w.rev, "applied": []any{}, "conflicts": []any{}})
 	default:
 		reply(404, map[string]string{"error": "not_found"})
@@ -947,7 +1022,7 @@ func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
 		t.Fatalf("mac's prompts after the sync: %+v; want both kept", got)
 	}
 	empty := SavedPrompt{ID: "00000000-0000-4000-8000-000000000009"}
-	if _, changes, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil); len(changes) != 0 {
+	if _, changes, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
 		t.Fatalf("an empty prompt was sent: %+v", changes)
 	}
 
@@ -1116,4 +1191,207 @@ func TestAFailedSyncLeavesTheStatusAsItWas(t *testing.T) {
 	if after, _ := mac.AccountSyncStatus(); after != before {
 		t.Fatalf("after a failed sync: %+v; want %+v", after, before)
 	}
+}
+
+// #372: a pull reads its pages one at a time. A prompt live on the first
+// page and deleted by another device before the second is not brought back.
+func TestAPromptLiveOnOnePullPageAndDeletedBeforeTheNextIsNotBroughtBack(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	const gone = "00000000-0000-4000-8000-000000000001"
+	w.seedPrompt(gone, `{"text":"deleted while pulled","order":0}`)
+	w.seedPrompt("00000000-0000-4000-8000-000000000002", `{"text":"two","order":1}`)
+	w.seedPrompt("00000000-0000-4000-8000-000000000003", `{"text":"three","order":2}`)
+	w.mu.Lock()
+	w.pageSize = 2
+	w.onNextPage = func() { w.tombstone(gone) }
+	w.mu.Unlock()
+	mac := device(t, srv)
+	syncEach(t, mac, mac)
+	got := promptsOf(t, mac)
+	if _, back := got[gone]; back || len(got) != 2 {
+		t.Fatalf("mac's prompts: %+v; want the two left", got)
+	}
+	if _, back := w.livePrompts()[gone]; back {
+		t.Fatal("the deleted prompt is in the account again")
+	}
+}
+
+// #372: another device's delete that this device reads back with its own
+// write is not uploaded again by the next sync.
+func TestADeleteArrivingWithTheReadbackIsNotUploadedAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac, linux := device(t, srv), device(t, srv)
+	p := savePrompt(t, mac, "", "", "deleted on linux")
+	syncEach(t, mac, linux)
+	savePrompt(t, mac, "", "", "new on mac")
+	// Linux's delete lands while mac pushes its new prompt.
+	w.mu.Lock()
+	w.onPush = func() { w.tombstone(p.ID) }
+	w.mu.Unlock()
+	syncEach(t, mac, mac)
+	if _, kept := promptsOf(t, mac)[p.ID]; kept {
+		t.Fatal("mac still holds the prompt linux deleted")
+	}
+	if live := w.livePrompts(); len(live) != 1 || live[p.ID] != "" {
+		t.Fatalf("the account holds %v; want only mac's new prompt", live)
+	}
+}
+
+// #372: the same for a machine: another device's delete read back with
+// this device's write is not uploaded again.
+func TestAMachineDeletedElsewhereDuringTheReadbackIsNotUploadedAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, mac)
+	id := syncIDs(t, mac)["root@pi:22"]
+	if err := mac.SaveMachine(Machine{Host: "box", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.onPush = func() { w.tombstone(id) }
+	w.mu.Unlock()
+	syncEach(t, mac, mac)
+	if _, kept := syncIDs(t, mac)["root@pi:22"]; kept {
+		t.Fatal("mac still holds the machine deleted elsewhere")
+	}
+	hosts := 0
+	for hid, it := range w.live() {
+		if it.Collection == "hosts" {
+			hosts++
+			if hid == id {
+				t.Fatal("the deleted machine is in the account again")
+			}
+		}
+	}
+	if hosts != 1 {
+		t.Fatalf("the account holds %d machines; want 1", hosts)
+	}
+}
+
+// #372: an upload the service took but whose answer was lost leaves no
+// baseline; an edit saved after it is still this device's edit, kept here
+// and sent, not overwritten by the account's copy of the first upload.
+func TestAnEditAfterAnUploadWhoseAnswerWasLostIsKept(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	w.mu.Lock()
+	w.losePush = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a sync whose push answer was lost reported success")
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v1"`) {
+		t.Fatalf("the account's copy: %s; want the upload taken", body)
+	}
+	v2 := savePrompt(t, mac, p.ID, "", "v2")
+	syncEach(t, mac)
+	if got := promptsOf(t, mac)[p.ID]; got != v2 {
+		t.Fatalf("mac's prompt: %+v; want the edit %+v", got, v2)
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v2"`) {
+		t.Fatalf("the account's copy: %s; want the edit", body)
+	}
+}
+
+// #372: account-sync.json from before the sent fields were kept lists the
+// prompts being sent by id; each still counts as one the account may hold,
+// so deleting it keeps its tombstone.
+func TestAnOldStatesSendingListKeepsADeletesTombstone(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "on its way")
+	old := fmt.Sprintf(`{"accountId":"acct","mirror":{"rev":0,"hosts":null},"promptsPulled":true,"promptsSending":[%q]}`, p.ID)
+	if err := os.WriteFile(mac.syncStatePath(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The upload was taken; its answer was lost.
+	w.seedPrompt(p.ID, `{"text":"on its way","order":0}`)
+	if _, err := mac.DeletePrompt(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, mac)
+	if _, back := promptsOf(t, mac)[p.ID]; back {
+		t.Fatal("the deleted prompt came back")
+	}
+	if _, held := w.livePrompts()[p.ID]; held {
+		t.Fatal("the account still holds the deleted prompt")
+	}
+}
+
+// #372: after an account prompt at the largest order the service takes, a
+// new prompt syncs without an order instead of never.
+func TestANewPromptAfterTheLargestOrderSyncsWithoutOne(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("00000000-0000-4000-8000-000000000001", `{"text":"last","order":9007199254740991}`)
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "new")
+	syncEach(t, mac)
+	if body := w.livePrompts()[p.ID]; body != `{"text":"new"}` {
+		t.Fatalf("the new prompt in the account: %q; want it without an order", body)
+	}
+}
+
+// #372: a sync whose request stalls ends by the round's deadline, and the
+// next sync gets its turn.
+func TestAStalledSyncEndsByItsDeadlineAndFreesTheTurn(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	previous := syncRoundTimeout
+	syncRoundTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { syncRoundTimeout = previous })
+	_, release := w.stallPulls(t)
+	done := make(chan error, 1)
+	go func() { done <- mac.SyncMachines(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a stalled sync reported success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled sync outlived its round's deadline")
+	}
+	release()
+	syncRoundTimeout = previous
+	syncEach(t, mac)
+}
+
+// #372: a sync waiting for its turn leaves when its own context ends,
+// without syncing, while another holds the turn.
+func TestASyncWaitingForItsTurnLeavesWhenItsContextEnds(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	stalled, release := w.stallPulls(t)
+	holding := make(chan error, 1)
+	go func() { holding <- mac.SyncMachines(context.Background()) }()
+	select {
+	case <-stalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first sync never pulled")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() { waited <- mac.SyncMachines(ctx) }()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the waiting sync: %v; want its context's end", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiting sync outlived its context")
+	}
+	release()
+	<-holding
 }

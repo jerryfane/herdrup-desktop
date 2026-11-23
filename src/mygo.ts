@@ -2275,7 +2275,10 @@ export const Desk = {
   /**
    * SyncMachines is one sync round with the account: it pulls the account's
    * machines and prompts, merges them into the saved ones and pushes this
-   * device's changes. Without a session it does nothing.
+   * device's changes. Without a session it does nothing. It ends by
+   * syncRoundTimeout, or sooner when ctx ends, waiting for its turn
+   * included: a call whose ctx ends before its turn returns ctx's error
+   * without syncing.
    */
   syncMachines(): Promise<void> {
     return call("Desk.SyncMachines");

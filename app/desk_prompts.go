@@ -162,7 +162,8 @@ func (d *Desk) DeletePrompt(id string) ([]SavedPrompt, error) {
 	// the tombstone only if the account then holds the prompt.
 	state, err := d.loadSyncState()
 	_, agreed := state.PromptBaseline[id]
-	held := agreed || slices.Contains(state.PromptsSending, id) ||
+	_, sending := state.PromptsSent[id]
+	held := agreed || sending ||
 		slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == id })
 	if err == nil && held && !slices.Contains(state.PromptDeletes, id) {
 		state.PromptDeletes = append(state.PromptDeletes, id)
