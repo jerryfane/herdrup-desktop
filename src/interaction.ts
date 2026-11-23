@@ -626,6 +626,9 @@ class Detail {
    const view = await (this.plainTerminal ? Desk.openTerminalView(this.target, this.token) : Desk.openAgentView(this.target, this.token));
    if (this.disposed) { await Desk.closeAgentView(this.token); return; }
    this.view = view; this.title.textContent = view.heading;
+   // A guest's page starts watching only; a terminal-scope web owner's learns it may type from
+   // the connection below, before the terminal opens.
+   this.terminalTyping = !view.guest;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
    const chatAvailable = /^omp(?:$| |-)/i.test(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
