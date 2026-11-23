@@ -89,6 +89,19 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 			}
 		}
 	}()
+	// HERDRUP_SMOKE_FIRSTRUN=1: a first launch with no machine (RoverOS's first boot). The
+	// page must reach a working host screen ("connect to your machine") with no startup
+	// error, caught or not; nothing is connected. One deadline from launch bounds the load,
+	// every probe and the exit.
+	if os.Getenv("HERDRUP_SMOKE_FIRSTRUN") == "1" {
+		deadline := time.Now().Add(90 * time.Second)
+		time.AfterFunc(time.Until(deadline)+10*time.Second, func() {
+			log.Print("smoke: first run: still running past its deadline")
+			os.Exit(1)
+		})
+		go smokeFirstRun(win, loaded, os.Getenv("HERDRUP_SMOKE_CAPTURE"), deadline, os.Getenv("HERDRUP_SMOKE_PHONE") == "1")
+		return
+	}
 	port, _ := strconv.Atoi(os.Getenv("HERDRUP_SMOKE_PORT"))
 	m := Machine{
 		Host:    os.Getenv("HERDRUP_SMOKE_HOST"),
@@ -185,4 +198,94 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 		return
 	}
 	time.AfterFunc(90*time.Second, func() { finish(false, "timed out without a board") })
+}
+
+// smokeFirstRunProbe reads whether the page shows the host screen (render adds
+// host-home-visible to the body), how many of its controls are visible inside
+// the window, the window's width, and the errors the preload captured.
+const smokeFirstRunProbe = `(() => {
+ const connect = document.getElementById("connect");
+ const controls = connect && !connect.hidden ? Array.from(connect.querySelectorAll("button, input")).filter(e => {
+  const r = e.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && r.left >= -1 && r.right <= innerWidth + 1 && getComputedStyle(e).visibility !== "hidden";
+ }).length : 0;
+ return {
+  hostHome: document.body?.classList.contains("host-home-visible") === true,
+  controls, width: innerWidth,
+  text: document.body?.innerText.slice(0,300), errors: window.__herdrupSmokeErrors,
+ };
+})()`
+
+// phoneMaxWidth is the widest window the phone layout starts in (style.css).
+const phoneMaxWidth = 700
+
+// firstRunVerdict judges one probe: done with ok when the host screen works
+// (shown, a control visible, at phone width when phone is asked) and no error
+// was reported or caught; done and failed on any error; not done otherwise.
+func firstRunVerdict(probe map[string]any, reported int64, phone bool) (done, ok bool, why string) {
+	if errs, _ := probe["errors"].([]any); len(errs) > 0 {
+		return true, false, "uncaught startup errors: " + fmt.Sprint(errs)
+	}
+	if reported > 0 {
+		return true, false, fmt.Sprintf("the page reported %d error(s); see \"page error\" above", reported)
+	}
+	home, _ := probe["hostHome"].(bool)
+	controls, _ := probe["controls"].(float64)
+	if !home || controls < 1 {
+		return false, false, ""
+	}
+	width, _ := probe["width"].(float64)
+	if phone && (width <= 0 || width > phoneMaxWidth) {
+		return true, false, fmt.Sprintf("the host screen shows at %v px, not at phone width", width)
+	}
+	return true, true, fmt.Sprintf("the host screen shows with %v controls at %v px", controls, width)
+}
+
+// smokeFirstRun passes once the page shows a working host screen with no
+// startup error, and fails on an error or when the screen hasn't come by deadline.
+func smokeFirstRun(win *mygo.Window, loaded <-chan struct{}, out string, deadline time.Time, phone bool) {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	end := func(ok bool, why string) {
+		if png, err := win.CapturePage(); err == nil && out != "" {
+			_ = os.WriteFile(out, png, 0o644)
+		}
+		log.Printf("smoke: first run: %s", why)
+		if !ok {
+			os.Exit(1)
+		}
+		mygo.App.Quit()
+	}
+	select {
+	case <-loaded:
+	case <-ctx.Done():
+		end(false, "the page never loaded")
+		return
+	}
+	var last any
+	for ctx.Err() == nil {
+		v, err := win.Page().EvalContext(ctx, smokeFirstRunProbe)
+		if err != nil {
+			last = err
+		} else {
+			last = v
+			m, _ := v.(map[string]any)
+			if done, ok, why := firstRunVerdict(m, pageErrors.Load(), phone); done {
+				if ok {
+					// Let the browser paint the frame, then check nothing was reported meanwhile.
+					time.Sleep(500 * time.Millisecond)
+					if n := pageErrors.Load(); n > 0 {
+						ok, why = false, fmt.Sprintf("the page reported %d error(s); see \"page error\" above", n)
+					}
+				}
+				end(ok, why)
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	end(false, fmt.Sprintf("the host screen never showed; last probe: %v", last))
 }

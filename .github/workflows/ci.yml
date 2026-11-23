@@ -138,7 +138,7 @@ jobs:
           "$bin" -listen 127.0.0.1:2222 -client-key "$RUNNER_TEMP/client.key" -interactions -guests > "$RUNNER_TEMP/fakeherdr.log" 2>&1 &
           for _ in $(seq 50); do [ -s "$RUNNER_TEMP/client.key" ] && break; sleep 0.2; done
           test -s "$RUNNER_TEMP/client.key" || { cat "$RUNNER_TEMP/fakeherdr.log"; exit 1; }
-          show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; if [ -f "$RUNNER_TEMP/herdrup-smoke-phone.log" ]; then echo "--- app (phone)"; cat "$RUNNER_TEMP/herdrup-smoke-phone.log"; fi; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
+          show_logs() { echo "--- app"; cat "$HERDRUP_SMOKE_LOG" 2>/dev/null; if [ -f "$RUNNER_TEMP/herdrup-smoke-phone.log" ]; then echo "--- app (phone)"; cat "$RUNNER_TEMP/herdrup-smoke-phone.log"; fi; if [ -f "$RUNNER_TEMP/herdrup-smoke-firstrun.log" ]; then echo "--- app (first run)"; cat "$RUNNER_TEMP/herdrup-smoke-firstrun.log"; fi; echo "--- fakeherdr"; cat "$RUNNER_TEMP/fakeherdr.log"; }
           trap show_logs EXIT
           case "$RUNNER_OS" in
             Linux)
@@ -147,7 +147,12 @@ jobs:
               # phone layout (smoke.go HERDRUP_SMOKE_PHONE sizes the window 360x780).
               HERDRUP_SMOKE_PHONE=1 HERDRUP_SMOKE_LOG="$RUNNER_TEMP/herdrup-smoke-phone.log" HERDRUP_SMOKE_CAPTURE="$RUNNER_TEMP/herdrup-Linux-phone.png" \
                 xvfb-run -a -s "-screen 0 1280x900x24" build/linux-amd64/herdrup
-              test -s "$RUNNER_TEMP/herdrup-Linux-phone.png" ;;
+              test -s "$RUNNER_TEMP/herdrup-Linux-phone.png"
+              # RoverOS's first boot: no machine, phone width, kiosk. The page must reach the
+              # host screen with no startup errors (smoke.go HERDRUP_SMOKE_FIRSTRUN).
+              HERDRUP_SMOKE_FIRSTRUN=1 HERDRUP_SMOKE_PHONE=1 HERDRUP_KIOSK=1 HERDRUP_SMOKE_LOG="$RUNNER_TEMP/herdrup-smoke-firstrun.log" HERDRUP_SMOKE_CAPTURE="$RUNNER_TEMP/herdrup-Linux-firstrun.png" \
+                xvfb-run -a -s "-screen 0 1280x900x24" build/linux-amd64/herdrup
+              test -s "$RUNNER_TEMP/herdrup-Linux-firstrun.png" ;;
             macOS) "$(ls -d build/darwin-*/herdrup.app)/Contents/MacOS/herdrup" ;;
             Windows)
               # A GUI executable: wait for it and take its exit code.
@@ -163,6 +168,7 @@ jobs:
           path: |
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png
             ${{ runner.temp }}/herdrup-Linux-phone.png
+            ${{ runner.temp }}/herdrup-Linux-firstrun.png
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png-preview-*.png
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png-typing.*
             ${{ runner.temp }}/herdrup-${{ runner.os }}.png-guest.*
