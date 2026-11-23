@@ -23,6 +23,9 @@ test("a send refused with guest_paused says the agent isn't running (GuestPaneVi
 test("a web owner's owner_paused reads as paused, as guest_paused does", () => {
  expect(isGuestPaused("pane.stream ended: herdr: owner_paused: no running agent")).toBe(true);
  expect(isGuestPaused("herdr: owner_forbidden: not in this scope")).toBe(false);
+ // Only the code counts: another error that mentions a pause in its words stays that error.
+ expect(isGuestPaused("herdr: internal_error: gate failed after owner_paused")).toBe(false);
+ expect(isGuestPaused("herdr: internal_error: guest_paused was not expected")).toBe(false);
 });
 
 test("a published connection applies to a guest's agent page and to a web owner's on that machine, no other", () => {
