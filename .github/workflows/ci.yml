@@ -95,19 +95,26 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
       # apt on the hosted runner normally finishes in 15-20 s, but now and then hangs until the job
-      # timeout cancels the whole smoke (#395, #398 on 2026-11-23). Bound each attempt and retry, so a
-      # stuck mirror costs minutes, not the job; DPkg::Lock::Timeout waits out a killed attempt's lock.
+      # timeout cancels the whole smoke (#395, #398 on 2026-11-23). Only the network phase (index
+      # update and package download) is bounded and retried: a timeout there leaves no dpkg state
+      # behind. Unpacking and configuring run once, from the downloaded archives, never under a
+      # per-command timeout, because killing dpkg mid-transaction breaks every later attempt.
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
-        timeout-minutes: 9
+        timeout-minutes: 10
         run: |
-          opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o DPkg::Lock::Timeout=60"
+          pkgs="libwebkit2gtk-4.1-0 xvfb"
+          opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20"
+          fetched=
           for attempt in 1 2 3; do
-            if sudo timeout 45 apt-get $opts update && sudo timeout 120 apt-get $opts install -y libwebkit2gtk-4.1-0 xvfb; then exit 0; fi
-            echo "::warning::apt attempt $attempt failed or timed out"
-            sleep 5
+            [ "$attempt" -gt 1 ] && sleep 5
+            if sudo timeout 45 apt-get $opts update && sudo timeout 90 apt-get $opts install -y --download-only $pkgs; then
+              fetched=1; break
+            fi
+            echo "::warning::apt download attempt $attempt failed or timed out"
           done
-          exit 1
+          [ -n "$fetched" ] || exit 1
+          sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-download $pkgs
       - name: Fetch pinned offline speech engine
         if: runner.os == 'Linux' || runner.os == 'Windows'
         uses: actions/checkout@v5
