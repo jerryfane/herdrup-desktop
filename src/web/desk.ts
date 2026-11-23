@@ -899,7 +899,16 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   async gramSenderAvatar(name: string) { return senderFace(name, active?.agents ?? []); },
-  async avatarImage(): Promise<string> { throw new Error("not connected"); },
+  // desk_avatars.go AvatarImage: the agent's photo as a data: URL, fetched over the open link by
+  // its sha256 (agent.avatar.get, which herdr's owner gate allows). avatars.ts caches photos by
+  // sha256 and remembers the ones that fail; "not connected" is asked again later.
+  async avatarImage(target: string, sha256: string): Promise<string> {
+   const l = active;
+   if (!l) throw new Error("not connected");
+   if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`invalid avatar sha256 ${JSON.stringify(sha256)}`);
+   const image = await l.client.call<{ data_base64?: unknown }>("agent.avatar.get", { target, sha256 }, "agent_avatar_image", "agent_avatar", l.life.signal);
+   return avatarDataURL(typeof image.data_base64 === "string" ? image.data_base64 : "", sha256);
+  },
 
   // ---- Terminal, read-only (desk_interaction.go) ----
 
@@ -1026,7 +1035,10 @@ export function createGuestDesk(env: DeskEnv) {
 
   async readAgentText(token: string, recent: boolean): Promise<string> {
    const v = viewOf(token);
-   const result = await v.active.client.call<{ read?: { text?: string } }>("agent.read", { target: v.paneID, source: recent ? "recent_unwrapped" : "visible", format: "text" }, "pane_read", "", within(v));
+   // herdr's owner gate takes recent or visible only (owner_gate.rs): an owner's recent text keeps
+   // the terminal's line wraps; a guest's comes unwrapped, as on the desktop.
+   const source = !recent ? "visible" : v.active.owner ? "recent" : "recent_unwrapped";
+   const result = await v.active.client.call<{ read?: { text?: string } }>("agent.read", { target: v.paneID, source, format: "text" }, "pane_read", "", within(v));
    viewOf(token);
    return result.read?.text ?? "";
   },
@@ -1083,6 +1095,20 @@ export function createGuestDesk(env: DeskEnv) {
  }
 
  return Object.assign(desk, { connectOwner, disconnectOwner });
+}
+
+/** desk_avatars.go loadAvatar + dataURL: agent.avatar.get's bytes as the data: URL the page
+ *  draws, only when they are the photo asked for (their sha256) and an image (sniffed as PNG or
+ *  JPEG, the two herdr takes). */
+export async function avatarDataURL(base64: string, sha256: string): Promise<string> {
+ let bytes: Uint8Array<ArrayBuffer>;
+ try { bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0)); } catch { throw new Error("avatar is not base64"); }
+ const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+ if (Array.from(digest, b => b.toString(16).padStart(2, "0")).join("") !== sha256) throw new Error("avatar doesn't match its sha256");
+ const png = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+ const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+ if (!png && !jpeg) throw new Error("avatar is not an image");
+ return `data:${png ? "image/png" : "image/jpeg"};base64,${base64}`;
 }
 
 /** desk_guest_invite.go shareRoute's details. */

@@ -6,7 +6,7 @@ import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } 
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/owner";
-import { createGuestDesk } from "../src/web/desk";
+import { createGuestDesk, avatarDataURL } from "../src/web/desk";
 import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
@@ -335,5 +335,42 @@ test("a menu key an owner's scope refuses while the open agent asks says the own
  try {
   await openP1(desk, relay);
   expect(await desk.guestMenuKey("view-1", "Enter")).toEqual({ ownerAnswers: true });
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+// A 1x1 PNG, as herdr sends a picture: its bytes in base64 and their sha256.
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+async function sha256Hex(b64: string) {
+ const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+ return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+test("an avatar is the picture asked for, as an image: its sha256 must match and its bytes must be PNG or JPEG", async () => {
+ const sha = await sha256Hex(PNG_B64);
+ expect(await avatarDataURL(PNG_B64, sha)).toBe(`data:image/png;base64,${PNG_B64}`);
+ await expect(avatarDataURL(PNG_B64, "0".repeat(64))).rejects.toThrow("sha256");
+ const text = btoa("not a picture");
+ await expect(avatarDataURL(text, await sha256Hex(text))).rejects.toThrow("not an image");
+});
+
+test("an owner link shows the agents' pictures and copies recent text with a source herdr's gate takes", async () => {
+ const sha = await sha256Hex(PNG_B64);
+ const sources: string[] = [];
+ const relay = host({ other: (session, req) => {
+  const params = (req as Request & { params?: { sha256?: string; source?: string } }).params ?? {};
+  if (req.method === "agent.avatar.get" && params.sha256 === sha) answer(session, req, { result: { type: "agent_avatar_image", data_base64: PNG_B64 } });
+  else if (req.method === "agent.read") {
+   sources.push(params.source ?? "");
+   // owner_gate.rs: recent and visible only.
+   if (params.source === "recent" || params.source === "visible") answer(session, req, { result: { type: "pane_read", read: { text: "last lines" } } });
+   else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+  } else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+ } });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  expect(await desk.avatarImage("p1", sha)).toBe(`data:image/png;base64,${PNG_B64}`);
+  expect(await desk.readAgentText("view-1", true)).toBe("last lines");
+  expect(sources).toEqual(["recent"]);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
