@@ -25,7 +25,7 @@ import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
 import { currentOwnerLink, setOwnerLink, setOwnerSettings, settingsLink } from "./ownerLink";
-import { closeAgent, sheetOpened } from "./agentActionsDesk";
+import { closeAgent, sheetChosen } from "./agentActionsDesk";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
@@ -893,9 +893,10 @@ export function createGuestDesk(env: DeskEnv) {
     if (action === "close" && !await closeAgent(link, o.paneID)) return;
     // The page acts on the pane id: once the page was mounted again meanwhile, this isn't its choice.
     if (!still()) return;
+    const chosen = () => emit("paneActionChosen", { paneID: o.paneID, action });
     // The avatar sheet it opens belongs to this link.
-    if (action === "avatar" && link) sheetOpened(link, "avatar", o.paneID);
-    emit("paneActionChosen", { paneID: o.paneID, action });
+    if (action === "avatar" && link) sheetChosen(link, "avatar", o.paneID, chosen);
+    else chosen();
    });
    return true;
   },

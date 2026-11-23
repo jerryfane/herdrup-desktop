@@ -144,9 +144,10 @@ export class OwnerGroups {
  #lastFetch: number | null = null;
  #pending: Edit[] = [];
  #sending = false;
- /** New folders open on this browser while their save is on its way; written to the open folders
-  *  only once the host took it, so a refused one leaves no trace. */
- #opening = new Set<string>();
+ /** New folders whose save is on its way, and whether this browser has them open (open at first,
+  *  then as the owner opens or closes them): written to the open folders only once the host took
+  *  the folder, so a refused one leaves no trace and a closed one stays closed. */
+ #creating = new Map<string, boolean>();
 
  /** One machine's link: signal ends with it, and every read and save goes with it. changed runs
   *  when what the list shows changed (the document, a folder opened or closed); alert shows a
@@ -167,13 +168,13 @@ export class OwnerGroups {
  view(): BoardView {
   const open: Record<string, boolean> = {};
   for (const id of this.open.get()?.[this.hostID] ?? []) open[id] = true;
-  for (const id of this.#opening) open[id] = true;
+  for (const [id, shown] of this.#creating) if (shown) open[id] = true;
   return { groups: this.document(), open };
  }
 
  /** groupsStore.off: folders hidden, for a host that turned out not to have them. */
  #off() {
-  this.#supported = false; this.#confirmed = null; this.#pending = []; this.#opening.clear();
+  this.#supported = false; this.#confirmed = null; this.#pending = []; this.#creating.clear();
   this.changed();
  }
 
@@ -199,9 +200,11 @@ export class OwnerGroups {
   if (before === null || !groupsEqual(before, fetched)) this.changed();
  }
 
- /** Desk.SetFolderOpen: opens or closes folder id on this browser. */
+ /** Desk.SetFolderOpen: opens or closes folder id on this browser (a folder still being created:
+  *  until the host has it). */
  setOpen(id: string, open: boolean): void {
-  this.#keepOpen(id, open);
+  if (this.#creating.has(id)) this.#creating.set(id, open);
+  else this.#keepOpen(id, open);
   this.changed();
  }
 
@@ -228,7 +231,7 @@ export class OwnerGroups {
   const name = folderName(raw);
   if (name === "") return;
   const id = newFolderID();
-  this.#opening.add(id);
+  this.#creating.set(id, true);
   this.apply({ kind: "addFolder", folder: id, text: name, name: member });
  }
 
@@ -241,7 +244,11 @@ export class OwnerGroups {
    if (off) { this.#sending = false; this.#off(); return; }
    if (saved !== null) this.#confirmed = saved;
    this.#pending.shift();
-   if (e.kind === "addFolder" && this.#opening.delete(e.folder) && failure === "" && saved?.folders?.some((f) => f.id === e.folder)) this.#keepOpen(e.folder, true);
+   if (e.kind === "addFolder" && this.#creating.has(e.folder)) {
+    const shown = this.#creating.get(e.folder)!;
+    this.#creating.delete(e.folder);
+    if (shown && failure === "" && saved?.folders?.some((f) => f.id === e.folder)) this.#keepOpen(e.folder, true);
+   }
    this.changed();
    // A link that ended took its folders with it: nothing to say.
    if (failure !== "" && !this.signal.aborted) this.alert(failure);

@@ -12,12 +12,14 @@
 // checks: herdr#510's owner gate serves neither yet and strips both from an owner's pong.
 //
 // A menu belongs to the link it was asked on: once another machine is open it is not shown, and a
-// choice made in it is dropped. So does the sheet or prompt an item opens (sheetOpened, by kind and
-// pane): every call it makes goes to its own record's link, and is refused once another machine is
-// open or without a record; it never falls back to the open link.
+// choice made in it is dropped. So does the sheet or prompt an item opens: each opening of a sheet
+// (sheetOpening.ts) is its own record, made when its request reaches the page; every call the
+// sheet makes through it goes to that opening's link, and is refused once another machine is open
+// or for a call made outside it; it never falls back to the open link.
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
 import { harnessDisplayName, normalizeAgentName, SheetStaleError, SheetSupersededError, transferPhaseIsConclusive } from "../agentActionsModel";
+import { setSheetOpenings, type SheetOpening } from "../sheetOpening";
 import { ompHarness } from "../topicsModel";
 import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
@@ -164,59 +166,100 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 /** The sheet an agent item opens, as the Desk calls it makes are told apart: by kind and pane. */
 export type SheetKind = "rename" | "restart" | "swap" | "avatar" | "topics" | "transfer";
 
-/** The sheet each item chose, by kind and pane: the link it was chosen on. Sheets are modal, so per
- *  kind and pane one is pending; choosing it again (on any machine) supersedes the older record. A
- *  record lives while its sheet can still call: until its one step settles (Rename, Restart, Swap,
- *  Topics), a newer choice replaces it, or its link ends (Avatar… and Switch harness ask more than
- *  once, so they stay until then). */
-interface SheetRecord { readonly link: OwnerLink; superseded: boolean }
-const sheets = new Map<string, SheetRecord>();
-/** Kinds whose sheet makes one call: its record goes once that call settles. */
-const ONE_STEP: readonly SheetKind[] = ["rename", "restart", "swap", "topics"];
-/** Links whose end retires their records. */
-const watched = new WeakSet<OwnerLink>();
-/** The pane of the newest Switch harness chosen: its sheet's account lookup names none. */
-let transferPane: string | null = null;
-/** A folder name prompt's link, by its request; gone once it answered. */
-const prompts = new WeakMap<FolderNaming, OwnerLink>();
-
-/** Records still held (a test seam for their lifetime). */
-export function openSheets(): number { return sheets.size; }
-
-/** A sheet of kind for paneID chosen on link (a row menu item, or the ••• menu's Avatar…). */
-export function sheetOpened(link: OwnerLink, kind: SheetKind, paneID: string): void {
- const key = kind + "\u0000" + paneID, older = sheets.get(key);
- if (older) older.superseded = true;
- sheets.set(key, { link, superseded: false });
- if (kind === "transfer") transferPane = paneID;
- if (!watched.has(link)) {
-  watched.add(link);
-  link.signal.addEventListener("abort", () => {
-   for (const [k, record] of sheets) if (record.link === link) sheets.delete(k);
-  }, { once: true });
+/** One opening of a sheet (sheetOpening.ts), made as its request reaches the page: the link the
+ *  item was chosen on (null when it came from nowhere this Desk knows: all its calls are refused).
+ *  Its calls go to that link, refused once it is no longer the open one. It speaks for its agent's
+ *  sheet of this kind once started (confirmed); a later one started for the same kind and pane
+ *  supersedes it, and its results no longer count. */
+class WebOpening implements SheetOpening {
+ superseded = false;
+ released = false;
+ steps = 0;
+ constructor(readonly link: OwnerLink | null, readonly kind: string, readonly paneID: string) {}
+ get key(): string { return this.kind + "\u0000" + this.paneID; }
+ run<T>(call: () => Promise<T>): Promise<T> {
+  const outer = calling;
+  calling = this;
+  try { return call(); } finally { calling = outer; }
+ }
+ start(): void {
+  if (this.link === null || this.released) return;
+  const older = speaking.get(this.key);
+  if (older !== undefined && older !== this) older.superseded = true;
+  speaking.set(this.key, this);
+  watch(this.link);
+ }
+ release(): void {
+  this.released = true;
+  this.settle();
+ }
+ /** Its record goes once it is released and nothing of it is on its way. */
+ settle(): void {
+  if (this.released && this.steps === 0 && speaking.get(this.key) === this) speaking.delete(this.key);
  }
 }
 
-/** One step of a sheet (a lookup, a poll, a write): it runs on the link of the record current for
- *  its kind and pane, refused without one or once that link is no longer the open one; it never
- *  falls back to the open link. How it ends counts only while that record stands: a newer choice
- *  of the sheet meanwhile (on any machine) ends it as SheetSupersededError, which the page keeps
- *  quiet about; another machine as SheetStaleError, the sheet's refusal. */
-async function sheetStep<T>(kind: SheetKind, paneID: string, step: (link: OwnerLink) => Promise<T>): Promise<T> {
+/** The started opening that speaks for each agent's sheet of each kind, by kind and pane. */
+const speaking = new Map<string, WebOpening>();
+/** The opening whose run() is making a Desk call right now (the call's synchronous start). */
+let calling: WebOpening | null = null;
+/** The item being chosen while its request is sent: the page opens its sheet synchronously then. */
+let choice: { link: OwnerLink; kind: string; paneID: string } | null = null;
+/** Links whose end retires their openings' records. */
+const watched = new WeakSet<OwnerLink>();
+/** A folder name prompt's link, by its request (the prompt hands the same object back). */
+const prompts = new WeakMap<FolderNaming, OwnerLink>();
+
+function watch(link: OwnerLink) {
+ if (watched.has(link)) return;
+ watched.add(link);
+ link.signal.addEventListener("abort", () => {
+  for (const [key, opening] of speaking) if (opening.link === link) speaking.delete(key);
+ }, { once: true });
+}
+
+setSheetOpenings({
+ open(kind, paneID) {
+  const chosen = choice !== null && choice.kind === kind && choice.paneID === paneID ? choice.link : null;
+  return new WebOpening(chosen, kind, paneID);
+ },
+});
+
+/** Sends the request for a sheet of kind for paneID chosen on link (a row menu item, or the •••
+ *  menu's Avatar…): the page opens it as it hears the request. */
+export function sheetChosen(link: OwnerLink, kind: SheetKind, paneID: string, request: () => void): void {
+ const outer = choice;
+ choice = { link, kind, paneID };
+ try { request(); } finally { choice = outer; }
+}
+
+/** Sheet records still held (a test seam for their lifetime). */
+export function openSheets(): number { return speaking.size; }
+
+/** One step of a sheet (a lookup, a poll, a write), as the opening that made the call: on its own
+ *  link, refused without one, once that link is no longer the open one, or for a call of another
+ *  sheet; it never falls back to the open link. How it ends counts only while that opening stands:
+ *  a later one started meanwhile ends it as SheetSupersededError, which the page keeps quiet
+ *  about; another machine as SheetStaleError, the sheet's refusal. kind is the sheet the call
+ *  belongs to; paneID is the call's agent (null for the account lookup, which names none). */
+async function sheetStep<T>(kind: SheetKind, paneID: string | null, step: (link: OwnerLink) => Promise<T>): Promise<T> {
+ const opening = calling;
  if (paneID === "") throw new Error("no agent");
- const key = kind + "\u0000" + paneID, record = sheets.get(key);
- if (record === undefined) throw new SheetStaleError();
- const ended = () => record.superseded ? new SheetSupersededError() : record.link !== currentOwnerLink() ? new SheetStaleError() : null;
- const before = ended();
+ if (opening === null || opening.link === null || opening.kind !== kind || (paneID !== null && opening.paneID !== paneID)) throw new SheetStaleError();
+ const link = opening.link;
+ const ended = () => opening.superseded ? new SheetSupersededError() : link !== currentOwnerLink() ? new SheetStaleError() : null;
+ const before = opening.released ? new SheetSupersededError() : ended();
  if (before) throw before;
+ opening.steps++;
  try {
   let result: T;
-  try { result = await step(record.link); } catch (error) { throw ended() ?? error; }
+  try { result = await step(link); } catch (error) { throw ended() ?? error; }
   const after = ended();
   if (after) throw after;
   return result;
  } finally {
-  if (ONE_STEP.includes(kind) && sheets.get(key) === record) sheets.delete(key);
+  opening.steps--;
+  opening.settle();
  }
 }
 
@@ -262,7 +305,7 @@ export async function closeAgent(link: OwnerLink | null, paneID: string): Promis
 /** desk_agent_actions.go chooseAgentAction: stop and archive here, the rest in the page's sheets. */
 function chooseAgentAction(link: OwnerLink, a: AgentAction) {
  const run = a.kind === "stop" ? stopAgent : a.kind === "archive" ? archiveAgent : null;
- if (run === null) { sheetOpened(link, a.kind as SheetKind, a.paneID); emit("agentActionRequested", a); return; }
+ if (run === null) { sheetChosen(link, a.kind as SheetKind, a.paneID, () => emit("agentActionRequested", a)); return; }
  run(a.paneID, link).catch((error) => { if (!link.signal.aborted) showWarning(`Couldn't ${a.kind} ${a.title}`, errorText(error)); });
 }
 
@@ -456,10 +499,8 @@ export const agentActionsDesk = {
 
  /** desk_agent_actions.go TransferAccounts: accounts.list, {"accounts": […]}, as JSON. */
  async transferAccounts(): Promise<string> {
-  // The Switch harness sheet's account picker: the newest one chosen, whose lookup this is (the
-  // page asks it as the sheet opens).
-  if (transferPane === null) throw new SheetStaleError();
-  return sheetStep("transfer", transferPane, async (link) => JSON.stringify(await ownerCall("accounts.list", {}, "accounts_list", { link })));
+  // The Switch harness sheet's account picker, as the opening that asks.
+  return sheetStep("transfer", null, async (link) => JSON.stringify(await ownerCall("accounts.list", {}, "accounts_list", { link })));
  },
 
  /** desk_agent_actions.go AlertAgentFailure: Go's warning, title and detail apart. */
