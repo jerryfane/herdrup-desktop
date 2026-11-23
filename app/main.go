@@ -136,6 +136,8 @@ func main() {
 		// A web content process that dies is reported without a stack.
 		win.Page().OnRenderProcessGone(desk.crash.renderGone)
 		startPresence(desk, win)
+		// No first render after 30 s: the log says where startup is (startup_watch.go).
+		watchStartup(win)
 		// The anonymous usage count: on start and when the window comes back,
 		// at most once a UTC day (usage_ping.go).
 		desk.usage.trigger()

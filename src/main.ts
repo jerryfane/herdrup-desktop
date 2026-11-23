@@ -749,6 +749,7 @@ async function init(rendered: () => void) {
   });
   roster.addEventListener("pointerleave", () => { if (hoveredRow) liveField.hoverEnded(hoveredRow); hoveredRow = null; });
   paintShape(searchField, { radius: "capsule", fill: "var(--color-surface)" });
+  startupStep("search icon");
   await place($("search-icon"), "magnifyingglass", 15, "medium");
   initFolders(folderDeps);
   initAgentActions({
@@ -758,15 +759,18 @@ async function init(rendered: () => void) {
     placeInitials,
     symbol,
   });
+  startupStep("sidebar rail");
   rail = await initSidebarRail($("sidebar"), selectTab, () => { placeTitle(); if (!field.hidden) drawField(); void renderRows(); }, symbol, compactQuery);
   // The back button of a Settings page in the phone layout (placeDetail): to the index.
   compactBack = el("button", "compact-back-button");
   compactBack.type = "button"; compactBack.hidden = true;
   compactBack.setAttribute("aria-label", "Settings");
+  startupStep("back button");
   compactBack.append(await symbol("chevron.left", 17, "semibold"), el("span", "", "Settings"));
   compactBack.onclick = () => { settingsPushed = false; render(); };
   document.body.append(compactBack);
   compactQuery.addEventListener("change", render);
+  startupStep("bars");
   await Promise.all([buildTopBar(), buildTabBar()]);
   starAsk = initStarAsk($("sidebar"), symbol, render);
   appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
@@ -786,6 +790,7 @@ async function init(rendered: () => void) {
   // connection, not the bar last drawn: from the host chooser over a share there is no guest bar
   // yet, and the account avatar still opens the share's Settings (#270).
   settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((state.guest ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
+  startupStep("gram");
   await initGram(
     {
       el,
@@ -809,6 +814,7 @@ async function init(rendered: () => void) {
     $("sidebar"),
     $("tabbar"),
   );
+  startupStep("list extras");
   await initListExtras({
     symbol,
     roster: $("roster"),
@@ -823,6 +829,7 @@ async function init(rendered: () => void) {
     needsYou: () => board?.board.needsYou ?? 0,
     rerender: () => void renderRows(),
   });
+  startupStep("desk state");
   const [m, s, b] = await Promise.all([Desk.machine(), Desk.state(), Desk.board()]);
   if (m) {
     for (const [k, v] of Object.entries(m)) {
@@ -835,11 +842,13 @@ async function init(rendered: () => void) {
   // that fails on it is forgotten at the first switch (#49).
   if (b) boardShown(b.session);
   board = b ?? null;
+  startupStep("fonts");
   await Promise.all([loadGlyphFieldFonts(cssVar("--font-machine")), document.fonts.ready]);
   placeTitle();
   drawField();
   showHostScreen();
   rendered();
+  startupStep("rendered");
   // An App updates request from before the page was ready (desk openAppUpdates).
   void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
   const version = activationVersion;
@@ -853,6 +862,8 @@ async function init(rendered: () => void) {
 // the current state is drawn and opens the disclosure rows.
 declare global {
   interface Window {
+    /** Startup's current step and 1 s ticks (startupStep; app/startup_watch.go). */
+    __herdrupStartup?: { step: string; ticks: number; fallback?: string };
     herdrupRef: { ready(): boolean; expand(key: "idle" | "archived" | `folder:${string}`, isOpen: boolean): void };
   }
 }
@@ -878,13 +889,25 @@ window.herdrupRef = {
 
 // Startup that throws or never finishes still renders, and says why in the app's output
 // (startup.ts); so does any later uncaught error.
+// Where startup is, for a device whose window stays on its empty bars (RoverOS):
+// app/startup_watch.go reads it from outside the page's timers when no first render has come,
+// and ticks says whether this page's timers run at all.
+const startup: { step: string; ticks: number; fallback?: string } = { step: "module", ticks: 0 };
+window.__herdrupStartup = startup;
+const startupTicks = window.setInterval(() => { startup.ticks++; }, 1000);
+function startupStep(step: string) {
+  startup.step = step;
+  if (step === "rendered") clearInterval(startupTicks);
+}
+
 const reportPageError = (message: string) => { void Desk.reportPageError(message).catch(() => {}); };
 window.addEventListener("error", event => reportPageError(`uncaught: ${errorDetail(event.error ?? event.message)}`));
 window.addEventListener("unhandledrejection", event => reportPageError(`unhandled rejection: ${errorDetail(event.reason)}`));
 void startWithFallback(init, {
   firstRender: () => {
     if (renderReady) return;
-    if (hostsReady) showHostScreen(); else showStartupError();
+    // The step stays where startup stopped; the fallback that rendered instead goes beside it.
+    if (hostsReady) { startup.fallback = "host screen"; showHostScreen(); } else { startup.fallback = "startup error"; showStartupError(); }
   },
   report: reportPageError,
 });
