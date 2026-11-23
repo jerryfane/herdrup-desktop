@@ -1035,9 +1035,9 @@ export function createGuestDesk(env: DeskEnv) {
 
   async readAgentText(token: string, recent: boolean): Promise<string> {
    const v = viewOf(token);
-   // herdr's owner gate takes recent or visible only (owner_gate.rs): an owner's recent text keeps
-   // the terminal's line wraps; a guest's comes unwrapped, as on the desktop.
-   const source = !recent ? "visible" : v.active.owner ? "recent" : "recent_unwrapped";
+   // herdr's owner and guest gates both take recent or visible only (owner_gate.rs,
+   // guest_gate.rs): recent text keeps the terminal's line wraps on the web.
+   const source = recent ? "recent" : "visible";
    const result = await v.active.client.call<{ read?: { text?: string } }>("agent.read", { target: v.paneID, source, format: "text" }, "pane_read", "", within(v));
    viewOf(token);
    return result.read?.text ?? "";
@@ -1105,7 +1105,8 @@ export async function avatarDataURL(base64: string, sha256: string): Promise<str
  try { bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0)); } catch { throw new Error("avatar is not base64"); }
  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
  if (Array.from(digest, b => b.toString(16).padStart(2, "0")).join("") !== sha256) throw new Error("avatar doesn't match its sha256");
- const png = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+ // The whole 8-byte PNG signature, as herdr checks it (persist/agent_avatars.rs).
+ const png = bytes.length > 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((b, i) => bytes[i] === b);
  const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
  if (!png && !jpeg) throw new Error("avatar is not an image");
  return `data:${png ? "image/png" : "image/jpeg"};base64,${base64}`;

@@ -351,14 +351,19 @@ test("an avatar is the picture asked for, as an image: its sha256 must match and
  await expect(avatarDataURL(PNG_B64, "0".repeat(64))).rejects.toThrow("sha256");
  const text = btoa("not a picture");
  await expect(avatarDataURL(text, await sha256Hex(text))).rejects.toThrow("not an image");
+ // Half a PNG signature (89 50 4E 47, then not 0D 0A 1A 0A) is not a PNG.
+ const halfPng = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 1, 2, 3));
+ await expect(avatarDataURL(halfPng, await sha256Hex(halfPng))).rejects.toThrow("not an image");
 });
 
 test("an owner link shows the agents' pictures and copies recent text with a source herdr's gate takes", async () => {
  const sha = await sha256Hex(PNG_B64);
  const sources: string[] = [];
  const relay = host({ other: (session, req) => {
-  const params = (req as Request & { params?: { sha256?: string; source?: string } }).params ?? {};
-  if (req.method === "agent.avatar.get" && params.sha256 === sha) answer(session, req, { result: { type: "agent_avatar_image", data_base64: PNG_B64 } });
+  const params = (req as Request & { params?: { sha256?: string; source?: string; target?: string } }).params ?? {};
+  // The host says it serves pictures; the picture goes only for the agent and sha256 asked for.
+  if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.5", capabilities: { agent_avatar: true } } });
+  else if (req.method === "agent.avatar.get" && params.target === "p1" && params.sha256 === sha) answer(session, req, { result: { type: "agent_avatar_image", data_base64: PNG_B64 } });
   else if (req.method === "agent.read") {
    sources.push(params.source ?? "");
    // owner_gate.rs: recent and visible only.
@@ -372,5 +377,19 @@ test("an owner link shows the agents' pictures and copies recent text with a sou
   expect(await desk.avatarImage("p1", sha)).toBe(`data:image/png;base64,${PNG_B64}`);
   expect(await desk.readAgentText("view-1", true)).toBe("last lines");
   expect(sources).toEqual(["recent"]);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+test("a host that doesn't say it serves pictures isn't asked for one", async () => {
+ let asked = 0;
+ const relay = host({ other: (session, req) => {
+  if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.0", capabilities: {} } });
+  else { if (req.method === "agent.avatar.get") asked++; answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); }
+ } });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  await expect(desk.avatarImage("p1", await sha256Hex(PNG_B64))).rejects.toThrow();
+  expect(asked).toBe(0);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
