@@ -127,17 +127,26 @@ export class WebAccount {
  accessToken(signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted();
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
-  // Counted before the refresh is queued: without a lock the refresh starts at once.
+  // Counted before the refresh is queued: without a lock the refresh starts at once. A caller
+  // stops counting the moment its signal aborts, so the lock's turn sees only live callers.
   this.waiting++;
+  let counted = true;
+  const leave = () => { if (counted) { counted = false; this.waiting--; } };
+  signal?.addEventListener("abort", leave, { once: true });
   if (!this.flight) {
    // The epoch now, not when the lock is granted: a sign-out while this waits for the lock
    // (another tab's refresh, or the sign-out itself) makes its answer stale.
    const epoch = this.epoch;
-   const flight: Promise<string> = this.exclusive(() => this.waiting > 0 ? this.refresh(epoch) : Promise.reject(new RefreshUnwanted()))
-    .finally(() => { if (this.flight === flight) this.flight = null; });
+   const flight: Promise<string> = this.exclusive(() => {
+    // Without a lock this runs at once, with this caller counted: flight is read only later.
+    if (this.waiting > 0) return this.refresh(epoch);
+    // Skipped: a caller that comes now queues its own refresh instead of joining this one.
+    if (this.flight === flight) this.flight = null;
+    return Promise.reject(new RefreshUnwanted());
+   }).finally(() => { if (this.flight === flight) this.flight = null; });
    this.flight = flight;
   }
-  return (signal ? untilAborted(this.flight, signal) : this.flight).finally(() => { this.waiting--; });
+  return (signal ? untilAborted(this.flight, signal) : this.flight).finally(() => { signal?.removeEventListener("abort", leave); leave(); });
  }
  /** Callers waiting for the refresh in flight. */
  private waiting = 0;
