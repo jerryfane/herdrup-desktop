@@ -64,7 +64,7 @@ const guestActions = {
  hosts: () => {
   closeWriter(); closeInteraction();
   // An owner's machine: back to the machine list.
-  if (ownerOpen !== null) { ownerOpen = null; ownerDesk.disconnectOwner(); showWelcome({ owner: null }); return; }
+  if (ownerOpen !== null) { ownerOpen = null; ownerAttempt++; ownerDesk.disconnectOwner(); showWelcome({ owner: null }); return; }
   showWelcome({ owner: localOwnerHint.get() });
  },
  open: (target: AgentTarget) => { guestTab = "agents"; void selectInteraction(target).then(render); },
@@ -87,6 +87,9 @@ const ownerRuns = new OwnerRuns();
 let guestInstead = false;
 /** The approved machine whose agents show (desk.ts connectOwner); null on the machine list. */
 let ownerOpen: EnvelopeMachine | null = null;
+/** Each opening of a machine, and each leaving of it, is a new attempt: a connect answers only
+ *  the attempt it was made for (opening the same machine twice is two attempts). */
+let ownerAttempt = 0;
 const statements = statementCache(ownerAccess.account);
 const statuses = new Map<string, MachineStatus>();
 /** The displayed machine list's probes (probeList): stopping them cancels the ones still out. */
@@ -112,10 +115,11 @@ function stopProbes() { if (probing !== null) { void probing(); probing = null; 
 function openMachine(m: EnvelopeMachine) {
  stopProbes();
  ownerOpen = m;
+ const attempt = ++ownerAttempt;
  guestTab = "agents";
  // A connect another one, a sign-out or Machines replaced meanwhile says nothing here.
- ownerDesk.connectOwner(m, statements, deviceName, ownerSession.signal).then(() => { if (ownerOpen === m) showWelcome(null); }, (error: unknown) => {
-  if (ownerOpen !== m) return;
+ ownerDesk.connectOwner(m, statements, deviceName, ownerSession.signal).then(() => { if (ownerAttempt === attempt) showWelcome(null); }, (error: unknown) => {
+  if (ownerAttempt !== attempt) return;
   ownerOpen = null;
   statuses.set(m.hostID, { kind: "problem", message: errorText(error) });
   redrawWelcome();
@@ -130,7 +134,7 @@ ownerAccess.account.onSessionChange(() => {
  ownerSession = new AbortController();
  stopProbes();
  if (ownerOpen === null) return;
- ownerOpen = null;
+ ownerOpen = null; ownerAttempt++;
  closeWriter(); closeInteraction();
  showWelcome({ owner: null });
 });

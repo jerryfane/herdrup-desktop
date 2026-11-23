@@ -213,8 +213,9 @@ interface Active {
  /** link.guestPoll: one pending kick. */
  kick: () => void;
  agents: AgentInfo[];
- /** link.guestKeyTaken: the host took one of this guest's menu keys (guestMenuKey). */
- keyTaken?: boolean;
+ /** link.guestKeyTaken: the panes where the host took one of this link's menu keys
+  *  (guestMenuKey). A guest's link has one pane; an owner's has the machine's, each its own. */
+ keyTaken?: Set<string>;
 }
 
 interface MountedView extends GuestView {
@@ -772,11 +773,11 @@ export function createGuestDesk(env: DeskEnv) {
    if (!GUEST_MENU_KEYS.includes(key)) throw new Error(`${JSON.stringify(key)} is not a menu key`);
    try {
     await v.active.link.call("pane.send_keys", { pane_id: v.paneID, keys: [key] }, within(v));
-    v.active.keyTaken = true;
+    (v.active.keyTaken ??= new Set()).add(v.paneID);
     return {};
    } catch (error) {
     if (!(error instanceof HerdrAPIError && refusedHere(error.code))) throw error;
-    if (v.active.keyTaken) return {};
+    if (v.active.keyTaken?.has(v.paneID)) return {};
     let list: GuestList;
     try { list = await listAgents(v.active.client, within(v)); } catch { return {}; }
     // The mounted pane: an owner link's access names no agent (agentTarget is "").
@@ -840,8 +841,16 @@ export function createGuestDesk(env: DeskEnv) {
     if (v.terminal === terminal) v.terminal = null;
     life.abort();
     // herdr #497: a chat stream's agent isn't running (owner_paused): the open agent is paused
-    // until a list has it again (republish, runGuest).
-    if (message(error).includes(OWNER_PAUSED)) republish(v.active, { availability: "paused" });
+    // until a list has it again (republish, runGuest). A chat-scope owner's pane.stream is
+    // refused before it opens with owner_forbidden for the same reason (owner_gate.rs: pane
+    // methods need the agent running; pane.stream is otherwise allowed in both scopes), so it
+    // reads as paused too, not as a refusal for good.
+    const pausedAtOpen = message(error).includes(OWNER_PAUSED)
+     || (!!v.active.owner && v.active.transport.scope === "chat" && message(error).includes(OWNER_FORBIDDEN));
+    if (pausedAtOpen) {
+     republish(v.active, { availability: "paused" });
+     if (!message(error).includes(OWNER_PAUSED)) throw new Error(`pane.stream: herdr: ${OWNER_PAUSED}: the agent this stream watches is no longer running`);
+    }
     throw error;
    }
    // A session admitted under another scope than the one published (a renewal changed it and

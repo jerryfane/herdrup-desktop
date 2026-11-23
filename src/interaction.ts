@@ -167,6 +167,7 @@ events.stateChanged.on(state => {
   // A guest's share or a web owner's machine (connectionOfView): the page's own connection only.
   if (!current || !view?.guest || !connectionOfView(current.target.machineID, access)) return;
   // A web owner's scope, as the newest session was admitted under (a renewal can change it).
+  current.applyOwnerScope(state.guest?.ownerScope);
   current.applyTerminalTyping(typesInTerminal(view, state.guest));
   view.guestGram = !!state.guest?.features.gram;
   current.attach.hidden = !view.guestGram;
@@ -643,6 +644,7 @@ class Detail {
     const connection = (await Desk.state().catch(() => null))?.guest;
     this.guestPaused = guestPausedPage(connection?.availability, view.name);
     this.terminalTyping = typesInTerminal(view, connection);
+    this.ownerScope = connection?.ownerScope;
     if (this.disposed) return;
     this.guestChat = chatAvailable; this.guestModes = modes;
     // The guest's one Gram with this shared agent selected (#697); the grant is Access.ID().
@@ -659,6 +661,18 @@ class Detail {
    if (this.topicsCapable && this.mode !== "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
    if (view.guest) this.showGuestPaused();
   } catch (e) { if (!this.disposed) this.status.textContent = errorText(e); }
+ }
+ /** A web owner's grant scope as last admitted (GuestConnection.ownerScope). */
+ ownerScope: string | undefined;
+ /** A renewal admitted the owner under another scope: what the earlier grant refused (the
+  *  terminal size, resizeRefused) is asked again under this one, at once. */
+ applyOwnerScope(scope: string | undefined) {
+  if (scope === this.ownerScope) return;
+  this.ownerScope = scope;
+  if (!this.resizeRefused) return;
+  this.resizeRefused = false;
+  this.updateGuestQuestion();
+  this.fitTerminal?.();
  }
  /** A web owner's scope as last admitted: a terminal-scope grant types into the terminal shown
   *  now, a chat-scope one (again) only watches it; a guest never types (typesInTerminal). */

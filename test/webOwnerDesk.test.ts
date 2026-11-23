@@ -32,6 +32,8 @@ const scopeChanged = (session: HostSession, req: Request) => {
 function host(script: {
  hellos?: Record<string, unknown>[]; refuse?: string; scope?: () => string; agents?: () => unknown[];
  list?: (session: HostSession, req: Request) => void | Promise<void>; stream?: (session: HostSession, req: Request) => void;
+ /** Any other method (default: refused with owner_forbidden). */
+ other?: (session: HostSession, req: Request) => void;
 } = {}): TestRelay {
  return startRelay({
   async serve(_conn, handshake) {
@@ -46,6 +48,7 @@ function host(script: {
     if (req.method === "pane.stream") (script.stream ?? scopeChanged)(session, req);
     else if (req.method === "agent.list" && script.list) await script.list(session, req);
     else if (req.method === "agent.list") answer(session, req, { result: { type: "agent_list", agents: script.agents?.() ?? agents } });
+    else if (script.other) script.other(session, req);
     else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
    }
   },
@@ -186,6 +189,27 @@ test("an owner stream refused at its start with owner_paused pauses the open age
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
+test("a chat-scope owner's stream refused before it opens (owner_forbidden: the agent isn't running) pauses until a list has it running; a terminal scope's is an error", async () => {
+ let scope = "chat";
+ const relay = host({ scope: () => scope, stream: (session, req) => answer(session, req, { error: { code: "owner_forbidden", message: "not allowed for this owner" } }) });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  await expect(desk.startTerminal("view-1", "stream-1")).rejects.toThrow("owner_paused");
+  expect((await desk.state()).guest?.availability).toBe("paused");
+  const running = stateWhere(s => s.phase === "connected" && s.guest?.availability === undefined);
+  await listAgain(desk);
+  await running;
+  desk.disconnectOwner();
+  scope = "terminal";
+  await openP1(desk, relay);
+  const error = await desk.startTerminal("view-1", "stream-2").catch(e => e);
+  expect(String(error)).toContain("owner_forbidden");
+  expect(String(error)).not.toContain("owner_paused");
+  expect((await desk.state()).guest?.availability).toBeUndefined();
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
 test("an owner stream the host ends with owner_paused pauses the open agent", async () => {
  const relay = host({ stream: (session, req) => {
   streamStarted(session, req);
@@ -273,6 +297,24 @@ test("a machine that answers agent.list with something else is a problem for the
 });
 
 // ---- P3-3: refusals of an owner's scope go the way a guest's do ----
+
+test("a key the host took in one pane doesn't hide a refusal in another: the blocked pane still says the owner answers", async () => {
+ const relay = host({
+  agents: () => [agents[0], { ...agents[1], agent_status: "blocked" }, agents[2]],
+  other: (session, req) => {
+   const pane = (req as Request & { params?: { pane_id?: string } }).params?.pane_id;
+   if (req.method === "pane.send_keys" && pane === "p1") answer(session, req, { result: { type: "ok" } });
+   else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+  },
+ });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  expect(await desk.guestMenuKey("view-1", "Enter")).toEqual({});
+  await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p2" }, "view-2");
+  expect(await desk.guestMenuKey("view-2", "Enter")).toEqual({ ownerAnswers: true });
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
 
 test("a menu key an owner's scope refuses while the open agent asks says the owner answers", async () => {
  const relay = host({ agents: () => [{ ...agents[0], agent_status: "blocked" }, ...agents.slice(1)] });

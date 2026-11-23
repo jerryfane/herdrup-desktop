@@ -32,7 +32,8 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
  return {
   async get(hostID, minLeftMs, signal) {
    signal.throwIfAborted();
-   const acct = await untilAborted(account.currentAccount(), signal);
+   // The signal goes to the lookup itself: a cancelled caller's refresh, still queued, isn't sent.
+   const acct = await account.currentAccount(signal);
    const generation = account.generation;
    const live = () => account.generation === generation && account.current?.accountID === acct;
    if (!live()) throw stale();

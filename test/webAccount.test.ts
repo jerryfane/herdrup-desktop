@@ -9,6 +9,7 @@ import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { enrolProof } from "../src/webguest/enrol";
 import { staticKey } from "../src/webguest/identity";
 import { createAccountDesk } from "../src/web/accountDesk";
+import { statementCache } from "../src/web/statements";
 import { runApproval } from "../src/web/ownerApproval";
 import { MemoryOwnerStore } from "../src/web/ownerStore";
 import { MemoryIdentityStore } from "../src/webguest/identity";
@@ -443,4 +444,18 @@ test("an approval stopped while its account lookup waits for the lock sends no r
  await running;
  await Promise.all(lock.turns);
  expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(0);
+});
+
+test("a statement lookup cancelled while its account lookup waits for the lock sends no refresh", async () => {
+ const s = service();
+ const lock = heldLock();
+ const cache = statementCache(new WebAccount(s.fetcher, undefined, Date.now, lock.locks));
+ const stop = new AbortController();
+ const pending = cache.get("H", 120_000, stop.signal);
+ await lock.asked;
+ stop.abort(new Error("left"));
+ lock.release();
+ await expect(pending).rejects.toThrow("left");
+ await Promise.all(lock.turns);
+ expect(s.calls.length).toBe(0);
 });
