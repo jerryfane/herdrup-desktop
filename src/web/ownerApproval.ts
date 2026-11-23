@@ -64,7 +64,14 @@ export async function ownerKey(identities: IdentityStore, subtle: SubtleCrypto |
  if (record === undefined) {
   const made = await generateIdentity(subtle);
   if (made.kind !== "webcrypto") return null;
-  record = await identities.add(made);
+  await identities.add(made);
+  // Only a key this browser can read back is one it keeps: a storage that saves it but can't
+  // return it (WebKit answered null for it on the owner's iPad) would make a new key at every
+  // read, and an approved browser would lose its approval on the next one. Such a browser can't
+  // be approved, and says so.
+  // (Another tab's key, saved first, is what reads back then, and is the one used.)
+  record = await identities.get();
+  if (record === undefined) return null;
  }
  return record.kind === "webcrypto" ? staticKey(record, subtle) : null;
 }

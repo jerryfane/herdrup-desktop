@@ -99,7 +99,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
   }
   case "unsupported":
    card.append(el("h1", "", "This browser can't be approved"),
-    el("p", "", "It can't keep its key out of reach of the page's scripts. Use a current Chrome, Edge, Firefox or Safari to reach your machines from the web."), guest());
+    el("p", "", "It can't keep a secure key for this page: one the page's scripts can't read, kept from one visit to the next. Use a current Chrome, Edge, Firefox or Safari to reach your machines from the web."), guest());
    break;
   case "elsewhere":
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));

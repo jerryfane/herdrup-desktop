@@ -107,3 +107,11 @@ test("the owner's browser key with a null stored where the record should be: mad
  expect((data.get("guest") as IdentityRecord).kind).toBe("webcrypto");
  expect((await ownerKey(new IndexedDBIdentityStore(factory)))?.publicKey).toEqual(key!.publicKey);
 });
+
+test("a browser that saves the owner's key but can't read it back can't be approved: no new key at every read", async () => {
+ // What WebKit on the owner's iPad looked like: the record is written, and every read answers null.
+ const saved: IdentityRecord[] = [];
+ const forgetful = { async get() { return undefined; }, async add(record: IdentityRecord) { saved.push(record); return record; } };
+ expect(await ownerKey(forgetful)).toBeNull();
+ expect(saved.length).toBe(1);
+});
