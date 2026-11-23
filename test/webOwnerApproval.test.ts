@@ -250,12 +250,15 @@ test("a cached approval refreshes on a new sign-in: the session is bound to the 
 });
 
 test("a browser that can't be approved is told why: WebKit only on Safari and iOS, no platform limit elsewhere", async () => {
- const { browserDeviceName, unsupportedText } = await import("../src/web/ownerScreen");
- const ipadChrome = browserDeviceName("Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0 Mobile/15E148 Safari/604.1");
- const macSafari = browserDeviceName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15");
- const androidChrome = browserDeviceName("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36");
- for (const webkit of [ipadChrome, macSafari]) expect(unsupportedText(webkit)).toContain("Safari and the browsers on iPhone and iPad");
- const other = unsupportedText(androidChrome);
+ const { thisBrowser, unsupportedText } = await import("../src/web/ownerScreen");
+ const ipadChrome = thisBrowser("Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0 Mobile/15E148 Safari/604.1");
+ const macSafari = thisBrowser("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15");
+ const androidChrome = thisBrowser("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36");
+ const macChrome = thisBrowser("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+ expect([ipadChrome, macSafari, androidChrome, macChrome].map(b => b.webKitOnly)).toEqual([true, true, false, false]);
+ expect(ipadChrome.name).toBe("Chrome on iOS");
+ expect(unsupportedText(true)).toContain("Safari and the browsers on iPhone and iPad");
+ const other = unsupportedText(false);
  expect(other).not.toContain("Safari");
  expect(other).not.toContain("computer");
  expect(other).toContain("site data");

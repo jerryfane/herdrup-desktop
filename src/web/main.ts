@@ -27,7 +27,7 @@ import { AccountServiceError, SignedOutError } from "./account";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { OwnerRuns } from "./ownerRuns";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
-import { approvedMachines, browserDeviceName, ownerCard } from "./ownerScreen";
+import { approvedMachines, ownerCard, thisBrowser } from "./ownerScreen";
 import { probeList, type MachineStatus } from "./ownerProbe";
 import { statementCache } from "./statements";
 import type { EnvelopeMachine } from "../webguest/approve";
@@ -80,7 +80,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 // ---- Owner access: approving this browser (ownerApproval.ts, mockup 1) ----
 
 const ownerStore = new IndexedDBOwnerStore();
-const deviceName = browserDeviceName(navigator.userAgent);
+const browser = thisBrowser(navigator.userAgent);
+const deviceName = browser.name;
 let ownerPhase: OwnerPhase | null = null;
 const ownerRuns = new OwnerRuns();
 /** The person chose "Use a guest invitation instead" on this load. */
@@ -197,7 +198,7 @@ function showWelcome(shown: WelcomeState | null) {
   // session's starts below.
   if (ownerPhase !== null && ownerRuns.staleFor(ownerAccess.account.current?.accountID)) stopOwner();
   if (ownerPhase === null) beginApproval();
-  card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, {
+  card = ownerCard(ownerPhase ?? { kind: "starting" }, browser, {
    again: () => { beginApproval(); redrawWelcome(); },
    guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
    open: openMachine,
