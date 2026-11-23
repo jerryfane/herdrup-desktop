@@ -53,12 +53,12 @@ export function createAccountDesk(page: AccountPage) {
    if (provider !== "apple" && provider !== "google") throw new Error(`unknown provider ${provider}`);
    page.navigate(webSignInURL(provider as Provider));
   },
+  /** The session ends at once (onSessionChange publishes it); the result, with any problem
+   *  sending the sign-out, goes back to the panel that asked. */
   async accountSignOut(): Promise<AccountState> {
    let problem = "";
    try { await account.signOut(); } catch (error) { problem = problemOf(error); }
-   const s = state(problem);
-   emit("accountChanged", s);
-   return s;
+   return state(problem);
   },
  };
  return { desk, signInReturned: returned !== null, account };
