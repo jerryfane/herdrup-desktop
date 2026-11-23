@@ -69,7 +69,7 @@ export function topicStatus(t: TopicInfo): HTMLElement | null {
  if (text === null) return null;
  const status = el("span", "topic-status");
  if (statusDot(t)) { const dot = el("span", "topic-status-dot"); dot.setAttribute("aria-hidden", "true"); status.append(dot); }
- status.append(el("span", "", text));
+ status.append(el("span", "topic-status-text", text));
  return status;
 }
 

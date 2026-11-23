@@ -73,7 +73,7 @@
 .topic-chat-title { flex: 0 1 auto; min-width: 0; max-width: 100%; font: 600 15px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-chat-status { display: flex; min-width: 0; max-width: 100%; }
 .topic-chat-status .topic-status { flex: 0 1 auto; min-width: 0; }
-.topic-chat-status .topic-status > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.topic-chat-status .topic-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-detail .topic-actions { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--color-text); }
 .topic-notice:empty { display: none; }
 .topic-transcript { width: min(var(--gram-column, 720px), 100%); margin: 0 auto; }

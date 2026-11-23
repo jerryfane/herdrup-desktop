@@ -8,7 +8,8 @@ import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { initAgentActions } from "./agentActions";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
-import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, rowPreview, updateNeedsYou } from "./sessions";
+import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
+import { rowPreview } from "./rowStatus";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
@@ -777,7 +778,7 @@ async function init(rendered: () => void) {
   if (parts.appUpdates) appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   initWebAccess();
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
-  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, rowPreview, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
+  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
     // The guest home's row shows the open agent selected, as the roster's does; the phone

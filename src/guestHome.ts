@@ -4,6 +4,7 @@ import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
 import { ACCOUNT_TITLE } from "./herdrupAccount";
+import { guestRowText, rowPreview } from "./rowStatus";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
@@ -11,12 +12,10 @@ import "./settings.css";
 type GuestState = NonNullable<ConnState["guest"]>;
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the roster row's
- * face and status line (faces.ts rowAvatar, sessions.ts rowPreview), the initial placement and
- * the loading spinner. */
+ * face (faces.ts rowAvatar), the initial placement and the loading spinner. */
 export interface GuestHomeDeps {
  symbol(name: string, size: number, weight: string): Promise<HTMLElement>;
  rowAvatar(row: Row): HTMLElement;
- rowPreview(row: Row, detail: string): HTMLElement;
  placeInitials(root: ParentNode): Promise<void>;
  spinner: string;
 }
@@ -63,10 +62,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
 
  /** agentRow (GuestHomeView.swift 232-276) as the owner's roster draws it (main.ts agentRow,
   * Topics A-v2): the avatar's face with no badge and no chevron, the name over the status in
-  * words and the agent's kind ("• Needs you · omp", sessions.ts rowPreview). An archived agent
+  * words and the agent's kind ("• Needs you · omp", rowStatus.ts rowPreview). An archived agent
   * reads "<kind> · <archived note>"; with no listed agent, or one the host says isn't running
-  * (availability "paused"), it reads "Agent unavailable" with the avatar dimmed (235-245, 255). */
- function agentRow(name: string, row: Row | undefined, state: string | undefined, archived: boolean, running: boolean, selected: boolean, open: (() => void) | null) {
+  * (availability "paused"), it reads "Agent unavailable" with the avatar dimmed (235-245, 255).
+  * `archivedNote` is undefined for a live agent (rowStatus.ts guestRowText). */
+ function agentRow(name: string, row: Row | undefined, archivedNote: string | undefined, running: boolean, selected: boolean, open: (() => void) | null) {
   const item = node("div", "row guest-agent-row" + (running && row?.badge === "waiting" ? " waiting" : "") + (row && running ? "" : " unavailable") + (selected ? " selected" : ""));
   item.dataset.testid = "guest-agent-row";
   item.setAttribute("role", "button");
@@ -86,9 +86,8 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   }
   const text = node("div", "text"), line1 = node("div", "line1");
   line1.append(node("span", "name t-row-name", name), node("span", "spacer"));
-  const meta = !row || !running ? node("div", "preview t-row-preview", "Agent unavailable")
-   : archived ? node("div", "preview t-row-preview", [row.agent, state].filter(Boolean).join(" · "))
-   : deps.rowPreview(row, row.agent);
+  const plain = guestRowText(row, running, archivedNote);
+  const meta = plain !== null || !row ? node("div", "preview t-row-preview", plain ?? "") : rowPreview(row, row.agent);
   text.append(line1, meta);
   item.append(face, text);
   return item;
@@ -104,9 +103,10 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const board = latest?.machineID === `guest:${id}` ? latest : null;
   const section = board?.board.sections.find(s => s.rows.length > 0);
   const row = section?.rows[0] ?? board?.board.archived[0];
-  const rowState = section ? section.label : row?.archivedNote;
+  // A live agent has no archive note; an archived one has its note ("" without one).
+  const archivedNote = section ? undefined : row?.archivedNote ?? "";
   // The account panel's presence too: the service's answer can come after Settings was drawn.
-  const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, rowState, selected, openPane === row?.id, !!options.account?.()]);
+  const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, archivedNote, selected, openPane === row?.id, !!options.account?.()]);
   if (signature === last) return; last = signature;
   const version = ++generation;
   void (async () => {
@@ -135,7 +135,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     content.setAttribute("role", "status"); content.setAttribute("aria-label", "Connecting");
    } else {
     const open = row ? () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: row.id }) : null;
-    content = agentRow(access.agentName, row, rowState, !section, guest.availability !== "paused", openPane === row?.id, open);
+    content = agentRow(access.agentName, row, archivedNote, guest.availability !== "paused", openPane === row?.id, open);
    }
    // Listed before the relay's 429: the row stays, and says it is reconnecting below it.
    const reconnecting = guest.availability === "reconnecting" && board ? node("p", "guest-home-note", `${RELAY_RECONNECTING} ${state.message}`) : null;

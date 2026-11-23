@@ -4,7 +4,6 @@
 // account line (App/HerdrApp.swift card() and rowMarkers()).
 import { Desk, events, type Row, type SessionPill } from "./mygo";
 import { accountLabel, needsYouText, timeInState, waitingOutOfSight } from "./listExtras";
-import { rowStatus } from "./rowStatus";
 import { deskOffers, parts } from "./shellModel";
 
 type SymbolFn = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -109,20 +108,6 @@ export function rowMarkers(r: Row): HTMLElement[] {
 export function rowAge(r: Row, nowUnixMs: number): HTMLElement | null {
   const age = timeInState(r.statusSinceUnixMs, nowUnixMs);
   return age === null ? null : el("span", "age t-row-age", age);
-}
-
-/** An agent row's second line (Topics A-v2), the owner's roster and the guest's list alike: the
- * status as muted words, a small dot only for Needs you and Working, then `detail` (the roster's
- * preview, the guest's agent kind): "• Needs you · Merge #305 and update…". */
-export function rowPreview(r: Row, detail: string): HTMLElement {
-  const line = el("div", "preview t-row-preview");
-  const s = rowStatus(r.badge);
-  const status = el("span", "row-status");
-  if (s.dot) { const dot = el("span", "row-status-dot"); dot.dataset.dot = s.dot; dot.setAttribute("aria-hidden", "true"); status.append(dot); }
-  status.append(s.text);
-  line.append(status);
-  if (detail) line.append(el("span", "row-status-sep", "·"), detail);
-  return line;
 }
 
 /** The account the agent runs on, under the preview; in died when herdr
