@@ -893,10 +893,10 @@ export function createGuestDesk(env: DeskEnv) {
     if (action === "close" && !await closeAgent(link, o.paneID)) return;
     // The page acts on the pane id: once the page was mounted again meanwhile, this isn't its choice.
     if (!still()) return;
-    const chosen = () => emit("paneActionChosen", { paneID: o.paneID, action });
-    // The avatar sheet it opens belongs to this link.
+    const chosen = { paneID: o.paneID, action };
+    // The avatar sheet it opens belongs to this link (the page opens it with this request).
     if (action === "avatar" && link) sheetChosen(link, "avatar", o.paneID, chosen);
-    else chosen();
+    emit("paneActionChosen", chosen);
    });
    return true;
   },

@@ -156,7 +156,7 @@ export function initInteraction(detail: HTMLElement, renderSymbol: typeof symbol
  });
  events.chatMenu.on(event => { void current?.chooseMessageAction(event.id, event.item); });
  events.topicsChanged.on(update => { if (current?.token === update.token && !current.disposed) current.applyTopics(update); });
- events.paneActionChosen.on(event => { if (current?.view?.paneID === event.paneID && !current.disposed) current.choosePaneAction(event.action); });
+ events.paneActionChosen.on(event => { if (current?.view?.paneID === event.paneID && !current.disposed) current.choosePaneAction(event.action, event); });
 events.stateChanged.on(state => {
  // Chats and terminal screens remembered in memory end with the connection: a disconnect, a
  // removed machine or a left share (all "idle"). A reconnect keeps them; they are keyed by machine.
@@ -735,8 +735,9 @@ class Detail {
    canShare: !this.plainTerminal && !view.guest,
   }).catch(error => { if (!this.disposed) this.status.textContent = errorText(error); });
  }
- /** Carries out the ••• item Go reports (HerdrApp.swift 6227-6281). */
- choosePaneAction(action: string) {
+ /** Carries out the ••• item Go reports (HerdrApp.swift 6227-6281); request is its event, which
+  *  the sheet an item opens is opened with. */
+ choosePaneAction(action: string, request: object) {
   const view = this.view;
   if (!view) return;
   switch (action) {
@@ -755,7 +756,7 @@ class Detail {
     this.guestShareSheet = openGuestShare(this.token, view.name);
     break;
    // AgentAvatarMenuButton → AgentAvatarSheet (AgentAvatarViews.swift 277-283; HerdrApp.swift 6252-6254).
-   case "avatar": openAvatarSheet(view.paneID, view.heading); break;
+   case "avatar": openAvatarSheet(view.paneID, view.heading, request); break;
    // Go has flipped the stored mute; the label follows (HerdrApp.swift 6255-6261).
    case "mute": case "unmute": void this.showMuted(action === "mute"); break;
    // Close agent: Go closed the pane; back to the agents list (HerdrApp.swift 6262-6269).

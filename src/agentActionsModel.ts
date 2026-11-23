@@ -189,18 +189,18 @@ export function sheetFailure(error: unknown): string | null {
 }
 
 /** A sheet that asks to confirm, then makes its one call (Restart, Swap; the Topics switch through
- * topicsSwitch): cancelled, it releases its opening and nothing starts; confirmed, its opening
- * starts (it now speaks for this sheet) and makes the call; either way it is released once done.
- * The call's failure goes to failed unless a later opening started meanwhile. */
-export async function confirmedStep<T>(opening: SheetOpening, confirm: () => Promise<boolean>, call: () => Promise<T>,
-  failed: (why: string) => void): Promise<T | undefined> {
+ * topicsSwitch): replaced before it showed, or cancelled, it releases its opening and nothing
+ * starts; confirmed, its opening starts (it now owns this sheet's result) and action runs; either
+ * way it is released once done. action's failure goes to failed unless a later opening started
+ * meanwhile. */
+export async function confirmedStep(opening: SheetOpening, confirm: () => Promise<boolean>, action: () => Promise<unknown>,
+  failed: (why: string) => void): Promise<void> {
   try {
-    if (!await confirm()) return undefined;
+    if (!opening.show() || !await confirm()) return;
     opening.start();
-    try { return await opening.run(call); } catch (error) {
+    try { await action(); } catch (error) {
       const why = sheetFailure(error);
       if (why !== null) failed(why);
-      return undefined;
     }
   } finally { opening.release(); }
 }
@@ -209,23 +209,23 @@ export async function confirmedStep<T>(opening: SheetOpening, confirm: () => Pro
  * banner says it is restarting, then what came of it; cancelled, the banner is left as it was, for
  * the opening whose restart is still on its way. */
 export async function topicsSwitch(opening: SheetOpening, request: SwitchRequest, confirm: () => Promise<boolean>,
-  setEnabled: (paneID: string, enable: boolean) => Promise<{ changed: boolean }>, show: (status: SwitchStatus) => void): Promise<void> {
+  show: (status: SwitchStatus) => void): Promise<void> {
   await confirmedStep(opening, confirm, async () => {
     show({ kind: "working", request });
-    const result = await setEnabled(request.paneID, request.enable);
+    const result = await opening.topicsSetEnabled(request.enable);
     show({ kind: "done", request, changed: result.changed });
   }, why => show({ kind: "failed", request, why }));
 }
 
 /** The Switch harness sheet's opening lookups (AgentSessionTransferSheet init), through its
  * opening: the accounts, then the agent, either failing reads as none, as before. A step refused
- * as stale stops the sheet instead: null, and the agent isn't asked. */
-export async function transferSheetOpening(opening: SheetOpening, desk: { transferAccounts(): Promise<string>; transferAgentInfo(paneID: string, terminalID: string): Promise<string> },
-  paneID: string, terminalID: string): Promise<{ accountsJSON: string; agentJSON: string } | null> {
+ * as stale (its machine closed, or a newer selection of the sheet) stops the sheet instead: null,
+ * and the agent isn't asked. */
+export async function transferSheetOpening(opening: SheetOpening, terminalID: string): Promise<{ accountsJSON: string; agentJSON: string } | null> {
   const orNone = (error: unknown) => { if (error instanceof SheetStaleError) throw error; return ""; };
   try {
-    const accountsJSON = await opening.run(() => desk.transferAccounts()).catch(orNone);
-    const agentJSON = await opening.run(() => desk.transferAgentInfo(paneID, terminalID)).catch(orNone);
+    const accountsJSON = await opening.transferAccounts().catch(orNone);
+    const agentJSON = await opening.transferAgentInfo(terminalID).catch(orNone);
     return { accountsJSON, agentJSON };
   } catch (error) {
     if (error instanceof SheetStaleError) return null;
