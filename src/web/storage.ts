@@ -4,6 +4,7 @@
 // stays in localStorage after a share is left, so the page can say whom to ask for a new invite.
 
 import type { Access } from "../webguest/transport";
+import { browserLocks, withStorageLock, type Locks } from "./locks";
 
 export interface GrantStore {
  get(): Promise<Access | undefined>;
@@ -82,18 +83,56 @@ export class MemoryOwnerHint implements OwnerHint {
  set(owner: string) { this.owner = owner; }
 }
 
-/** A JSON value this browser keeps in localStorage, for state the desktop keeps in Go's per-device
- *  files (open folders, muted panes). get is undefined when nothing readable is
- *  kept or storage is unavailable; a write storage refuses is dropped. */
-export interface LocalRecord<T> { get(): T | undefined; set(value: T): void }
+/** Lists of ids per machine (hostID) this browser keeps in localStorage under one key, for state
+ *  the desktop keeps in Go's per-device files (open folders, muted panes). localStorage is the
+ *  value, shared by this origin's tabs. This page's changes not yet stored are kept by machine and
+ *  id, never as a copy of a list: a write reads what storage holds, applies all of them one by one,
+ *  and writes, under the key's lock (withStorageLock), so no other tab writes between the read
+ *  and the write; one that goes through clears them. A write storage refuses (quota, privacy
+ *  mode), or a lock refused (nothing is written outside it), leaves them pending, so the change
+ *  still holds for this page and goes in with the next write. */
+export interface MachineLists {
+ /** hostID's list: what storage holds, with this page's pending changes applied. */
+ get(hostID: string): string[];
+ /** Puts id into hostID's list (on) or takes it out: at once for get, stored in the key's turn
+  *  (settled when written or kept pending; it never rejects). */
+ set(hostID: string, id: string, on: boolean): Promise<void>;
+}
 
-export function localRecord<T>(key: string, storage: () => Pick<Storage, "getItem" | "setItem"> = () => localStorage): LocalRecord<T> {
+export function machineLists(key: string, storage: () => Pick<Storage, "getItem" | "setItem"> = () => localStorage,
+ locks: Locks | null = browserLocks()): MachineLists {
+ /** hostID → id → on: changes not yet stored. */
+ const pending = new Map<string, Map<string, boolean>>();
+ /** What storage holds, null when it can't be read. */
+ const stored = (): Record<string, string[]> | null => {
+  try { const raw = storage().getItem(key); return raw === null ? {} : JSON.parse(raw) as Record<string, string[]>; } catch { return null; }
+ };
+ /** ids (just decoded, so this page's own) with hostID's pending changes: as they are when there
+  *  are none, else through one set, made a list once. */
+ const applied = (hostID: string, ids: string[]): string[] => {
+  const changes = pending.get(hostID);
+  if (changes === undefined) return ids;
+  const out = new Set(ids);
+  for (const [id, on] of changes) { if (on) out.add(id); else out.delete(id); }
+  return [...out];
+ };
+ /** The pending changes go into what storage holds now (just decoded, so this page's own to
+  *  change), written once. Unreadable: nothing is written over it (it may hold another tab's
+  *  lists); the changes wait. */
+ const write = () => {
+  if (pending.size === 0) return;
+  const now = stored();
+  if (now === null) return;
+  for (const host of pending.keys()) now[host] = applied(host, now[host] ?? []);
+  try { storage().setItem(key, JSON.stringify(now)); pending.clear(); } catch { /* kept in pending */ }
+ };
  return {
-  get() {
-   try { const raw = storage().getItem(key); return raw === null ? undefined : JSON.parse(raw) as T; } catch { return undefined; }
-  },
-  set(value) {
-   try { storage().setItem(key, JSON.stringify(value)); } catch { /* storage unavailable: the change lasts this page */ }
+  get(hostID) { return applied(hostID, stored()?.[hostID] ?? []); },
+  set(hostID, id, on) {
+   let changes = pending.get(hostID);
+   if (!changes) pending.set(hostID, changes = new Map());
+   changes.set(id, on);
+   return withStorageLock(key, write, locks).then(() => {});
   },
  };
 }

@@ -4,11 +4,15 @@
 // because a rotated-away cookie revokes the session.
 import { expect, test } from "bun:test";
 import { AccountServiceError, returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
+import type { AccountState } from "../src/mygo";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { enrolProof } from "../src/webguest/enrol";
 import { staticKey } from "../src/webguest/identity";
 import { createAccountDesk } from "../src/web/accountDesk";
+import { approvalRunning, followSession, OwnerWork, PageExit } from "../src/web/ownerSession";
+import type { OwnerPhase } from "../src/web/ownerApproval";
+import type { Locks } from "../src/web/locks";
 import { statementCache } from "../src/web/statements";
 import { runApproval } from "../src/web/ownerApproval";
 import { MemoryOwnerStore } from "../src/web/ownerStore";
@@ -116,7 +120,7 @@ test("the web Desk's providers: a failed check rejects and the next one asks aga
 });
 
 /** navigator.locks for tests: one holder per name, queued. */
-function locks(): import("../src/web/account").AccountLocks {
+function locks(): Locks {
  const tails = new Map<string, Promise<unknown>>();
  return {
   request<T>(name: string, run: () => Promise<T>): Promise<T> {
@@ -287,7 +291,7 @@ test("the page hears its session change when it happens: sign-out before its req
  await out;
 });
 
-test("the web Desk publishes accountChanged the moment the session ends", async () => {
+test("the web Desk publishes accountChanged the moment the session ends, and again how the sign-out went", async () => {
  const signOutHeld = Promise.withResolvers<void>();
  const s = service();
  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -301,11 +305,11 @@ test("the web Desk publishes accountChanged the moment the session ends", async 
  const heard: boolean[] = [];
  const off = events.accountChanged.on(st => heard.push(st.signedIn));
  const out = desk.accountSignOut();
- expect(heard[0]).toBe(false);
+ expect(heard).toEqual([false]);
  signOutHeld.resolve();
  await out;
- // Once: the end of the session, not again when the sign-out call returns.
- expect(heard).toEqual([false]);
+ // The sign-out went through: still signed out, now that it is over.
+ expect(heard).toEqual([false, false]);
  off();
 });
 
@@ -522,4 +526,375 @@ test("a lock that throws while asked fails that refresh; the next caller asks ag
  await expect(account.accessToken()).rejects.toThrow("lock broke");
  expect(await account.accessToken()).toMatch(/./);
  expect(asks).toBe(2);
+});
+
+test("an owner page leaves only once its sign-out was sent and taken; a refused one answers at once and Sign out works again from the cookie alone", async () => {
+ const held = Promise.withResolvers<void>();
+ let refuse = true, sent = 0, refreshDown = false, readBacks = 0;
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = String(input);
+  if (url.endsWith("/v1/auth/signout")) {
+   sent++;
+   await held.promise;
+   if (refuse) return Response.json({ error: "unavailable" }, { status: 503 });
+  }
+  if (url.endsWith("/v1/auth/refresh") && refreshDown) { readBacks++; return Response.json({ error: "unavailable" }, { status: 503 }); }
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ await desk.accountCheck();
+ const calls: string[] = [];
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push(`startOver after ${sent}`), restored: () => calls.push("restored") });
+ // The session can't be read back after the refusal: the service refuses it (503).
+ refreshDown = true;
+ const { events } = await import("../src/web/events");
+ const heard: string[] = [];
+ const off = events.accountChanged.on(s => heard.push(`${s.signedIn} ${s.problem?.startsWith("Couldn't sign out.") ?? false}`));
+ const out = desk.accountSignOut();
+ // The owner link ends at once; the page waits for the request.
+ expect(calls).toEqual(["end"]);
+ held.resolve();
+ const refused = await out;
+ expect([refused.signedIn, refused.displayHint, refused.problem?.startsWith("Couldn't sign out.")]).toEqual([true, "jerry@example.com", true]);
+ expect(calls).toEqual(["end"]);
+ // Every view (not just the panel that asked) shows it signed in, with why and the retry.
+ expect(heard.at(-1)).toBe("true true");
+ off();
+ // The read-back was refused: no session is known here.
+ await account.signOutSettled();
+ await desk.accountCheck();
+ expect([readBacks > 0, account.current]).toEqual([true, null]);
+ // Sign out again: sent from the cookie alone, and then the page leaves.
+ refuse = false;
+ expect((await desk.accountSignOut()).signedIn).toBe(false);
+ expect([calls, account.signOutAttempt]).toEqual([["end", "end", "startOver after 2"], null]);
+});
+
+test("a sign-out retry goes out while the read-back still hasn't answered: an operation holding the lock lets it go after its bound", async () => {
+ let stall = false, refuse = true;
+ const posts: string[] = [];
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = String(input);
+  if (url.endsWith("/v1/auth/signout")) { posts.push(refuse ? "503" : "204"); if (refuse) return Response.json({ error: "unavailable" }, { status: 503 }); }
+  if (url.endsWith("/v1/auth/refresh") && stall) return new Promise<Response>(() => {});
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ // A real 50 ms bound: AbortSignal.timeout runs on the platform clock.
+ const account = new WebAccount(fetcher, undefined, Date.now, locks(), 50);
+ await account.check();
+ await account.signOut().catch(() => {});
+ // The read-back takes the lock and never answers.
+ stall = true;
+ let readBack = "pending";
+ void account.check().then(() => { readBack = "answered"; }, error => { readBack = error.name; });
+ await new Promise(r => setTimeout(r, 0)); // the read-back holds the lock
+ refuse = false;
+ await account.signOut();
+ expect(posts).toEqual(["503", "204"]);
+ expect([readBack, account.signOutAttempt]).toEqual(["TimeoutError", null]);
+});
+
+test("after a refused sign-out whose read-back fails too, every read says signed in with why and Sign out, until the service says there is no session", async () => {
+ let refresh: "ok" | "503" | "401" = "ok";
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = String(input);
+  if (url.endsWith("/v1/auth/signout")) return Response.json({ error: "unavailable" }, { status: 503 });
+  if (url.endsWith("/v1/auth/refresh") && refresh === "503") return Response.json({ error: "unavailable" }, { status: 503 });
+  if (url.endsWith("/v1/auth/refresh") && refresh === "401") return Response.json({ error: "no_session" }, { status: 401 });
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ await desk.accountCheck();
+ const changes: string[] = [];
+ account.onSessionChange(change => changes.push(change));
+ const calls: string[] = [];
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
+ refresh = "503";
+ const said = (st: AccountState) => [st.signedIn, st.displayHint, st.problem];
+ const refused = [true, "jerry@example.com", "Couldn't sign out. The account service is unavailable. Try again later."];
+ expect(said(await desk.accountSignOut())).toEqual(refused);
+ // Reading again (the Settings page reopened) keeps the refusal and its retry.
+ expect(said(await desk.accountState())).toEqual(refused);
+ expect(said(await desk.accountCheck())).toEqual(refused);
+ // The service says there is no session: the attempt is over, signed out.
+ refresh = "401";
+ expect(said(await desk.accountCheck())).toEqual([false, undefined, undefined]);
+ expect([account.signOutAttempt, changes]).toEqual([null, ["sign-out-sending", "sign-out-refused", "no-session"]]);
+ // ... and the owner page, ended at the sign-out's start, starts over then.
+ expect(calls).toEqual(["end", "startOver"]);
+});
+
+test("nothing leaves the page while a sign-out is being sent; the page's one exit takes the latest choice, and only its mark is written", async () => {
+ const held = Promise.withResolvers<void>();
+ const s = service();
+ let posts = 0;
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input).endsWith("/v1/auth/signout")) { posts++; await held.promise; return Response.json({ error: "unavailable" }, { status: 503 }); }
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const exits: string[] = [];
+ const { desk, exit } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate: url => exits.push(`navigate ${new URL(url).pathname}`), replaceURL() {} });
+ await desk.accountCheck();
+ const out = desk.accountSignOut();
+ // Another view's Sign out while the request is out: the same attempt, no second request.
+ const again = desk.accountSignOut();
+ // The guest page chosen, then a provider's sign-in: the sign-in, the later choice, is the way out.
+ exit.leave(() => { exits.push("guest mark", "reload"); }, true);
+ await desk.accountSignIn("apple");
+ await new Promise(r => setTimeout(r, 0)); // every step the sign-out's answer doesn't hold
+ expect(exits).toEqual([]);
+ held.resolve();
+ await Promise.all([out, again]);
+ await new Promise(r => setTimeout(r, 0));
+ expect([exits, posts]).toEqual([["navigate /v1/auth/web/start"], 1]);
+});
+
+test("a retry with no session known signs out the account the refused attempt was for: another account read back after it starts over", async () => {
+ const s = service(undefined, n => n >= 2 ? "acct-B" : "acct-A");
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) =>
+  String(input).endsWith("/v1/auth/signout") ? Response.json({ error: "unavailable" }, { status: 503 }) : s.fetcher(input, init)) as typeof fetch;
+ const account = new WebAccount(fetcher, undefined, Date.now, null);
+ await account.check();
+ const calls: string[] = [];
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
+ await account.signOut().catch(() => {});
+ await account.signOut().catch(() => {});
+ expect(account.signOutAttempt?.account).toBe("acct-A");
+ await account.check();
+ expect([account.current?.accountID, calls, account.signOutAttempt]).toEqual(["acct-B", ["end", "end", "end", "startOver"], null]);
+});
+
+test("after a refused sign-out the same account read back goes on (restored); another account later starts the page over, with nothing of the refusal", async () => {
+ const s = service(undefined, n => n >= 3 ? "acct-B" : "acct-A");
+ // Tokens that are due at once: every read is a refresh, the third one Beta's.
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = String(input);
+  if (url.endsWith("/v1/auth/signout")) return Response.json({ error: "unavailable" }, { status: 503 });
+  const response = await s.fetcher(input, init);
+  return url.endsWith("/v1/auth/refresh") && response.ok ? Response.json({ ...await response.json() as object, access_expires_in: 60 }) : response;
+ }) as typeof fetch;
+ const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ await account.check();
+ const calls: string[] = [];
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
+ const { events } = await import("../src/web/events");
+ const heard: string[] = [];
+ const off = events.accountChanged.on(st => heard.push(`${st.displayHint ?? "-"} ${st.problem ?? "-"}`));
+ await account.signOut().catch(() => {});
+ // Tried again before the session was read back (none known here): still that account's sign-out.
+ await account.signOut().catch(() => {});
+ expect(calls).toEqual(["end", "end"]);
+ await account.check();
+ // Alpha's own read back: still the refusal (signed in, with why and Sign out), with its hint.
+ expect([account.current?.accountID, calls, account.signOutAttempt?.phase, heard.at(-1)]).toEqual(["acct-A", ["end", "end", "restored"], "refused", "jerry@example.com Couldn't sign out. The account service is unavailable. Try again later."]);
+ await account.check();
+ expect([account.current?.accountID, calls, account.signOutAttempt]).toEqual(["acct-B", ["end", "end", "restored", "end", "startOver"], null]);
+ // Beta's session is told without Alpha's refusal, by the event and by a read.
+ expect(heard.at(-1)).toBe("- -");
+ const read = await desk.accountCheck();
+ expect([read.signedIn, read.problem]).toEqual([true, undefined]);
+ off();
+});
+
+test("without Web Locks a page's refresh still waits for its sign-out: one asked while it is sent reads back after the refusal (restored), not as a new session", async () => {
+ const held = Promise.withResolvers<void>();
+ const order: string[] = [];
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const url = String(input);
+  if (url.endsWith("/v1/auth/signout")) { order.push("signout sent"); await held.promise; order.push("signout 503"); return Response.json({ error: "unavailable" }, { status: 503 }); }
+  if (url.endsWith("/v1/auth/refresh")) order.push("refresh sent");
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const account = new WebAccount(fetcher, undefined, Date.now, null);
+ await account.check();
+ const calls: string[] = [];
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
+ const out = account.signOut().catch(() => {});
+ const read = account.accessToken();
+ await new Promise(r => setTimeout(r, 0)); // everything the sign-out's answer doesn't hold
+ expect(order).toEqual(["refresh sent", "signout sent"]);
+ held.resolve();
+ await out; await read;
+ expect(order).toEqual(["refresh sent", "signout sent", "signout 503", "refresh sent"]);
+ expect([calls, account.signOutAttempt?.phase]).toEqual([["end", "restored"], "refused"]);
+});
+
+test("an owner page's work stops at a sign-out's start and nothing new starts until its account is restored; the record of what ran is written once", () => {
+ const work = new OwnerWork<string>();
+ const first = work.signal!;
+ work.end(() => ({ approval: false, listRefresh: true, probes: true, link: "alpha" }));
+ expect([first.aborted, work.signal]).toEqual([true, null]);
+ // A second refusal's sign-out, with nothing running: what the first stopped stays.
+ work.end(() => ({ approval: false, listRefresh: false, probes: false, link: null }));
+ expect(work.resume()).toEqual({ approval: false, listRefresh: true, probes: true, link: "alpha" });
+ const next = work.signal!;
+ expect([next.aborted, next === first]).toEqual([false, false]);
+ // Restored again while it runs: nothing to start, the same session.
+ expect([work.resume(), work.signal]).toEqual([null, next]);
+});
+
+test("an approval runs while it asks, waits or shows its code; one that ended stays as it ended", () => {
+ const kinds: [OwnerPhase["kind"], boolean][] = [["starting", true], ["waiting", true], ["code", true],
+  ["approved", false], ["denied", false], ["expired", false], ["failed", false], ["elsewhere", false], ["unsupported", false]];
+ expect(kinds.map(([kind]) => [kind, approvalRunning(kind)])).toEqual(kinds);
+});
+
+test("a page has one way out: the person's choice takes the place of the default reload, never a second one", async () => {
+ const held = Promise.withResolvers<void>();
+ let sending = true;
+ const account = { signOutSettled: async () => { if (sending) await held.promise; }, signOutAttempt: null };
+ const exits: string[] = [];
+ const page = new PageExit(account);
+ page.leave(() => { exits.push("reload"); });
+ page.leave(() => { exits.push("guest"); }, true);
+ // The default after a choice doesn't replace it.
+ page.leave(() => { exits.push("reload again"); });
+ sending = false;
+ held.resolve();
+ await new Promise(r => setTimeout(r, 0));
+ expect(exits).toEqual(["guest"]);
+ // Once left, the page doesn't leave again.
+ page.leave(() => { exits.push("late"); }, true);
+ await new Promise(r => setTimeout(r, 0));
+ expect(exits).toEqual(["guest"]);
+});
+
+test("an exit that finds it can't leave lets a later one go", async () => {
+ const exits: string[] = [];
+ const page = new PageExit({ signOutSettled: async () => {}, signOutAttempt: null });
+ page.leave(() => { exits.push("stayed"); return "stayed"; });
+ await new Promise(r => setTimeout(r, 0));
+ page.leave(() => { exits.push("sign-in"); }, true);
+ await new Promise(r => setTimeout(r, 0));
+ expect(exits).toEqual(["stayed", "sign-in"]);
+});
+
+test("a page leaving and a sign-out started in the same turn: the sign-out is sent, and the page leaves once it settled", async () => {
+ const held = Promise.withResolvers<void>();
+ const order: string[] = [];
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input).endsWith("/v1/auth/signout")) { order.push("signout sent"); await held.promise; order.push("signout answered"); }
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const account = new WebAccount(fetcher, undefined, Date.now, null);
+ await account.check();
+ const page = new PageExit(account);
+ page.leave(() => { order.push("left"); });
+ const out = account.signOut();
+ await new Promise(r => setTimeout(r, 0));
+ expect(order).toEqual(["signout sent"]);
+ held.resolve();
+ await out;
+ await new Promise(r => setTimeout(r, 0));
+ expect(order).toEqual(["signout sent", "signout answered", "left"]);
+});
+
+test("a view that reads the account as soon as it hears the sign-out start reads after the request: a taken sign-out ends signed out", async () => {
+ const order: string[] = [];
+ const s = service();
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  order.push(new URL(String(input)).pathname);
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ const { desk } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ await desk.accountCheck();
+ const { events } = await import("../src/web/events");
+ const reads: Promise<AccountState>[] = [];
+ const off = events.accountChanged.on(() => { if (reads.length === 0) reads.push(desk.accountCheck()); });
+ const out = await desk.accountSignOut();
+ off();
+ const read = await reads[0]!;
+ expect([order, out.signedIn, read.signedIn]).toEqual([["/v1/auth/refresh", "/v1/auth/signout", "/v1/auth/refresh"], false, false]);
+});
+
+test("an owner page loaded before its session is known (the last load found it signed in) goes on when it comes; another account later starts over", async () => {
+ const s = service(undefined, n => n >= 2 ? "acct-B" : "acct-A");
+ // Tokens due at once: every read is a refresh, the second one Beta's.
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const response = await s.fetcher(input, init);
+  return String(input).endsWith("/v1/auth/refresh") && response.ok ? Response.json({ ...await response.json() as object, access_expires_in: 60 }) : response;
+ }) as typeof fetch;
+ const account = new WebAccount(fetcher, undefined, Date.now, null);
+ const calls: string[] = [];
+ const changes: string[] = [];
+ account.onSessionChange(change => changes.push(change));
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
+ await account.check();
+ expect([account.current?.accountID, calls, changes]).toEqual(["acct-A", [], ["signed-in"]]);
+ await account.check();
+ expect([account.current?.accountID, calls, changes]).toEqual(["acct-B", ["end", "startOver"], ["signed-in", "session"]]);
+});
+
+test("a refresh whose answer's body never comes lets the lock go at its bound: another tab's sign-out reaches the service, and the request is cancelled", async () => {
+ const shared = locks();
+ const sent: string[] = [];
+ let refreshSignal: AbortSignal | undefined;
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const path = new URL(String(input)).pathname;
+  sent.push(path);
+  if (path === "/v1/auth/signout") return new Response(null, { status: 204 });
+  // Headers 200 at once; the body is held open (and this stub ignores the abort, as a body
+  // already being read may).
+  refreshSignal = init?.signal ?? undefined;
+  return new Response(new ReadableStream({ start() {} }), { status: 200, headers: { "Content-Type": "application/json" } });
+ }) as typeof fetch;
+ // A real 50 ms bound: AbortSignal.timeout runs on the platform clock.
+ const tabA = new WebAccount(fetcher, undefined, Date.now, shared, 50);
+ const tabB = new WebAccount(fetcher, undefined, Date.now, shared, 50);
+ const reading = tabA.check().then(() => "answered", (error: Error) => error.name);
+ await new Promise(r => setTimeout(r, 0)); // tab A's refresh holds the lock, reading its body
+ await tabB.signOut();
+ expect([sent, await reading, refreshSignal?.aborted]).toEqual([["/v1/auth/refresh", "/v1/auth/signout"], "TimeoutError", true]);
+});
+
+test("a refresh that answers after its bound changes nothing: a later refresh's session stays", async () => {
+ const body = Promise.withResolvers<string>();
+ let refreshes = 0;
+ const session = (account: string, n: number) => JSON.stringify({ account_id: account, access_token: access(n), access_expires_in: 60 });
+ const fetcher = (async () => {
+  refreshes++;
+  // The first answer's body comes only later, whatever the abort (the stub ignores it).
+  if (refreshes === 1) return new Response(new ReadableStream({ async start(c) { c.enqueue(new TextEncoder().encode(await body.promise)); c.close(); } }), { status: 200 });
+  return new Response(session("acct-B", 2), { status: 200 });
+ }) as typeof fetch;
+ // A real 50 ms bound: AbortSignal.timeout runs on the platform clock.
+ const account = new WebAccount(fetcher, undefined, Date.now, null, 50);
+ expect(await account.check().catch((e: Error) => e.name)).toBe("TimeoutError");
+ expect((await account.check())?.accountID).toBe("acct-B");
+ body.resolve(session("acct-A", 1));
+ await new Promise(r => setTimeout(r, 10));
+ expect(account.current?.accountID).toBe("acct-B");
+});
+
+test("a refresh whose 401 comes after its bound changes nothing: a later refresh's session stays", async () => {
+ const late = Promise.withResolvers<Response>();
+ let refreshes = 0;
+ const fetcher = (async () => {
+  refreshes++;
+  // The first answer comes only later, whatever the abort (the stub ignores it).
+  if (refreshes === 1) return late.promise;
+  return Response.json({ account_id: "acct-B", access_token: access(2), access_expires_in: 3600 });
+ }) as typeof fetch;
+ // A real 50 ms bound: AbortSignal.timeout runs on the platform clock.
+ const account = new WebAccount(fetcher, undefined, Date.now, null, 50);
+ expect(await account.check().catch((e: Error) => e.name)).toBe("TimeoutError");
+ expect((await account.check())?.accountID).toBe("acct-B");
+ late.resolve(Response.json({ error: "no_session" }, { status: 401 }));
+ await new Promise(r => setTimeout(r, 10));
+ expect(account.current?.accountID).toBe("acct-B");
+});
+
+test("a page handed a session the service no longer has hears so (no-session) and starts over", async () => {
+ const fetcher = (async () => Response.json({ error: "no_session" }, { status: 401 })) as typeof fetch;
+ const account = new WebAccount(fetcher, undefined, Date.now, null);
+ const changes: string[] = [], calls: string[] = [];
+ account.onSessionChange(change => changes.push(change));
+ followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
+ expect(await account.check()).toBeNull();
+ expect([changes, calls]).toEqual([["no-session"], ["startOver"]]);
 });

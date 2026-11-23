@@ -3,7 +3,7 @@
 // takes `browser` (platform.ts webGuest, the build's mode) so the desktop's answer stays what it
 // was, which the tests hold.
 
-import { Desk, type ConnState } from "./mygo";
+import { Desk, type BoardUpdate, type ConnState } from "./mygo";
 import { webGuest } from "./platform";
 
 /** Whether this build's Desk has every one of methods. The desktop's has them all; the browser's
@@ -41,6 +41,32 @@ export const parts = shellParts(webGuest);
  *  paused, reconnecting) but are never a share. */
 export function shareShown(state: Pick<ConnState, "guest">, browser = webGuest): boolean {
   return !browser && !!state.guest;
+}
+
+/** Whether next is another connection than previous: another share, or another of a web owner's
+ *  machines (each link publishes its own GuestConnection). The board on screen goes when it is the
+ *  previous connection's (boardOf): the new one shows its loading or its failure until its first
+ *  list. One that is already the new connection's stays: the desktop publishes a saved machine's
+ *  cached board before it says it is connecting. */
+export function connectionChanged(previous: Pick<ConnState, "guest">, next: Pick<ConnState, "guest">): boolean {
+  return next.guest?.access.guestID !== previous.guest?.access.guestID || next.guest?.access.endpoint.hostID !== previous.guest?.access.endpoint.hostID;
+}
+
+/** Whether board is the connection's state describes, by the link id every board carries
+ *  (BoardUpdate.machineID, Go's and the browser's link.id alike): a share's
+ *  "guest:<hostID>/<guestID>" (guest.Access.ID), a web owner's machine "owner:<hostID>", a saved
+ *  SSH machine's its own id (a connection with no guest). */
+export function boardOf(state: Pick<ConnState, "guest">, board: Pick<BoardUpdate, "machineID">): boolean {
+  const g = state.guest;
+  if (!g) return !board.machineID.startsWith("guest:") && !board.machineID.startsWith("owner:");
+  const host = g.access.endpoint.hostID;
+  return board.machineID === `guest:${host}/${g.access.guestID}` || board.machineID === `owner:${host}`;
+}
+
+/** The board the shell keeps as the connection goes from previous to next: none when it is the
+ *  previous connection's (connectionChanged), else the one it has. */
+export function boardAfter<B extends Pick<BoardUpdate, "machineID">>(previous: Pick<ConnState, "guest">, next: Pick<ConnState, "guest">, board: B | null): B | null {
+  return board !== null && connectionChanged(previous, next) && boardOf(previous, board) ? null : board;
 }
 
 /** Whether this connection may create, rename, close or administer (herdr#510): on the desktop the

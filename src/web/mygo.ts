@@ -33,6 +33,9 @@ startAccountLabels();
 export const signInReturned = account.signInReturned;
 /** What owner access (ownerApproval.ts) works with: this page's account session and the browser's key. */
 export const ownerAccess = { account: account.account, identities: env.identities };
+/** This document's one way out (ownerSession.ts PageExit): the owner page, the guest page and the
+ *  account's sign-in all leave through it. */
+export const pageExit = account.exit;
 /** The owner's link to one approved machine at a time (desk.ts connectOwner). */
 export const ownerDesk = { connectOwner: guest.connectOwner, disconnectOwner: guest.disconnectOwner };
 

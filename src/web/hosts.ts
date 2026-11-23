@@ -11,9 +11,11 @@ import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
 import { errorText } from "../errors";
 import type { EnvelopeMachine } from "../webguest/approve";
 import { AccountServiceError, SignedOutError } from "./account";
-import { GUEST_INSTEAD_KEY } from "./bootChoice";
+import { bootMarks } from "./bootChoice";
+import { approvalRunning, closingLink, followSession, OwnerWork } from "./ownerSession";
+import { currentOwnerLink } from "./ownerLink";
 import { events } from "./events";
-import { ownerAccess, ownerDesk } from "./mygo";
+import { ownerAccess, ownerDesk, pageExit } from "./mygo";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { probeList, type MachineStatus } from "./ownerProbe";
 import { OwnerRuns } from "./ownerRuns";
@@ -29,10 +31,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 }
 
 /** The page starts over for whoever is signed in now (boot.ts chooses again): a sign-out, another
- *  account, or the person asking for the guest page. */
+ *  account, or the person asking for the guest page (a choice, which takes the place of the page
+ *  starting over: one way out, pageExit); never while a sign-out is being sent. */
 function startOver(guestInstead = false) {
- if (guestInstead) { try { sessionStorage.setItem(GUEST_INSTEAD_KEY, "1"); } catch { /* the owner screen again, then */ } }
- location.reload();
+ pageExit.leave(() => { if (guestInstead) bootMarks().chooseGuest(); location.reload(); }, guestInstead);
 }
 
 export const initHosts: typeof desktopHosts = (container, _form, showAgents, _symbol, spinner) => {
@@ -44,29 +46,61 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
  const statements = statementCache(ownerAccess.account);
  const statuses = new Map<string, MachineStatus>();
  const runs = new OwnerRuns();
- // The account session owner links and probes belong to: its end reloads the page.
- const session = new AbortController();
+ // The account session owner links, probes and the approval belong to. A sign-out ends it, and
+ // nothing new starts (Open, probes, Try again do nothing) until its own account is read back
+ // (restored, a new session) or the page starts over.
+ const work = new OwnerWork<EnvelopeMachine>();
  let phase: OwnerPhase = { kind: "starting" };
  /** When the machine list arrived from the code (performance.now()), for its entrance; null when
   *  the list showed without that step (ownerCard's arrivedAt). */
  let arrivedAt: number | null = null;
  let probing: (() => Promise<void>) | null = null;
- /** The machine whose link is open or opening (connectOwner), null before the first pick. */
+ /** The machine picked last (connectOwner), for Settings' Reconnect; null before the first pick. */
  let opened: EnvelopeMachine | null = null;
- /** Its link answers (opened and not failed since): picking it again just shows its agents. */
- let linked = false;
+ /** The machine whose link is being opened (connectOwner still out), null when none is. */
+ let opening: EnvelopeMachine | null = null;
  let attempt = 0;
- events.stateChanged.on(s => { if (s.phase === "error" || s.phase === "idle") linked = false; });
+ /** The run whose list refresh is out (refreshShown), null when none is. */
+ let refreshing: AbortSignal | null = null;
+ /** The open link's last state: picking its machine goes straight back to it unless it failed. */
+ let linkPhase = "";
+ events.stateChanged.on(s => { linkPhase = s.phase; });
 
  // The owner screen's account row (as the guest page's welcome has it): signing out there, or in
  // Settings, ends the session.
  const account = new HerdrUpAccountPanel(() => draw());
- ownerAccess.account.onSessionChange(() => { session.abort(); runs.stop(); startOver(); });
+ followSession(ownerAccess.account, {
+  // The session's work goes at once, its record (OwnerWork) saying what ran: the approval in
+  // flight, the list's refresh, the probes, the link the end closes (closingLink: the one being
+  // opened, else the open one, however its last list went; one still opening is forgotten, not
+  // failed).
+  end: () => {
+   work.end(() => ({ approval: approvalRunning(phase.kind), listRefresh: refreshing !== null, probes: probing !== null,
+    link: closingLink(opening, currentOwnerLink()) }));
+   runs.stop(); opening = null; refreshing = null; attempt++;
+   if (probing !== null) { void probing(); probing = null; }
+  },
+  startOver: () => startOver(),
+  // The same account read back after a refused sign-out: what the end stopped starts again under
+  // the new session; the screen stays as it was (an approval that had ended stays as it ended).
+  restored: () => {
+   const stopped = work.resume();
+   if (stopped === null) return;
+   if (stopped.approval) begin();
+   if (stopped.listRefresh && phase.kind === "approved") {
+    const record = phase.record;
+    runs.begin(ownerAccess.account.current?.accountID, run => refreshShown(run, record), () => {});
+   }
+   if (stopped.probes) probe();
+   if (stopped.link !== null) open(stopped.link, true, false);
+  },
+ });
 
  /** Asks every approved machine how it is while the list shows (one probeList per showing): the
   *  shell shows the host home by unhiding #connect (main.ts render). */
  function probe() {
-  const want = !container.hidden && phase.kind === "approved";
+  const signal = work.signal;
+  const want = signal !== null && !container.hidden && phase.kind === "approved";
   if (want === (probing !== null)) return;
   if (!want) { void probing!(); probing = null; return; }
   probing = probeList(async () => {
@@ -74,7 +108,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
    const record = phase.record;
    const key = await ownerKey(ownerAccess.identities).catch(() => null);
    return key === null ? null : { machines: approvedMachines(record).machines, key };
-  }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); shown.showStatus(hostID, status); }, { signal: session.signal });
+  }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); shown.showStatus(hostID, status); }, { signal: signal! });
  }
 
  /** The card on screen: a probe's status goes into its row in place; with no row for the machine
@@ -89,44 +123,52 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
   probe();
  }
 
- /** Opens an approved machine: its owner link, then the shell's agents. Picking the machine whose
-  *  link answers goes straight back to it; again (Reconnect) opens it anew. */
- function open(m: EnvelopeMachine, again = false) {
-  if (!again && linked && opened?.hostID === m.hostID) { showAgents(); return; }
+ /** Opens an approved machine: its owner link, then the shell's agents (show; a link opened again
+  *  in place doesn't change what shows). Picking the machine whose link is open (and not failed)
+  *  goes straight back to it; again (Reconnect, a restored session) opens it anew. */
+ function open(m: EnvelopeMachine, again = false, show = true) {
+  const signal = work.signal;
+  if (signal === null) return;
+  if (!again && currentOwnerLink()?.machine.hostID === m.hostID && linkPhase !== "error") { showAgents(); return; }
   opened = m;
-  linked = false;
+  opening = m;
   statuses.delete(m.hostID);
   const at = ++attempt;
-  ownerDesk.connectOwner(m, statements, deviceName, session.signal).then(() => {
+  ownerDesk.connectOwner(m, statements, deviceName, signal).then(() => {
    if (at !== attempt) return;
-   linked = true;
-   showAgents();
+   opening = null;
+   if (show) showAgents();
   }, (error: unknown) => {
    if (at !== attempt) return;
-   opened = null;
+   opened = null; opening = null;
    statuses.set(m.hostID, { kind: "problem", message: errorText(error) });
    draw();
   });
  }
 
- /** Newer lists for the approval shown (same account, same key), taken in the background. */
+ /** Newer lists for the approval shown (same account, same key), taken in the background; while
+  *  it is out, it is part of the session's running work (refreshing). */
  async function refreshShown(run: AbortSignal, record: OwnerRecord) {
-  const key = await ownerKey(ownerAccess.identities).catch(() => null);
-  if (key === null || !runs.isCurrent(run)) return;
-  let fresh: OwnerRecord | undefined;
-  try { fresh = await refreshLists(ownerAccess.account, record.account, key, store, deviceName, run); }
-  catch (error) {
-   if (runs.isCurrent(run) && ((error instanceof AccountServiceError && error.code === "account_changed") || error instanceof SignedOutError)) startOver();
-   return;
-  }
-  if (fresh === undefined || !runs.isCurrent(run) || phase.kind !== "approved") return;
-  phase = { kind: "approved", record: fresh };
-  draw();
+  refreshing = run;
+  try {
+   const key = await ownerKey(ownerAccess.identities).catch(() => null);
+   if (key === null || !runs.isCurrent(run)) return;
+   let fresh: OwnerRecord | undefined;
+   try { fresh = await refreshLists(ownerAccess.account, record.account, key, store, deviceName, run); }
+   catch (error) {
+    if (runs.isCurrent(run) && ((error instanceof AccountServiceError && error.code === "account_changed") || error instanceof SignedOutError)) startOver();
+    return;
+   }
+   if (fresh === undefined || !runs.isCurrent(run) || phase.kind !== "approved") return;
+   phase = { kind: "approved", record: fresh };
+   draw();
+  } finally { if (refreshing === run) refreshing = null; }
  }
 
  /** The approval: what this account already has here shows, else this browser asks; Ask again
   *  goes the same way. */
  function begin() {
+  if (work.signal === null) return;
   phase = { kind: "starting" }; arrivedAt = null;
   runs.begin(ownerAccess.account.current?.accountID,
    run => runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store, deviceName }, (p: OwnerPhase) => {

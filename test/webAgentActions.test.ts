@@ -11,7 +11,7 @@ import type { StatementSource } from "../src/webguest/owner";
 import { createGuestDesk, webPaneMenu } from "../src/web/desk";
 import { events } from "../src/web/events";
 import { ErrUnsupported } from "../src/web/engine";
-import { MemoryGrantStore, MemoryOwnerHint, localRecord, type LocalRecord } from "../src/web/storage";
+import { MemoryGrantStore, MemoryOwnerHint, machineLists, type MachineLists } from "../src/web/storage";
 import { applyEdit, folderName, GROUPS_CONFLICT_MESSAGE, OwnerGroups } from "../src/web/groups";
 import { currentOwnerLink, OWNER_REFUSED, OwnerRefusedError } from "../src/web/ownerLink";
 import { showMenu } from "../src/web/menu";
@@ -159,11 +159,13 @@ function store(answers: ((params: Record<string, unknown>) => unknown)[], signal
   return a;
  } };
  const storage = new Map<string, string>();
- const open = localRecord<Record<string, string[]>>("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
+ const open = machineLists("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
  const g = new OwnerGroups(client as never, "h", signal, () => { changes++; for (const w of waits) if (changes >= w.at) w.resolve(); }, Date.now, open, (m) => alerts.push(m));
  /** Resolves once the list changed k more times (each saved edit is one, after its alert). */
  const more = (k: number) => { const { promise, resolve } = Promise.withResolvers<void>(); waits.push({ at: changes + k, resolve }); return promise; };
- return { g, sets, alerts, signals, open, more, changes: () => changes };
+ /** What this browser has stored of open folders (undefined: nothing). */
+ const stored = () => { const raw = storage.get("open"); return raw === undefined ? undefined : JSON.parse(raw) as Record<string, string[]>; };
+ return { g, sets, alerts, signals, stored, more, changes: () => changes };
 }
 const conflict = (current: Groups) => new HerdrAPIError("groups_conflict", "stale", { code: "groups_conflict", message: "stale", current: tagged(current) });
 
@@ -252,12 +254,12 @@ test("a new folder opens on this browser at once, and is kept open once the host
  expect([added.name, added.members]).toEqual(["Ship it", ["relay"]]);
  expect(s.g.view().open).toEqual({ [added.id]: true });
  // Not stored before the host answers.
- expect(s.open.get()).toBeUndefined();
+ expect(s.stored()).toBeUndefined();
  s.g.createFolder("   ", "relay");
  saved.resolve(tagged({ ...applyEdit({ kind: "addFolder", folder: added.id, text: "Ship it", name: "relay" }, groups()), revision: 4 }));
  await s.more(1);
  expect(s.sets.length).toBe(1);
- expect(s.open.get()).toEqual({ h: [added.id] });
+ expect(s.stored()).toEqual({ h: [added.id] });
 });
 
 test("a new folder the host refuses (the browser still thinks it writes) leaves this browser's open folders as they were", async () => {
@@ -265,7 +267,7 @@ test("a new folder the host refuses (the browser still thinks it writes) leaves 
  await s.g.refresh();
  s.g.createFolder("Ship it", "relay");
  await s.more(1);
- expect(s.open.get()).toBeUndefined();
+ expect(s.stored()).toBeUndefined();
  expect(s.g.view().open).toEqual({});
  expect(s.g.document()).toEqual(groups());
  expect(s.alerts).toEqual(["Couldn't save folders: herdr: scope_denied: this link no longer writes"]);
@@ -385,7 +387,7 @@ function host(scope: string | (() => string), o: HostOptions = {}): TestRelay {
 }
 
 type Desk = ReturnType<typeof createGuestDesk>;
-async function newDesk(openFolders?: LocalRecord<Record<string, string[]>>): Promise<Desk> {
+async function newDesk(openFolders?: MachineLists): Promise<Desk> {
  const identities = new MemoryIdentityStore();
  await identities.add(await generateIdentity());
  return createGuestDesk({ identities, grants: new MemoryGrantStore(), owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), openFolders });
@@ -831,7 +833,7 @@ test("#377: a Switch harness sheet waiting on its lookup, then another pane's sh
 
 test("a New folder prompt submitted after another machine opened changes nothing, here or there", async () => {
  const storage = new Map<string, string>();
- const openFolders = localRecord<Record<string, string[]>>("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
+ const openFolders = machineLists("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
  const seenA: Request[] = [], seenB: Request[] = [];
  const a = host("terminal", { seen: seenA, hostID: "AQEBAQEBAQEBAQEBAQEBAQ" });
  const savedOnB = Promise.withResolvers<void>();
@@ -848,11 +850,11 @@ test("a New folder prompt submitted after another machine opened changes nothing
   await p.next(shown);
   p.click("New folder…");
   await settle();
-  const before = openFolders.get();
+  const before = storage.get("open");
   await open(desk, b, "terminal");
   await agentActionsDesk.nameFolder(asked[0]!, "Ship it");
   await settle();
-  expect(openFolders.get()).toEqual(before);
+  expect(storage.get("open")).toEqual(before);
   expect([methods(seenA, "agent.groups.set"), methods(seenB, "agent.groups.set")]).toEqual([[], []]);
   // On its own machine the prompt's folder is made there.
   expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
@@ -1039,7 +1041,7 @@ test("a newer selection stops an opening not yet shown; a shown one keeps its re
 test("a New folder prompt submitted once the link went to chat scope changes nothing, here or there", async () => {
  let scope = "terminal";
  const storage = new Map<string, string>();
- const openFolders = localRecord<Record<string, string[]>>("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
+ const openFolders = machineLists("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
  const seen: Request[] = [];
  const relay = host(() => scope, { seen });
  const desk = await newDesk(openFolders);
@@ -1055,14 +1057,14 @@ test("a New folder prompt submitted once the link went to chat scope changes not
   await p.next(shown);
   p.click("New folder…");
   await settle();
-  const before = openFolders.get();
+  const before = storage.get("open");
   // A renewal admits the link under chat (the next connection, a terminal stream's).
   scope = "chat";
   await desk.startTerminal("view-1", "stream-1").catch(() => {});
   expect(currentOwnerLink()!.scope()).toBe("chat");
   await agentActionsDesk.nameFolder(asked[0]!, "Ship it");
   await settle();
-  expect(openFolders.get()).toEqual(before);
+  expect(storage.get("open")).toEqual(before);
   expect(methods(seen, "agent.groups.set")).toEqual([]);
  } finally { off(); desk.disconnectOwner(); relay.stop(); }
 }, 30_000);
@@ -1157,14 +1159,14 @@ test("#396: a new folder collapsed while its save is on its way stays closed onc
  saved.resolve(tagged({ ...applyEdit({ kind: "addFolder", folder: id, text: "Ship it", name: "relay" }, groups()), revision: 4 }));
  await s.more(1);
  expect(s.g.view().open).toEqual({});
- expect(s.open.get()).toBeUndefined();
+ expect(s.stored()).toBeUndefined();
  // Opened again while pending, then refused: nothing stored either.
  s.g.createFolder("Later on", "relay");
  const refused = s.g.document()!.folders!.at(-1)!.id;
  s.g.setOpen(refused, false);
  s.g.setOpen(refused, true);
  await s.more(1);
- expect([s.open.get(), s.g.view().open]).toEqual([undefined, {}]);
+ expect([s.stored(), s.g.view().open]).toEqual([undefined, {}]);
 });
 
 test("the row menu's Swap lists the accounts its link reads as the menu opens", async () => {
