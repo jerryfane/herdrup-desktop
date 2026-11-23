@@ -442,8 +442,8 @@ function platformName(platform: string): string {
 }
 
 /** Desktop's first-launch sign-in (1B): before the host home on a first launch, answered once. */
-/** AccountWelcome.decide's answer: whether the sign-in shows, with the providers it offers. */
-export interface WelcomeDecision { show: boolean; providers?: string[] }
+/** AccountWelcome.decide's answer: hidden, or shown with the providers it offers (never without). */
+export type WelcomeDecision = { show: false } | { show: true; providers: readonly string[] };
 
 export class AccountWelcome {
  readonly root = el("section", "account-welcome");
@@ -475,7 +475,7 @@ export class AccountWelcome {
  /** Puts a decision on screen: the sign-in drawn the first time it shows, or hidden. */
  commit(decision: WelcomeDecision) {
   if (!decision.show) { this.root.hidden = true; return; }
-  if (!this.shownFor) { this.providers = decision.providers ?? []; this.shownFor = true; this.draw(""); }
+  if (!this.shownFor) { this.providers = [...decision.providers]; this.shownFor = true; this.draw(""); }
   this.root.hidden = false;
  }
 
