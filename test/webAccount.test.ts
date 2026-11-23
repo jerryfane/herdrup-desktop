@@ -106,16 +106,19 @@ test("a health check that fails rejects instead of listing no providers", async 
  await expect(webSignInProviders((async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch)).rejects.toThrow();
 });
 
+/** No device key, no stored sync, no background sync: the sign-in methods alone. */
+const quiet = { key: async () => null, name: "", storage: () => ({ getItem: () => null, setItem() {}, removeItem() {}, key: () => null, length: 0 }), locks: null, background: false };
+
 test("the web Desk's providers: a failed check rejects and the next one asks again; other origins get none", async () => {
  let down = true, asked = 0;
  const fetcher = (async () => { asked++; return down ? new Response("", { status: 503 }) : Response.json({ features: ["web_sign_in_apple"] }); }) as unknown as typeof fetch;
  const page = (origin: string) => ({ origin, href: `${origin}/web/`, fetch: fetcher, navigate() {}, replaceURL() {} });
- const { desk } = createAccountDesk(page("https://guest.herdrup.app"));
+ const { desk } = createAccountDesk(page("https://guest.herdrup.app"), quiet);
  await expect(desk.accountProviders()).rejects.toThrow();
  down = false;
  expect(await desk.accountProviders()).toEqual(["apple"]);
  const before = asked;
- expect(await createAccountDesk(page("https://guest.herdrup.themartian.app")).desk.accountProviders()).toEqual([]);
+ expect(await createAccountDesk(page("https://guest.herdrup.themartian.app"), quiet).desk.accountProviders()).toEqual([]);
  expect(asked).toBe(before);
 });
 
@@ -123,7 +126,8 @@ test("the web Desk's providers: a failed check rejects and the next one asks aga
 function locks(): Locks {
  const tails = new Map<string, Promise<unknown>>();
  return {
-  request<T>(name: string, run: () => Promise<T>): Promise<T> {
+  request<T>(name: string, ...args: [() => Promise<T>] | [{ signal?: AbortSignal }, () => Promise<T>]): Promise<T> {
+   const run = args.length === 1 ? args[0] : args[1];
    const before = tails.get(name) ?? Promise.resolve();
    const result = before.then(run, run);
    tails.set(name, result.catch(() => undefined));
@@ -299,7 +303,7 @@ test("the web Desk publishes accountChanged the moment the session ends, and aga
   return s.fetcher(input, init);
  }) as typeof fetch;
  const page = { origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} };
- const { desk } = createAccountDesk(page);
+ const { desk } = createAccountDesk(page, quiet);
  await desk.accountCheck();
  const { events } = await import("../src/web/events");
  const heard: boolean[] = [];
@@ -542,7 +546,7 @@ test("an owner page leaves only once its sign-out was sent and taken; a refused 
   if (url.endsWith("/v1/auth/refresh") && refreshDown) { readBacks++; return Response.json({ error: "unavailable" }, { status: 503 }); }
   return s.fetcher(input, init);
  }) as typeof fetch;
- const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} }, quiet);
  await desk.accountCheck();
  const calls: string[] = [];
  followSession(account, { end: () => calls.push("end"), startOver: () => calls.push(`startOver after ${sent}`), restored: () => calls.push("restored") });
@@ -606,7 +610,7 @@ test("after a refused sign-out whose read-back fails too, every read says signed
   if (url.endsWith("/v1/auth/refresh") && refresh === "401") return Response.json({ error: "no_session" }, { status: 401 });
   return s.fetcher(input, init);
  }) as typeof fetch;
- const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} }, quiet);
  await desk.accountCheck();
  const changes: string[] = [];
  account.onSessionChange(change => changes.push(change));
@@ -636,7 +640,7 @@ test("nothing leaves the page while a sign-out is being sent; the page's one exi
   return s.fetcher(input, init);
  }) as typeof fetch;
  const exits: string[] = [];
- const { desk, exit } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate: url => exits.push(`navigate ${new URL(url).pathname}`), replaceURL() {} });
+ const { desk, exit } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate: url => exits.push(`navigate ${new URL(url).pathname}`), replaceURL() {} }, quiet);
  await desk.accountCheck();
  const out = desk.accountSignOut();
  // Another view's Sign out while the request is out: the same attempt, no second request.
@@ -676,7 +680,7 @@ test("after a refused sign-out the same account read back goes on (restored); an
   const response = await s.fetcher(input, init);
   return url.endsWith("/v1/auth/refresh") && response.ok ? Response.json({ ...await response.json() as object, access_expires_in: 60 }) : response;
  }) as typeof fetch;
- const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ const { desk, account } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} }, quiet);
  await account.check();
  const calls: string[] = [];
  followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
@@ -810,7 +814,7 @@ test("a view that reads the account as soon as it hears the sign-out start reads
   order.push(new URL(String(input)).pathname);
   return s.fetcher(input, init);
  }) as typeof fetch;
- const { desk } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} });
+ const { desk } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} }, quiet);
  await desk.accountCheck();
  const { events } = await import("../src/web/events");
  const reads: Promise<AccountState>[] = [];
@@ -906,4 +910,21 @@ test("a page handed a session the service no longer has hears so (no-session) an
  followSession(account, { end: () => calls.push("end"), startOver: () => calls.push("startOver"), restored: () => calls.push("restored") });
  expect(await account.check()).toBeNull();
  expect([changes, calls]).toEqual([["no-session"], ["startOver"]]);
+});
+
+test("the cookie coming back as another account's: every view hears the old session end before the new one's state", async () => {
+ const s = service(undefined, n => n >= 2 ? "acct-B" : "acct-A");
+ // Tokens due at once: every read is a refresh, the second one Beta's.
+ const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+  const response = await s.fetcher(input, init);
+  return String(input).endsWith("/v1/auth/refresh") && response.ok ? Response.json({ ...await response.json() as object, access_expires_in: 60 }) : response;
+ }) as typeof fetch;
+ const { desk } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: fetcher, navigate() {}, replaceURL() {} }, quiet);
+ await desk.accountCheck();
+ const { events } = await import("../src/web/events");
+ const heard: boolean[] = [];
+ const off = events.accountChanged.on(s => heard.push(s.signedIn));
+ await desk.accountCheck();
+ off();
+ expect(heard).toEqual([false, true]);
 });

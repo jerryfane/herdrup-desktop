@@ -2,7 +2,7 @@
 // the desktop's answers unchanged), which page a load runs (bootChoice.ts), and an owner link's
 // folders (groups.ts).
 import { expect, test } from "bun:test";
-import { boardAfter, boardOf, connectionChanged, ownerWrites, shareShown, shellParts } from "../src/shellModel";
+import { boardAfter, boardOf, connectionChanged, deskOffers, ownerWrites, shareShown, shellParts } from "../src/shellModel";
 import { bootMarks, choosePage, loadPage, signedInBefore } from "../src/web/bootChoice";
 import { GROUPS_REFRESH_MS, OwnerGroups } from "../src/web/groups";
 import { machineLists } from "../src/web/storage";
@@ -409,4 +409,9 @@ test("the storage lock: true once update ran, false only when the lock was refus
  expect([await withStorageLock("k", update, granted), await withStorageLock("k", update, null), await withStorageLock("k", update, refused), runs]).toEqual([true, true, false, 2]);
  expect(await withStorageLock("k", fails, granted).catch((e: Error) => e.message)).toBe("quota");
  expect(await withStorageLock("k", fails, null).catch((e: Error) => e.message)).toBe("quota");
+});
+
+test("deskOffers asks a Desk given first, and every method named must be on it", () => {
+ const desk = { accountSyncNow: async () => {}, accountDevices: async () => ({ devices: [] }) };
+ expect([deskOffers(desk, "accountSyncNow", "accountDevices"), deskOffers(desk, "accountSyncNow", "accountDeleteInfo"), deskOffers({}, "accountSyncNow")]).toEqual([true, false, false]);
 });

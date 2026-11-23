@@ -7,28 +7,9 @@
 import qrcode from "qrcode-generator";
 import type { EnvelopeMachine, EnvelopeSkipped } from "../webguest/approve";
 import type { OwnerPhase } from "./ownerApproval";
+import { deviceLabel, parseUserAgent } from "./browserIdentity";
 import type { OwnerRecord } from "./ownerStore";
 import { statusText, type MachineStatus } from "./ownerProbe";
-
-/** What this browser is called on the account's devices and on the approval sheet: "Chrome on
- *  macOS", from the user agent; "Web browser" when it can't tell. */
-export function browserDeviceName(ua: string): string {
- return deviceLabel(parseUserAgent(ua));
-}
-
-/** The account's name for a parsed browser ("Chrome on macOS"). */
-function deviceLabel({ browser, os }: { browser: string; os: string }): string {
- if (browser && os) return `${browser} on ${os}`;
- return browser || (os ? `Browser on ${os}` : "Web browser");
-}
-
-/** The browser and OS a user agent names ("" when it names none). */
-function parseUserAgent(ua: string): { browser: string; os: string } {
- const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /(Chrome|CriOS)\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
- const os = /iPhone|iPad|iPod/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /CrOS/.test(ua) ? "ChromeOS" : /Mac OS X|Macintosh/.test(ua) ? "macOS"
-  : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
- return { browser, os };
-}
 
 /** Which notice this browser gets if it can't be approved. Safari, and every browser on iPhone and
  *  iPad (all WebKit), can't read back a stored X25519 CryptoKey: WebKit's structured clone can't

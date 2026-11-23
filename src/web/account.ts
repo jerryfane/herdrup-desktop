@@ -109,6 +109,41 @@ export interface WebSession { accountID: string; displayHint?: string }
 /** A device of the account as the service lists it (AccountService devices.ts). */
 export interface AccountDevice { id: string; name: string; platform: string; device_pub: string; created_ms: number; current?: boolean }
 
+/** A device name as the service keeps it (devices.ts deviceName, Go account.DeviceName): control
+ *  characters removed, trimmed, at most 64 characters; "" when nothing is left. */
+export function deviceName(name: string): string {
+ const clean = name.replace(/\p{Cc}/gu, "").trim();
+ const chars = [...clean];
+ return chars.length > 64 ? chars.slice(0, 64).join("").trim() : clean;
+}
+
+/** One synced item as GET /v1/sync sends it (AccountService sync.ts). */
+export interface SyncItem { collection: string; id: string; rev: number; updated_ms: number; deleted: boolean; body: unknown }
+/** One write in a push: a body, or a delete. With base_rev it is written only while the item is
+ *  still at that revision (0: no such item); otherwise it comes back in the answer's conflicts. */
+export interface SyncChange { collection: string; id: string; base_rev?: number; deleted?: boolean; body?: unknown }
+/** POST /v1/sync's answer: the changes the service now holds, and those it didn't write, with its
+ *  copy (null: no such item). now_ms is the service's clock as it answered (themartianapp/herdrup#826;
+ *  absent from a service without it). */
+export interface SyncPushAnswer {
+ rev: number;
+ applied: { collection: string; id: string; rev: number }[];
+ conflicts: { collection: string; id: string; server: SyncItem | null }[];
+ now_ms?: number;
+}
+/** POST /v1/sync's body. With not_after (ms, the service's clock), a service that is already past
+ *  it refuses the push whole (409 expired) before writing any of it (themartianapp/herdrup#826). */
+export interface SyncPushBody { changes: SyncChange[]; not_after?: number }
+/** A push made at dispatch (syncPush): prepare makes its body right before each request (null:
+ *  nothing to send); sending is told as the request is handed to fetch (from then on it may have
+ *  been written); refused is told that a request of it was definitely not written: a 4xx, on its
+ *  status line (before its body is read or the request is tried again), or an abort before it
+ *  was sent. prepare and refused may wait (for a storage lock: prompts.ts). */
+export interface PushDispatch { prepare(): Promise<SyncPushBody | null>; sending(): void; refused(): Promise<void> }
+/** One page of GET /v1/sync: a page that isn't the last carries the cursor for the next. now_ms
+ *  as SyncPushAnswer's. */
+export interface SyncPage { rev: number; changes: SyncItem[]; more: boolean; cursor?: string; now_ms?: number }
+
 /** GET /v1/approvals/<id> (approve-v1). The approver and nonce_t appear once a trusted device
  *  claimed the request; outcome_stored once the service holds its outcome. */
 export interface ApprovalStatus {
@@ -127,11 +162,14 @@ export interface BrowserSelf {
 }
 
 const ACCESS = /^a1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/;
+/** How long one shared enrolment (its challenge and its POST) may take. */
+const ENROL_MS = 20_000;
+/** One enrolment and its callers (enrol): stop ends it once none waits. */
+interface Enrolment { callers: number; stop: AbortController; done: Promise<AccountDevice> }
 
 /** Every tab shares the refresh cookie, so its rotations take turns across tabs (locks.ts): a
  *  second refresh with a cookie another tab just rotated away would revoke the session. */
 const REFRESH_LOCK = "herdrup-account-refresh";
-
 /** One page's account session. `fetch` is the page's; tests pass a stub. */
 export class WebAccount {
  private access = "";
@@ -327,39 +365,92 @@ export class WebAccount {
   *  none yet does the first token's account bind it. A token for another account (the cookie now
   *  holds another sign-in) is refused before anything is sent, so a write never goes there.
   *  signal, when it aborts, stops the call: nothing is sent once it has, not even the retry, and a
-  *  request in flight is cancelled. Errors are AccountServiceError with the service's code,
-  *  SignedOutError, or the abort's reason. */
- private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal): Promise<T> {
+  *  request in flight is cancelled. A push (dispatch, in place of body) makes its body right before
+  *  each request (the retry included), once the token is in hand; null sends nothing and the call
+  *  returns null. Errors are AccountServiceError with the service's code, SignedOutError, or the
+  *  abort's reason. */
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number): Promise<T> {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
    const { token, account: now } = await this.credential(signal);
+   // The session the call is for: generation (a sync round's, from its start), else the one the
+   // token is for. A session that isn't it, from a refresh on or while a push is being made (a
+   // sign-out begun, a new session even of the same account), sends nothing more.
+   const session = generation ?? this.sessionGeneration;
    // Aborted while the token was handed over: the caller's abort, not an account check.
    signal?.throwIfAborted();
-   if (bound !== undefined && now !== bound) throw new AccountServiceError(409, "account_changed");
+   if ((bound !== undefined && now !== bound) || this.sessionGeneration !== session) throw new AccountServiceError(409, "account_changed");
    bound = now;
+   const payload = dispatch ? await dispatch.prepare() : body;
+   if (dispatch && payload === null) return null as T;
+   // Aborted, or the session ended or changed, while the push was made (a wait for a storage lock
+   // included): no request goes, so none of it can be written.
+   if (dispatch && (signal?.aborted || this.sessionGeneration !== session)) {
+    await dispatch.refused();
+    signal?.throwIfAborted();
+    throw new AccountServiceError(409, "account_changed");
+   }
+   const sent = payload === undefined ? undefined : JSON.stringify(payload);
+   dispatch?.sending();
    const response = await this.fetcher(`${this.service}${path}`, {
     method, mode: "cors", cache: "no-store", ...(signal ? { signal } : {}),
-    headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: { Authorization: `Bearer ${token}`, ...(sent === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(sent === undefined ? {} : { body: sent }),
    });
-   if (response.status === 401 && attempt === 0) { if (this.access === token) { this.access = ""; this.accessUntil = 0; } continue; }
+   // A 4xx wrote nothing of the request: a push hears it on the status line, before the body is
+   // read (which may stall) or the request is tried again.
+   if (dispatch && response.status >= 400 && response.status < 500) await dispatch.refused();
+   if (response.status === 401 && attempt === 0) {
+    if (this.access === token) { this.access = ""; this.accessUntil = 0; }
+    continue;
+   }
    if (!response.ok) {
     const code = await errorCode(response);
     // An abort while the error body was read is the caller's, not the service's answer.
     signal?.throwIfAborted();
     throw new AccountServiceError(response.status, code);
    }
-   return await response.json() as T;
+   // 204 (a device removed) has no body.
+   return response.status === 204 ? undefined as T : await response.json() as T;
   }
  }
 
  /** Adds this browser to the account as a device with key (the guest identity), or binds this
   *  session to it when the account already has it. The challenge is single-use and lives 60 s,
   *  so both calls run together, as account (default: the current one). Refusals:
-  *  device_in_other_account, session_has_device (409), too_many_devices (403), account_changed. */
+  *  device_in_other_account, session_has_device (409), too_many_devices (403), account_changed.
+  *  One enrolment per account and key at a time: callers that come while it runs (Settings and
+  *  the owner screen at startup) share it, each leaving when its own signal aborts. It stops,
+  *  sending nothing more, once no caller waits for it, and runs for at most ENROL_MS. */
  async enrol(key: StaticKey, name: string, account?: string, signal?: AbortSignal): Promise<AccountDevice> {
   const acct = account ?? await this.currentAccount(signal);
+  signal?.throwIfAborted();
+  const id = `${acct} ${toB64url(key.publicKey)}`;
+  let flight = this.enrolments.get(id);
+  if (flight === undefined) {
+   const stop = new AbortController();
+   const made: Enrolment = { callers: 0, stop, done: this.enrolOnce(key, name, acct, AbortSignal.any([stop.signal, AbortSignal.timeout(ENROL_MS)])) };
+   const end = () => { if (this.enrolments.get(id) === made) this.enrolments.delete(id); };
+   made.done.then(end, end);
+   this.enrolments.set(id, made);
+   flight = made;
+  }
+  const joined = flight;
+  joined.callers++;
+  if (signal === undefined) return joined.done;
+  // The last caller to leave stops it, and a caller that comes after starts its own.
+  const leave = () => {
+   if (--joined.callers > 0) return;
+   if (this.enrolments.get(id) === joined) this.enrolments.delete(id);
+   joined.stop.abort(signal.reason);
+  };
+  signal.addEventListener("abort", leave, { once: true });
+  return untilAborted(joined.done, signal).finally(() => signal.removeEventListener("abort", leave));
+ }
+ private readonly enrolments = new Map<string, Enrolment>();
+
+ private async enrolOnce(key: StaticKey, name: string, acct: string, signal: AbortSignal): Promise<AccountDevice> {
   const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge", undefined, acct, signal);
   if (ch.account_id !== acct) throw new AccountServiceError(409, "account_changed");
   const { devicePub, mac } = await enrolProof(key, ch);
@@ -390,6 +481,45 @@ export class WebAccount {
  /** This device's statements for hosts (relay host ids): what an owner hello carries. */
  statements(hosts: string[], account?: string, signal?: AbortSignal): Promise<{ statements: { host: string; jws: string }[]; exp: number }> {
   return this.authed("POST", "/v1/statements", { hosts }, account, signal);
+ }
+
+ /** The account's devices; `current` marks the one this session is bound to. */
+ async devices(account?: string, signal?: AbortSignal): Promise<AccountDevice[]> {
+  return (await this.authed<{ devices: AccountDevice[] }>("GET", "/v1/devices", undefined, account, signal)).devices;
+ }
+
+ /** Renames device id; a name with nothing left (deviceName) is refused before anything is sent. */
+ async renameDevice(id: string, name: string, account?: string, signal?: AbortSignal): Promise<AccountDevice> {
+  const kept = deviceName(name);
+  if (!kept) throw new AccountServiceError(400, "bad_request");
+  return (await this.authed<{ device: AccountDevice }>("PATCH", `/v1/devices/${encodeURIComponent(id)}`, { name: kept }, account, signal)).device;
+ }
+
+ /** Removes device id; the service ends the sessions bound to it. */
+ async removeDevice(id: string, account?: string, signal?: AbortSignal): Promise<void> {
+  await this.authed("DELETE", `/v1/devices/${encodeURIComponent(id)}`, undefined, account, signal);
+ }
+
+ /** Removes device id, the one this session is bound to. The service ends this session with it,
+  *  so it is forgotten here too, but only the session that asked: one signed in while the answer
+  *  was on its way is kept, and nothing is revoked on the service (Go RemoveThisDevice). */
+ async removeThisDevice(id: string, account: string, signal?: AbortSignal): Promise<void> {
+  const epoch = this.epoch;
+  await this.removeDevice(id, account, signal);
+  // The service has no session for this browser any more (noSession: a refused sign-out is over too).
+  if (this.epoch === epoch && this.session?.accountID === account) this.noSession();
+ }
+
+ /** GET /v1/sync?<query> (since=<rev> or cursor=<cursor>) as account, in the session generation
+  *  names (a sync round's: authed). */
+ syncPage(query: string, account: string, signal?: AbortSignal, generation?: number): Promise<SyncPage> {
+  return this.authed<SyncPage>("GET", `/v1/sync?${query}`, undefined, account, signal, undefined, generation);
+ }
+
+ /** POST /v1/sync as account, its body made by dispatch right before each request (PushDispatch),
+  *  in the session generation names; none sends nothing and the answer is null. */
+ syncPush(dispatch: PushDispatch, account: string, signal?: AbortSignal, generation?: number): Promise<SyncPushAnswer | null> {
+  return this.authed("POST", "/v1/sync", undefined, account, signal, dispatch, generation);
  }
 
  /** Calls changed whenever this page's session or sign-out attempt changes, at the moment it does

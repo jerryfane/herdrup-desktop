@@ -3,9 +3,15 @@
 // localStorage takes turns on its key (withStorageLock).
 
 export interface Locks { request<T>(name: string, callback: () => Promise<T>): Promise<T> }
+/** Locks in both forms the page uses: with a signal, a request still waiting for the lock leaves
+ *  when it aborts (the account sync's turn, prompts.ts). */
+export interface AbortableLocks extends Locks {
+ request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+ request<T>(name: string, options: { signal?: AbortSignal }, callback: () => Promise<T>): Promise<T>;
+}
 
 /** This browser's Web Locks, null where there are none. */
-export const browserLocks = (): Locks | null => (globalThis.navigator as { locks?: Locks } | undefined)?.locks ?? null;
+export const browserLocks = (): AbortableLocks | null => (globalThis.navigator as { locks?: AbortableLocks } | undefined)?.locks ?? null;
 
 /** Runs update, which reads, changes and writes what this origin keeps under name (a localStorage
  *  key), while no other tab runs one for the same name: what it read is still what is there when
@@ -15,10 +21,14 @@ export const browserLocks = (): Locks | null => (globalThis.navigator as { locks
  *  rejected before granting it: a SecurityError in a sandboxed or opaque origin, an abort):
  *  update did NOT run, nothing was written, and the caller keeps what it meant to write as not yet
  *  stored, as for a write storage refused. An update that throws rejects, with or without Web
- *  Locks. */
-export function withStorageLock(name: string, update: () => void, locks: Locks | null = browserLocks()): Promise<boolean> {
+ *  Locks. With signal (and AbortableLocks), a wait for the lock leaves when it aborts (false);
+ *  update itself still runs once the lock is granted. */
+export function withStorageLock(name: string, update: () => void, locks?: Locks | null): Promise<boolean>;
+export function withStorageLock(name: string, update: () => void, locks: AbortableLocks | null, signal: AbortSignal | undefined): Promise<boolean>;
+export function withStorageLock(name: string, update: () => void, locks: Locks | AbortableLocks | null = browserLocks(), signal?: AbortSignal): Promise<boolean> {
  if (locks === null) return new Promise<boolean>(resolve => { update(); resolve(true); });
  let ran = false;
- return locks.request(name, async () => { ran = true; update(); return true; })
+ const run = async () => { ran = true; update(); return true; };
+ return (signal ? (locks as AbortableLocks).request(name, { signal }, run) : locks.request(name, run))
   .catch((error: unknown) => { if (ran) throw error; return false; });
 }

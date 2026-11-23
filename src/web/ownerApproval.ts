@@ -8,9 +8,10 @@
 import { untilAborted } from "../webguest/abort";
 import { approveCode, approveCommit, newApproveNonce, openEnvelope, type Envelope } from "../webguest/approve";
 import { fromB64url, toB64url } from "../webguest/b64url";
-import { generateIdentity, staticKey, type IdentityStore } from "../webguest/identity";
+import type { IdentityStore } from "../webguest/identity";
 import type { StaticKey } from "../webguest/noise";
 import { AccountServiceError, type ApprovalStatus, type BrowserSelf, type WebAccount } from "./account";
+import { ownerKey } from "./browserKey";
 import type { OwnerRecord, OwnerStore, VerifiedApprover } from "./ownerStore";
 
 export type OwnerPhase =
@@ -56,23 +57,6 @@ const sleepFor = (ms: number, signal: AbortSignal) => new Promise<void>((resolve
  const stop = () => { clearTimeout(t); reject(signal.reason); };
  signal.addEventListener("abort", stop, { once: true });
 });
-
-/** The browser's key for owner access: the guest identity, only when WebCrypto keeps it
- *  non-extractable. With none saved, a key is made and saved only if it is a WebCrypto one, so an
- *  unsupported visit leaves nothing behind that a later, supported one would be refused for. A
- *  saved raw key is never replaced: it may hold a share. */
-export async function ownerKey(identities: IdentityStore, subtle: SubtleCrypto | null = globalThis.crypto?.subtle ?? null): Promise<StaticKey | null> {
- let record = await identities.get();
- if (record === undefined) {
-  const made = await generateIdentity(subtle);
-  if (made.kind !== "webcrypto") return null;
-  // A key this browser can't give back would be a new key at every read, and an approved browser
-  // would lose its approval at the next one: such a browser can't be approved, and says so.
-  record = await identities.add(made);
-  if (record === undefined) return null;
- }
- return record.kind === "webcrypto" ? staticKey(record, subtle) : null;
-}
 
 const problemOf = (error: unknown): string => {
  if (error instanceof AccountServiceError) {
