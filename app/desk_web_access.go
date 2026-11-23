@@ -532,9 +532,8 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 		default:
 			res.Granted = append(res.Granted, c.label)
 			res.Expires = append(res.Expires, g.expiresMs)
-			g.HostItemID = c.m.SyncID
-			envelope.Machines = append(envelope.Machines, g)
-			grants = append(grants, webGrant{m: c, grantID: g.GrantID})
+			envelope.Machines = append(envelope.Machines, g.entry(c))
+			grants = append(grants, webGrant{m: c, grantID: g.grantID})
 		}
 	}
 	if len(envelope.Machines) == 0 {
@@ -609,17 +608,31 @@ func (d *Desk) removeGrant(ctx context.Context, g webGrant) error {
 // couldn't let the browser in. A herdr that leaves the field out is older.
 const webOwnerProtocol = 2
 
+// webMachineGrant is the grant one machine added, as it recorded it.
+type webMachineGrant struct {
+	relay, hostID, nodePub, grantID, scope string
+	expiresMs                              int64
+}
+
+// entry is g in the sealed list, which says the expiry in whole seconds.
+func (g webMachineGrant) entry(c webMachine) webEnvelopeMachine {
+	return webEnvelopeMachine{
+		HostItemID: c.m.SyncID, Label: c.label, Relay: g.relay, HostID: g.hostID, NodePub: g.nodePub,
+		GrantID: g.grantID, Scope: g.scope, ExpiresUnix: g.expiresMs / 1000,
+	}
+}
+
 // grantOn adds the grant on one machine: owner_access.info for its relay id,
 // a statement for that host, then owner_access.add. A machine that can't take
 // owner grants is skipped with the envelope's reason.
-func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrapi.OwnerAccessAddParams) (webEnvelopeMachine, string, error) {
+func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrapi.OwnerAccessAddParams) (webMachineGrant, string, error) {
 	// One deadline for the SSH dial and every call, so a machine never takes
 	// more than webGrantTime of the time kept before the report.
 	cctx, cancel := context.WithTimeout(ctx, webGrantTime)
 	defer cancel()
 	client, done, err := d.ownerClient(cctx, c.m)
 	if err != nil {
-		return webEnvelopeMachine{}, "unreachable", nil
+		return webMachineGrant{}, "unreachable", nil
 	}
 	defer done()
 	info, err := client.OwnerAccessInfo(cctx)
@@ -627,34 +640,33 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 	var old *engine.ErrUnsupported
 	switch {
 	case errors.As(err, &old):
-		return webEnvelopeMachine{}, "needs_update", nil
+		return webMachineGrant{}, "needs_update", nil
 	case errors.As(err, &api) && api.Code == "owner_access_unsupported":
-		return webEnvelopeMachine{}, "unsupported", nil
+		return webMachineGrant{}, "unsupported", nil
 	case err != nil:
-		return webEnvelopeMachine{}, "", err
+		return webMachineGrant{}, "", err
 	case info.Protocol < webOwnerProtocol:
-		return webEnvelopeMachine{}, "needs_update", nil
+		return webMachineGrant{}, "needs_update", nil
 	}
 	if !webrelay.Allowed(info.RelayURL) {
-		return webEnvelopeMachine{}, "relay_not_allowed", nil
+		return webMachineGrant{}, "relay_not_allowed", nil
 	}
 	statements, err := d.account.Statements(cctx, acct, []string{info.HostID})
 	if err != nil {
-		return webEnvelopeMachine{}, "", err
+		return webMachineGrant{}, "", err
 	}
 	i := slices.IndexFunc(statements, func(s account.Statement) bool { return s.Host == info.HostID })
 	if i < 0 {
-		return webEnvelopeMachine{}, "", errors.New("the account service gave no statement for this machine")
+		return webMachineGrant{}, "", errors.New("the account service gave no statement for this machine")
 	}
 	p.AccountStatement = statements[i].JWS
 	added, err := client.OwnerAccessAdd(cctx, p)
 	if err != nil {
-		return webEnvelopeMachine{}, "", err
+		return webMachineGrant{}, "", err
 	}
-	return webEnvelopeMachine{
-		Label: c.label, Relay: strings.TrimRight(info.RelayURL, "/"), HostID: info.HostID, NodePub: info.NodePub,
-		GrantID: added.Grant.GrantID, Scope: string(added.Grant.Scope),
-		ExpiresUnix: int64(added.Grant.ExpiresMs / 1000), expiresMs: int64(added.Grant.ExpiresMs),
+	return webMachineGrant{
+		relay: strings.TrimRight(info.RelayURL, "/"), hostID: info.HostID, nodePub: info.NodePub,
+		grantID: added.Grant.GrantID, scope: string(added.Grant.Scope), expiresMs: int64(added.Grant.ExpiresMs),
 	}, "", nil
 }
 
@@ -709,9 +721,6 @@ type webEnvelopeMachine struct {
 	GrantID     string `json:"grant_id"`
 	Scope       string `json:"scope"`
 	ExpiresUnix int64  `json:"expires_unix"`
-	// expiresMs is the expiry as the machine recorded it (Unix ms), for the
-	// approval's result; the envelope says it in whole seconds.
-	expiresMs int64
 }
 
 type webEnvelopeSkipped struct {
