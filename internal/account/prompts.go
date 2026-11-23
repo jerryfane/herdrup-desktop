@@ -21,7 +21,8 @@ const PromptsCap = 500
 const (
 	maxPromptTitle = 128
 	maxPromptText  = 8192
-	maxPromptOrder = 1<<53 - 1
+	// MaxPromptOrder is the largest order the service takes.
+	MaxPromptOrder = 1<<53 - 1
 )
 
 // MaxItemBytes is the most UTF-8 bytes one item's body may take once the
@@ -46,13 +47,21 @@ func RemotePrompts(items []Item) (live []RemotePrompt, deleted []string) {
 			deleted = append(deleted, it.ID)
 			continue
 		}
-		var b PromptBody
-		if json.Unmarshal(it.Body, &b) != nil || b.Text == "" {
-			continue
+		if p, ok := promptRow(it); ok {
+			live = append(live, p)
 		}
-		live = append(live, RemotePrompt{ID: it.ID, Rev: it.Rev, Body: b})
 	}
 	return live, deleted
+}
+
+// promptRow reads a live prompts item; one without text is none the service
+// would hold.
+func promptRow(it Item) (RemotePrompt, bool) {
+	var b PromptBody
+	if json.Unmarshal(it.Body, &b) != nil || b.Text == "" {
+		return RemotePrompt{}, false
+	}
+	return RemotePrompt{ID: it.ID, Rev: it.Rev, Body: b}, true
 }
 
 // ValidPrompt reports whether the service would take b: a push holding one
@@ -74,7 +83,7 @@ func ValidPrompt(b PromptBody) bool {
 			return false
 		}
 	}
-	if o := b.Order; o != nil && (math.IsNaN(*o) || math.Abs(*o) > maxPromptOrder) {
+	if o := b.Order; o != nil && (math.IsNaN(*o) || math.Abs(*o) > MaxPromptOrder) {
 		return false
 	}
 	return storedSize(b) <= MaxItemBytes

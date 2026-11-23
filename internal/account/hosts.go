@@ -1,9 +1,11 @@
 package account
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -139,31 +141,42 @@ type Mirror struct {
 
 // Apply folds a pull into the mirror.
 func (m Mirror) Apply(p Pull) Mirror {
-	hosts, goneHosts := RemoteHosts(p.Items)
-	prompts, gonePrompts := RemotePrompts(p.Items)
 	return Mirror{
 		Rev:     p.Rev,
-		Hosts:   fold(m.Hosts, p.Full, hosts, goneHosts, func(h RemoteHost) (string, int64) { return h.ID, h.Rev }),
-		Prompts: fold(m.Prompts, p.Full, prompts, gonePrompts, func(h RemotePrompt) (string, int64) { return h.ID, h.Rev }),
+		Hosts:   fold(m.Hosts, p, "hosts", hostRow, func(h RemoteHost) (string, int64) { return h.ID, h.Rev }),
+		Prompts: fold(m.Prompts, p, "prompts", promptRow, func(h RemotePrompt) (string, int64) { return h.ID, h.Rev }),
 	}
 }
 
-// fold patches one collection's items with a pull's (all of them when
-// full), oldest revision first.
-func fold[T any](held []T, full bool, live []T, deleted []string, key func(T) (string, int64)) []T {
+// fold patches one collection's held items with a pull's (all of them when
+// full) in revision order, each replacing the one held: a pull's pages are
+// read one at a time, so an item can show live on one page and deleted, at
+// a newer revision, on a later one. An item older than the one held is
+// skipped; a live one row can't read leaves the held one as it is.
+func fold[T any](held []T, p Pull, collection string, row func(Item) (T, bool), key func(T) (string, int64)) []T {
 	byID := map[string]T{}
-	if !full {
+	if !p.Full {
 		for _, it := range held {
 			id, _ := key(it)
 			byID[id] = it
 		}
 	}
-	for _, id := range deleted {
-		delete(byID, id)
-	}
-	for _, it := range live {
-		id, _ := key(it)
-		byID[id] = it
+	items := slices.Clone(p.Items)
+	slices.SortStableFunc(items, func(a, b Item) int { return cmp.Compare(a.Rev, b.Rev) })
+	for _, it := range items {
+		if it.Collection != collection {
+			continue
+		}
+		if h, ok := byID[it.ID]; ok {
+			if _, rev := key(h); rev > it.Rev {
+				continue
+			}
+		}
+		if it.Deleted {
+			delete(byID, it.ID)
+		} else if r, ok := row(it); ok {
+			byID[it.ID] = r
+		}
 	}
 	var out []T
 	for _, it := range byID {
@@ -198,11 +211,19 @@ func RemoteHosts(items []Item) (live []RemoteHost, deleted []string) {
 			deleted = append(deleted, it.ID)
 			continue
 		}
-		var b HostBody
-		if json.Unmarshal(it.Body, &b) != nil || b.Host == "" || b.Username == "" {
-			continue
+		if h, ok := hostRow(it); ok {
+			live = append(live, h)
 		}
-		live = append(live, RemoteHost{ID: it.ID, Rev: it.Rev, Body: b})
 	}
 	return live, deleted
+}
+
+// hostRow reads a live hosts item; one without a host or username is none
+// the service would hold.
+func hostRow(it Item) (RemoteHost, bool) {
+	var b HostBody
+	if json.Unmarshal(it.Body, &b) != nil || b.Host == "" || b.Username == "" {
+		return RemoteHost{}, false
+	}
+	return RemoteHost{ID: it.ID, Rev: it.Rev, Body: b}, true
 }

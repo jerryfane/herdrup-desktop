@@ -48,10 +48,20 @@ type syncState struct {
 	// PromptBaseline is each prompt's fields as this device last agreed
 	// them with the account: a prompt that differs from it was edited here.
 	PromptBaseline map[string]promptFields `json:"promptBaseline,omitempty"`
-	// PromptsSending are the prompts this sync is writing: a prompt sent
-	// for the first time is in neither Mirror nor PromptBaseline until it
-	// is read back, and one deleted meanwhile still needs its tombstone.
-	PromptsSending []string `json:"promptsSending,omitempty"`
+	// PromptsSent are the prompts this sync is writing, with the fields
+	// sent: a prompt sent for the first time is in neither Mirror nor
+	// PromptBaseline until it is read back, and one deleted meanwhile still
+	// needs its tombstone. When the answer to its upload is lost, the next
+	// sync tells an edit made here since by them. A new key, not
+	// promptsSending (the ids alone, before the fields were kept), so a
+	// downgraded app still reads this file; loadSyncState takes in the old
+	// list as prompts sent with fields not known (no text).
+	PromptsSent map[string]promptFields `json:"promptsSent,omitempty"`
+	// PromptsGone and HostsGone are the tombstones from other devices that
+	// the last readback passed: the next sync, pulling from after them,
+	// still knows the account held those items.
+	PromptsGone []string `json:"promptsGone,omitempty"`
+	HostsGone   []string `json:"hostsGone,omitempty"`
 	// LastSync is the newest sync of AccountID that finished well: when,
 	// and the items the account held then.
 	LastSync *AccountSyncStatus `json:"lastSync,omitempty"`
@@ -73,6 +83,21 @@ func (d *Desk) loadSyncState() (syncState, error) {
 	}
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return syncState{}, fmt.Errorf("account sync state %s: %w", d.syncStatePath(), err)
+	}
+	// A state from before the sent fields were kept lists the prompts being
+	// sent by id (promptsSending): each may still be held by the account.
+	var legacy struct {
+		Sending []string `json:"promptsSending"`
+	}
+	if json.Unmarshal(raw, &legacy) == nil {
+		for _, id := range legacy.Sending {
+			if _, ok := s.PromptsSent[id]; !ok {
+				if s.PromptsSent == nil {
+					s.PromptsSent = map[string]promptFields{}
+				}
+				s.PromptsSent[id] = promptFields{}
+			}
+		}
 	}
 	return s, nil
 }
@@ -147,15 +172,21 @@ var publishSyncedMachines = func(m []SyncedMachine) { SyncedMachinesChanged.Broa
 
 // accountSync runs one sync at a time: a call waits for the one running and
 // then makes its own, so it returns once a sync that began after it is done.
+// turn is that one place (newDesk makes it): a call holds it by filling it,
+// and one whose context ends while it waits leaves without syncing.
 // failed holds the accounts whose newest finished sync failed: the host
 // home's account avatar says "needs attention" while the signed-in one is
 // among them. It has its own lock, as accountState reads it while a sync
-// holds mu.
+// holds turn.
 type accountSync struct {
-	mu       sync.Mutex
+	turn     chan struct{}
 	failedMu sync.Mutex
 	failed   map[string]bool
 }
+
+// syncRoundTimeout bounds each sync round, its wait for the turn included:
+// a stalled one can't hold every later sync's turn.
+var syncRoundTimeout = time.Minute
 
 // errSyncAbandoned is a sync dropped because the session became another
 // account's (or ended) while it ran: it neither failed nor succeeded.
@@ -231,10 +262,22 @@ func unsavedHosts(local []Machine, mirror []account.RemoteHost) []SyncedMachine 
 
 // SyncMachines is one sync round with the account: it pulls the account's
 // machines and prompts, merges them into the saved ones and pushes this
-// device's changes. Without a session it does nothing.
+// device's changes. Without a session it does nothing. It ends by
+// syncRoundTimeout, or sooner when ctx ends, waiting for its turn
+// included: a call whose ctx ends before its turn returns ctx's error
+// without syncing.
 func (d *Desk) SyncMachines(ctx context.Context) error {
-	d.accountSync.mu.Lock()
-	defer d.accountSync.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, syncRoundTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case d.accountSync.turn <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-d.accountSync.turn }()
 	cur, _ := d.account.Current()
 	err := d.syncMachinesOnce(ctx)
 	if errors.Is(err, account.ErrSignedOut) {
@@ -290,12 +333,14 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	// The ids the account is known to have held: a machine with one of
 	// these that the account no longer lists was deleted elsewhere; any
 	// other id it doesn't list was never acknowledged, and is pushed again.
+	// The last readback may have passed other devices' deletes (HostsGone;
+	// none for another account, whose state starts over).
 	known := map[string]bool{}
 	for _, h := range old.Hosts {
 		known[h.ID] = true
 	}
 	_, tombstoned := account.RemoteHosts(pull.Items)
-	for _, id := range tombstoned {
+	for _, id := range slices.Concat(tombstoned, state.HostsGone) {
 		known[id] = true
 	}
 	// The same for prompts, but on this device's first prompt sync none is
@@ -307,7 +352,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	}
 	if state.PromptsPulled {
 		_, tombstonedPrompts := account.RemotePrompts(pull.Items)
-		for _, id := range tombstonedPrompts {
+		for _, id := range slices.Concat(tombstonedPrompts, state.PromptsGone) {
 			knownPrompts[id] = true
 		}
 	}
@@ -333,10 +378,10 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		return err
 	}
 	pending, baseline := latest.Deletes, latest.Baseline
-	pendingPrompts, promptBaseline, lastSync := latest.PromptDeletes, latest.PromptBaseline, latest.LastSync
+	pendingPrompts, promptBaseline, lastSync, sent := latest.PromptDeletes, latest.PromptBaseline, latest.LastSync, latest.PromptsSent
 	if switched {
 		pending, baseline = nil, nil
-		pendingPrompts, promptBaseline, lastSync = nil, nil, nil
+		pendingPrompts, promptBaseline, lastSync, sent = nil, nil, nil, nil
 		for i := range st.Machines {
 			st.Machines[i].SyncID = ""
 		}
@@ -351,7 +396,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		d.boards.forget(from)
 		d.boards.allow(to)
 	}
-	prompts, promptChanges, promptDeletes, promptBaseline := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline)
+	prompts, promptChanges, promptDeletes, promptBaseline := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, sent)
 	promptsChanged := !slices.Equal(prompts, ps.Prompts)
 	if promptsChanged {
 		ps.Prompts = prompts
@@ -361,14 +406,14 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		}
 	}
 	changes = append(changes, promptChanges...)
-	var sending []string
+	sending := map[string]promptFields{}
 	for _, c := range promptChanges {
-		if !c.Deleted {
-			sending = append(sending, c.ID)
+		if b, ok := c.Body.(account.PromptBody); ok && !c.Deleted {
+			sending[c.ID] = bodyFields(b)
 		}
 	}
 	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline, PromptsPulled: true,
-		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptsSending: sending, LastSync: lastSync}
+		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptsSent: sending, LastSync: lastSync}
 	if err := d.storeSyncState(state); err != nil {
 		d.storeMu.Unlock()
 		return err
@@ -430,7 +475,13 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		state.Deletes = slices.DeleteFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] })
 		state.PromptDeletes = slices.DeleteFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] })
 		state.Mirror = state.Mirror.Apply(readBack)
-		state.PromptsSending = nil
+		state.PromptsSent = nil
+		// Deletes from other devices the readback passed: the local copies
+		// go next time, unless edited, instead of being uploaded again.
+		_, goneHosts := account.RemoteHosts(readBack.Items)
+		_, gonePrompts := account.RemotePrompts(readBack.Items)
+		state.HostsGone = slices.DeleteFunc(goneHosts, func(id string) bool { return pushed["hosts/"+id] })
+		state.PromptsGone = slices.DeleteFunc(gonePrompts, func(id string) bool { return pushed["prompts/"+id] })
 	}
 	state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	err = d.storeSyncState(state)
@@ -541,8 +592,14 @@ func promptBody(p SavedPrompt, order *float64) account.PromptBody {
 //     order, unless it was deleted here (its tombstone is pushed).
 //
 // A prompt the service would refuse (no text, too long) or one past the
-// account's cap is not sent: it stays here, and is tried again next time.
-func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known map[string]bool, deletes []string, baseline map[string]promptFields) (next []SavedPrompt, changes []account.Change, left []string, nextBaseline map[string]promptFields) {
+// account's cap is not sent: it stays here, and is tried again next time;
+// one past the largest order the service takes is sent without an order
+// (it sorts last). sent holds the fields of prompts an earlier sync sent
+// without hearing back: for one neither baseline nor old has, they tell
+// whether it was edited here since (the upload may have been taken). Sent
+// fields with no text are an id kept from before the fields were, and
+// tell nothing.
+func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known map[string]bool, deletes []string, baseline map[string]promptFields, sent map[string]promptFields) (next []SavedPrompt, changes []account.Change, left []string, nextBaseline map[string]promptFields) {
 	remote := map[string]account.PromptBody{}
 	held := map[string]bool{}
 	last := -1.0
@@ -580,6 +637,9 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 	var fresh []SavedPrompt
 	for _, p := range local {
 		base, ok := agreed(p.ID)
+		if f, was := sent[p.ID]; !ok && was && f.Text != "" {
+			base, ok = f, true
+		}
 		edited := ok && fieldsOf(p) != base
 		r, here := remote[p.ID]
 		delete(remote, p.ID)
@@ -615,11 +675,20 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 			writing[p.ID] = true
 			continue
 		}
-		order := last + 1
+		// An order past the service's largest goes without one; the next
+		// keeps last.
+		var order *float64
+		if last+1 <= account.MaxPromptOrder {
+			o := last + 1
+			order = &o
+		}
 		before := len(changes)
-		write(p, &order)
+		write(p, order)
 		if len(changes) > before {
-			last, live = order, live+1
+			if order != nil {
+				last = *order
+			}
+			live++
 		}
 	}
 	var added []account.RemotePrompt
@@ -833,15 +902,14 @@ func (d *Desk) startMachineSync() {
 // backgroundMachineSync is false in tests that sync by hand.
 var backgroundMachineSync = true
 
-// syncMachinesSoon runs a sync in the background after a local change.
+// syncMachinesSoon runs a sync in the background after a local change
+// (SyncMachines bounds it by syncRoundTimeout).
 func (d *Desk) syncMachinesSoon() {
 	if !backgroundMachineSync {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := d.SyncMachines(ctx); err != nil {
+		if err := d.SyncMachines(context.Background()); err != nil {
 			log.Printf("account sync: %v", err)
 		}
 	}()

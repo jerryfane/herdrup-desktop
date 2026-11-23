@@ -270,6 +270,7 @@ func newDesk(dir string) *Desk {
 		appUpdateNudge: make(chan struct{}, 1),
 		usage:          newUsagePing(filepath.Join(dir, "usage-ping.json"), usagePingApp(runtime.GOOS), mygo.App.Version()),
 		boards:         boardCache{dir: filepath.Join(dir, "cache", "boards")},
+		accountSync:    accountSync{turn: make(chan struct{}, 1)},
 	}
 	d.account, d.accountStore = newAccountClient(runtime.GOOS)
 	d.openBrowser = mygo.Shell.OpenExternal
