@@ -23,16 +23,24 @@ export function guestPausedPage(availability: string | undefined, agent: string)
  };
 }
 
-/** herdr's guest_paused refusal, as both Desks word a herdr error ("herdr: guest_paused: …"; Go
- *  bridge.APIError, web HerdrAPIError). Only the error's own code counts: the first "herdr: <code>"
- *  after any wrapper. Words after it, even a pause-shaped "herdr: …_paused" quoted in the message,
- *  leave another error that error. */
+/** herdr's guest_paused refusal, as both Desks word a herdr error ("herdr: <code>: <message>"; Go
+ *  bridge.APIError, web HerdrAPIError). Only the error's own code counts: the whole field after
+ *  the first "herdr: " marker (after any wrapper), up to the ": " before its message or the end,
+ *  compared exactly. The message is never searched, so a refusal quoted in it, or a code that
+ *  merely starts with a pause code, leaves another error that error. */
 export function isGuestPaused(message: string): boolean {
+ const code = herdrCode(message);
  // owner_paused: a web owner's chat scope while the pane runs no local agent (herdr #497).
- // The first envelope's code, whatever its characters, up to its delimiter: an unfamiliar one
- // (internal_error_v2) is still that error's code, never a reason to look further along.
- const code = /(?:^|[\s:])herdr: ([^\s:]+)/.exec(message)?.[1];
  return code === "guest_paused" || code === "owner_paused";
+}
+
+/** The code field of the first herdr error envelope in text, or null without one. */
+function herdrCode(text: string): string | null {
+ const marker = /(?:^|[\s:])herdr: /.exec(text);
+ if (marker === null) return null;
+ const field = text.slice(marker.index + marker[0].length);
+ const end = field.indexOf(": ");
+ return end < 0 ? field : field.slice(0, end);
 }
 
 /** failureNote for a send the host refused while paused (GuestPaneView.swift:918-920). */

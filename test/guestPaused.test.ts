@@ -32,6 +32,10 @@ test("a web owner's owner_paused reads as paused, as guest_paused does", () => {
  // Any code the wire allows is the error's own; a digit doesn't send the matcher further along.
  expect(isGuestPaused("pane.stream: herdr: internal_error_v2: gate failed after herdr: owner_paused: cached")).toBe(false);
  expect(isGuestPaused("herdr: owner_paused")).toBe(true);
+ // The whole code field, compared exactly: a longer code isn't a pause, and an empty one doesn't
+ // send the matcher on to a refusal quoted in the message.
+ expect(isGuestPaused("herdr: owner_paused extension: the gate's own code")).toBe(false);
+ expect(isGuestPaused("pane.stream: herdr: : gate failed after herdr: owner_paused: cached")).toBe(false);
 });
 
 test("a published connection applies to a guest's agent page and to a web owner's on that machine, no other", () => {
