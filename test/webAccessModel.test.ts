@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { choiceRows, type SheetClock } from "../src/webAccess";
+import { choiceRows, followPresses, type SheetClock } from "../src/webAccess";
 import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 
@@ -88,11 +88,11 @@ test("the sheet's rows, closed, say the choice: ticked machines by name, and acc
  expect(choiceLabel(ACCESS_CHOICES, "chat")).toBe("Chat only");
 });
 
-test("For says the length in whole days and the day it ends from the duration the computer grants", () => {
+test("For says the length in whole days and the day it ends", () => {
  const now = Date.UTC(2026, 10, 23, 12);
  const day = (d: number) => new Date(now + d * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
- expect(timeSummary(7 * 86_400, now)).toBe(`7 days, until ${day(7)}`);
- expect(timeSummary(86_400, now)).toBe(`1 day, until ${day(1)}`);
+ expect(timeSummary(7 * 86_400, now + 7 * 86_400_000)).toBe(`7 days, until ${day(7)}`);
+ expect(timeSummary(86_400, now + 86_400_000)).toBe(`1 day, until ${day(1)}`);
  expect(lengthLabel(30 * 86_400)).toBe("30 days");
 });
 
@@ -185,6 +185,60 @@ test("For's end date follows the clock past midnight while the sheet is open, an
  expect(clock.queued).toHaveLength(1);
  rows.stop();
  expect(clock.queued).toHaveLength(0);
+});
+
+test("once a grant exists For says the expiry it was made with, past midnight too, or no date if unknown (#371)", () => {
+ const evening = new Date(2026, 11, 22, 23, 59, 30).getTime(), midnight = new Date(2026, 11, 23).getTime();
+ const clock = handClock(evening);
+ const { rows, value } = drawRows(clock);
+ const until = (from: number) => `30 days, until ${new Date(from + 30 * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+ // Approved before midnight; the answer was lost, so the sheet waits for Try again.
+ rows.granted(evening + 30 * 86_400_000);
+ expect(clock.queued).toHaveLength(0);
+ clock.to(midnight + 1000);
+ expect(value("For")).toBe(until(evening));
+ rows.granted(undefined);
+ expect(value("For")).toBe("30 days");
+});
+
+/** An owner that keeps the pointermove listeners it holds, to see the press stop being followed. */
+class Owner extends EventTarget {
+ readonly moves = new Set<unknown>();
+ override addEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: AddEventListenerOptions | boolean) {
+  if (type === "pointermove") this.moves.add(l);
+  super.addEventListener(type, l, o);
+ }
+ override removeEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: EventListenerOptions | boolean) {
+  if (type === "pointermove") this.moves.delete(l);
+  super.removeEventListener(type, l, o);
+ }
+}
+
+test("the dialog follows one primary press until release, cancel or close; a cancelled or closed press is no click", () => {
+ const owner = new Owner();
+ const presses = followPresses(owner);
+ const pointer = (type: string, x: number, more = {}) => Object.assign(new Event(type), { clientX: x, clientY: 40, isPrimary: true, button: 0, ...more });
+ const at = (type: string, x: number, more = {}) => owner.dispatchEvent(pointer(type, x, more));
+ const down = (x: number, more = {}) => presses.down(pointer("pointerdown", x, more) as unknown as PointerEvent);
+ const click = { detail: 1, shiftKey: false };
+ // Out and back from where it went down is a drag (#362).
+ down(200); at("pointermove", 60); at("pointermove", 200); at("pointerup", 200);
+ expect(owner.moves.size).toBe(0);
+ expect(presses.plainClick(click)).toBe(false);
+ // Moves after the release, or of another pointer, aren't this press's.
+ down(200); at("pointermove", 60, { isPrimary: false }); at("pointerup", 200); at("pointermove", 60);
+ expect(presses.plainClick(click)).toBe(true);
+ // A press that was cancelled, or that the sheet closed on, stops being followed and is no click.
+ down(200); at("pointercancel", 200);
+ expect(owner.moves.size).toBe(0);
+ expect(presses.plainClick(click)).toBe(false);
+ down(200); presses.close();
+ expect(owner.moves.size).toBe(0);
+ expect(presses.plainClick(click)).toBe(false);
+ // Only the primary button presses.
+ down(200, { button: 2 });
+ expect(owner.moves.size).toBe(0);
+ expect(presses.plainClick(click)).toBe(false);
 });
 
 test("the line under the rows says what Approve turns on and why a machine can't be ticked, with Machines closed", () => {

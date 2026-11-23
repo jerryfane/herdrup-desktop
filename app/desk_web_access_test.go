@@ -403,22 +403,27 @@ func TestWebAccessRemovesTheGrantsOfARefusedApproval(t *testing.T) {
 }
 
 // When the service's answer is lost and its state can't be read, the grants
-// stay and the next Approve sends the same report, with no new grant.
+// stay and the next Approve sends the same report, with no new grant, and
+// says the expiry the grants were made with, not one from the retry's time.
 func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
+	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
+	t.Cleanup(func() { webNow = time.Now })
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
 	ctx := context.Background()
 	typeCode(t, d, w)
 	w.set(func() { w.finishStatus, w.readStatus = http.StatusServiceUnavailable, http.StatusServiceUnavailable })
 	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d")
-	if err != nil || !res.Unsure || res.Problem == "" {
+	granted := time.Unix(1_800_000_000, 0).Add(7 * 24 * time.Hour).UnixMilli()
+	if err != nil || !res.Unsure || res.Problem == "" || res.ExpiresMs != granted {
 		t.Fatalf("lost answer: %+v, %v", res, err)
 	}
 	if live := w.live(t); len(live) != 1 {
 		t.Fatalf("live grants while unsure: %v", live)
 	}
 	w.set(func() { w.finishStatus, w.readStatus = 0, 0 })
+	webNow = func() time.Time { return time.Unix(1_800_000_000, 0).Add(time.Hour) }
 	res, err = d.WebAccessApprove(ctx, "req-1", []string{machine}, "terminal", "1d")
-	if err != nil || res.Unsure || len(res.Granted) != 1 {
+	if err != nil || res.Unsure || len(res.Granted) != 1 || res.ExpiresMs != granted {
 		t.Fatalf("retry: %+v, %v", res, err)
 	}
 	if g := w.grants(t); len(g) != 1 || g[0]["scope"] != "chat" {
@@ -426,7 +431,7 @@ func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.finishes != 2 || w.outcome != "approved" || w.finish["scope"] != "chat" {
+	if w.finishes != 2 || w.outcome != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(granted) {
 		t.Fatalf("finishes %d, outcome %q, finish %v", w.finishes, w.outcome, w.finish)
 	}
 }
