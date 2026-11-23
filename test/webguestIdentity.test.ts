@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
+import { ownerKey } from "../src/web/ownerApproval";
 import { existingIdentity, generateIdentity, IndexedDBIdentityStore, loadIdentity, MemoryIdentityStore, staticKey, type IdentityRecord } from "../src/webguest/identity";
 
 test("a new identity is a non-extractable WebCrypto key whose DH agrees with X25519", async () => {
@@ -68,6 +69,7 @@ function fakeIndexedDB() {
    const tx = { oncomplete: null as null | (() => void), onerror: null, onabort: null, objectStore: () => ({
     get: (key: string) => request(() => data.get(key)),
     add: (value: unknown, key: string) => request(() => { if (data.has(key)) throw new DOMException("exists", "ConstraintError"); data.set(key, value); setTimeout(() => tx.oncomplete?.()); }),
+    put: (value: unknown, key: string) => request(() => { data.set(key, value); setTimeout(() => tx.oncomplete?.()); }),
    }) };
    return tx;
   },
@@ -85,4 +87,23 @@ test("the IndexedDB store saves one record and returns an earlier one instead of
  expect((await loadIdentity(new IndexedDBIdentityStore(factory))).publicKey).toEqual(key.publicKey);
  const later = await generateIdentity();
  expect((await store.add(later)).publicKey).toEqual(key.publicKey);
+});
+
+test("a null where the record should be is no record: a key is made and saved over it, and read back after", async () => {
+ const { factory, data } = fakeIndexedDB();
+ data.set("guest", null); // what WebKit on iPad answered after a first visit that stalled
+ const store = new IndexedDBIdentityStore(factory);
+ expect(await store.get()).toBeUndefined();
+ const key = await loadIdentity(store);
+ expect(data.get("guest")).not.toBeNull();
+ expect((await existingIdentity(new IndexedDBIdentityStore(factory)))?.publicKey).toEqual(key.publicKey);
+});
+
+test("the owner's browser key with a null stored where the record should be: made and kept, not a crash", async () => {
+ const { factory, data } = fakeIndexedDB();
+ data.set("guest", null);
+ const key = await ownerKey(new IndexedDBIdentityStore(factory));
+ expect(key).not.toBeNull();
+ expect((data.get("guest") as IdentityRecord).kind).toBe("webcrypto");
+ expect((await ownerKey(new IndexedDBIdentityStore(factory)))?.publicKey).toEqual(key!.publicKey);
 });
