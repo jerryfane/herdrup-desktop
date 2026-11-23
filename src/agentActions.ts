@@ -9,7 +9,7 @@ import { Desk, events, type AgentAction, type AvatarChoice, type Row } from "./m
 import { avatarFace, MASCOTS, mascotName, mascotURL } from "./avatars";
 import {
   agentFrom, AVATAR_PIXEL_SIZE, clampZoom, CROP_VIEWPORT, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName,
-  integralCropRect, renameField, transferPhaseIsConclusive, transferPhaseIsTerminal, workingSize,
+  integralCropRect, renameField, SheetStaleError, transferPhaseIsConclusive, transferPhaseIsTerminal, transferSheetOpening, workingSize,
   type TransferAgent, type TransferInfo,
 } from "./agentActionsModel";
 import { switchAction, switchMessage, switchStatusText, switchTitle, type SwitchRequest, type SwitchStatus } from "./topicSuggestionsModel";
@@ -384,11 +384,15 @@ async function switchHarness(action: AgentAction) {
   const paneID = action.paneID;
   let terminalID = action.terminalID;
   let source = from, target = to.id;
-  const accountsJSON = await Desk.transferAccounts().catch(() => "");
+  // The accounts and the agent. A browser sheet refused as stale (chosen again since, or its
+  // machine closed) stops here: no dialog, nothing more asked.
+  const opening = await transferSheetOpening(Desk, paneID, terminalID);
+  if (opening === null) return;
+  const accountsJSON = opening.accountsJSON;
   // accounts.list as Go passes it on.
   const reply: { accounts?: { id: string; kind: string; label: string; active: boolean }[] } = accountsJSON ? JSON.parse(accountsJSON) : {};
   const accounts = reply.accounts ?? [];
-  const opened = agentFrom(await Desk.transferAgentInfo(paneID, terminalID).catch(() => ""));
+  const opened = agentFrom(opening.agentJSON);
   if (opened?.terminal_id) terminalID = opened.terminal_id;
   // init (AgentSessionTransferSheet.swift 23-49): an unfinished transfer in this direction is adopted.
   let transfer: TransferInfo | null = existingTransfer(opened, source, target);
@@ -400,6 +404,13 @@ async function switchHarness(action: AgentAction) {
   title.textContent = "Switch harness";
   leading.append(button("Close", "dim", () => dialog.close()));
   dialog.addEventListener("close", () => { closed = true; });
+  /** A step refused as stale (SheetStaleError, the browser's): the sheet closes and asks nothing
+   * more; any other failure is the sheet's to show or retry, as before. */
+  const stopped = (error: unknown) => {
+    if (!(error instanceof SheetStaleError)) return false;
+    dialog.close();
+    return true;
+  };
   const body = el("div", "agent-transfer-body"), bar = el("div", "agent-transfer-bar");
   dialog.append(body, bar);
 
@@ -576,6 +587,7 @@ async function switchHarness(action: AgentAction) {
       synchronizeTransfer(info, updated.agent_status); render();
       await pollTransfer(info.id);
     } catch (error) {
+      if (stopped(error)) return;
       const transportError = failure(error);
       if (await adoptDurableTransfer(null, false) && transfer) {
         const recovered = transfer;
@@ -600,6 +612,7 @@ async function switchHarness(action: AgentAction) {
       synchronizeTransfer(info, updated.agent_status); render();
       await pollTransfer(info.id);
     } catch (error) {
+      if (stopped(error)) return;
       const transportError = failure(error);
       if (await adoptDurableTransfer(current.id, true) && transfer) {
         const recovered = transfer;
@@ -630,7 +643,7 @@ async function switchHarness(action: AgentAction) {
         errorText = "A different transfer replaced this transaction. Review the durable state shown here before taking another action.";
       }
       return true;
-    } catch { return false; }
+    } catch (error) { stopped(error); return false; }
   };
 
   // pollTransfer (570-594): every 0.3 s, up to 400 times.
@@ -663,7 +676,10 @@ async function switchHarness(action: AgentAction) {
       }
       synchronizeTransfer(durable, updated.agent_status);
       if (transferPhaseIsTerminal(durable.phase)) errorText = null;
-    } catch { /* A daemon restart can drop a poll; the deadline above reports prolonged silence. */ }
+    } catch (error) {
+      // A daemon restart can drop a poll; the deadline above reports prolonged silence.
+      stopped(error);
+    }
   };
 
   // pollSourceUntilIdle (630-642): once a second until the source is idle.
@@ -673,7 +689,7 @@ async function switchHarness(action: AgentAction) {
       try {
         const updated = await listed();
         if (updated) sourceStatus = updated.agent_status;
-      } catch { /* try again */ }
+      } catch (error) { if (stopped(error)) return; /* else try again */ }
       // Redrawn only on a change, so an open account picker stays open.
       if (sourceStatus !== before) render();
       if (!sourceIsIdle()) await sleep(1000);

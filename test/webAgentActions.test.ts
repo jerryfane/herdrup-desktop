@@ -11,14 +11,15 @@ import type { StatementSource } from "../src/webguest/owner";
 import { createGuestDesk, webPaneMenu } from "../src/web/desk";
 import { events } from "../src/web/events";
 import { ErrUnsupported } from "../src/web/engine";
-import { MemoryGrantStore, MemoryOwnerHint, localRecord } from "../src/web/storage";
+import { MemoryGrantStore, MemoryOwnerHint, localRecord, type LocalRecord } from "../src/web/storage";
 import { applyEdit, folderName, GROUPS_CONFLICT_MESSAGE, OwnerGroups } from "../src/web/groups";
 import { currentOwnerLink, OWNER_REFUSED, OwnerRefusedError } from "../src/web/ownerLink";
 import { showMenu } from "../src/web/menu";
 import { ompHarness } from "../src/topicsModel";
+import { SHEET_STALE, SheetStaleError, transferSheetOpening } from "../src/agentActionsModel";
 import {
- agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, sessionTransfer, SHEET_STALE, topicsSwitchProblem,
- type ActionAgent, type MenuItem,
+ agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, sessionTransfer, sheetOpened, topicsSwitchProblem,
+ type ActionAgent, type MenuItem, type SheetKind,
 } from "../src/web/agentActionsDesk";
 import { orderedFolders, type Groups } from "../src/web/board";
 import type { BoardUpdate, FolderNaming } from "../src/mygo";
@@ -78,12 +79,15 @@ test("a chat-scope row menu keeps only a local agent's Topics switch", () => {
  expect(agentRowMenu({ ...input, info: agent({ agent: "claude" }) }, false)).toEqual([]);
 });
 
-test("an unfinished transfer offers only its own target; a finished one, the other harnesses", () => {
+test("a transfer needs the host's flag; then an unfinished one offers its own target, a finished one the other harnesses", () => {
+ const transfers = { agent_session_transfer: true };
  const moving = agent({ agent: "claude", session_transfer: { phase: "ready", source: "codex", target: "omp" } });
- expect(sessionTransfer(moving, null)).toEqual({ source: "codex", targets: ["omp"], active: true });
+ expect(sessionTransfer(moving, null)).toBeNull();
+ expect(sessionTransfer(moving, transfers)).toEqual({ source: "codex", targets: ["omp"] });
  const done = agent({ agent: "claude", session_transfer: { phase: "completed", source: "codex", target: "omp" } });
  // A host predating the harness list transfers between Claude Code and Codex.
- expect(sessionTransfer(done, { agent_session_transfer: true }).targets).toEqual(["codex"]);
+ expect(sessionTransfer(done, transfers)).toEqual({ source: "claude", targets: ["codex"] });
+ expect(sessionTransfer(agent({ agent: "omp" }), transfers)).toBeNull();
 });
 
 test("omp is omp plain or a named build, as Go's ompHarness says", () => {
@@ -278,6 +282,8 @@ class FakeElement {
  contains(n: unknown): boolean { return n === this || this.children.some((c) => c.contains(n)); }
  getBoundingClientRect() { return { left: 0, top: 0, bottom: 0, width: 100, height: 100 }; }
  focus() {}
+ showModal() {}
+ addEventListener() {}
 }
 const saved: Record<string, unknown> = {};
 function page() {
@@ -291,6 +297,8 @@ function page() {
  return {
   menu,
   labels: () => items().map((b) => b.textContent),
+  /** The warnings shown (warning.ts): title and detail. */
+  warnings: () => body.children.filter((c) => c.tag === "dialog").map((d) => d.children.filter((c) => c.tag !== "div").map((c) => c.textContent)),
   /** Clicks the nth (0-based) item labelled label. */
   click(label: string, nth = 0) { const b = items().filter((x) => x.textContent === label)[nth]; if (!b) throw new Error("no item " + label); b.onclick!(); },
   /** The next menu, once the one clicked has opened it. */
@@ -322,17 +330,20 @@ interface HostOptions {
  caps?: Record<string, unknown>;
  hostID?: string;
  doc?: () => Groups;
- /** While set, a ping waits for it. */
- hold?: { ping: Promise<void> | null };
+ /** The listed agents (default: listed). */
+ agents?: () => unknown[];
+ /** While set, a ping (or a pane.close, or an accounts.list) waits for it. */
+ hold?: { ping: Promise<void> | null; close?: Promise<void> | null; accounts?: Promise<void> | null };
  onRequest?: (req: Request) => void;
 }
-/** A host admitting the owner under scope, listing agents, answering ping and agent.groups.get. */
-function host(scope: string, o: HostOptions = {}): TestRelay {
+/** A host admitting the owner under scope (read at each admission, as a renewal's grant is),
+ *  listing agents, answering ping and agent.groups.get. */
+function host(scope: string | (() => string), o: HostOptions = {}): TestRelay {
  return startRelay({
   hostID: o.hostID,
   async serve(_conn, handshake) {
    const h = await handshake();
-   const session: HostSession = h.reply({ ok: true, mode: "owner", grant_id: "g1", scope, expires_unix: 1_800_000_000, account: { deadline_unix: Math.floor(Date.now() / 1000) + 660 }, features: { owner: 2, multi_request: true } });
+   const session: HostSession = h.reply({ ok: true, mode: "owner", grant_id: "g1", scope: typeof scope === "string" ? scope : scope(), expires_unix: 1_800_000_000, account: { deadline_unix: Math.floor(Date.now() / 1000) + 660 }, features: { owner: 2, multi_request: true } });
    const answer = (req: Request, body: object) => session.write(JSON.stringify({ id: req.id, ...body }) + "\n");
    for (;;) {
     const line = await session.readLine();
@@ -340,23 +351,26 @@ function host(scope: string, o: HostOptions = {}): TestRelay {
     const req = JSON.parse(line) as Request;
     o.seen?.push(req);
     o.onRequest?.(req);
-    if (req.method === "agent.list") answer(req, { result: { type: "agent_list", agents: listed } });
+    const other = () => answer(req, o.other?.(req) ?? { error: { code: "owner_forbidden", message: "no" } });
+    if (req.method === "agent.list") answer(req, { result: { type: "agent_list", agents: o.agents?.() ?? listed } });
     else if (req.method === "ping") {
      const wait = o.hold?.ping;
      const pong = () => answer(req, { result: { type: "pong", version: "0.9.9", capabilities: o.caps ?? servedCaps } });
      if (wait) void wait.then(pong); else pong();
     } else if (req.method === "agent.groups.get") answer(req, { result: tagged(o.doc?.() ?? groups()) });
-    else answer(req, o.other?.(req) ?? { error: { code: "owner_forbidden", message: "no" } });
+    else if (req.method === "pane.close" && o.hold?.close) void o.hold.close.then(other);
+    else if (req.method === "accounts.list" && o.hold?.accounts) void o.hold.accounts.then(other);
+    else other();
    }
   },
  });
 }
 
 type Desk = ReturnType<typeof createGuestDesk>;
-async function newDesk(): Promise<Desk> {
+async function newDesk(openFolders?: LocalRecord<Record<string, string[]>>): Promise<Desk> {
  const identities = new MemoryIdentityStore();
  await identities.add(await generateIdentity());
- return createGuestDesk({ identities, grants: new MemoryGrantStore(), owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url) });
+ return createGuestDesk({ identities, grants: new MemoryGrantStore(), owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), openFolders });
 }
 /** Opens desk's owner link to relay's machine and waits for its first board with the folders. */
 async function open(desk: Desk, relay: TestRelay, scope = "chat") {
@@ -373,6 +387,8 @@ async function linked(relay: TestRelay) {
 }
 const methods = (seen: Request[], name: string) => seen.filter((r) => r.method === name).map((r) => r.params);
 const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+/** The sheet of kind for paneID, as chosen from a menu on the open link. */
+const opened = (kind: SheetKind, paneID: string) => sheetOpened(currentOwnerLink()!, kind, paneID);
 
 test("rename sends herdr's grammar and reads the folders again, which the server moved to the new name", async () => {
  const seen: Request[] = [];
@@ -380,6 +396,7 @@ test("rename sends herdr's grammar and reads the folders again, which the server
  const desk = await linked(relay);
  try {
   const before = methods(seen, "agent.groups.get").length;
+  opened("rename", "p1");
   expect(await agentActionsDesk.renameAgent("p1", "  Ship It ")).toBe("ship-it");
   expect(methods(seen, "agent.rename")).toEqual([{ target: "p1", name: "ship-it" }]);
   expect(methods(seen, "agent.groups.get").length).toBe(before + 1);
@@ -394,8 +411,12 @@ test("an older host refusing a write rejects with the browser's refusal; archive
  try {
   await expect(agentActionsDesk.archiveAgent("p1")).rejects.toBeInstanceOf(OwnerRefusedError);
   expect(methods(seen, "agent.archive")).toEqual([{ target: "p1", reason: "user action", by: "herdrup" }]);
+  opened("swap", "p1");
   await agentActionsDesk.restartAgent("p1", "a2");
+  opened("restart", "p1");
   await agentActionsDesk.restartAgent("p1", "");
+  // A sheet never chosen sends nothing: each call belongs to its own kind's sheet.
+  await expect(agentActionsDesk.restartAgent("p2", "")).rejects.toThrow(SHEET_STALE);
   expect(methods(seen, "agent.restart")).toEqual([{ target: "p1", account: "a2" }, { target: "p1" }]);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
@@ -405,6 +426,7 @@ test("the Topics switch works on a chat-scope link whose pong offers it; folder 
  const relay = host("chat", { seen, other: (req) => req.method === "agent.topics.set_enabled" ? { result: { type: "agent_topics_switched", agent: listed[0], changed: true, topics_enabled: true } } : undefined });
  const desk = await linked(relay);
  try {
+  opened("topics", "p1");
   expect(await agentActionsDesk.topicsSetEnabled("p1", true)).toEqual({ changed: true, topicsEnabled: true });
   expect(methods(seen, "agent.topics.set_enabled")).toEqual([{ target: "p1", enabled: true }]);
   expect(await agentActionsDesk.folderMenu("f1")).toBe(false);
@@ -418,6 +440,8 @@ test("a pong without the Topics switch or transfers sends neither request", asyn
  const relay = host("terminal", { seen, caps: { agent_groups: true }, other: () => ({ result: { type: "agent_info", agent: listed[0] } }) });
  const desk = await linked(relay);
  try {
+  opened("topics", "p1");
+  opened("transfer", "p1");
   await expect(agentActionsDesk.topicsSetEnabled("p1", true)).rejects.toThrow("this server has no Topics switch.");
   await expect(agentActionsDesk.prepareSessionTransfer("p1", "claude", "")).rejects.toBeInstanceOf(ErrUnsupported);
   expect(seen.map((r) => r.method).filter((m) => m === "agent.topics.set_enabled" || m === "agent.transfer_session")).toEqual([]);
@@ -429,12 +453,17 @@ test("a session transfer is prepared, then confirmed with its id, and the agent 
  const relay = host("terminal", { seen, other: (req) => req.method === "agent.transfer_session" ? { result: { type: "agent_info", agent: { ...listed[1], pane_id: "p9" } } } : undefined });
  const desk = await linked(relay);
  try {
+  opened("transfer", "p2");
   expect(JSON.parse(await agentActionsDesk.prepareSessionTransfer("p2", "codex", ""))).toEqual({ agent: { ...listed[1], pane_id: "p9" } });
   await agentActionsDesk.confirmSessionTransfer("p2", "codex", "a1", "x1");
   expect(methods(seen, "agent.transfer_session")).toEqual([{ target: "p2", to: "codex" }, { target: "p2", to: "codex", account: "a1", transfer_id: "x1", confirm: true }]);
   await expect(agentActionsDesk.confirmSessionTransfer("p2", "codex", "", "")).rejects.toThrow("no prepared transfer");
+  opened("transfer", "gone");
   expect(JSON.parse(await agentActionsDesk.transferAgentInfo("gone", "t2")).pane_id).toBe("p2");
   expect(await agentActionsDesk.transferAgentInfo("gone", "")).toBe("");
+  // The account picker asks the newest Switch harness sheet's machine (this one refuses it).
+  await expect(agentActionsDesk.transferAccounts()).rejects.toBeInstanceOf(OwnerRefusedError);
+  expect(methods(seen, "accounts.list").length).toBe(1);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
@@ -551,6 +580,8 @@ test("a sheet opened on one machine sends nothing once another is open; on its o
   p.click("Rename");
   await settle();
   expect(sheets.length).toBe(1);
+  // The other sheets of p1, as their items would record them on A.
+  for (const kind of ["restart", "swap", "avatar", "topics", "transfer"] as const) opened(kind, "p1");
   await open(desk, b, "terminal");
   await stale(agentActionsDesk.renameAgent("p1", "x"));
   await stale(agentActionsDesk.restartAgent("p1", "a1"));
@@ -570,6 +601,8 @@ test("a sheet opened on one machine sends nothing once another is open; on its o
   p.click("Avatar…");
   await settle();
   expect(sheets.length).toBe(3);
+  // On its own machine the ••• Avatar… sheet's picture goes there.
+  await agentActionsDesk.setAgentAvatar("p1", { kind: "default" });
   await open(desk, b, "terminal");
   await stale(agentActionsDesk.setAgentAvatar("p1", { kind: "default" }));
 
@@ -582,7 +615,7 @@ test("a sheet opened on one machine sends nothing once another is open; on its o
   await open(desk, b, "terminal");
   await agentActionsDesk.nameFolder(naming, "Renamed");
   await settle();
-  expect([writes(seenA), writes(seenB)]).toEqual([[], []]);
+  expect([writes(seenA), writes(seenB)]).toEqual([["agent.avatar.set"], []]);
   // A's accounts.list is its row menu's own (Swap); B has had no menu, so none is the sheet's.
   expect(methods(seenB, "accounts.list")).toEqual([]);
 
@@ -591,6 +624,282 @@ test("a sheet opened on one machine sends nothing once another is open; on its o
   p.click("Rename");
   await settle();
   expect(await agentActionsDesk.renameAgent("p1", "ok")).toBe("herdr-app");
-  expect([writes(seenA), writes(seenB)]).toEqual([[], ["agent.rename"]]);
+  expect([writes(seenA), writes(seenB)]).toEqual([["agent.avatar.set"], ["agent.rename"]]);
  } finally { for (const off of offs) off(); desk.disconnectOwner(); a.stop(); b.stop(); }
 }, 30_000); // six link openings over a loopback relay
+
+const p1 = (relay: TestRelay) => ({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" });
+const pane = { paneID: "p1", plain: false, hasSelection: false, canShare: true };
+
+test("a menu offers writes as its link is once its answers are in, and drops a write chosen after the link went to chat", async () => {
+ let scope = "terminal";
+ const seen: Request[] = [];
+ const hold: { ping: Promise<void> | null } = { ping: null };
+ const pinged = { wait: Promise.withResolvers<void>() };
+ const relay = host(() => scope, { seen, hold, caps: { ...servedCaps, agent_avatar: true }, agents: () => [{ ...listed[0], topics_enabled: true }, listed[1]],
+  onRequest: (r) => { if (r.method === "ping" && hold.ping) pinged.wait.resolve(); } });
+ const desk = await newDesk();
+ const p = page();
+ let streams = 0;
+ /** A renewal: the next connection (a terminal stream's) is admitted under to. */
+ const renew = async (to: string) => {
+  scope = to;
+  await desk.startTerminal("view-1", "stream-" + ++streams).catch(() => {});
+  expect(currentOwnerLink()!.scope()).toBe(to);
+ };
+ try {
+  await open(desk, relay, "terminal");
+  await desk.openAgentView(p1(relay), "view-1");
+  // Admitted under chat while each menu's ping is out: neither offers a write.
+  for (const ask of [() => agentActionsDesk.agentMenu("p1"), () => desk.paneMenu(pane)]) {
+   const release = Promise.withResolvers<void>();
+   hold.ping = release.promise;
+   pinged.wait = Promise.withResolvers<void>();
+   const shown = ask();
+   await pinged.wait.promise;
+   await renew("chat");
+   hold.ping = null;
+   release.resolve();
+   expect(await shown).toBe(true);
+   expect(p.labels().filter((l) => ["Stop agent", "Rename", "Archive", "Avatar…", "Close agent", "Share with someone"].includes(l))).toEqual([]);
+   await renew("terminal");
+  }
+  // Shown under terminal, chosen once the link went to chat: Stop agent and Close agent send nothing.
+  for (const [ask, label] of [[() => agentActionsDesk.agentMenu("p1"), "Stop agent"], [() => desk.paneMenu(pane), "Close agent"]] as const) {
+   expect(await ask()).toBe(true);
+   await renew("chat");
+   p.click(label);
+   await settle();
+   await renew("terminal");
+  }
+  expect(methods(seen, "pane.close")).toEqual([]);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+}, 30_000); // a renewal per step over a loopback relay
+
+test("a Close acknowledged after its agent page was mounted again is not that page's", async () => {
+ const hold: { ping: Promise<void> | null; close: Promise<void> | null } = { ping: null, close: null };
+ const closing = { wait: Promise.withResolvers<void>() }, relisted = { wait: Promise.withResolvers<void>() };
+ let released = false;
+ const relay = host("terminal", { hold, other: (r) => r.method === "pane.close" ? { result: { type: "ok" } } : undefined, onRequest: (r) => {
+  if (r.method === "pane.close") closing.wait.resolve();
+  if (r.method === "agent.list" && released) relisted.wait.resolve();
+ } });
+ const desk = await newDesk();
+ const p = page();
+ const chosen: unknown[] = [];
+ const heard = { wait: Promise.withResolvers<void>() };
+ const off = events.paneActionChosen.on((x) => { chosen.push(x); heard.wait.resolve(); });
+ try {
+  await open(desk, relay, "terminal");
+  await desk.openAgentView(p1(relay), "view-1");
+  const release = Promise.withResolvers<void>();
+  hold.close = release.promise;
+  expect(await desk.paneMenu(pane)).toBe(true);
+  p.click("Close agent");
+  await closing.wait.promise;
+  await desk.openAgentView(p1(relay), "view-2");
+  released = true;
+  release.resolve();
+  // Close relists once acknowledged; by the time that list arrives the choice was settled.
+  await relisted.wait.promise;
+  await settle();
+  expect(chosen).toEqual([]);
+  // The page it was chosen on hears it.
+  hold.close = null;
+  expect(await desk.paneMenu(pane)).toBe(true);
+  p.click("Close agent");
+  await heard.wait.promise;
+  expect(chosen).toEqual([{ paneID: "p1", action: "close" }]);
+ } finally { off(); desk.disconnectOwner(); relay.stop(); }
+}, 30_000);
+
+test("a Close that fails says so under the pane's row title, or its pane id once it is off the list", async () => {
+ const relay = host("terminal");
+ const desk = await linked(relay);
+ const p = page();
+ try {
+  const link = currentOwnerLink();
+  expect(await closeAgent(link, "p1")).toBe(false);
+  expect(await closeAgent(link, "p9")).toBe(false);
+  expect(p.warnings()).toEqual([["Couldn't close herdr-app", OWNER_REFUSED], ["Couldn't close p9", OWNER_REFUSED]]);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+test("#377: a Switch harness sheet waiting on its lookup, then another pane's sheet and another machine, sends nothing there", async () => {
+ const served = (req: Request): object | undefined => {
+  if (req.method === "agent.transfer_session") return { result: { type: "agent_info", agent: listed[0] } };
+  if (req.method === "accounts.list") return { result: { type: "accounts_list", accounts: [] } };
+  return undefined;
+ };
+ const caps = { ...servedCaps, agent_session_transfer_harnesses: ["claude", "codex", "omp"] };
+ const hold: { ping: Promise<void> | null; accounts: Promise<void> | null } = { ping: null, accounts: null };
+ const lookup = { wait: Promise.withResolvers<void>() };
+ const seenA: Request[] = [], seenB: Request[] = [];
+ const a = host("terminal", { seen: seenA, caps, hold, other: served, hostID: "AQEBAQEBAQEBAQEBAQEBAQ", onRequest: (r) => { if (r.method === "accounts.list" && hold.accounts) lookup.wait.resolve(); } });
+ const b = host("terminal", { seen: seenB, caps, other: served, hostID: "AgICAgICAgICAgICAgICAg" });
+ const desk = await newDesk();
+ const p = page();
+ // The page's Switch harness sheet asks for the accounts as it opens (agentActions.ts switchHarness).
+ const asked: Promise<unknown>[] = [];
+ const off = events.agentActionRequested.on((x) => { if (x.kind === "transfer") asked.push(agentActionsDesk.transferAccounts().catch((e: unknown) => e)); });
+ try {
+  await open(desk, a, "terminal");
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  const release = Promise.withResolvers<void>();
+  hold.accounts = release.promise;
+  const shown = p.menu();
+  p.click("Switch harness");
+  await p.next(shown);
+  p.click("Claude Code");
+  await lookup.wait.promise;
+  hold.accounts = null;
+  // Rename opened for p2 and cancelled, then machine B.
+  expect(await agentActionsDesk.agentMenu("p2")).toBe(true);
+  p.click("Rename");
+  await settle();
+  await open(desk, b, "terminal");
+  // A Rename on B's own p1 is another kind's sheet: it can't stand in for A's transfer.
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  p.click("Rename");
+  await settle();
+  release.resolve();
+  await Promise.all(asked);
+  // The sheet goes on: its agent, then prepare and confirm. All refused; B hears none of it.
+  await expect(agentActionsDesk.transferAgentInfo("p1", "t1")).rejects.toThrow(SHEET_STALE);
+  await expect(agentActionsDesk.prepareSessionTransfer("p1", "claude", "")).rejects.toThrow(SHEET_STALE);
+  await expect(agentActionsDesk.confirmSessionTransfer("p1", "claude", "", "x1")).rejects.toThrow(SHEET_STALE);
+  await expect(agentActionsDesk.transferAccounts()).rejects.toThrow(SHEET_STALE);
+  // B's one accounts.list is its own row menu's (Swap), none the sheet's.
+  expect([methods(seenB, "agent.transfer_session").length, methods(seenB, "accounts.list").length]).toEqual([0, 1]);
+  expect(methods(seenA, "agent.transfer_session")).toEqual([]);
+ } finally { off(); desk.disconnectOwner(); a.stop(); b.stop(); }
+}, 30_000);
+
+test("a New folder prompt submitted after another machine opened changes nothing, here or there", async () => {
+ const storage = new Map<string, string>();
+ const openFolders = localRecord<Record<string, string[]>>("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
+ const seenA: Request[] = [], seenB: Request[] = [];
+ const a = host("terminal", { seen: seenA, hostID: "AQEBAQEBAQEBAQEBAQEBAQ" });
+ const savedOnB = Promise.withResolvers<void>();
+ const b = host("terminal", { seen: seenB, hostID: "AgICAgICAgICAgICAgICAg", onRequest: (r) => { if (r.method === "agent.groups.set") savedOnB.resolve(); } });
+ const desk = await newDesk(openFolders);
+ const p = page();
+ const asked: FolderNaming[] = [];
+ const off = events.folderNamingRequested.on((n) => asked.push(n));
+ try {
+  await open(desk, a, "terminal");
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  const shown = p.menu();
+  p.click("Move to folder");
+  await p.next(shown);
+  p.click("New folder…");
+  await settle();
+  const before = openFolders.get();
+  await open(desk, b, "terminal");
+  await agentActionsDesk.nameFolder(asked[0]!, "Ship it");
+  await settle();
+  expect(openFolders.get()).toEqual(before);
+  expect([methods(seenA, "agent.groups.set"), methods(seenB, "agent.groups.set")]).toEqual([[], []]);
+  // On its own machine the prompt's folder is made there.
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  const again = p.menu();
+  p.click("Move to folder");
+  await p.next(again);
+  p.click("New folder…");
+  await settle();
+  await agentActionsDesk.nameFolder(asked[1]!, "Ship it");
+  await savedOnB.promise;
+  expect(methods(seenB, "agent.groups.set").length).toBe(1);
+ } finally { off(); desk.disconnectOwner(); a.stop(); b.stop(); }
+}, 30_000);
+
+test("a Switch harness sheet whose lookup was held while the same sheet was chosen on another machine stops; that one goes on there", async () => {
+ const served = (req: Request): object | undefined => {
+  if (req.method === "agent.transfer_session") return { result: { type: "agent_info", agent: listed[0] } };
+  if (req.method === "accounts.list") return { result: { type: "accounts_list", accounts: [{ id: "c1", kind: "claude", label: "Max", active: true }] } };
+  return undefined;
+ };
+ const caps = { ...servedCaps, agent_session_transfer_harnesses: ["claude", "codex", "omp"] };
+ const hold: { ping: Promise<void> | null; accounts: Promise<void> | null } = { ping: null, accounts: null };
+ const lookup = { wait: Promise.withResolvers<void>() };
+ const seenA: Request[] = [], seenB: Request[] = [];
+ const a = host("terminal", { seen: seenA, caps, hold, other: served, hostID: "AQEBAQEBAQEBAQEBAQEBAQ", onRequest: (r) => { if (r.method === "accounts.list" && hold.accounts) lookup.wait.resolve(); } });
+ const b = host("terminal", { seen: seenB, caps, other: served, hostID: "AgICAgICAgICAgICAgICAg" });
+ const desk = await newDesk();
+ const p = page();
+ // Each Switch harness sheet opens as the page's does (agentActions.ts switchHarness), its own
+ // calls counted.
+ const calls: string[][] = [], openings: Promise<{ accountsJSON: string; agentJSON: string } | null>[] = [];
+ const off = events.agentActionRequested.on((x) => {
+  if (x.kind !== "transfer") return;
+  const mine: string[] = [];
+  calls.push(mine);
+  openings.push(transferSheetOpening({
+   transferAccounts: () => { mine.push("accounts"); return agentActionsDesk.transferAccounts(); },
+   transferAgentInfo: (paneID, terminalID) => { mine.push("agent"); return agentActionsDesk.transferAgentInfo(paneID, terminalID); },
+  }, x.paneID, x.terminalID));
+ });
+ const chooseClaude = async () => {
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  const shown = p.menu();
+  p.click("Switch harness");
+  await p.next(shown);
+  p.click("Claude Code");
+  await settle();
+ };
+ try {
+  await open(desk, a, "terminal");
+  const release = Promise.withResolvers<void>();
+  // A's sheet: its account lookup held.
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  hold.accounts = release.promise;
+  const shown = p.menu();
+  p.click("Switch harness");
+  await p.next(shown);
+  p.click("Claude Code");
+  await lookup.wait.promise;
+  hold.accounts = null;
+  // Machine B, the same sheet chosen there, then A's lookup answers.
+  await open(desk, b, "terminal");
+  await chooseClaude();
+  release.resolve();
+  expect(await openings[0]).toBeNull();
+  expect(calls[0]).toEqual(["accounts"]);
+  const onB = await openings[1];
+  expect(JSON.parse(onB!.accountsJSON).accounts[0].id).toBe("c1");
+  expect(JSON.parse(onB!.agentJSON).pane_id).toBe("p1");
+  // B's sheet goes on, there only.
+  await agentActionsDesk.prepareSessionTransfer("p1", "claude", "c1");
+  await agentActionsDesk.confirmSessionTransfer("p1", "claude", "c1", "x1");
+  expect(methods(seenB, "agent.transfer_session").length).toBe(2);
+  expect(methods(seenA, "agent.transfer_session")).toEqual([]);
+ } finally { off(); desk.disconnectOwner(); a.stop(); b.stop(); }
+}, 30_000);
+
+test("the opening lookups read any other failure as none, as the desktop does; only a stale refusal stops the sheet", async () => {
+ const fails = (error: Error) => async () => { throw error; };
+ expect(await transferSheetOpening({ transferAccounts: fails(new Error("refused")), transferAgentInfo: async () => "{}" }, "p1", "")).toEqual({ accountsJSON: "", agentJSON: "{}" });
+ expect(await transferSheetOpening({ transferAccounts: async () => "{}", transferAgentInfo: fails(new SheetStaleError()) }, "p1", "")).toBeNull();
+});
+
+test("a sheet chosen again on the same machine retires the older: its answer, come late, doesn't count", async () => {
+ const hold: { ping: Promise<void> | null; accounts: Promise<void> | null } = { ping: null, accounts: null };
+ const lookup = { wait: Promise.withResolvers<void>() };
+ const relay = host("terminal", { hold, caps: { ...servedCaps, agent_session_transfer_harnesses: ["claude", "codex", "omp"] },
+  other: (r) => r.method === "accounts.list" ? { result: { type: "accounts_list", accounts: [] } } : undefined,
+  onRequest: (r) => { if (r.method === "accounts.list" && hold.accounts) lookup.wait.resolve(); } });
+ const desk = await linked(relay);
+ try {
+  const release = Promise.withResolvers<void>();
+  opened("transfer", "p1");
+  hold.accounts = release.promise;
+  const older = agentActionsDesk.transferAccounts();
+  await lookup.wait.promise;
+  hold.accounts = null;
+  opened("transfer", "p1");
+  const newer = agentActionsDesk.transferAccounts();
+  expect(await newer).toBe(JSON.stringify({ accounts: [] }));
+  release.resolve();
+  await expect(older).rejects.toBeInstanceOf(SheetStaleError);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
