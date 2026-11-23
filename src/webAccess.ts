@@ -11,7 +11,7 @@ import type { WebAccessLength, WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, plainClick, resultLines, skipReason,
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
  slotSelection, timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
@@ -37,11 +37,17 @@ function segmented(name: string, options: readonly (readonly [string, string])[]
  return box;
 }
 
+/** The clock the For row reads its end date from, and a way to look again later that returns its
+ *  cancel (tests pass their own). */
+export interface SheetClock { now(): number; after(ms: number, f: () => void): () => void }
+const systemClock: SheetClock = { now: Date.now, after: (ms, f) => { const t = setTimeout(f, ms); return () => clearTimeout(t); } };
+
 /** Machines, Access and For as rows: each says its choice and opens in place to change it. The
  *  terminal warning sits in the Access row outside the part that closes, so it shows whenever
  *  terminal access is chosen. For starts at the longest length. Access, For and the warning follow
- *  their own choices; the sheet writes the Machines row's summary (showMachines) and reads choice. */
-export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: readonly WebAccessLength[]) {
+ *  their own choices, and For's end date follows the clock until stop; the sheet writes the
+ *  Machines row's summary (showMachines) and reads choice. */
+export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: readonly WebAccessLength[], clock = systemClock) {
  const choice = { scope: "terminal", length: lengths.at(-1)?.id ?? "" };
  const rows = el("div", "web-access-rows");
  const row = (key: string, open: boolean, ...nodes: HTMLElement[]) => {
@@ -59,18 +65,27 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
   return { row: r, value };
  };
  const machinesRow = row("Machines", machinesOpen, list);
- const accessRow = row("Access", true, segmented("access", ACCESS_CHOICES, choice.scope, v => { choice.scope = v; paint(); }));
+ const accessRow = row("Access", true, segmented("access", ACCESS_CHOICES, choice.scope, v => { choice.scope = v; paintAccess(); }));
  const terminalNote = el("p", "web-access-warning", "Terminal access is a shell on these machines: it can do anything you can do there.");
  accessRow.row.append(terminalNote);
- const forRow = row("For", false, segmented("time", lengths.map(l => [l.id, lengthLabel(l.seconds)] as const), choice.length, v => { choice.length = v; paint(); }));
- function paint(): void {
+ const forRow = row("For", false, segmented("time", lengths.map(l => [l.id, lengthLabel(l.seconds)] as const), choice.length, v => { choice.length = v; paintFor(); }));
+ function paintAccess(): void {
   accessRow.value.textContent = choiceLabel(ACCESS_CHOICES, choice.scope);
-  const length = lengths.find(l => l.id === choice.length);
-  forRow.value.textContent = length ? timeSummary(length.seconds, Date.now()) : "";
   terminalNote.hidden = choice.scope !== "terminal";
  }
- paint();
- return { rows, choice: choice as Readonly<typeof choice>, showMachines: (summary: string) => { machinesRow.value.textContent = summary; } };
+ // The end date moves with the clock (past midnight it's a day later), so For looks again at each
+ // minute's turn while the sheet is open.
+ let cancel = () => {};
+ function paintFor(): void {
+  cancel();
+  const now = clock.now();
+  const length = lengths.find(l => l.id === choice.length);
+  forRow.value.textContent = length ? timeSummary(length.seconds, now) : "";
+  cancel = clock.after(60_000 - now % 60_000, paintFor);
+ }
+ paintAccess();
+ paintFor();
+ return { rows, choice: choice as Readonly<typeof choice>, showMachines: (summary: string) => { machinesRow.value.textContent = summary; }, stop: () => cancel() };
 }
 
 export function initWebAccess(): void {
@@ -122,18 +137,24 @@ export function initWebAccess(): void {
     d.classList.toggle("filled", s.filled); d.classList.toggle("selected", s.selected); d.classList.toggle("active", s.active);
    });
   };
-  // A plain click on a box takes its digit; a drag, double click or shift-click keeps the
-  // selection it made. The second press of a double click lands on the digit the first one took,
-  // which would start dragging that selection, so it's dropped first and the press selects the
-  // code as in any field.
+  // A plain click on a box takes its digit; a drag (even one that came back to its start), a
+  // double click or a shift-click keeps the selection the field made. The second press of a double
+  // click lands on the digit the first one took, which would start dragging that selection, so
+  // it's dropped first and the press selects the code as in any field.
+  let press: CodePress | null = null;
+  const follow = (event: MouseEvent) => press?.move(event.clientX, event.clientY);
   code.addEventListener("mousedown", event => {
    if (event.detail > 1) code.setSelectionRange(code.selectionStart, code.selectionStart);
+   press = new CodePress(event.clientX, event.clientY);
+   document.addEventListener("mousemove", follow);
+   document.addEventListener("mouseup", () => document.removeEventListener("mousemove", follow), { once: true });
   });
   code.addEventListener("click", event => {
-   if (plainClick(event, code.selectionStart ?? 0, code.selectionEnd ?? 0)) {
+   if (press?.plainClick(event)) {
     const slot = digits.findIndex(d => event.clientX < d.getBoundingClientRect().right);
     code.setSelectionRange(...slotSelection(slot < 0 ? 3 : slot, code.value.length));
    }
+   press = null;
    slots();
   });
   for (const type of ["keyup", "select", "focus"]) code.addEventListener(type, slots);
@@ -217,7 +238,7 @@ export function initWebAccess(): void {
    } finally { approve.textContent = retry ? "Try again" : "Approve"; }
   });
   dialog.addEventListener("cancel", event => { if (!finished) event.preventDefault(); });
-  dialog.addEventListener("close", () => { off(); dialog.remove(); done(); }, { once: true });
+  dialog.addEventListener("close", () => { off(); choices.stop(); dialog.remove(); done(); }, { once: true });
   document.body.append(dialog);
   update();
   dialog.showModal();
