@@ -44,12 +44,13 @@ export function isStarred(g: Groups, name: string): boolean { return (g.stars ??
 
 /** folders.go Edit: one change, pure so a conflict can replay it onto the server's current
  *  document. name is the agent, folder the folder id, text a folder name, star the star state and
- *  by the step of a folder move. */
+ *  by the step of a folder move. A queued addFolder also carries whether this browser has the new
+ *  folder open (open: set by createFolder, changed by setOpen while it waits; applyEdit ignores it). */
 export type Edit =
  | { kind: "setStar"; name: string; star: boolean }
  | { kind: "move"; name: string; folder: string }
  | { kind: "removeFromFolder"; name: string }
- | { kind: "addFolder"; folder: string; text: string; name: string }
+ | { kind: "addFolder"; folder: string; text: string; name: string; open?: boolean }
  | { kind: "renameFolder"; folder: string; text: string }
  | { kind: "deleteFolder"; folder: string }
  | { kind: "moveFolder"; folder: string; by: number };
@@ -144,10 +145,6 @@ export class OwnerGroups {
  #lastFetch: number | null = null;
  #pending: Edit[] = [];
  #sending = false;
- /** New folders whose save is on its way, and whether this browser has them open (open at first,
-  *  then as the owner opens or closes them): written to the open folders only once the host took
-  *  the folder, so a refused one leaves no trace and a closed one stays closed. */
- #creating = new Map<string, boolean>();
 
  /** One machine's link: signal ends with it, and every read and save goes with it. changed runs
   *  when what the list shows changed (the document, a folder opened or closed); alert shows a
@@ -164,17 +161,18 @@ export class OwnerGroups {
   return this.#pending.reduce((g, e) => applyEdit(e, g), this.#confirmed);
  }
 
- /** groupsStore.view: the document (none until loaded, or when off) and this machine's open folders. */
+ /** groupsStore.view: the document (none until loaded, or when off) and this machine's open
+  *  folders, with the new ones still on their way shown as the owner has them. */
  view(): BoardView {
   const open: Record<string, boolean> = {};
   for (const id of this.open.get()?.[this.hostID] ?? []) open[id] = true;
-  for (const [id, shown] of this.#creating) if (shown) open[id] = true;
+  for (const e of this.#pending) if (e.kind === "addFolder" && e.open) open[e.folder] = true;
   return { groups: this.document(), open };
  }
 
  /** groupsStore.off: folders hidden, for a host that turned out not to have them. */
  #off() {
-  this.#supported = false; this.#confirmed = null; this.#pending = []; this.#creating.clear();
+  this.#supported = false; this.#confirmed = null; this.#pending = [];
   this.changed();
  }
 
@@ -200,10 +198,11 @@ export class OwnerGroups {
   if (before === null || !groupsEqual(before, fetched)) this.changed();
  }
 
- /** Desk.SetFolderOpen: opens or closes folder id on this browser (a folder still being created:
-  *  until the host has it). */
+ /** Desk.SetFolderOpen: opens or closes folder id on this browser; a folder still being created
+  *  keeps the choice on its queued creation, written only once the host has the folder. */
  setOpen(id: string, open: boolean): void {
-  if (this.#creating.has(id)) this.#creating.set(id, open);
+  const creating = this.#pending.find((e): e is Extract<Edit, { kind: "addFolder" }> => e.kind === "addFolder" && e.folder === id);
+  if (creating) creating.open = open;
   else this.#keepOpen(id, open);
   this.changed();
  }
@@ -226,13 +225,12 @@ export class OwnerGroups {
  }
 
  /** groupsStore.createFolder: a folder named raw holding member, opened on this browser so the
-  *  agent just moved stays in sight: shown open at once, kept open once the host saved it. */
+  *  agent just moved stays in sight: shown open at once, kept open once the host saved it (unless
+  *  the owner closed it meanwhile). */
  createFolder(raw: string, member: string): void {
   const name = folderName(raw);
   if (name === "") return;
-  const id = newFolderID();
-  this.#creating.set(id, true);
-  this.apply({ kind: "addFolder", folder: id, text: name, name: member });
+  this.apply({ kind: "addFolder", folder: newFolderID(), text: name, name: member, open: true });
  }
 
  /** groupsStore.send: the pending edits, one at a time. */
@@ -244,11 +242,7 @@ export class OwnerGroups {
    if (off) { this.#sending = false; this.#off(); return; }
    if (saved !== null) this.#confirmed = saved;
    this.#pending.shift();
-   if (e.kind === "addFolder" && this.#creating.has(e.folder)) {
-    const shown = this.#creating.get(e.folder)!;
-    this.#creating.delete(e.folder);
-    if (shown && failure === "" && saved?.folders?.some((f) => f.id === e.folder)) this.#keepOpen(e.folder, true);
-   }
+   if (e.kind === "addFolder" && e.open && failure === "" && saved?.folders?.some((f) => f.id === e.folder)) this.#keepOpen(e.folder, true);
    this.changed();
    // A link that ended took its folders with it: nothing to say.
    if (failure !== "" && !this.signal.aborted) this.alert(failure);
