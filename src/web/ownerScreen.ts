@@ -9,19 +9,33 @@ import { statusText, type MachineStatus } from "./ownerProbe";
 /** What this browser is called on the account's devices and on the approval sheet: "Chrome on
  *  macOS", from the user agent; "Web browser" when it can't tell. */
 export function browserDeviceName(ua: string): string {
- const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /(Chrome|CriOS)\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
- const os = /iPhone|iPad|iPod/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /CrOS/.test(ua) ? "ChromeOS" : /Mac OS X|Macintosh/.test(ua) ? "macOS"
-  : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
+ const { browser, os } = parseUserAgent(ua);
  if (browser && os) return `${browser} on ${os}`;
  return browser || (os ? `Browser on ${os}` : "Web browser");
 }
 
-/** Why this browser can't be approved, for deviceName (browserDeviceName). Safari, and every
+/** The browser and OS a user agent names ("" when it names none). */
+function parseUserAgent(ua: string): { browser: string; os: string } {
+ const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /(Chrome|CriOS)\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+ const os = /iPhone|iPad|iPod/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /CrOS/.test(ua) ? "ChromeOS" : /Mac OS X|Macintosh/.test(ua) ? "macOS"
+  : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
+ return { browser, os };
+}
+
+/** This browser: its name for the account (browserDeviceName), and whether it runs on WebKit's
+ *  key storage (Safari, or any browser on iPhone and iPad), from the same parse of the agent. */
+export interface ThisBrowser { name: string; webKitOnly: boolean }
+export function thisBrowser(ua: string): ThisBrowser {
+ const { browser, os } = parseUserAgent(ua);
+ return { name: browserDeviceName(ua), webKitOnly: browser === "Safari" || os === "iOS" };
+}
+
+/** Why this browser can't be approved (webKitOnly: thisBrowser). Safari, and every
  *  browser on iPhone and iPad (all WebKit), can't read back a stored X25519 CryptoKey: WebKit's
  *  structured clone can't deserialize it, and IndexedDB answers null (#330). Any other browser
  *  gets here only when it can't keep the key at all (blocked site data, no X25519). */
-export function unsupportedText(deviceName: string): string {
- return deviceName.startsWith("Safari") || deviceName.endsWith(" on iOS")
+export function unsupportedText(webKitOnly: boolean): string {
+ return webKitOnly
   ? "Safari and the browsers on iPhone and iPad can't keep a secure key for this page yet. Use Chrome, Edge or Firefox, or the HerdrUp app on iPhone and iPad."
   : "It can't keep a secure key for this page from one visit to the next. Private browsing or blocked site data can cause this; allow site data, or use a current Chrome, Edge or Firefox.";
 }
@@ -73,8 +87,8 @@ export function approvedMachines(record: OwnerRecord): { machines: EnvelopeMachi
  return { machines: [...machines.values()], skipped: [...skipped.values()].filter(s => !granted.has(s.hostItemID)) };
 }
 
-/** The card for phase; deviceName is this browser's name, statuses each machine's probe. */
-export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerActions, spinnerSVG: string,
+/** The card for phase; browser is this browser (thisBrowser), statuses each machine's probe. */
+export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
  statuses: ReadonlyMap<string, MachineStatus> = new Map()): HTMLElement {
  const card = el("div", "web-welcome-card web-owner-card");
  const guest = () => button("web-owner-link", "Use a guest invitation instead", actions.guestInstead);
@@ -83,7 +97,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
   case "starting":
   case "waiting":
    card.append(el("h1", "", "Approve this browser"),
-    el("p", "", `Open HerdrUp on your Mac, PC or iPhone. It will ask to approve ${deviceName}.`),
+    el("p", "", `Open HerdrUp on your Mac, PC or iPhone. It will ask to approve ${browser.name}.`),
     waiting(spinnerSVG), guest(),
     el("p", "web-owner-note", "This browser made its own key. Your machines accept it only after you approve it."));
    break;
@@ -92,7 +106,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
    digits.setAttribute("aria-label", `Code ${phase.code.split("").join(" ")}`);
    for (const d of phase.code) digits.append(el("span", "", d));
    card.append(el("h1", "", "Enter this code in HerdrUp"),
-    el("p", "", `${phase.approver} opened the request to approve ${deviceName}. Type these 4 digits there.`),
+    el("p", "", `${phase.approver} opened the request to approve ${browser.name}. Type these 4 digits there.`),
     digits, waiting(spinnerSVG));
    break;
   }
@@ -109,7 +123,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
   }
   case "unsupported":
    card.append(el("h1", "", "This browser can't be approved"),
-    el("p", "", unsupportedText(deviceName)), guest());
+    el("p", "", unsupportedText(browser.webKitOnly)), guest());
    break;
   case "elsewhere":
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
