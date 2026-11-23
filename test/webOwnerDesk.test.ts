@@ -498,4 +498,41 @@ test("an owner link back up asks for a moved picture where the new list has it, 
   Desk.avatarImage = avatarImage;
   desk.disconnectOwner(); relay.stop();
  }
-});
+}, 20_000);
+
+// One more picture, asked for nowhere else in this file.
+const PNG_B64_D = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQWBDwHwADxAIAsKf0fQAAAABJRU5ErkJggg==";
+
+// #335 review: the relay closing the socket under an ask (4503 host_offline) says nothing of the
+// picture. The next render asks again, with no state between to mark the link down and up.
+test("an ask whose socket the relay closed is asked again on the next render, the link up throughout", async () => {
+ const sha = await sha256Hex(PNG_B64_D);
+ let asks = 0;
+ const relay = host({
+  agents: () => [{ ...agents[0], avatar: { style: "image", sha256: sha } }],
+  other: (session, req) => {
+   if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.5", capabilities: { agent_avatar: true } } });
+   else if (req.method !== "agent.avatar.get") answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+   else if (++asks === 1) session.conn.close(4503, "host_offline");
+   else answer(session, req, { result: { type: "agent_avatar_image", data_base64: PNG_B64_D } });
+  },
+ });
+ const desk = await deskWithKey();
+ const avatarImage = Desk.avatarImage;
+ Desk.avatarImage = (target, sha256) => desk.avatarImage(target, sha256);
+ const a: Avatar = { kind: "image", target: "t1", sha256: sha };
+ const states: string[] = [];
+ try {
+  await openP1(desk, relay);
+  const off = events.stateChanged.on(s => { states.push(s.phase); });
+  try {
+   expect(await loadPhoto(a)).toBeNull();
+   expect(knownPhoto(a)).toBeUndefined();
+   expect(await loadPhoto(a)).toBe(`data:image/png;base64,${PNG_B64_D}`);
+  } finally { off(); }
+  expect({ asks, states }).toEqual({ asks: 2, states: [] });
+ } finally {
+  Desk.avatarImage = avatarImage;
+  desk.disconnectOwner(); relay.stop();
+ }
+}, 20_000);
