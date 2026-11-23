@@ -21,11 +21,16 @@ import (
 // avatarStore keeps avatar photos the way herdrup's AgentAvatarDirectory
 // and AgentAvatarImageCache do: by sha256, forever, since a content address
 // never changes meaning. Bytes live on disk under <data dir>/agent-avatars
-// and are checked against their sha256 when stored and on every read. Each
-// sha is fetched at most once at a time, and a failed one is remembered for
-// the rest of the connection and drawn as the initial tile.
+// and are checked against their sha256 when stored and on every read, and
+// any agent with that sha is shown them. Asks are by agent and sha: each is
+// fetched at most once at a time, and a failed one is remembered for the
+// rest of the connection and drawn as the initial tile. An agent's failure
+// never stands for another's, nor does one agent's ask wait on another's: a
+// list can move a photo to another pane, and herdr answers not_found for the
+// old one (#335).
 type avatarStore struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// inflight and failed are keyed by target and sha (get).
 	inflight map[string]*avatarFlight
 	failed   map[string]bool
 	// owner is the connection failed belongs to; a new one forgets them.
@@ -102,38 +107,50 @@ func dataURL(data []byte) (string, error) {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-// get returns sha's photo from dir, else fetches it once with fetch, which
-// returns agent.avatar.get's base64 bytes. owner is the connection.
-func (s *avatarStore) get(ctx context.Context, dir string, owner any, sha string, fetch func(context.Context) (string, error)) (string, error) {
+// get returns sha's photo from dir, else asks target for it once with fetch,
+// which returns agent.avatar.get's base64 bytes. owner is the connection.
+func (s *avatarStore) get(ctx context.Context, dir string, owner any, target, sha string, fetch func(context.Context) (string, error)) (string, error) {
 	if !herdr.ValidSHA256(sha) {
 		return "", fmt.Errorf("invalid avatar sha256 %q", sha)
 	}
+	// Loaded already, from whichever agent: no ask, and no failure of this
+	// agent's stands against it.
+	if data := readAvatar(dir, sha); data != nil {
+		return dataURL(data)
+	}
+	key := target + " " + sha
 	s.mu.Lock()
 	if s.owner != owner {
 		s.owner, s.failed = owner, nil
 	}
-	if s.failed[sha] {
+	if s.failed[key] {
 		s.mu.Unlock()
 		return "", errAvatarFailed
 	}
-	f := s.inflight[sha]
+	f := s.inflight[key]
 	if f == nil {
 		f = &avatarFlight{done: make(chan struct{})}
 		if s.inflight == nil {
 			s.inflight = map[string]*avatarFlight{}
 		}
-		s.inflight[sha] = f
+		s.inflight[key] = f
 		s.mu.Unlock()
 		// The fetch outlives a caller that stops waiting, so the next asker
 		// finds it done rather than starting over.
 		f.url, f.err = loadAvatar(context.WithoutCancel(ctx), dir, sha, fetch)
+		if f.err != nil {
+			// Another agent's ask may have loaded the same photo meanwhile.
+			if data := readAvatar(dir, sha); data != nil {
+				f.url, f.err = dataURL(data)
+			}
+		}
 		s.mu.Lock()
-		delete(s.inflight, sha)
+		delete(s.inflight, key)
 		if f.err != nil && !errors.Is(f.err, errNotConnected) && s.owner == owner {
 			if s.failed == nil {
 				s.failed = map[string]bool{}
 			}
-			s.failed[sha] = true
+			s.failed[key] = true
 		}
 		close(f.done)
 	}
@@ -187,7 +204,7 @@ func (d *Desk) AvatarImage(ctx context.Context, target, sha256 string) (string, 
 	// Failures belong to this connection and session, as herdrup's
 	// AgentAvatarDirectory does (one per connected home, made anew on each
 	// reconnect or session switch): a reconnect asks again (#36).
-	return d.avatars.get(ctx, avatarDir(d.dir), at, sha256, func(ctx context.Context) (string, error) {
+	return d.avatars.get(ctx, avatarDir(d.dir), at, target, sha256, func(ctx context.Context) (string, error) {
 		view, err := at.client.ForSession(session)
 		if err != nil {
 			return "", err
