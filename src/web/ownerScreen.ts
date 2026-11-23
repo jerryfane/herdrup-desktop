@@ -16,6 +16,16 @@ export function browserDeviceName(ua: string): string {
  return browser || (os ? `Browser on ${os}` : "Web browser");
 }
 
+/** Why this browser can't be approved, for deviceName (browserDeviceName). Safari, and every
+ *  browser on iPhone and iPad (all WebKit), can't read back a stored X25519 CryptoKey: WebKit's
+ *  structured clone can't deserialize it, and IndexedDB answers null (#330). Any other browser
+ *  gets here only when it can't keep the key at all (blocked site data, no X25519). */
+export function unsupportedText(deviceName: string): string {
+ return deviceName.startsWith("Safari") || deviceName.endsWith(" on iOS")
+  ? "Safari and the browsers on iPhone and iPad can't keep a secure key for this page yet. Use Chrome, Edge or Firefox, or the HerdrUp app on iPhone and iPad."
+  : "It can't keep a secure key for this page from one visit to the next. Private browsing or blocked site data can cause this; allow site data, or use a current Chrome, Edge or Firefox.";
+}
+
 export interface OwnerActions { again(): void; guestInstead(): void; open(machine: EnvelopeMachine): void }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -99,9 +109,7 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
   }
   case "unsupported":
    card.append(el("h1", "", "This browser can't be approved"),
-    // Safari, and so every browser on iPhone and iPad (all WebKit), loses the stored X25519 key:
-    // WebKit can't read it back (state webkit-x25519-20261123). Chrome, Edge and Firefox keep it.
-    el("p", "", "It can't keep a secure key for this page from one visit to the next. Safari and the browsers on iPhone and iPad can't. Use Chrome, Edge or Firefox on a computer, or the HerdrUp app on iPhone and iPad."), guest());
+    el("p", "", unsupportedText(deviceName)), guest());
    break;
   case "elsewhere":
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
