@@ -59,7 +59,7 @@
 
 /* The topic's header, 48 px: [Topics ⌥⌘T |] ‹ Inbox | title • status … •••. */
 .topic-chat { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-.topic-chat-header { display: flex; align-items: center; gap: 12px; flex: none; height: 48px; box-sizing: border-box; padding: 0 12px 0 16px; border-bottom: 1px solid var(--color-hairline-quiet); }
+.topic-chat-header { display: flex; align-items: center; gap: 12px; flex: none; min-height: 48px; box-sizing: border-box; padding: 4px 12px 4px 16px; border-bottom: 1px solid var(--color-hairline-quiet); }
 .topic-list-button { display: flex; align-items: center; gap: 12px; flex: none; }
 .topic-list-button[hidden] { display: none; }
 .agent-detail .topic-list-open { flex: none; height: 32px; padding: 0; border: 0; background: none; color: var(--color-text); font: 500 14px var(--font-app); white-space: nowrap; }
@@ -67,8 +67,13 @@
 .topic-chat-rule { flex: none; width: 1px; height: 18px; background: var(--color-hairline); }
 .agent-detail .topic-inbox-link { display: flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0; border: 0; background: none; color: var(--color-text); font: 500 14px var(--font-app); }
 .topic-inbox-chevron { display: grid; place-items: center; }
-.topic-chat-heading { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; }
-.topic-chat-title { min-width: 0; font: 600 15px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The title keeps the room; a status that doesn't fit beside it goes to a second line (#345), and
+   ends in an ellipsis rather than running into the ••• button. */
+.topic-chat-heading { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 0; flex: 1; min-width: 0; }
+.topic-chat-title { flex: 0 1 auto; min-width: 0; max-width: 100%; font: 600 15px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topic-chat-status { display: flex; min-width: 0; max-width: 100%; }
+.topic-chat-status .topic-status { flex: 0 1 auto; min-width: 0; }
+.topic-chat-status .topic-status > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .agent-detail .topic-actions { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--color-text); }
 .topic-notice:empty { display: none; }
 .topic-transcript { width: min(var(--gram-column, 720px), 100%); margin: 0 auto; }

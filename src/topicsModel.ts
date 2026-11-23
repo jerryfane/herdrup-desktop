@@ -48,10 +48,25 @@ export function topicsLayout(wide: boolean, folded: boolean, topicOpen: boolean)
  return { list: !folded || !topicOpen, chat: true };
 }
 
+/** There is a column to fold: wide, beside an open topic. The fold button shows and the shortcut
+ *  acts only then, so neither changes the kept preference without changing the page (#344: a
+ *  narrow page has no column; leaving its topic would drop the unsent draft). */
+export function canFold(wide: boolean, topicOpen: boolean): boolean {
+ return wide && topicOpen;
+}
+
 /** ⌥⌘T on a Mac, Ctrl+Alt+T elsewhere, folds or unfolds the topics column. `code`, not `key`:
  *  Option turns the T key into "†" on a Mac. */
 export function isFoldShortcut(e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "code">): boolean {
  return (e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyT";
+}
+
+/** What a keydown does to the fold: "toggle" once per press where there is a column to fold;
+ *  "swallow" for the key held down (auto-repeat), which must not flap the column; null for any
+ *  other key, or where nothing can fold, so the key goes on to the page. */
+export function foldKey(e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "code" | "repeat">, foldable: boolean): "toggle" | "swallow" | null {
+ if (!foldable || !isFoldShortcut(e)) return null;
+ return e.repeat ? "swallow" : "toggle";
 }
 /** The shortcut as the header's hint shows it. */
 export function foldShortcutLabel(mac: boolean): string {

@@ -105,9 +105,9 @@ dialog.folder-naming.agent-confirm .destructive { background:none; color:var(--s
 .agent-transfer-bar .ring, .agent-avatar-actions .ring { box-sizing:border-box; width:15px; height:15px; border:2px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color:currentColor; border-radius:50%; animation:agent-turn 1s linear infinite; }
 .agent-crop-previews .face.preview { outline:1px solid var(--color-hairline); outline-offset:-1px; }
 /* The Topics switch's notice (herdrup #788 TopicsSwitchBanner) as Topics A-v2 draws it: a plain
-   line at the foot of the agents list, over the text-only tab bar (55 px tall), muted words and at
-   most one small dot (blue while it works, red when it failed). */
-.topics-switch-banner { position:absolute; left:0; right:0; bottom:calc(55px + var(--home-inset)); z-index:4; display:flex; align-items:baseline; gap:8px; box-sizing:border-box; padding:10px 20px; border-top:1px solid var(--color-hairline-quiet); background:var(--color-ground); color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
+   line in the sidebar's foot, stacked over the text-only tab bar (style.css .sidebar-foot), muted
+   words and at most one small dot (blue while it works, red when it failed). */
+.topics-switch-banner { display:flex; align-items:baseline; gap:8px; box-sizing:border-box; padding:10px 20px; border-top:1px solid var(--color-hairline-quiet); color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
 .topics-switch-banner[hidden] { display:none; }
 .topics-switch-text { overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .topics-switch-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--status-died); transform:translateY(-1px); }

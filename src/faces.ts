@@ -1,6 +1,6 @@
 // The roster's faces, shared by the owner's roster (main.ts) and the guest home in both builds
-// (guestHome.ts deps, web/main.ts): the avatar with its status badge, the initial tile and its
-// placement, and the loading spinner.
+// (guestHome.ts deps, web/main.ts): an agent row's avatar (its face, no badge), the status badge
+// still drawn elsewhere, the initial tile and its placement, and the loading spinner.
 
 import type { Row } from "./mygo";
 import { avatarFace } from "./avatars";
@@ -108,13 +108,11 @@ export async function placeInitials(root: ParentNode) {
   }
 }
 
-/** The avatar, with its status badge unless `badged` is false (the agent list's rows say their
- *  status in words, Topics A-v2). */
-export async function avatar(r: Row, badged = true): Promise<HTMLElement> {
+/** An agent row's avatar: its face alone. The row says its status in words (sessions.ts
+ *  rowPreview, Topics A-v2), so neither the owner's roster nor the guest's list badges it. */
+export function rowAvatar(r: Row): HTMLElement {
   const a = el("div", "avatar");
   a.append(avatarFace(r.avatar, () => initialTile(r)));
-  const b = badged ? await badge(r.badge) : null;
-  if (b) a.append(b);
   return a;
 }
 

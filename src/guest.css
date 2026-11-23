@@ -14,7 +14,7 @@
    sidebar, between the owner's top bar and glass tab bar, where the roster sits. ---- */
 /* A share's sidebar: its agent list, its Gram's inbox (gram.ts, #697), or on the desktop the
    app's Settings index (settings.ts). */
-.guest-mode #sidebar > :not(.topbar, .tabbar, .guest-navigation, .gram-side, .settings-index) { display: none !important; }
+.guest-mode #sidebar > :not(.topbar, .sidebar-foot, .guest-navigation, .gram-side, .settings-index) { display: none !important; }
 .guest-navigation[hidden], .guest-settings[hidden] { display: none; }
 .guest-navigation {
   flex: 1;

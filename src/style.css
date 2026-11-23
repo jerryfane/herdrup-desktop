@@ -20,9 +20,9 @@
   --sidebar-width: var(--size-sidebar-min);
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
-  /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
-     6 pt above and 12 below (HerdrApp.swift 2401, 2843), over the home inset. */
-  --tabbar-inset: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
+  /* The sidebar lists end above its foot (the tab bar and any notice over it): bars.ts sets this
+     to the foot's laid-out height; until then, the bar's token height over the home inset. */
+  --tabbar-inset: calc(var(--size-tab-bar) + var(--home-inset));
   /* Liquid Glass over the bare ground, as every 9845ecf reference draws it: a flat #31354e
      (sidebar tab bar, Gram header capsules); CSS has no refraction, so it is drawn flat. */
   --glass-fill: color-mix(in srgb, var(--color-on-accent) 5%, var(--color-surface-raised));
@@ -418,19 +418,26 @@ html, body {
   color: var(--color-text-dim);
 }
 
-/* Sidebar tab bar, text only (Topics A-v2, owner 2026-11-23): the sidebar's full width under a
-   quiet rule, three words, the selected one on a rounded surface. */
-.tabbar {
+/* The sidebar's foot: a notice (agentActions.ts) stacked over the tab bar, on the ground. Its
+   laid-out height is the lists' bottom inset (bars.ts watchFoot sets --tabbar-inset). */
+.sidebar-foot {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-ground);
+}
+/* Sidebar tab bar, text only (Topics A-v2, owner 2026-11-23): the sidebar's full width under a
+   quiet rule, three words, the selected one on a rounded surface. */
+.tabbar {
+  position: relative;
   padding: 10px 16px calc(14px + var(--home-inset));
   display: flex;
   gap: 4px;
   border-top: 1px solid var(--color-hairline-quiet);
-  background: var(--color-ground);
 }
 .tab {
   flex: 1;

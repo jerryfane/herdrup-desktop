@@ -86,4 +86,15 @@ export function commitTabBar(nodes: HTMLElement[], selectedIndex: number) {
   if (focused) nodes.find((n) => n.dataset.tab === focused)?.focus();
   $("tabbar").style.setProperty("--tab-count", String(nodes.length));
   $("tabbar").style.setProperty("--tab-index", String(selectedIndex));
+  watchFoot();
+}
+
+let footWatched = false;
+/** The sidebar's lists end above its foot, the tab bar with any notice stacked over it
+ *  (#sidebar-foot): its laid-out height, whatever the text size, is their bottom inset. */
+function watchFoot() {
+  if (footWatched) return;
+  footWatched = true;
+  const foot = $("sidebar-foot");
+  new ResizeObserver(() => document.documentElement.style.setProperty("--tabbar-inset", `${foot.getBoundingClientRect().height}px`)).observe(foot);
 }
