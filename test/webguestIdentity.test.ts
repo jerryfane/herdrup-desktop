@@ -55,7 +55,7 @@ test("a saved identity is loaded, never replaced, and refused when damaged", asy
 // Bun has no IndexedDB; this fake keeps the parts the store uses (one object store, readwrite
 // transactions that complete after their requests) so the store's own flow is checked. A browser
 // structured-clones the CryptoKey into it; that is checked in the browser build.
-function fakeIndexedDB() {
+function fakeIndexedDB(forgetful = false) {
  const data = new Map<string, unknown>();
  let created = 0;
  const request = <T>(run: () => T) => {
@@ -67,7 +67,8 @@ function fakeIndexedDB() {
   createObjectStore: () => { created++; },
   transaction: () => {
    const tx = { oncomplete: null as null | (() => void), onerror: null, onabort: null, objectStore: () => ({
-    get: (key: string) => request(() => data.get(key)),
+    // forgetful: every read answers null, what WebKit on the owner's iPad did for the saved key.
+    get: (key: string) => request(() => forgetful ? null : data.get(key)),
     add: (value: unknown, key: string) => request(() => { if (data.has(key)) throw new DOMException("exists", "ConstraintError"); data.set(key, value); setTimeout(() => tx.oncomplete?.()); }),
     put: (value: unknown, key: string) => request(() => { data.set(key, value); setTimeout(() => tx.oncomplete?.()); }),
    }) };
@@ -108,10 +109,13 @@ test("the owner's browser key with a null stored where the record should be: mad
  expect((await ownerKey(new IndexedDBIdentityStore(factory)))?.publicKey).toEqual(key!.publicKey);
 });
 
-test("a browser that saves the owner's key but can't read it back can't be approved: no new key at every read", async () => {
- // What WebKit on the owner's iPad looked like: the record is written, and every read answers null.
- const saved: IdentityRecord[] = [];
- const forgetful = { async get() { return undefined; }, async add(record: IdentityRecord) { saved.push(record); return record; } };
- expect(await ownerKey(forgetful)).toBeNull();
- expect(saved.length).toBe(1);
+test("a browser whose storage can't give the key back: the owner can't be approved, a guest still opens this visit", async () => {
+ const { factory, data } = fakeIndexedDB(true);
+ // add reports what a read gives back: nothing.
+ expect(await new IndexedDBIdentityStore(factory).add(await generateIdentity())).toBeUndefined();
+ expect(data.size).toBe(1);
+ // The owner's key: none, so the page says it can't be approved (no new key at every read).
+ expect(await ownerKey(new IndexedDBIdentityStore(factory))).toBeNull();
+ // A guest's key: the one made now, for this visit.
+ expect((await loadIdentity(new IndexedDBIdentityStore(factory))).publicKey.length).toBe(32);
 });
