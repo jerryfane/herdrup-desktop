@@ -85,10 +85,10 @@ export function unsupportedNotice(kind: BrowserKind): UnsupportedNotice {
  *  the desktop invitation's code in guestShare.ts). */
 const QR_QUIET = 4;
 
-/** The App Store link (IOS_APP_URL) as a QR code: an SVG of its dark modules, one path, with the
- *  quiet zone. */
-export function appStoreQR(): string {
- const code = qrcode(0, "M"); code.addData(IOS_APP_URL); code.make();
+/** href as a QR code: an SVG of its dark modules, one path, with the quiet zone. The notice draws
+ *  its App Store link this way, from the same href as its badge. */
+function qrSVG(href: string): string {
+ const code = qrcode(0, "M"); code.addData(href); code.make();
  const size = code.getModuleCount();
  let path = "";
  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) if (code.isDark(row, col)) path += `M${col} ${row}h1v1h-1z`;
@@ -103,22 +103,25 @@ export function pageLink(href: string): { href: string; shown: string } {
  return { href: url.origin + url.pathname, shown: url.host + url.pathname };
 }
 
-/** A phase the guide shows: waiting, the code, and every way a request ends. */
-type GuidePhase = Exclude<OwnerPhase, { kind: "approved" | "unsupported" }>;
+/** The phases of a live request (the guide's steps show) and of one that ended (retry's words). */
+type LivePhase = Extract<OwnerPhase, { kind: "starting" | "waiting" | "code" }>;
+type EndedPhase = Extract<OwnerPhase, { kind: "denied" | "expired" | "failed" | "elsewhere" }>;
 
-/** How the guide recovers from a request that ended: the button's label and, in the steps' place,
- *  what to do, worded with that same label. */
+/** How the guide recovers from a request that ended: the button's label, and the one sentence in
+ *  the steps' place that says what to do, worded with that same label. */
 export interface Retry { action: "Ask again" | "Try again"; text: string }
 const retryWith = (action: Retry["action"], why = ""): Retry => ({ action, text: `${why}${action} for a new code, then approve it in HerdrUp.` });
 
 /** What a phase shows, decided once: the screen's layout and what it holds. The guide shows its
- *  steps only while a request is live (retry: null); once the request ended, retry's words stand
- *  in their place, as the step "Type the code this page shows" no longer holds. A failure says
- *  what failed on its own (the phase's problem), so its retry words claim nothing about it. */
+ *  steps only while a request is live (retry: null); a request that ended always has its retry,
+ *  whose words stand in the steps' place, as the step "Type the code this page shows" no longer
+ *  holds. A failure says what failed on its own (the phase's problem), so its retry words claim
+ *  nothing about it. */
 export type OwnerLayout =
  | { view: "list"; record: OwnerRecord }
  | { view: "notice" }
- | { view: "guide"; phase: GuidePhase; code: string | null; retry: Retry | null };
+ | { view: "guide"; phase: LivePhase; code: string | null; retry: null }
+ | { view: "guide"; phase: EndedPhase; code: null; retry: Retry };
 export function ownerLayout(phase: OwnerPhase): OwnerLayout {
  switch (phase.kind) {
   case "approved": return { view: "list", record: phase.record };
@@ -129,7 +132,7 @@ export function ownerLayout(phase: OwnerPhase): OwnerLayout {
   case "denied": return { view: "guide", phase, code: null, retry: retryWith("Ask again", "This request wasn't approved. ") };
   case "expired": return { view: "guide", phase, code: null, retry: retryWith("Ask again", "This request's code no longer works. ") };
   case "failed": return { view: "guide", phase, code: null, retry: retryWith("Try again") };
-  case "elsewhere": return { view: "guide", phase, code: null, retry: { action: "Try again", text: "Another tab of this page holds the request. Approve it there, or close that tab and try again here." } };
+  case "elsewhere": return { view: "guide", phase, code: null, retry: retryWith("Try again", "Another tab of this page holds the request: approve it there, or close that tab. ") };
  }
 }
 
@@ -247,9 +250,9 @@ function waiting(spinnerSVG: string, text: string) {
 /** The guide's platform, kept across redraws. */
 let guidePlatform: GuidePlatform = "computer";
 
-/** A drawn screen and the way to show a machine's new status on it in place (a redraw would
- *  restart the list's entrance): false when this screen has no row for the machine. */
-export interface OwnerCard { root: HTMLElement; showStatus(hostID: string, status: MachineStatus): boolean }
+/** A drawn screen; a list's also shows a machine's new status in its row in place (a redraw would
+ *  restart the list's entrance), and leaves the rows as they are for a machine it hasn't. */
+export interface OwnerCard { root: HTMLElement; showStatus?: (hostID: string, status: MachineStatus) => void }
 
 /** The screen for phase; browser is this browser (thisBrowser), statuses each machine's probe,
  *  arrivedAt when the list arrived from the code (performance.now(), null for none). The list's
@@ -263,7 +266,7 @@ export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: Owne
  const body = el("div", "web-owner-body");
  screen.append(body);
  const guest = (cls: string) => button(cls, "Use a guest invitation instead", actions.guestInstead);
- let showStatus: OwnerCard["showStatus"] = () => false;
+ let showStatus: OwnerCard["showStatus"];
  switch (layout.view) {
   case "list": {
    const list = approvedList(layout.record, statuses, actions.open);
@@ -276,19 +279,19 @@ export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: Owne
    body.append(...notice(unsupportedNotice(browser.kind), guest("web-owner-link")));
    break;
   case "guide":
-   body.append(guideMain(layout.phase, layout.retry, browser, actions, spinnerSVG, guest), guide(browser.name, layout.code, layout.retry));
+   body.append(layout.retry === null ? liveMain(layout.phase, browser, spinnerSVG, guest) : endedMain(layout.phase, layout.retry, actions, guest),
+    guide(browser.name, layout.code, layout.retry));
    break;
  }
- return { root: screen, showStatus };
+ return showStatus ? { root: screen, showStatus } : { root: screen };
 }
 
-/** The guide's left side for phase: what the page waits for, the code (or where it will show),
- *  and what to do next (an ended request: retry's action). */
-function guideMain(phase: GuidePhase, retry: Retry | null, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
- guest: (cls: string) => HTMLElement): HTMLElement {
+const actionRow = (...items: HTMLElement[]) => { const r = el("div", "web-owner-actions"); r.append(...items); return r; };
+
+/** The guide's left side while a request is live: what the page waits for, and the code (or
+ *  where it will show). */
+function liveMain(phase: LivePhase, browser: ThisBrowser, spinnerSVG: string, guest: (cls: string) => HTMLElement): HTMLElement {
  const main = el("div", "web-owner-main");
- const again = () => button("web-owner-action web-owner-primary", retry?.action ?? "Ask again", actions.again);
- const row = (...items: HTMLElement[]) => { const r = el("div", "web-owner-actions"); r.append(...items); return r; };
  const alt = () => { const a = el("div", "web-owner-alt"); a.append(el("span", "", "Not your machines?"), guest("web-owner-action web-owner-small")); return a; };
  const keyNote = () => el("p", "web-owner-note", "This browser made its own key. Your machines accept it only after you approve it.");
  switch (phase.kind) {
@@ -309,24 +312,34 @@ function guideMain(phase: GuidePhase, retry: Retry | null, browser: ThisBrowser,
    main.append(waiting(spinnerSVG, "Waiting for you to approve"),
     el("h1", "", "Enter this code in HerdrUp"),
     el("p", "web-owner-lead", `${phase.approver} opened the request to approve ${browser.name}. Type these 4 digits there.`),
-    shown, row(copy, expiry),
+    shown, actionRow(copy, expiry),
     el("p", "web-owner-hint", "When the time runs out, the code stops working and this page offers a new request."),
     el("div", "web-owner-sep"), alt(), keyNote());
    break;
   }
+ }
+ return main;
+}
+
+/** The guide's left side once a request ended: what happened, and retry's button (its words are
+ *  the guide's, beside: guide()). */
+function endedMain(phase: EndedPhase, retry: Retry, actions: OwnerActions, guest: (cls: string) => HTMLElement): HTMLElement {
+ const main = el("div", "web-owner-main");
+ const again = button("web-owner-action web-owner-primary", retry.action, actions.again);
+ switch (phase.kind) {
   case "denied":
-   main.append(el("h1", "", "Not approved"), el("p", "web-owner-lead", "HerdrUp didn't approve this browser."), row(again(), guest("web-owner-action")));
+   main.append(el("h1", "", "Not approved"), el("p", "web-owner-lead", "HerdrUp didn't approve this browser."), actionRow(again, guest("web-owner-action")));
    break;
   case "expired":
-   main.append(el("h1", "", "The request expired"), el("p", "web-owner-lead", "No device approved this browser in time."), digits(null), row(again(), guest("web-owner-action")));
+   main.append(el("h1", "", "The request expired"), el("p", "web-owner-lead", "No device approved this browser in time."), digits(null), actionRow(again, guest("web-owner-action")));
    break;
   case "failed": {
    const problem = el("p", "web-welcome-error", phase.problem); problem.setAttribute("role", "alert");
-   main.append(el("h1", "", "Couldn't finish the approval"), problem, row(again(), guest("web-owner-action")));
+   main.append(el("h1", "", "Couldn't finish the approval"), problem, actionRow(again, guest("web-owner-action")));
    break;
   }
   case "elsewhere":
-   main.append(el("h1", "", "Approving in another tab"), el("p", "web-owner-lead", "Finish there, or close that tab and try again here."), row(again()));
+   main.append(el("h1", "", "Approving in another tab"), el("p", "web-owner-lead", "This browser's request is open in another tab of this page."), actionRow(again));
    break;
  }
  return main;
@@ -407,7 +420,7 @@ function notice(n: UnsupportedNotice, guest: HTMLElement): HTMLElement[] {
  if (n.app && n.computer) {
   const block = el("div", "web-owner-qr");
   const code = el("span", "web-owner-qr-code"); code.setAttribute("role", "img"); code.setAttribute("aria-label", "QR code for HerdrUp on the App Store");
-  code.innerHTML = appStoreQR();
+  code.innerHTML = qrSVG(n.app.href);
   const words = el("span", "web-owner-qr-text");
   words.append(el("strong", "", n.computer.qrTitle), el("span", "", n.computer.qrText), appBadge(n.app));
   block.append(code, words);
@@ -438,7 +451,7 @@ function appBadge(app: { href: string; label: string }): HTMLElement {
 
 /** "Pick a machine": who approved, then a row per machine with its status as plain text, its
  *  access and Open; skipped machines with the reason. showStatus updates this list's rows in place. */
-function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): { parts: HTMLElement[]; showStatus: OwnerCard["showStatus"] } {
+function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): { parts: HTMLElement[]; showStatus: NonNullable<OwnerCard["showStatus"]> } {
  const { rows, skipped } = machineRows(record, statuses);
  const names = [...new Set(record.approvers.map(a => a.name))].join(", ");
  const list = el("ul", "web-owner-machines");
@@ -467,10 +480,9 @@ function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, Machine
  const approvedBy = el("p", "web-owner-eyebrow", "Approved by "); approvedBy.append(el("span", "", names));
  const showStatus = (hostID: string, next: MachineStatus) => {
   const row = byHost.get(hostID);
-  if (row === undefined) return false;
+  if (row === undefined) return;
   const s = rowStatus(next);
   row.status.dataset.state = s.state; row.words.data = s.status; row.open.disabled = !s.openable;
-  return true;
  };
  return { parts: [approvedBy, el("h1", "", "Pick a machine"), el("p", "web-owner-lead", "Open a machine to chat with its agents."), list], showStatus };
 }
