@@ -169,7 +169,9 @@ export class WebAccount {
   catch (error) { if (error instanceof SignedOutError) return null; throw error; }
  }
 
- private exclusive<T>(run: () => Promise<T>): Promise<T> {
+ /** run under the tab lock (when there is one). Async: the lock is asked at once, and a lock or
+  *  run that throws while being started still reports through the returned promise. */
+ private async exclusive<T>(run: () => Promise<T>): Promise<T> {
   return this.locks ? this.locks.request(REFRESH_LOCK, run) : run();
  }
 

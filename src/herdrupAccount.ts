@@ -442,6 +442,9 @@ function platformName(platform: string): string {
 }
 
 /** Desktop's first-launch sign-in (1B): before the host home on a first launch, answered once. */
+/** AccountWelcome.decide's answer: whether the sign-in shows, with the providers it offers. */
+export interface WelcomeDecision { show: boolean; providers?: string[] }
+
 export class AccountWelcome {
  readonly root = el("section", "account-welcome");
  private waiting = false;
@@ -457,19 +460,23 @@ export class AccountWelcome {
 
  private static seen(): boolean { try { return localStorage.getItem(WELCOME_SEEN) === "1"; } catch { return true; } }
 
- /** Shows the sign-in when this is a first launch (nothing saved or shared), the service offers
-  *  sign-in and nobody is signed in. Returns whether it shows. */
- async update(firstLaunch: boolean): Promise<boolean> {
-  if (!firstLaunch || AccountWelcome.seen()) { this.root.hidden = true; return false; }
-  if (!this.shownFor) {
-   this.providers = await Desk.accountProviders().catch(() => []);
-   const state = this.providers.length ? await Desk.accountState().catch(() => null) : null;
-   if (!this.providers.length || !state || state.signedIn || AccountWelcome.seen()) { this.root.hidden = true; return false; }
-   this.shownFor = true;
-   this.draw("");
-  }
+ /** Whether the sign-in shows: a first launch (nothing saved or shared), the service offers
+  *  sign-in and nobody is signed in. Nothing on screen changes (commit does), so the caller can
+  *  drop a decision a newer one has replaced. */
+ async decide(firstLaunch: boolean): Promise<WelcomeDecision> {
+  if (!firstLaunch || AccountWelcome.seen()) return { show: false };
+  if (this.shownFor) return { show: true, providers: this.providers };
+  const providers = await Desk.accountProviders().catch(() => [] as string[]);
+  const state = providers.length ? await Desk.accountState().catch(() => null) : null;
+  if (!providers.length || !state || state.signedIn || AccountWelcome.seen()) return { show: false };
+  return { show: true, providers };
+ }
+
+ /** Puts a decision on screen: the sign-in drawn the first time it shows, or hidden. */
+ commit(decision: WelcomeDecision) {
+  if (!decision.show) { this.root.hidden = true; return; }
+  if (!this.shownFor) { this.providers = decision.providers ?? []; this.shownFor = true; this.draw(""); }
   this.root.hidden = false;
-  return true;
  }
 
  private finish() {
