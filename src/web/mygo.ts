@@ -11,6 +11,7 @@ import { browserEnv, createGuestDesk } from "./desk";
 import { gramDesk, guestGramDesk } from "./gram";
 import { browserAccountPage, createAccountDesk } from "./accountDesk";
 import { createPromptsDesk } from "./prompts";
+import { agentActionsDesk } from "./agentActionsDesk";
 
 export type * from "../mygo";
 export { events } from "./events";
@@ -22,7 +23,7 @@ const notAvailable = () => Promise.reject(new Error("Not available in the browse
 const account = createAccountDesk(browserAccountPage());
 const env = browserEnv();
 const guest = createGuestDesk(env);
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...createPromptsDesk() };
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...createPromptsDesk(), ...agentActionsDesk };
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
 export const signInReturned = account.signInReturned;
 /** What owner access (ownerApproval.ts) works with: this page's account session and the browser's key. */

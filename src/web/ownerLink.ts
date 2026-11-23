@@ -5,6 +5,7 @@
 import type { EnvelopeMachine } from "../webguest/approve";
 import { HerdrAPIError } from "../webguest/errors";
 import type { AgentInfo } from "./board";
+import type { OwnerGroups } from "./groups";
 import { untagged, type GuestClient } from "./engine";
 
 export interface OwnerLink {
@@ -21,6 +22,8 @@ export interface OwnerLink {
  agents(): readonly AgentInfo[];
  /** Lists again now and publishes the board (after a change a group made). */
  relist(): void;
+ /** The machine's folders and stars (groups.ts): the menus' document and the edits' queue. */
+ readonly groups?: OwnerGroups;
 }
 
 let current: OwnerLink | null = null;

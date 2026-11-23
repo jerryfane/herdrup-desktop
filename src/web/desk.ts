@@ -25,6 +25,7 @@ import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
 import { setOwnerLink, setOwnerSettings, settingsLink } from "./ownerLink";
+import { closeAgent } from "./agentActionsDesk";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
@@ -174,9 +175,10 @@ export function pageAccess(a: Access): PageAccess {
 }
 
 /** paneMenu (desk_agent_actions.go:267-303) in the browser: a guest's has no share, avatar, mute or
- *  close; an owner's agent (muted not null) has Mute or Unmute notifications (this browser's).
- *  Share, Avatar… and Close agent are the agent-actions slice's. */
-function webPaneMenu(o: PaneMenuOptions, muted: boolean | null): (MenuEntry & { action?: string })[] {
+ *  close; an owner's agent (muted not null) has Share with someone when the page offers it, then
+ *  Avatar… and Close agent when the link may write them (owner.avatar, owner.close), with Mute or
+ *  Unmute notifications (this browser's) between them. */
+export function webPaneMenu(o: PaneMenuOptions, muted: boolean | null, owner = { avatar: false, close: false }): (MenuEntry & { action?: string })[] {
  const entries: (MenuEntry & { action?: string })[] = [
   { label: "Copy screen", action: "copy-screen" },
   { label: "Copy recent output", action: "copy-recent" },
@@ -188,7 +190,11 @@ function webPaneMenu(o: PaneMenuOptions, muted: boolean | null): (MenuEntry & { 
   { label: "Reset", action: "text-reset" },
  ];
  if (muted === null || o.plain) return entries;
- return [...entries, { label: "", separator: true }, muted ? { label: "Unmute notifications", action: "unmute" } : { label: "Mute notifications", action: "mute" }];
+ return [...entries, { label: "", separator: true },
+  ...o.canShare ? [{ label: "Share with someone", action: "share" }] : [],
+  ...owner.avatar ? [{ label: "Avatar…", action: "avatar" }] : [],
+  muted ? { label: "Unmute notifications", action: "unmute" } : { label: "Mute notifications", action: "mute" },
+  ...owner.close ? [{ label: "Close agent", action: "close" }] : []];
 }
 
 /** The muted panes of every machine, by host id (Go's notifications.json muted). */
@@ -865,11 +871,16 @@ export function createGuestDesk(env: DeskEnv) {
   async paneMenu(o: PaneMenuOptions): Promise<boolean> {
    const l = active;
    if (!l || o.paneID === "") return false;
-   const entries = webPaneMenu(o, l.owner ? await desk.paneMuted(o.paneID) : null);
+   // Avatar… (a host that stores avatars) and Close agent write (herdr#510): a terminal-scope link's.
+   const writes = !!l.owner && l.transport.scope === "terminal";
+   const avatar = writes && !o.plain && (await l.client.ping(l.life.signal).catch(() => null))?.capabilities?.agent_avatar === true;
+   const entries = webPaneMenu(o, l.owner ? await desk.paneMuted(o.paneID) : null, { avatar, close: writes });
    void showMenu(entries).then(async (label) => {
     const action = entries.find((e) => e.label === label)?.action;
     // Go flips the stored mute before the page hears the choice.
     if (action === "mute" || action === "unmute") await desk.setPaneMuted(o.paneID, action === "mute");
+    // Close agent is sent once the pane closed (choosePaneAction).
+    if (action === "close" && !await closeAgent(o.paneID)) return;
     if (action) emit("paneActionChosen", { paneID: o.paneID, action });
    });
    return true;
@@ -1047,7 +1058,7 @@ export function createGuestDesk(env: DeskEnv) {
    l.groups = new OwnerGroups(client, m.hostID, () => publishBoard(l), now, env.openFolders);
    active = l;
    setLink(link);
-   setOwnerLink({ machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick() });
+   setOwnerLink({ machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups });
    // The session ending ends the link too: its board and agent view go, the page goes idle.
    session.addEventListener("abort", () => { if (active === l) disconnectOwner(); }, { once: true, signal: l.life.signal });
    void runGuest(l, print).finally(() => transport.close());
