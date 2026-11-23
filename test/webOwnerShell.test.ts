@@ -3,7 +3,7 @@
 // folders (groups.ts).
 import { expect, test } from "bun:test";
 import { ownerWrites, shareShown, shellParts } from "../src/shellModel";
-import { choosePage } from "../src/web/bootChoice";
+import { afterLoadFailure, choosePage, LOAD_RELOAD_WINDOW_MS } from "../src/web/bootChoice";
 import { GROUPS_REFRESH_MS, OwnerGroups } from "../src/web/groups";
 import { localRecord } from "../src/web/storage";
 import { ErrUnsupported } from "../src/web/engine";
@@ -57,6 +57,15 @@ test("a signed-in browser without a grant gets the owner's shell, unless it aske
 test("a fact that can't be read counts as absent", async () => {
  expect(await choosePage(facts({ grant: new Error("idb"), signedIn: true }).facts)).toBe("owner");
  expect(await choosePage(facts({ signedIn: new Error("offline") }).facts)).toBe("guest");
+});
+
+test("the page's code didn't load: reload once, and explain when a reload just now didn't help", () => {
+ const now = 1_000_000;
+ expect(afterLoadFailure(null, now)).toBe("reload");
+ expect(afterLoadFailure(now - 1_000, now)).toBe("explain");
+ expect(afterLoadFailure(now - LOAD_RELOAD_WINDOW_MS + 1, now)).toBe("explain");
+ // A reload long ago (a stale tab, another deploy since) is worth trying again.
+ expect(afterLoadFailure(now - LOAD_RELOAD_WINDOW_MS, now)).toBe("reload");
 });
 
 function memory() {

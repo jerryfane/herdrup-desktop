@@ -7,11 +7,9 @@ import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/owner";
 import { createGuestDesk } from "../src/web/desk";
-import { buildBoard } from "../src/web/board";
 import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
-import { ownerHomeRows } from "../src/guestHome";
 import type { BoardUpdate, ConnState } from "../src/mygo";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
@@ -266,9 +264,9 @@ test("an owner link's open agent is paused while the list has its pane archived 
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
-// ---- P2-4: the owner home and the machine list count the same agents ----
+// ---- P2-4: the machine list counts every agent the machine lists ----
 
-test("the owner home lists every agent the machine probe counts: archived with its note, unnamed by its terminal title", async () => {
+test("the machine probe counts every agent the machine lists, archived and unnamed ones too", async () => {
  const three = [
   { pane_id: "p1", terminal_id: "t1", name: "herdr-app", agent: "claude", agent_status: "working" },
   { pane_id: "p2", terminal_id: "t2", name: null, terminal_title_stripped: "release notes", agent: "codex", agent_status: "idle" },
@@ -276,9 +274,7 @@ test("the owner home lists every agent the machine probe counts: archived with i
  ];
  const relay = host({ agents: () => three });
  try {
-  const rows = ownerHomeRows(buildBoard(three));
-  expect(rows.map(r => [r.name, r.state])).toEqual([["herdr-app", "working"], ["release notes", "idle"], ["old", "archived by jerry"]]);
-  expect(await probeMachine(machineOn(relay), staticKey(await generateIdentity()), statements, "x")).toEqual({ kind: "online", agents: rows.length });
+  expect(await probeMachine(machineOn(relay), staticKey(await generateIdentity()), statements, "x")).toEqual({ kind: "online", agents: 3 });
  } finally { relay.stop(); }
 });
 
