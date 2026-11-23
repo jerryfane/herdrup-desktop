@@ -210,19 +210,21 @@ func typeCode(t *testing.T, d *Desk, w *webAccessWorld) {
 }
 
 // The whole approval: a typed code that matches, a grant on the machine bound
-// to its own statement, and a sealed list only the browser can open.
+// to its own statement and lasting the duration the sheet was given for the
+// chosen length, and a sealed list only the browser can open.
 func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
 	t.Cleanup(func() { webNow = time.Now })
 	d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
 	ctx := context.Background()
-	if _, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d"); err == nil {
+	week := d.WebAccessLengths()[1]
+	if _, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", week.ID); err == nil {
 		t.Fatal("approved before the code was typed")
 	}
 	if c, err := d.WebAccessCheckCode(ctx, "req-1", w.code(t)); !c.Ok || c.Denied || err != nil {
 		t.Fatalf("browser's code: %+v %v", c, err)
 	}
-	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d")
+	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", week.ID)
 	if err != nil || len(res.Granted) != 1 || len(res.Failed) != 0 || len(res.Skipped) != 0 {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
@@ -235,12 +237,12 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 		t.Fatalf("statements sent %v, want this machine's", w.owner.Statements)
 	}
 	if g["scope"] != "chat" || g["device_pub"] != b64u(w.browser.PublicKey().Bytes()) || g["device"] != "Chrome on macOS" ||
-		g["expires_ms"].(float64)-g["created_ms"].(float64) != 7*24*3600*1000 {
+		g["expires_ms"].(float64)-g["created_ms"].(float64) != float64(week.Seconds*1000) {
 		t.Fatalf("grant %v", g)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.finish["outcome"] != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(time.Unix(1_800_000_000, 0).Add(7*24*time.Hour).UnixMilli()) {
+	if w.finish["outcome"] != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(time.Unix(1_800_000_000+week.Seconds, 0).UnixMilli()) {
 		t.Fatalf("finish %v", w.finish)
 	}
 	plain, err := account.OpenEnvelope(x25519Browser{w.browser}, w.approver, uint64(w.finish["seq"].(float64)), w.finish["sealed"].(string))

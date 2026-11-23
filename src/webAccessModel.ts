@@ -26,6 +26,19 @@ export function codeInput(raw: string): string {
  return raw.replace(/\D+/g, "").slice(0, 4);
 }
 
+/** How the four code boxes show the one input's caret and selection (start, end): which hold a
+ *  digit, which the selection covers, and the box the next digit goes into (the last once all four
+ *  are typed), ringed while the input has focus. */
+export function codeSlots(length: number, start: number, end: number): { filled: boolean; selected: boolean; active: boolean }[] {
+ return [0, 1, 2, 3].map(i => ({ filled: i < length, selected: start <= i && i < end, active: i === Math.min(start, 3) }));
+}
+
+/** A click on a box: its digit is selected, so Backspace or Delete removes that digit and typing
+ *  replaces it; on a box past the digits the caret goes after the last one. */
+export function slotSelection(slot: number, length: number): [number, number] {
+ return slot < length ? [slot, slot + 1] : [length, length];
+}
+
 /** Approve needs 4 digits and at least one machine (the sheet also waits for calls in flight). */
 export function canApprove(code: string, machines: number): boolean {
  return code.length === 4 && machines > 0;
@@ -43,18 +56,18 @@ export function skipReason(reason: string): string {
  return SKIP_REASONS[reason] ?? reason;
 }
 
-/** The sheet's choices, value and label: access, and how long it lasts (app/desk_web_access.go
- *  webAccessTTLs: whole days). */
+/** The sheet's access choices, value and label. How long access lasts comes from the computer
+ *  (Desk.webAccessLengths), which grants it. */
 export const ACCESS_CHOICES: readonly (readonly [string, string])[] = [["terminal", "Chat and terminal"], ["chat", "Chat only"]];
-export const TIME_CHOICES: readonly (readonly [string, string])[] = [["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"]];
 
 export function choiceLabel(choices: readonly (readonly [string, string])[], value: string): string {
  return choices.find(([v]) => v === value)?.[1] ?? value;
 }
 
-/** The terminal warning shows whenever terminal access is chosen, the Access row open or not. */
-export function showsTerminalWarning(scope: string): boolean {
- return scope === "terminal";
+/** A length as the For choices say it: whole days, else hours ("7 days", "12 hours"). */
+export function lengthLabel(seconds: number): string {
+ const [n, unit] = seconds % 86_400 === 0 ? [seconds / 86_400, "day"] : [Math.round(seconds / 3600), "hour"];
+ return `${n} ${unit}${n === 1 ? "" : "s"}`;
 }
 
 /** The Machines row, closed: the ticked machines by name, the first two and a count past three. */
@@ -65,11 +78,11 @@ export function machinesSummary(machines: readonly { id: string; label: string }
  return names.length <= 3 ? names.join(", ") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"). */
-export function timeSummary(length: string, now: number): string {
- const days = Number(length.replace(/d$/, ""));
- const end = new Date(now + days * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
- return `${choiceLabel(TIME_CHOICES, length)}, until ${end}`;
+/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"), from the duration
+ *  the computer grants for the chosen length. */
+export function timeSummary(length: { id: string; seconds: number }, now: number): string {
+ const end = new Date(now + length.seconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+ return `${lengthLabel(length.seconds)}, until ${end}`;
 }
 
 /** The line under the rows: what Approve turns on, and why any machine can't be ticked, so both
