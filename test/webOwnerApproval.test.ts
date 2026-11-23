@@ -257,6 +257,7 @@ test("a browser that can't be approved is told why: WebKit only on Safari and iO
  const macChrome = thisBrowser("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
  expect([ipadChrome, macSafari, androidChrome, macChrome].map(b => b.webKitOnly)).toEqual([true, true, false, false]);
  expect(ipadChrome.name).toBe("Chrome on iOS");
+ expect(unsupportedText(true)).toContain("Chrome, Edge or Firefox on a computer");
  expect(unsupportedText(true)).toContain("Safari and the browsers on iPhone and iPad");
  const other = unsupportedText(false);
  expect(other).not.toContain("Safari");

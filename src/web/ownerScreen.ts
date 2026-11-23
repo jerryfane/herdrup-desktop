@@ -40,9 +40,12 @@ export function thisBrowser(ua: string): ThisBrowser {
  *  gets here only when it can't keep the key at all (blocked site data, no X25519). */
 export function unsupportedText(webKitOnly: boolean): string {
  return webKitOnly
-  ? "Safari and the browsers on iPhone and iPad can't keep a secure key for this page yet. Use Chrome, Edge or Firefox, or the HerdrUp app on iPhone and iPad."
+  ? "Web access to your machines works in Chrome, Edge or Firefox on a computer. Safari and the browsers on iPhone and iPad can't keep its secure key. On iPhone and iPad, use the HerdrUp app."
   : "It can't keep a secure key for this page from one visit to the next. Private browsing or blocked site data can cause this; allow site data, or use a current Chrome, Edge or Firefox.";
 }
+
+/** The HerdrUp app for iPhone and iPad on the App Store (the owner's link, 2026-11-23). */
+export const IOS_APP_URL = "https://apps.apple.com/app/id6798087089";
 
 export interface OwnerActions { again(): void; guestInstead(): void; open(machine: EnvelopeMachine): void }
 
@@ -126,8 +129,14 @@ export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: Owne
    break;
   }
   case "unsupported":
-   card.append(el("h1", "", "This browser can't be approved"),
-    el("p", "", unsupportedText(browser.webKitOnly)), guest());
+   if (browser.webKitOnly) {
+    // The owner's choice for WebKit (option c): a computer browser, or the app on iPhone and iPad.
+    const app = el("a", "web-owner-action web-owner-app", "Get HerdrUp for iPhone and iPad");
+    app.href = IOS_APP_URL; app.target = "_blank"; app.rel = "noopener";
+    card.append(el("h1", "", "Use a computer browser"), el("p", "", unsupportedText(true)), app, guest());
+   } else {
+    card.append(el("h1", "", "This browser can't be approved"), el("p", "", unsupportedText(false)), guest());
+   }
    break;
   case "elsewhere":
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
