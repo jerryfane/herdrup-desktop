@@ -12,7 +12,8 @@
 // checks: herdr#510's owner gate serves neither yet and strips both from an owner's pong.
 //
 // A menu belongs to the link it was asked on: once another machine is open it is not shown, and a
-// choice made in it is dropped.
+// choice made in it is dropped. So does the sheet or prompt an item opens (sheetOpened): its calls
+// go to its own link and are refused once another machine is open.
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
 import { harnessDisplayName, normalizeAgentName, transferPhaseIsConclusive } from "../agentActionsModel";
@@ -158,9 +159,30 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 
 // ---- Carrying them out ----
 
-/** desk_agent_actions.go agentLink: the link (the open one unless a menu brings its own) and the
+/** What a sheet answers when the machine it was opened on is no longer the open one. */
+export const SHEET_STALE = "the machine changed since this was opened";
+
+/** The one sheet the page has open (they are modal) and the link it was opened from: an agent
+ *  action's (Rename, Restart, Swap, Avatar…, Topics, Switch harness) by its pane, or a folder
+ *  name's by its request. Its Desk calls go to that link, and are refused once another is open. */
+let sheet: { link: OwnerLink; paneID?: string; naming?: FolderNaming } | null = null;
+
+/** A sheet opened from link: a menu item's request for paneID, or for a folder name. */
+export function sheetOpened(link: OwnerLink, on: { paneID: string } | { naming: FolderNaming }): void {
+ sheet = { link, ...on };
+}
+
+/** The link a sheet's call on paneID belongs to: its sheet's, which must still be the open one;
+ *  else the open link. */
+function sheetLink(paneID: string): OwnerLink | null {
+ if (sheet?.paneID !== paneID) return currentOwnerLink();
+ if (sheet.link !== currentOwnerLink()) throw new Error(SHEET_STALE);
+ return sheet.link;
+}
+
+/** desk_agent_actions.go agentLink: the link (a menu's own, a sheet's, or the open one) and the
  *  agent as last listed there (only its pane id when it isn't). */
-function agentLink(paneID: string, link = currentOwnerLink()): { link: OwnerLink; info: ActionAgent } {
+function agentLink(paneID: string, link = sheetLink(paneID)): { link: OwnerLink; info: ActionAgent } {
  if (link === null) throw new Error("not connected");
  if (paneID === "") throw new Error("no agent");
  return { link, info: link.agents().find((a) => a.pane_id === paneID) ?? { pane_id: paneID } };
@@ -198,14 +220,14 @@ export async function closeAgent(link: OwnerLink | null, paneID: string): Promis
 /** desk_agent_actions.go chooseAgentAction: stop and archive here, the rest in the page's sheets. */
 function chooseAgentAction(link: OwnerLink, a: AgentAction) {
  const run = a.kind === "stop" ? stopAgent : a.kind === "archive" ? archiveAgent : null;
- if (run === null) { emit("agentActionRequested", a); return; }
+ if (run === null) { sheetOpened(link, { paneID: a.paneID }); emit("agentActionRequested", a); return; }
  run(a.paneID, link).catch((error) => { if (!link.signal.aborted) showWarning(`Couldn't ${a.kind} ${a.title}`, errorText(error)); });
 }
 
 /** desk_groups.go choose. */
 function choose(link: OwnerLink, e: MenuItem) {
  if (e.edit) link.groups?.apply(e.edit);
- else if (e.naming) emit("folderNamingRequested", e.naming);
+ else if (e.naming) { sheetOpened(link, { naming: e.naming }); emit("folderNamingRequested", e.naming); }
  else if (e.action) chooseAgentAction(link, e.action);
 }
 
@@ -299,7 +321,9 @@ export const agentActionsDesk = {
  /** desk_groups.go NameFolder: creates the folder or renames it; a name with nothing left once
   *  trimmed does nothing. */
  async nameFolder(n: FolderNaming, text: string): Promise<void> {
-  const link = currentOwnerLink();
+  // The prompt's own link: once another machine is open its queue ended with it, so nothing goes
+  // to the new one.
+  const link = sheet?.naming === n ? sheet.link : currentOwnerLink();
   if (!link?.groups) return;
   if (n.kind === "new") link.groups.createFolder(text, n.member);
   else if (n.kind === "rename") {
@@ -378,6 +402,8 @@ export const agentActionsDesk = {
 
  /** desk_agent_actions.go TransferAccounts: accounts.list, {"accounts": […]}, as JSON. */
  async transferAccounts(): Promise<string> {
+  // The Switch harness sheet's account picker: refused once its machine is no longer open.
+  if (sheet?.paneID !== undefined) sheetLink(sheet.paneID);
   return JSON.stringify(await ownerCall("accounts.list", {}, "accounts_list"));
  },
 

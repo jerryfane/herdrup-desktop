@@ -17,7 +17,7 @@ import { currentOwnerLink, OWNER_REFUSED, OwnerRefusedError } from "../src/web/o
 import { showMenu } from "../src/web/menu";
 import { ompHarness } from "../src/topicsModel";
 import {
- agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, sessionTransfer, topicsSwitchProblem,
+ agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, sessionTransfer, SHEET_STALE, topicsSwitchProblem,
  type ActionAgent, type MenuItem,
 } from "../src/web/agentActionsDesk";
 import { orderedFolders, type Groups } from "../src/web/board";
@@ -521,3 +521,76 @@ test("a menu asked on one machine is not shown, nor carried out, once another ma
   expect([...methods(seenA, "pane.close"), ...methods(seenB, "pane.close")]).toEqual([]);
  } finally { desk.disconnectOwner(); a.stop(); b.stop(); }
 }, 30_000); // seven link openings over a loopback relay
+
+test("a sheet opened on one machine sends nothing once another is open; on its own machine it works", async () => {
+ // Both hosts serve every sheet's request, so one that reached either would show.
+ const served = (req: Request): object | undefined => {
+  switch (req.method) {
+   case "agent.rename": case "agent.restart": case "agent.transfer_session": return { result: { type: "agent_info", agent: listed[0] } };
+   case "agent.avatar.set": return { result: { type: "agent_avatar_set" } };
+   case "agent.topics.set_enabled": return { result: { type: "agent_topics_switched", agent: listed[0], changed: true, topics_enabled: true } };
+   case "accounts.list": return { result: { type: "accounts_list", accounts: [] } };
+   case "agent.groups.set": return { result: tagged({ ...(req.params as unknown as Groups), revision: 9 }) };
+  }
+  return undefined;
+ };
+ const caps = { ...servedCaps, agent_avatar: true };
+ const seenA: Request[] = [], seenB: Request[] = [];
+ const a = host("terminal", { seen: seenA, caps, other: served, hostID: "AQEBAQEBAQEBAQEBAQEBAQ" });
+ const b = host("terminal", { seen: seenB, caps, other: served, hostID: "AgICAgICAgICAgICAgICAg" });
+ const desk = await newDesk();
+ const p = page();
+ const sheets: unknown[] = [];
+ const offs = [events.agentActionRequested.on((x) => sheets.push(x)), events.paneActionChosen.on((x) => sheets.push(x)), events.folderNamingRequested.on((x) => sheets.push(x))];
+ const writes = (seen: Request[]) => seen.map((r) => r.method).filter((m) => ["agent.rename", "agent.restart", "agent.avatar.set", "agent.topics.set_enabled", "agent.transfer_session", "agent.groups.set"].includes(m));
+ const stale = (call: Promise<unknown>) => expect(call).rejects.toThrow(SHEET_STALE);
+ try {
+  // A row menu's sheet (Rename here; Restart, Swap, Avatar…, Topics and Switch harness are the same).
+  await open(desk, a, "terminal");
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  p.click("Rename");
+  await settle();
+  expect(sheets.length).toBe(1);
+  await open(desk, b, "terminal");
+  await stale(agentActionsDesk.renameAgent("p1", "x"));
+  await stale(agentActionsDesk.restartAgent("p1", "a1"));
+  await stale(agentActionsDesk.setAgentAvatar("p1", { kind: "default" }));
+  await stale(agentActionsDesk.topicsSetEnabled("p1", true));
+  await stale(agentActionsDesk.prepareSessionTransfer("p1", "claude", ""));
+  await stale(agentActionsDesk.confirmSessionTransfer("p1", "claude", "", "x1"));
+  await stale(agentActionsDesk.transferAgentInfo("p1", "t1"));
+  await stale(agentActionsDesk.transferAccounts());
+
+  // The ••• menu's Avatar… sheet, after another pane's sheet on the same machine.
+  await open(desk, a, "terminal");
+  expect(await agentActionsDesk.agentMenu("p2")).toBe(true);
+  p.click("Rename");
+  await settle();
+  expect(await desk.paneMenu({ paneID: "p1", plain: false, hasSelection: false, canShare: false })).toBe(true);
+  p.click("Avatar…");
+  await settle();
+  expect(sheets.length).toBe(3);
+  await open(desk, b, "terminal");
+  await stale(agentActionsDesk.setAgentAvatar("p1", { kind: "default" }));
+
+  // A folder menu's name prompt.
+  await open(desk, a, "terminal");
+  expect(await agentActionsDesk.folderMenu("f1")).toBe(true);
+  p.click("Rename");
+  await settle();
+  const naming = sheets[3] as FolderNaming;
+  await open(desk, b, "terminal");
+  await agentActionsDesk.nameFolder(naming, "Renamed");
+  await settle();
+  expect([writes(seenA), writes(seenB)]).toEqual([[], []]);
+  // A's accounts.list is its row menu's own (Swap); B has had no menu, so none is the sheet's.
+  expect(methods(seenB, "accounts.list")).toEqual([]);
+
+  // On its own machine the sheet's request goes there.
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  p.click("Rename");
+  await settle();
+  expect(await agentActionsDesk.renameAgent("p1", "ok")).toBe("herdr-app");
+  expect([writes(seenA), writes(seenB)]).toEqual([[], ["agent.rename"]]);
+ } finally { for (const off of offs) off(); desk.disconnectOwner(); a.stop(); b.stop(); }
+}, 30_000); // six link openings over a loopback relay
