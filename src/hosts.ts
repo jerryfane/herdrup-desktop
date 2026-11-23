@@ -78,9 +78,12 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  form.append(saveOnly, error);
  sheet.append(sheetHeader, form); document.body.append(sheet);
  const add = action("Add host", () => edit()); add.className = "host-add";
+ // The first-run smoke (app/smoke.go) finds the host actions and the welcome by these hooks.
+ add.dataset.smoke = "host-action";
  void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
  const startPairing = (offer?: PairingOffer) => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit(), offer);
  const pair = action("Scan pairing code", () => startPairing()); pair.className = "host-pair";
+ pair.dataset.smoke = "host-action";
  // 1B-dk "Welcome back": the account's machines this device hasn't saved, each to pair here.
  // Rows are the saved rows' neutral style (no colour per machine).
  const synced = element("section", "host-home-saved host-home-synced"); synced.hidden = true;
@@ -215,6 +218,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  // guest's sign-in lives in Settings only.
  const welcome = new AccountWelcome(() => { home.hidden = false; });
  container.replaceChildren(...(webGuest ? [home] : [welcome.root, home]));
+ // "settled" once the first refresh has decided whether the first-launch welcome shows (its
+ // provider lookup can take a while); the home stays visible meanwhile, so a launch without a
+ // network still shows it. The first-run smoke waits for it.
+ container.dataset.welcome = webGuest ? "settled" : "pending";
  async function openPendingInvitation() {
   const text = await Desk.takeGuestInvitation();
   if (text) showGuestAccept(refresh, showAgents, text);
@@ -317,6 +324,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
    if (!webGuest && accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
    if (!webGuest) home.hidden = await welcome.update(machines.length === 0 && shares.length === 0);
+   container.dataset.welcome = "settled";
    if (generation !== version) return;
    shared.hidden = shares.length === 0;
    placeOwnerSetup(shares.length > 0);

@@ -64,6 +64,9 @@ export async function webSignInProviders(fetcher: typeof fetch, service = ACCOUN
 export class SignedOutError extends Error {
  constructor() { super("Signed out"); this.name = "SignedOutError"; }
 }
+/** One refresh and the callers waiting for it. */
+interface Flight { waiting: number; done: Promise<string> }
+
 /** A refresh nobody waited for any more by the time the lock came: not sent. */
 class RefreshUnwanted extends Error {
  constructor() { super("refresh no longer wanted"); this.name = "RefreshUnwanted"; }
@@ -110,7 +113,7 @@ export class WebAccount {
  private access = "";
  private accessUntil = 0;
  private session: WebSession | null = null;
- private flight: Promise<string> | null = null;
+ private flight: Flight | null = null;
  /** Counts sign-outs: a refresh commits only into the session it started from. */
  private epoch = 0;
 
@@ -132,29 +135,33 @@ export class WebAccount {
  accessToken(signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted();
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
-  // Counted before the refresh is queued: without a lock the refresh starts at once. A caller
-  // stops counting the moment its signal aborts, so the lock's turn sees only live callers.
-  this.waiting++;
+  const joining = this.flight;
+  // A new flight is published with its real result already pending: a caller that comes while
+  // the lock or the fetch is being started (even from inside them) joins that, not a stand-in.
+  const result = joining === null ? Promise.withResolvers<string>() : null;
+  const flight: Flight = joining ?? { waiting: 0, done: result!.promise };
+  // Counted on its own flight before the refresh is queued (without a lock it starts at once). A
+  // caller stops counting the moment its signal aborts, so the lock's turn sees only live callers
+  // of that refresh, not of a newer one.
+  flight.waiting++;
   let counted = true;
-  const leave = () => { if (counted) { counted = false; this.waiting--; } };
+  const leave = () => { if (counted) { counted = false; flight.waiting--; } };
   signal?.addEventListener("abort", leave, { once: true });
-  if (!this.flight) {
+  if (joining === null) {
    // The epoch now, not when the lock is granted: a sign-out while this waits for the lock
-   // (another tab's refresh, or the sign-out itself) makes its answer stale.
+   // (another tab's refresh, or the sign-out itself) makes it stale, and it isn't sent.
    const epoch = this.epoch;
-   const flight: Promise<string> = this.exclusive(() => {
-    // Without a lock this runs at once, with this caller counted: flight is read only later.
-    if (this.waiting > 0) return this.refresh(epoch);
+   flight.done = result!.promise.finally(() => { if (this.flight === flight) this.flight = null; });
+   this.flight = flight;
+   this.exclusive(() => {
+    if (flight.waiting > 0 && epoch === this.epoch) return this.refresh(epoch);
     // Skipped: a caller that comes now queues its own refresh instead of joining this one.
     if (this.flight === flight) this.flight = null;
-    return Promise.reject(new RefreshUnwanted());
-   }).finally(() => { if (this.flight === flight) this.flight = null; });
-   this.flight = flight;
+    return Promise.reject(epoch === this.epoch ? new RefreshUnwanted() : new SignedOutError());
+   }).then(result!.resolve, result!.reject);
   }
-  return (signal ? untilAborted(this.flight, signal) : this.flight).finally(() => { signal?.removeEventListener("abort", leave); leave(); });
+  return (signal ? untilAborted(flight.done, signal) : flight.done).finally(() => { signal?.removeEventListener("abort", leave); leave(); });
  }
- /** Callers waiting for the refresh in flight. */
- private waiting = 0;
 
  /** The session the cookie holds now, or null when there is none: a refresh. Other errors throw. */
  async check(): Promise<WebSession | null> {
