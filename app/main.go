@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	armFirstRunDeadline()
+	firstRun := armFirstRunDeadline()
 	// Linux keeps the data of the app's former name apart (userdata_rename.go).
 	if config, err := os.UserConfigDir(); err == nil && !smokeEnabled() {
 		if err := moveFormerUserData(config, mygo.App.Name()); err != nil {
@@ -149,7 +149,7 @@ func main() {
 			return
 		}
 		if smokeEnabled() {
-			runSmoke(desk, win)
+			runSmoke(desk, win, firstRun)
 			return
 		}
 		// Reconnect to the saved machine when it logs in with a key; a

@@ -451,6 +451,7 @@ export class AccountWelcome {
  constructor(private readonly done: () => void) {
   this.root.hidden = true;
   this.root.setAttribute("aria-label", "Sign in");
+  this.root.dataset.smoke = "welcome"; // the first-run smoke's hook (app/smoke.go)
   events.accountChanged.on(s => { if (s.signedIn && !this.root.hidden) this.finish(); else if (!this.root.hidden) this.draw(s.problem ?? ""); });
  }
 
@@ -485,7 +486,7 @@ export class AccountWelcome {
    this.waiting = true; this.draw("");
    void Desk.accountSignIn(provider).catch(error => { this.waiting = false; this.draw(errorText(error)); });
   }));
-  const skip = el("button", "account-welcome-skip", "Set up without an account"); skip.type = "button";
+  const skip = el("button", "account-welcome-skip", "Set up without an account"); skip.type = "button"; skip.dataset.smoke = "welcome-skip";
   skip.onclick = () => this.finish();
   actions.append(skip);
   if (this.waiting) actions.append(el("p", "account-note", "Finish signing in in your browser."));

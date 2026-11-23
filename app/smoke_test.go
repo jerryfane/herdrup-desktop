@@ -4,8 +4,10 @@ import "testing"
 
 func TestFirstRunVerdict(t *testing.T) {
 	probe := func(home, welcome, phone bool, actions float64, errs ...any) map[string]any {
-		return map[string]any{"hostHome": home, "welcome": welcome, "phone": phone, "actions": actions, "width": 360.0, "errors": errs}
+		return map[string]any{"hostHome": home, "settled": true, "welcome": welcome, "phone": phone, "actions": actions, "width": 360.0, "errors": errs}
 	}
+	unsettled := probe(true, false, true, 2)
+	unsettled["settled"] = false
 	cases := []struct {
 		name     string
 		probe    map[string]any
@@ -19,6 +21,7 @@ func TestFirstRunVerdict(t *testing.T) {
 		{"the account welcome over the host screen: dismissed, look again", probe(true, true, true, 2), 0, true, false, false},
 		{"the host screen with no host action a click reaches", probe(true, false, true, 0), 0, true, false, false},
 		{"no host screen yet", probe(false, false, true, 2), 0, true, false, false},
+		{"the host screen before the welcome is decided", unsettled, 0, true, false, false},
 		{"the desktop layout when the phone was asked", probe(true, false, false, 2), 0, true, true, false},
 		{"the desktop layout when it wasn't", probe(true, false, false, 2), 0, false, true, true},
 	}
