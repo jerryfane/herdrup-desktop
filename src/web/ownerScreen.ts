@@ -81,13 +81,18 @@ export function unsupportedNotice(kind: BrowserKind): UnsupportedNotice {
  }
 }
 
-/** The App Store link as a QR code: one SVG path of its dark modules on a size × size grid. */
-export function appStoreQR(): { url: string; size: number; path: string } {
+/** The quiet zone round a QR code, in modules: the four DENSO WAVE's specification requires (as
+ *  the desktop invitation's code in guestShare.ts). */
+const QR_QUIET = 4;
+
+/** The App Store link as a QR code: an SVG of its dark modules, one path, with the quiet zone. */
+export function appStoreQR(): { url: string; svg: string } {
  const code = qrcode(0, "M"); code.addData(IOS_APP_URL); code.make();
  const size = code.getModuleCount();
  let path = "";
  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) if (code.isDark(row, col)) path += `M${col} ${row}h1v1h-1z`;
- return { url: IOS_APP_URL, size, path };
+ const side = size + 2 * QR_QUIET;
+ return { url: IOS_APP_URL, svg: `<svg viewBox="${-QR_QUIET} ${-QR_QUIET} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true"><path d="${path}"/></svg>` };
 }
 
 /** This page's link to open in another browser: no query or fragment (they belong to this visit),
@@ -97,17 +102,44 @@ export function pageLink(href: string): { href: string; shown: string } {
  return { href: url.origin + url.pathname, shown: url.host + url.pathname };
 }
 
-/** Which screen a phase gets: the guide (waiting, the code, and every way a request ends), the
- *  machine list once approved, or the notice for a browser that can't be approved. */
-export type OwnerView = "guide" | "list" | "notice";
-export function ownerView(kind: OwnerPhase["kind"]): OwnerView {
- return kind === "approved" ? "list" : kind === "unsupported" ? "notice" : "guide";
+/** A phase the guide shows: waiting, the code, and every way a request ends. */
+type GuidePhase = Exclude<OwnerPhase, { kind: "approved" | "unsupported" }>;
+
+/** What a phase shows, decided once: the screen's layout and what it holds. The guide shows its
+ *  steps only while a request is live (ended: null); once the request ended, the line in their
+ *  place says what to do instead, as the step "Type the code this page shows" no longer holds. */
+export type OwnerLayout =
+ | { view: "list"; record: OwnerRecord }
+ | { view: "notice" }
+ | { view: "guide"; phase: GuidePhase; code: string | null; ended: string | null };
+export function ownerLayout(phase: OwnerPhase): OwnerLayout {
+ switch (phase.kind) {
+  case "approved": return { view: "list", record: phase.record };
+  case "unsupported": return { view: "notice" };
+  case "starting":
+  case "waiting": return { view: "guide", phase, code: null, ended: null };
+  case "code": return { view: "guide", phase, code: phase.code, ended: null };
+  case "denied": return { view: "guide", phase, code: null, ended: "This request wasn't approved. Ask again for a new code, then approve it in HerdrUp." };
+  case "expired": return { view: "guide", phase, code: null, ended: "This request's code no longer works. Ask again for a new code, then approve it in HerdrUp." };
+  case "failed": return { view: "guide", phase, code: null, ended: "No request was made. Try again for a code, then approve it in HerdrUp." };
+  case "elsewhere": return { view: "guide", phase, code: null, ended: "Another tab of this page holds the request. Approve it there, or close that tab and try again here." };
+ }
 }
 
 /** The rows rise in only on the way from the code to the list (proposal D's transition); a redraw
  *  of the list (a machine's status changed) or a list that was approved before stays still. */
 export function arrives(previous: OwnerPhase["kind"] | null, next: OwnerPhase["kind"]): boolean {
  return previous === "code" && next === "approved";
+}
+
+/** How far into the list's entrance a drawing at now is, in ms, for an arrival at arrivedAt (null
+ *  for none); null once its last of rows rows has risen. A redraw during the entrance draws it at
+ *  this point (web.css delays each part by its own delay less this), so the rise runs on. The
+ *  times are web.css's: each part rises in 360 ms, the rows from 120 ms, 60 ms apart. */
+export function arrivalElapsed(arrivedAt: number | null, now: number, rows: number): number | null {
+ if (arrivedAt === null) return null;
+ const elapsed = Math.max(0, now - arrivedAt);
+ return elapsed < 120 + Math.max(0, rows - 1) * 60 + 360 ? elapsed : null;
 }
 
 /** The minutes and seconds until expiresAt ("9:38"), never below 0:00. */
@@ -157,16 +189,20 @@ export function approvedMachines(record: OwnerRecord): { machines: EnvelopeMachi
 
 /** "Pick a machine": each granted machine with its probe's status, its access and until when, and
  *  whether Open can reach it; each skipped machine with the reason. */
-export interface MachineRow { machine: EnvelopeMachine; status: string; state: MachineStatus["kind"]; access: string; openable: boolean }
+export interface MachineRow extends RowStatus { machine: EnvelopeMachine; access: string }
 export function machineRows(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>): { rows: MachineRow[]; skipped: { label: string; reason: string }[] } {
  const { machines, skipped } = approvedMachines(record);
  return {
-  rows: machines.map(m => {
-   const status = statuses.get(m.hostID);
-   return { machine: m, status: statusText(status), state: status?.kind ?? "checking", access: `${m.scope === "terminal" ? "Chat and terminal" : "Chat"} · until ${until(m.expiresUnix)}`, openable: status?.kind !== "ended" };
-  }),
+  rows: machines.map(m => ({ machine: m, ...rowStatus(statuses.get(m.hostID)), access: `${m.scope === "terminal" ? "Chat and terminal" : "Chat"} · until ${until(m.expiresUnix)}` })),
   skipped: skipped.map(s => ({ label: s.label, reason: SKIP_TEXT[s.reason] + (s.version ? ` (herdr ${s.version})` : "") })),
  };
+}
+
+/** A machine row's part its probe sets: the status as words, its state, and whether Open can
+ *  reach the machine (not once it ended). */
+export interface RowStatus { status: string; state: MachineStatus["kind"]; openable: boolean }
+function rowStatus(status: MachineStatus | undefined): RowStatus {
+ return { status: statusText(status), state: status?.kind ?? "checking", openable: status?.kind !== "ended" };
 }
 
 export interface OwnerActions { again(): void; guestInstead(): void; open(machine: EnvelopeMachine): void }
@@ -184,15 +220,21 @@ function button(cls: string, text: string, run: () => void) {
  return b;
 }
 
+/** Copies text: done once the clipboard took it, failed when it refused or there is no clipboard
+ *  (navigator.clipboard is absent outside a secure context and in some embedded browsers), so the
+ *  caller's manual-selection fallback runs either way. */
+export function copyText(clipboard: Pick<Clipboard, "writeText"> | undefined, text: string, done: () => void, failed: () => void): void {
+ if (clipboard === undefined) { failed(); return; }
+ clipboard.writeText(text).then(done, failed);
+}
+
 /** A copy button: its icon is the button's, and it says Copied once the clipboard took it. */
 const COPY_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg>`;
 function copyButton(cls: string, label: string, text: string, failed: () => void) {
  const b = el("button", cls); b.type = "button";
  const word = el("span", "", label);
  b.innerHTML = COPY_ICON; b.append(word);
- b.addEventListener("click", () => {
-  void navigator.clipboard.writeText(text).then(() => { word.textContent = "Copied"; }, failed);
- });
+ b.addEventListener("click", () => copyText(navigator.clipboard as Clipboard | undefined, text, () => { word.textContent = "Copied"; }, failed));
  return b;
 }
 
@@ -205,31 +247,41 @@ function waiting(spinnerSVG: string, text: string) {
  return w;
 }
 
-/** The phase ownerCard drew last, for arrives. */
-let lastKind: OwnerPhase["kind"] | null = null;
 /** The guide's platform, kept across redraws. */
 let guidePlatform: GuidePlatform = "computer";
 
-/** The screen for phase; browser is this browser (thisBrowser), statuses each machine's probe.
- *  The caller adds its error line before and the account part after the screen's body. */
+/** The screen for phase; browser is this browser (thisBrowser), statuses each machine's probe,
+ *  arrivedAt when the list arrived from the code (performance.now(), null for none: see
+ *  arrivalElapsed). The caller adds its error line before and the account part after the
+ *  screen's body. */
 export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
- statuses: ReadonlyMap<string, MachineStatus> = new Map()): HTMLElement {
- const view = ownerView(phase.kind);
- const arriving = arrives(lastKind, phase.kind);
- lastKind = phase.kind;
- const screen = el("div", `web-owner web-owner-${view}${arriving ? " web-owner-arrive" : ""}`);
+ statuses: ReadonlyMap<string, MachineStatus> = new Map(), arrivedAt: number | null = null): HTMLElement {
+ const layout = ownerLayout(phase);
+ const screen = el("div", `web-owner web-owner-${layout.view}`);
  const body = el("div", "web-owner-body");
  screen.append(body);
  const guest = (cls: string) => button(cls, "Use a guest invitation instead", actions.guestInstead);
- if (phase.kind === "approved") body.append(...approvedList(phase.record, statuses, actions.open));
- else if (phase.kind === "unsupported") body.append(...notice(unsupportedNotice(browser.kind), guest("web-owner-link")));
- else body.append(guideMain(phase, browser, actions, spinnerSVG, guest), guide(browser.name, phase.kind === "code" ? phase.code : null));
+ switch (layout.view) {
+  case "list": {
+   const list = approvedList(layout.record, statuses, actions.open);
+   body.append(...list.parts);
+   const elapsed = arrivalElapsed(arrivedAt, performance.now(), list.rows);
+   if (elapsed !== null) { screen.classList.add("web-owner-arrive"); screen.style.setProperty("--arrive-elapsed", `${elapsed}ms`); }
+   break;
+  }
+  case "notice":
+   body.append(...notice(unsupportedNotice(browser.kind), guest("web-owner-link")));
+   break;
+  case "guide":
+   body.append(guideMain(layout.phase, browser, actions, spinnerSVG, guest), guide(browser.name, layout.code, layout.ended));
+   break;
+ }
  return screen;
 }
 
 /** The guide's left side for phase: what the page waits for, the code (or where it will show),
  *  and what to do next. */
-function guideMain(phase: Exclude<OwnerPhase, { kind: "approved" | "unsupported" }>, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
+function guideMain(phase: GuidePhase, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
  guest: (cls: string) => HTMLElement): HTMLElement {
  const main = el("div", "web-owner-main");
  const again = (label = "Ask again") => button("web-owner-action web-owner-primary", label, actions.again);
@@ -287,28 +339,39 @@ function digits(code: string | null): HTMLElement {
 }
 
 /** The guide's right side: "Where to approve", the platform switch, the drawing of HerdrUp with
- *  "Approve a browser?" open and its numbered markers, and the steps the markers point to. */
-function guide(browserName: string, code: string | null): HTMLElement {
+ *  "Approve a browser?" open and its numbered markers, and the steps the markers point to; once
+ *  the request ended, ended in the steps' place (ownerLayout). The switch is native radios, kept
+ *  in place when it changes (only the drawing and the steps are drawn again), so the arrow keys
+ *  move the choice and the focus stays on it. */
+function guide(browserName: string, code: string | null, ended: string | null): HTMLElement {
  const panel = el("div", "web-owner-howto");
- const draw = () => {
-  const head = el("div", "web-owner-howto-head");
-  const sw = el("div", "web-owner-switch"); sw.setAttribute("role", "radiogroup"); sw.setAttribute("aria-label", "Where to approve");
-  for (const [platform, label] of GUIDE_PLATFORMS) {
-   const b = button("", label, () => { guidePlatform = platform; draw(); });
-   b.setAttribute("role", "radio"); b.setAttribute("aria-checked", String(platform === guidePlatform));
-   sw.append(b);
+ const head = el("div", "web-owner-howto-head");
+ const sw = el("div", "web-owner-switch"); sw.setAttribute("role", "radiogroup"); sw.setAttribute("aria-label", "Where to approve");
+ const shown = el("div", "web-owner-howto-shown");
+ const show = () => {
+  let instructions: HTMLElement;
+  if (ended !== null) instructions = el("p", "web-owner-howto-ended", ended);
+  else {
+   instructions = el("ol", "web-owner-steps");
+   for (const [i, step] of guideSteps(guidePlatform, browserName, code).entries()) {
+    const li = el("li");
+    const text = el("span"); text.append(el("strong", "", step.lead), document.createTextNode(step.rest));
+    li.append(el("span", "web-owner-step-n", String(i + 1)), text);
+    instructions.append(li);
+   }
   }
-  head.append(el("strong", "", "Where to approve"), sw);
-  const steps = el("ol", "web-owner-steps");
-  for (const [i, step] of guideSteps(guidePlatform, browserName, code).entries()) {
-   const li = el("li");
-   const text = el("span"); text.append(el("strong", "", step.lead), document.createTextNode(step.rest));
-   li.append(el("span", "web-owner-step-n", String(i + 1)), text);
-   steps.append(li);
-  }
-  panel.replaceChildren(head, drawing(guidePlatform, browserName, code), steps);
+  shown.replaceChildren(drawing(guidePlatform, browserName, code), instructions);
  };
- draw();
+ for (const [platform, label] of GUIDE_PLATFORMS) {
+  const choice = el("label");
+  const radio = el("input"); radio.type = "radio"; radio.name = "web-owner-platform"; radio.value = platform; radio.checked = platform === guidePlatform;
+  radio.addEventListener("change", () => { if (radio.checked) { guidePlatform = platform; show(); } });
+  choice.append(radio, el("span", "", label));
+  sw.append(choice);
+ }
+ head.append(el("strong", "", "Where to approve"), sw);
+ show();
+ panel.append(head, shown);
  return panel;
 }
 
@@ -337,10 +400,9 @@ function notice(n: UnsupportedNotice, guest: HTMLElement): HTMLElement[] {
  if (n.eyebrow) out.push(el("p", "web-owner-eyebrow", n.eyebrow));
  out.push(el("h1", "", n.title), el("p", "web-owner-lead", n.text));
  if (n.app && n.computer) {
-  const qr = appStoreQR();
   const block = el("div", "web-owner-qr");
   const code = el("span", "web-owner-qr-code"); code.setAttribute("role", "img"); code.setAttribute("aria-label", "QR code for HerdrUp on the App Store");
-  code.innerHTML = `<svg viewBox="-2 -2 ${qr.size + 4} ${qr.size + 4}" shape-rendering="crispEdges" aria-hidden="true"><path d="${qr.path}"/></svg>`;
+  code.innerHTML = appStoreQR().svg;
   const words = el("span", "web-owner-qr-text");
   words.append(el("strong", "", n.computer.qrTitle), el("span", "", n.computer.qrText), appBadge(n.app));
   block.append(code, words);
@@ -369,24 +431,40 @@ function appBadge(app: { href: string; label: string }): HTMLElement {
  return a;
 }
 
+/** The rows of the list drawn last, by host ID: showStatus updates them in place. */
+const mountedRows = new Map<string, { status: HTMLElement; words: Text; open: HTMLButtonElement }>();
+
+/** Shows a machine's new status in the list on screen, in place (a redraw would restart the
+ *  list's entrance); false when no row of the list on screen is the machine's (the caller redraws). */
+export function showStatus(hostID: string, status: MachineStatus): boolean {
+ const row = mountedRows.get(hostID);
+ if (row === undefined || !row.open.isConnected) return false;
+ const s = rowStatus(status);
+ row.status.dataset.state = s.state; row.words.data = s.status; row.open.disabled = !s.openable;
+ return true;
+}
+
 /** "Pick a machine": who approved, then a row per machine with its status as plain text, its
- *  access and Open; skipped machines with the reason. */
-function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): HTMLElement[] {
+ *  access and Open; skipped machines with the reason. rows counts the list's rows. */
+function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): { parts: HTMLElement[]; rows: number } {
  const { rows, skipped } = machineRows(record, statuses);
  const names = [...new Set(record.approvers.map(a => a.name))].join(", ");
  const list = el("ul", "web-owner-machines");
+ mountedRows.clear();
  let i = 0;
  for (const r of rows) {
   const row = el("li"); row.style.setProperty("--i", String(i++));
   const text = el("span", "web-owner-machine-text");
   const status = el("span", "web-owner-status"); status.dataset.state = r.state;
-  status.append(el("i", "web-owner-dot"), document.createTextNode(r.status));
+  const words = document.createTextNode(r.status);
+  status.append(el("i", "web-owner-dot"), words);
   text.append(el("strong", "", r.machine.label), status);
   const b = button("web-owner-action", "Open", () => open(r.machine));
   b.setAttribute("aria-label", `Open ${r.machine.label}`);
   b.disabled = !r.openable;
   row.append(text, el("span", "web-owner-machine-access", r.access), b);
   list.append(row);
+  mountedRows.set(r.machine.hostID, { status, words, open: b });
  }
  for (const s of skipped) {
   const row = el("li", "web-owner-skipped"); row.style.setProperty("--i", String(i++));
@@ -395,6 +473,5 @@ function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, Machine
   list.append(row);
  }
  const approvedBy = el("p", "web-owner-eyebrow", "Approved by "); approvedBy.append(el("span", "", names));
- return [approvedBy, el("h1", "", "Pick a machine"),
-  el("p", "web-owner-lead", "Open a machine to chat with its agents."), list];
+ return { parts: [approvedBy, el("h1", "", "Pick a machine"), el("p", "web-owner-lead", "Open a machine to chat with its agents."), list], rows: i };
 }

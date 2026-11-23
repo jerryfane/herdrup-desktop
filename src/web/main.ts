@@ -27,7 +27,7 @@ import { AccountServiceError, SignedOutError } from "./account";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { OwnerRuns } from "./ownerRuns";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
-import { approvedMachines, ownerCard, thisBrowser } from "./ownerScreen";
+import { approvedMachines, arrives, ownerCard, showStatus, thisBrowser } from "./ownerScreen";
 import { probeList, type MachineStatus } from "./ownerProbe";
 import { statementCache } from "./statements";
 import type { EnvelopeMachine } from "../webguest/approve";
@@ -83,6 +83,9 @@ const ownerStore = new IndexedDBOwnerStore();
 const browser = thisBrowser(navigator.userAgent, navigator.maxTouchPoints);
 const deviceName = browser.name;
 let ownerPhase: OwnerPhase | null = null;
+/** When the machine list arrived from the code (performance.now()), for its entrance; null when
+ *  the list showed without that step (ownerCard's arrivedAt). */
+let ownerArrivedAt: number | null = null;
 const ownerRuns = new OwnerRuns();
 /** The person chose "Use a guest invitation instead" on this load. */
 let guestInstead = false;
@@ -108,7 +111,7 @@ function startProbes() {
   const record = ownerPhase.record;
   const key = await ownerKey(ownerAccess.identities).catch(() => null);
   return key === null ? null : { machines: approvedMachines(record).machines, key };
- }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); redrawWelcome(); }, { signal: ownerSession.signal });
+ }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); if (!showStatus(hostID, status)) redrawWelcome(); }, { signal: ownerSession.signal });
 }
 function stopProbes() { if (probing !== null) { void probing(); probing = null; } }
 
@@ -168,10 +171,11 @@ async function refreshShown(run: AbortSignal, record: OwnerRecord) {
  *  lock), else this browser asks; Ask again goes the same way. It only changes state: the
  *  caller draws (showWelcome when entering owner mode, redrawWelcome for Ask again). */
 function beginApproval() {
- ownerPhase = { kind: "starting" };
+ ownerPhase = { kind: "starting" }; ownerArrivedAt = null;
  // The run is this session's: another account's or none (see showWelcome) ends it.
  const onPhase = (run: AbortSignal) => (p: OwnerPhase) => {
   if (!ownerRuns.isCurrent(run)) return;
+  if (arrives(ownerPhase?.kind ?? null, p.kind)) ownerArrivedAt = performance.now();
   ownerPhase = p;
   if (p.kind === "approved") void refreshShown(run, p.record);
   redrawWelcome();
@@ -182,7 +186,7 @@ function beginApproval() {
 }
 
 /** Stops the approval and forgets what it showed: another sign-in starts from its own account. */
-function stopOwner() { ownerRuns.stop(); ownerPhase = null; stopProbes(); statuses.clear(); }
+function stopOwner() { ownerRuns.stop(); ownerPhase = null; ownerArrivedAt = null; stopProbes(); statuses.clear(); }
 
 // ---- The plain screen without a grant ----
 
@@ -202,7 +206,7 @@ function showWelcome(shown: WelcomeState | null) {
    again: () => { beginApproval(); redrawWelcome(); },
    guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
    open: openMachine,
-  }, spinnerSVG, statuses);
+  }, spinnerSVG, statuses, ownerArrivedAt);
   if (ownerPhase?.kind === "approved") startProbes(); else stopProbes();
   if (shown.error) { const error = el("p", "web-welcome-error", shown.error); error.setAttribute("role", "alert"); card.prepend(error); }
  } else {

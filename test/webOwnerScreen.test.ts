@@ -1,8 +1,9 @@
 // The owner's screen in the browser (src/web/ownerScreen.ts): what each phase shows, decided by
 // small functions, and the unsupported notice as ownerCard draws it, on a minimal fake document.
 import { afterEach, expect, test } from "bun:test";
-import qrcode from "qrcode-generator";
-import { appStoreQR, arrives, guideSteps, IOS_APP_URL, machineRows, ownerCard, ownerView, pageLink, thisBrowser, timeLeft, unsupportedNotice } from "../src/web/ownerScreen";
+import jsQR from "jsqr";
+import { appStoreQR, arrivalElapsed, arrives, copyText, guideSteps, IOS_APP_URL, machineRows, ownerCard, ownerLayout, pageLink, showStatus, thisBrowser, timeLeft, unsupportedNotice } from "../src/web/ownerScreen";
+import type { OwnerPhase } from "../src/web/ownerApproval";
 import type { MachineStatus } from "../src/web/ownerProbe";
 import type { OwnerRecord } from "../src/web/ownerStore";
 
@@ -46,22 +47,30 @@ test("the notice's words: Safari is sent to another browser with the app's QR co
  expect(other.app).toBeUndefined();
 });
 
-test("the QR code is the App Store link's, module for module", () => {
- const qr = appStoreQR();
- const code = qrcode(0, "M"); code.addData(IOS_APP_URL); code.make();
- let path = "";
- for (let row = 0; row < code.getModuleCount(); row++) for (let col = 0; col < code.getModuleCount(); col++) if (code.isDark(row, col)) path += `M${col} ${row}h1v1h-1z`;
- expect(qr).toEqual({ url: IOS_APP_URL, size: code.getModuleCount(), path });
-});
-
 test("the link to copy is this page's, without the visit's query or fragment", () => {
  expect(pageLink("https://guest.herdrup.app/web/?x=1#invite=secret")).toEqual({ href: "https://guest.herdrup.app/web/", shown: "guest.herdrup.app/web/" });
 });
 
-test("each phase has its screen: the guide until it ends, the list once approved, the notice when it can't be approved", () => {
- expect((["starting", "waiting", "code", "denied", "expired", "failed", "elsewhere"] as const).map(ownerView)).toEqual(Array(7).fill("guide"));
- expect(ownerView("approved")).toBe("list");
- expect(ownerView("unsupported")).toBe("notice");
+const LIVE: OwnerPhase[] = [{ kind: "starting" }, { kind: "waiting" }, { kind: "code", code: "4827", approver: "Mac", expiresAt: 0 }];
+const ENDED: OwnerPhase[] = [{ kind: "denied" }, { kind: "expired" }, { kind: "failed", problem: "x" }, { kind: "elsewhere" }];
+
+test("each phase has its screen, decided once: the guide until it ends, the list once approved, the notice when it can't be approved", () => {
+ expect([...LIVE, ...ENDED].map(p => ownerLayout(p).view)).toEqual(Array(7).fill("guide"));
+ const record = { v: 2, account: "a", devicePub: "B", approvers: [] } as OwnerRecord;
+ expect(ownerLayout({ kind: "approved", record })).toEqual({ view: "list", record });
+ expect(ownerLayout({ kind: "unsupported" })).toEqual({ view: "notice" });
+ const code = ownerLayout(LIVE[2]);
+ expect(code.view === "guide" && code.code).toBe("4827");
+});
+
+test("the guide's steps show only while a request is live; once it ended, the guide says to ask again instead", () => {
+ for (const p of LIVE) { const l = ownerLayout(p); expect(l.view === "guide" && l.ended).toBeNull(); }
+ for (const p of ENDED) {
+  const l = ownerLayout(p);
+  const ended = l.view === "guide" ? l.ended : null;
+  expect(ended).toMatch(/[Aa]sk again|[Tt]ry again/);
+  expect(ended).not.toContain("this page shows");
+ }
 });
 
 test("the rows rise in only on the way from the code to the list, not on a redraw or a list kept from before", () => {
@@ -70,6 +79,28 @@ test("the rows rise in only on the way from the code to the list, not on a redra
  expect(arrives(null, "approved")).toBe(false);
  expect(arrives("starting", "approved")).toBe(false);
  expect(arrives("waiting", "code")).toBe(false);
+});
+
+test("a redraw during the list's entrance draws it as far in as it is, until its last row has risen", () => {
+ expect(arrivalElapsed(null, 5_000, 3)).toBeNull();
+ expect(arrivalElapsed(1_000, 1_100, 3)).toBe(100);
+ expect(arrivalElapsed(1_000, 1_000 + 120 + 2 * 60 + 359, 3)).toBe(599);
+ expect(arrivalElapsed(1_000, 1_000 + 120 + 2 * 60 + 360, 3)).toBeNull();
+ expect(arrivalElapsed(1_000, 1_000 + 500, 1)).toBeNull();
+});
+
+test("Copy falls back to its manual selection when the clipboard refuses and when there is none", async () => {
+ const calls: string[] = [];
+ const done = () => calls.push("done"), failed = () => calls.push("failed");
+ expect(() => copyText(undefined, "x", done, failed)).not.toThrow();
+ expect(calls).toEqual(["failed"]);
+ copyText({ writeText: () => Promise.reject(new Error("denied")) }, "x", done, failed);
+ await Promise.resolve(); await Promise.resolve();
+ expect(calls).toEqual(["failed", "failed"]);
+ let written = "";
+ copyText({ writeText: async t => { written = t; } }, "4827", done, failed);
+ await Promise.resolve(); await Promise.resolve();
+ expect([written, calls.at(-1)]).toEqual(["4827", "done"]);
 });
 
 test("the expiry counts down in minutes and seconds, a started second counting, and stops at 0:00", () => {
@@ -105,31 +136,43 @@ test("Pick a machine: each machine's status, access and until; a machine that en
  expect(skipped).toEqual([{ label: "nas", reason: "Needs a herdr update (herdr 0.8.2)" }, { label: "win", reason: "Doesn't support browser access" }]);
 });
 
-// ---- The unsupported notice as ownerCard draws it, on a fake document (Bun has no DOM) ----
+// ---- ownerCard's drawing, on a fake document (Bun has no DOM) ----
 
-/** The few DOM calls the notice makes: createElement, className, textContent, setAttribute,
- *  append, addEventListener, and plain properties (href, target, rel, innerHTML, value). */
+/** The few DOM calls the screen makes: createElement, createTextNode, className, textContent,
+ *  setAttribute, append, replaceChildren, addEventListener, style, dataset and plain properties. */
+class FakeText {
+ constructor(public data: string) {}
+ all(): FakeElement[] { return []; }
+ get textContent() { return this.data; }
+}
 class FakeElement {
  className = ""; textContent = ""; innerHTML = ""; href = ""; target = ""; rel = ""; value = ""; readOnly = false; type = "";
- readonly children: FakeElement[] = [];
+ name = ""; checked = false; disabled = false; isConnected = true;
+ readonly children: (FakeElement | FakeText)[] = [];
  readonly attributes = new Map<string, string>();
+ readonly dataset: Record<string, string> = {};
+ readonly listeners = new Map<string, () => void>();
+ readonly style = { setProperty() {} };
+ readonly classList = { add: (c: string) => { this.className += ` ${c}`; } };
  constructor(readonly tagName: string) {}
  setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
- append(...nodes: FakeElement[]) { this.children.push(...nodes); }
- addEventListener() {}
+ append(...nodes: (FakeElement | FakeText)[]) { this.children.push(...nodes); }
+ replaceChildren(...nodes: (FakeElement | FakeText)[]) { this.children.splice(0, this.children.length, ...nodes); }
+ addEventListener(type: string, run: () => void) { this.listeners.set(type, run); }
  all(): FakeElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
+ text(): string { return this.textContent + this.children.map(c => c instanceof FakeText ? c.data : c.text()).join(""); }
 }
 const saved = { document: (globalThis as { document?: unknown }).document, location: (globalThis as { location?: unknown }).location };
 afterEach(() => {
  (globalThis as { document?: unknown }).document = saved.document;
  (globalThis as { location?: unknown }).location = saved.location;
 });
-function drawUnsupported(ua: string): FakeElement[] {
- (globalThis as { document?: unknown }).document = { createElement: (tag: string) => new FakeElement(tag) };
+function draw(phase: OwnerPhase, ua: string, statuses?: Map<string, MachineStatus>): FakeElement {
+ (globalThis as { document?: unknown }).document = { createElement: (tag: string) => new FakeElement(tag), createTextNode: (data: string) => new FakeText(data) };
  (globalThis as { location?: unknown }).location = { href: "https://guest.herdrup.app/web/#k=1" };
- const card = ownerCard({ kind: "unsupported" }, thisBrowser(ua), { again() {}, guestInstead() {}, open() {} }, "") as unknown as FakeElement;
- return card.all();
+ return ownerCard(phase, thisBrowser(ua), { again() {}, guestInstead() {}, open() {} }, "", statuses) as unknown as FakeElement;
 }
+const drawUnsupported = (ua: string) => draw({ kind: "unsupported" }, ua).all();
 const one = (nodes: FakeElement[], tag: string, cls?: string) => {
  const found = nodes.filter(n => n.tagName === tag && (cls === undefined || n.className.split(" ").includes(cls)));
  expect(found).toHaveLength(1);
@@ -147,7 +190,7 @@ test("ownerCard draws the notice: a WebKit browser gets its heading, words and t
  const safari = drawUnsupported(UA.macSafari);
  expect(one(safari, "h1").textContent).toBe("Open this page in Chrome, Edge or Firefox.");
  expect(one(safari, "a").href).toBe(IOS_APP_URL);
- expect(one(safari, "span", "web-owner-qr-code").innerHTML).toContain(appStoreQR().path);
+ expect(one(safari, "span", "web-owner-qr-code").innerHTML).toBe(appStoreQR().svg);
  expect(one(safari, "input").value).toBe("guest.herdrup.app/web/");
  expect(one(safari, "button", "web-owner-primary").children.map(c => c.textContent)).toEqual(["Copy link"]);
 });
@@ -158,4 +201,51 @@ test("ownerCard draws the notice: any other browser gets the site-data reason an
  expect(one(android, "p", "web-owner-lead").textContent).toContain("site data");
  expect(android.filter(n => n.tagName === "a")).toEqual([]);
  expect(one(android, "button", "web-owner-link").textContent).toBe("Use a guest invitation instead");
+});
+
+test("the App Store QR code as drawn has the four-module quiet zone on every side and reads as the App Store link", () => {
+ const svg = one(drawUnsupported(UA.macSafari), "span", "web-owner-qr-code").innerHTML;
+ const [x, y, w, h] = svg.match(/viewBox="([^"]+)"/)![1].split(" ").map(Number);
+ expect(w).toBe(h);
+ const cells: number[][] = [];
+ for (const [, col, row] of svg.matchAll(/M(\d+) (\d+)h1v1h-1z/g)) cells.push([Number(col) - x, Number(row) - y]);
+ const [cols, rows] = [cells.map(c => c[0]), cells.map(c => c[1])];
+ expect([Math.min(...cols), Math.min(...rows), w - 1 - Math.max(...cols), h - 1 - Math.max(...rows)]).toEqual([4, 4, 4, 4]);
+ // The symbol as a camera sees it: 4 px a module, dark on white.
+ const px = 4, side = w * px, image = new Uint8ClampedArray(side * side * 4).fill(255);
+ for (const [c, r] of cells) for (let dy = 0; dy < px; dy++) for (let dx = 0; dx < px; dx++) image.fill(0, ((r * px + dy) * side + c * px + dx) * 4, ((r * px + dy) * side + c * px + dx) * 4 + 3);
+ expect(jsQR(image, side, side)?.data).toBe(IOS_APP_URL);
+});
+
+test("the platform switch is radios kept in place: choosing iPhone or iPad draws only the drawing and the steps again", () => {
+ const card = draw({ kind: "waiting" }, UA.macChrome);
+ const radios = card.all().filter(n => n.tagName === "input");
+ expect(radios.map(r => [r.type, r.name, r.value, r.checked])).toEqual([["radio", "web-owner-platform", "computer", true], ["radio", "web-owner-platform", "phone", false]]);
+ expect(one(card.all(), "ol", "web-owner-steps").text()).toContain("Mac or PC");
+ const pick = (i: number) => { radios.forEach((r, j) => { r.checked = i === j; }); radios[i].listeners.get("change")!(); };
+ pick(1);
+ const after = card.all();
+ const inputs = after.filter(n => n.tagName === "input");
+ expect(inputs.length === radios.length && inputs.every((r, i) => r === radios[i])).toBe(true);
+ expect(one(after, "ol", "web-owner-steps").text()).toContain("iPhone or iPad");
+ expect(one(after, "div", "web-owner-drawing-phone")).toBeDefined();
+ pick(0);
+});
+
+test("an ended request's guide keeps its layout but shows what to do instead of the steps", () => {
+ const nodes = draw({ kind: "expired" }, UA.macChrome).all();
+ expect(nodes.some(n => n.className === "web-owner-steps")).toBe(false);
+ expect(one(nodes, "p", "web-owner-howto-ended").textContent).toContain("Ask again");
+ expect(one(nodes, "div", "web-owner-drawing")).toBeDefined();
+});
+
+test("a machine's new status shows in its row on screen, in place", () => {
+ const m = { hostItemID: "i", label: "hetzner", relay: "r", hostID: "h1", nodePub: "n", grantID: "g", scope: "chat" as const, expiresUnix: 1_800_000_000 };
+ const record: OwnerRecord = { v: 2, account: "a", devicePub: "B", approvers: [{ pub: "A", name: "Mac", envelope: { seq: 1, issuedUnix: 1, approver: "x", machines: [m], skipped: [] } }] };
+ const nodes = draw({ kind: "approved", record }, UA.macChrome).all();
+ const status = one(nodes, "span", "web-owner-status");
+ expect(status.text()).toBe("Checking…");
+ expect(showStatus("h1", { kind: "ended", message: "gone" })).toBe(true);
+ expect([status.dataset.state, status.text(), one(nodes, "button", "web-owner-action").disabled]).toEqual(["ended", "Not approved on this machine any more", true]);
+ expect(showStatus("other", { kind: "ended", message: "gone" })).toBe(false);
 });

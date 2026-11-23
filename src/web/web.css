@@ -69,8 +69,12 @@
 .web-owner-howto { flex: 0 1 600px; min-width: 0; display: flex; flex-direction: column; gap: 20px; padding: 24px; border: 1px solid var(--color-hairline); border-radius: var(--radius-group); background: var(--color-surface); }
 .web-owner-howto-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; font-size: 15px; }
 .web-owner-switch { display: inline-flex; gap: 1px; border: 1px solid var(--color-hairline); border-radius: 9px; overflow: hidden; background: var(--color-hairline); }
-.web-owner-switch button { padding: 7px 14px; border: 0; background: var(--color-surface-raised); color: var(--color-text-dim); font: 400 13px var(--font-app); white-space: nowrap; cursor: pointer; }
-.web-owner-switch button[aria-checked="true"] { background: var(--color-surface); color: var(--color-text); font-weight: 500; }
+.web-owner-switch label { position: relative; padding: 7px 14px; background: var(--color-surface-raised); color: var(--color-text-dim); font: 400 13px var(--font-app); white-space: nowrap; cursor: pointer; }
+.web-owner-switch input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.web-owner-switch label:has(input:checked) { background: var(--color-surface); color: var(--color-text); font-weight: 500; }
+.web-owner-switch label:has(input:focus-visible) { outline: 2px solid var(--color-text); outline-offset: -2px; }
+.web-owner-howto-shown { display: contents; }
+.web-owner-howto-ended { margin: 0; color: var(--color-text-dim); font-size: 14px; line-height: 1.45; }
 .web-owner-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; color: var(--color-text-dim); font-size: 14px; line-height: 1.45; }
 .web-owner-steps li { display: flex; align-items: flex-start; gap: 12px; }
 .web-owner-steps strong { color: var(--color-text); font-weight: 600; }
@@ -136,7 +140,8 @@
 /* The way in from the code: the content fades in and the rows rise one by one (60 ms apart). */
 @keyframes web-owner-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .web-owner-arrive .web-owner-body > *, .web-owner-arrive .web-owner-machines li { animation: web-owner-rise 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-.web-owner-arrive .web-owner-machines li { animation-delay: calc(120ms + var(--i, 0) * 60ms); }
+.web-owner-arrive .web-owner-body > * { animation-delay: calc(0ms - var(--arrive-elapsed, 0ms)); }
+.web-owner-arrive .web-owner-machines li { animation-delay: calc(120ms + var(--i, 0) * 60ms - var(--arrive-elapsed, 0ms)); }
 .web-owner-arrive .web-owner-machines { animation: none; }
 @media (prefers-reduced-motion: reduce) { .web-owner-arrive .web-owner-body > *, .web-owner-arrive .web-owner-machines li { animation: none; } }
 
