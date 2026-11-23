@@ -4,7 +4,7 @@ import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
 import { ACCOUNT_TITLE } from "./herdrupAccount";
-import { guestRowText, rowPreview } from "./rowStatus";
+import { guestRowLine, rowPreview } from "./rowStatus";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
@@ -65,7 +65,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   * words and the agent's kind ("• Needs you · omp", rowStatus.ts rowPreview). An archived agent
   * reads "<kind> · <archived note>"; with no listed agent, or one the host says isn't running
   * (availability "paused"), it reads "Agent unavailable" with the avatar dimmed (235-245, 255).
-  * `archivedNote` is undefined for a live agent (rowStatus.ts guestRowText). */
+  * `archivedNote` is undefined for a live agent (rowStatus.ts guestRowLine). */
  function agentRow(name: string, row: Row | undefined, archivedNote: string | undefined, running: boolean, selected: boolean, open: (() => void) | null) {
   const item = node("div", "row guest-agent-row" + (running && row?.badge === "waiting" ? " waiting" : "") + (row && running ? "" : " unavailable") + (selected ? " selected" : ""));
   item.dataset.testid = "guest-agent-row";
@@ -86,8 +86,9 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   }
   const text = node("div", "text"), line1 = node("div", "line1");
   line1.append(node("span", "name t-row-name", name), node("span", "spacer"));
-  const plain = guestRowText(row, running, archivedNote);
-  const meta = plain !== null || !row ? node("div", "preview t-row-preview", plain ?? "") : rowPreview(row, row.agent);
+  const line = guestRowLine(row, running, archivedNote);
+  const meta = line.kind === "live" ? rowPreview(line.row, line.row.agent)
+   : node("div", "preview t-row-preview", line.kind === "archived" ? line.text : "Agent unavailable");
   text.append(line1, meta);
   item.append(face, text);
   return item;
