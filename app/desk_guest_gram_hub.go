@@ -543,12 +543,18 @@ func (d *Desk) gramComposerLink() (*link, error) {
 // shared agent the page shows, by its combined guest Gram link (the agent
 // page's own has no Gram state), else the owner's Gram connection.
 func (d *Desk) attachmentLink() (*link, error) {
+	// The share's ID is read under d.mu: runGuest rewrites the access (its agent's name) under it.
 	d.mu.Lock()
 	active := d.link
+	shared := active != nil && active.guest != nil
+	var shareID string
+	if shared {
+		shareID = active.access.ID()
+	}
 	d.mu.Unlock()
-	if active != nil && active.guest != nil {
+	if shared {
 		if h := d.guestGram.Load(); h != nil {
-			if l := h.link(active.access.ID()); l != nil && l.gram != nil {
+			if l := h.link(shareID); l != nil && l.gram != nil {
 				return l, nil
 			}
 		}
