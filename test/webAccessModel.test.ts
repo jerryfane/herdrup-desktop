@@ -146,8 +146,10 @@ class FakeElement extends Listened {
  readonly children: FakeElement[] = [];
  readonly attributes = new Map<string, string>();
  readonly classList = { toggle() {} };
- /** The pointers captured on this element, in order. */
+ /** The pointers captured on this element, in order, and the ones it holds now (a release, a
+ *  pointerup or a pointercancel lets go, as a browser's implicit release does). */
  readonly captured: number[] = [];
+ readonly holding = new Set<number>();
  constructor(readonly tagName: string, readonly ownerDocument: FakeDocument) { super(); }
  setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
@@ -162,6 +164,7 @@ class FakeElement extends Listened {
  override dispatchEvent(e: Event): boolean {
   const ok = super.dispatchEvent(e);
   ({ click: this.onclick, change: this.onchange, input: this.oninput } as Record<string, ((e: Event) => void) | null>)[e.type]?.call(this, e);
+  if (e.type === "pointerup" || e.type === "pointercancel") this.holding.delete((e as PointerEvent).pointerId);
   return ok;
  }
  click(): void {
@@ -181,7 +184,9 @@ class FakeElement extends Listened {
  focus(): void { if (!this.disabled && this.connected()) this.ownerDocument.activeElement = this; }
  setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
  getBoundingClientRect() { return { right: 0 }; }
- setPointerCapture(id: number) { this.captured.push(id); }
+ setPointerCapture(id: number) { this.captured.push(id); this.holding.add(id); }
+ hasPointerCapture(id: number) { return this.holding.has(id); }
+ releasePointerCapture(id: number) { this.holding.delete(id); }
  showModal(): void {
   if (this.open || !this.connected()) throw new Error("InvalidStateError: showModal on a dialog that's open or not in the document");
   this.open = true;
@@ -350,11 +355,15 @@ test("the code field follows one primary press until release, cancel or close; a
  down(200, { pointerId: 3 }); at("pointerup", 200, { pointerId: 3 });
  expect(presses.plainClick({ ...click, pointerId: 3 })).toBe(true);
  // A press the sheet closed on stops being followed and is no click, and close() takes off every
- // listener it put on the field and its window (#398 review): a field still in the document
- // follows no further press, and nothing captures it.
+ // listener it put on the field and its window (#398 review) and lets go of the pointer the field
+ // holds (#402 review): a field still in the document follows no further press, and holds and
+ // captures no pointer.
  expect(input.total()).toBeGreaterThan(0);
  expect(win.count("blur")).toBe(1);
- down(200); presses.close();
+ down(200);
+ expect(input.hasPointerCapture(1)).toBe(true);
+ presses.close();
+ expect(input.hasPointerCapture(1)).toBe(false);
  expect(input.total()).toBe(0);
  expect(win.total()).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
@@ -422,32 +431,36 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
   const field = code()!;
   field.value = "1234"; field.dispatchEvent(new Event("input"));
   await until("an enabled Approve", () => button("Approve")?.disabled === false);
-  // For opens and its labels pick the length: 1 day, then back to 30 days.
+  const accessValue = () => rowHead("Access").children[1]!.textContent;
+  const picked = (group: string) => nodes().find(n => n.name === `web-access-${group}` && n.checked)?.value;
+  // Both rows' labels pick a choice other than the default: Chat only, and (For opened) 1 day.
+  choose("Chat only");
+  expect([picked("access"), accessValue()]).toEqual(["chat", "Chat only"]);
   rowHead("For").click();
   choose("1 day");
+  expect(picked("time")).toBe("1d");
   expect(forValue()).toStartWith("1 day, until ");
-  choose("30 days");
-  expect(forValue()).toStartWith("30 days, until ");
   button("Approve")!.click();
   await until("Approving…", () => button("Approving…") !== undefined);
-  // While the approval is out the choices are held: 1 day's label picks nothing.
-  choose("1 day");
-  expect(forValue()).toStartWith("30 days, until ");
+  // While the approval is out the choices are held: the default's labels pick nothing.
+  const unchanged = () => {
+   expect([picked("access"), accessValue(), picked("time")]).toEqual(["chat", "Chat only", "1d"]);
+   expect(forValue()).toStartWith("1 day, until ");
+  };
+  choose("Chat and terminal"); choose("30 days");
+  unchanged();
   firstAnswer.resolve();
   await until("Try again", () => button("Try again")?.disabled === false);
   // After the lost answer they're still held, and Try again is about that approval.
-  choose("1 day");
-  choose("Chat only");
-  expect(nodes().find(n => n.name === "web-access-time" && n.checked)?.value).toBe("30d");
-  expect(forValue()).toStartWith("30 days, until ");
-  expect(rowHead("Access").children[1]!.textContent).toBe("Chat and terminal");
+  choose("Chat and terminal"); choose("30 days");
+  unchanged();
   expect(sent("Desk.WebAccessCheckCode")).toEqual([["r1", "1234"]]);
-  expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"]]);
+  expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "chat", "1d"]]);
   // Try again resends what the lost approval sent, without checking the code again.
   button("Try again")!.click();
   await until("Approved", () => status() === "Approved. The browser can open your machines now.");
   expect(sent("Desk.WebAccessCheckCode")).toHaveLength(1);
-  expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"], ["r1", ["a"], "terminal", "30d"]]);
+  expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "chat", "1d"], ["r1", ["a"], "chat", "1d"]]);
   expect(button("Try again") ?? button("Approve")).toBeUndefined();
   button("Done")!.click();
   expect(dialog()).toBeUndefined();
