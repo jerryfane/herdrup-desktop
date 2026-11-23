@@ -16,9 +16,9 @@ import { applyEdit, folderName, GROUPS_CONFLICT_MESSAGE, OwnerGroups } from "../
 import { currentOwnerLink, OWNER_REFUSED, OwnerRefusedError } from "../src/web/ownerLink";
 import { showMenu } from "../src/web/menu";
 import { ompHarness } from "../src/topicsModel";
-import { SHEET_STALE, SheetStaleError, transferSheetOpening } from "../src/agentActionsModel";
+import { SHEET_STALE, sheetFailure, SheetStaleError, SheetSupersededError, transferSheetOpening } from "../src/agentActionsModel";
 import {
- agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, sessionTransfer, sheetOpened, topicsSwitchProblem,
+ agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, openSheets, sessionTransfer, sheetOpened, topicsSwitchProblem,
  type ActionAgent, type MenuItem, type SheetKind,
 } from "../src/web/agentActionsDesk";
 import { orderedFolders, type Groups } from "../src/web/board";
@@ -242,16 +242,32 @@ test("a forced read waits while an edit is unsent, so it can't undo it on screen
  await s.more(1);
 });
 
-test("a new folder opens on this browser and takes its agent", async () => {
- const s = store([(p) => tagged({ ...(p as Groups), revision: 4 })]);
+test("a new folder opens on this browser at once, and is kept open once the host saved it", async () => {
+ const saved = Promise.withResolvers<unknown>();
+ const s = store([() => saved.promise]);
  await s.g.refresh();
  s.g.createFolder("  Ship it ", "relay");
  const added = s.g.document()!.folders!.at(-1)!;
  expect([added.name, added.members]).toEqual(["Ship it", ["relay"]]);
  expect(s.g.view().open).toEqual({ [added.id]: true });
+ // Not stored before the host answers.
+ expect(s.open.get()).toBeUndefined();
  s.g.createFolder("   ", "relay");
+ saved.resolve(tagged({ ...applyEdit({ kind: "addFolder", folder: added.id, text: "Ship it", name: "relay" }, groups()), revision: 4 }));
  await s.more(1);
  expect(s.sets.length).toBe(1);
+ expect(s.open.get()).toEqual({ h: [added.id] });
+});
+
+test("a new folder the host refuses (the browser still thinks it writes) leaves this browser's open folders as they were", async () => {
+ const s = store([() => new HerdrAPIError("scope_denied", "this link no longer writes", {})]);
+ await s.g.refresh();
+ s.g.createFolder("Ship it", "relay");
+ await s.more(1);
+ expect(s.open.get()).toBeUndefined();
+ expect(s.g.view().open).toEqual({});
+ expect(s.g.document()).toEqual(groups());
+ expect(s.alerts).toEqual(["Couldn't save folders: herdr: scope_denied: this link no longer writes"]);
 });
 
 // ---- Errors as the desktop words them ----
@@ -332,8 +348,8 @@ interface HostOptions {
  doc?: () => Groups;
  /** The listed agents (default: listed). */
  agents?: () => unknown[];
- /** While set, a ping (or a pane.close, or an accounts.list) waits for it. */
- hold?: { ping: Promise<void> | null; close?: Promise<void> | null; accounts?: Promise<void> | null };
+ /** While set, a ping (or a pane.close, an accounts.list, an agent.topics.set_enabled) waits for it. */
+ hold?: { ping: Promise<void> | null; close?: Promise<void> | null; accounts?: Promise<void> | null; topics?: Promise<void> | null };
  onRequest?: (req: Request) => void;
 }
 /** A host admitting the owner under scope (read at each admission, as a renewal's grant is),
@@ -360,6 +376,7 @@ function host(scope: string | (() => string), o: HostOptions = {}): TestRelay {
     } else if (req.method === "agent.groups.get") answer(req, { result: tagged(o.doc?.() ?? groups()) });
     else if (req.method === "pane.close" && o.hold?.close) void o.hold.close.then(other);
     else if (req.method === "accounts.list" && o.hold?.accounts) void o.hold.accounts.then(other);
+    else if (req.method === "agent.topics.set_enabled" && o.hold?.topics) void o.hold.topics.then(other);
     else other();
    }
   },
@@ -900,6 +917,84 @@ test("a sheet chosen again on the same machine retires the older: its answer, co
   const newer = agentActionsDesk.transferAccounts();
   expect(await newer).toBe(JSON.stringify({ accounts: [] }));
   release.resolve();
-  await expect(older).rejects.toBeInstanceOf(SheetStaleError);
+  await expect(older).rejects.toBeInstanceOf(SheetSupersededError);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
+
+test("a New folder prompt submitted once the link went to chat scope changes nothing, here or there", async () => {
+ let scope = "terminal";
+ const storage = new Map<string, string>();
+ const openFolders = localRecord<Record<string, string[]>>("open", () => ({ getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => { storage.set(k, v); } }));
+ const seen: Request[] = [];
+ const relay = host(() => scope, { seen });
+ const desk = await newDesk(openFolders);
+ const p = page();
+ const asked: FolderNaming[] = [];
+ const off = events.folderNamingRequested.on((n) => asked.push(n));
+ try {
+  await open(desk, relay, "terminal");
+  await desk.openAgentView(p1(relay), "view-1");
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  const shown = p.menu();
+  p.click("Move to folder");
+  await p.next(shown);
+  p.click("New folder…");
+  await settle();
+  const before = openFolders.get();
+  // A renewal admits the link under chat (the next connection, a terminal stream's).
+  scope = "chat";
+  await desk.startTerminal("view-1", "stream-1").catch(() => {});
+  expect(currentOwnerLink()!.scope()).toBe("chat");
+  await agentActionsDesk.nameFolder(asked[0]!, "Ship it");
+  await settle();
+  expect(openFolders.get()).toEqual(before);
+  expect(methods(seen, "agent.groups.set")).toEqual([]);
+ } finally { off(); desk.disconnectOwner(); relay.stop(); }
+}, 30_000);
+
+test("a Topics reply superseded by a newer choice ends silently; another machine is the sheet's refusal", async () => {
+ const hold: { ping: Promise<void> | null; topics: Promise<void> | null } = { ping: null, topics: null };
+ const asked = { wait: Promise.withResolvers<void>() };
+ const switched = { result: { type: "agent_topics_switched", agent: listed[0], changed: true, topics_enabled: true } };
+ const relay = host("terminal", { hold, other: (r) => r.method === "agent.topics.set_enabled" ? switched : undefined,
+  onRequest: (r) => { if (r.method === "agent.topics.set_enabled" && hold.topics) asked.wait.resolve(); } });
+ const other = host("terminal", { hostID: "AwMDAwMDAwMDAwMDAwMDAw" });
+ const desk = await linked(relay);
+ try {
+  const release = Promise.withResolvers<void>();
+  opened("topics", "p1");
+  hold.topics = release.promise;
+  const first = agentActionsDesk.topicsSetEnabled("p1", true).catch((e: unknown) => e);
+  await asked.wait.promise;
+  hold.topics = null;
+  opened("topics", "p1");
+  expect(await agentActionsDesk.topicsSetEnabled("p1", true)).toEqual({ changed: true, topicsEnabled: true });
+  release.resolve();
+  const late = await first;
+  expect(late).toBeInstanceOf(SheetSupersededError);
+  expect(sheetFailure(late)).toBeNull();
+  // The same sheet, its machine gone meanwhile: the refusal the page shows.
+  opened("topics", "p1");
+  await open(desk, other, "terminal");
+  const refused = await agentActionsDesk.topicsSetEnabled("p1", true).catch((e: unknown) => e);
+  expect([refused instanceof SheetSupersededError, sheetFailure(refused)]).toEqual([false, SHEET_STALE]);
+ } finally { desk.disconnectOwner(); relay.stop(); other.stop(); }
+}, 30_000);
+
+test("a sheet's record goes when its one step settles, or when its link ends; one that asks again stays until then", async () => {
+ const relay = host("terminal", { other: (r) => r.method === "agent.restart" ? { result: { type: "agent_info", agent: listed[0] } } : undefined });
+ const other = host("terminal", { hostID: "AwMDAwMDAwMDAwMDAwMDAw" });
+ const desk = await linked(relay);
+ try {
+  const before = openSheets();
+  opened("restart", "p1");
+  opened("rename", "p2");
+  opened("avatar", "p1");
+  expect(openSheets()).toBe(before + 3);
+  await agentActionsDesk.restartAgent("p1", "");
+  await expect(agentActionsDesk.renameAgent("p2", "x")).rejects.toBeInstanceOf(OwnerRefusedError);
+  expect(openSheets()).toBe(before + 1);
+  await open(desk, other, "terminal");
+  expect(openSheets()).toBe(before);
+ } finally { desk.disconnectOwner(); relay.stop(); other.stop(); }
+}, 30_000);

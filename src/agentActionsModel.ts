@@ -157,16 +157,32 @@ export function existingTransfer(agent: TransferAgent | null, source: string, ta
 }
 
 /** What a browser sheet's step is refused with once the machine it was opened on is no longer
- *  open, or the same sheet was chosen again since (web/agentActionsDesk.ts). */
+ *  open (web/agentActionsDesk.ts). */
 export const SHEET_STALE = "the machine changed since this was opened";
 
 /** A browser sheet's step refused as stale: the sheet stops (no dialog, nothing more asked). The
  *  desktop's Desk never throws it: its sheets act on the one open machine. */
 export class SheetStaleError extends Error {
-  constructor() {
-    super(SHEET_STALE);
+  constructor(message = SHEET_STALE) {
+    super(message);
     this.name = "SheetStaleError";
   }
+}
+
+/** A browser sheet's step whose sheet was chosen again since: the newer one speaks for it, so this
+ *  one ends without a word (no alert, no banner, no error line). */
+export class SheetSupersededError extends SheetStaleError {
+  constructor() {
+    super("a newer choice of this sheet replaced it");
+    this.name = "SheetSupersededError";
+  }
+}
+
+/** What a sheet's failed action shows: the error's text, or nothing for one a newer choice of the
+ *  same sheet replaced. */
+export function sheetFailure(error: unknown): string | null {
+  if (error instanceof SheetSupersededError) return null;
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** The Switch harness sheet's opening lookups (AgentSessionTransferSheet init): the accounts,

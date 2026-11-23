@@ -144,6 +144,9 @@ export class OwnerGroups {
  #lastFetch: number | null = null;
  #pending: Edit[] = [];
  #sending = false;
+ /** New folders open on this browser while their save is on its way; written to the open folders
+  *  only once the host took it, so a refused one leaves no trace. */
+ #opening = new Set<string>();
 
  /** One machine's link: signal ends with it, and every read and save goes with it. changed runs
   *  when what the list shows changed (the document, a folder opened or closed); alert shows a
@@ -164,12 +167,13 @@ export class OwnerGroups {
  view(): BoardView {
   const open: Record<string, boolean> = {};
   for (const id of this.open.get()?.[this.hostID] ?? []) open[id] = true;
+  for (const id of this.#opening) open[id] = true;
   return { groups: this.document(), open };
  }
 
  /** groupsStore.off: folders hidden, for a host that turned out not to have them. */
  #off() {
-  this.#supported = false; this.#confirmed = null; this.#pending = [];
+  this.#supported = false; this.#confirmed = null; this.#pending = []; this.#opening.clear();
   this.changed();
  }
 
@@ -219,12 +223,12 @@ export class OwnerGroups {
  }
 
  /** groupsStore.createFolder: a folder named raw holding member, opened on this browser so the
-  *  agent just moved stays in sight. */
+  *  agent just moved stays in sight: shown open at once, kept open once the host saved it. */
  createFolder(raw: string, member: string): void {
   const name = folderName(raw);
   if (name === "") return;
   const id = newFolderID();
-  this.#keepOpen(id, true);
+  this.#opening.add(id);
   this.apply({ kind: "addFolder", folder: id, text: name, name: member });
  }
 
@@ -232,10 +236,12 @@ export class OwnerGroups {
  async #send(): Promise<void> {
   for (;;) {
    if (this.#pending.length === 0 || this.#confirmed === null) { this.#sending = false; return; }
-   const { saved, failure, off } = await this.#commit(this.#pending[0]!, this.#confirmed);
+   const e = this.#pending[0]!;
+   const { saved, failure, off } = await this.#commit(e, this.#confirmed);
    if (off) { this.#sending = false; this.#off(); return; }
    if (saved !== null) this.#confirmed = saved;
    this.#pending.shift();
+   if (e.kind === "addFolder" && this.#opening.delete(e.folder) && failure === "" && saved?.folders?.some((f) => f.id === e.folder)) this.#keepOpen(e.folder, true);
    this.changed();
    // A link that ended took its folders with it: nothing to say.
    if (failure !== "" && !this.signal.aborted) this.alert(failure);
