@@ -26,7 +26,7 @@ import { initAppUpdateAsk } from "./appUpdateAsk";
 import { initWebAccess } from "./webAccess";
 import { errorText } from "./errors";
 import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
-import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
+import { badge, initialTile, placeInitials, rowAvatar, spinnerSVG } from "./faces";
 import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "./bars";
 import { enableLongPress } from "./longPress";
 import { deskOffers, ownerWrites, parts, shareShown } from "./shellModel";
@@ -88,7 +88,7 @@ let settingsAsked = false;
 // (review of #167).
 function selectTab(next: typeof tab) {
   tab = next; choosingHost = false; settingsAsked = false; settingsPushed = false;
-  void buildTabBar(); void buildTopBar(); render();
+  buildTabBar(); void buildTopBar(); render();
 }
 // ---- Phone layout (rover, gitmoot 456087) ----
 // At 700 px and narrower (style.css, "Phone layout") the window takes herdrup's iPhone
@@ -212,7 +212,6 @@ async function buildTopBar() {
 
 // ---- Tab bar ----
 
-let tabBarGeneration = 0;
 // Gram's unread count, as the last snapshot reported it (gram.ts barChanged).
 let gramUnread = 0;
 // Whether a newer Herdrup is out (appUpdates.ts): to install, or to download.
@@ -239,22 +238,20 @@ function setTabBadge() {
     settings.closest(".tab")?.setAttribute("aria-label", appUpdateWaiting ? "Settings, update available" : "Settings");
   }
 }
-async function buildTabBar() {
-  const generation = ++tabBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
+/** The tabs, text only (bars.ts tabNode): built and committed at once. */
+function buildTabBar() {
+  const guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
   // A guest's TabView: Agents, Gram while a shared agent shares it (#697), and Settings.
   const items: Array<[typeof tab, string]> = [["agents", "Agents"], ...(!guestView || guestView.gram ? [["gram", "Gram"] as [typeof tab, string]] : []), ["settings", "Settings"]];
-  const nodes = await Promise.all(
-    items.map(([key, label]) =>
-      // The guest's Settings is its own page, without the app update.
-      tabNode(key, label, key === selectedTab, key === "gram" || key === "settings" && !guestView && appUpdatesShown, () => {
-        if (guestView) {
-          if (key === "settings") guestActions.settings(); else if (key === "gram") guestActions.gram(); else guestActions.agents();
-          return;
-        }
-        selectTab(key);
-      })),
-  );
-  if (generation !== tabBarGeneration) return;
+  const nodes = items.map(([key, label]) =>
+    // The guest's Settings is its own page, without the app update.
+    tabNode(key, label, key === selectedTab, key === "gram" || key === "settings" && !guestView && appUpdatesShown, () => {
+      if (guestView) {
+        if (key === "settings") guestActions.settings(); else if (key === "gram") guestActions.gram(); else guestActions.agents();
+        return;
+      }
+      selectTab(key);
+    }));
   commitTabBar(nodes, items.findIndex(([key]) => key === selectedTab));
   setTabBadge();
 }
@@ -306,11 +303,11 @@ async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
   if (r.starred) line1.append(await star(folderDeps));
   line1.append(...rowMarkers(r), el("span", "spacer"), ...(age ? [age] : []));
   agentMenu(row, r);
-  // Topics A-v2: status as words on the preview line, no badge on the avatar, no chevron.
-  text.append(line1, rowPreview(r));
+  // Topics A-v2: status as words on the preview line, the avatar's face with no badge, no chevron.
+  text.append(line1, rowPreview(r, r.preview));
   const account = accountLine(r);
   if (account) text.append(account);
-  row.append(await avatar(r, false), text);
+  row.append(rowAvatar(r), text);
   return row;
 }
 
@@ -528,7 +525,7 @@ function render() {
   if (nextBar?.tab !== guestBar?.tab || nextBar?.gram !== guestBar?.gram) {
     guestBar = nextBar;
     void buildTopBar();
-    void buildTabBar();
+    buildTabBar();
   }
   guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null);
   if (guestVisible) {
@@ -637,7 +634,7 @@ function openSettingsPage(page: Parameters<ReturnType<typeof initSettings>["open
     tab = "settings";
     settingsAsked = true;
     settings.openPage(page);
-    void buildTabBar();
+    buildTabBar();
     void buildTopBar();
   }
   render();
@@ -650,7 +647,7 @@ function openAgent(target: AgentTarget) {
   if (!pageReady) return;
   tab = "agents";
   choosingHost = false;
-  void buildTabBar();
+  buildTabBar();
   render();
   // Serialize connection/session changes; a superseded request must not
   // finish after the latest one and leave the wrong connection selected.
@@ -774,19 +771,20 @@ async function init(rendered: () => void) {
   document.body.append(compactBack);
   compactQuery.addEventListener("change", render);
   startupStep("bars");
-  await Promise.all([buildTopBar(), buildTabBar()]);
+  buildTabBar();
+  await buildTopBar();
   if (parts.starAsk) starAsk = initStarAsk($("sidebar"), symbol, render);
   if (parts.appUpdates) appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   initWebAccess();
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
-  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
+  guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, rowPreview, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
     // The guest home's row shows the open agent selected, as the roster's does; the phone
     // layout returns to the list when the agent's page closes.
     if (shareShown(state) || compactQuery.matches) render();
   });
-  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
+  const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
   hostsHold = hosts.holdsHome;
   hostsReady = true;
   // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
@@ -815,7 +813,7 @@ async function init(rendered: () => void) {
     },
     $("detail"),
     $("sidebar"),
-    $("tabbar"),
+    $("sidebar-foot"),
   );
   startupStep("list extras");
   await initListExtras({

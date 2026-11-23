@@ -102,7 +102,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  *  (main.ts, compact). */
 export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>, opened: () => void) {
   const index = el("nav", "settings-index"); index.setAttribute("aria-label", "Settings"); index.hidden = true;
-  sidebar.insertBefore(index, document.getElementById("tabbar"));
+  sidebar.insertBefore(index, document.getElementById("sidebar-foot"));
   const page = el("section", "settings-detail"); page.hidden = true; detail.append(page);
   const title = el("h1", "settings-page-title", "Machines"), body = el("div", "settings-page-body");
   // detailHeader: the page's summary line under the title, amber when it warns.

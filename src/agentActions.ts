@@ -135,14 +135,15 @@ async function switchTopics(action: AgentAction) {
 }
 
 let bannerShown: SwitchStatus | null = null;
-/** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced. */
+/** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced.
+ * It sits in the sidebar's foot, stacked over the tab bar, which the lists end above (bars.ts). */
 function switchBanner() {
-  const sidebar = document.getElementById("sidebar") ?? document.body;
-  let banner = sidebar.querySelector<HTMLElement>(":scope > .topics-switch-banner");
+  const foot = document.getElementById("sidebar-foot") ?? document.body;
+  let banner = foot.querySelector<HTMLElement>(":scope > .topics-switch-banner");
   if (!banner) {
     banner = el("div", "topics-switch-banner");
     banner.setAttribute("role", "status");
-    sidebar.append(banner);
+    foot.prepend(banner);
   }
   const node = banner;
   return (status: SwitchStatus) => {

@@ -10,7 +10,7 @@ import { composerEnterSends } from "./composer";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing, type Outgoing } from "./chatPoll";
 import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
 import { rowTime } from "./gramDates";
-import { activityMs, foldShortcutLabel, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicsLayout, topicTitle, type TopicInfo } from "./topicsModel";
+import { activityMs, canFold, foldShortcutLabel, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicsLayout, topicTitle, type TopicInfo } from "./topicsModel";
 import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
 import { appleSymbols } from "./platform";
 import infoIcon from "../third_party/phosphor/web/info.svg?url";
@@ -193,8 +193,10 @@ export class TopicsPane {
   const shown = topicsLayout(this.wide, this.folded, this.selected !== null);
   this.column.hidden = !shown.list;
   this.side.hidden = !shown.chat;
-  this.foldButton.hidden = !this.wide || this.selected === null;
-  this.chat?.setListButton(!shown.list);
+  const foldable = this.foldable();
+  this.foldButton.hidden = !foldable;
+  // The hint names the shortcut only where it acts (a narrow page has no column to fold).
+  this.chat?.setListButton(!shown.list, foldable);
   if (this.wide && !this.chat) this.drawPlaceholder();
   this.drawList();
  }
@@ -209,10 +211,12 @@ export class TopicsPane {
   *  topic when narrow). */
  private showList() { if (this.wide) this.setFolded(false); else this.select(null); }
 
- /** ⌥⌘T: folds or unfolds the column beside an open topic; narrow, it goes back to the list. */
+ /** The fold button and ⌥⌘T act only beside an open topic on a wide page (canFold). */
+ foldable(): boolean { return canFold(this.wide, this.selected !== null); }
+
+ /** ⌥⌘T: folds or unfolds the column beside an open topic; elsewhere nothing to fold. */
  toggleColumn() {
-  if (this.wide) this.setFolded(!this.folded);
-  else if (this.selected !== null) this.select(null);
+  if (this.foldable()) this.setFolded(!this.folded);
  }
 
  private drawPlaceholder() {
@@ -516,6 +520,8 @@ class TopicChat {
  readonly root = el("div", "topic-chat");
  /** "Topics ⌥⌘T": shown wherever the list is not (folded, or narrow). */
  private readonly list = el("span", "topic-list-button");
+ private readonly listButton: HTMLButtonElement;
+ private readonly hint = el("span", "topic-list-hint", FOLD_HINT);
  private readonly title = el("strong", "topic-chat-title");
  private readonly status = el("span", "topic-chat-status");
  private readonly messages = el("div", "chat-transcript topic-transcript");
@@ -540,11 +546,10 @@ class TopicChat {
  constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void) {
   // Topics A-v2 header: [Topics ⌥⌘T |] ‹ Inbox | title · status … •••. Text buttons; the only
   // icons are the back chevron and the ••• menu, both working controls.
-  const listButton = button("Topics", "topic-list-open", showList);
-  listButton.title = `Show topics (${FOLD_HINT})`;
-  const hint = el("span", "topic-list-hint", FOLD_HINT); hint.setAttribute("aria-hidden", "true");
+  this.listButton = button("Topics", "topic-list-open", showList);
+  this.hint.setAttribute("aria-hidden", "true");
   const rule = () => { const r = el("span", "topic-chat-rule"); r.setAttribute("aria-hidden", "true"); return r; };
-  this.list.append(listButton, hint, rule());
+  this.list.append(this.listButton, this.hint, rule());
   const inbox = button("", "topic-inbox-link", () => host.openInbox());
   inbox.title = "Opens the agent's own conversation";
   const chevron = el("span", "topic-inbox-chevron"); chevron.setAttribute("aria-hidden", "true");
@@ -574,7 +579,11 @@ class TopicChat {
   this.messages.append(this.earlier);
  }
 
- setListButton(shown: boolean) { this.list.hidden = !shown; }
+ /** The "Topics" button wherever the list is not shown; its ⌥⌘T hint only where the shortcut folds. */
+ setListButton(shown: boolean, foldable: boolean) {
+  this.list.hidden = !shown; this.hint.hidden = !foldable;
+  this.listButton.title = foldable ? `Show topics (${FOLD_HINT})` : "Show topics";
+ }
  focus() { if (!this.input.disabled) this.input.focus(); }
 
  setActive(active: boolean) {

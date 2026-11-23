@@ -7,7 +7,8 @@
 import { enableLongPress } from "../longPress";
 import { Desk, events, type AgentTarget, type BoardUpdate, type ConnState } from "../mygo";
 import { symbol } from "../symbol";
-import { avatar, placeInitials, spinnerSVG } from "../faces";
+import { placeInitials, rowAvatar, spinnerSVG } from "../faces";
+import { rowPreview } from "../sessions";
 import { barActions, barCount, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "../gram";
 import { commitTabBar, commitTopBar, placeTitle, tabNode } from "../bars";
 import { initGuestHome } from "../guestHome";
@@ -182,13 +183,13 @@ async function init() {
  reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
  animateDisclosures(document.body);
  enableLongPress();
- guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot });
+ guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, rowPreview, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot });
  initInteraction($("detail"), symbol, target => { selectedAgent = target; render(); });
  await initGram({
   el, symbol, placeInitials, spinner: spinnerSVG,
   barChanged: () => { if (guestBar?.tab === "gram") void buildBars(guestBar); },
   guestGramChanged: () => { setTabBadge(); if (guestBar && guestBar.gram !== guestGramOffer().offered) render(); },
- }, $("detail"), $("sidebar"), $("tabbar"));
+ }, $("detail"), $("sidebar"), $("sidebar-foot"));
  if (payload !== "") showOpening();
  let started;
  try {

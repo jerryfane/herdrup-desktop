@@ -34,7 +34,7 @@ import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } 
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane } from "./topicsView";
-import { isFoldShortcut, nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
+import { foldKey, nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
 import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
@@ -188,8 +188,11 @@ events.stateChanged.on(state => {
    return;
   }
   if (event.key.toLowerCase() === "f" && (event.metaKey || event.ctrlKey) && !event.altKey) { event.preventDefault(); event.stopPropagation(); current.toggleFind(true); }
-  // ⌥⌘T (Ctrl+Alt+T off the Mac) folds or unfolds the topics column while Topics shows.
-  if (isFoldShortcut(event) && current.mode === "topics" && current.topics) { event.preventDefault(); event.stopPropagation(); current.topics.toggleColumn(); }
+  // ⌥⌘T (Ctrl+Alt+T off the Mac) folds or unfolds the topics column where there is one to fold;
+  // the key held down folds once.
+  const topics = current.mode === "topics" ? current.topics : null;
+  const fold = topics ? foldKey(event, topics.foldable()) : null;
+  if (topics && fold) { event.preventDefault(); event.stopPropagation(); if (fold === "toggle") topics.toggleColumn(); }
   if (event.key === "Escape" && current.findOpen) { event.preventDefault(); event.stopPropagation(); current.toggleFind(false); }
  }, true);
 }

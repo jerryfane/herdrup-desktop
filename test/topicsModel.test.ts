@@ -1,7 +1,7 @@
 // The Topics view's decisions (src/topicsModel.ts), against herdrup #745: TopicsView.swift
 // (sections, pill, search), HerdrKit AgentTopics.swift (ordering) and ChatPreference.swift.
 import { expect, test } from "bun:test";
-import { foldShortcutLabel, isFoldShortcut, nextTopicsOffer, orderedTopics, topicSendDelivery, topicsLayout, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
+import { canFold, foldKey, foldShortcutLabel, isFoldShortcut, nextTopicsOffer, orderedTopics, topicSendDelivery, topicsLayout, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
 
 const topic = (id: string, over: Partial<TopicInfo> = {}): TopicInfo => ({
  topic_id: id, title: id, state: "idle", turns: 1, queued: 0, created_unix_ms: 0, last_activity_unix_ms: 0, ...over,
@@ -61,6 +61,22 @@ test("⌥⌘T (Ctrl+Alt+T off the Mac) folds the column, by key position, not by
  expect(isFoldShortcut(key({ altKey: true }))).toBe(false);
  expect(isFoldShortcut(key({ metaKey: true, code: "KeyY" }))).toBe(false);
  expect([foldShortcutLabel(true), foldShortcutLabel(false)]).toEqual(["⌥⌘T", "Ctrl+Alt+T"]);
+});
+
+test("only a wide page with a topic open has a column to fold: button and shortcut alike (#344)", () => {
+ expect(canFold(true, true)).toBe(true);
+ expect(canFold(true, false)).toBe(false);
+ expect(canFold(false, true)).toBe(false);
+ expect(canFold(false, false)).toBe(false);
+});
+
+test("the fold key toggles once per press, swallows its auto-repeat, and passes through where nothing folds", () => {
+ const press = { metaKey: true, ctrlKey: false, altKey: true, shiftKey: false, code: "KeyT", repeat: false };
+ expect(foldKey(press, true)).toBe("toggle");
+ expect(foldKey({ ...press, repeat: true }, true)).toBe("swallow");
+ expect(foldKey(press, false)).toBe(null);
+ expect(foldKey({ ...press, repeat: true }, false)).toBe(null);
+ expect(foldKey({ ...press, code: "KeyY" }, true)).toBe(null);
 });
 
 test("search matches the title or the newest step, ignoring case; a blank query keeps everything", () => {
