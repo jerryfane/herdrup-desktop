@@ -108,7 +108,9 @@ export class IndexedDBIdentityStore implements IdentityStore {
 
  async get(): Promise<IdentityRecord | undefined> {
   const db = await this.#open();
-  return await request(db.transaction(this.storeName, "readonly").objectStore(this.storeName).get(RECORD_KEY)) as IdentityRecord | undefined;
+  // No record is undefined, whatever the storage answers: a null (seen from WebKit on iPad, where
+  // the owner's first visit left one) is no record either, so a key is made rather than read.
+  return (await request(db.transaction(this.storeName, "readonly").objectStore(this.storeName).get(RECORD_KEY)) ?? undefined) as IdentityRecord | undefined;
  }
 
  async add(record: IdentityRecord): Promise<IdentityRecord> {
@@ -121,9 +123,11 @@ export class IndexedDBIdentityStore implements IdentityStore {
   tx.onerror = () => done.reject(tx.error);
   tx.onabort = () => done.reject(tx.error ?? new Error("Saving the guest identity was aborted."));
   const store = tx.objectStore(this.storeName);
-  const existing = await request(store.get(RECORD_KEY)) as IdentityRecord | undefined;
-  if (existing !== undefined) return existing;
-  store.add(record, RECORD_KEY);
+  const existing = await request(store.get(RECORD_KEY)) as IdentityRecord | null | undefined;
+  if (existing != null) return existing;
+  // put, not add: a stored null under the key is no record, and add would refuse to replace it.
+  // Nothing else can write in between (this transaction holds the store).
+  store.put(record, RECORD_KEY);
   await done.promise;
   return record;
  }
