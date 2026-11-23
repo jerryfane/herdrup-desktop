@@ -25,6 +25,9 @@ type OwnerAccess struct {
 	// protocol is what owner_access.info reports (SetProtocol); 0 leaves
 	// the field out, as a herdr from before it did.
 	protocol uint32
+	// Now is the machine's clock for a grant's created_ms and expires_ms;
+	// nil is the wall clock.
+	Now func() time.Time
 }
 
 // SetProtocol sets the owner access protocol owner_access.info reports.
@@ -116,7 +119,11 @@ func (o *OwnerAccess) Handle(method string, raw json.RawMessage) (any, *APIError
 			}
 		}
 		o.next++
-		now := uint64(time.Now().UnixMilli())
+		at := time.Now()
+		if o.Now != nil {
+			at = o.Now()
+		}
+		now := uint64(at.UnixMilli())
 		sum := sha256.Sum256([]byte(pub))
 		g := map[string]any{"grant_id": fmt.Sprintf("grant-%d", o.next), "device_pub": pub,
 			"fingerprint": "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:8]), "device": p["device_name"], "scope": scope,

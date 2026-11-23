@@ -11,8 +11,8 @@ import type { WebAccessLength, WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
- slotSelection, timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
+import { ACCESS_CHOICES, approveSend, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines,
+ skipReason, slotSelection, timeSummary, wrongCode, type SentChoices, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
  *  calls a minute per account, and a request lasts 10 minutes. */
@@ -107,35 +107,38 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
 }
 
 /** Follows one primary-pointer press on the code for its owner, the sheet's dialog (modal, so
- *  every pointer event in the window lands in it). Only the pointer that pressed counts: its moves
- *  while it's down; its release stops following, and its cancel, or a close, also forgets the press,
- *  which then isn't a click. Other pointers' moves, releases and cancels don't touch it. */
+ *  every pointer event in the window lands in it). The pointer that pressed keeps the press through
+ *  its release and its click: only its moves count, its release stops following, and its cancel,
+ *  or a close, forgets the press, which then isn't a click. Another pointer, even another device's
+ *  primary one, can't take the press over or end it, and its click isn't this press's. */
 export function followPresses(owner: EventTarget) {
- let press: CodePress | null = null;
- let pointer: number | null = null;
+ let press: { pointer: number; gesture: CodePress; down: boolean } | null = null;
  const ours = (event: Event): PointerEvent | null => {
   const e = event as PointerEvent;
-  return pointer !== null && e.pointerId === pointer ? e : null;
+  return press?.down && e.pointerId === press.pointer ? e : null;
  };
  const follow = (event: Event) => {
   const e = ours(event);
-  if (e) press?.move(e.clientX, e.clientY);
+  if (e && press) press.gesture.move(e.clientX, e.clientY);
  };
- const release = () => { owner.removeEventListener("pointermove", follow); pointer = null; };
- const drop = () => { release(); press = null; };
- owner.addEventListener("pointerup", event => { if (ours(event)) release(); });
+ const stop = () => owner.removeEventListener("pointermove", follow);
+ const drop = () => { stop(); press = null; };
+ owner.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } });
  owner.addEventListener("pointercancel", event => { if (ours(event)) drop(); });
  return {
   down(e: PointerEvent): void {
-   if (!e.isPrimary || e.button !== 0) return;
-   press = new CodePress(e.clientX, e.clientY);
-   pointer = e.pointerId;
+   // A press still down belongs to its pointer; the same pointer pressing again means its release
+   // never reached the sheet, so that press is over.
+   if (!e.isPrimary || e.button !== 0 || (press?.down && press.pointer !== e.pointerId)) return;
+   press = { pointer: e.pointerId, gesture: new CodePress(e.clientX, e.clientY), down: true };
    owner.addEventListener("pointermove", follow);
   },
-  /** Whether this click ends a plain click on the code; the press is done either way. */
-  plainClick(click: { detail: number; shiftKey: boolean }): boolean {
-   const plain = press?.plainClick(click) ?? false;
-   press = null;
+  /** Whether this click ends a plain click on the code; the press is done either way. A click the
+   *  browser says came from another pointer (pointerId) leaves the press alone. */
+  plainClick(click: { detail: number; shiftKey: boolean; pointerId?: number }): boolean {
+   if (!press || (click.pointerId !== undefined && click.pointerId !== press.pointer)) return false;
+   const plain = press.gesture.plainClick(click);
+   drop();
    return plain;
   },
   close: drop,
@@ -225,10 +228,10 @@ export function initWebAccess(): void {
   if (!machines.length) list.append(el("p", "web-access-dim", "Add a machine first."));
 
   const choices = choiceRows(list, ticked.size === 0, lengths);
-  // The choices an approval was sent with. While it's out, and after a lost answer until it
-  // settles, Machines, Access and For are held: Try again resends that report, whatever is chosen,
-  // and For describes it.
-  let sent: { machines: string[]; scope: string; length: string } | null = null;
+  // While an approval is out, and after a lost answer until it settles, Machines, Access and For
+  // are held. unsettled is the choices of an approval whose answer was lost: Try again resends
+  // exactly those (Go resends that report), the button says so, and For describes them.
+  let unsettled: SentChoices | null = null;
   const freeze = (on: boolean) => {
    choices.freeze(on);
    for (const [box, m] of machineBoxes) box.disabled = on || !m.available;
@@ -244,12 +247,12 @@ export function initWebAccess(): void {
 
   // busy: a call is in flight (Approve and Deny wait for each other). locked: the choices no longer
   // do anything (approved, too many codes, or a pending answer). finished: the request is over.
-  let busy = false, locked = false, finished = false, retry = false;
+  let busy = false, locked = false, finished = false;
   const lock = () => { locked = true; for (const i of dialog.querySelectorAll("input")) i.disabled = true; };
   const end = () => { finished = true; lock(); approve.hidden = true; close.hidden = true; deny.textContent = "Done"; };
   const update = () => {
    deny.disabled = busy;
-   approve.disabled = busy || finished || (!retry && (locked || !canApprove(code.value, ticked.size) || code.disabled));
+   approve.disabled = busy || finished || (!unsettled && (locked || !canApprove(code.value, ticked.size) || code.disabled));
    slots();
    choices.showMachines(machinesSummary(machines, ticked));
   };
@@ -276,12 +279,12 @@ export function initWebAccess(): void {
   };
   close.onclick = () => { finished = true; dialog.close(); };
   approve.onclick = () => {
-   if (!retry) { sent = { machines: [...ticked], ...choices.choice }; freeze(true); }
-   const out = sent!;
+   const { choices: out, fresh } = approveSend(unsettled, () => ({ machines: [...ticked], ...choices.choice }));
+   if (fresh) freeze(true);
    void run(async () => {
     try {
      say("");
-     if (!retry) {
+     if (fresh) {
       const check = await Desk.webAccessCheckCode(req.id, code.value);
       if (!check.ok) {
        say(wrongCode(check));
@@ -292,18 +295,18 @@ export function initWebAccess(): void {
       }
      }
      approve.textContent = "Approving…";
-     retry = false;
+     unsettled = null;
      try {
-      const result = await Desk.webAccessApprove(req.id, out.machines, out.scope, out.length);
+      const result = await Desk.webAccessApprove(req.id, [...out.machines], out.scope, out.length);
       const { done: approved, unsure, lines } = resultLines(result);
       say(lines.join(" "));
-      retry = unsure;
+      if (unsure) unsettled = out;
       // The grants exist now: For says what they were made with, no longer a preview.
       if (approved || unsure) choices.granted(out.length, result.expires ?? []);
       if (unsure) lock();
       if (approved) { end(); status.textContent = "Approved. The browser can open your machines now."; }
-     } finally { approve.textContent = retry ? "Try again" : "Approve"; }
-    } finally { if (!retry && !locked) freeze(false); }
+     } finally { approve.textContent = unsettled ? "Try again" : "Approve"; }
+    } finally { if (!unsettled && !locked) freeze(false); }
    });
   };
   dialog.addEventListener("cancel", event => { if (!finished) event.preventDefault(); });

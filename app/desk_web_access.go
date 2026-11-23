@@ -531,7 +531,7 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 			envelope.Skipped = append(envelope.Skipped, webEnvelopeSkipped{HostItemID: c.m.SyncID, Label: c.label, Reason: skip})
 		default:
 			res.Granted = append(res.Granted, c.label)
-			res.Expires = append(res.Expires, g.ExpiresUnix*1000)
+			res.Expires = append(res.Expires, g.expiresMs)
 			g.HostItemID = c.m.SyncID
 			envelope.Machines = append(envelope.Machines, g)
 			grants = append(grants, webGrant{m: c, grantID: g.GrantID})
@@ -653,7 +653,8 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 	}
 	return webEnvelopeMachine{
 		Label: c.label, Relay: strings.TrimRight(info.RelayURL, "/"), HostID: info.HostID, NodePub: info.NodePub,
-		GrantID: added.Grant.GrantID, Scope: string(added.Grant.Scope), ExpiresUnix: int64(added.Grant.ExpiresMs / 1000),
+		GrantID: added.Grant.GrantID, Scope: string(added.Grant.Scope),
+		ExpiresUnix: int64(added.Grant.ExpiresMs / 1000), expiresMs: int64(added.Grant.ExpiresMs),
 	}, "", nil
 }
 
@@ -708,6 +709,9 @@ type webEnvelopeMachine struct {
 	GrantID     string `json:"grant_id"`
 	Scope       string `json:"scope"`
 	ExpiresUnix int64  `json:"expires_unix"`
+	// expiresMs is the expiry as the machine recorded it (Unix ms), for the
+	// approval's result; the envelope says it in whole seconds.
+	expiresMs int64
 }
 
 type webEnvelopeSkipped struct {
