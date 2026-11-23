@@ -10,7 +10,8 @@ import { Desk, events } from "./mygo";
 import type { WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { webGuest } from "./platform";
-import { askOffered, canApprove, codeInput, nextRequest, resultLines, skipReason, wrongCode, type WebAccessRequestView } from "./webAccessModel";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, machinesNote, machinesSummary, nextRequest, resultLines, showsTerminalWarning, skipReason, TIME_CHOICES, timeSummary,
+ wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
  *  calls a minute per account, and a request lasts 10 minutes. */
@@ -23,7 +24,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: stri
  return n;
 }
 
-function segmented(name: string, options: [string, string][], value: string, onChange: (v: string) => void): HTMLElement {
+function segmented(name: string, options: readonly (readonly [string, string])[], value: string, onChange: (v: string) => void): HTMLElement {
  const box = el("div", "web-access-segmented"); box.setAttribute("role", "radiogroup"); box.setAttribute("aria-label", name);
  for (const [v, label] of options) {
   const id = `web-access-${name}-${v}`;
@@ -70,7 +71,11 @@ export function initWebAccess(): void {
   const status = el("p", "web-access-status", "Waiting for the browser to show its code…");
   const code = el("input", "web-access-code"); code.inputMode = "numeric"; code.autocomplete = "one-time-code";
   code.maxLength = 4; code.disabled = true; code.setAttribute("aria-label", "Code shown in the browser"); code.placeholder = "····";
-  const codeLabel = el("label", "web-access-field"); codeLabel.append(el("span", "", "Enter the code shown in the browser"), code);
+  // The code first (proposal D): four boxes drawn under the one input, which takes the typing.
+  const boxes = el("span", "web-access-boxes"); boxes.setAttribute("aria-hidden", "true");
+  const digits = [0, 1, 2, 3].map(() => boxes.appendChild(el("span", "web-access-box")));
+  const codeBox = el("span", "web-access-codebox"); codeBox.append(boxes, code);
+  const codeLabel = el("label", "web-access-field"); codeLabel.append(el("span", "", "Enter the code shown in the browser"), codeBox);
 
   const ticked = new Set(machines.filter(m => m.available).map(m => m.id));
   const list = el("div", "web-access-machines"); list.setAttribute("role", "group"); list.setAttribute("aria-label", "Machines");
@@ -85,9 +90,9 @@ export function initWebAccess(): void {
   if (!machines.length) list.append(el("p", "web-access-dim", "Add a machine first."));
 
   let scope = "terminal", length = "30d";
-  const terminalNote = el("p", "web-access-dim", "Terminal access is a shell on these machines: it can do anything you can do there.");
-  const access = segmented("access", [["terminal", "Chat and terminal"], ["chat", "Chat only"]], scope, v => { scope = v; terminalNote.hidden = v !== "terminal"; });
-  const time = segmented("time", [["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"]], length, v => { length = v; });
+  const terminalNote = el("p", "web-access-warning", "Terminal access is a shell on these machines: it can do anything you can do there.");
+  const access = segmented("access", ACCESS_CHOICES, scope, v => { scope = v; update(); });
+  const time = segmented("time", TIME_CHOICES, length, v => { length = v; update(); });
 
   const problem = el("p", "web-access-problem"); problem.hidden = true;
   const deny = el("button", "ghost", "Deny"); deny.type = "button";
@@ -95,9 +100,26 @@ export function initWebAccess(): void {
   const close = el("button", "ghost", "Close"); close.type = "button"; close.hidden = true;
   const approve = el("button", "", "Approve"); approve.type = "button";
   const buttons = el("div", "buttons"); buttons.append(close, deny, approve);
-  const section = (label: string, ...nodes: HTMLElement[]) => { const s = el("section", "web-access-section"); s.append(el("h3", "settings-section-label", label), ...nodes); return s; };
-  dialog.append(title, lead, status, codeLabel, section("MACHINES", list, el("p", "web-access-dim", "Approving turns on web access on the machines you tick.")),
-   section("ACCESS", access, terminalNote), section("FOR", time), problem, buttons);
+  // Machines, Access and For as rows: each says its choice and opens in place to change it. The
+  // terminal warning sits in the Access row outside the part that closes, so it shows whenever
+  // terminal access is chosen.
+  const rows = el("div", "web-access-rows");
+  const row = (key: string, open: boolean, ...nodes: HTMLElement[]) => {
+   const head = el("button", "web-access-row-head"); head.type = "button";
+   const value = el("span", "web-access-row-value");
+   head.append(el("span", "web-access-row-key", key), value, el("span", "web-access-chevron"));
+   const body = el("div", "web-access-row-body"); body.append(...nodes);
+   const show = (o: boolean) => { head.setAttribute("aria-expanded", String(o)); body.hidden = !o; };
+   head.onclick = () => show(head.getAttribute("aria-expanded") !== "true");
+   show(open);
+   const r = el("div", "web-access-row"); r.append(head, body); rows.append(r);
+   return { row: r, value };
+  };
+  const machinesRow = row("Machines", ticked.size === 0, list);
+  const accessRow = row("Access", true, access);
+  accessRow.row.append(terminalNote);
+  const forRow = row("For", false, time);
+  dialog.append(title, lead, codeLabel, status, rows, el("p", "web-access-dim web-access-note", machinesNote(machines)), problem, buttons);
 
   // busy: a call is in flight (Approve and Deny wait for each other). locked: the choices no longer
   // do anything (approved, too many codes, or a pending answer). finished: the request is over.
@@ -107,6 +129,11 @@ export function initWebAccess(): void {
   const update = () => {
    deny.disabled = busy;
    approve.disabled = busy || finished || (!retry && (locked || !canApprove(code.value, ticked.size) || code.disabled));
+   digits.forEach((d, i) => { d.textContent = code.value[i] ?? ""; d.classList.toggle("next", i === code.value.length); });
+   machinesRow.value.textContent = machinesSummary(machines, ticked);
+   accessRow.value.textContent = choiceLabel(ACCESS_CHOICES, scope);
+   forRow.value.textContent = timeSummary(length, Date.now());
+   terminalNote.hidden = !showsTerminalWarning(scope);
   };
   const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
   code.oninput = () => { code.value = codeInput(code.value); say(""); update(); };
