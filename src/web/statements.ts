@@ -17,11 +17,14 @@ type Held = { jws: string; expMs: number };
  *  sign-in): nothing from it is kept or used. */
 const stale = () => new AccountServiceError(409, "account_changed");
 
-export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount" | "current" | "generation">, now: () => number = Date.now): StatementSource {
+export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount" | "current" | "generation" | "onSessionChange">, now: () => number = Date.now): StatementSource {
  // The current session's statements and requests, by host; replaced when the session changes.
  let session = "";
  let held = new Map<string, Held>();
  let asking = new Map<string, Promise<Held>>();
+ // Nothing signed is kept past its session: a sign-out or another sign-in empties the cache
+ // at once, not at the next lookup.
+ account.onSessionChange(() => { session = ""; held = new Map(); asking = new Map(); });
  return {
   async get(hostID, minLeftMs, signal) {
    signal.throwIfAborted();
@@ -39,7 +42,8 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
      const s = reply.statements.find(x => x.host === hostID);
      if (s === undefined || typeof s.jws !== "string" || !Number.isSafeInteger(reply.exp)) throw new Error("The account service gave no statement for this machine.");
      const got = { jws: s.jws, expMs: reply.exp * 1000 };
-     mine.held.set(hostID, got);
+     // An answer that comes after its session ended isn't kept.
+     if (live()) mine.held.set(hostID, got);
      return got;
     }).finally(() => mine.asking.delete(hostID));
     asking.set(hostID, flight);

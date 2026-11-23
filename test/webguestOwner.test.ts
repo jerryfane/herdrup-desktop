@@ -116,12 +116,41 @@ test("before the deadline the session sends a newer statement in-band, as one wh
  } finally { relay.stop(); }
 });
 
+// Real time on purpose: the refresh timer waits its 1 s floor on a live session.
+test("a refresh statement whose session ended at the handoff is never sent in-band", async () => {
+ const next = Promise.withResolvers<string | null>();
+ const relay = relayWith(async (_conn, handshake) => {
+  const session = (await handshake()).reply(ownerReply(Math.floor(Date.now() / 1000) + 121));
+  await ping(session);
+  next.resolve(await session.readMessage());
+ });
+ try {
+  const s = statements();
+  const refreshAsked = Promise.withResolvers<void>();
+  const get = s.get.bind(s);
+  // The refresh's statement comes back as its session ends (signed out at the handoff).
+  s.get = async (...args) => { const got = await get(...args); if (s.issued === 2) { s.alive = false; refreshAsked.resolve(); } return got; };
+  const t = new GuestTransport(ownerLink(endpointOf(relay), "x", s), staticKey(await generateIdentity()));
+  expect(await t.call("ping")).toEqual({ type: "pong" });
+  await refreshAsked.promise;
+  // One macrotask: a refresh about to be sent would be handed to the socket by now.
+  await new Promise(r => setTimeout(r, 0));
+  void t.call("ping").catch(() => {});
+  const message = await next.promise;
+  expect(message).not.toContain("account.refresh");
+  expect(message).toContain("ping");
+  t.close();
+ } finally { relay.stop(); }
+});
+
 /** The account service's statements for the cache tests: who is signed in, and each issue. */
 function issuer(clock: () => number) {
  const t = { signedIn: "acct-A" as string | null, generation: 0, signOutAfterLookup: false, asked: [] as string[], looked: 0, hold: null as PromiseWithResolvers<void> | null,
+  changed: new Set<() => void>(),
   /** Sign-out ends the session; signing in again starts another, even for the same account. */
-  signOut() { t.signedIn = null; t.generation++; } };
+  signOut() { t.signedIn = null; t.generation++; for (const f of t.changed) f(); } };
  const api = {
+  onSessionChange(f: () => void) { t.changed.add(f); return () => { t.changed.delete(f); }; },
   get current() { return t.signedIn === null ? null : { accountID: t.signedIn }; },
   get generation() { return t.generation; },
   async currentAccount() {
@@ -258,9 +287,16 @@ test("a hello whose session ended (signed out while it was prepared) is never di
  const relay = startRelay({ admit: () => undefined, serve: async (_conn, handshake) => { await ping((await handshake()).reply(ownerReply(Math.floor(Date.now() / 1000) + 660))); } });
  try {
   const s = statements();
+  // The session ends while the hello is prepared: during its static-key DH.
+  const key = staticKey(await generateIdentity());
+  const dhStarted = Promise.withResolvers<void>(), dhGate = Promise.withResolvers<void>();
+  const gated = { publicKey: key.publicKey, async dh(peer: Uint8Array) { dhStarted.resolve(); await dhGate.promise; return key.dh(peer); } };
+  const t = new GuestTransport(ownerLink(endpointOf(relay), "x", s), gated);
+  const call = t.call("ping");
+  await dhStarted.promise;
   s.alive = false;
-  const t = new GuestTransport(ownerLink(endpointOf(relay), "x", s), staticKey(await generateIdentity()));
-  await expect(t.call("ping")).rejects.toBeInstanceOf(GuestError);
+  dhGate.resolve();
+  await expect(call).rejects.toBeInstanceOf(GuestError);
   expect(relay.connects).toBe(0);
   t.close();
  } finally { relay.stop(); }
