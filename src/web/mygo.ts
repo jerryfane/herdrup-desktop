@@ -1,6 +1,10 @@
-// src/mygo.ts for the browser guest build (vite.web.config.ts aliases ./mygo and ../mygo here):
-// the same exports, the types re-exported from the generated client so they never drift. Desk is
-// the guest subset (desk.ts, gram.ts); any other method rejects, as there is no Go behind the page.
+// src/mygo.ts for the browser build (vite.web.config.ts aliases ./mygo and ../mygo here): the same
+// exports, the types re-exported from the generated client so they never drift. Desk is the method
+// groups registered in `implemented` below: the guest's and the owner link's core (desk.ts), Gram
+// (gram.ts), the account (accountDesk.ts) and saved prompts (prompts.ts). Any other method rejects,
+// as there is no Go behind the page, and `name in Desk` is false for it (shellModel.ts deskOffers),
+// so the shell hides what needs it. A new group: a module whose object `satisfies Partial<DeskFns>`,
+// calling herdr through ownerLink.ts, spread into `implemented`.
 
 import type { Desk as GoDesk, Dictation as GoDictation } from "../mygo";
 import { browserEnv, createGuestDesk } from "./desk";

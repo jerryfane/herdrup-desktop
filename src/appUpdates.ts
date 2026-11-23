@@ -1,6 +1,7 @@
 import { Desk, events } from "./mygo";
 import type { AppUpdateState } from "./mygo";
 import { version as packageVersion } from "../package.json";
+import { parts } from "./shellModel";
 
 // Herdrup Desktop updating itself (desk_updates_app.go). The herdr server's
 // update is settingsUpdates.ts.
@@ -9,8 +10,8 @@ import { version as packageVersion } from "../package.json";
 export const appUpdateIntervalHours = 6;
 
 /** The reference captures (refshot.go) compare Settings with herdrup's iPad screenshots, which have no
- *  app update row: it is the desktop's own, left out of them. */
-export const appUpdatesShown = Reflect.get(globalThis, "herdrupHoldsStill") !== true;
+ *  app update row: it is the desktop's own, left out of them. The browser has none (shellModel.ts). */
+export const appUpdatesShown = parts.appUpdates && Reflect.get(globalThis, "herdrupHoldsStill") !== true;
 
 /** The short status beside the App updates row. */
 export function appUpdateSummary(s: AppUpdateState | null): string {
@@ -64,7 +65,7 @@ function publish(s: AppUpdateState) { latest = s; for (const listener of listene
 export function watchAppUpdate(listener: (s: AppUpdateState) => void): () => void {
   listeners.add(listener);
   if (latest) listener(latest);
-  if (!started) {
+  if (!started && parts.appUpdates) {
     started = true;
     events.appUpdateChanged.on(s => { heard = true; publish(s); });
     // An event that came first is newer than this read.

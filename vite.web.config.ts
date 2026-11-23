@@ -14,17 +14,19 @@ import { uiTypography } from "./scripts/uiTypography.ts";
 const root = dirname(fileURLToPath(import.meta.url));
 const src = resolve(root, "src");
 
-/** src/*.ts import ./mygo, src/web/*.ts ../mygo, and composer.ts mygo-runtime: all to src/web. */
+/** src/*.ts import ./mygo, src/web/*.ts ../mygo, and composer.ts mygo-runtime: all to src/web. The
+ *  desktop-only host home goes the same way: main.ts's ./hosts (saved SSH hosts, pairing) is
+ *  src/web/hosts.ts here, the owner's approved machines (shellModel.ts has the other parts). */
 function browserBridge(): Plugin {
-  const bridge = resolve(src, "mygo.ts");
+  const swapped = new Map([[resolve(src, "mygo.ts"), resolve(src, "web/mygo.ts")], [resolve(src, "hosts.ts"), resolve(src, "web/hosts.ts")]]);
   return {
     name: "herdrup-guest-web-bridge",
     enforce: "pre",
     resolveId(source, importer) {
       if (!importer) return null;
       if (source === "mygo-runtime") return resolve(src, "web/runtime.ts");
-      if (/^\.\.?\/mygo(\.ts)?$/.test(source) && resolve(dirname(importer), source).replace(/\.ts$/, "") + ".ts" === bridge) return resolve(src, "web/mygo.ts");
-      return null;
+      if (!/^\.\.?\/(mygo|hosts)(\.ts)?$/.test(source)) return null;
+      return swapped.get(resolve(dirname(importer), source).replace(/\.ts$/, "") + ".ts") ?? null;
     },
   };
 }
@@ -35,6 +37,8 @@ const runtimeAssets = [
   ...readdirSync(resolve(root, "public/herdrup/composer")).sort().map(f => `herdrup/composer/${f}`),
   "mermaid/mermaid.min.js", "mermaid/Mermaid-LICENSE.txt",
   "fonts/Geist-OFL.txt", "fonts/IBMPlexMono-OFL.txt", "herdrup/fonts/NerdFonts-LICENSE.txt",
+  // Settings' Join the Discord row (settings.ts discordGlyph), with its brand notice.
+  "herdrup/discord-mark.png", "herdrup/NOTICE-Discord-Brand.txt",
 ];
 function runtimeFiles(): Plugin {
   return {
@@ -80,7 +84,7 @@ function devServer(): Plugin {
     apply: "serve",
     transformIndexHtml: {
       order: "pre",
-      handler: html => html.replace(`src="../src/web/main.ts"`, `src="/@fs${resolve(src, "web/main.ts")}"`),
+      handler: html => html.replace(`src="../src/web/boot.ts"`, `src="/@fs${resolve(src, "web/boot.ts")}"`),
     },
     configureServer(server) {
       server.middlewares.use((req, res, next) => {

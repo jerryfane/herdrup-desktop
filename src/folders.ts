@@ -3,6 +3,7 @@
 // the right-click menus and the folder-name prompt. The layout itself is
 // Go's (internal/herdr/folders.go, herdrup AgentFolderLayout).
 import { Desk, events, type Board, type Folder, type FolderNaming, type Row } from "./mygo";
+import { deskOffers } from "./shellModel";
 
 /** One line of the roster as drawn. */
 export type Entry =
@@ -76,6 +77,8 @@ export async function star(d: FolderDeps): Promise<HTMLElement> {
  * 4294-4393), from Stop agent to Archive; the items that need a sheet come
  * back as events.agentActionRequested (agentActions.ts). */
 export function agentMenu(row: HTMLElement, r: Row) {
+  // The browser has the menu once its agent-actions group is registered (shellModel.ts).
+  if (!deskOffers("agentMenu")) return;
   row.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     void Desk.agentMenu(r.id);
@@ -109,10 +112,12 @@ export async function folderRow(f: Folder, d: FolderDeps): Promise<HTMLElement> 
     d.toggled(f.id, !f.open);
     void Desk.setFolderOpen(f.id, !f.open);
   });
-  row.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    void Desk.folderMenu(f.id);
-  });
+  if (deskOffers("folderMenu")) {
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      void Desk.folderMenu(f.id);
+    });
+  }
   return row;
 }
 

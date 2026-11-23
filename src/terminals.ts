@@ -2,6 +2,7 @@ import { Desk, events, type AgentTarget, type BoardUpdate, type SavedTerminal } 
 import { savedTerminalChanged, selectInteraction } from "./interaction";
 import "./terminals.css";
 import { errorText } from "./errors";
+import { deskOffers } from "./shellModel";
 
 type Scope = Pick<BoardUpdate, "machineID" | "session">;
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
@@ -13,6 +14,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") 
 function button(text: string, action: () => void) { const node = el("button", "", text); node.type = "button"; node.onclick = action; return node; }
 
 export async function terminalRows(scope: Scope, query: string, symbol: SymbolRenderer, changed: () => Promise<void>): Promise<HTMLElement | null> {
+  // The browser lists saved terminals once its terminals group is registered (shellModel.ts).
+  if (!deskOffers("savedTerminals")) return null;
   const saved = await Desk.savedTerminals(scope.machineID, scope.session);
   const needle = query.trim().toLocaleLowerCase();
   const entries = saved.filter(entry => !needle || entry.label.toLocaleLowerCase().includes(needle));

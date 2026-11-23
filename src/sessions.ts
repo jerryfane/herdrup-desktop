@@ -5,6 +5,7 @@
 import { Desk, events, type Row, type SessionPill } from "./mygo";
 import { accountLabel, needsYouText, timeInState, waitingOutOfSight } from "./listExtras";
 import { rowStatus } from "./rowStatus";
+import { deskOffers, parts } from "./shellModel";
 
 type SymbolFn = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 
@@ -60,7 +61,9 @@ export async function initListExtras(h: Host) {
     accounts = a;
     h.rerender();
   });
-  const [p, a] = await Promise.all([Desk.sessionPills(), Desk.accounts()]);
+  // Session pills are the desktop's (herdr sessions listed over SSH); the agents' account labels
+  // need the browser's accounts group (shellModel.ts).
+  const [p, a] = await Promise.all([parts.sessionPills ? Desk.sessionPills() : [], deskOffers("accounts") ? Desk.accounts() : {}]);
   pills = p ?? [];
   accounts = a ?? {};
   renderSessionPills();
