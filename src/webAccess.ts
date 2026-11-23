@@ -112,9 +112,12 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
  *  click: only its moves count, its release stops following, and its cancel, or a close, forgets
  *  the press, which then isn't a click. Another pointer, even another device's primary one, can't
  *  take the press over or end it, and its click isn't this press's. If the capture is lost before
- *  the release, or input's window loses focus, the press is over. */
+ *  the release, or input's window loses focus, the press is over. close() removes every listener
+ *  this installed, so a field that stays in the document follows no further presses. */
 export function followPresses(input: HTMLInputElement) {
  const win = input.ownerDocument.defaultView;
+ const listening = new AbortController();
+ const { signal } = listening;
  let press: { pointer: number; gesture: CodePress; down: boolean } | null = null;
  const ours = (event: Event): PointerEvent | null => {
   const e = event as PointerEvent;
@@ -132,13 +135,13 @@ export function followPresses(input: HTMLInputElement) {
   // never reached the sheet, so that press is over.
   if (!e.isPrimary || e.button !== 0 || (press?.down && press.pointer !== e.pointerId)) return;
   press = { pointer: e.pointerId, gesture: new CodePress(e.clientX, e.clientY), down: true };
-  input.addEventListener("pointermove", follow);
+  input.addEventListener("pointermove", follow, { signal });
   input.setPointerCapture(e.pointerId);
- });
- input.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } });
- input.addEventListener("pointercancel", event => { if (ours(event)) drop(); });
- input.addEventListener("lostpointercapture", event => { if (ours(event)) drop(); });
- win?.addEventListener("blur", drop);
+ }, { signal });
+ input.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } }, { signal });
+ input.addEventListener("pointercancel", event => { if (ours(event)) drop(); }, { signal });
+ input.addEventListener("lostpointercapture", event => { if (ours(event)) drop(); }, { signal });
+ win?.addEventListener("blur", drop, { signal });
  return {
   /** Whether this click ends a plain click on the code; the press is done either way. A click the
    *  browser says came from another pointer (pointerId) leaves the press alone. */
@@ -148,7 +151,7 @@ export function followPresses(input: HTMLInputElement) {
    drop();
    return plain;
   },
-  close: () => { drop(); win?.removeEventListener("blur", drop); },
+  close: () => { drop(); listening.abort(); },
  };
 }
 
