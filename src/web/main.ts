@@ -25,6 +25,7 @@ import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
 import { ownerAccess, signInReturned } from "./mygo";
 import { AccountServiceError, SignedOutError } from "./account";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
+import { OwnerRuns } from "./ownerRuns";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
 import { browserDeviceName, ownerCard } from "./ownerScreen";
 
@@ -73,7 +74,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 const ownerStore = new IndexedDBOwnerStore();
 const deviceName = browserDeviceName(navigator.userAgent);
 let ownerPhase: OwnerPhase | null = null;
-let ownerRun: AbortController | null = null;
+const ownerRuns = new OwnerRuns();
 /** The person chose "Use a guest invitation instead" on this load. */
 let guestInstead = false;
 
@@ -86,17 +87,17 @@ const ownerWanted = (shown: WelcomeState) => account.signedIn && shown.owner ===
 /** Newer lists for the approval shown (same account, same key), taken in the background. The
  *  session now another account's, or signed out: the approval shown goes, and the screen starts
  *  over for whoever is signed in. */
-async function refreshShown(run: AbortController, record: OwnerRecord) {
+async function refreshShown(run: AbortSignal, record: OwnerRecord) {
  const key = await ownerKey(ownerAccess.identities).catch(() => null);
- if (key === null || ownerRun !== run) return;
+ if (key === null || !ownerRuns.isCurrent(run)) return;
  let fresh: OwnerRecord | undefined;
- try { fresh = await refreshLists(ownerAccess.account, record.account, key, ownerStore, deviceName, run.signal); }
+ try { fresh = await refreshLists(ownerAccess.account, record.account, key, ownerStore, deviceName, run); }
  catch (error) {
-  if (ownerRun !== run) return;
+  if (!ownerRuns.isCurrent(run)) return;
   if ((error instanceof AccountServiceError && error.code === "account_changed") || error instanceof SignedOutError) { stopOwner(); redrawWelcome(); }
   return;
  }
- if (fresh === undefined || ownerRun !== run || ownerPhase?.kind !== "approved") return;
+ if (fresh === undefined || !ownerRuns.isCurrent(run) || ownerPhase?.kind !== "approved") return;
  ownerPhase = { kind: "approved", record: fresh };
  redrawWelcome();
 }
@@ -105,22 +106,21 @@ async function refreshShown(run: AbortController, record: OwnerRecord) {
  *  lock), else this browser asks; Ask again goes the same way. It only changes state: the
  *  caller draws (showWelcome when entering owner mode, redrawWelcome for Ask again). */
 function beginApproval() {
- ownerRun?.abort();
- const run = new AbortController();
- ownerRun = run;
  ownerPhase = { kind: "starting" };
- const onPhase = (p: OwnerPhase) => {
-  if (ownerRun !== run) return;
+ // The run is this session's: another account's or none (see showWelcome) ends it.
+ const onPhase = (run: AbortSignal) => (p: OwnerPhase) => {
+  if (!ownerRuns.isCurrent(run)) return;
   ownerPhase = p;
   if (p.kind === "approved") void refreshShown(run, p.record);
   redrawWelcome();
  };
- runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store: ownerStore, deviceName }, onPhase, run.signal)
-  .catch(error => { if (ownerRun === run) { ownerPhase = { kind: "failed", problem: errorText(error) }; redrawWelcome(); } });
+ ownerRuns.begin(ownerAccess.account.current?.accountID,
+  run => runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store: ownerStore, deviceName }, onPhase(run), run),
+  error => { ownerPhase = { kind: "failed", problem: errorText(error) }; redrawWelcome(); });
 }
 
 /** Stops the approval and forgets what it showed: another sign-in starts from its own account. */
-function stopOwner() { ownerRun?.abort(); ownerRun = null; ownerPhase = null; }
+function stopOwner() { ownerRuns.stop(); ownerPhase = null; }
 
 // ---- The plain screen without a grant ----
 
@@ -132,7 +132,9 @@ function showWelcome(shown: WelcomeState | null) {
  let card: HTMLElement;
  if (ownerWanted(shown)) {
   // An approval shown for an account this session no longer has (another sign-in) goes.
-  if (ownerPhase?.kind === "approved" && ownerAccess.account.current?.accountID !== ownerPhase.record.account) stopOwner();
+  // A run (waiting, code or list) of an account this session no longer has goes; the new
+  // session's starts below.
+  if (ownerPhase !== null && ownerRuns.staleFor(ownerAccess.account.current?.accountID)) stopOwner();
   if (ownerPhase === null) beginApproval();
   card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, {
    again: () => { beginApproval(); redrawWelcome(); },

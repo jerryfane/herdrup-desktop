@@ -64,6 +64,10 @@ export async function webSignInProviders(fetcher: typeof fetch, service = ACCOUN
 export class SignedOutError extends Error {
  constructor() { super("Signed out"); this.name = "SignedOutError"; }
 }
+/** A refresh nobody waited for any more by the time the lock came: not sent. */
+class RefreshUnwanted extends Error {
+ constructor() { super("refresh no longer wanted"); this.name = "RefreshUnwanted"; }
+}
 export class AccountServiceError extends Error {
  constructor(readonly status: number, readonly code: string) { super(`account service: ${status} ${code}`); this.name = "AccountServiceError"; }
 }
@@ -117,18 +121,26 @@ export class WebAccount {
 
  /** A current access token, refreshing through the cookie when the one held is missing or within
   *  a minute of expiry. Callers in this page share one refresh, and tabs take turns (the lock).
-  *  Throws SignedOutError when the service has no session for this browser. */
- accessToken(): Promise<string> {
+  *  Throws SignedOutError when the service has no session for this browser. A caller whose
+  *  signal aborts stops waiting at once; a refresh still queued for the lock is skipped when no
+  *  caller waits for it any more, and one already sent finishes. */
+ accessToken(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
+  // Counted before the refresh is queued: without a lock the refresh starts at once.
+  this.waiting++;
   if (!this.flight) {
    // The epoch now, not when the lock is granted: a sign-out while this waits for the lock
    // (another tab's refresh, or the sign-out itself) makes its answer stale.
    const epoch = this.epoch;
-   const flight: Promise<string> = this.exclusive(() => this.refresh(epoch)).finally(() => { if (this.flight === flight) this.flight = null; });
+   const flight: Promise<string> = this.exclusive(() => this.waiting > 0 ? this.refresh(epoch) : Promise.reject(new RefreshUnwanted()))
+    .finally(() => { if (this.flight === flight) this.flight = null; });
    this.flight = flight;
   }
-  return this.flight;
+  return (signal ? untilAborted(this.flight, signal) : this.flight).finally(() => { this.waiting--; });
  }
+ /** Callers waiting for the refresh in flight. */
+ private waiting = 0;
 
  /** The session the cookie holds now, or null when there is none: a refresh. Other errors throw. */
  async check(): Promise<WebSession | null> {
@@ -172,9 +184,10 @@ export class WebAccount {
  }
 
  /** A token and the account it is for, read together: a refresh sets both at once. */
- private async credential(): Promise<{ token: string; account: string }> {
+ private async credential(signal?: AbortSignal): Promise<{ token: string; account: string }> {
   for (;;) {
-   const token = await this.accessToken();
+   // A cancelled caller doesn't go round again: no new refresh starts for it.
+   const token = await this.accessToken(signal);
    if (this.access === token && this.session !== null) return { token, account: this.session.accountID };
   }
  }
@@ -186,7 +199,7 @@ export class WebAccount {
   signal?.throwIfAborted();
   if (this.session) return this.session.accountID;
   // A cancelled caller stops waiting; the refresh goes on for whoever else needs it.
-  return (await (signal ? untilAborted(this.credential(), signal) : this.credential())).account;
+  return (await this.credential(signal)).account;
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
@@ -201,7 +214,9 @@ export class WebAccount {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
-   const { token, account: now } = await (signal ? untilAborted(this.credential(), signal) : this.credential());
+   const { token, account: now } = await this.credential(signal);
+   // Aborted while the token was handed over: the caller's abort, not an account check.
+   signal?.throwIfAborted();
    if (bound !== undefined && now !== bound) throw new AccountServiceError(409, "account_changed");
    bound = now;
    const response = await this.fetcher(`${this.service}${path}`, {
