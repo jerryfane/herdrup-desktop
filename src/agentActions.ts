@@ -9,7 +9,7 @@ import { Desk, events, type AgentAction, type AvatarChoice, type Row } from "./m
 import { avatarFace, MASCOTS, mascotName, mascotURL } from "./avatars";
 import {
   agentFrom, AVATAR_PIXEL_SIZE, clampZoom, CROP_VIEWPORT, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName,
-  integralCropRect, renameField, SheetStaleError, transferPhaseIsConclusive, transferPhaseIsTerminal, transferSheetOpening, workingSize,
+  integralCropRect, renameField, sheetFailure, SheetStaleError, transferPhaseIsConclusive, transferPhaseIsTerminal, transferSheetOpening, workingSize,
   type TransferAgent, type TransferInfo,
 } from "./agentActionsModel";
 import { switchAction, switchMessage, switchStatusText, switchTitle, type SwitchRequest, type SwitchStatus } from "./topicSuggestionsModel";
@@ -42,10 +42,14 @@ const failure = errorText;
 
 /** herdrup's roster perform() (HerdrApp.swift 2249-2257) discloses a failed
  * action as "couldn't <verb> <title>: <error>"; the desktop shows it as the
- * native alert Go uses for Stop and Archive. */
+ * native alert Go uses for Stop and Archive. A browser sheet a newer choice of
+ * it replaced says nothing (sheetFailure). */
 async function perform(verb: string, title: string, op: () => Promise<unknown>) {
   try { await op(); }
-  catch (error) { void Desk.alertAgentFailure(`Couldn't ${verb} ${title}`, failure(error)); }
+  catch (error) {
+    const why = sheetFailure(error);
+    if (why !== null) void Desk.alertAgentFailure(`Couldn't ${verb} ${title}`, why);
+  }
 }
 
 /** A sheet: a header with leading and trailing toolbar slots around the
@@ -130,7 +134,9 @@ async function switchTopics(action: AgentAction) {
     const result = await Desk.topicsSetEnabled(request.paneID, request.enable);
     show({ kind: "done", request, changed: result.changed });
   } catch (error) {
-    show({ kind: "failed", request, why: failure(error) });
+    // A newer Topics choice for this agent owns the banner now.
+    const why = sheetFailure(error);
+    if (why !== null) show({ kind: "failed", request, why });
   }
 }
 
@@ -251,7 +257,7 @@ export function openAvatarSheet(paneID: string, name: string) {
     error = "";
     void Desk.setAgentAvatar(paneID, choice ?? { kind: "default" }).then(() => {
       current = choice === null ? { kind: "initial" } : choice.kind === "mascot" ? { kind: "mascot", mascot: choice.mascot } : { kind: "image", photo };
-    }, reason => { error = `Couldn't change the picture: ${failure(reason)}`; }).finally(() => { if (dialog.open && !cropping) void main(); });
+    }, reason => { const why = sheetFailure(reason); if (why !== null) error = `Couldn't change the picture: ${why}`; }).finally(() => { if (dialog.open && !cropping) void main(); });
     void main();
   };
 

@@ -17,7 +17,7 @@
 // open or without a record; it never falls back to the open link.
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
-import { harnessDisplayName, normalizeAgentName, SheetStaleError, transferPhaseIsConclusive } from "../agentActionsModel";
+import { harnessDisplayName, normalizeAgentName, SheetStaleError, SheetSupersededError, transferPhaseIsConclusive } from "../agentActionsModel";
 import { ompHarness } from "../topicsModel";
 import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
@@ -165,34 +165,59 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 export type SheetKind = "rename" | "restart" | "swap" | "avatar" | "topics" | "transfer";
 
 /** The sheet each item chose, by kind and pane: the link it was chosen on. Sheets are modal, so per
- *  kind and pane one is pending; choosing it again (on any machine) retires the older record. */
-interface SheetRecord { readonly link: OwnerLink }
+ *  kind and pane one is pending; choosing it again (on any machine) supersedes the older record. A
+ *  record lives while its sheet can still call: until its one step settles (Rename, Restart, Swap,
+ *  Topics), a newer choice replaces it, or its link ends (Avatar… and Switch harness ask more than
+ *  once, so they stay until then). */
+interface SheetRecord { readonly link: OwnerLink; superseded: boolean }
 const sheets = new Map<string, SheetRecord>();
+/** Kinds whose sheet makes one call: its record goes once that call settles. */
+const ONE_STEP: readonly SheetKind[] = ["rename", "restart", "swap", "topics"];
+/** Links whose end retires their records. */
+const watched = new WeakSet<OwnerLink>();
 /** The pane of the newest Switch harness chosen: its sheet's account lookup names none. */
 let transferPane: string | null = null;
-/** A folder name prompt's link, by its request. */
+/** A folder name prompt's link, by its request; gone once it answered. */
 const prompts = new WeakMap<FolderNaming, OwnerLink>();
+
+/** Records still held (a test seam for their lifetime). */
+export function openSheets(): number { return sheets.size; }
 
 /** A sheet of kind for paneID chosen on link (a row menu item, or the ••• menu's Avatar…). */
 export function sheetOpened(link: OwnerLink, kind: SheetKind, paneID: string): void {
- sheets.set(kind + "\u0000" + paneID, { link });
+ const key = kind + "\u0000" + paneID, older = sheets.get(key);
+ if (older) older.superseded = true;
+ sheets.set(key, { link, superseded: false });
  if (kind === "transfer") transferPane = paneID;
+ if (!watched.has(link)) {
+  watched.add(link);
+  link.signal.addEventListener("abort", () => {
+   for (const [k, record] of sheets) if (record.link === link) sheets.delete(k);
+  }, { once: true });
+ }
 }
 
 /** One step of a sheet (a lookup, a poll, a write): it runs on the link of the record current for
  *  its kind and pane, refused without one or once that link is no longer the open one; it never
- *  falls back to the open link. How it ends counts only while that record is still current and its
- *  link still open: a newer choice of the sheet meanwhile (on any machine), or another machine,
- *  turns its answer or its failure into SheetStaleError, and the page stops that sheet. */
+ *  falls back to the open link. How it ends counts only while that record stands: a newer choice
+ *  of the sheet meanwhile (on any machine) ends it as SheetSupersededError, which the page keeps
+ *  quiet about; another machine as SheetStaleError, the sheet's refusal. */
 async function sheetStep<T>(kind: SheetKind, paneID: string, step: (link: OwnerLink) => Promise<T>): Promise<T> {
  if (paneID === "") throw new Error("no agent");
  const key = kind + "\u0000" + paneID, record = sheets.get(key);
- const current = () => sheets.get(key) === record && record?.link === currentOwnerLink();
- if (record === undefined || !current()) throw new SheetStaleError();
- let result: T;
- try { result = await step(record.link); } catch (error) { throw current() ? error : new SheetStaleError(); }
- if (!current()) throw new SheetStaleError();
- return result;
+ if (record === undefined) throw new SheetStaleError();
+ const ended = () => record.superseded ? new SheetSupersededError() : record.link !== currentOwnerLink() ? new SheetStaleError() : null;
+ const before = ended();
+ if (before) throw before;
+ try {
+  let result: T;
+  try { result = await step(record.link); } catch (error) { throw ended() ?? error; }
+  const after = ended();
+  if (after) throw after;
+  return result;
+ } finally {
+  if (ONE_STEP.includes(kind) && sheets.get(key) === record) sheets.delete(key);
+ }
 }
 
 /** desk_agent_actions.go agentLink, without the roster: the link a menu brought, or the open one,
@@ -342,10 +367,11 @@ export const agentActionsDesk = {
  /** desk_groups.go NameFolder: creates the folder or renames it; a name with nothing left once
   *  trimmed does nothing. */
  async nameFolder(n: FolderNaming, text: string): Promise<void> {
-  // The prompt's own link, and only while it is the open one: a refused name changes nothing,
-  // here (the open folders) or there.
+  // The prompt's own link, and only while it is the open one and still writes (terminal scope): a
+  // refused name changes nothing, here (the open folders) or there.
   const link = prompts.get(n);
-  if (!link?.groups || link !== currentOwnerLink()) return;
+  prompts.delete(n);
+  if (!link?.groups || link !== currentOwnerLink() || link.scope() !== "terminal") return;
   if (n.kind === "new") link.groups.createFolder(text, n.member);
   else if (n.kind === "rename") {
    const name = folderName(text);
