@@ -79,7 +79,7 @@ const problemOf = (error: unknown): string => {
   if (error.code === "too_many_requests") return "Too many approval requests from this account. Try again in an hour.";
   if (error.code === "device_in_other_account") return "This browser is already a device of another HerdrUp account.";
   if (error.code === "too_many_devices") return "The account has too many devices. Remove one in HerdrUp, then try again.";
-  if (error.code === "account_changed") return "This browser is now signed in to another account. Ask again to approve it there.";
+  if (error.code === "account_changed") return "This browser is now signed in to another account.";
   return error.status >= 500 ? "The account service is unavailable. Try again later." : `The account service refused the request (${error.code || error.status}).`;
  }
  return "Couldn't reach the account service. Check the connection and try again.";
@@ -155,7 +155,8 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
    // a service this browser can't follow, never an approval to take.
    const taken = approver !== null && await takeApproval(deps, acct, devicePub, key, approver, onPhase, signal, sleep);
    if (taken || signal.aborted) return;
-   onPhase({ kind: "failed", problem: "HerdrUp approved this browser, but its list of machines didn't arrive or didn't open. Ask again." });
+   // What failed only: the guide offers the way on (ownerScreen.ts ownerLayout's retry).
+   onPhase({ kind: "failed", problem: "HerdrUp approved this browser, but its list of machines didn't arrive or didn't open." });
    return;
   }
   if (now() >= expiresAt) { onPhase({ kind: "expired" }); return; }

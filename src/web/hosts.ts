@@ -17,7 +17,7 @@ import { ownerAccess, ownerDesk } from "./mygo";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { probeList, type MachineStatus } from "./ownerProbe";
 import { OwnerRuns } from "./ownerRuns";
-import { approvedMachines, arrives, ownerCard, showStatus, thisBrowser } from "./ownerScreen";
+import { approvedMachines, arrives, ownerCard, thisBrowser, type OwnerCard } from "./ownerScreen";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
 import { statementCache } from "./statements";
 
@@ -74,13 +74,18 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
    const record = phase.record;
    const key = await ownerKey(ownerAccess.identities).catch(() => null);
    return key === null ? null : { machines: approvedMachines(record).machines, key };
-  }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); if (!showStatus(hostID, status)) draw(); }, { signal: session.signal });
+  }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); shown.showStatus(hostID, status); }, { signal: session.signal });
  }
 
+ /** The card on screen: a probe's status goes into its row in place; with no row for the machine
+  *  (another screen, or a machine this list doesn't have) the status waits in statuses for the
+  *  next drawing. */
+ let shown: Pick<OwnerCard, "showStatus"> = { showStatus: () => false };
  function draw() {
   const card = ownerCard(phase, browser, { again: begin, guestInstead: () => startOver(true), open: m => open(m) }, spinner, statuses, arrivedAt);
-  if (account.available) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), account.root); card.append(part); }
-  screen.replaceChildren(card);
+  if (account.available) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), account.root); card.root.append(part); }
+  screen.replaceChildren(card.root);
+  shown = card;
   probe();
  }
 
