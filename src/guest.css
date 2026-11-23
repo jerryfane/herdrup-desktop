@@ -15,6 +15,9 @@
 /* A share's sidebar: its agent list, its Gram's inbox (gram.ts, #697), or on the desktop the
    app's Settings index (settings.ts). */
 .guest-mode #sidebar > :not(.topbar, .sidebar-foot, .guest-navigation, .gram-side, .settings-index) { display: none !important; }
+/* The foot keeps only the tab bar: the owner's notices over it (the Topics switch's) are the
+   owner's, and take no room in a share's sidebar. */
+.guest-mode #sidebar-foot > :not(.tabbar) { display: none !important; }
 .guest-navigation[hidden], .guest-settings[hidden] { display: none; }
 .guest-navigation {
   flex: 1;
