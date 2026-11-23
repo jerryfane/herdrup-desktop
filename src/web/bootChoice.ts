@@ -25,3 +25,16 @@ export async function choosePage(f: BootFacts): Promise<"guest" | "owner"> {
  if (await f.grant().catch(() => false)) return "guest";
  return await f.signedIn().catch(() => false) ? "owner" : "guest";
 }
+
+/** sessionStorage: when this tab last reloaded because the page's code didn't load (ms). */
+export const LOAD_RELOAD_KEY = "herdrup.web.loadReloadedAt";
+/** A reload this recent that didn't help is not tried again. */
+export const LOAD_RELOAD_WINDOW_MS = 30_000;
+
+/** The page's code didn't load (a network drop, or a deploy that replaced the hashed files this
+ *  index names: Vite's advice for its preload errors is a reload, which fetches the new index).
+ *  Reload once; if this tab already reloaded for it moments ago, say so and leave the reload to
+ *  the person instead of looping. */
+export function afterLoadFailure(reloadedAt: number | null, now: number): "reload" | "explain" {
+ return reloadedAt !== null && now - reloadedAt < LOAD_RELOAD_WINDOW_MS ? "explain" : "reload";
+}
