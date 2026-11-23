@@ -323,10 +323,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
    if (!webGuest && accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
-   const welcomed = webGuest ? false : await welcome.update(machines.length === 0 && shares.length === 0);
-   // Only the newest refresh decides: an older lookup answering late commits nothing.
+   const welcomed = webGuest ? null : await welcome.decide(machines.length === 0 && shares.length === 0);
+   // Only the newest refresh decides: an older lookup answering late changes nothing. The
+   // welcome, the home and "settled" change together.
    if (generation !== version) return;
-   if (!webGuest) home.hidden = welcomed;
+   if (welcomed !== null) { welcome.commit(welcomed); home.hidden = welcomed.show; }
    container.dataset.welcome = "settled";
    shared.hidden = shares.length === 0;
    placeOwnerSetup(shares.length > 0);
