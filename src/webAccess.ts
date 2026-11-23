@@ -112,8 +112,9 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
  *  click: only its moves count, its release stops following, and its cancel, or a close, forgets
  *  the press, which then isn't a click. Another pointer, even another device's primary one, can't
  *  take the press over or end it, and its click isn't this press's. If the capture is lost before
- *  the release, or input's window loses focus, the press is over. close() removes every listener
- *  this installed, so a field that stays in the document follows no further presses. */
+ *  the release, or input's window loses focus, the press is over. close() lets go of a pointer the
+ *  field still holds and removes every listener this installed, so a field that stays in the
+ *  document holds no pointer and follows no further presses. */
 export function followPresses(input: HTMLInputElement) {
  const win = input.ownerDocument.defaultView;
  const listening = new AbortController();
@@ -151,7 +152,12 @@ export function followPresses(input: HTMLInputElement) {
    drop();
    return plain;
   },
-  close: () => { drop(); listening.abort(); },
+  close: () => {
+   // Only a pointer still down is captured, so releasing it can't fail.
+   if (press && input.hasPointerCapture(press.pointer)) input.releasePointerCapture(press.pointer);
+   drop();
+   listening.abort();
+  },
  };
 }
 
