@@ -88,9 +88,10 @@ type WebAccessResult struct {
 	// Deny removes them.
 	Unsure  bool   `json:"unsure,omitempty"`
 	Problem string `json:"problem,omitempty"`
-	// ExpiresMs is when the grants end (Unix ms), once any machine was
-	// granted. A retry after a lost answer sends, and returns, the same one.
-	ExpiresMs int64 `json:"expiresMs,omitempty"`
+	// Expires is each granted machine's expiry as the machine recorded it
+	// (Unix ms), in Granted's order. A retry after a lost answer returns the
+	// same ones.
+	Expires []int64 `json:"expires,omitempty"`
 }
 
 // WebAccessSkipped is a machine left out, with the reason the browser sees
@@ -530,6 +531,7 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 			envelope.Skipped = append(envelope.Skipped, webEnvelopeSkipped{HostItemID: c.m.SyncID, Label: c.label, Reason: skip})
 		default:
 			res.Granted = append(res.Granted, c.label)
+			res.Expires = append(res.Expires, g.ExpiresUnix*1000)
 			g.HostItemID = c.m.SyncID
 			envelope.Machines = append(envelope.Machines, g)
 			grants = append(grants, webGrant{m: c, grantID: g.GrantID})
@@ -542,8 +544,7 @@ func (d *Desk) WebAccessApprove(ctx context.Context, id string, machineIDs []str
 	if err != nil {
 		return res, err
 	}
-	res.ExpiresMs = expires.UnixMilli()
-	return d.report(ctx, w, &webPending{scope: scope, expiresMs: res.ExpiresMs, seq: seq, envelope: plain, grants: grants, res: res})
+	return d.report(ctx, w, &webPending{scope: scope, expiresMs: expires.UnixMilli(), seq: seq, envelope: plain, grants: grants, res: res})
 }
 
 // report sends the approval with its grants. Recorded: done. Definitely not

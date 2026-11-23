@@ -240,6 +240,10 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 		g["expires_ms"].(float64)-g["created_ms"].(float64) != float64(week.Seconds*1000) {
 		t.Fatalf("grant %v", g)
 	}
+	// The result says the expiry the machine recorded, not one from this computer's clock.
+	if len(res.Expires) != 1 || res.Expires[0] != int64(g["expires_ms"].(float64))/1000*1000 {
+		t.Fatalf("expires %v, want the machine's %v", res.Expires, g["expires_ms"])
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.finish["outcome"] != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(time.Unix(1_800_000_000+week.Seconds, 0).UnixMilli()) {
@@ -404,7 +408,7 @@ func TestWebAccessRemovesTheGrantsOfARefusedApproval(t *testing.T) {
 
 // When the service's answer is lost and its state can't be read, the grants
 // stay and the next Approve sends the same report, with no new grant, and
-// says the expiry the grants were made with, not one from the retry's time.
+// says the expiries the machines recorded, not new ones from the retry.
 func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	webNow = func() time.Time { return time.Unix(1_800_000_000, 0) }
 	t.Cleanup(func() { webNow = time.Now })
@@ -413,8 +417,9 @@ func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	typeCode(t, d, w)
 	w.set(func() { w.finishStatus, w.readStatus = http.StatusServiceUnavailable, http.StatusServiceUnavailable })
 	res, err := d.WebAccessApprove(ctx, "req-1", []string{machine}, "chat", "7d")
-	granted := time.Unix(1_800_000_000, 0).Add(7 * 24 * time.Hour).UnixMilli()
-	if err != nil || !res.Unsure || res.Problem == "" || res.ExpiresMs != granted {
+	report := time.Unix(1_800_000_000, 0).Add(7 * 24 * time.Hour).UnixMilli()
+	recorded := func() []int64 { return []int64{int64(w.grants(t)[0]["expires_ms"].(float64)) / 1000 * 1000} }
+	if err != nil || !res.Unsure || res.Problem == "" || fmt.Sprint(res.Expires) != fmt.Sprint(recorded()) {
 		t.Fatalf("lost answer: %+v, %v", res, err)
 	}
 	if live := w.live(t); len(live) != 1 {
@@ -423,7 +428,7 @@ func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	w.set(func() { w.finishStatus, w.readStatus = 0, 0 })
 	webNow = func() time.Time { return time.Unix(1_800_000_000, 0).Add(time.Hour) }
 	res, err = d.WebAccessApprove(ctx, "req-1", []string{machine}, "terminal", "1d")
-	if err != nil || res.Unsure || len(res.Granted) != 1 || res.ExpiresMs != granted {
+	if err != nil || res.Unsure || len(res.Granted) != 1 || fmt.Sprint(res.Expires) != fmt.Sprint(recorded()) {
 		t.Fatalf("retry: %+v, %v", res, err)
 	}
 	if g := w.grants(t); len(g) != 1 || g[0]["scope"] != "chat" {
@@ -431,7 +436,7 @@ func TestWebAccessRetriesTheSameReportAfterALostAnswer(t *testing.T) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.finishes != 2 || w.outcome != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(granted) {
+	if w.finishes != 2 || w.outcome != "approved" || w.finish["scope"] != "chat" || w.finish["expires_ms"].(float64) != float64(report) {
 		t.Fatalf("finishes %d, outcome %q, finish %v", w.finishes, w.outcome, w.finish)
 	}
 }

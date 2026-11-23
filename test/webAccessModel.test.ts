@@ -88,11 +88,14 @@ test("the sheet's rows, closed, say the choice: ticked machines by name, and acc
  expect(choiceLabel(ACCESS_CHOICES, "chat")).toBe("Chat only");
 });
 
-test("For says the length in whole days and the day it ends", () => {
+test("For says the length in whole days and the day it ends; grants that end on two days say both", () => {
  const now = Date.UTC(2026, 10, 23, 12);
  const day = (d: number) => new Date(now + d * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
- expect(timeSummary(7 * 86_400, now + 7 * 86_400_000)).toBe(`7 days, until ${day(7)}`);
- expect(timeSummary(86_400, now + 86_400_000)).toBe(`1 day, until ${day(1)}`);
+ expect(timeSummary(7 * 86_400, [now + 7 * 86_400_000])).toBe(`7 days, until ${day(7)}`);
+ expect(timeSummary(86_400, [now + 86_400_000])).toBe(`1 day, until ${day(1)}`);
+ expect(timeSummary(86_400, [now + 86_400_000, now + 86_400_000 + 60_000])).toBe(`1 day, until ${day(1)}`);
+ expect(timeSummary(86_400, [now + 2 * 86_400_000, now + 86_400_000])).toBe(`1 day, until ${day(1)} or ${day(2)}`);
+ expect(timeSummary(30 * 86_400, [])).toBe("30 days");
  expect(lengthLabel(30 * 86_400)).toBe("30 days");
 });
 
@@ -101,7 +104,7 @@ test("For says the length in whole days and the day it ends", () => {
 /** The few DOM calls the rows make: createElement, plain properties, attributes, append, and the
  *  onclick/onchange handlers the test calls as a click or a pick would. */
 class FakeElement {
- className = ""; textContent = ""; hidden = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
+ className = ""; textContent = ""; hidden = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false; disabled = false;
  onclick: (() => void) | null = null; onchange: (() => void) | null = null;
  parent: FakeElement | null = null;
  readonly children: FakeElement[] = [];
@@ -187,18 +190,29 @@ test("For's end date follows the clock past midnight while the sheet is open, an
  expect(clock.queued).toHaveLength(0);
 });
 
-test("once a grant exists For says the expiry it was made with, past midnight too, or no date if unknown (#371)", () => {
+test("once grants exist For says the length sent and the machines' recorded expiry, past midnight too (#371, #379)", () => {
  const evening = new Date(2026, 11, 22, 23, 59, 30).getTime(), midnight = new Date(2026, 11, 23).getTime();
  const clock = handClock(evening);
- const { rows, value } = drawRows(clock);
- const until = (from: number) => `30 days, until ${new Date(from + 30 * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
- // Approved before midnight; the answer was lost, so the sheet waits for Try again.
- rows.granted(evening + 30 * 86_400_000);
+ const { rows, all, value } = drawRows(clock);
+ const radios = all.filter(n => n.type === "radio");
+ const until = (end: number) => `30 days, until ${new Date(end).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+ // Approve sent with 30 days holds the choices until it settles.
+ rows.freeze(true);
+ expect(radios.length).toBeGreaterThan(0);
+ expect(radios.every(r => r.disabled)).toBe(true);
+ // Even were For moved to 1 day meanwhile, the grants say what was sent: 30 days, until the day
+ // the machine recorded. The answer was lost, so the sheet waits for Try again past midnight.
+ const pick = radios.find(r => r.value === "1d")!; pick.checked = true; pick.onchange!();
+ const recorded = evening + 30 * 86_400_000 + 5000;
+ rows.granted("30d", [recorded]);
+ expect(value("For")).toBe(until(recorded));
  expect(clock.queued).toHaveLength(0);
  clock.to(midnight + 1000);
- expect(value("For")).toBe(until(evening));
- rows.granted(undefined);
+ expect(value("For")).toBe(until(recorded));
+ rows.granted("30d", []);
  expect(value("For")).toBe("30 days");
+ rows.freeze(false);
+ expect(radios.some(r => r.disabled)).toBe(false);
 });
 
 /** An owner that keeps the pointermove listeners it holds, to see the press stop being followed. */
@@ -217,7 +231,7 @@ class Owner extends EventTarget {
 test("the dialog follows one primary press until release, cancel or close; a cancelled or closed press is no click", () => {
  const owner = new Owner();
  const presses = followPresses(owner);
- const pointer = (type: string, x: number, more = {}) => Object.assign(new Event(type), { clientX: x, clientY: 40, isPrimary: true, button: 0, ...more });
+ const pointer = (type: string, x: number, more = {}) => Object.assign(new Event(type), { clientX: x, clientY: 40, isPrimary: true, button: 0, pointerId: 1, ...more });
  const at = (type: string, x: number, more = {}) => owner.dispatchEvent(pointer(type, x, more));
  const down = (x: number, more = {}) => presses.down(pointer("pointerdown", x, more) as unknown as PointerEvent);
  const click = { detail: 1, shiftKey: false };
@@ -225,8 +239,14 @@ test("the dialog follows one primary press until release, cancel or close; a can
  down(200); at("pointermove", 60); at("pointermove", 200); at("pointerup", 200);
  expect(owner.moves.size).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
- // Moves after the release, or of another pointer, aren't this press's.
- down(200); at("pointermove", 60, { isPrimary: false }); at("pointerup", 200); at("pointermove", 60);
+ // Moves after the release aren't this press's.
+ down(200); at("pointerup", 200); at("pointermove", 60);
+ expect(presses.plainClick(click)).toBe(true);
+ // Another pointer's moves, release and cancel don't touch the press (#376 review): it's still
+ // followed, and released where it went down it's a plain click.
+ down(200); at("pointermove", 60, { pointerId: 2 }); at("pointerup", 60, { pointerId: 2 }); at("pointercancel", 60, { pointerId: 2 });
+ expect(owner.moves.size).toBe(1);
+ at("pointerup", 200);
  expect(presses.plainClick(click)).toBe(true);
  // A press that was cancelled, or that the sheet closed on, stops being followed and is no click.
  down(200); at("pointercancel", 200);
@@ -235,8 +255,8 @@ test("the dialog follows one primary press until release, cancel or close; a can
  down(200); presses.close();
  expect(owner.moves.size).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
- // Only the primary button presses.
- down(200, { button: 2 });
+ // Only the primary pointer's primary button presses.
+ down(200, { button: 2 }); down(200, { isPrimary: false });
  expect(owner.moves.size).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
 });
