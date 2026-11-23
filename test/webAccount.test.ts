@@ -474,3 +474,16 @@ test("a caller that comes while the refresh is being started joins it and gets t
  expect(await nested!).toBe(outer);
  expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(1);
 });
+
+test("a lock that throws while asked fails that refresh; the next caller asks again and isn't left waiting", async () => {
+ const s = service();
+ let asks = 0;
+ const locks = { request: <T>(_n: string, run: () => Promise<T>): Promise<T> => {
+  if (++asks === 1) throw new Error("lock broke");
+  return run();
+ } };
+ const account = new WebAccount(s.fetcher, undefined, Date.now, locks);
+ await expect(account.accessToken()).rejects.toThrow("lock broke");
+ expect(await account.accessToken()).toMatch(/./);
+ expect(asks).toBe(2);
+});

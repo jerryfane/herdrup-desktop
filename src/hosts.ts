@@ -323,9 +323,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
    if (!webGuest && accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
-   if (!webGuest) home.hidden = await welcome.update(machines.length === 0 && shares.length === 0);
-   container.dataset.welcome = "settled";
+   const welcomed = webGuest ? false : await welcome.update(machines.length === 0 && shares.length === 0);
+   // Only the newest refresh decides: an older lookup answering late commits nothing.
    if (generation !== version) return;
+   if (!webGuest) home.hidden = welcomed;
+   container.dataset.welcome = "settled";
    shared.hidden = shares.length === 0;
    placeOwnerSetup(shares.length > 0);
    // Without shares the instructions show only while nothing is saved; inside the

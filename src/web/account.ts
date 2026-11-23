@@ -153,12 +153,14 @@ export class WebAccount {
    const epoch = this.epoch;
    flight.done = result!.promise.finally(() => { if (this.flight === flight) this.flight = null; });
    this.flight = flight;
-   this.exclusive(() => {
+   // Started at once; a lock that throws while being asked rejects the flight like any failure,
+   // so its callers and the next ones aren't left waiting on it.
+   new Promise<string>(started => started(this.exclusive(() => {
     if (flight.waiting > 0 && epoch === this.epoch) return this.refresh(epoch);
     // Skipped: a caller that comes now queues its own refresh instead of joining this one.
     if (this.flight === flight) this.flight = null;
     return Promise.reject(epoch === this.epoch ? new RefreshUnwanted() : new SignedOutError());
-   }).then(result!.resolve, result!.reject);
+   }))).then(result!.resolve, result!.reject);
   }
   return (signal ? untilAborted(flight.done, signal) : flight.done).finally(() => { signal?.removeEventListener("abort", leave); leave(); });
  }
