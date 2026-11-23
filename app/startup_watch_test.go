@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -107,17 +109,28 @@ func TestStartupWatchProbesAgainOnceALateAnswerFreesTheSlot(t *testing.T) {
 	}
 }
 
-// Real time on purpose: the reported time is what is measured.
-func TestStartupWatchReportsMeasuredElapsedTime(t *testing.T) {
-	var lines []string
-	eval := func(context.Context) (any, error) { time.Sleep(15 * time.Millisecond); return `{"step":"fonts"}`, nil }
-	runStartupWatch(eval, 10*time.Millisecond, time.Second, 2, func(v ...any) { lines = append(lines, fmt.Sprint(v...)) })
-	if len(lines) != 2 {
-		t.Fatalf("lines = %q", lines)
-	}
-	// The second probe answers no earlier than 10 ms + 15 ms (first answer) + 15 ms after start.
-	var ms int
-	if _, err := fmt.Sscanf(lines[1][strings.Index(lines[1], "after ")+len("after "):], "%dms", &ms); err != nil || ms < 35 {
-		t.Errorf("second line %q reports %d ms (err %v), want the measured time, at least 35 ms", lines[1], ms, err)
-	}
+// The bubble's fake clock (testing/synctest) makes the schedule exact.
+func TestStartupWatchKeepsItsScheduleAndReportsMeasuredTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		begin := time.Now()
+		var starts []time.Duration
+		eval := func(context.Context) (any, error) {
+			starts = append(starts, time.Since(begin))
+			time.Sleep(15 * time.Millisecond)
+			return `{"step":"fonts"}`, nil
+		}
+		var lines []string
+		runStartupWatch(eval, 10*time.Millisecond, time.Second, 3, func(v ...any) { lines = append(lines, fmt.Sprint(v...)) })
+		// Ticks at 10, 20 and 30 ms from one start: each probe starts at its tick, or at once
+		// when the tick passed while the last probe was answering. A schedule that drifted (a
+		// fresh wait after each probe) would start them at 10, 35 and 60 ms.
+		if want := []time.Duration{10 * time.Millisecond, 25 * time.Millisecond, 40 * time.Millisecond}; !slices.Equal(starts, want) {
+			t.Errorf("probes started at %v, want %v", starts, want)
+		}
+		for k, want := range []string{"after 25ms:", "after 40ms:", "after 55ms:"} {
+			if k >= len(lines) || !strings.Contains(lines[k], want) {
+				t.Errorf("line %d = %q, want the measured %q", k, lines, want)
+			}
+		}
+	})
 }
