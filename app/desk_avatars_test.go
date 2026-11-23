@@ -41,15 +41,48 @@ func TestAvatarCacheVerifiesOnStoreAndRead(t *testing.T) {
 	if got := readAvatar(dir, sha); string(got) != string(pngBytes) {
 		t.Fatalf("read back %q", got)
 	}
-	// A damaged file is not served, and is removed.
+	// A damaged file is not served; a verified write replaces it.
 	if err := os.WriteFile(filepath.Join(dir, sha), []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := readAvatar(dir, sha); got != nil {
 		t.Fatalf("served a damaged file: %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(dir, sha)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("damaged file kept: %v", err)
+	if err := storeAvatar(dir, sha, pngBytes); err != nil {
+		t.Fatal(err)
+	}
+	if got := readAvatar(dir, sha); string(got) != string(pngBytes) {
+		t.Fatalf("read back %q after replacing a damaged file", got)
+	}
+}
+
+// #366 review: a reader that read damaged bytes just before another ask put
+// verified ones in their place must not remove the verified file.
+func TestAvatarStaleReadKeepsAVerifiedReplacement(t *testing.T) {
+	dir := t.TempDir()
+	sha := shaOf(pngBytes)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, sha), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read := readAvatarFile
+	t.Cleanup(func() { readAvatarFile = read })
+	readAvatarFile = func(name string) ([]byte, error) {
+		stale, err := read(name)
+		// The other ask publishes while this reader still holds the stale bytes.
+		if err := storeAvatar(dir, sha, pngBytes); err != nil {
+			t.Fatal(err)
+		}
+		return stale, err
+	}
+	if got := readAvatar(dir, sha); got != nil {
+		t.Fatalf("served the stale bytes: %q", got)
+	}
+	readAvatarFile = read
+	if got := readAvatar(dir, sha); string(got) != string(pngBytes) {
+		t.Fatalf("the verified photo is gone: read %q", got)
 	}
 }
 
@@ -219,22 +252,30 @@ func TestAvatarGetAsksEachAgentAndSharesWhatLoaded(t *testing.T) {
 	}
 }
 
-// An ask of one agent does not wait on another's still pending: t2's never
-// answers, t4's is asked and loads.
+// An ask of one agent does not wait on another's still pending: t2's has not
+// answered when t4's is asked and loads. t2's then fails, and returns the
+// photo t4's loaded.
 func TestAvatarGetDoesNotJoinAnotherAgentsAsk(t *testing.T) {
 	dir := t.TempDir()
 	sha := shaOf(pngBytes)
 	var s avatarStore
 	owner := new(int)
 	hang := make(chan struct{})
-	defer close(hang)
+	release := sync.OnceFunc(func() { close(hang) })
+	defer release()
 	started := make(chan struct{})
+	type result struct {
+		url string
+		err error
+	}
+	t2 := make(chan result, 1)
 	go func() {
-		_, _ = s.get(context.Background(), dir, owner, "t2", sha, func(context.Context) (string, error) {
+		url, err := s.get(context.Background(), dir, owner, "t2", sha, func(context.Context) (string, error) {
 			close(started)
 			<-hang
 			return "", &bridge.APIError{Code: "not_found", Message: "avatar not found"}
 		})
+		t2 <- result{url, err}
 	}()
 	<-started
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -246,6 +287,10 @@ func TestAvatarGetDoesNotJoinAnotherAgentsAsk(t *testing.T) {
 	})
 	if err != nil || !asked || !strings.HasPrefix(url, "data:image/png;base64,") {
 		t.Fatalf("t4: asked %v, %q, %v", asked, url, err)
+	}
+	release()
+	if late := <-t2; late.err != nil || late.url != url {
+		t.Fatalf("t2 after t4 loaded: %q, %v; want t4's photo", late.url, late.err)
 	}
 }
 
