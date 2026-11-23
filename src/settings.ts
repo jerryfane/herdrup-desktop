@@ -48,7 +48,7 @@ import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
 import { appleSymbols } from "./platform";
-import { deskOffers, parts } from "./shellModel";
+import { deskOffers, ownerWrites, parts } from "./shellModel";
 
 /** The machine's pages this build's Desk serves (shellModel.ts): all on the desktop; in the
  *  browser, each once its method group is registered. A page not served has no row. */
@@ -120,6 +120,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let reconnectNote: HTMLElement | null = null;
   let openDialog: HTMLDialogElement | null = null;
   const report = (error: unknown) => { message.textContent = errorText(error); message.hidden = false; };
+  // Accounts, Shared access and the herdr update card: herdr lets a web owner's browser administer
+  // them under a terminal-scope grant only (shellModel.ts ownerWrites); always on the desktop.
+  const administers = () => state !== null && ownerWrites(state);
   let settingsToken = "";
   const accountSummary = el("span", "settings-row-value"), guestSummary = el("span", "settings-row-value"), notificationSummary = el("span", "settings-row-value");
   const headers: Partial<Record<Page, { text: string; warn: boolean }>> = {};
@@ -167,9 +170,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     try {
       await Desk.openSettings(target.machineID, target.session, token);
       if (at !== generation || !visible) { void Desk.closeSettings(token); return; }
-      if (served.accounts) accounts.setScope(token);
-      if (served.sharedAccess) { guests.setMachines(name(), statuses, peers); guests.setScope(token); }
-      if (served.serverUpdate) updates.setScope(token, name());
+      if (served.accounts && administers()) accounts.setScope(token);
+      if (served.sharedAccess && administers()) { guests.setMachines(name(), statuses, peers); guests.setScope(token); }
+      if (served.serverUpdate && administers()) updates.setScope(token, name());
       const version = await Desk.settingsMachineVersion(token);
       if (at !== generation || !visible || settingsToken !== token) return;
       machineVersion = version;
@@ -344,8 +347,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     // accounts, sharing, notifications and typing measurements) waits for one.
     const herd = share
       ? group("YOUR OWN MACHINE", [row("Connect your own machine", "plus.circle", () => share?.connectOwn(), "Pair your computer or add an SSH host")])
-      : group("YOUR HERD", [...(served.accounts ? [accountRow] : []), ...(served.sharedAccess ? [sharedRow] : []), ...(served.notifications ? [notificationRow] : [])]);
-    const herdShown = share !== null || served.accounts || served.sharedAccess || served.notifications;
+      : group("YOUR HERD", [...(served.accounts && administers() ? [accountRow] : []), ...(served.sharedAccess && administers() ? [sharedRow] : []), ...(served.notifications ? [notificationRow] : [])]);
+    const herdShown = share !== null || (served.accounts || served.sharedAccess) && administers() || served.notifications;
     index.replaceChildren(card, suggestions, ...(herdrupAccountShown ? [group(ACCOUNT_TITLE.toUpperCase(), [herdrupAccountRow])] : []), ...(herdShown ? [herd] : []), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
       ...(share ? [] : [latencyRow]),
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
@@ -451,7 +454,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
       }).catch(report);
     }); copy.className = "settings-plain-row action";
-    body.append(hero, ...(served.serverUpdate ? [updates.root] : []), group("CONNECTION", [reconnectButton, copy]), ...(parts.federation ? [federation()] : []));
+    body.append(hero, ...(served.serverUpdate && administers() ? [updates.root] : []), group("CONNECTION", [reconnectButton, copy]), ...(parts.federation ? [federation()] : []));
     if (parts.federation) { reach = el("p", "settings-reach"); body.append(reach); }
     updateConnection();
   }
@@ -572,8 +575,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
      *  own settings with the share's card and page in place of the machine's. */
     show(show: boolean, nextState: ConnState, nextBoard: BoardUpdate | null, nextShare: ShareSettings | null = null) {
       const nextID = `${nextShare ? `share\0${nextShare.key}` : ""}\0${nextBoard?.machineID ?? ""}\0${nextBoard?.session ?? ""}`;
-      const reload = show && (!visible || identity !== nextID || state?.phase !== nextState.phase);
+      // A web owner link's scope decides the pages herdr administers (accounts, guests, its update).
+      const reload = show && (!visible || identity !== nextID || state?.phase !== nextState.phase || (state !== null && ownerWrites(state)) !== ownerWrites(nextState));
       if (nextShare && !shareLeaves.has(selected)) selected = "machines";
+      if (!ownerWrites(nextState) && (selected === "accounts" || selected === "sharedAccess")) selected = "machines";
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show; share = nextShare;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();

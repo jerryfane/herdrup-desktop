@@ -72,11 +72,12 @@ export class GuestClient {
   if (pong.capabilities?.[capability] !== true) throw new ErrUnsupported(method, capability, pong.version ?? "");
  }
 
- /** engine.go doRaw: gate, call, map the error, check the result's tag; the result keeps its tag. */
- async call<T>(method: string, params: unknown, tag: string, capability = "", signal?: AbortSignal): Promise<T> {
+ /** engine.go doRaw: gate, call, map the error, check the result's tag; the result keeps its tag.
+  *  sendSignal ends the call only while it is unsent (WebLink.call). */
+ async call<T>(method: string, params: unknown, tag: string, capability = "", signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T> {
   await this.gate(method, capability, signal);
   let result: unknown;
-  try { result = await this.link.call(method, params, signal); } catch (error) { throw this.mapError(method, error); }
+  try { result = await this.link.call(method, params, signal, sendSignal); } catch (error) { throw this.mapError(method, error); }
   checkTag(method, result, tag);
   return result as T;
  }

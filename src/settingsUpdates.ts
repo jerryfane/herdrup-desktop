@@ -1,22 +1,6 @@
 import { Desk } from "./mygo";
+import { installsItself, newerBuildOffered, requirementMet, updateMissing, waitingRestart, type UpdateState } from "./serverUpdatePolicy";
 
-interface Attempt {
-  attempt_id: string; build_id: string; from: string; to: string; phase: string;
-  bytes_done: number; bytes_total: number; restart_later: boolean;
-  outcome?: string; message?: string; panes?: number;
-}
-interface UpdateState {
-  known: boolean; version: string; flow: string; code: string; message: string;
-  forbidden: boolean; restartLater: boolean; missing: string[];
-  capabilities?: { server_update?: boolean; agent_groups?: boolean; agent_avatar?: boolean; agent_answer?: boolean };
-  check?: {
-    running: { version: string; build_id?: string; commit_time?: number };
-    latest?: { version: string; build_id: string; commit_time: number; notes: string };
-    update_available: boolean; mode: string; reason?: string;
-  };
-  pending?: Attempt; attempt?: Attempt;
-}
-const minCommitTime = 1793108998; // accepted Swift ServerRequirement.current
 const baseVersion = (version: string) => version.split(/[- +]/, 1)[0] || version;
 function labels(old: string, next: string): [string, string] {
   if (baseVersion(old) !== baseVersion(next)) return [baseVersion(old), baseVersion(next)];
@@ -42,14 +26,11 @@ export function updateSuggestion(s: UpdateState | undefined, host: string): Upda
   if (!s.capabilities?.server_update) return { title: "herdr needs a one-time update", subtitle: "This version can't update itself from the app." };
   if (!c) return null;
   const pending = s.flow === "finished" && a?.outcome === "downloaded_restart_required" ? a : s.pending;
-  if (pending && c.running.build_id !== pending.build_id) {
+  if (pending && waitingRestart(c, pending)) {
     return { title: `herdr ${labels(pending.from, pending.to)[1]} finishes on next restart`, subtitle: "Restarting herdr closes terminals. Your layout comes back." };
   }
-  const caps = s.capabilities;
-  const missing = [!caps.agent_groups && "folders", !caps.agent_avatar && "avatars", !caps.agent_answer && "answers from notifications"].filter(Boolean) as string[];
-  const meets = !missing.length && (c.running.commit_time === undefined || c.running.commit_time >= minCommitTime);
-  if (!c.update_available || !c.latest || (!meets && c.latest.commit_time < minCommitTime)) return null;
-  if (c.mode !== "live" && c.mode !== "restart_required") return null;
+  if (!newerBuildOffered(c, s.capabilities) || !installsItself(c) || !c.latest) return null;
+  const missing = updateMissing(s.capabilities);
   const joined = missing.length < 2 ? missing.join("") : `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}`;
   return {
     title: `Update herdr to ${labels(c.running.version, c.latest.version)[1]}`,
@@ -171,6 +152,9 @@ export class ServerUpdateSettings {
   private render() {
     const s = this.state; this.root.replaceChildren(); this.root.hidden = true;
     this.suggest(updateSuggestion(s, this.host));
+    // herdr refusing the updates to a web owner's browser (web/serverUpdateDesk.ts), whichever read
+    // met it: the card hides and Settings' message line says why.
+    if (s?.forbidden && s.code === "owner_forbidden") this.report(s.message);
     if (!s || s.forbidden || !s.known) return;
     this.root.hidden = false; this.root.dataset.flow = s.flow;
     const a = s.attempt, c = s.check;
@@ -212,20 +196,18 @@ export class ServerUpdateSettings {
     }
     if (!c) { this.root.hidden = true; return; }
     const pending = s.flow === "finished" && a?.outcome === "downloaded_restart_required" ? a : s.pending;
-    if (pending && c.running.build_id !== pending.build_id) {
+    if (pending && waitingRestart(c, pending)) {
       this.header("Downloaded. Finishes on next restart");
       this.text(`${this.cantSwitch(c.reason)} herdr ${labels(pending.from, pending.to)[1]} starts the next time herdr restarts.`);
       this.text("Restarting herdr closes terminals. Your layout comes back.", true); return;
     }
-    const caps = s.capabilities;
-    const missing = [!caps.agent_groups && "folders", !caps.agent_avatar && "avatars", !caps.agent_answer && "answers from notifications"].filter(Boolean) as string[];
-    const meets = !missing.length && (c.running.commit_time === undefined || c.running.commit_time >= minCommitTime);
-    if (!c.update_available || !c.latest || (!meets && c.latest.commit_time < minCommitTime)) {
-      if (meets) this.root.hidden = true;
+    const caps = s.capabilities, missing = updateMissing(caps);
+    if (!newerBuildOffered(c, caps) || !c.latest) {
+      if (requirementMet(caps, c)) this.root.hidden = true;
       else { this.header("A newer herdr is on its way"); this.text(`This app needs a newer herdr than has been published yet. ${this.host} has ${baseVersion(c.running.version)}.`); }
       return;
     }
-    if (c.mode !== "live" && c.mode !== "restart_required") {
+    if (!installsItself(c)) {
       this.header(`Update herdr on ${this.host}`);
       if (c.reason === "package_managed") this.text(`herdr on ${this.host} is installed by a package manager. Update it with Homebrew, mise or nix there.`);
       else if (c.reason === "windows") this.text(`herdr on Windows can't update itself from the app yet. Update it on ${this.host}.`);
