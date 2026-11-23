@@ -51,6 +51,15 @@ type syncWorker struct {
 	// stall, while set, holds every pull until it is closed or the request
 	// ends; stalled hears of each held pull.
 	stall, stalled chan struct{}
+	// quotaBytes, when set, is the account's storage quota in prompt-body
+	// bytes: a push past it is refused whole (403 quota).
+	quotaBytes int
+}
+
+// startOver begins the account's history again, as after a restored
+// database. w.mu must be held (as in a hook).
+func (w *syncWorker) startOver() {
+	w.items, w.rev = map[string]account.Item{}, 0
 }
 
 // stallPulls holds pulls from now until release (at the latest, when the
@@ -139,6 +148,12 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			}
 			since, _ = strconv.ParseInt(cursor, 10, 64)
 		}
+		if since > w.rev {
+			// A revision past the account's is another history (a
+			// restored database): start over.
+			reply(410, map[string]string{"error": "reset_required"})
+			return
+		}
 		var changes []account.Item
 		for _, it := range w.items {
 			if it.Rev > since {
@@ -224,6 +239,23 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 		if prompts > account.PromptsCap {
 			reply(403, map[string]string{"error": "quota"})
 			return
+		}
+		if w.quotaBytes > 0 {
+			stored := 0
+			for id, it := range w.items {
+				if it.Collection == "prompts" && !it.Deleted && !ids["prompts/"+id] {
+					stored += len(it.Body)
+				}
+			}
+			for _, c := range body.Changes {
+				if c.Collection == "prompts" && !c.Deleted {
+					stored += len(c.Body)
+				}
+			}
+			if stored > w.quotaBytes {
+				reply(403, map[string]string{"error": "quota"})
+				return
+			}
 		}
 		for _, c := range body.Changes {
 			w.rev++
@@ -1394,4 +1426,107 @@ func TestASyncWaitingForItsTurnLeavesWhenItsContextEnds(t *testing.T) {
 	}
 	release()
 	<-holding
+}
+
+// #372: the account's history starts over (a restore without this
+// device's prompts and machine) while it pushes a new prompt: its readback
+// pulls the restored account whole, and what that no longer holds goes
+// here too instead of being uploaded again.
+func TestWhatARestoredAccountNoLongerHoldsGoesHereTooWhenTheReadbackShowsIt(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	a, b := savePrompt(t, mac, "", "", "a"), savePrompt(t, mac, "", "", "b")
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	syncEach(t, mac)
+	c := savePrompt(t, mac, "", "", "c")
+	w.mu.Lock()
+	w.onPush = w.startOver
+	w.mu.Unlock()
+	syncEach(t, mac, mac)
+	if got := promptsOf(t, mac); len(got) != 1 || got[c.ID] != c {
+		t.Fatalf("mac's prompts: %+v; want only %+v", got, c)
+	}
+	if live := w.livePrompts(); len(live) != 1 || live[c.ID] == "" || live[a.ID] != "" || live[b.ID] != "" {
+		t.Fatalf("the account holds %v; want only c", live)
+	}
+	if ids := syncIDs(t, mac); len(ids) != 0 {
+		t.Fatalf("mac's machines: %v; want the restored account's (none)", ids)
+	}
+	for _, it := range w.live() {
+		if it.Collection == "hosts" {
+			t.Fatalf("the machine was uploaded again: %+v", it)
+		}
+	}
+}
+
+// #372: two uploads whose answers were lost (v1, then v2) both reached
+// the account; v1 saved again afterwards is an edit, kept here and sent.
+func TestARevertAfterTwoUploadsWhoseAnswersWereLostIsKept(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	for _, text := range []string{"v1", "v2"} {
+		savePrompt(t, mac, p.ID, "", text)
+		w.mu.Lock()
+		w.losePush = true
+		w.mu.Unlock()
+		if err := mac.SyncMachines(context.Background()); err == nil {
+			t.Fatal("a sync whose push answer was lost reported success")
+		}
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v2"`) {
+		t.Fatalf("the account's copy: %s; want both uploads taken", body)
+	}
+	reverted := savePrompt(t, mac, p.ID, "", "v1")
+	syncEach(t, mac)
+	if got := promptsOf(t, mac)[p.ID]; got != reverted {
+		t.Fatalf("mac's prompt: %+v; want the revert %+v", got, reverted)
+	}
+	if body := w.livePrompts()[p.ID]; !strings.Contains(body, `"v1"`) {
+		t.Fatalf("the account's copy: %s; want the revert", body)
+	}
+}
+
+// #372: a push past the account's storage quota is refused whole; a
+// deletion and a prompt that fits still reach the account, and the prompt
+// past it stays here. The round still fails, every time it is tried.
+func TestAPromptPastTheQuotaStaysHereWhileADeletionAndAPromptThatFitGo(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	savePrompt(t, mac, "", "", "kept")
+	k := savePrompt(t, mac, "", "", "k")
+	syncEach(t, mac)
+	w.mu.Lock()
+	w.quotaBytes = 81
+	for _, it := range w.items {
+		w.quotaBytes += len(it.Body)
+	}
+	w.mu.Unlock()
+	if _, err := mac.DeletePrompt(k.ID); err != nil {
+		t.Fatal(err)
+	}
+	draft := savePrompt(t, mac, "", "", strings.Repeat("d", 500))
+	small := savePrompt(t, mac, "", "", "small")
+	for round := range 2 {
+		var api *account.APIError
+		if err := mac.SyncMachines(context.Background()); !errors.As(err, &api) || api.Code != "quota" {
+			t.Fatalf("round %d: %v; want the quota refusal", round, err)
+		}
+		live := w.livePrompts()
+		if _, held := live[k.ID]; held || live[small.ID] == "" || live[draft.ID] != "" {
+			t.Fatalf("round %d: the account holds %v; want k deleted, small sent and the draft not", round, live)
+		}
+		if _, kept := promptsOf(t, mac)[draft.ID]; !kept {
+			t.Fatalf("round %d: the draft is no longer saved here", round)
+		}
+		state, err := mac.loadSyncState()
+		if err != nil || len(state.PromptDeletes) != 0 || !mac.AccountState().SyncFailed {
+			t.Fatalf("round %d: pending deletes %v (%v), needs attention %v", round, state.PromptDeletes, err, mac.AccountState().SyncFailed)
+		}
+	}
 }

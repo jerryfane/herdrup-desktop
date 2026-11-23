@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -427,12 +428,45 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// acked are the changes the service took; refused is its quota answer
+	// to a write that stays here for the next round.
+	var acked []account.Change
+	var refused error
+	send := func(part []account.Change) error {
+		if _, err := d.account.Push(ctx, acct, part); err != nil {
+			return err
+		}
+		acked = append(acked, part...)
+		// Acknowledged: what was written is what this device and the
+		// account now agree on.
+		return d.ackBaseline(acct, part)
+	}
 	for _, batch := range batches {
-		_, err := d.account.Push(ctx, acct, batch)
-		if err == nil {
-			// Acknowledged: what was written is what this device and the
-			// account now agree on.
-			err = d.ackBaseline(acct, batch)
+		err := send(batch)
+		if overQuota(err) {
+			// The service refuses a push past the account's quota whole.
+			// Its deletes (which free room) go on their own first, then
+			// each write alone: one still refused stays here, unsent, and
+			// is tried again next time, while the rest reach the account.
+			var deletes []account.Change
+			var parts [][]account.Change
+			for _, c := range batch {
+				if c.Deleted {
+					deletes = append(deletes, c)
+				} else {
+					parts = append(parts, []account.Change{c})
+				}
+			}
+			if len(deletes) > 0 {
+				parts = append([][]account.Change{deletes}, parts...)
+			}
+			for _, part := range parts {
+				if err = send(part); overQuota(err) {
+					refused, err = err, nil
+				} else if err != nil {
+					break
+				}
+			}
 		}
 		if err != nil {
 			// Nothing is lost: an unacknowledged id is pushed again next
@@ -445,7 +479,7 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		}
 	}
 	var readBack account.Pull
-	if len(changes) > 0 {
+	if len(acked) > 0 {
 		// Read our own writes back, so the mirror holds what the account holds.
 		readBack, err = d.account.PullSince(ctx, acct, mirror.Rev)
 		if errors.Is(err, account.ErrAccountChanged) {
@@ -465,32 +499,68 @@ func (d *Desk) syncMachinesOnce(ctx context.Context) error {
 		d.storeMu.Unlock()
 		return err
 	}
-	if len(changes) > 0 {
-		pushed := map[string]bool{}
-		for _, c := range changes {
+	if len(acked) > 0 {
+		pushed, wrote := map[string]bool{}, map[string]bool{}
+		for _, c := range acked {
 			if c.Deleted {
 				pushed[c.Collection+"/"+c.ID] = true
+			} else {
+				wrote[c.Collection+"/"+c.ID] = true
 			}
 		}
 		state.Deletes = slices.DeleteFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] })
 		state.PromptDeletes = slices.DeleteFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] })
+		held := state.Mirror
 		state.Mirror = state.Mirror.Apply(readBack)
 		state.PromptsSent = nil
 		// Deletes from other devices the readback passed: the local copies
 		// go next time, unless edited, instead of being uploaded again.
 		_, goneHosts := account.RemoteHosts(readBack.Items)
 		_, gonePrompts := account.RemotePrompts(readBack.Items)
+		if readBack.Full {
+			// The account's history started over (a restore) during the
+			// readback: what the mirror held and the restored account
+			// doesn't is gone as well, except what this round just wrote.
+			restored := map[string]bool{}
+			for _, h := range state.Mirror.Hosts {
+				restored["hosts/"+h.ID] = true
+			}
+			for _, p := range state.Mirror.Prompts {
+				restored["prompts/"+p.ID] = true
+			}
+			for _, h := range held.Hosts {
+				if !restored["hosts/"+h.ID] && !wrote["hosts/"+h.ID] {
+					goneHosts = append(goneHosts, h.ID)
+				}
+			}
+			for _, p := range held.Prompts {
+				if !restored["prompts/"+p.ID] && !wrote["prompts/"+p.ID] {
+					gonePrompts = append(gonePrompts, p.ID)
+				}
+			}
+		}
 		state.HostsGone = slices.DeleteFunc(goneHosts, func(id string) bool { return pushed["hosts/"+id] })
 		state.PromptsGone = slices.DeleteFunc(gonePrompts, func(id string) bool { return pushed["prompts/"+id] })
 	}
-	state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
+	// A round with a refused write did not finish well: the status keeps
+	// the last one that did.
+	if refused == nil {
+		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
+	}
 	err = d.storeSyncState(state)
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
 	}
 	publishSyncedMachines(unsavedHosts(st.Machines, state.Mirror.Hosts))
-	return nil
+	return refused
+}
+
+// overQuota is the service refusing a push whole for the account's storage
+// quota (403 quota).
+func overQuota(err error) bool {
+	var api *account.APIError
+	return errors.As(err, &api) && api.Status == http.StatusForbidden && api.Code == "quota"
 }
 
 // ackBaseline records a pushed batch's bodies as agreed.
@@ -595,22 +665,30 @@ func promptBody(p SavedPrompt, order *float64) account.PromptBody {
 // account's cap is not sent: it stays here, and is tried again next time;
 // one past the largest order the service takes is sent without an order
 // (it sorts last). sent holds the fields of prompts an earlier sync sent
-// without hearing back: for one neither baseline nor old has, they tell
-// whether it was edited here since (the upload may have been taken). Sent
-// fields with no text are an id kept from before the fields were, and
-// tell nothing.
+// without hearing back (the upload may have been taken): one the account
+// now holds exactly as sent is what both agree on, ahead of baseline and
+// old; otherwise they tell whether a prompt neither baseline nor old has
+// was edited here since. Sent fields with no text are an id kept from
+// before the fields were, and tell nothing.
 func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known map[string]bool, deletes []string, baseline map[string]promptFields, sent map[string]promptFields) (next []SavedPrompt, changes []account.Change, left []string, nextBaseline map[string]promptFields) {
 	remote := map[string]account.PromptBody{}
-	held := map[string]bool{}
+	held := map[string]account.PromptBody{}
 	last := -1.0
 	for _, r := range mirror {
 		remote[r.ID] = r.Body
-		held[r.ID] = true
+		held[r.ID] = r.Body
 		if r.Body.Order != nil && *r.Body.Order > last {
 			last = *r.Body.Order
 		}
 	}
 	agreed := func(id string) (promptFields, bool) {
+		// A write the account confirms is newer than any baseline or old
+		// copy: its answer was lost.
+		if f, ok := sent[id]; ok {
+			if b, pulled := held[id]; pulled && bodyFields(b) == f {
+				return f, true
+			}
+		}
 		if f, ok := baseline[id]; ok {
 			return f, true
 		}
@@ -664,7 +742,7 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 	}
 	live := len(mirror)
 	for _, id := range deletes {
-		if held[id] && !inUse[id] {
+		if _, ok := held[id]; ok && !inUse[id] {
 			changes = append(changes, account.Change{Collection: "prompts", ID: id, Deleted: true})
 			left = append(left, id)
 			live--
@@ -710,12 +788,13 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 	// account holds, as it stands after the merge.
 	nextBaseline = map[string]promptFields{}
 	for _, p := range next {
+		_, isHeld := held[p.ID]
 		switch {
 		case writing[p.ID]:
 			if f, ok := agreed(p.ID); ok {
 				nextBaseline[p.ID] = f
 			}
-		case held[p.ID]:
+		case isHeld:
 			nextBaseline[p.ID] = fieldsOf(p)
 		}
 	}
