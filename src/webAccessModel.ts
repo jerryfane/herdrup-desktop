@@ -97,11 +97,14 @@ export function machinesSummary(machines: readonly { id: string; label: string }
  return names.length <= 3 ? names.join(", ") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"); endMs is the
- *  previewed end (now plus the duration the computer grants) or the grant's own expiry. */
-export function timeSummary(seconds: number, endMs: number): string {
- const end = new Date(endMs).toLocaleDateString(undefined, { day: "numeric", month: "short" });
- return `${lengthLabel(seconds)}, until ${end}`;
+/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"). ends is the
+ *  previewed end (now plus the duration the computer grants), or each machine's grant expiry as it
+ *  recorded it; grants made across midnight can end on two days, said as both. No ends: no date. */
+export function timeSummary(seconds: number, ends: readonly number[]): string {
+ if (!ends.length) return lengthLabel(seconds);
+ const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+ const first = day(Math.min(...ends)), last = day(Math.max(...ends));
+ return `${lengthLabel(seconds)}, until ${first === last ? first : `${first} or ${last}`}`;
 }
 
 /** The line under the rows: what Approve turns on, and why any machine can't be ticked, so both

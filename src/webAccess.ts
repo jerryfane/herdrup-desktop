@@ -25,7 +25,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: stri
  return n;
 }
 
-function segmented(name: string, options: readonly (readonly [string, string])[], value: string, onChange: (v: string) => void): HTMLElement {
+/** A row of radios as one control; each radio is also added to radios. */
+function segmented(name: string, options: readonly (readonly [string, string])[], value: string, onChange: (v: string) => void, radios: HTMLInputElement[]): HTMLElement {
  const box = el("div", "web-access-segmented"); box.setAttribute("role", "radiogroup"); box.setAttribute("aria-label", name);
  for (const [v, label] of options) {
   const id = `web-access-${name}-${v}`;
@@ -33,6 +34,7 @@ function segmented(name: string, options: readonly (readonly [string, string])[]
   input.onchange = () => { if (input.checked) onChange(v); };
   const l = el("label", "", label); l.htmlFor = id;
   box.append(input, l);
+  radios.push(input);
  }
  return box;
 }
@@ -45,9 +47,9 @@ const systemClock: SheetClock = { now: Date.now, after: (ms, f) => { const t = s
 /** Machines, Access and For as rows: each says its choice and opens in place to change it. The
  *  terminal warning sits in the Access row outside the part that closes, so it shows whenever
  *  terminal access is chosen. For starts at the longest length. Access, For and the warning follow
- *  their own choices; For's end date is a preview that follows the clock until granted says a
- *  grant exists, or stop. The sheet writes the Machines row's summary (showMachines) and reads
- *  choice. */
+ *  their own choices; For's end date is a preview that follows the clock until granted says grants
+ *  exist, or stop. freeze holds the Access and For choices (an approval is out with them). The
+ *  sheet writes the Machines row's summary (showMachines) and reads choice. */
 export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: readonly WebAccessLength[], clock = systemClock) {
  const choice = { scope: "terminal", length: lengths.at(-1)?.id ?? "" };
  const rows = el("div", "web-access-rows");
@@ -66,27 +68,29 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
   return { row: r, value };
  };
  const machinesRow = row("Machines", machinesOpen, list);
- const accessRow = row("Access", true, segmented("access", ACCESS_CHOICES, choice.scope, v => { choice.scope = v; paintAccess(); }));
+ const radios: HTMLInputElement[] = [];
+ const accessRow = row("Access", true, segmented("access", ACCESS_CHOICES, choice.scope, v => { choice.scope = v; paintAccess(); }, radios));
  const terminalNote = el("p", "web-access-warning", "Terminal access is a shell on these machines: it can do anything you can do there.");
  accessRow.row.append(terminalNote);
- const forRow = row("For", false, segmented("time", lengths.map(l => [l.id, lengthLabel(l.seconds)] as const), choice.length, v => { choice.length = v; paintFor(); }));
+ const forRow = row("For", false, segmented("time", lengths.map(l => [l.id, lengthLabel(l.seconds)] as const), choice.length, v => { choice.length = v; paintFor(); }, radios));
  function paintAccess(): void {
   accessRow.value.textContent = choiceLabel(ACCESS_CHOICES, choice.scope);
   terminalNote.hidden = choice.scope !== "terminal";
  }
- // Until a grant exists, For's end date is a preview that moves with the clock (past midnight it's
- // a day later), so it looks again at each minute's turn. Once one exists For says the expiry the
- // grant was made with (a retry keeps it), or no date if that isn't known.
+ // Until grants exist, For's end date is a preview that moves with the clock (past midnight it's a
+ // day later), so it looks again at each minute's turn. Once they exist For says the length the
+ // approval was sent with and the expiries the machines recorded (a retry keeps both), or no date
+ // if those aren't known.
  let cancel = () => {};
- let grant: { endMs: number | undefined } | null = null;
+ let grant: { length: string; ends: readonly number[] } | null = null;
  function paintFor(): void {
   cancel(); cancel = () => {};
-  const length = lengths.find(l => l.id === choice.length);
+  const length = lengths.find(l => l.id === (grant?.length ?? choice.length));
   if (!length) forRow.value.textContent = "";
-  else if (grant) forRow.value.textContent = grant.endMs ? timeSummary(length.seconds, grant.endMs) : lengthLabel(length.seconds);
+  else if (grant) forRow.value.textContent = timeSummary(length.seconds, grant.ends);
   else {
    const now = clock.now();
-   forRow.value.textContent = timeSummary(length.seconds, now + length.seconds * 1000);
+   forRow.value.textContent = timeSummary(length.seconds, [now + length.seconds * 1000]);
    cancel = clock.after(60_000 - now % 60_000, paintFor);
   }
  }
@@ -95,28 +99,37 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
  return {
   rows, choice: choice as Readonly<typeof choice>,
   showMachines: (summary: string) => { machinesRow.value.textContent = summary; },
-  granted: (endMs: number | undefined) => { grant = { endMs }; paintFor(); },
+  freeze: (on: boolean) => { for (const r of radios) r.disabled = on; },
+  /** Grants exist, made for length (the ID the approval was sent with), ending at ends (Unix ms). */
+  granted: (length: string, ends: readonly number[]) => { grant = { length, ends }; paintFor(); },
   stop: () => cancel(),
  };
 }
 
 /** Follows one primary-pointer press on the code for its owner, the sheet's dialog (modal, so
- *  every pointer event in the window lands in it): moves count while the press is down; release
- *  stops following, and a cancel or close also forgets the press, which then isn't a click. */
+ *  every pointer event in the window lands in it). Only the pointer that pressed counts: its moves
+ *  while it's down; its release stops following, and its cancel, or a close, also forgets the press,
+ *  which then isn't a click. Other pointers' moves, releases and cancels don't touch it. */
 export function followPresses(owner: EventTarget) {
  let press: CodePress | null = null;
- const follow = (event: Event) => {
+ let pointer: number | null = null;
+ const ours = (event: Event): PointerEvent | null => {
   const e = event as PointerEvent;
-  if (e.isPrimary) press?.move(e.clientX, e.clientY);
+  return pointer !== null && e.pointerId === pointer ? e : null;
  };
- const release = () => owner.removeEventListener("pointermove", follow);
+ const follow = (event: Event) => {
+  const e = ours(event);
+  if (e) press?.move(e.clientX, e.clientY);
+ };
+ const release = () => { owner.removeEventListener("pointermove", follow); pointer = null; };
  const drop = () => { release(); press = null; };
- owner.addEventListener("pointerup", release);
- owner.addEventListener("pointercancel", drop);
+ owner.addEventListener("pointerup", event => { if (ours(event)) release(); });
+ owner.addEventListener("pointercancel", event => { if (ours(event)) drop(); });
  return {
   down(e: PointerEvent): void {
    if (!e.isPrimary || e.button !== 0) return;
    press = new CodePress(e.clientX, e.clientY);
+   pointer = e.pointerId;
    owner.addEventListener("pointermove", follow);
   },
   /** Whether this click ends a plain click on the code; the press is done either way. */
@@ -199,6 +212,7 @@ export function initWebAccess(): void {
 
   const ticked = new Set(machines.filter(m => m.available).map(m => m.id));
   const list = el("div", "web-access-machines"); list.setAttribute("role", "group"); list.setAttribute("aria-label", "Machines");
+  const machineBoxes: [HTMLInputElement, WebAccessMachine][] = [];
   for (const m of machines) {
    const row = el("label", "web-access-machine");
    const box = el("input"); box.type = "checkbox"; box.checked = ticked.has(m.id); box.disabled = !m.available;
@@ -206,10 +220,19 @@ export function initWebAccess(): void {
    const text = el("span", "web-access-machine-text"); text.append(el("span", "", m.label));
    if (!m.available) text.append(el("span", "web-access-dim", skipReason(m.unavailable ?? "")));
    row.append(box, text); list.append(row);
+   machineBoxes.push([box, m]);
   }
   if (!machines.length) list.append(el("p", "web-access-dim", "Add a machine first."));
 
   const choices = choiceRows(list, ticked.size === 0, lengths);
+  // The choices an approval was sent with. While it's out, and after a lost answer until it
+  // settles, Machines, Access and For are held: Try again resends that report, whatever is chosen,
+  // and For describes it.
+  let sent: { machines: string[]; scope: string; length: string } | null = null;
+  const freeze = (on: boolean) => {
+   choices.freeze(on);
+   for (const [box, m] of machineBoxes) box.disabled = on || !m.available;
+  };
 
   const problem = el("p", "web-access-problem"); problem.hidden = true;
   const deny = el("button", "ghost", "Deny"); deny.type = "button";
@@ -252,31 +275,37 @@ export function initWebAccess(): void {
    });
   };
   close.onclick = () => { finished = true; dialog.close(); };
-  approve.onclick = () => void run(async () => {
-   say("");
-   if (!retry) {
-    const check = await Desk.webAccessCheckCode(req.id, code.value);
-    if (!check.ok) {
-     say(wrongCode(check));
-     code.value = "";
-     if (check.left === 0) { lock(); if (check.denied) end(); else close.hidden = false; }
-     else code.focus();
-     return;
-    }
-   }
-   approve.textContent = "Approving…";
-   retry = false;
-   try {
-    const result = await Desk.webAccessApprove(req.id, [...ticked], choices.choice.scope, choices.choice.length);
-    const { done: approved, unsure, lines } = resultLines(result);
-    say(lines.join(" "));
-    retry = unsure;
-    // The grants exist now: For says the expiry they were made with, no longer a preview.
-    if (approved || unsure) choices.granted(result.expiresMs);
-    if (unsure) lock();
-    if (approved) { end(); status.textContent = "Approved. The browser can open your machines now."; }
-   } finally { approve.textContent = retry ? "Try again" : "Approve"; }
-  });
+  approve.onclick = () => {
+   if (!retry) { sent = { machines: [...ticked], ...choices.choice }; freeze(true); }
+   const out = sent!;
+   void run(async () => {
+    try {
+     say("");
+     if (!retry) {
+      const check = await Desk.webAccessCheckCode(req.id, code.value);
+      if (!check.ok) {
+       say(wrongCode(check));
+       code.value = "";
+       if (check.left === 0) { lock(); if (check.denied) end(); else close.hidden = false; }
+       else code.focus();
+       return;
+      }
+     }
+     approve.textContent = "Approving…";
+     retry = false;
+     try {
+      const result = await Desk.webAccessApprove(req.id, out.machines, out.scope, out.length);
+      const { done: approved, unsure, lines } = resultLines(result);
+      say(lines.join(" "));
+      retry = unsure;
+      // The grants exist now: For says what they were made with, no longer a preview.
+      if (approved || unsure) choices.granted(out.length, result.expires ?? []);
+      if (unsure) lock();
+      if (approved) { end(); status.textContent = "Approved. The browser can open your machines now."; }
+     } finally { approve.textContent = retry ? "Try again" : "Approve"; }
+    } finally { if (!retry && !locked) freeze(false); }
+   });
+  };
   dialog.addEventListener("cancel", event => { if (!finished) event.preventDefault(); });
   dialog.addEventListener("close", () => { off(); choices.stop(); presses.close(); dialog.remove(); done(); }, { once: true });
   document.body.append(dialog);
