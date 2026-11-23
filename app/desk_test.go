@@ -287,9 +287,9 @@ func TestSelectSessionKeepsTheConnection(t *testing.T) {
 		t.Errorf("listed board shows session %q, want work", b.Session)
 	}
 	// A photo is fetched on the session shown and cached on disk.
-	url, err := d.AvatarImage(context.Background(), "t1", shaOf(pngBytes))
-	if err != nil || url != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(pngBytes) {
-		t.Fatalf("avatar %q, %v", url, err)
+	photo, err := d.AvatarImage(context.Background(), "t1", shaOf(pngBytes))
+	if err != nil || photo.URL != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(pngBytes) {
+		t.Fatalf("avatar %+v, %v", photo, err)
 	}
 	if !slices.ContainsFunc(srv.Requests(), func(r fakeherdr.Request) bool {
 		return r.Method == "agent.avatar.get" && r.Session == "work"

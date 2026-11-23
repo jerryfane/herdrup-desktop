@@ -67,22 +67,48 @@ func TestAvatarStaleReadKeepsAVerifiedReplacement(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, sha), []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	read := readAvatarFile
-	t.Cleanup(func() { readAvatarFile = read })
-	readAvatarFile = func(name string) ([]byte, error) {
-		stale, err := read(name)
-		// The other ask publishes while this reader still holds the stale bytes.
+	// Only this read is staged: the other ask publishes while this reader
+	// still holds the stale bytes.
+	staged := func(name string) ([]byte, error) {
+		stale, err := os.ReadFile(name)
 		if err := storeAvatar(dir, sha, pngBytes); err != nil {
 			t.Fatal(err)
 		}
 		return stale, err
 	}
-	if got := readAvatar(dir, sha); got != nil {
+	if got := readAvatarWith(staged, dir, sha); got != nil {
 		t.Fatalf("served the stale bytes: %q", got)
 	}
-	readAvatarFile = read
 	if got := readAvatar(dir, sha); string(got) != string(pngBytes) {
 		t.Fatalf("the verified photo is gone: read %q", got)
+	}
+}
+
+// #375 review: verified bytes are the photo even when the cache cannot take
+// them (here its directory cannot be made): shown, logged, and nothing
+// remembered as failed, so the next ask fetches again.
+func TestAvatarGetReturnsVerifiedBytesTheCacheCouldNotTake(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(file, "agent-avatars")
+	sha := shaOf(pngBytes)
+	var s avatarStore
+	owner := new(int)
+	calls := 0
+	fetch := func(context.Context) (string, error) {
+		calls++
+		return base64.StdEncoding.EncodeToString(pngBytes), nil
+	}
+	for range 2 {
+		url, err := s.get(context.Background(), dir, owner, "t1", sha, fetch)
+		if err != nil || !strings.HasPrefix(url, "data:image/png;base64,") {
+			t.Fatalf("%q, %v; want the photo", url, err)
+		}
+	}
+	if calls != 2 || len(s.failed) != 0 {
+		t.Fatalf("fetched %d times, failed %v; want 2 and nothing", calls, s.failed)
 	}
 }
 
@@ -318,11 +344,13 @@ func TestDeskAvatarFailureIsForgottenOnReconnect(t *testing.T) {
 		}
 	})
 	sha := shaOf(pngBytes)
-	if _, err := d.AvatarImage(context.Background(), "t1", sha); err == nil {
-		t.Fatal("the first fetch succeeded")
+	for _, when := range []string{"first", "same connection"} {
+		if photo, err := d.AvatarImage(context.Background(), "t1", sha); err != nil || !photo.Unavailable {
+			t.Fatalf("%s: %+v, %v; want herdr's refusal as Unavailable", when, photo, err)
+		}
 	}
-	if _, err := d.AvatarImage(context.Background(), "t1", sha); !errors.Is(err, errAvatarFailed) {
-		t.Fatalf("same connection: %v, want the failure remembered", err)
+	if n := gets.Load(); n != 1 {
+		t.Fatalf("%d agent.avatar.get on one connection, want the refusal remembered", n)
 	}
 	srv.DropConns()
 	waitFor(t, "a second connection with a board", func() bool {
@@ -330,11 +358,68 @@ func TestDeskAvatarFailureIsForgottenOnReconnect(t *testing.T) {
 		defer d.mu.Unlock()
 		return srv.Conns() == 2 && d.link != nil && d.link.client != nil && d.board != nil
 	})
-	url, err := d.AvatarImage(context.Background(), "t1", sha)
-	if err != nil || !strings.HasPrefix(url, "data:image/png;base64,") {
-		t.Fatalf("after reconnecting: %q, %v", url, err)
+	photo, err := d.AvatarImage(context.Background(), "t1", sha)
+	if err != nil || !strings.HasPrefix(photo.URL, "data:image/png;base64,") {
+		t.Fatalf("after reconnecting: %+v, %v", photo, err)
 	}
 	if n := gets.Load(); n != 2 {
 		t.Fatalf("%d agent.avatar.get, want 2", n)
+	}
+}
+
+// #366/#369 reviews: the page tells herdr's answer (Unavailable, remembered)
+// from a failure on the way to it (an error, asked again) by AvatarImage's
+// result, never by an error's words. A whole reply with a numeric
+// data_base64, which the decoder refuses before any byte is checked, is
+// herdr's answer as much as a result of another type: asked for once.
+func TestDeskAvatarImageAnswersWithAnOutcome(t *testing.T) {
+	var mu sync.Mutex
+	gets := map[string]int{}
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		handle := s.Handle
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			switch method {
+			case "ping":
+				pong := fakeherdr.Pong(true)
+				pong["capabilities"].(map[string]bool)["agent_avatar"] = true
+				return pong, nil
+			case "agent.avatar.get":
+			default:
+				return handle(method, params)
+			}
+			var p struct {
+				Target string `json:"target"`
+			}
+			_ = json.Unmarshal(params, &p)
+			mu.Lock()
+			gets[p.Target]++
+			mu.Unlock()
+			if p.Target == "numeric" {
+				return map[string]any{"type": "agent_avatar_image", "mime": "image/png", "data_base64": 12345}, nil
+			}
+			return fakeherdr.Pong(true), nil
+		}
+	})
+	sha := shaOf(pngBytes)
+	for _, target := range []string{"numeric", "wrong-type"} {
+		for range 2 {
+			if photo, err := d.AvatarImage(context.Background(), target, sha); err != nil || !photo.Unavailable || photo.URL != "" {
+				t.Fatalf("%s: %+v, %v; want Unavailable", target, photo, err)
+			}
+		}
+	}
+	mu.Lock()
+	asked := fmt.Sprint(gets)
+	mu.Unlock()
+	if asked != "map[numeric:1 wrong-type:1]" {
+		t.Fatalf("agent.avatar.get %s, want each once", asked)
+	}
+	if photo, err := d.AvatarImage(context.Background(), "t1", "nope"); err != nil || !photo.Unavailable {
+		t.Fatalf("invalid sha256: %+v, %v", photo, err)
+	}
+	// Not connected: an error, which the page asks again for.
+	var off Desk
+	if photo, err := off.AvatarImage(context.Background(), "t1", sha); !errors.Is(err, errNotConnected) || photo != (AvatarPhoto{}) {
+		t.Fatalf("not connected: %+v, %v", photo, err)
 	}
 }

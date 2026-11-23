@@ -380,13 +380,13 @@ test("an owner link shows the agents' pictures and copies recent text with a sou
  const desk = await deskWithKey();
  try {
   await openP1(desk, relay);
-  expect(await desk.avatarImage("p1", sha)).toBe(`data:image/png;base64,${PNG_B64}`);
+  expect(await desk.avatarImage("p1", sha)).toEqual({ url: `data:image/png;base64,${PNG_B64}` });
   expect(await desk.readAgentText("view-1", true)).toBe("last lines");
   expect(sources).toEqual(["recent"]);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
-test("a host that doesn't say it serves pictures isn't asked for one", async () => {
+test("a host that doesn't say it serves pictures isn't asked for one: its answer is that there is none", async () => {
  let asked = 0;
  const relay = host({ other: (session, req) => {
   if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.0", capabilities: {} } });
@@ -395,8 +395,32 @@ test("a host that doesn't say it serves pictures isn't asked for one", async () 
  const desk = await deskWithKey();
  try {
   await openP1(desk, relay);
-  await expect(desk.avatarImage("p1", await sha256Hex(PNG_B64))).rejects.toThrow();
+  expect(await desk.avatarImage("p1", await sha256Hex(PNG_B64))).toEqual({ unavailable: true });
   expect(asked).toBe(0);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+// #369 review, on the web: the desk decides at agent.avatar.get, by type, and says it as its
+// result. herdr's answers (an error reply, a result of another type, a data_base64 that is not
+// the photo's bytes, a number among them) are { unavailable }; a socket closed under the ask is
+// an error.
+test("the web desk answers herdr's refusals as unavailable and throws for a failure on the way", async () => {
+ const sha = await sha256Hex(PNG_B64);
+ const relay = host({ other: (session, req) => {
+  const target = (req as Request & { params?: { target?: string } }).params?.target;
+  if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.5", capabilities: { agent_avatar: true } } });
+  else if (req.method !== "agent.avatar.get") answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+  else if (target === "refused") answer(session, req, { error: { code: "not_found", message: "avatar not found" } });
+  else if (target === "wrong-type") answer(session, req, { result: { type: "pong", version: "0.9.5" } });
+  else if (target === "numeric") answer(session, req, { result: { type: "agent_avatar_image", data_base64: 12345 } });
+  else if (target === "not-the-photo") answer(session, req, { result: { type: "agent_avatar_image", data_base64: btoa("not a picture") } });
+  else session.conn.close(4503, "host_offline");
+ } });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  for (const target of ["refused", "wrong-type", "numeric", "not-the-photo"]) expect([target, await desk.avatarImage(target, sha)]).toEqual([target, { unavailable: true }]);
+  await expect(desk.avatarImage("closed", sha)).rejects.toThrow();
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
