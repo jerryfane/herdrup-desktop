@@ -300,6 +300,8 @@ export function pathBase(p: string): string {
 const space = "\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 const leadingSpace = new RegExp(`^[${space}]+`);
 const trailingSpace = new RegExp(`[${space}]+$`);
+/** Go strings.TrimSpace. */
+export const trimSpace = (s: string) => s.replace(leadingSpace, "").replace(trailingSpace, "");
 
 // board.go:304-312
 function initial(name: string): string {
@@ -385,8 +387,8 @@ function avatarOf(a: AgentInfo): Avatar {
  return { kind: "initial" };
 }
 
-// avatar.go:72-86
-function avatarTarget(a: AgentInfo): string {
+// avatar.go:72-86; desk_agent_actions.go avatarTarget, where agent.avatar.set sends a picture.
+export function avatarTarget(a: AgentInfo): string {
  const pane = str(a.pane_id), terminal = str(a.terminal_id);
  if (a.machine_id == null && terminal !== "") return terminal;
  return pane || terminal || str(a.name);
