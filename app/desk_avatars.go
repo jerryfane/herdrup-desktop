@@ -70,16 +70,18 @@ func definitiveAvatarFailure(err error) bool {
 
 func avatarDir(dataDir string) string { return filepath.Join(dataDir, "agent-avatars") }
 
+// readAvatarFile reads a cached photo; tests stand in for it to interleave a
+// write with a read.
+var readAvatarFile = os.ReadFile
+
 // readAvatar returns the cached bytes for sha, or nil when they are missing
-// or no longer hash to sha (a damaged file is removed).
+// or do not hash to sha. A damaged file is a miss and stays: it is never
+// removed here, since by the time the bytes are checked another ask may have
+// put verified bytes in its place (storeAvatar renames over it), and a path
+// removed then would be theirs (#366).
 func readAvatar(dir, sha string) []byte {
-	p := filepath.Join(dir, sha)
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	if !matchesSHA(data, sha) {
-		_ = os.Remove(p)
+	data, err := readAvatarFile(filepath.Join(dir, sha))
+	if err != nil || !matchesSHA(data, sha) {
 		return nil
 	}
 	return data
