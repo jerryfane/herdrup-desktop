@@ -360,7 +360,7 @@ class Session {
   *  never reaches the API and gets no reply. A statement that can't be had lets the host end the
   *  session at its deadline; the next call connects with a fresh one. A statement whose session
   *  is no longer the page's (live false: signed out meanwhile) is never sent, and refreshing stops. */
- keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<{ jws: string; expMs: number; live?: () => boolean }>, now: () => number) {
+ keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<AccountStatement>, now: () => number) {
   const life = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
   this.whenEnded(() => { life.abort(); if (timer !== null) clearTimeout(timer); });
@@ -368,9 +368,9 @@ class Session {
    if (life.signal.aborted) return;
    timer = setTimeout(async () => {
     timer = null;
-    let statement: { jws: string; expMs: number; live?: () => boolean };
+    let statement: AccountStatement;
     try { statement = await next(life.signal); } catch { return; }
-    if (life.signal.aborted || (statement.live && !statement.live())) return;
+    if (life.signal.aborted || !statement.live()) return;
     try { this.socket.send(this.noise.encrypt(new TextEncoder().encode(JSON.stringify({ t: "account.refresh", account: statement.jws })))); }
     catch { return; }
     arm(statement.expMs);
@@ -556,6 +556,11 @@ export function decodeReply(line: string): unknown {
 /** What a transport connects to and how it is admitted: the hello each connect sends, and the
  *  check of the host's reply (a guest grant's id; an owner's mode). An account-bound link also
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
+/** An account statement for an owner hello or refresh (POST /v1/statements): its JWS, when it
+ *  expires (ms), and whether the session it was issued in is still the page's. live() is required:
+ *  nothing is sent with a statement whose session has ended. */
+export interface AccountStatement { jws: string; expMs: number; live(): boolean }
+
 export interface TransportLink {
  endpoint: Endpoint;
  /** The hello for one connect. refused, when given, opts into one more connect after the host
@@ -565,7 +570,7 @@ export interface TransportLink {
  hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void; live?: () => boolean }>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
- statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number; live?: () => boolean }>;
+ statement?(signal: AbortSignal): Promise<AccountStatement>;
 }
 
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation. */

@@ -5,6 +5,7 @@
 // /v1/auth/refresh. The service rotates the cookie on every refresh and revokes the session when a
 // rotated-away token comes back, so refreshes are single-flight.
 
+import { untilAborted } from "../webguest/abort";
 import { toB64url } from "../webguest/b64url";
 import { enrolProof, type EnrolChallenge } from "../webguest/enrol";
 import type { StaticKey } from "../webguest/noise";
@@ -62,6 +63,10 @@ export async function webSignInProviders(fetcher: typeof fetch, service = ACCOUN
 
 export class SignedOutError extends Error {
  constructor() { super("Signed out"); this.name = "SignedOutError"; }
+}
+/** A refresh nobody waited for any more by the time the lock came: not sent. */
+class RefreshUnwanted extends Error {
+ constructor() { super("refresh no longer wanted"); this.name = "RefreshUnwanted"; }
 }
 export class AccountServiceError extends Error {
  constructor(readonly status: number, readonly code: string) { super(`account service: ${status} ${code}`); this.name = "AccountServiceError"; }
@@ -121,18 +126,35 @@ export class WebAccount {
 
  /** A current access token, refreshing through the cookie when the one held is missing or within
   *  a minute of expiry. Callers in this page share one refresh, and tabs take turns (the lock).
-  *  Throws SignedOutError when the service has no session for this browser. */
- accessToken(): Promise<string> {
+  *  Throws SignedOutError when the service has no session for this browser. A caller whose
+  *  signal aborts stops waiting at once; a refresh still queued for the lock is skipped when no
+  *  caller waits for it any more, and one already sent finishes. */
+ accessToken(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
+  // Counted before the refresh is queued: without a lock the refresh starts at once. A caller
+  // stops counting the moment its signal aborts, so the lock's turn sees only live callers.
+  this.waiting++;
+  let counted = true;
+  const leave = () => { if (counted) { counted = false; this.waiting--; } };
+  signal?.addEventListener("abort", leave, { once: true });
   if (!this.flight) {
    // The epoch now, not when the lock is granted: a sign-out while this waits for the lock
    // (another tab's refresh, or the sign-out itself) makes its answer stale.
    const epoch = this.epoch;
-   const flight: Promise<string> = this.exclusive(() => this.refresh(epoch)).finally(() => { if (this.flight === flight) this.flight = null; });
+   const flight: Promise<string> = this.exclusive(() => {
+    // Without a lock this runs at once, with this caller counted: flight is read only later.
+    if (this.waiting > 0) return this.refresh(epoch);
+    // Skipped: a caller that comes now queues its own refresh instead of joining this one.
+    if (this.flight === flight) this.flight = null;
+    return Promise.reject(new RefreshUnwanted());
+   }).finally(() => { if (this.flight === flight) this.flight = null; });
    this.flight = flight;
   }
-  return this.flight;
+  return (signal ? untilAborted(this.flight, signal) : this.flight).finally(() => { signal?.removeEventListener("abort", leave); leave(); });
  }
+ /** Callers waiting for the refresh in flight. */
+ private waiting = 0;
 
  /** The session the cookie holds now, or null when there is none: a refresh. Other errors throw. */
  async check(): Promise<WebSession | null> {
@@ -179,9 +201,10 @@ export class WebAccount {
  }
 
  /** A token and the account it is for, read together: a refresh sets both at once. */
- private async credential(): Promise<{ token: string; account: string }> {
+ private async credential(signal?: AbortSignal): Promise<{ token: string; account: string }> {
   for (;;) {
-   const token = await this.accessToken();
+   // A cancelled caller doesn't go round again: no new refresh starts for it.
+   const token = await this.accessToken(signal);
    if (this.access === token && this.session !== null) return { token, account: this.session.accountID };
   }
  }
@@ -189,8 +212,11 @@ export class WebAccount {
  /** The account this page signed in to, before any refresh (the cookie may hold another sign-in
   *  by now; calls bound to it then refuse); the first refresh's when there is none yet. An
   *  operation spanning calls binds to it. */
- async currentAccount(): Promise<string> {
-  return this.session?.accountID ?? (await this.credential()).account;
+ async currentAccount(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  if (this.session) return this.session.accountID;
+  // A cancelled caller stops waiting; the refresh goes on for whoever else needs it.
+  return (await this.credential(signal)).account;
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
@@ -205,7 +231,8 @@ export class WebAccount {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
-   const { token, account: now } = await this.credential();
+   const { token, account: now } = await this.credential(signal);
+   // Aborted while the token was handed over: the caller's abort, not an account check.
    signal?.throwIfAborted();
    if (bound !== undefined && now !== bound) throw new AccountServiceError(409, "account_changed");
    bound = now;
@@ -215,7 +242,12 @@ export class WebAccount {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
    });
    if (response.status === 401 && attempt === 0) { if (this.access === token) { this.access = ""; this.accessUntil = 0; } continue; }
-   if (!response.ok) throw new AccountServiceError(response.status, await errorCode(response));
+   if (!response.ok) {
+    const code = await errorCode(response);
+    // An abort while the error body was read is the caller's, not the service's answer.
+    signal?.throwIfAborted();
+    throw new AccountServiceError(response.status, code);
+   }
    return await response.json() as T;
   }
  }
@@ -225,7 +257,7 @@ export class WebAccount {
   *  so both calls run together, as account (default: the current one). Refusals:
   *  device_in_other_account, session_has_device (409), too_many_devices (403), account_changed. */
  async enrol(key: StaticKey, name: string, account?: string, signal?: AbortSignal): Promise<AccountDevice> {
-  const acct = account ?? await this.currentAccount();
+  const acct = account ?? await this.currentAccount(signal);
   const ch = await this.authed<EnrolChallenge>("POST", "/v1/devices/challenge", undefined, acct, signal);
   if (ch.account_id !== acct) throw new AccountServiceError(409, "account_changed");
   const { devicePub, mac } = await enrolProof(key, ch);

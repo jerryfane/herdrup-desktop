@@ -2066,6 +2066,15 @@ export const Desk = {
     return call("Desk.RenameTerminal", target, label);
   },
   /**
+   * ReportPageError logs an error the page can't show itself: an uncaught error
+   * or rejection, or a startup that failed or never finished (main.ts). It goes
+   * to the app's output, so a device without a console (RoverOS under cage)
+   * keeps it in its journal.
+   */
+  reportPageError(message: string): Promise<void> {
+    return call("Desk.ReportPageError", message);
+  },
+  /**
    * RestartAgent reopens the agent's session with --resume: in place for
    * accountID "", else on that account, herdrup's Swap subscription
    * (HerdrApp.swift:3434-3473).

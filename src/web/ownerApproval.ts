@@ -102,7 +102,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
  const nonceB = newApproveNonce();
  try {
   // The whole approval is the account's it starts in: a call after another sign-in sends nothing.
-  acct = await untilAborted(deps.account.currentAccount(), signal);
+  acct = await deps.account.currentAccount(signal);
   // Under the lock, the first visit and Ask again alike: an approval this account already has
   // (another tab may have just finished one) shows instead of asking again.
   const saved = await untilAborted(deps.store.get(acct, devicePub), signal);
