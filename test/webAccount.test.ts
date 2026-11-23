@@ -9,6 +9,9 @@ import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { enrolProof } from "../src/webguest/enrol";
 import { staticKey } from "../src/webguest/identity";
 import { createAccountDesk } from "../src/web/accountDesk";
+import { runApproval } from "../src/web/ownerApproval";
+import { MemoryOwnerStore } from "../src/web/ownerStore";
+import { MemoryIdentityStore } from "../src/webguest/identity";
 
 const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0")}`;
 
@@ -300,6 +303,8 @@ test("the web Desk publishes accountChanged the moment the session ends", async 
  expect(heard[0]).toBe(false);
  signOutHeld.resolve();
  await out;
+ // Once: the end of the session, not again when the sign-out call returns.
+ expect(heard).toEqual([false]);
  off();
 });
 
@@ -316,4 +321,126 @@ test("the session generation changes when the session ends and when a refresh br
  expect(new Set([a, b, a2]).size).toBe(3);
  await account.signOut();
  expect(account.generation).not.toBe(a2);
+});
+
+test("a call already cancelled starts nothing, not even a refresh; one cancelled behind the refresh lock stops waiting", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ const s = service();
+ const gone = new AbortController(); gone.abort(new Error("left"));
+ await expect(new WebAccount(s.fetcher).enrol(key, "x", undefined, gone.signal)).rejects.toThrow("left");
+ expect(s.calls).toEqual([]);
+ // Another tab holds the refresh lock: the cancelled caller doesn't wait for it.
+ const held = Promise.withResolvers<void>();
+ const locks = { request: async <T>(_n: string, run: () => Promise<T>) => { await held.promise; return run(); } };
+ const queued = new AbortController();
+ const pending = new WebAccount(s.fetcher, undefined, Date.now, locks).requestApproval(new Uint8Array(32), undefined, queued.signal);
+ queued.abort(new Error("closed"));
+ await expect(pending).rejects.toThrow("closed");
+ held.resolve();
+});
+
+test("an abort while an error body is read is reported as the abort, not as the service's answer", async () => {
+ const reading = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+ const stop = new AbortController();
+ // The error response says when its body read starts, and finishes only after the abort.
+ const blocked = { ok: false, status: 403, json: async () => { reading.resolve(); await gate.promise; return { error: "device_required" }; } } as unknown as Response;
+ const s = service(url => url.endsWith("/v1/browsers/self") ? blocked : null);
+ const pending = new WebAccount(s.fetcher).browserSelf(undefined, stop.signal);
+ await reading.promise;
+ stop.abort(new Error("left"));
+ gate.resolve();
+ await expect(pending).rejects.toThrow("left");
+});
+
+test("a refresh nobody waits for any more isn't sent, and a caller cancelled at sign-out starts none", async () => {
+ const s = service();
+ const refreshes = () => s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length;
+ // Queued behind another tab's lock, then abandoned: when the lock comes, nothing is sent.
+ const held = Promise.withResolvers<void>();
+ const locks = { request: async <T>(_n: string, run: () => Promise<T>) => { await held.promise; return run(); } };
+ const queued = new AbortController();
+ const pending = new WebAccount(s.fetcher, undefined, Date.now, locks).requestApproval(new Uint8Array(32), undefined, queued.signal);
+ queued.abort(new Error("closed"));
+ await expect(pending).rejects.toThrow("closed");
+ held.resolve();
+ await held.promise; await Promise.resolve(); await Promise.resolve();
+ expect(refreshes()).toBe(0);
+ // A warm token: the call is cancelled and the page signs out before it resumes; it doesn't
+ // go round again for a new token.
+ const account = new WebAccount(s.fetcher);
+ await account.accessToken();
+ const before = refreshes();
+ const stop = new AbortController();
+ const call = account.browserSelf(undefined, stop.signal);
+ stop.abort(new Error("left"));
+ void account.signOut();
+ await expect(call).rejects.toThrow("left");
+ expect(refreshes()).toBe(before);
+});
+
+/** A refresh lock another tab holds until release(), which starts the queued turns at once
+ *  (as the browser may, right after an abort); turns settle as each one does. */
+function heldLock() {
+ const asked = Promise.withResolvers<void>();
+ const queued: (() => void)[] = [];
+ const turns: Promise<void>[] = [];
+ let free = false;
+ let afterRun: (() => void) | null = null;
+ const locks = { request: <T>(_n: string, run: () => Promise<T>) => {
+  asked.resolve();
+  const turn = Promise.withResolvers<T>();
+  const start = () => { const p = run(); const after = afterRun; afterRun = null; after?.(); p.then(turn.resolve, turn.reject); };
+  if (free) start(); else queued.push(start);
+  turns.push(turn.promise.then(() => {}, () => {}));
+  return turn.promise;
+ } };
+ return { locks, turns, asked: asked.promise,
+  release: () => { free = true; for (const start of queued.splice(0)) start(); },
+  then: (f: () => void) => { afterRun = f; } };
+}
+
+test("a caller aborted just before the lock comes isn't counted: no refresh is sent for it", async () => {
+ const s = service();
+ const lock = heldLock();
+ const stop = new AbortController();
+ const pending = new WebAccount(s.fetcher, undefined, Date.now, lock.locks).accessToken(stop.signal);
+ // The abort and the lock's turn come back to back, before the caller's wait has unwound.
+ stop.abort(new Error("left"));
+ lock.release();
+ await expect(pending).rejects.toThrow("left");
+ await Promise.all(lock.turns);
+ expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(0);
+});
+
+test("a caller that comes as an abandoned refresh is skipped gets its own refresh, not the skip", async () => {
+ const s = service();
+ const lock = heldLock();
+ const account = new WebAccount(s.fetcher, undefined, Date.now, lock.locks);
+ const stop = new AbortController();
+ const abandoned = account.accessToken(stop.signal);
+ stop.abort(new Error("left"));
+ await expect(abandoned).rejects.toThrow("left");
+ let late: Promise<string> | null = null;
+ // Right after the lock's turn decided to skip, before that turn has settled.
+ lock.then(() => { late = account.accessToken(); });
+ lock.release();
+ await Promise.all(lock.turns.slice(0, 1));
+ expect(late).not.toBeNull();
+ expect(await late!).toMatch(/./);
+ expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(1);
+});
+
+test("an approval stopped while its account lookup waits for the lock sends no refresh", async () => {
+ const s = service();
+ const lock = heldLock();
+ const account = new WebAccount(s.fetcher, undefined, Date.now, lock.locks);
+ const stop = new AbortController();
+ const running = runApproval({ account, identities: new MemoryIdentityStore(), store: new MemoryOwnerStore(), deviceName: "x", sleep: async () => {}, now: () => 0, locks: null }, () => {}, stop.signal);
+ await lock.asked; // the key is made first, then the account lookup queues for the lock
+ stop.abort(new Error("left"));
+ lock.release();
+ await running;
+ await Promise.all(lock.turns);
+ expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(0);
 });
