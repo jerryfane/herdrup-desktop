@@ -67,7 +67,7 @@ const drawnOnlyOnMac = [
  "desktopcomputer", "doc.on.clipboard", "doc.text", "ellipsis.circle", "envelope", "exclamationmark.bubble", "exclamationmark.circle",
  "exclamationmark.triangle.fill", "gauge.with.needle", "globe", "info.circle", "ipad", "iphone",
  "key.horizontal", "keyboard", "laptopcomputer", "lightbulb", "lock.open", "lock.shield", "pause.circle", "person.2", "person.crop.circle", "person.crop.circle.fill", "person.fill",
- "photo.on.rectangle", "plus.circle", "qrcode.viewfinder", "questionmark.circle.fill", "rectangle.portrait.and.arrow.right", "rectangle.stack",
+ "photo.on.rectangle", "plus.circle", "qrcode.viewfinder", "questionmark.circle.fill", "rectangle.portrait.and.arrow.right",
  "shield.lefthalf.filled", "sparkles", "stop.circle", "text.bubble", "textformat.size", "trash",
 ];
 

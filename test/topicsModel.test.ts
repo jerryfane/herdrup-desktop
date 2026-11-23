@@ -1,7 +1,7 @@
 // The Topics view's decisions (src/topicsModel.ts), against herdrup #745: TopicsView.swift
 // (sections, pill, search), HerdrKit AgentTopics.swift (ordering) and ChatPreference.swift.
 import { expect, test } from "bun:test";
-import { nextTopicsOffer, orderedTopics, topicSendDelivery, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
+import { foldShortcutLabel, isFoldShortcut, nextTopicsOffer, orderedTopics, topicSendDelivery, topicsLayout, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
 
 const topic = (id: string, over: Partial<TopicInfo> = {}): TopicInfo => ({
  topic_id: id, title: id, state: "idle", turns: 1, queued: 0, created_unix_ms: 0, last_activity_unix_ms: 0, ...over,
@@ -35,13 +35,32 @@ test("open topics fall under Today, This week and Earlier by local day; closed o
  expect(topicSections([topic("x", { last_activity_unix_ms: now.getTime() })], now).map(s => s.id)).toEqual(["Today"]);
 });
 
-test("the pill reads the state, with what waits; one dot, none for Closed or an unknown state", () => {
+test("the status reads the state, with what waits; a dot only while working (Topics A-v2)", () => {
  expect([statusText(topic("a", { state: "running" })), statusDot(topic("a", { state: "running" }))]).toEqual(["Working", "working"]);
- expect(statusText(topic("a", { state: "starting" }))).toBe("Starting");
- expect([statusText(topic("a", { state: "idle", queued: 2 })), statusDot(topic("a"))]).toEqual(["Idle · 2 queued", "done"]);
- expect([statusText(topic("a", { state: "dead" })), statusDot(topic("a", { state: "dead" }))]).toEqual(["Stopped", "died"]);
+ expect([statusText(topic("a", { state: "starting" })), statusDot(topic("a", { state: "starting" }))]).toEqual(["Starting", "working"]);
+ expect([statusText(topic("a", { state: "idle", queued: 2 })), statusDot(topic("a"))]).toEqual(["Idle · 2 queued", null]);
+ expect([statusText(topic("a", { state: "dead" })), statusDot(topic("a", { state: "dead" }))]).toEqual(["Stopped", null]);
  expect([statusText(topic("a", { state: "closed" })), statusDot(topic("a", { state: "closed" }))]).toEqual(["Closed", null]);
  expect([statusText(topic("a", { state: "unknown" })), statusDot(topic("a", { state: "unknown" }))]).toEqual([null, null]);
+});
+
+test("wide, the column folds away only beside an open topic; narrow, the list or the topic", () => {
+ expect(topicsLayout(true, false, true)).toEqual({ list: true, chat: true });
+ expect(topicsLayout(true, true, true)).toEqual({ list: false, chat: true });
+ expect(topicsLayout(true, true, false)).toEqual({ list: true, chat: true });
+ expect(topicsLayout(false, true, false)).toEqual({ list: true, chat: false });
+ expect(topicsLayout(false, false, true)).toEqual({ list: false, chat: true });
+});
+
+test("⌥⌘T (Ctrl+Alt+T off the Mac) folds the column, by key position, not by the letter Option types", () => {
+ const key = (over: Partial<KeyboardEvent>) => ({ metaKey: false, ctrlKey: false, altKey: true, shiftKey: false, code: "KeyT", ...over });
+ expect(isFoldShortcut(key({ metaKey: true }))).toBe(true);
+ expect(isFoldShortcut(key({ ctrlKey: true }))).toBe(true);
+ expect(isFoldShortcut(key({ metaKey: true, altKey: false }))).toBe(false);
+ expect(isFoldShortcut(key({ metaKey: true, shiftKey: true }))).toBe(false);
+ expect(isFoldShortcut(key({ altKey: true }))).toBe(false);
+ expect(isFoldShortcut(key({ metaKey: true, code: "KeyY" }))).toBe(false);
+ expect([foldShortcutLabel(true), foldShortcutLabel(false)]).toEqual(["⌥⌘T", "Ctrl+Alt+T"]);
 });
 
 test("search matches the title or the newest step, ignoring case; a blank query keeps everything", () => {

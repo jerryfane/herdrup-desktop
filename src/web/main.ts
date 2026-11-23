@@ -236,14 +236,14 @@ function showOpening() {
 let barGeneration = 0;
 async function buildBars(view: { tab: GuestTab; gram: boolean }) {
  const generation = ++barGeneration;
- const items: Array<[GuestTab, string, string]> = [
-  ["agents", "square.grid.2x2.fill", "Agents"],
-  ...(view.gram ? [["gram", "bubble.left.and.bubble.right.fill", "Gram"] as [GuestTab, string, string]] : []),
-  ["settings", "gearshape.fill", "Settings"],
+ const items: Array<[GuestTab, string]> = [
+  ["agents", "Agents"],
+  ...(view.gram ? [["gram", "Gram"] as [GuestTab, string]] : []),
+  ["settings", "Settings"],
  ];
  const actions = view.tab === "gram" ? await barActions(null) : [];
- const tabs = await Promise.all(items.map(([key, icon, label]) =>
-  tabNode(key, icon, label, key === view.tab, key === "gram", key === "settings" ? guestActions.settings : key === "gram" ? () => guestActions.gram() : guestActions.agents)));
+ const tabs = items.map(([key, label]) =>
+  tabNode(key, label, key === view.tab, key === "gram", key === "settings" ? guestActions.settings : key === "gram" ? () => guestActions.gram() : guestActions.agents));
  if (generation !== barGeneration) return;
  const count = view.tab === "gram" ? barCount() : null;
  const title = view.tab === "settings" ? "Settings" : view.tab === "gram" ? "Gram" : "Agents";

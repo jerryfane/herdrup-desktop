@@ -10,7 +10,7 @@ import { composerEnterSends } from "./composer";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing, type Outgoing } from "./chatPoll";
 import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
 import { rowTime } from "./gramDates";
-import { activityMs, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicTitle, type TopicInfo } from "./topicsModel";
+import { activityMs, foldShortcutLabel, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicsLayout, topicTitle, type TopicInfo } from "./topicsModel";
 import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
 import { appleSymbols } from "./platform";
 import infoIcon from "../third_party/phosphor/web/info.svg?url";
@@ -62,17 +62,24 @@ function popup(items: string[], chosen: (item: string) => void) {
  void Desk.gramMenu(id, items).then(shown => { if (!shown) menus.delete(id); }, () => menus.delete(id));
 }
 
-/** A neutral pill with one small dot, or plain text for a closed topic (TopicStatusPill). */
-export function topicPill(t: TopicInfo): HTMLElement | null {
+/** A topic's status as plain muted words, with one small dot only while it works (Topics A-v2:
+ *  no pills, badges or chips). */
+export function topicStatus(t: TopicInfo): HTMLElement | null {
  const text = statusText(t);
  if (text === null) return null;
- const dot = statusDot(t);
- if (!dot) return el("span", "topic-status-plain", text);
- const pill = el("span", "topic-status");
- const mark = el("span", "topic-status-dot"); mark.dataset.dot = dot; mark.setAttribute("aria-hidden", "true");
- pill.append(mark, el("span", "", text));
- return pill;
+ const status = el("span", "topic-status");
+ if (statusDot(t)) { const dot = el("span", "topic-status-dot"); dot.setAttribute("aria-hidden", "true"); status.append(dot); }
+ status.append(el("span", "", text));
+ return status;
 }
+
+/** The column's fold (⌥⌘T), kept as the sidebar keeps its own (sidebar.ts sidebarMinimized). */
+const FOLDED_KEY = "topicsColumnFolded";
+function storedFold(): boolean {
+ try { return localStorage.getItem(FOLDED_KEY) === "true"; } catch { return false; }
+}
+/** The fold's shortcut as the header shows it beside the "Topics" button. */
+const FOLD_HINT = foldShortcutLabel(navigator.platform.startsWith("Mac"));
 
 export class TopicsPane {
  readonly root = el("div", "topics-surface");
@@ -89,6 +96,9 @@ export class TopicsPane {
  private wide = false;
  private shown = false;
  private disposed = false;
+ /** The column folded away beside an open topic (⌥⌘T); kept across launches. */
+ private folded = storedFold();
+ private readonly foldButton = button("", "topics-fold", () => this.setFolded(true));
  private readonly resize: ResizeObserver;
  private sheet: HTMLDialogElement | null = null;
  // Organise (herdrup #788, TopicsView.swift proposal 3): the agent proposes topics from its Inbox.
@@ -107,12 +117,14 @@ export class TopicsPane {
  private settling = false;
  constructor(private readonly host: TopicsHost) {
   const head = el("div", "topics-head");
+  // The one icon in the bar: it works (folds the column). Shown where there is a column to fold.
+  this.foldButton.setAttribute("aria-label", "Hide topics"); this.foldButton.title = `Hide topics (${FOLD_HINT})`;
+  void host.symbol("sidebar.leading", 16, "medium").then(icon => this.foldButton.append(icon));
   const heading = el("span", "topics-heading");
   heading.append(el("strong", "", "Topics"), this.aboutButton());
-  head.append(heading);
-  // Text only: square.and.pencil has no Windows/Linux stand-in (src/web/symbols.data.ts).
+  head.append(this.foldButton, heading);
+  // Text buttons (Topics A-v2): Organise only where the agent's suggestions are served.
   const create = button("New topic", "topics-new", () => this.openNewTopic());
-  // A plain word in the bar (proposal 3), only where the agent's suggestions are served.
   this.organiseButton.hidden = true;
   head.append(this.organiseButton, create);
   this.searchInput.type = "search"; this.searchInput.placeholder = "Search topics";
@@ -178,11 +190,29 @@ export class TopicsPane {
 
  private layout() {
   this.root.dataset.layout = this.wide ? "wide" : "narrow";
-  this.chat?.setBack(!this.wide);
-  this.column.hidden = !this.wide && this.selected !== null;
-  this.side.hidden = !this.wide && this.selected === null;
+  const shown = topicsLayout(this.wide, this.folded, this.selected !== null);
+  this.column.hidden = !shown.list;
+  this.side.hidden = !shown.chat;
+  this.foldButton.hidden = !this.wide || this.selected === null;
+  this.chat?.setListButton(!shown.list);
   if (this.wide && !this.chat) this.drawPlaceholder();
   this.drawList();
+ }
+
+ private setFolded(folded: boolean) {
+  this.folded = folded;
+  try { localStorage.setItem(FOLDED_KEY, String(folded)); } catch (error) { console.warn("Topics column fold is session-only", error); }
+  this.layout();
+ }
+
+ /** The header's "Topics" button: the list comes back (unfolded when wide, in place of the
+  *  topic when narrow). */
+ private showList() { if (this.wide) this.setFolded(false); else this.select(null); }
+
+ /** ⌥⌘T: folds or unfolds the column beside an open topic; narrow, it goes back to the list. */
+ toggleColumn() {
+  if (this.wide) this.setFolded(!this.folded);
+  else if (this.selected !== null) this.select(null);
  }
 
  private drawPlaceholder() {
@@ -195,8 +225,7 @@ export class TopicsPane {
   this.chat?.dispose(); this.chat = null;
   const topic = id ? this.topics().find(t => t.topic_id === id) : undefined;
   if (topic) {
-   this.chat = new TopicChat(this.host, topic, () => this.select(null));
-   this.chat.setBack(!this.wide);
+   this.chat = new TopicChat(this.host, topic, () => this.showList());
    this.chat.setActive(this.shown);
    this.side.replaceChildren(this.chat.root);
    this.chat.focus();
@@ -224,7 +253,7 @@ export class TopicsPane {
   }
   const shown = searchTopics(this.topics(), query);
   for (const section of topicSections(shown, new Date())) {
-   nodes.push(el("h3", "topics-section", section.id.toUpperCase()));
+   nodes.push(el("h3", "topics-section", section.id));
    for (const topic of section.topics) nodes.push(this.row(topic));
   }
   if (u?.loaded && !this.topics().length && !u.problem) nodes.push(el("p", "topics-empty", "No topics yet. A topic is a lasting line of work with its own conversation."));
@@ -323,16 +352,15 @@ export class TopicsPane {
   this.drawList();
  }
 
+ /** The Inbox, first in the list: a plain row like a topic's (Topics A-v2: no icon, no chevron). */
  private inboxRow(): HTMLElement {
   const row = button("", "topics-inbox", () => this.host.openInbox());
   row.title = "Opens the agent's own conversation";
-  const icon = el("span", "topics-inbox-icon"); icon.setAttribute("aria-hidden", "true");
-  void this.host.symbol("tray", 15, "semibold").then(svg => icon.append(svg));
-  const lines = el("span", "topics-row-lines");
-  lines.append(el("strong", "", "Inbox"), el("span", "topics-row-activity", this.inbox || "The agent's own conversation"));
-  const chevron = el("span", "topics-chevron"); chevron.setAttribute("aria-hidden", "true");
-  void this.host.symbol("chevron.right", 12, "semibold").then(svg => chevron.append(svg));
-  row.append(icon, lines, chevron);
+  const top = el("span", "topic-row-top");
+  top.append(el("strong", "topic-row-title", "Inbox"));
+  const line = el("span", "topic-row-line");
+  line.append(el("span", "topics-row-activity", this.inbox || "The agent's own conversation"));
+  row.append(top, line);
   return row;
  }
 
@@ -347,11 +375,15 @@ export class TopicsPane {
   if (value) row.setAttribute("aria-description", value);
   const top = el("span", "topic-row-top");
   top.append(el("strong", "topic-row-title", title));
-  const pill = topicPill(topic); if (pill) top.append(pill);
   const ms = activityMs(topic);
   if (ms > 0) top.append(el("span", "topic-row-time", rowTime(new Date(ms), new Date())));
+  // Status, then the newest step: "• Working · Drawing the waiting state…".
+  const line = el("span", "topic-row-line");
+  const status = topicStatus(topic); if (status) line.append(status);
+  if (status && topic.last_activity) line.append(el("span", "topic-row-sep", "·"));
+  if (topic.last_activity) line.append(el("span", "topics-row-activity", topic.last_activity));
   row.append(top);
-  if (topic.last_activity) row.append(el("span", "topics-row-activity", topic.last_activity));
+  if (line.childElementCount) row.append(line);
   const menu = () => popup(["Rename…", topic.state === "closed" ? "Reopen" : "Close"], item => {
    if (item === "Rename…") this.openRename(topic);
    else if (item === "Reopen") void this.act(() => Desk.topicsReopen(this.host.token, topic.topic_id));
@@ -482,9 +514,10 @@ export class TopicsPane {
  *  to this topic only (agent.topics.send). */
 class TopicChat {
  readonly root = el("div", "topic-chat");
- private readonly back: HTMLButtonElement;
+ /** "Topics ⌥⌘T": shown wherever the list is not (folded, or narrow). */
+ private readonly list = el("span", "topic-list-button");
  private readonly title = el("strong", "topic-chat-title");
- private readonly pill = el("span", "topic-chat-pill");
+ private readonly status = el("span", "topic-chat-status");
  private readonly messages = el("div", "chat-transcript topic-transcript");
  private readonly notice = el("p", "interaction-status topic-notice");
  private readonly note = el("p", "topic-send-note");
@@ -504,10 +537,19 @@ class TopicChat {
  private disposed = false;
  private timer: number | undefined;
 
- constructor(private readonly host: TopicsHost, private topic: TopicInfo, close: () => void) {
-  this.back = button("", "topic-back", close);
-  this.back.setAttribute("aria-label", "Topics");
-  void host.symbol("chevron.left", 14, "semibold").then(icon => this.back.append(icon));
+ constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void) {
+  // Topics A-v2 header: [Topics ⌥⌘T |] ‹ Inbox | title · status … •••. Text buttons; the only
+  // icons are the back chevron and the ••• menu, both working controls.
+  const listButton = button("Topics", "topic-list-open", showList);
+  listButton.title = `Show topics (${FOLD_HINT})`;
+  const hint = el("span", "topic-list-hint", FOLD_HINT); hint.setAttribute("aria-hidden", "true");
+  const rule = () => { const r = el("span", "topic-chat-rule"); r.setAttribute("aria-hidden", "true"); return r; };
+  this.list.append(listButton, hint, rule());
+  const inbox = button("", "topic-inbox-link", () => host.openInbox());
+  inbox.title = "Opens the agent's own conversation";
+  const chevron = el("span", "topic-inbox-chevron"); chevron.setAttribute("aria-hidden", "true");
+  void host.symbol("chevron.left", 13, "semibold").then(icon => chevron.append(icon));
+  inbox.append(chevron, el("span", "", "Inbox"));
   const actions = button("", "topic-actions", () => popup([this.topic.state === "closed" ? "Reopen" : "Close"], item => {
    const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose;
    void call(this.host.token, this.topic.topic_id).then(() => this.showNote(null), error => this.showNote(errorText(error)));
@@ -515,8 +557,8 @@ class TopicChat {
   actions.setAttribute("aria-label", "Topic actions"); actions.setAttribute("aria-haspopup", "menu");
   // The page's own ••• (interaction.ts showMuted): ellipsis has no Windows/Linux stand-in.
   actions.innerHTML = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><g fill="currentColor"><circle cx="4" cy="10" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="16" cy="10" r="1.5"/></g></svg>';
-  const heading = el("div", "topic-chat-heading"); heading.append(this.title, this.pill);
-  const header = el("header", "topic-chat-header"); header.append(this.back, heading, actions);
+  const heading = el("div", "topic-chat-heading"); heading.append(this.title, this.status);
+  const header = el("header", "topic-chat-header"); header.append(this.list, inbox, rule(), heading, actions);
   this.earlier.hidden = true;
   this.notice.setAttribute("role", "status");
   this.note.setAttribute("role", "status"); this.note.hidden = true;
@@ -532,7 +574,7 @@ class TopicChat {
   this.messages.append(this.earlier);
  }
 
- setBack(shown: boolean) { this.back.hidden = !shown; }
+ setListButton(shown: boolean) { this.list.hidden = !shown; }
  focus() { if (!this.input.disabled) this.input.focus(); }
 
  setActive(active: boolean) {
@@ -548,8 +590,8 @@ class TopicChat {
   this.topic = topic;
   const title = topicTitle(topic);
   this.title.textContent = title;
-  const pill = topicPill(topic);
-  this.pill.replaceChildren(...(pill ? [pill] : []));
+  const status = topicStatus(topic);
+  this.status.replaceChildren(...(status ? [status] : []));
   const closed = topic.state === "closed";
   this.input.placeholder = closed ? "Closed. Reopen it to continue." : `Message ${topic.title.trim() ? topic.title.trim() : "this topic"}`;
   this.input.setAttribute("aria-label", this.input.placeholder);

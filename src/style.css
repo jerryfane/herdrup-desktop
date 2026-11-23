@@ -247,7 +247,7 @@ html, body {
 .row .line1 { display: flex; align-items: center; gap: var(--space-stack-small); }
 .row .name { color: var(--color-text); overflow: hidden; text-overflow: ellipsis; }
 .row .spacer { flex: 1; min-width: var(--space-stack-small); }
-.row .age { color: var(--color-text-dim); }
+.row .age { color: var(--color-text-faint); }
 .row .chev { color: var(--color-text-faint); }
 .row .preview {
   color: var(--color-text-dim);
@@ -257,7 +257,14 @@ html, body {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-.row.waiting .preview { color: var(--color-text); }
+/* An agent's second line (Topics A-v2, sessions.ts rowPreview): its status as muted words, one
+   small dot only for Needs you and Working, then the preview, on one line. */
+.row .row-status { color: var(--color-text-dim); }
+.row .row-status-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; vertical-align: 0.1em; }
+.row .row-status-dot[data-dot="waiting"] { background: var(--status-waiting); }
+.row .row-status-dot[data-dot="working"] { background: var(--status-working); }
+.row .row-status-sep { padding: 0 5px; color: var(--color-text-faint); }
+.row:not(.folder) .preview { -webkit-line-clamp: 1; }
 /* The separator spans the text column, one device pixel, hairline. */
 .row .text::after {
   content: "";
@@ -411,41 +418,37 @@ html, body {
   color: var(--color-text-dim);
 }
 
-/* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
-   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour over the bare
-   sidebar in every 9845ecf reference (#31354e: board, Gram and detail captures alike), and
-   the selected pill, white 12% on top, gives their #4a4d63. */
+/* Sidebar tab bar, text only (Topics A-v2, owner 2026-11-23): the sidebar's full width under a
+   quiet rule, three words, the selected one on a rounded surface. */
 .tabbar {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: var(--tabbar-bottom);
-  max-width: var(--size-tab-bar-max-width);
-  margin: 0 auto;
-  height: var(--size-tab-bar);
-  padding: 4px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  padding: 10px 16px calc(14px + var(--home-inset));
   display: flex;
-  border-radius: 999px;
-  background: var(--glass-fill);
+  gap: 4px;
+  border-top: 1px solid var(--color-hairline-quiet);
+  background: var(--color-ground);
 }
 .tab {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1px;
-  border-radius: 999px;
+  padding: 7px 0;
+  border-radius: 8px;
   color: var(--color-text-dim);
 }
+.tab .t-tab-label { position: relative; font: 500 13px var(--font-app); font-variation-settings: normal; }
 .tab:focus-visible { outline: 2px solid var(--color-text-dim); outline-offset: -2px; }
-.tab .icon { position: relative; height: 28px; display: flex; align-items: center; }
-/* tabBadge (HerdrApp.swift 2871-2881): top-trailing of the icon, moved 12 pt right and
-   3 pt up; at least 18 pt, 5 pt sides, badgeCount text, white on system red (main.ts). */
+/* tabBadge (HerdrApp.swift 2871-2881): top-trailing of the label; at least 18 pt, 5 pt sides,
+   badgeCount text, white on system red (main.ts). */
 .tab-badge {
   position: absolute;
-  top: -3px;
-  right: -12px;
+  top: -9px;
+  right: -20px;
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -462,15 +465,16 @@ html, body {
 .tab { position: relative; z-index: 1; transition: color var(--motion-tab-duration) var(--motion-tab-ease); }
 .tab.selected { color: var(--color-text); }
 .tabbar::before {
+  --tab-width: calc((100% - 32px - (var(--tab-count, 3) - 1) * 4px) / var(--tab-count, 3));
   content: "";
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 10px;
+  bottom: calc(14px + var(--home-inset));
   /* --tab-count: 3 for the owner, 2 for a guest's Agents and Settings (main.ts buildTabBar). */
-  left: calc(4px + var(--tab-index, 0) * (100% - 8px) / var(--tab-count, 3));
-  width: calc((100% - 8px) / var(--tab-count, 3));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-on-accent) 12%, transparent);
+  left: calc(16px + var(--tab-index, 0) * (var(--tab-width) + 4px));
+  width: var(--tab-width);
+  border-radius: 8px;
+  background: var(--color-surface);
   transition: left var(--motion-tab-duration) var(--motion-tab-ease);
 }
 

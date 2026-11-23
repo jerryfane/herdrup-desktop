@@ -8,7 +8,7 @@ import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { initAgentActions } from "./agentActions";
 import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
-import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
+import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, rowPreview, updateNeedsYou } from "./sessions";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
@@ -239,15 +239,11 @@ function setTabBadge() {
 async function buildTabBar() {
   const generation = ++tabBarGeneration, guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
   // A guest's TabView: Agents, Gram while a shared agent shares it (#697), and Settings.
-  const items: Array<[typeof tab, string, string]> = [
-    ["agents", "square.grid.2x2.fill", "Agents"],
-    ...(!guestView || guestView.gram ? [["gram", "bubble.left.and.bubble.right.fill", "Gram"] as [typeof tab, string, string]] : []),
-    ["settings", "gearshape.fill", "Settings"],
-  ];
+  const items: Array<[typeof tab, string]> = [["agents", "Agents"], ...(!guestView || guestView.gram ? [["gram", "Gram"] as [typeof tab, string]] : []), ["settings", "Settings"]];
   const nodes = await Promise.all(
-    items.map(([key, icon, label]) =>
+    items.map(([key, label]) =>
       // The guest's Settings is its own page, without the app update.
-      tabNode(key, icon, label, key === selectedTab, key === "gram" || key === "settings" && !guestView && appUpdatesShown, () => {
+      tabNode(key, label, key === selectedTab, key === "gram" || key === "settings" && !guestView && appUpdatesShown, () => {
         if (guestView) {
           if (key === "settings") guestActions.settings(); else if (key === "gram") guestActions.gram(); else guestActions.agents();
           return;
@@ -302,17 +298,16 @@ async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
   row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(); } });
   const text = el("div", "text");
   const line1 = el("div", "line1");
-  const chev = el("span", "chev");
-  chev.append(await symbol("chevron.right", 12, "semibold"));
   const age = rowAge(r, Date.now());
   line1.append(el("span", "name t-row-name", r.title));
   if (r.starred) line1.append(await star(folderDeps));
-  line1.append(...rowMarkers(r), el("span", "spacer"), ...(age ? [age] : []), chev);
+  line1.append(...rowMarkers(r), el("span", "spacer"), ...(age ? [age] : []));
   agentMenu(row, r);
-  text.append(line1, el("div", "preview t-row-preview", r.preview));
+  // Topics A-v2: status as words on the preview line, no badge on the avatar, no chevron.
+  text.append(line1, rowPreview(r));
   const account = accountLine(r);
   if (account) text.append(account);
-  row.append(await avatar(r), text);
+  row.append(await avatar(r, false), text);
   return row;
 }
 

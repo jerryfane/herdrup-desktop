@@ -53,10 +53,10 @@ export function placeTitle() {
   title.style.left = `${centre - w / 2}px`;
 }
 
-/** One tab. Keyboard users reach and switch tabs (issue #94): Tab focuses it, Enter or Space
- *  activates it, and the selected tab reads as the current page. A div with a button's role, not
- *  a <button>, which WebKit letters differently (parity 41516232593). */
-export async function tabNode(key: string, icon: string, label: string, selected: boolean, badge: boolean, activate: () => void): Promise<HTMLElement> {
+/** One tab, text only (Topics A-v2). Keyboard users reach and switch tabs (issue #94): Tab
+ *  focuses it, Enter or Space activates it, and the selected tab reads as the current page. A div
+ *  with a button's role, not a <button>, which WebKit letters differently (parity 41516232593). */
+export function tabNode(key: string, label: string, selected: boolean, badge: boolean, activate: () => void): HTMLElement {
   const t = el("div", "tab" + (selected ? " selected" : ""));
   t.dataset.tab = key;
   t.tabIndex = 0;
@@ -67,14 +67,13 @@ export async function tabNode(key: string, icon: string, label: string, selected
     event.preventDefault();
     t.click();
   });
-  const i = el("div", "icon");
-  i.replaceChildren(await symbol(icon, 21, "medium"));
+  const name = el("span", "t-tab-label", label);
   if (badge) {
     const b = el("span", "tab-badge");
     b.setAttribute("aria-hidden", "true"); b.dataset.tab = key; b.hidden = true;
-    i.append(b);
+    name.append(b);
   }
-  t.append(i, el("span", "t-tab-label", label));
+  t.append(name);
   t.addEventListener("click", activate);
   return t;
 }
