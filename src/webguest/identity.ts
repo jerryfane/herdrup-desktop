@@ -12,11 +12,13 @@ export type IdentityRecord =
  | { v: 1; kind: "webcrypto"; privateKey: CryptoKey; publicKey: Uint8Array }
  | { v: 1; kind: "raw"; secret: Uint8Array; publicKey: Uint8Array };
 
-/** Where the identity lives. add keeps an existing record: it returns the record now saved, which
- *  is another tab's when that tab saved first (identity.go:512-525's os.Link). */
+/** Where the identity lives. add keeps an existing record: it returns the record now saved, as a
+ *  read gives it back, which is another tab's when that tab saved first (identity.go:512-525's
+ *  os.Link); undefined when the storage can't give back what it saved (WebKit answered null for
+ *  it on the owner's iPad), so this browser doesn't keep a key between visits. */
 export interface IdentityStore {
  get(): Promise<IdentityRecord | undefined>;
- add(record: IdentityRecord): Promise<IdentityRecord>;
+ add(record: IdentityRecord): Promise<IdentityRecord | undefined>;
 }
 
 const damaged = () => new Error("The saved guest identity is damaged. It was not replaced; replacing it would disconnect existing shares.");
@@ -61,7 +63,11 @@ export async function generateIdentity(subtle: SubtleCrypto | null = globalThis.
 /** The saved identity, or a new one saved first (Go LoadIdentity). */
 export async function loadIdentity(store: IdentityStore, subtle: SubtleCrypto | null = globalThis.crypto?.subtle ?? null): Promise<StaticKey> {
  const saved = await store.get();
- return staticKey(saved === undefined ? await store.add(await generateIdentity(subtle)) : saved, subtle);
+ if (saved !== undefined) return staticKey(saved, subtle);
+ const made = await generateIdentity(subtle);
+ // A storage that can't give the key back still lets this visit use it, as before: a guest opens
+ // the share now and needs a new invite on a later visit.
+ return staticKey(await store.add(made) ?? made, subtle);
 }
 
 /** The saved identity only: a guest returning to a grant never gets an unrelated key (Go
@@ -113,7 +119,7 @@ export class IndexedDBIdentityStore implements IdentityStore {
   return (await request(db.transaction(this.storeName, "readonly").objectStore(this.storeName).get(RECORD_KEY)) ?? undefined) as IdentityRecord | undefined;
  }
 
- async add(record: IdentityRecord): Promise<IdentityRecord> {
+ async add(record: IdentityRecord): Promise<IdentityRecord | undefined> {
   const db = await this.#open();
   // Readwrite transactions on one store run one at a time, so this get then add is atomic: a
   // record another tab saved first is read back, never overwritten (and add would refuse it).
@@ -129,6 +135,8 @@ export class IndexedDBIdentityStore implements IdentityStore {
   // Nothing else can write in between (this transaction holds the store).
   store.put(record, RECORD_KEY);
   await done.promise;
-  return record;
+  // What a read gives back now, not what was handed in: a storage that can't return it is a
+  // browser that doesn't keep the key (see IdentityStore).
+  return await this.get();
  }
 }

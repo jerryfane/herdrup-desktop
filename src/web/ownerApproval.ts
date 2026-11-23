@@ -14,7 +14,8 @@ import { AccountServiceError, type ApprovalStatus, type BrowserSelf, type WebAcc
 import type { OwnerRecord, OwnerStore, VerifiedApprover } from "./ownerStore";
 
 export type OwnerPhase =
- /** This browser can't hold a key that page scripts can't read (WIRE-PLAN §5.3). */
+ /** This browser can't hold a key that page scripts can't read (WIRE-PLAN §5.3), or can't keep it
+  *  from one visit to the next (its storage doesn't give it back). */
  | { kind: "unsupported" }
  /** Another tab of this browser is running the approval. */
  | { kind: "elsewhere" }
@@ -64,13 +65,9 @@ export async function ownerKey(identities: IdentityStore, subtle: SubtleCrypto |
  if (record === undefined) {
   const made = await generateIdentity(subtle);
   if (made.kind !== "webcrypto") return null;
-  await identities.add(made);
-  // Only a key this browser can read back is one it keeps: a storage that saves it but can't
-  // return it (WebKit answered null for it on the owner's iPad) would make a new key at every
-  // read, and an approved browser would lose its approval on the next one. Such a browser can't
-  // be approved, and says so.
-  // (Another tab's key, saved first, is what reads back then, and is the one used.)
-  record = await identities.get();
+  // A key this browser can't give back would be a new key at every read, and an approved browser
+  // would lose its approval at the next one: such a browser can't be approved, and says so.
+  record = await identities.add(made);
   if (record === undefined) return null;
  }
  return record.kind === "webcrypto" ? staticKey(record, subtle) : null;
