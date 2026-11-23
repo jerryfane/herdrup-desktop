@@ -47,6 +47,15 @@ export function unsupportedText(webKitOnly: boolean): string {
 /** The HerdrUp app for iPhone and iPad on the App Store (the owner's link, 2026-11-23). */
 export const IOS_APP_URL = "https://apps.apple.com/app/id6798087089";
 
+/** What the card says when this browser can't be approved: WebKit gets the owner's choice
+ *  (option c: a computer browser, or the app on iPhone and iPad, with its App Store link); any
+ *  other browser gets the site-data reason. ownerCard draws exactly this. */
+export function unsupportedCard(webKitOnly: boolean): { title: string; text: string; app?: { href: string; label: string } } {
+ return webKitOnly
+  ? { title: "Use a computer browser", text: unsupportedText(true), app: { href: IOS_APP_URL, label: "Get HerdrUp for iPhone and iPad" } }
+  : { title: "This browser can't be approved", text: unsupportedText(false) };
+}
+
 export interface OwnerActions { again(): void; guestInstead(): void; open(machine: EnvelopeMachine): void }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -128,16 +137,17 @@ export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: Owne
    card.append(el("h1", "", "Couldn't ask for approval"), problem, again("Try again"), guest());
    break;
   }
-  case "unsupported":
-   if (browser.webKitOnly) {
-    // The owner's choice for WebKit (option c): a computer browser, or the app on iPhone and iPad.
-    const app = el("a", "web-owner-action web-owner-app", "Get HerdrUp for iPhone and iPad");
-    app.href = IOS_APP_URL; app.target = "_blank"; app.rel = "noopener";
-    card.append(el("h1", "", "Use a computer browser"), el("p", "", unsupportedText(true)), app, guest());
-   } else {
-    card.append(el("h1", "", "This browser can't be approved"), el("p", "", unsupportedText(false)), guest());
+  case "unsupported": {
+   const u = unsupportedCard(browser.webKitOnly);
+   card.append(el("h1", "", u.title), el("p", "", u.text));
+   if (u.app) {
+    const app = el("a", "web-owner-action", u.app.label);
+    app.href = u.app.href; app.target = "_blank"; app.rel = "noopener";
+    card.append(app);
    }
+   card.append(guest());
    break;
+  }
   case "elsewhere":
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
    break;

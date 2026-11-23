@@ -250,7 +250,7 @@ test("a cached approval refreshes on a new sign-in: the session is bound to the 
 });
 
 test("a browser that can't be approved is told why: WebKit only on Safari and iOS, no platform limit elsewhere", async () => {
- const { thisBrowser, unsupportedText } = await import("../src/web/ownerScreen");
+ const { thisBrowser, unsupportedText, unsupportedCard } = await import("../src/web/ownerScreen");
  const ipadChrome = thisBrowser("Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0 Mobile/15E148 Safari/604.1");
  const macSafari = thisBrowser("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15");
  const androidChrome = thisBrowser("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36");
@@ -263,4 +263,12 @@ test("a browser that can't be approved is told why: WebKit only on Safari and iO
  expect(other).not.toContain("Safari");
  expect(other).not.toContain("computer");
  expect(other).toContain("site data");
+ // The card ownerCard draws: WebKit gets the computer-browser title and the App Store link;
+ // any other browser gets neither.
+ const webkit = unsupportedCard(ipadChrome.webKitOnly);
+ expect(webkit.title).toBe("Use a computer browser");
+ expect(webkit.app).toEqual({ href: "https://apps.apple.com/app/id6798087089", label: "Get HerdrUp for iPhone and iPad" });
+ const generic = unsupportedCard(androidChrome.webKitOnly);
+ expect(generic.title).toBe("This browser can't be approved");
+ expect(generic.app).toBeUndefined();
 });
