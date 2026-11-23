@@ -85,14 +85,15 @@ export function unsupportedNotice(kind: BrowserKind): UnsupportedNotice {
  *  the desktop invitation's code in guestShare.ts). */
 const QR_QUIET = 4;
 
-/** The App Store link as a QR code: an SVG of its dark modules, one path, with the quiet zone. */
-export function appStoreQR(): { url: string; svg: string } {
+/** The App Store link (IOS_APP_URL) as a QR code: an SVG of its dark modules, one path, with the
+ *  quiet zone. */
+export function appStoreQR(): string {
  const code = qrcode(0, "M"); code.addData(IOS_APP_URL); code.make();
  const size = code.getModuleCount();
  let path = "";
  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) if (code.isDark(row, col)) path += `M${col} ${row}h1v1h-1z`;
  const side = size + 2 * QR_QUIET;
- return { url: IOS_APP_URL, svg: `<svg viewBox="${-QR_QUIET} ${-QR_QUIET} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true"><path d="${path}"/></svg>` };
+ return `<svg viewBox="${-QR_QUIET} ${-QR_QUIET} ${side} ${side}" shape-rendering="crispEdges" aria-hidden="true"><path d="${path}"/></svg>`;
 }
 
 /** This page's link to open in another browser: no query or fragment (they belong to this visit),
@@ -105,24 +106,30 @@ export function pageLink(href: string): { href: string; shown: string } {
 /** A phase the guide shows: waiting, the code, and every way a request ends. */
 type GuidePhase = Exclude<OwnerPhase, { kind: "approved" | "unsupported" }>;
 
+/** How the guide recovers from a request that ended: the button's label and, in the steps' place,
+ *  what to do, worded with that same label. */
+export interface Retry { action: "Ask again" | "Try again"; text: string }
+const retryWith = (action: Retry["action"], why = ""): Retry => ({ action, text: `${why}${action} for a new code, then approve it in HerdrUp.` });
+
 /** What a phase shows, decided once: the screen's layout and what it holds. The guide shows its
- *  steps only while a request is live (ended: null); once the request ended, the line in their
- *  place says what to do instead, as the step "Type the code this page shows" no longer holds. */
+ *  steps only while a request is live (retry: null); once the request ended, retry's words stand
+ *  in their place, as the step "Type the code this page shows" no longer holds. A failure says
+ *  what failed on its own (the phase's problem), so its retry words claim nothing about it. */
 export type OwnerLayout =
  | { view: "list"; record: OwnerRecord }
  | { view: "notice" }
- | { view: "guide"; phase: GuidePhase; code: string | null; ended: string | null };
+ | { view: "guide"; phase: GuidePhase; code: string | null; retry: Retry | null };
 export function ownerLayout(phase: OwnerPhase): OwnerLayout {
  switch (phase.kind) {
   case "approved": return { view: "list", record: phase.record };
   case "unsupported": return { view: "notice" };
   case "starting":
-  case "waiting": return { view: "guide", phase, code: null, ended: null };
-  case "code": return { view: "guide", phase, code: phase.code, ended: null };
-  case "denied": return { view: "guide", phase, code: null, ended: "This request wasn't approved. Ask again for a new code, then approve it in HerdrUp." };
-  case "expired": return { view: "guide", phase, code: null, ended: "This request's code no longer works. Ask again for a new code, then approve it in HerdrUp." };
-  case "failed": return { view: "guide", phase, code: null, ended: "No request was made. Try again for a code, then approve it in HerdrUp." };
-  case "elsewhere": return { view: "guide", phase, code: null, ended: "Another tab of this page holds the request. Approve it there, or close that tab and try again here." };
+  case "waiting": return { view: "guide", phase, code: null, retry: null };
+  case "code": return { view: "guide", phase, code: phase.code, retry: null };
+  case "denied": return { view: "guide", phase, code: null, retry: retryWith("Ask again", "This request wasn't approved. ") };
+  case "expired": return { view: "guide", phase, code: null, retry: retryWith("Ask again", "This request's code no longer works. ") };
+  case "failed": return { view: "guide", phase, code: null, retry: retryWith("Try again") };
+  case "elsewhere": return { view: "guide", phase, code: null, retry: { action: "Try again", text: "Another tab of this page holds the request. Approve it there, or close that tab and try again here." } };
  }
 }
 
@@ -130,16 +137,6 @@ export function ownerLayout(phase: OwnerPhase): OwnerLayout {
  *  of the list (a machine's status changed) or a list that was approved before stays still. */
 export function arrives(previous: OwnerPhase["kind"] | null, next: OwnerPhase["kind"]): boolean {
  return previous === "code" && next === "approved";
-}
-
-/** How far into the list's entrance a drawing at now is, in ms, for an arrival at arrivedAt (null
- *  for none); null once its last of rows rows has risen. A redraw during the entrance draws it at
- *  this point (web.css delays each part by its own delay less this), so the rise runs on. The
- *  times are web.css's: each part rises in 360 ms, the rows from 120 ms, 60 ms apart. */
-export function arrivalElapsed(arrivedAt: number | null, now: number, rows: number): number | null {
- if (arrivedAt === null) return null;
- const elapsed = Math.max(0, now - arrivedAt);
- return elapsed < 120 + Math.max(0, rows - 1) * 60 + 360 ? elapsed : null;
 }
 
 /** The minutes and seconds until expiresAt ("9:38"), never below 0:00. */
@@ -250,41 +247,47 @@ function waiting(spinnerSVG: string, text: string) {
 /** The guide's platform, kept across redraws. */
 let guidePlatform: GuidePlatform = "computer";
 
+/** A drawn screen and the way to show a machine's new status on it in place (a redraw would
+ *  restart the list's entrance): false when this screen has no row for the machine. */
+export interface OwnerCard { root: HTMLElement; showStatus(hostID: string, status: MachineStatus): boolean }
+
 /** The screen for phase; browser is this browser (thisBrowser), statuses each machine's probe,
- *  arrivedAt when the list arrived from the code (performance.now(), null for none: see
- *  arrivalElapsed). The caller adds its error line before and the account part after the
- *  screen's body. */
+ *  arrivedAt when the list arrived from the code (performance.now(), null for none). The list's
+ *  entrance is web.css's: the card says only how long ago the list arrived (--arrive-elapsed), so
+ *  a redraw during the entrance draws it as far in as it is and one after it draws it still. The
+ *  caller adds its error line before and the account part after the screen's body. */
 export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
- statuses: ReadonlyMap<string, MachineStatus> = new Map(), arrivedAt: number | null = null): HTMLElement {
+ statuses: ReadonlyMap<string, MachineStatus> = new Map(), arrivedAt: number | null = null): OwnerCard {
  const layout = ownerLayout(phase);
  const screen = el("div", `web-owner web-owner-${layout.view}`);
  const body = el("div", "web-owner-body");
  screen.append(body);
  const guest = (cls: string) => button(cls, "Use a guest invitation instead", actions.guestInstead);
+ let showStatus: OwnerCard["showStatus"] = () => false;
  switch (layout.view) {
   case "list": {
    const list = approvedList(layout.record, statuses, actions.open);
    body.append(...list.parts);
-   const elapsed = arrivalElapsed(arrivedAt, performance.now(), list.rows);
-   if (elapsed !== null) { screen.classList.add("web-owner-arrive"); screen.style.setProperty("--arrive-elapsed", `${elapsed}ms`); }
+   showStatus = list.showStatus;
+   if (arrivedAt !== null) { screen.classList.add("web-owner-arrive"); screen.style.setProperty("--arrive-elapsed", `${Math.max(0, performance.now() - arrivedAt)}ms`); }
    break;
   }
   case "notice":
    body.append(...notice(unsupportedNotice(browser.kind), guest("web-owner-link")));
    break;
   case "guide":
-   body.append(guideMain(layout.phase, browser, actions, spinnerSVG, guest), guide(browser.name, layout.code, layout.ended));
+   body.append(guideMain(layout.phase, layout.retry, browser, actions, spinnerSVG, guest), guide(browser.name, layout.code, layout.retry));
    break;
  }
- return screen;
+ return { root: screen, showStatus };
 }
 
 /** The guide's left side for phase: what the page waits for, the code (or where it will show),
- *  and what to do next. */
-function guideMain(phase: GuidePhase, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
+ *  and what to do next (an ended request: retry's action). */
+function guideMain(phase: GuidePhase, retry: Retry | null, browser: ThisBrowser, actions: OwnerActions, spinnerSVG: string,
  guest: (cls: string) => HTMLElement): HTMLElement {
  const main = el("div", "web-owner-main");
- const again = (label = "Ask again") => button("web-owner-action web-owner-primary", label, actions.again);
+ const again = () => button("web-owner-action web-owner-primary", retry?.action ?? "Ask again", actions.again);
  const row = (...items: HTMLElement[]) => { const r = el("div", "web-owner-actions"); r.append(...items); return r; };
  const alt = () => { const a = el("div", "web-owner-alt"); a.append(el("span", "", "Not your machines?"), guest("web-owner-action web-owner-small")); return a; };
  const keyNote = () => el("p", "web-owner-note", "This browser made its own key. Your machines accept it only after you approve it.");
@@ -319,11 +322,11 @@ function guideMain(phase: GuidePhase, browser: ThisBrowser, actions: OwnerAction
    break;
   case "failed": {
    const problem = el("p", "web-welcome-error", phase.problem); problem.setAttribute("role", "alert");
-   main.append(el("h1", "", "Couldn't ask for approval"), problem, row(again("Try again"), guest("web-owner-action")));
+   main.append(el("h1", "", "Couldn't finish the approval"), problem, row(again(), guest("web-owner-action")));
    break;
   }
   case "elsewhere":
-   main.append(el("h1", "", "Approving in another tab"), el("p", "web-owner-lead", "Finish there, or close that tab and try again here."), row(again("Try again")));
+   main.append(el("h1", "", "Approving in another tab"), el("p", "web-owner-lead", "Finish there, or close that tab and try again here."), row(again()));
    break;
  }
  return main;
@@ -340,17 +343,18 @@ function digits(code: string | null): HTMLElement {
 
 /** The guide's right side: "Where to approve", the platform switch, the drawing of HerdrUp with
  *  "Approve a browser?" open and its numbered markers, and the steps the markers point to; once
- *  the request ended, ended in the steps' place (ownerLayout). The switch is native radios, kept
- *  in place when it changes (only the drawing and the steps are drawn again), so the arrow keys
- *  move the choice and the focus stays on it. */
-function guide(browserName: string, code: string | null, ended: string | null): HTMLElement {
+ *  the request ended, retry's words in the steps' place and the drawing without markers, as there
+ *  are no steps for them to point to (ownerLayout). The switch is native radios, kept in place when
+ *  it changes (only the drawing and the steps are drawn again), so the arrow keys move the choice
+ *  and the focus stays on it. */
+function guide(browserName: string, code: string | null, retry: Retry | null): HTMLElement {
  const panel = el("div", "web-owner-howto");
  const head = el("div", "web-owner-howto-head");
  const sw = el("div", "web-owner-switch"); sw.setAttribute("role", "radiogroup"); sw.setAttribute("aria-label", "Where to approve");
  const shown = el("div", "web-owner-howto-shown");
  const show = () => {
   let instructions: HTMLElement;
-  if (ended !== null) instructions = el("p", "web-owner-howto-ended", ended);
+  if (retry !== null) instructions = el("p", "web-owner-howto-ended", retry.text);
   else {
    instructions = el("ol", "web-owner-steps");
    for (const [i, step] of guideSteps(guidePlatform, browserName, code).entries()) {
@@ -360,7 +364,7 @@ function guide(browserName: string, code: string | null, ended: string | null): 
     instructions.append(li);
    }
   }
-  shown.replaceChildren(drawing(guidePlatform, browserName, code), instructions);
+  shown.replaceChildren(drawing(guidePlatform, browserName, code, retry === null), instructions);
  };
  for (const [platform, label] of GUIDE_PLATFORMS) {
   const choice = el("label");
@@ -375,8 +379,9 @@ function guide(browserName: string, code: string | null, ended: string | null): 
  return panel;
 }
 
-/** HerdrUp with "Approve a browser?" open, drawn in boxes (aria-hidden: the steps say it). */
-function drawing(platform: GuidePlatform, browserName: string, code: string | null): HTMLElement {
+/** HerdrUp with "Approve a browser?" open, drawn in boxes (aria-hidden: the steps say it); with
+ *  numbered, the markers the steps point to. */
+function drawing(platform: GuidePlatform, browserName: string, code: string | null, numbered: boolean): HTMLElement {
  const box = el("div", `web-owner-drawing web-owner-drawing-${platform}`); box.setAttribute("aria-hidden", "true");
  const app = el("div", "wod-app");
  const list = el("div", "wod-list");
@@ -390,7 +395,7 @@ function drawing(platform: GuidePlatform, browserName: string, code: string | nu
  else app.append(el("span", "wod-island"), list);
  app.append(el("div", "wod-dim"), sheet);
  box.append(app);
- for (const n of ["1", "2", "3"]) box.append(el("span", `wod-marker wod-marker-${n}`, n));
+ if (numbered) for (const n of ["1", "2", "3"]) box.append(el("span", `wod-marker wod-marker-${n}`, n));
  return box;
 }
 
@@ -402,7 +407,7 @@ function notice(n: UnsupportedNotice, guest: HTMLElement): HTMLElement[] {
  if (n.app && n.computer) {
   const block = el("div", "web-owner-qr");
   const code = el("span", "web-owner-qr-code"); code.setAttribute("role", "img"); code.setAttribute("aria-label", "QR code for HerdrUp on the App Store");
-  code.innerHTML = appStoreQR().svg;
+  code.innerHTML = appStoreQR();
   const words = el("span", "web-owner-qr-text");
   words.append(el("strong", "", n.computer.qrTitle), el("span", "", n.computer.qrText), appBadge(n.app));
   block.append(code, words);
@@ -431,26 +436,13 @@ function appBadge(app: { href: string; label: string }): HTMLElement {
  return a;
 }
 
-/** The rows of the list drawn last, by host ID: showStatus updates them in place. */
-const mountedRows = new Map<string, { status: HTMLElement; words: Text; open: HTMLButtonElement }>();
-
-/** Shows a machine's new status in the list on screen, in place (a redraw would restart the
- *  list's entrance); false when no row of the list on screen is the machine's (the caller redraws). */
-export function showStatus(hostID: string, status: MachineStatus): boolean {
- const row = mountedRows.get(hostID);
- if (row === undefined || !row.open.isConnected) return false;
- const s = rowStatus(status);
- row.status.dataset.state = s.state; row.words.data = s.status; row.open.disabled = !s.openable;
- return true;
-}
-
 /** "Pick a machine": who approved, then a row per machine with its status as plain text, its
- *  access and Open; skipped machines with the reason. rows counts the list's rows. */
-function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): { parts: HTMLElement[]; rows: number } {
+ *  access and Open; skipped machines with the reason. showStatus updates this list's rows in place. */
+function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): { parts: HTMLElement[]; showStatus: OwnerCard["showStatus"] } {
  const { rows, skipped } = machineRows(record, statuses);
  const names = [...new Set(record.approvers.map(a => a.name))].join(", ");
  const list = el("ul", "web-owner-machines");
- mountedRows.clear();
+ const byHost = new Map<string, { status: HTMLElement; words: Text; open: HTMLButtonElement }>();
  let i = 0;
  for (const r of rows) {
   const row = el("li"); row.style.setProperty("--i", String(i++));
@@ -464,7 +456,7 @@ function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, Machine
   b.disabled = !r.openable;
   row.append(text, el("span", "web-owner-machine-access", r.access), b);
   list.append(row);
-  mountedRows.set(r.machine.hostID, { status, words, open: b });
+  byHost.set(r.machine.hostID, { status, words, open: b });
  }
  for (const s of skipped) {
   const row = el("li", "web-owner-skipped"); row.style.setProperty("--i", String(i++));
@@ -473,5 +465,12 @@ function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, Machine
   list.append(row);
  }
  const approvedBy = el("p", "web-owner-eyebrow", "Approved by "); approvedBy.append(el("span", "", names));
- return { parts: [approvedBy, el("h1", "", "Pick a machine"), el("p", "web-owner-lead", "Open a machine to chat with its agents."), list], rows: i };
+ const showStatus = (hostID: string, next: MachineStatus) => {
+  const row = byHost.get(hostID);
+  if (row === undefined) return false;
+  const s = rowStatus(next);
+  row.status.dataset.state = s.state; row.words.data = s.status; row.open.disabled = !s.openable;
+  return true;
+ };
+ return { parts: [approvedBy, el("h1", "", "Pick a machine"), el("p", "web-owner-lead", "Open a machine to chat with its agents."), list], showStatus };
 }
