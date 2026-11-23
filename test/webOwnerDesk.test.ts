@@ -6,7 +6,7 @@ import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } 
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/owner";
-import { createGuestDesk, avatarDataURL } from "../src/web/desk";
+import { createGuestDesk, avatarDataURL, AvatarBytesError } from "../src/web/desk";
 import { knownPhoto, loadPhoto, trackPhotoConnections } from "../src/avatars";
 import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
@@ -360,6 +360,25 @@ test("an avatar is the picture asked for, as an image: its sha256 must match and
  // Half a PNG signature (89 50 4E 47, then not 0D 0A 1A 0A) is not a PNG.
  const halfPng = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 1, 2, 3));
  await expect(avatarDataURL(halfPng, await sha256Hex(halfPng))).rejects.toThrow("not an image");
+ // Each is the reply's fault (AvatarBytesError), malformed base64 too.
+ for (const [b64, want] of [[PNG_B64, "0".repeat(64)], [text, await sha256Hex(text)], ["%%", sha]]) {
+  await expect(avatarDataURL(b64!, want!)).rejects.toBeInstanceOf(AvatarBytesError);
+ }
+});
+
+// #388 review: only atob's refusal of malformed base64 is the reply's fault. The page failing to
+// decode or build the bytes itself is thrown as it is, and asked again.
+test("a local failure decoding an avatar is not taken as bytes that are not the photo", async () => {
+ const sha = await sha256Hex(PNG_B64);
+ const atob0 = globalThis.atob, from0 = Uint8Array.from;
+ try {
+  globalThis.atob = () => { throw new RangeError("out of memory"); };
+  await expect(avatarDataURL(PNG_B64, sha)).rejects.toBeInstanceOf(RangeError);
+  globalThis.atob = atob0;
+  Uint8Array.from = (() => { throw new RangeError("out of memory"); }) as typeof Uint8Array.from;
+  await expect(avatarDataURL(PNG_B64, sha)).rejects.toBeInstanceOf(RangeError);
+ } finally { globalThis.atob = atob0; Uint8Array.from = from0; }
+ expect(await avatarDataURL(PNG_B64, sha)).toBe(`data:image/png;base64,${PNG_B64}`);
 });
 
 test("an owner link shows the agents' pictures and copies recent text with a source herdr's gate takes", async () => {
@@ -414,6 +433,7 @@ test("the web desk answers herdr's refusals as unavailable and throws for a fail
   else if (target === "wrong-type") answer(session, req, { result: { type: "pong", version: "0.9.5" } });
   else if (target === "numeric") answer(session, req, { result: { type: "agent_avatar_image", data_base64: 12345 } });
   else if (target === "not-the-photo") answer(session, req, { result: { type: "agent_avatar_image", data_base64: btoa("not a picture") } });
+  else if (target === "photo") answer(session, req, { result: { type: "agent_avatar_image", data_base64: PNG_B64 } });
   else session.conn.close(4503, "host_offline");
  } });
  const desk = await deskWithKey();
@@ -421,8 +441,25 @@ test("the web desk answers herdr's refusals as unavailable and throws for a fail
   await openP1(desk, relay);
   for (const target of ["refused", "wrong-type", "numeric", "not-the-photo"]) expect([target, await desk.avatarImage(target, sha)]).toEqual([target, { unavailable: true }]);
   await expect(desk.avatarImage("closed", sha)).rejects.toThrow();
+  // #381 review: the page's own Web Crypto failing once while it checks the photo is no answer of
+  // herdr's: thrown, and the next ask loads it.
+  const png = Uint8Array.from(atob(PNG_B64), c => c.charCodeAt(0));
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  let failOnce = true;
+  crypto.subtle.digest = ((algorithm: AlgorithmIdentifier, data: BufferSource) => {
+   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+   if (failOnce && bytes.length === png.length && bytes.every((b, i) => b === png[i])) {
+    failOnce = false;
+    return Promise.reject(new DOMException("The operation failed for an operation-specific reason", "OperationError"));
+   }
+   return digest(algorithm, data);
+  }) as typeof crypto.subtle.digest;
+  try {
+   await expect(desk.avatarImage("photo", sha)).rejects.toThrow("operation-specific");
+   expect(await desk.avatarImage("photo", sha)).toEqual({ url: `data:image/png;base64,${PNG_B64}` });
+  } finally { crypto.subtle.digest = digest; }
  } finally { desk.disconnectOwner(); relay.stop(); }
-});
+}, 20_000);
 
 // More pictures, so failed and loaded ones can be told apart.
 const PNG_B64_B = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQSDjwHwAEJAJA6qdhxgAAAABJRU5ErkJggg==";

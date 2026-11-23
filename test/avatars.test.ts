@@ -84,6 +84,19 @@ test("Desk.avatarImage's error is asked again on the next render, whatever it sa
   }
 });
 
+// #381 review: only a result that says unavailable is herdr's answer; one
+// with neither a photo nor that flag is asked again.
+test("a result that neither has the photo nor says unavailable is asked again", async () => {
+  const a = { ...avatar, sha256: "9".repeat(64) };
+  replies.push(() => Promise.resolve<AvatarPhoto>({}));
+  expect(await loadPhoto(a)).toBeNull();
+  expect(knownPhoto(a)).toBeUndefined();
+  const before = calls;
+  replies.push(photo("data:image/png;base64,99=="));
+  expect(await loadPhoto(a)).toBe("data:image/png;base64,99==");
+  expect(calls).toBe(before + 1);
+});
+
 test("a settled ask is no longer out: its outcome is kept as a photo or a refusal", async () => {
   const loads = { ...avatar, sha256: "e".repeat(64) }, refused = { ...avatar, sha256: "f".repeat(64) };
   const answer = Promise.withResolvers<AvatarPhoto>(), refuse = Promise.withResolvers<AvatarPhoto>();

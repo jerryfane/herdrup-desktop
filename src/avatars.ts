@@ -90,8 +90,9 @@ export function loadPhoto(a: Avatar): Promise<string | null> {
           photos.set(sha, photo.url);
           return photo.url;
         }
-        // herdr's answer: remembered for this connection.
-        if (on === connection) failed.add(key);
+        // herdr's answer, said as such: remembered for this connection. A
+        // result without a URL that does not say so is asked again.
+        if (photo.unavailable === true && on === connection) failed.add(key);
         // The same photo may have loaded from another agent meanwhile.
         return photos.get(sha) ?? null;
       },

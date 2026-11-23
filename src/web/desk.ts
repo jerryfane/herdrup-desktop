@@ -916,7 +916,12 @@ export function createGuestDesk(env: DeskEnv) {
     if (avatarAnswered(error)) return { unavailable: true };
     throw error;
    }
-   return avatarDataURL(typeof image.data_base64 === "string" ? image.data_base64 : "", sha256).then((url) => ({ url }), () => ({ unavailable: true }));
+   // Bytes that are not the photo are herdr's answer; anything else failed here (the page's own
+   // Web Crypto, say), and is asked again.
+   return avatarDataURL(typeof image.data_base64 === "string" ? image.data_base64 : "", sha256).then((url) => ({ url }), (error: unknown) => {
+    if (error instanceof AvatarBytesError) return { unavailable: true };
+    throw error;
+   });
   },
 
   // ---- Terminal, read-only (desk_interaction.go) ----
@@ -1114,18 +1119,32 @@ export function avatarAnswered(error: unknown): boolean {
  return error instanceof HerdrAPIError || error instanceof ErrUnsupported || error instanceof ResultTagError;
 }
 
+/** desk_avatars.go avatarBytesError: agent.avatar.get's bytes are not the photo asked for. */
+export class AvatarBytesError extends Error {
+ constructor(message: string) {
+  super(message);
+  this.name = "AvatarBytesError";
+ }
+}
+
 /** desk_avatars.go loadAvatar + dataURL: agent.avatar.get's bytes as the data: URL the page
  *  draws, only when they are the photo asked for (their sha256) and an image (sniffed as PNG or
- *  JPEG, the two herdr takes). */
+ *  JPEG, the two herdr takes): AvatarBytesError otherwise. Hashing them can fail too, as any Web
+ *  Crypto call can; that error is thrown as it is. */
 export async function avatarDataURL(base64: string, sha256: string): Promise<string> {
- let bytes: Uint8Array<ArrayBuffer>;
- try { bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0)); } catch { throw new Error("avatar is not base64"); }
+ // Only atob's refusal of malformed base64 is the reply's fault; building the bytes is not.
+ let binary: string;
+ try { binary = atob(base64); } catch (error) {
+  if (error instanceof DOMException && error.name === "InvalidCharacterError") throw new AvatarBytesError("avatar is not base64");
+  throw error;
+ }
+ const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
- if (Array.from(digest, b => b.toString(16).padStart(2, "0")).join("") !== sha256) throw new Error("avatar doesn't match its sha256");
+ if (Array.from(digest, b => b.toString(16).padStart(2, "0")).join("") !== sha256) throw new AvatarBytesError("avatar doesn't match its sha256");
  // The whole 8-byte PNG signature, as herdr checks it (persist/agent_avatars.rs).
  const png = bytes.length > 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((b, i) => bytes[i] === b);
  const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
- if (!png && !jpeg) throw new Error("avatar is not an image");
+ if (!png && !jpeg) throw new AvatarBytesError("avatar is not an image");
  return `data:${png ? "image/png" : "image/jpeg"};base64,${base64}`;
 }
 
