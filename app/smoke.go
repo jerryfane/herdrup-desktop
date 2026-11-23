@@ -55,7 +55,7 @@ const smokePageProbe = `({
 // waits for a board with agents, saves a screenshot of the window to
 // HERDRUP_SMOKE_CAPTURE and quits. It exits 1 when no agent was shown. A
 // Windows GUI program has no stderr, so it logs to HERDRUP_SMOKE_LOG.
-func runSmoke(desk *Desk, win *mygo.Window) {
+func runSmoke(desk *Desk, win *mygo.Window, firstRun time.Time) {
 	if path := os.Getenv("HERDRUP_SMOKE_LOG"); path != "" {
 		if f, err := os.Create(path); err == nil {
 			log.SetOutput(f)
@@ -91,10 +91,10 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	}()
 	// HERDRUP_SMOKE_FIRSTRUN=1: a first launch with no machine (RoverOS's first boot). The
 	// page must reach a working host screen ("connect to your machine") with no startup
-	// error, caught or not; nothing is connected. The deadline armed at launch
-	// (armFirstRunDeadline) bounds the load, every probe and the exit.
-	if os.Getenv("HERDRUP_SMOKE_FIRSTRUN") == "1" {
-		go smokeFirstRun(win, loaded, os.Getenv("HERDRUP_SMOKE_CAPTURE"), firstRunDeadline, os.Getenv("HERDRUP_SMOKE_PHONE") == "1")
+	// error, caught or not; nothing is connected. firstRun, the deadline armed at
+	// launch (armFirstRunDeadline), bounds the load, every probe and the exit.
+	if !firstRun.IsZero() {
+		go smokeFirstRun(win, loaded, os.Getenv("HERDRUP_SMOKE_CAPTURE"), firstRun, os.Getenv("HERDRUP_SMOKE_PHONE") == "1")
 		return
 	}
 	port, _ := strconv.Atoi(os.Getenv("HERDRUP_SMOKE_PORT"))
@@ -195,45 +195,46 @@ func runSmoke(desk *Desk, win *mygo.Window) {
 	time.AfterFunc(90*time.Second, func() { finish(false, "timed out without a board") })
 }
 
-// firstRunDeadline is the first-run smoke's one deadline (armFirstRunDeadline).
-var firstRunDeadline time.Time
-
 // armFirstRunDeadline starts the first-run smoke's deadline at launch, before
 // the window is made, navigated or sized: a stall in any of those, as in the
 // page's load and probes, fails the run instead of waiting for the CI job's
-// timeout. A hard exit 10 s after it covers capture and quit.
-func armFirstRunDeadline() {
+// timeout. A hard exit 10 s after it covers capture and quit. It returns the
+// deadline, zero when this is not a first-run smoke; main hands it to runSmoke.
+func armFirstRunDeadline() time.Time {
 	if !smokeEnabled() || os.Getenv("HERDRUP_SMOKE_FIRSTRUN") != "1" {
-		return
+		return time.Time{}
 	}
-	firstRunDeadline = time.Now().Add(90 * time.Second)
-	time.AfterFunc(time.Until(firstRunDeadline)+10*time.Second, func() {
+	deadline := time.Now().Add(90 * time.Second)
+	time.AfterFunc(time.Until(deadline)+10*time.Second, func() {
 		log.Print("smoke: first run: still running past its deadline")
 		os.Exit(1)
 	})
+	return deadline
 }
 
 // smokeFirstRunProbe reads whether the page shows the host screen (render adds
-// host-home-visible to the body) and how many of its host actions (Add host,
-// Scan pairing code) a click would reach: visible, inside the window, and not
-// covered (the hit test at its centre lands on it). The account welcome of a
-// first launch is dismissed first ("Set up without an account"), as a person
-// would. phone is the stylesheet's own phone-layout marker; width is for the log.
+// host-home-visible to the body), whether the host screen has decided on the
+// first-launch welcome (hosts.ts data-welcome), and how many of its host
+// actions (data-smoke="host-action": Add host, Scan pairing code) a click would
+// activate: enabled, visible, inside the window, and not covered (the hit test
+// at its centre lands on it). The account welcome of a first launch is
+// dismissed first ("Set up without an account"), as a person would. phone is
+// the stylesheet's own phone-layout marker; width is for the log.
 const smokeFirstRunProbe = `(() => {
- const welcome = document.querySelector(".account-welcome");
+ const welcome = document.querySelector('[data-smoke="welcome"]');
  const welcomed = !!welcome && !welcome.hidden;
- if (welcomed) document.querySelector(".account-welcome-skip")?.click();
+ if (welcomed) document.querySelector('[data-smoke="welcome-skip"]')?.click();
  const reachable = e => {
   const r = e.getBoundingClientRect();
-  if (r.width <= 0 || r.height <= 0 || r.left < -1 || r.right > innerWidth + 1 || getComputedStyle(e).visibility === "hidden") return false;
+  if (e.disabled || r.width <= 0 || r.height <= 0 || r.left < -1 || r.right > innerWidth + 1 || getComputedStyle(e).visibility === "hidden") return false;
   const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
   return !!hit && (hit === e || e.contains(hit));
  };
  const connect = document.getElementById("connect");
- const actions = connect && !connect.hidden ? Array.from(connect.querySelectorAll(".host-add, .host-pair")).filter(reachable).length : 0;
+ const actions = connect && !connect.hidden ? Array.from(connect.querySelectorAll('[data-smoke="host-action"]')).filter(reachable).length : 0;
  return {
   hostHome: document.body?.classList.contains("host-home-visible") === true,
-  welcome: welcomed, actions, width: innerWidth,
+  settled: connect?.dataset.welcome === "settled", welcome: welcomed, actions, width: innerWidth,
   phone: getComputedStyle(document.documentElement).getPropertyValue("--phone-layout").trim() === "1",
   text: document.body?.innerText.slice(0,300), errors: window.__herdrupSmokeErrors,
  };
@@ -242,7 +243,8 @@ const smokeFirstRunProbe = `(() => {
 // firstRunVerdict judges one probe: done with ok when the host screen works
 // (shown, a host action a click reaches, in the phone layout when phone is
 // asked) and no error was reported or caught; done and failed on any error;
-// not done otherwise (still loading, or the welcome was just dismissed).
+// not done otherwise (still loading, the welcome not decided yet, or just
+// dismissed).
 func firstRunVerdict(probe map[string]any, reported int64, phone bool) (done, ok bool, why string) {
 	if errs, _ := probe["errors"].([]any); len(errs) > 0 {
 		return true, false, "uncaught startup errors: " + fmt.Sprint(errs)
@@ -251,9 +253,10 @@ func firstRunVerdict(probe map[string]any, reported int64, phone bool) (done, ok
 		return true, false, fmt.Sprintf("the page reported %d error(s); see \"page error\" above", reported)
 	}
 	home, _ := probe["hostHome"].(bool)
+	settled, _ := probe["settled"].(bool)
 	welcome, _ := probe["welcome"].(bool)
 	actions, _ := probe["actions"].(float64)
-	if !home || welcome || actions < 1 {
+	if !home || !settled || welcome || actions < 1 {
 		return false, false, ""
 	}
 	width, _ := probe["width"].(float64)

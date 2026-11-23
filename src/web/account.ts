@@ -136,7 +136,10 @@ export class WebAccount {
   signal?.throwIfAborted();
   if (this.access && this.now() < this.accessUntil) return Promise.resolve(this.access);
   const joining = this.flight;
-  const flight: Flight = joining ?? { waiting: 0, done: Promise.resolve("") };
+  // A new flight is published with its real result already pending: a caller that comes while
+  // the lock or the fetch is being started (even from inside them) joins that, not a stand-in.
+  const result = joining === null ? Promise.withResolvers<string>() : null;
+  const flight: Flight = joining ?? { waiting: 0, done: result!.promise };
   // Counted on its own flight before the refresh is queued (without a lock it starts at once). A
   // caller stops counting the moment its signal aborts, so the lock's turn sees only live callers
   // of that refresh, not of a newer one.
@@ -148,13 +151,14 @@ export class WebAccount {
    // The epoch now, not when the lock is granted: a sign-out while this waits for the lock
    // (another tab's refresh, or the sign-out itself) makes it stale, and it isn't sent.
    const epoch = this.epoch;
+   flight.done = result!.promise.finally(() => { if (this.flight === flight) this.flight = null; });
    this.flight = flight;
-   flight.done = this.exclusive(() => {
+   this.exclusive(() => {
     if (flight.waiting > 0 && epoch === this.epoch) return this.refresh(epoch);
     // Skipped: a caller that comes now queues its own refresh instead of joining this one.
     if (this.flight === flight) this.flight = null;
     return Promise.reject(epoch === this.epoch ? new RefreshUnwanted() : new SignedOutError());
-   }).finally(() => { if (this.flight === flight) this.flight = null; });
+   }).then(result!.resolve, result!.reject);
   }
   return (signal ? untilAborted(flight.done, signal) : flight.done).finally(() => { signal?.removeEventListener("abort", leave); leave(); });
  }

@@ -458,3 +458,19 @@ test("a refresh queued for the lock before a sign-out isn't sent once the lock c
  await Promise.all(lock.turns);
  expect(s.calls.map(c => c.url.split("/v1/")[1])).toEqual(["auth/signout"]);
 });
+
+test("a caller that comes while the refresh is being started joins it and gets the real token", async () => {
+ const s = service();
+ let account: WebAccount;
+ let nested: Promise<string> | null = null;
+ // The fetch is started synchronously (no lock): a call made from inside it joins the new refresh.
+ const fetcher = ((input: string | URL | Request, init?: RequestInit) => {
+  if (nested === null && String(input).endsWith("/v1/auth/refresh")) nested = account.accessToken();
+  return s.fetcher(input, init);
+ }) as typeof fetch;
+ account = new WebAccount(fetcher);
+ const outer = await account.accessToken();
+ expect(outer).toMatch(/./);
+ expect(await nested!).toBe(outer);
+ expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(1);
+});
