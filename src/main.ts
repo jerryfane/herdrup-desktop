@@ -7,7 +7,7 @@ import { loadGlyphFieldFonts } from "./glyphField";
 import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { initAgentActions } from "./agentActions";
-import { avatarFace, boardShown, noteConnection } from "./avatars";
+import { avatarFace, boardShown, trackPhotoConnections } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 import { rowPreview } from "./rowStatus";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
@@ -586,6 +586,9 @@ window.addEventListener("guest-gram", event => {
   guestActions.gram((event as CustomEvent<string | null>).detail ?? null);
 });
 
+// Before the handlers below, so a photo that failed is forgotten before the
+// board it is asked for again on renders (avatars.ts).
+trackPhotoConnections(events);
 events.stateChanged.on((s) => {
   // A web owner's link admitted under another scope: the bar's create buttons follow it.
   const writesChanged = ownerWrites(s) !== ownerWrites(state);
@@ -596,13 +599,9 @@ events.stateChanged.on((s) => {
   if (writesChanged) void buildTopBar();
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
-  // Before the render below: a connection back up asks again for the photos
-  // that failed while it was down, as Desk's own store does per connection.
-  noteConnection(s);
   render();
 });
 events.boardChanged.on((b) => {
-  boardShown(b.session);
   board = b;
   interactionBoard(b);
   render();

@@ -1,13 +1,14 @@
 // Agent avatars as herdrup draws them (App/AgentAvatarViews.swift
 // AgentAvatarView): a bundled mascot, a photo fetched by sha256, or the
 // initial tile. The status badge goes on top of any of them (main.ts).
-import { Desk, type Avatar, type ConnState } from "./mygo";
+import { Desk, type Avatar, type ConnState, type BoardUpdate, type events } from "./mygo";
 
 /** Photos by sha256: the data: URL once fetched, null after a failure, which
  * herdrup draws as the initial tile. Desk caches the bytes on disk. A failure
  * is remembered for the connection and session only, as Desk's own store
- * does: a connection coming up again or another session forgets it
- * (noteConnection, boardShown) and the photo is asked for again (#36, #42). */
+ * does: the first board after the connection comes back up, or another
+ * session, forgets it (trackPhotoConnections, boardShown) and the photo is
+ * asked for again (#36, #42). */
 const photos = new Map<string, string | null>();
 const loading = new Map<string, Promise<string | null>>();
 /** Counts connections and sessions, so a fetch begun on an older one
@@ -15,8 +16,6 @@ const loading = new Map<string, Promise<string | null>>();
 let connection = 0;
 /** The session of the last board shown, undefined before the first. */
 let shownSession: string | undefined;
-/** Whether the last state noted had the connection up (noteConnection). */
-let up = false;
 
 /** What is known of sha's photo: its URL, null after a failure on this
  * connection, undefined before it is fetched. */
@@ -31,19 +30,33 @@ export function forgetFailedPhotos() {
   loading.clear();
 }
 
-/** Notes each connection state, before the page draws it. The connection is
- * up once a list goes through: "connected", unless it is waiting out the
- * relay's backoff ("reconnecting", which the web desk and a desktop guest
- * publish as "connected" once they have listed). Photos that failed are asked
- * for again when it comes up after connecting, an error or that backoff: a
- * fetch refused while it was down failed for no fault of the photo. The desk
- * publishes this state before the board of the list that brought it up, so
- * that board asks at once. A republish while up (availability, scope) keeps
- * them; photos that loaded always stay. */
-export function noteConnection(s: ConnState) {
-  const now = s.phase === "connected" && s.guest?.availability !== "reconnecting";
-  if (now && !up) forgetFailedPhotos();
-  up = now;
+/** Has the page's photos follow its connection: call once at startup, before
+ * the page subscribes its own handlers to events, so these run first (both
+ * runtimes call listeners in subscription order). The connection is up once a
+ * list goes through: "connected", unless it is waiting out the relay's backoff
+ * ("reconnecting", which the web desk and a desktop guest publish as
+ * "connected" once they have listed). When it comes up after connecting, an
+ * error or that backoff, the photos that failed are forgotten as the next
+ * board arrives, before it is drawn: the desk publishes the state before the
+ * board of the list that brought it up, and until that board the page draws
+ * the old one, whose targets may be stale (an agent's photo can move to
+ * another pane), so its failures stay and nothing is asked of them. A
+ * republish while up (availability, scope) forgets nothing; photos that
+ * loaded always stay. Returns the unsubscribe. */
+export function trackPhotoConnections(on: Pick<typeof events, "stateChanged" | "boardChanged">): () => void {
+  let up = false;
+  let due = false;
+  const offState = on.stateChanged.on((s: ConnState) => {
+    const now = s.phase === "connected" && s.guest?.availability !== "reconnecting";
+    if (now && !up) due = true;
+    up = now;
+  });
+  const offBoard = on.boardChanged.on((b: BoardUpdate) => {
+    if (due) forgetFailedPhotos();
+    due = false;
+    boardShown(b.session);
+  });
+  return () => { offState(); offBoard(); };
 }
 
 /** Notes the session a board shows. A switch keeps the SSH connection, so
