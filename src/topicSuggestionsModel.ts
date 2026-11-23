@@ -158,9 +158,9 @@ export function organiseOver(before: readonly AgentTopicSuggestionInfo[], after:
 export function organiseNote(queued: boolean): string {
  return queued ? "Organise starts when the agent's current turn ends." : "The agent is reading the Inbox to propose topics.";
 }
-/** "SUGGESTED BY DOCS"; "SUGGESTED BY THE AGENT" without a name. */
+/** "Suggested by docs"; "Suggested by the agent" without a name (sentence case, Topics A-v2). */
 export function proposalsHeading(agent: string): string {
- return agent.trim() === "" ? "SUGGESTED BY THE AGENT" : `SUGGESTED BY ${agent.trim().toUpperCase()}`;
+ return agent.trim() === "" ? "Suggested by the agent" : `Suggested by ${agent.trim()}`;
 }
 /** A proposal's message count: "1 msg", "4 msgs", nothing for none. */
 export function messagesText(count: number): string | null {

@@ -34,10 +34,8 @@ import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } 
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane } from "./topicsView";
-import { nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
+import { isFoldShortcut, nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
 import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
-import chatTextIcon from "../third_party/phosphor/web/chat-text.svg?url";
-import stackIcon from "../third_party/phosphor/web/stack.svg?url";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
 import bellIcon from "../third_party/phosphor/web/bell.svg?url";
@@ -190,6 +188,8 @@ events.stateChanged.on(state => {
    return;
   }
   if (event.key.toLowerCase() === "f" && (event.metaKey || event.ctrlKey) && !event.altKey) { event.preventDefault(); event.stopPropagation(); current.toggleFind(true); }
+  // ⌥⌘T (Ctrl+Alt+T off the Mac) folds or unfolds the topics column while Topics shows.
+  if (isFoldShortcut(event) && current.mode === "topics" && current.topics) { event.preventDefault(); event.stopPropagation(); current.topics.toggleColumn(); }
   if (event.key === "Escape" && current.findOpen) { event.preventDefault(); event.stopPropagation(); current.toggleFind(false); }
  }, true);
 }
@@ -1562,37 +1562,44 @@ class Detail {
  chatRows(): (ChatRow | SuggestionRow)[] {
   return inboxRows(groupTranscript(this.entries, !!this.chat?.working), this.listedSuggestions, this.settledSuggestions);
  }
- /** A suggestion's card or line, or the "<TITLE> STARTS HERE" mark (ChatTopicSuggestion.swift).
-  *  `interactive`: the Inbox, where Start and Not now act (owner and guest alike). */
+ /** A suggestion's card or line, or the "<Title> starts here" mark (ChatTopicSuggestion.swift),
+  *  drawn as Topics A-v2: a plain card with Not now as text and Start filled, "Continued in topic"
+  *  as a link, and a Start or Not now that failed as one line under the card with a red dot and
+  *  Dismiss. `interactive`: the Inbox, where Start and Not now act (owner and guest alike). */
  renderSuggestionRow(row: SuggestionRow, interactive: boolean): HTMLElement {
   if (row.kind === "mark") {
    const mark = el("div", "chat-summary chat-suggestion-mark");
-   mark.append(el("span", "chat-summary-rule"), el("span", "chat-summary-text", `${suggestionTitle(row.title).toUpperCase()} STARTS HERE`), el("span", "chat-summary-rule"));
+   mark.append(el("span", "chat-summary-rule"), el("span", "chat-summary-text", `${suggestionTitle(row.title)} starts here`), el("span", "chat-summary-rule"));
    return mark;
   }
   const s: ChatSuggestion = row.suggestion, title = suggestionTitle(s.title);
   if (s.state === "dismissed") return el("div", "chat-day chat-suggestion-dismissed", dismissedText(s));
   if (s.state === "accepted") {
-   const chip = button("", () => { if (s.topicID) void this.openTopic(s.topicID); });
-   chip.className = "chat-suggestion-continued"; chip.disabled = !s.topicID;
-   const words = el("span"); words.append("Continued in topic ", el("strong", "", title));
-   chip.append(chatGlyph("rectangle.stack", 12, stackIcon), words);
-   const line = el("div", "chat-suggestion-continued-row"); line.append(chip); return line;
+   const link = button("", () => { if (s.topicID) void this.openTopic(s.topicID); });
+   link.className = "chat-suggestion-continued"; link.disabled = !s.topicID;
+   link.append("Continued in topic ", el("strong", "", title));
+   const line = el("div", "chat-suggestion-continued-row"); line.append(link); return line;
   }
   const card = el("div", "chat-message chat-suggestion-card");
   const head = el("p", "chat-suggestion-title"); head.append("New subject? Start a topic: ", el("strong", "", title));
   card.append(head);
   if (s.reason) card.append(el("p", "chat-suggestion-reason", s.reason));
-  if (s.messageCount > 0) { const count = el("p", "chat-suggestion-count"); count.append(chatGlyph("text.bubble", 12, chatTextIcon), el("span", "", carriedText(s.messageCount))); card.append(count); }
-  const problem = this.suggestionProblem?.id === s.id ? this.suggestionProblem.message : null;
-  if (problem) card.append(el("p", "chat-suggestion-problem", problem));
+  if (s.messageCount > 0) card.append(el("p", "chat-suggestion-count", carriedText(s.messageCount)));
   if (interactive) {
    const busy = this.suggestionBusy !== null;
-   const later = button("Not now", () => { void this.settleSuggestion(s.id, false); }); later.className = "ghost"; later.disabled = busy;
-   const start = button("Start", () => { void this.settleSuggestion(s.id, true); }); start.disabled = busy;
+   const later = button("Not now", () => { void this.settleSuggestion(s.id, false); }); later.className = "chat-suggestion-later"; later.disabled = busy;
+   const start = button("Start", () => { void this.settleSuggestion(s.id, true); }); start.className = "chat-suggestion-start"; start.disabled = busy;
    const actions = el("div", "chat-suggestion-actions"); actions.append(later, start); card.append(actions);
   }
-  return card;
+  const problem = this.suggestionProblem?.id === s.id ? this.suggestionProblem.message : null;
+  if (!problem) return card;
+  const note = el("div", "chat-suggestion-problem"); note.setAttribute("role", "status");
+  const dot = el("span", "chat-suggestion-problem-dot"); dot.setAttribute("aria-hidden", "true");
+  const words = el("span", "chat-suggestion-problem-text"); words.append(el("strong", "", title), " " + problem);
+  const dismiss = button("Dismiss", () => { this.suggestionProblem = null; this.drawChat(false); }); dismiss.className = "chat-suggestion-problem-dismiss";
+  note.append(dot, words, dismiss);
+  const block = el("div", "chat-suggestion-block"); block.append(card, note);
+  return block;
  }
  /** Start (accept_suggestion, then the topic opens) or Not now (dismiss_suggestion): a local line
   *  shows at once and yields to the server's state (ChatModel.settleLocally). */
@@ -1606,7 +1613,7 @@ class Detail {
    const line = settledLine(id, start ? "accepted" : "dismissed", topicID || undefined, this.listedSuggestions, this.entries, Date.now());
    if (line) this.settledSuggestions.set(id, line);
   } catch (error) {
-   this.suggestionProblem = { id, message: (start ? "Couldn't start it: " : "Couldn't set it aside: ") + errorText(error) };
+   this.suggestionProblem = { id, message: (start ? "couldn't start: " : "couldn't be set aside: ") + errorText(error) };
   }
   this.suggestionBusy = null;
   if (this.disposed) return;

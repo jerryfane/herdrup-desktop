@@ -66,8 +66,8 @@ test("Organise: answered by a new proposal only, unticks kept while open, and th
  expect([...keptUnticks(new Set(["sg1", "sg9"]), [listed("sg1"), listed("sg2")])]).toEqual(["sg1"]);
  expect(organiseNote(true)).toBe("Organise starts when the agent's current turn ends.");
  expect(organiseNote(false)).toBe("The agent is reading the Inbox to propose topics.");
- expect(proposalsHeading(" docs ")).toBe("SUGGESTED BY DOCS");
- expect(proposalsHeading("")).toBe("SUGGESTED BY THE AGENT");
+ expect(proposalsHeading(" docs ")).toBe("Suggested by docs");
+ expect(proposalsHeading("")).toBe("Suggested by the agent");
  expect([messagesText(0), messagesText(1), messagesText(4)]).toEqual([null, "1 msg", "4 msgs"]);
 });
 

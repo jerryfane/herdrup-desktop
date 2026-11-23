@@ -108,10 +108,12 @@ export async function placeInitials(root: ParentNode) {
   }
 }
 
-export async function avatar(r: Row): Promise<HTMLElement> {
+/** The avatar, with its status badge unless `badged` is false (the agent list's rows say their
+ *  status in words, Topics A-v2). */
+export async function avatar(r: Row, badged = true): Promise<HTMLElement> {
   const a = el("div", "avatar");
   a.append(avatarFace(r.avatar, () => initialTile(r)));
-  const b = await badge(r.badge);
+  const b = badged ? await badge(r.badge) : null;
   if (b) a.append(b);
   return a;
 }

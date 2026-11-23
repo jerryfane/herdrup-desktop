@@ -33,14 +33,29 @@ export function statusText(t: TopicInfo): string | null {
  return t.queued > 0 ? `${label} · ${t.queued} queued` : label;
 }
 
-/** The pill's one dot (TopicStatusPill.dot): working, done, died; none for Closed (plain text). */
-export function statusDot(t: TopicInfo): "working" | "done" | "died" | null {
- switch (t.state) {
-  case "starting": case "running": return "working";
-  case "idle": return "done";
-  case "dead": return "died";
- }
- return null;
+/** The status's one small dot (Topics A-v2, owner 2026-11-23): only a working topic has one;
+ *  every other state is plain muted words. */
+export function statusDot(t: TopicInfo): "working" | null {
+ return t.state === "starting" || t.state === "running" ? "working" : null;
+}
+
+/** Which parts of the Topics view show (Topics A-v2 "fold the column"). Wide: the open topic (or
+ *  the placeholder) always, the list beside it unless folded; a fold with no topic open keeps the
+ *  list, so the page is never empty. Narrow: the list, or the open topic in its place. Wherever the
+ *  list is not shown, the topic's header offers the "Topics" text button that brings it back. */
+export function topicsLayout(wide: boolean, folded: boolean, topicOpen: boolean): { list: boolean; chat: boolean } {
+ if (!wide) return { list: !topicOpen, chat: topicOpen };
+ return { list: !folded || !topicOpen, chat: true };
+}
+
+/** ⌥⌘T on a Mac, Ctrl+Alt+T elsewhere, folds or unfolds the topics column. `code`, not `key`:
+ *  Option turns the T key into "†" on a Mac. */
+export function isFoldShortcut(e: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "code">): boolean {
+ return (e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === "KeyT";
+}
+/** The shortcut as the header's hint shows it. */
+export function foldShortcutLabel(mac: boolean): string {
+ return mac ? "⌥⌘T" : "Ctrl+Alt+T";
 }
 
 /** Topics whose title or newest step holds the query, case-insensitively (TopicsList.shown). */
