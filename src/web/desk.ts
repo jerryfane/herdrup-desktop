@@ -834,7 +834,8 @@ export function createGuestDesk(env: DeskEnv) {
     const value = ack.value;
     if (typeof value === "object" && value !== null && "error" in value && value.error != null) {
      const e = value.error as { code?: string; message?: string };
-     throw v.active.client.mapError("pane.stream", new Error(`pane.stream: herdr: ${e.code ?? ""}: ${e.message ?? ""}`));
+     // Structured, so the refusal below is told by its code, not by words in its message.
+     throw v.active.client.mapError("pane.stream", new HerdrAPIError(e.code ?? "", e.message ?? "", value.error));
     }
     checkTag("pane.stream", typeof value === "object" && value !== null && "result" in value ? value.result : null, "stream_started");
    } catch (error) {
@@ -848,11 +849,11 @@ export function createGuestDesk(env: DeskEnv) {
     // otherwise allowed in both scopes), so it reads as paused too. A remote agent's pane is
     // refused for good: that stays an error.
     const agent = v.active.agents.find(a => a.pane_id === v.paneID);
-    const pausedAtOpen = message(error).includes(OWNER_PAUSED)
-     || (!!v.active.owner && !agent?.machine_id && message(error).includes(OWNER_FORBIDDEN));
+    const code = error instanceof HerdrAPIError ? error.code : "";
+    const pausedAtOpen = code === OWNER_PAUSED || (!!v.active.owner && !agent?.machine_id && code === OWNER_FORBIDDEN);
     if (pausedAtOpen) {
      republish(v.active, { availability: "paused" });
-     if (!message(error).includes(OWNER_PAUSED)) throw new Error(`pane.stream: herdr: ${OWNER_PAUSED}: the agent this stream watches is no longer running`);
+     if (code !== OWNER_PAUSED) throw new Error(`pane.stream: herdr: ${OWNER_PAUSED}: the agent this stream watches is no longer running`);
     }
     throw error;
    }

@@ -213,6 +213,18 @@ test("an owner's stream refused before it opens (owner_forbidden: the agent isn'
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
+test("an opening refusal is told by its code: another error that only mentions owner_forbidden stays that error", async () => {
+ const relay = host({ stream: (session, req) => answer(session, req, { error: { code: "internal_error", message: "gate failed after owner_forbidden" } }) });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  const error = await desk.startTerminal("view-1", "stream-1").catch(e => e);
+  expect(String(error)).toContain("internal_error");
+  expect(String(error)).not.toContain("owner_paused");
+  expect((await desk.state()).guest?.availability).toBeUndefined();
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
 test("an owner stream the host ends with owner_paused pauses the open agent", async () => {
  const relay = host({ stream: (session, req) => {
   streamStarted(session, req);
