@@ -24,10 +24,10 @@ import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
-import { setOwnerLink, setOwnerSettings, settingsLink } from "./ownerLink";
+import { currentOwnerLink, setOwnerLink, setOwnerSettings, settingsLink } from "./ownerLink";
 import { closeAgent } from "./agentActionsDesk";
 import { panePromptAttachments } from "./gram";
-import { messageTooLong, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
+import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
 
 type DeskFns = typeof GoDesk;
@@ -445,7 +445,7 @@ export function createGuestDesk(env: DeskEnv) {
     l.listedAt = goTime(new Date(now())).replace(/\.\d+Z$/, "Z");
     publishBoard(l);
     // desk_groups.go: a list reads the folder document again, at most once a minute.
-    void l.groups?.refresh(signal);
+    void l.groups?.refresh();
    }
    if (kicked) { kicked = false; continue; }
    await new Promise<void>((resolve) => {
@@ -634,7 +634,7 @@ export function createGuestDesk(env: DeskEnv) {
 
   async topicsAvailable(token: string): Promise<boolean> {
    const v = viewOf(token);
-   if (!/^omp(?:$| |-)/i.test(v.view.harness)) return false;
+   if (!ompHarness(v.view.harness)) return false;
    const pong = await v.active.client.ping(within(v));
    return pong.capabilities?.agent_topics === true;
   },
@@ -865,30 +865,36 @@ export function createGuestDesk(env: DeskEnv) {
   async chatMenu(id: string, offersMarkdown: boolean): Promise<void> {
    const labels = ["Copy", ...(offersMarkdown ? ["Copy as Markdown"] : []), "Select Text"];
    const item = await showMenu(labels.map((label) => ({ label })));
-   if (item !== null) emit("chatMenu", { id, item });
+   if (item !== null) emit("chatMenu", { id, item: item.label });
   },
 
   async paneMenu(o: PaneMenuOptions): Promise<boolean> {
-   const l = active;
+   const l = active, view = mounted, link = currentOwnerLink();
    if (!l || o.paneID === "") return false;
+   // The menu and its choice belong to the link and the agent page it was asked on: another
+   // machine or page since (a slow ping, a choice made later) drops it, or its pane id would name
+   // a pane there.
+   const still = () => active === l && mounted === view;
    // Avatar… (a host that stores avatars) and Close agent write (herdr#510): a terminal-scope link's.
    const writes = !!l.owner && l.transport.scope === "terminal";
    const avatar = writes && !o.plain && (await l.client.ping(l.life.signal).catch(() => null))?.capabilities?.agent_avatar === true;
    const entries = webPaneMenu(o, l.owner ? await desk.paneMuted(o.paneID) : null, { avatar, close: writes });
-   void showMenu(entries).then(async (label) => {
-    const action = entries.find((e) => e.label === label)?.action;
+   if (!still()) return false;
+   void showMenu(entries).then(async (item) => {
+    const action = item?.action;
+    if (!action || !still()) return;
     // Go flips the stored mute before the page hears the choice.
     if (action === "mute" || action === "unmute") await desk.setPaneMuted(o.paneID, action === "mute");
-    // Close agent is sent once the pane closed (choosePaneAction).
-    if (action === "close" && !await closeAgent(o.paneID)) return;
-    if (action) emit("paneActionChosen", { paneID: o.paneID, action });
+    // Close agent is sent once the pane closed (choosePaneAction), on the menu's own link.
+    if (action === "close" && !await closeAgent(link, o.paneID)) return;
+    emit("paneActionChosen", { paneID: o.paneID, action });
    });
    return true;
   },
 
   async gramMenu(id: string, items: string[]): Promise<boolean> {
    if (items.length === 0) return false;
-   void showMenu(items.map((label) => ({ label }))).then((item) => { if (item !== null) emit("gramMenu", { id, item }); });
+   void showMenu(items.map((label) => ({ label }))).then((item) => { if (item !== null) emit("gramMenu", { id, item: item.label }); });
    return true;
   },
 
@@ -1055,7 +1061,7 @@ export function createGuestDesk(env: DeskEnv) {
    const { access, transport, link, client } = ownerConnection(m, identity, statements, device, { now, webSocket: env.webSocket });
    disconnect();
    const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
-   l.groups = new OwnerGroups(client, m.hostID, () => publishBoard(l), now, env.openFolders);
+   l.groups = new OwnerGroups(client, m.hostID, l.life.signal, () => publishBoard(l), now, env.openFolders);
    active = l;
    setLink(link);
    setOwnerLink({ machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups });

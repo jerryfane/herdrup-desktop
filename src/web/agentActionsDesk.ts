@@ -7,16 +7,22 @@
 // Everything but the Topics switch writes (herdr#510), which herdr allows only on a terminal-scope
 // link: a chat-scope link's row menu has the Topics switch alone (a local agent's) and folder rows
 // have none. An older host refuses a write with owner_forbidden (OwnerRefusedError), shown where the
-// desktop shows that action's failure.
+// desktop shows that action's failure. The Topics switch and Switch harness show only when the
+// owner link's pong advertises agent_topics_switch / agent_session_transfer, the flags the desktop
+// checks: herdr#510's owner gate serves neither yet and strips both from an owner's pong.
+//
+// A menu belongs to the link it was asked on: once another machine is open it is not shown, and a
+// choice made in it is dropped.
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
 import { harnessDisplayName, normalizeAgentName, transferPhaseIsConclusive } from "../agentActionsModel";
+import { ompHarness } from "../topicsModel";
 import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
-import { avatarTarget, displayName, isArchived, trimSpace, type AgentInfo, type Groups } from "./board";
+import { avatarTarget, displayName, isArchived, orderedFolders, trimSpace, type AgentInfo, type Groups } from "./board";
 import { ErrUnsupported } from "./engine";
 import { emit } from "./events";
-import { folderName, folderOf, isStarred, orderedFolders, type Edit } from "./groups";
+import { folderName, folderOf, isStarred, type Edit } from "./groups";
 import { showMenu } from "./menu";
 import { currentOwnerLink, ownerCall, OwnerRefusedError, type OwnerLink } from "./ownerLink";
 import { showWarning } from "./warning";
@@ -123,13 +129,13 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
  out.push(...folderItems(input.groups, a.name ?? ""));
  out.push({ label: "Restart agent", action: action("restart") });
  const enabled = a.topics_enabled;
- // desk_topics.go ompHarness: an omp build, plain or named.
- const harness = (a.agent ?? "").toLowerCase();
- if (typeof enabled === "boolean" && supported(caps, "agent_topics_switch") && (harness === "omp" || harness.startsWith("omp ") || harness.startsWith("omp-"))) {
+ if (typeof enabled === "boolean" && supported(caps, "agent_topics_switch") && ompHarness(a.agent ?? "")) {
   out.push({ label: enabled ? "Turn off topics" : "Turn on topics", action: { ...action("topics"), enable: !enabled } });
  }
+ // Go also offers an unfinished transfer on a host that no longer says agent_session_transfer;
+ // an owner link's pong reports only what its gate serves the browser, so the flag decides.
  const transfer = sessionTransfer(a, caps);
- if (transfer.source !== null && a.machine_id == null && transfer.targets.length > 0 && (supported(caps, "agent_session_transfer") || transfer.active)) {
+ if (transfer.source !== null && a.machine_id == null && transfer.targets.length > 0 && supported(caps, "agent_session_transfer")) {
   const sub = transfer.targets.map((t): MenuItem => ({
    label: harnessDisplayName(t),
    action: { ...action("transfer"), source: transfer.source!, target: { id: t, displayName: harnessDisplayName(t) } },
@@ -152,37 +158,36 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 
 // ---- Carrying them out ----
 
-/** desk_agent_actions.go agentLink: the open link and the agent as last listed (only its pane id
- *  when it isn't). */
-function agentLink(paneID: string): { link: OwnerLink; info: ActionAgent } {
- const link = currentOwnerLink();
+/** desk_agent_actions.go agentLink: the link (the open one unless a menu brings its own) and the
+ *  agent as last listed there (only its pane id when it isn't). */
+function agentLink(paneID: string, link = currentOwnerLink()): { link: OwnerLink; info: ActionAgent } {
  if (link === null) throw new Error("not connected");
  if (paneID === "") throw new Error("no agent");
  return { link, info: link.agents().find((a) => a.pane_id === paneID) ?? { pane_id: paneID } };
 }
 
-/** desk_agent_actions.go StopAgent: closes the agent's pane (Stop agent, Close agent). */
-async function stopAgent(paneID: string): Promise<void> {
- const { link } = agentLink(paneID);
- await ownerCall("pane.close", { pane_id: paneID }, "ok");
+/** desk_agent_actions.go StopAgent: closes the agent's pane (Stop agent, Close agent), on the
+ *  link a menu was shown for, or the open one. */
+async function stopAgent(paneID: string, on = currentOwnerLink()): Promise<void> {
+ const { link } = agentLink(paneID, on);
+ await ownerCall("pane.close", { pane_id: paneID }, "ok", { link });
  link.relist();
 }
 
 /** desk_agent_actions.go ArchiveAgent: archived, attributed to herdrup. */
-async function archiveAgent(paneID: string): Promise<void> {
- const { link } = agentLink(paneID);
- await ownerCall("agent.archive", { target: paneID, reason: ARCHIVE_REASON, by: ARCHIVE_BY }, "agent_info");
+async function archiveAgent(paneID: string, on = currentOwnerLink()): Promise<void> {
+ const { link } = agentLink(paneID, on);
+ await ownerCall("agent.archive", { target: paneID, reason: ARCHIVE_REASON, by: ARCHIVE_BY }, "agent_info", { link });
  link.relist();
 }
 
-/** desk_agent_actions.go choosePaneAction's close: the pane closed, or why not said as Go's alert
- *  (unless the link ended). The ••• menu's Close agent (desk.ts paneMenu). */
-export async function closeAgent(paneID: string): Promise<boolean> {
- const link = currentOwnerLink();
+/** desk_agent_actions.go choosePaneAction's close: the pane closed on link (the ••• menu's own,
+ *  desk.ts paneMenu), or why not said as Go's alert (unless the link ended). */
+export async function closeAgent(link: OwnerLink | null, paneID: string): Promise<boolean> {
  const listed = link?.agents().find((a) => a.pane_id === paneID);
  const title = listed ? displayName(listed) : paneID;
  try {
-  await stopAgent(paneID);
+  await stopAgent(paneID, link);
   return true;
  } catch (error) {
   if (link !== null && !link.signal.aborted) showWarning("Couldn't close " + title, errorText(error));
@@ -194,23 +199,24 @@ export async function closeAgent(paneID: string): Promise<boolean> {
 function chooseAgentAction(link: OwnerLink, a: AgentAction) {
  const run = a.kind === "stop" ? stopAgent : a.kind === "archive" ? archiveAgent : null;
  if (run === null) { emit("agentActionRequested", a); return; }
- run(a.paneID).catch((error) => { if (!link.signal.aborted) showWarning(`Couldn't ${a.kind} ${a.title}`, errorText(error)); });
+ run(a.paneID, link).catch((error) => { if (!link.signal.aborted) showWarning(`Couldn't ${a.kind} ${a.title}`, errorText(error)); });
 }
 
 /** desk_groups.go choose. */
 function choose(link: OwnerLink, e: MenuItem) {
- if (e.edit) link.groups?.apply(e.edit, link.signal);
+ if (e.edit) link.groups?.apply(e.edit);
  else if (e.naming) emit("folderNamingRequested", e.naming);
  else if (e.action) chooseAgentAction(link, e.action);
 }
 
 /** desk_groups.go popup: entries as a menu, false when there is nothing to show. The page's menu
- *  has no cascades: a submenu opens as its own menu where its item was. */
+ *  has no cascades: a submenu opens as its own menu where its item was. A choice is the entry
+ *  itself (two folders may share a name), and it belongs to link: once another machine is open it
+ *  is dropped. */
 function popup(link: OwnerLink, entries: MenuItem[]): boolean {
  if (entries.length === 0) return false;
  const show = async (items: MenuItem[]): Promise<void> => {
-  const label = await showMenu(items.map(({ label, disabled, separator }) => ({ label, disabled, separator })));
-  const chosen = items.find((e) => !e.separator && e.label === label);
+  const chosen = await showMenu(items);
   if (!chosen || currentOwnerLink() !== link) return;
   if (chosen.sub) await show(chosen.sub);
   else choose(link, chosen);
@@ -276,8 +282,10 @@ export const agentActionsDesk = {
   const writes = link.scope() === "terminal";
   const [pong, accounts] = await Promise.all([
    link.client.ping(link.signal).catch(() => null),
-   writes ? ownerCall<{ accounts: AccountInfo[] }>("accounts.list", {}, "accounts_list").then((r) => r.accounts, () => []) : [],
+   writes ? ownerCall<{ accounts: AccountInfo[] }>("accounts.list", {}, "accounts_list", { link }).then((r) => r.accounts, () => []) : [],
   ]);
+  // Another machine opened while its pong was on its way: this menu would name its panes.
+  if (currentOwnerLink() !== link) return false;
   return popup(link, agentRowMenu({ info, caps: pong?.capabilities ?? null, groups: link.groups?.document() ?? null, accounts }, writes));
  },
 
@@ -293,10 +301,10 @@ export const agentActionsDesk = {
  async nameFolder(n: FolderNaming, text: string): Promise<void> {
   const link = currentOwnerLink();
   if (!link?.groups) return;
-  if (n.kind === "new") link.groups.createFolder(text, n.member, link.signal);
+  if (n.kind === "new") link.groups.createFolder(text, n.member);
   else if (n.kind === "rename") {
    const name = folderName(text);
-   if (name !== "") link.groups.apply({ kind: "renameFolder", folder: n.folder, text: name }, link.signal);
+   if (name !== "") link.groups.apply({ kind: "renameFolder", folder: n.folder, text: name });
   }
  },
 
@@ -314,7 +322,7 @@ export const agentActionsDesk = {
   try {
    result = await ownerCall<{ agent: AgentInfo }>("agent.rename", { target: paneID, name: saved }, "agent_info");
   } finally {
-   if (currentOwnerLink() === link) await link.groups?.refresh(link.signal, true);
+   if (currentOwnerLink() === link) await link.groups?.refresh(true);
   }
   link.relist();
   return result.agent.name ?? saved;

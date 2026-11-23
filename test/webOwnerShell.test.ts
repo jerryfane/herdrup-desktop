@@ -74,53 +74,53 @@ function memory() {
 }
 const doc = (revision: number, name = "Build") => ({ type: "agent_groups", revision, stars: ["a"], folders: [{ id: "f1", name, order: 0, members: ["a"] }] });
 
+const signal = new AbortController().signal;
 function groupsWith(answers: (() => unknown)[], storage = memory()) {
  let clock = 1_000_000, changes = 0;
  const calls: string[] = [];
  const client = { async call(method: string, _p: unknown, tag: string, capability: string) { calls.push(`${method} ${tag} ${capability}`); const a = answers.shift()!(); if (a instanceof Error) throw a; return a; } };
  const open = localRecord<Record<string, string[]>>("open", storage);
- const g = new OwnerGroups(client as never, "host-1", () => { changes++; }, () => clock, open);
+ const g = new OwnerGroups(client as never, "host-1", signal, () => { changes++; }, () => clock, open);
  return { g, calls, open, tick: (ms: number) => { clock += ms; }, changes: () => changes };
 }
-const signal = new AbortController().signal;
 
 test("folders show once agent.groups.get answers, read again at most once a minute", async () => {
  const s = groupsWith([() => doc(1), () => doc(2, "Renamed")]);
  expect(s.g.view().groups).toBeNull();
- await s.g.refresh(signal);
+ await s.g.refresh();
  expect(s.calls).toEqual(["agent.groups.get agent_groups agent_groups"]);
  expect(s.g.view().groups?.folders?.[0]?.name).toBe("Build");
  expect(s.changes()).toBe(1);
  s.tick(GROUPS_REFRESH_MS - 1);
- await s.g.refresh(signal);
+ await s.g.refresh();
  expect(s.calls.length).toBe(1);
  s.tick(1);
- await s.g.refresh(signal);
+ await s.g.refresh();
  expect(s.g.view().groups?.folders?.[0]?.name).toBe("Renamed");
  expect(s.changes()).toBe(2);
 });
 
 test("an older revision, or the same document, changes nothing", async () => {
  const s = groupsWith([() => doc(5), () => doc(4, "Old"), () => doc(5)]);
- await s.g.refresh(signal);
- await s.g.refresh(signal, true);
+ await s.g.refresh();
+ await s.g.refresh(true);
  expect(s.g.view().groups?.revision).toBe(5);
- await s.g.refresh(signal, true);
+ await s.g.refresh(true);
  expect(s.changes()).toBe(1);
 });
 
 test("a host without folders, or refusing the owner's browser, shows the plain list; a hiccup keeps them", async () => {
  for (const off of [new ErrUnsupported("agent.groups.get", "agent_groups", "0.9"), new HerdrAPIError("owner_forbidden", "no", null)]) {
   const s = groupsWith([() => doc(1), () => off, () => doc(2)]);
-  await s.g.refresh(signal);
-  await s.g.refresh(signal, true);
+  await s.g.refresh();
+  await s.g.refresh(true);
   expect(s.g.view().groups).toBeNull();
-  await s.g.refresh(signal, true);
+  await s.g.refresh(true);
   expect(s.calls.length).toBe(2);
  }
  const s = groupsWith([() => doc(1), () => new Error("socket closed")]);
- await s.g.refresh(signal);
- await s.g.refresh(signal, true);
+ await s.g.refresh();
+ await s.g.refresh(true);
  expect(s.g.view().groups?.revision).toBe(1);
 });
 
@@ -133,6 +133,6 @@ test("open folders are this browser's, per machine", () => {
  expect(s.g.view().open).toEqual({ f2: true });
  expect(s.open.get()).toEqual({ "host-1": ["f2"] });
  expect(s.changes()).toBe(3);
- const other = new OwnerGroups({ call: async () => doc(1) }, "host-2", () => {}, Date.now, localRecord("open", storage));
+ const other = new OwnerGroups({ call: async () => doc(1) }, "host-2", signal, () => {}, Date.now, localRecord("open", storage));
  expect(other.view().open).toEqual({});
 });

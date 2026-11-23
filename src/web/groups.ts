@@ -6,7 +6,7 @@
 // the plain list.
 
 import { HerdrAPIError } from "../webguest/errors";
-import { trimSpace, type AgentGroupFolder, type BoardView, type Groups } from "./board";
+import { orderedFolders, trimSpace, type AgentGroupFolder, type BoardView, type Groups } from "./board";
 import { ErrUnsupported, untagged, type GuestClient } from "./engine";
 import { OwnerRefusedError } from "./ownerLink";
 import { localRecord, type LocalRecord } from "./storage";
@@ -33,11 +33,6 @@ export function folderName(raw: string): string {
 /** folders.go NewFolderID: 12 lowercase hex characters. */
 export function newFolderID(): string {
  return Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** folders.go OrderedFolders: by order, then by their place in the document. */
-export function orderedFolders(g: Groups): AgentGroupFolder[] {
- return [...g.folders ?? []].sort((a, b) => a.order - b.order);
 }
 
 /** folders.go FolderOf: the folder name is in, or null. An agent is in at most one. */
@@ -140,7 +135,7 @@ function conflictCurrent(error: unknown): Groups | null {
 
 /** desk_groups.go commit's answer: the newest document the server confirmed (null while that is
  *  still the base), why the edit was dropped, or off for a host without folders. */
-export interface Commit { saved: Groups | null; failure: string; off: boolean }
+interface Commit { saved: Groups | null; failure: string; off: boolean }
 
 export class OwnerGroups {
  #confirmed: Groups | null = null;
@@ -150,10 +145,12 @@ export class OwnerGroups {
  #pending: Edit[] = [];
  #sending = false;
 
- /** changed runs when what the list shows changed (the document, a folder opened or closed);
-  *  alert shows a save that failed. */
- constructor(private readonly client: Pick<GuestClient, "call">, private readonly hostID: string, private readonly changed: () => void,
-  private readonly now: () => number = Date.now, private readonly open: LocalRecord<Record<string, string[]>> = localRecord(OPEN_FOLDERS_KEY),
+ /** One machine's link: signal ends with it, and every read and save goes with it. changed runs
+  *  when what the list shows changed (the document, a folder opened or closed); alert shows a
+  *  save that failed. */
+ constructor(private readonly client: Pick<GuestClient, "call">, private readonly hostID: string, private readonly signal: AbortSignal,
+  private readonly changed: () => void, private readonly now: () => number = Date.now,
+  private readonly open: LocalRecord<Record<string, string[]>> = localRecord(OPEN_FOLDERS_KEY),
   private readonly alert: (message: string) => void = (message) => showWarning(GROUPS_ALERT_TITLE, message)) {}
 
  /** groupsStore.document: what the list draws, the server's last document with this browser's
@@ -179,13 +176,13 @@ export class OwnerGroups {
  /** groupsStore.refresh: the first time, then at most once a minute unless force, never while an
   *  edit is unsent (a read can't undo it on screen). A transport hiccup keeps what shows (a later
   *  list retries); a host without folders turns them off. */
- async refresh(signal: AbortSignal, force = false): Promise<void> {
+ async refresh(force = false): Promise<void> {
   const at = this.now();
   if (!this.#supported || this.#fetching || this.#pending.length > 0 || (!force && this.#lastFetch !== null && at - this.#lastFetch < GROUPS_REFRESH_MS)) return;
   this.#fetching = true;
   let fetched: Groups;
   try {
-   fetched = untagged<Groups>(await this.client.call("agent.groups.get", {}, "agent_groups", "agent_groups", signal));
+   fetched = untagged<Groups>(await this.client.call("agent.groups.get", {}, "agent_groups", "agent_groups", this.signal));
   } catch (error) {
    if (groupsOff(error)) this.#off();
    return;
@@ -211,37 +208,37 @@ export class OwnerGroups {
   this.open.set({ ...all, [this.hostID]: ids });
  }
 
- /** groupsStore.apply: shows e at once and queues it for the server; signal is the link's. */
- apply(e: Edit, signal: AbortSignal): void {
+ /** groupsStore.apply: shows e at once and queues it for the server. */
+ apply(e: Edit): void {
   if (this.document() === null) return;
   this.#pending.push(e);
   const start = !this.#sending;
   this.#sending = true;
   this.changed();
-  if (start) void this.#send(signal);
+  if (start) void this.#send();
  }
 
  /** groupsStore.createFolder: a folder named raw holding member, opened on this browser so the
   *  agent just moved stays in sight. */
- createFolder(raw: string, member: string, signal: AbortSignal): void {
+ createFolder(raw: string, member: string): void {
   const name = folderName(raw);
   if (name === "") return;
   const id = newFolderID();
   this.#keepOpen(id, true);
-  this.apply({ kind: "addFolder", folder: id, text: name, name: member }, signal);
+  this.apply({ kind: "addFolder", folder: id, text: name, name: member });
  }
 
  /** groupsStore.send: the pending edits, one at a time. */
- async #send(signal: AbortSignal): Promise<void> {
+ async #send(): Promise<void> {
   for (;;) {
    if (this.#pending.length === 0 || this.#confirmed === null) { this.#sending = false; return; }
-   const { saved, failure, off } = await this.commit(this.#pending[0]!, this.#confirmed, signal);
+   const { saved, failure, off } = await this.#commit(this.#pending[0]!, this.#confirmed);
    if (off) { this.#sending = false; this.#off(); return; }
    if (saved !== null) this.#confirmed = saved;
    this.#pending.shift();
    this.changed();
    // A link that ended took its folders with it: nothing to say.
-   if (failure !== "" && !signal.aborted) this.alert(failure);
+   if (failure !== "" && !this.signal.aborted) this.alert(failure);
   }
  }
 
@@ -249,11 +246,11 @@ export class OwnerGroups {
   *  server's current document and sends that; a second conflict gives up with the newest document.
   *  A replay that fails otherwise still returns the document the conflict reported. An edit that
   *  changes nothing is not sent. */
- async commit(e: Edit, base: Groups, signal: AbortSignal): Promise<Commit> {
+ async #commit(e: Edit, base: Groups): Promise<Commit> {
   const set = async (g: Groups) => untagged<Groups>(await this.client.call("agent.groups.set", {
    revision: g.revision, stars: g.stars ?? [],
    folders: (g.folders ?? []).map(({ id, name, order, members }) => (members ? { id, name, order, members } : { id, name, order })),
-  }, "agent_groups", "agent_groups", signal));
+  }, "agent_groups", "agent_groups", this.signal));
   const next = applyEdit(e, base);
   if (groupsEqual(next, base)) return { saved: base, failure: "", off: false };
   // known is the newest document the server has confirmed, null while that is still base.

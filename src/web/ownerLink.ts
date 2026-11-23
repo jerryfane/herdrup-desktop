@@ -67,11 +67,13 @@ export class OwnerRefusedError extends Error {
  }
 }
 
-/** One herdr call on the open link: the result without its tag. Throws "not connected" without a
- *  link, OwnerRefusedError on owner_forbidden, ErrUnsupported for a capability the host lacks,
- *  else the transport's or herdr's error. It ends with the link, or with signal. */
-export async function ownerCall<T>(method: string, params: unknown, tag: string, options: { capability?: string; signal?: AbortSignal } = {}): Promise<T> {
- const link = current;
+/** One herdr call on the open link, or on options.link (a call that belongs to the link it was
+ *  asked on, which ends, and the call with it, once another opens): the result without its tag.
+ *  Throws "not connected" without a link, OwnerRefusedError on owner_forbidden, ErrUnsupported for
+ *  a capability the host lacks, else the transport's or herdr's error. It ends with the link, or
+ *  with signal. */
+export async function ownerCall<T>(method: string, params: unknown, tag: string, options: { capability?: string; signal?: AbortSignal; link?: OwnerLink | null } = {}): Promise<T> {
+ const link = options.link === undefined ? current : options.link;
  if (link === null) throw new Error("not connected");
  const signal = options.signal ? AbortSignal.any([link.signal, options.signal]) : link.signal;
  try {

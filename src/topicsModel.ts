@@ -7,6 +7,12 @@ import type { ChatMode } from "./chatPreference";
 export type TopicInfo = AgentTopicInfo;
 export type { TopicsUpdate };
 
+/** desk_topics.go ompHarness: an omp agent, plain or a named build ("omp …", "omp-…"); only omp
+ *  has Chat and Topics, and only omp's Topics switch. */
+export function ompHarness(harness: string): boolean {
+ return /^omp(?:$| |-)/i.test(harness);
+}
+
 /** The mode a page shows for the one asked for (ChatPreference.resolved): Topics only where the
  *  agent has them; a Topics or Chat default without Chat opens the terminal. */
 export function resolvedMode(mode: ChatMode, chatAvailable: boolean, topicsAvailable: boolean): ChatMode {
