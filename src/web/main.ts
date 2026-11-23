@@ -4,7 +4,7 @@
 // boot.ts runs it for a guest; a signed-in owner gets the desktop shell itself (src/main.ts), whose
 // host home is the approved machines (hosts.ts).
 
-import { forgetFailedPhotos } from "../avatars";
+import { forgetFailedPhotos, newConnection } from "../avatars";
 import { enableLongPress } from "../longPress";
 import { Desk, events, type AgentTarget, type BoardUpdate, type ConnState } from "../mygo";
 import { symbol } from "../symbol";
@@ -160,12 +160,13 @@ events.stateChanged.on((s) => {
  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
   guestTab = "agents";
  }
+ // Each new connection, including the desk's own retry from an error, asks again for the
+ // pictures that failed on the last one, as the desktop does (src/main.ts); the ones that
+ // loaded stay. Before the render below, so the recovered list asks at once.
+ if (newConnection(state.phase, s.phase)) forgetFailedPhotos();
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
  if (s.phase === "idle") board = null;
- // Each connection attempt is a new connection: pictures that failed on the last one are asked
- // for again, as the desktop does (src/main.ts); the ones that loaded stay.
- if (s.phase === "connecting") forgetFailedPhotos();
  render();
 });
 events.boardChanged.on((b) => {

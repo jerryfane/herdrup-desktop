@@ -29,6 +29,16 @@ export function forgetFailedPhotos() {
   loading.clear();
 }
 
+/** Whether a state change starts a new connection, whose photos that failed
+ * on the last one are asked for again. The desktop goes through "connecting"
+ * on every attempt; the web desk's own retry goes from "error" straight back
+ * to "connected". Connecting to connected is the same connection: photos
+ * already asked for while it was connecting are kept. */
+export function newConnection(before: string, after: string): boolean {
+  if (after === before) return false;
+  return after === "connecting" || (after === "connected" && before === "error");
+}
+
 /** Notes the session a board shows. A switch keeps the SSH connection, so
  * no "connecting" state marks it: photos that failed on the session before
  * are forgotten here, whether the user switched or the board fell back to

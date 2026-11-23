@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { boardShown, forgetFailedPhotos, knownPhoto, loadPhoto } from "../src/avatars";
+import { boardShown, forgetFailedPhotos, knownPhoto, loadPhoto, newConnection } from "../src/avatars";
 import { Desk, type Avatar } from "../src/mygo";
 
 // Desk.avatarImage answers from this queue, one reply per call.
@@ -70,4 +70,17 @@ test("a failed photo is asked for again in another session", async () => {
   replies.push(() => Promise.resolve("data:image/png;base64,BB=="));
   expect(await loadPhoto(a)).toBe("data:image/png;base64,BB==");
   expect(calls).toBe(before + 1);
+});
+
+test("a retry from an error is a new connection; connecting to connected is the same one", () => {
+  // The web desk's own retry: offline, then back without passing through "connecting" (#335).
+  expect(newConnection("error", "connected")).toBe(true);
+  expect(newConnection("idle", "connecting")).toBe(true);
+  expect(newConnection("error", "connecting")).toBe(true);
+  // Photos asked for while connecting belong to the connection that just came up.
+  expect(newConnection("connecting", "connected")).toBe(false);
+  // A republish of the same phase (availability, scope) is not a new connection.
+  expect(newConnection("connected", "connected")).toBe(false);
+  expect(newConnection("connecting", "connecting")).toBe(false);
+  expect(newConnection("connected", "error")).toBe(false);
 });
