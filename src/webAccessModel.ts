@@ -39,6 +39,13 @@ export function slotSelection(slot: number, length: number): [number, number] {
  return slot < length ? [slot, slot + 1] : [length, length];
 }
 
+/** Whether a click on the code takes a box's digit (slotSelection): only a plain single click,
+ *  which leaves the caret collapsed. A drag, a double click or a shift-click made a selection of
+ *  its own, and keeps it. */
+export function plainClick(click: { detail: number; shiftKey: boolean }, start: number, end: number): boolean {
+ return click.detail === 1 && !click.shiftKey && start === end;
+}
+
 /** Approve needs 4 digits and at least one machine (the sheet also waits for calls in flight). */
 export function canApprove(code: string, machines: number): boolean {
  return code.length === 4 && machines > 0;
@@ -64,10 +71,11 @@ export function choiceLabel(choices: readonly (readonly [string, string])[], val
  return choices.find(([v]) => v === value)?.[1] ?? value;
 }
 
-/** A length as the For choices say it: whole days, else hours ("7 days", "12 hours"). */
+/** A length as the For choices say it, in days: the computer offers whole days only
+ *  (app/desk_web_access.go webAccessLengths). */
 export function lengthLabel(seconds: number): string {
- const [n, unit] = seconds % 86_400 === 0 ? [seconds / 86_400, "day"] : [Math.round(seconds / 3600), "hour"];
- return `${n} ${unit}${n === 1 ? "" : "s"}`;
+ const days = seconds / 86_400;
+ return `${days} day${days === 1 ? "" : "s"}`;
 }
 
 /** The Machines row, closed: the ticked machines by name, the first two and a count past three. */
@@ -80,9 +88,9 @@ export function machinesSummary(machines: readonly { id: string; label: string }
 
 /** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"), from the duration
  *  the computer grants for the chosen length. */
-export function timeSummary(length: { id: string; seconds: number }, now: number): string {
- const end = new Date(now + length.seconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
- return `${lengthLabel(length.seconds)}, until ${end}`;
+export function timeSummary(seconds: number, now: number): string {
+ const end = new Date(now + seconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+ return `${lengthLabel(seconds)}, until ${end}`;
 }
 
 /** The line under the rows: what Approve turns on, and why any machine can't be ticked, so both

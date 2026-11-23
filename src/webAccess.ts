@@ -11,8 +11,8 @@ import type { WebAccessLength, WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason, slotSelection,
- timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, plainClick, resultLines, skipReason,
+ slotSelection, timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
  *  calls a minute per account, and a request lasts 10 minutes. */
@@ -39,9 +39,9 @@ function segmented(name: string, options: readonly (readonly [string, string])[]
 
 /** Machines, Access and For as rows: each says its choice and opens in place to change it. The
  *  terminal warning sits in the Access row outside the part that closes, so it shows whenever
- *  terminal access is chosen. For starts at the longest length; changed runs after a choice
- *  changes, and show writes the rows' values (machines: the Machines row's summary). */
-export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: readonly WebAccessLength[], changed: () => void) {
+ *  terminal access is chosen. For starts at the longest length. Access, For and the warning follow
+ *  their own choices; the sheet writes the Machines row's summary (showMachines) and reads choice. */
+export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: readonly WebAccessLength[]) {
  const choice = { scope: "terminal", length: lengths.at(-1)?.id ?? "" };
  const rows = el("div", "web-access-rows");
  const row = (key: string, open: boolean, ...nodes: HTMLElement[]) => {
@@ -59,18 +59,18 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
   return { row: r, value };
  };
  const machinesRow = row("Machines", machinesOpen, list);
- const accessRow = row("Access", true, segmented("access", ACCESS_CHOICES, choice.scope, v => { choice.scope = v; changed(); }));
+ const accessRow = row("Access", true, segmented("access", ACCESS_CHOICES, choice.scope, v => { choice.scope = v; paint(); }));
  const terminalNote = el("p", "web-access-warning", "Terminal access is a shell on these machines: it can do anything you can do there.");
  accessRow.row.append(terminalNote);
- const forRow = row("For", false, segmented("time", lengths.map(l => [l.id, lengthLabel(l.seconds)] as const), choice.length, v => { choice.length = v; changed(); }));
- const show = (machines: string, now: number) => {
-  machinesRow.value.textContent = machines;
+ const forRow = row("For", false, segmented("time", lengths.map(l => [l.id, lengthLabel(l.seconds)] as const), choice.length, v => { choice.length = v; paint(); }));
+ function paint(): void {
   accessRow.value.textContent = choiceLabel(ACCESS_CHOICES, choice.scope);
   const length = lengths.find(l => l.id === choice.length);
-  forRow.value.textContent = length ? timeSummary(length, now) : "";
+  forRow.value.textContent = length ? timeSummary(length.seconds, Date.now()) : "";
   terminalNote.hidden = choice.scope !== "terminal";
- };
- return { rows, choice, show };
+ }
+ paint();
+ return { rows, choice: choice as Readonly<typeof choice>, showMachines: (summary: string) => { machinesRow.value.textContent = summary; } };
 }
 
 export function initWebAccess(): void {
@@ -122,9 +122,18 @@ export function initWebAccess(): void {
     d.classList.toggle("filled", s.filled); d.classList.toggle("selected", s.selected); d.classList.toggle("active", s.active);
    });
   };
+  // A plain click on a box takes its digit; a drag, double click or shift-click keeps the
+  // selection it made. The second press of a double click lands on the digit the first one took,
+  // which would start dragging that selection, so it's dropped first and the press selects the
+  // code as in any field.
+  code.addEventListener("mousedown", event => {
+   if (event.detail > 1) code.setSelectionRange(code.selectionStart, code.selectionStart);
+  });
   code.addEventListener("click", event => {
-   const slot = digits.findIndex(d => event.clientX < d.getBoundingClientRect().right);
-   code.setSelectionRange(...slotSelection(slot < 0 ? 3 : slot, code.value.length));
+   if (plainClick(event, code.selectionStart ?? 0, code.selectionEnd ?? 0)) {
+    const slot = digits.findIndex(d => event.clientX < d.getBoundingClientRect().right);
+    code.setSelectionRange(...slotSelection(slot < 0 ? 3 : slot, code.value.length));
+   }
    slots();
   });
   for (const type of ["keyup", "select", "focus"]) code.addEventListener(type, slots);
@@ -141,7 +150,7 @@ export function initWebAccess(): void {
   }
   if (!machines.length) list.append(el("p", "web-access-dim", "Add a machine first."));
 
-  const choices = choiceRows(list, ticked.size === 0, lengths, () => update());
+  const choices = choiceRows(list, ticked.size === 0, lengths);
 
   const problem = el("p", "web-access-problem"); problem.hidden = true;
   const deny = el("button", "ghost", "Deny"); deny.type = "button";
@@ -160,7 +169,7 @@ export function initWebAccess(): void {
    deny.disabled = busy;
    approve.disabled = busy || finished || (!retry && (locked || !canApprove(code.value, ticked.size) || code.disabled));
    slots();
-   choices.show(machinesSummary(machines, ticked), Date.now());
+   choices.showMachines(machinesSummary(machines, ticked));
   };
   const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
   code.oninput = () => { code.value = codeInput(code.value); say(""); update(); };
