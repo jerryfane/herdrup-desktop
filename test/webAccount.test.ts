@@ -429,3 +429,17 @@ test("an approval stopped while its account lookup waits for the lock sends no r
  await Promise.all(lock.turns);
  expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(0);
 });
+
+test("a refresh queued for the lock before a sign-out isn't sent once the lock comes; its caller is signed out", async () => {
+ const s = service();
+ const lock = heldLock();
+ const account = new WebAccount(s.fetcher, undefined, Date.now, lock.locks);
+ const queued = account.accessToken();
+ await lock.asked;
+ const out = account.signOut();
+ lock.release();
+ await expect(queued).rejects.toBeInstanceOf(SignedOutError);
+ await out;
+ await Promise.all(lock.turns);
+ expect(s.calls.map(c => c.url.split("/v1/")[1])).toEqual(["auth/signout"]);
+});

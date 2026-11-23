@@ -11,6 +11,7 @@ import (
 )
 
 func main() {
+	armFirstRunDeadline()
 	// Linux keeps the data of the app's former name apart (userdata_rename.go).
 	if config, err := os.UserConfigDir(); err == nil && !smokeEnabled() {
 		if err := moveFormerUserData(config, mygo.App.Name()); err != nil {
