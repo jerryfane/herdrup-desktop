@@ -591,10 +591,14 @@ export interface TransportOptions {
  callLimitMs?: number;
 }
 
-/** signal ends the request at any point. sendSignal ends it only while it is unsent (waiting for a
- *  connection, the relay's admission and the handshake included): once its frame is handed to the
- *  socket herdr may act on it, so its reply is still awaited (within signal) whatever sendSignal does. */
-export interface RequestOptions { signal?: AbortSignal; sendSignal?: AbortSignal }
+/** A stream's options: signal ends it at any point. */
+export interface StreamOptions { signal?: AbortSignal }
+
+/** A unary request's options: signal ends it at any point. sendSignal ends it only while it is
+ *  unsent (waiting for a connection, the relay's admission and the handshake included): once its
+ *  frame is handed to the socket herdr may act on it, so its reply is still awaited (within signal)
+ *  whatever sendSignal does. Streams have none (StreamOptions). */
+export interface RequestOptions extends StreamOptions { sendSignal?: AbortSignal }
 
 /** The idle session a call left for the next one, since `since`, with its expiry timer. */
 interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout>; unpark: () => void }
@@ -716,7 +720,7 @@ export class GuestTransport {
 
  /** One request whose reply lines are read until the host closes, e.g. pane.stream, on a session of
   *  its own: pane.stream takes a session over (transport.go OpenStream). The caller closes the stream. */
- async openStream(method: string, params?: unknown, options: RequestOptions = {}): Promise<GuestStream> {
+ async openStream(method: string, params?: unknown, options: StreamOptions = {}): Promise<GuestStream> {
   if (this.closed) throw this.#life.signal.reason;
   const { signal, dispose } = linkSignals([this.#life.signal, options.signal]);
   let session: Session | null = null;
