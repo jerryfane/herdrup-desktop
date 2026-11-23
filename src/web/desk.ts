@@ -22,7 +22,9 @@ import { checkTag, ErrUnsupported, GuestClient, untagged } from "./engine";
 import { emit } from "./events";
 import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
-import { IndexedDBGrantStore, localOwnerHint, type GrantStore, type OwnerHint } from "./storage";
+import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
+import { OwnerGroups } from "./groups";
+import { setOwnerLink, setOwnerSettings, settingsLink } from "./ownerLink";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
@@ -171,9 +173,11 @@ export function pageAccess(a: Access): PageAccess {
  };
 }
 
-/** paneMenu (desk_agent_actions.go:267-303) for a guest: no share, avatar, mute or close. */
-function guestPaneMenu(o: PaneMenuOptions): (MenuEntry & { action?: string })[] {
- return [
+/** paneMenu (desk_agent_actions.go:267-303) in the browser: a guest's has no share, avatar, mute or
+ *  close; an owner's agent (muted not null) has Mute or Unmute notifications (this browser's).
+ *  Share, Avatar… and Close agent are the agent-actions slice's. */
+function webPaneMenu(o: PaneMenuOptions, muted: boolean | null): (MenuEntry & { action?: string })[] {
+ const entries: (MenuEntry & { action?: string })[] = [
   { label: "Copy screen", action: "copy-screen" },
   { label: "Copy recent output", action: "copy-recent" },
   { label: "Copy selection", action: "copy-selection", disabled: !o.hasSelection },
@@ -183,7 +187,12 @@ function guestPaneMenu(o: PaneMenuOptions): (MenuEntry & { action?: string })[] 
   { label: "Decrease", action: "text-decrease" },
   { label: "Reset", action: "text-reset" },
  ];
+ if (muted === null || o.plain) return entries;
+ return [...entries, { label: "", separator: true }, muted ? { label: "Unmute notifications", action: "unmute" } : { label: "Mute notifications", action: "mute" }];
 }
+
+/** The muted panes of every machine, by host id (Go's notifications.json muted). */
+export const MUTED_PANES_KEY = "herdrup.web.mutedPanes";
 
 // ---- The Desk ----
 
@@ -198,6 +207,9 @@ export interface DeskEnv {
  openWindow?: (url: string) => void;
  /** TOPICS_RETRY_MS unless a test passes its own. */
  topicsRetryMs?: readonly number[];
+ /** An owner's per-machine state on this browser; localStorage unless a test passes its own. */
+ openFolders?: LocalRecord<Record<string, string[]>>;
+ mutedPanes?: LocalRecord<Record<string, string[]>>;
 }
 
 interface Active {
@@ -216,6 +228,10 @@ interface Active {
  /** link.guestKeyTaken: the panes where the host took one of this link's menu keys
   *  (guestMenuKey). A guest's link has one pane; an owner's has the machine's, each its own. */
  keyTaken?: Set<string>;
+ /** An owner link's folders and stars (groups.ts); a guest's link has none. */
+ groups?: OwnerGroups;
+ /** When the last list answered, as the board says (BoardUpdate.listedAt); "" before it. */
+ listedAt: string;
 }
 
 interface MountedView extends GuestView {
@@ -244,6 +260,14 @@ export function createGuestDesk(env: DeskEnv) {
  let accepting = Promise.resolve();
  /** connectOwner while it reads the key: cancelled by a newer one, a disconnect or its session's end. */
  let ownerPending: AbortController | null = null;
+ const mutedPanes = env.mutedPanes ?? localRecord<Record<string, string[]>>(MUTED_PANES_KEY);
+
+ /** The board of l's last list, laid out with an owner link's folders (BuildBoard's view). */
+ function publishBoard(l: Active) {
+  if (active !== l || l.listedAt === "") return;
+  board = { board: buildBoard(l.agents, l.groups?.view()), listedAt: l.listedAt, session: "", machineID: l.id };
+  emit("boardChanged", board);
+ }
 
  const setState = (life: AbortSignal | null, s: ConnState) => {
   if (life?.aborted) return;
@@ -363,6 +387,7 @@ export function createGuestDesk(env: DeskEnv) {
   board = null;
   setSharedAgents([]);
   setLink(null);
+  setOwnerLink(null);
  }
 
  /** An owner link's connection published again between lists: the open agent's availability as
@@ -411,8 +436,10 @@ export function createGuestDesk(env: DeskEnv) {
     l.agents = agents;
     setSharedAgents(agents.map((a) => ({ pane_id: a.pane_id ?? "", name: a.name ?? null })));
     if (!l.owner && agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
-    board = { board: buildBoard(agents), listedAt: goTime(new Date(now())).replace(/\.\d+Z$/, "Z"), session: "", machineID: l.id };
-    emit("boardChanged", board);
+    l.listedAt = goTime(new Date(now())).replace(/\.\d+Z$/, "Z");
+    publishBoard(l);
+    // desk_groups.go: a list reads the folder document again, at most once a minute.
+    void l.groups?.refresh(signal);
    }
    if (kicked) { kicked = false; continue; }
    await new Promise<void>((resolve) => {
@@ -468,7 +495,7 @@ export function createGuestDesk(env: DeskEnv) {
    disconnect();
    const transport = new GuestTransport(guestLink(grant), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
-   const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [] };
+   const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
    active = l;
    setLink(link);
    void runGuest(l, print).finally(() => transport.close());
@@ -491,7 +518,48 @@ export function createGuestDesk(env: DeskEnv) {
   async machine() { return null; },
   async machines() { return []; },
   async pendingAgent() { return null; },
-  async paneMuted(): Promise<boolean> { return false; },
+  // desk_notifications.go PaneMuted / SetPaneMuted: an owner's, per machine on this browser.
+  async paneMuted(paneID: string): Promise<boolean> {
+   const hostID = active?.owner?.hostID;
+   return hostID !== undefined && (mutedPanes.get()?.[hostID] ?? []).includes(paneID);
+  },
+  async setPaneMuted(paneID: string, muted: boolean): Promise<void> {
+   const hostID = active?.owner?.hostID;
+   if (hostID === undefined || paneID === "") return;
+   const all = mutedPanes.get() ?? {};
+   const panes = (all[hostID] ?? []).filter((p) => p !== paneID);
+   if (muted) panes.push(paneID);
+   mutedPanes.set({ ...all, [hostID]: panes });
+  },
+
+  // ---- Folders (desk_groups.go), an owner link's ----
+
+  /** The board for a sidebar search: the matching agents, every folder open, no empty folder. */
+  async searchBoard(query: string) {
+   const l = active;
+   if (!l?.groups || l.listedAt === "") return null;
+   return buildBoard(l.agents, { ...l.groups.view(), query });
+  },
+  async setFolderOpen(id: string, open: boolean): Promise<void> { active?.groups?.setOpen(id, open); },
+
+  // ---- Settings scope (desk_settings.go), an owner link's ----
+
+  async openSettings(machineID: string, session: string, token: string): Promise<void> {
+   if (token === "" || token.length > 128) throw new Error("invalid Settings token");
+   if (!active?.owner || active.id !== machineID || (session !== "" && session !== "default")) throw new Error("the session changed; try again");
+   setOwnerSettings(token);
+  },
+  async closeSettings(token: string): Promise<void> {
+   try { settingsLink(token); setOwnerSettings(""); } catch { /* another scope is open, or none */ }
+  },
+  /** desk_settings.go SettingsMachineVersion: "herdr <version>" from the link's ping ("" when it
+   *  says none). */
+  async settingsMachineVersion(token: string): Promise<string> {
+   const link = settingsLink(token);
+   const version = (await link.client.ping(link.signal)).version ?? "";
+   settingsLink(token);
+   return version === "" ? "" : `herdr ${version}`;
+  },
 
   // ---- Agent view (desk_interaction.go) ----
 
@@ -795,10 +863,13 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   async paneMenu(o: PaneMenuOptions): Promise<boolean> {
-   if (!active || o.paneID === "") return false;
-   const entries = guestPaneMenu(o);
-   void showMenu(entries).then((label) => {
+   const l = active;
+   if (!l || o.paneID === "") return false;
+   const entries = webPaneMenu(o, l.owner ? await desk.paneMuted(o.paneID) : null);
+   void showMenu(entries).then(async (label) => {
     const action = entries.find((e) => e.label === label)?.action;
+    // Go flips the stored mute before the page hears the choice.
+    if (action === "mute" || action === "unmute") await desk.setPaneMuted(o.paneID, action === "mute");
     if (action) emit("paneActionChosen", { paneID: o.paneID, action });
    });
    return true;
@@ -972,9 +1043,11 @@ export function createGuestDesk(env: DeskEnv) {
    cancelled.throwIfAborted();
    const { access, transport, link, client } = ownerConnection(m, identity, statements, device, { now, webSocket: env.webSocket });
    disconnect();
-   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [] };
+   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
+   l.groups = new OwnerGroups(client, m.hostID, () => publishBoard(l), now, env.openFolders);
    active = l;
    setLink(link);
+   setOwnerLink({ machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick() });
    // The session ending ends the link too: its board and agent view go, the page goes idle.
    session.addEventListener("abort", () => { if (active === l) disconnectOwner(); }, { once: true, signal: l.life.signal });
    void runGuest(l, print).finally(() => transport.close());

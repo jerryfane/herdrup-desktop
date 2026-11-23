@@ -48,6 +48,16 @@ import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
 import { appleSymbols } from "./platform";
+import { deskOffers, parts } from "./shellModel";
+
+/** The machine's pages this build's Desk serves (shellModel.ts): all on the desktop; in the
+ *  browser, each once its method group is registered. A page not served has no row. */
+const served = {
+  accounts: deskOffers("settingsAccounts"),
+  sharedAccess: deskOffers("settingsGuestMachine"),
+  notifications: deskOffers("getNotificationSettings"),
+  serverUpdate: deskOffers("settingsServerUpdate"),
+};
 
 const settingIcons: Record<string, string> = {
   "textformat.size": textSizeIcon, "exclamationmark.bubble": reportIcon,
@@ -157,9 +167,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     try {
       await Desk.openSettings(target.machineID, target.session, token);
       if (at !== generation || !visible) { void Desk.closeSettings(token); return; }
-      accounts.setScope(token);
-      guests.setMachines(name(), statuses, peers); guests.setScope(token);
-      updates.setScope(token, name());
+      if (served.accounts) accounts.setScope(token);
+      if (served.sharedAccess) { guests.setMachines(name(), statuses, peers); guests.setScope(token); }
+      if (served.serverUpdate) updates.setScope(token, name());
       const version = await Desk.settingsMachineVersion(token);
       if (at !== generation || !visible || settingsToken !== token) return;
       machineVersion = version;
@@ -232,7 +242,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
    *  wide and scaled to fit, never tinted (synced with NOTICE-Discord-Brand.txt). */
   function discordGlyph() {
     const slot = el("span", "settings-glyph"), mark = el("img", "settings-discord-mark") as HTMLImageElement;
-    slot.setAttribute("aria-hidden", "true"); mark.src = "/herdrup/discord-mark.png"; mark.alt = "";
+    // BASE_URL: the browser build serves public/ under /web/ (vite.web.config.ts runtimeAssets).
+    slot.setAttribute("aria-hidden", "true"); mark.src = `${import.meta.env.BASE_URL}herdrup/discord-mark.png`; mark.alt = "";
     slot.append(mark); return slot;
   }
   function showSubtitle() {
@@ -333,8 +344,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     // accounts, sharing, notifications and typing measurements) waits for one.
     const herd = share
       ? group("YOUR OWN MACHINE", [row("Connect your own machine", "plus.circle", () => share?.connectOwn(), "Pair your computer or add an SSH host")])
-      : group("YOUR HERD", [accountRow, sharedRow, notificationRow]);
-    index.replaceChildren(card, suggestions, ...(herdrupAccountShown ? [group(ACCOUNT_TITLE.toUpperCase(), [herdrupAccountRow])] : []), herd, group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
+      : group("YOUR HERD", [...(served.accounts ? [accountRow] : []), ...(served.sharedAccess ? [sharedRow] : []), ...(served.notifications ? [notificationRow] : [])]);
+    const herdShown = share !== null || served.accounts || served.sharedAccess || served.notifications;
+    index.replaceChildren(card, suggestions, ...(herdrupAccountShown ? [group(ACCOUNT_TITLE.toUpperCase(), [herdrupAccountRow])] : []), ...(herdShown ? [herd] : []), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
       ...(share ? [] : [latencyRow]),
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
@@ -343,7 +355,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       link("Terms of Service", "doc.text", "https://herdrup.app/legal/terms"),
       link("Open source on GitHub", "chevron.left.forwardslash.chevron.right", "https://github.com/themartianapp/herdrup"),
       ...(appUpdatesShown ? [appUpdatesRow] : []),
-      usageCount.root,
+      ...(parts.usageCount ? [usageCount.root] : []),
     ]), footer);
     updateConnection();
   }
@@ -439,8 +451,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
       }).catch(report);
     }); copy.className = "settings-plain-row action";
-    body.append(hero, updates.root, group("CONNECTION", [reconnectButton, copy]), federation());
-    reach = el("p", "settings-reach"); body.append(reach); updateConnection();
+    body.append(hero, ...(served.serverUpdate ? [updates.root] : []), group("CONNECTION", [reconnectButton, copy]), ...(parts.federation ? [federation()] : []));
+    if (parts.federation) { reach = el("p", "settings-reach"); body.append(reach); }
+    updateConnection();
   }
   function federation() {
     const rows: HTMLElement[] = [];
@@ -517,7 +530,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     // A share's Settings reads nothing of a machine: there is none of this device's own.
     if (share) { renderIndex(); renderPage(); return; }
     void openScope(at);
-    const [saved, machines, remotePeers] = await Promise.allSettled([Desk.machine(), Desk.machineStatuses(), Desk.peers()]);
+    // Federation is the desktop's (saved SSH machines): the browser reads none of it.
+    const [saved, machines, remotePeers] = await Promise.allSettled([Desk.machine(), parts.federation ? Desk.machineStatuses() : [], parts.federation ? Desk.peers() : []]);
     if (at !== generation || !visible) return;
     machine = saved.status === "fulfilled" ? saved.value : null;
     statuses = machines.status === "fulfilled" ? machines.value : [];
@@ -534,7 +548,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   });
   let peerRead = 0;
   events.boardChanged.on(() => {
-    if (!visible || share || state?.phase !== "connected") return;
+    if (!visible || share || state?.phase !== "connected" || !parts.federation) return;
     const at = generation, request = ++peerRead;
     void Desk.peers().then(next => {
       if (at !== generation || request !== peerRead || JSON.stringify(next) === JSON.stringify(peers)) return;
@@ -563,7 +577,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       state = nextState; board = nextBoard; identity = nextID; visible = show; index.hidden = !show; page.hidden = !show; share = nextShare;
       if (!show) { generation++; busy = ""; openDialog?.close(); closeScope(); clearInterval(latencyTimer); }
       updateConnection();
-      if (reload) { openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh(); void usageCount.refresh(); void notifications.refresh(); }
+      if (reload) {
+        openDialog?.close(); message.hidden = true; machine = null; statuses = []; peers = []; renderIndex(); renderPage(); void refresh();
+        if (parts.usageCount) void usageCount.refresh();
+        if (served.notifications) void notifications.refresh();
+      }
     },
   };
 }

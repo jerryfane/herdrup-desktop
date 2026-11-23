@@ -29,6 +29,7 @@ import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { avatar, badge, initialTile, placeInitials, spinnerSVG } from "./faces";
 import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "./bars";
 import { enableLongPress } from "./longPress";
+import { deskOffers, ownerWrites, parts, shareShown } from "./shellModel";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -184,7 +185,9 @@ async function buildTopBar() {
     minimize.onclick = () => rail?.minimize();
     minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
     actionNodes = [minimize];
-    if (selectedTab === "agents") {
+    // New agent and New terminal create on the machine: a web owner's need the creation methods
+    // (a later slice) and a terminal-scope link (shellModel.ts deskOffers, ownerWrites).
+    if (selectedTab === "agents" && deskOffers("openCreation", "createAgent", "createTerminal") && ownerWrites(state)) {
       const add = await slot("plus", "New agent");
       const enabled = !!board && state.phase === "connected";
       add.tabIndex = enabled ? 0 : -1; add.setAttribute("role", "button"); add.setAttribute("aria-label", "New agent");
@@ -514,7 +517,7 @@ let renderedOnce = false, pushTimer = 0;
 function render() {
   if (!renderReady) return;
   const showConnect = !(settingsAsked && tab === "settings") && (choosingHost || hostsHold() || (!state.guest && !board && state.phase !== "connecting" && state.phase !== "connected"));
-  const guestVisible = !!state.guest && !showConnect;
+  const guestVisible = shareShown(state) && !showConnect;
   // The guest's Gram is every shared agent's (#697); its tab shows while one shares Gram.
   setGuestGram(guestVisible);
   const gramOffered = guestVisible && guestGramOffer().offered;
@@ -580,14 +583,19 @@ searchInput.addEventListener("input", () => void renderRows());
 
 // The shared agent page's Gram button: the guest's Gram with that agent selected (#697).
 window.addEventListener("guest-gram", event => {
+  // A web owner's agent page (its link is share-shaped) opens the owner's Gram.
+  if (!shareShown(state)) { closeWriter(); selectTab("gram"); return; }
   guestActions.gram((event as CustomEvent<string | null>).detail ?? null);
 });
 
 events.stateChanged.on((s) => {
+  // A web owner's link admitted under another scope: the bar's create buttons follow it.
+  const writesChanged = ownerWrites(s) !== ownerWrites(state);
   if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
     guestTab = "agents";
   }
   state = s;
+  if (writesChanged) void buildTopBar();
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
   // Each connection attempt is a new connection: photos that failed on the
@@ -622,7 +630,7 @@ function openSettingsPage(page: Parameters<ReturnType<typeof initSettings>["open
   if (!settings) return;
   closeWriter();
   choosingHost = false;
-  if (state.guest) {
+  if (shareShown(state)) {
     guestTab = "settings";
     settings.openPage(page);
   } else {
@@ -767,8 +775,8 @@ async function init(rendered: () => void) {
   compactQuery.addEventListener("change", render);
   startupStep("bars");
   await Promise.all([buildTopBar(), buildTabBar()]);
-  starAsk = initStarAsk($("sidebar"), symbol, render);
-  appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
+  if (parts.starAsk) starAsk = initStarAsk($("sidebar"), symbol, render);
+  if (parts.appUpdates) appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   initWebAccess();
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, avatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
@@ -776,7 +784,7 @@ async function init(rendered: () => void) {
     selectedAgent = target; refreshRowSelection();
     // The guest home's row shows the open agent selected, as the roster's does; the phone
     // layout returns to the list when the agent's page closes.
-    if (state.guest || compactQuery.matches) render();
+    if (shareShown(state) || compactQuery.matches) render();
   });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; void buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
   hostsHold = hosts.holdsHome;
@@ -784,7 +792,7 @@ async function init(rendered: () => void) {
   // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
   // connection, not the bar last drawn: from the host chooser over a share there is no guest bar
   // yet, and the account avatar still opens the share's Settings (#270).
-  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((state.guest ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((shareShown(state) ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
   startupStep("gram");
   await initGram(
     {
@@ -845,7 +853,7 @@ async function init(rendered: () => void) {
   rendered();
   startupStep("rendered");
   // An App updates request from before the page was ready (desk openAppUpdates).
-  void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
+  if (parts.appUpdates) void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
   const version = activationVersion;
   const retained = await Desk.pendingAgent();
   if (version === activationVersion) pendingAgent = retained;

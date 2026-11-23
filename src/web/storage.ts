@@ -81,3 +81,19 @@ export class MemoryOwnerHint implements OwnerHint {
  get() { return this.owner; }
  set(owner: string) { this.owner = owner; }
 }
+
+/** A JSON value this browser keeps in localStorage, for state the desktop keeps in Go's per-device
+ *  files (open folders, muted panes). get is undefined when nothing readable is
+ *  kept or storage is unavailable; a write storage refuses is dropped. */
+export interface LocalRecord<T> { get(): T | undefined; set(value: T): void }
+
+export function localRecord<T>(key: string, storage: () => Pick<Storage, "getItem" | "setItem"> = () => localStorage): LocalRecord<T> {
+ return {
+  get() {
+   try { const raw = storage().getItem(key); return raw === null ? undefined : JSON.parse(raw) as T; } catch { return undefined; }
+  },
+  set(value) {
+   try { storage().setItem(key, JSON.stringify(value)); } catch { /* storage unavailable: the change lasts this page */ }
+  },
+ };
+}

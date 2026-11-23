@@ -2852,5 +2852,2805 @@
    "total": 4,
    "emptyFolders": []
   }
+ },
+ {
+  "name": "folders and stars, one open",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "needsYou",
+     "label": "needs you",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p1",
+       "title": "ana",
+       "agent": "",
+       "status": "blocked",
+       "badge": "waiting",
+       "preview": "p1",
+       "initial": "A",
+       "tint": 0,
+       "match": [
+        "ana"
+       ],
+       "name": "ana",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "f1",
+        "name": "Review",
+        "open": false,
+        "waiting": 1,
+        "stopped": 0,
+        "count": "2 agents",
+        "summary": "ana needs you",
+        "picture": [
+         {
+          "id": "p1",
+          "title": "ana",
+          "agent": "",
+          "status": "blocked",
+          "badge": "waiting",
+          "preview": "p1",
+          "initial": "A",
+          "tint": 0,
+          "match": [
+           "ana"
+          ],
+          "name": "ana",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p5",
+          "title": "eve",
+          "agent": "",
+          "status": "idle",
+          "badge": "none",
+          "preview": "p5",
+          "initial": "E",
+          "tint": 1,
+          "match": [
+           "eve"
+          ],
+          "name": "eve",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      }
+     ],
+     "agentCount": 2
+    },
+    {
+     "key": "unrecognised",
+     "label": "unrecognised",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p7",
+       "title": "gus",
+       "agent": "",
+       "status": "unknown",
+       "badge": "unrecognised",
+       "preview": "p7",
+       "initial": "G",
+       "tint": 2,
+       "match": [
+        "gus"
+       ],
+       "name": "gus",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p7",
+        "title": "gus",
+        "agent": "",
+        "status": "unknown",
+        "badge": "unrecognised",
+        "preview": "p7",
+        "initial": "G",
+        "tint": 2,
+        "match": [
+         "gus"
+        ],
+        "name": "gus",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p2",
+       "title": "bo",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p2",
+       "initial": "B",
+       "tint": 1,
+       "match": [
+        "bo"
+       ],
+       "name": "bo",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p3",
+       "title": "cy",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "yard",
+       "initial": "C",
+       "tint": 2,
+       "match": [
+        "cy"
+       ],
+       "name": "cy",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p4",
+       "title": "dee",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p4",
+       "initial": "D",
+       "tint": 1,
+       "match": [
+        "dee"
+       ],
+       "name": "dee",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p9",
+       "title": "hal",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p9",
+       "initial": "H",
+       "tint": 3,
+       "match": [
+        "hal"
+       ],
+       "name": "hal",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p3",
+        "title": "cy",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "yard",
+        "initial": "C",
+        "tint": 2,
+        "match": [
+         "cy"
+        ],
+        "name": "cy",
+        "starred": true,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "f2",
+        "name": "Build",
+        "open": true,
+        "waiting": 0,
+        "stopped": 0,
+        "count": "3 agents",
+        "summary": "3 working",
+        "picture": [
+         {
+          "id": "p2",
+          "title": "bo",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p2",
+          "initial": "B",
+          "tint": 1,
+          "match": [
+           "bo"
+          ],
+          "name": "bo",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p4",
+          "title": "dee",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p4",
+          "initial": "D",
+          "tint": 1,
+          "match": [
+           "dee"
+          ],
+          "name": "dee",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p9",
+          "title": "hal",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p9",
+          "initial": "H",
+          "tint": 3,
+          "match": [
+           "hal"
+          ],
+          "name": "hal",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p2",
+        "title": "bo",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p2",
+        "initial": "B",
+        "tint": 1,
+        "match": [
+         "bo"
+        ],
+        "name": "bo",
+        "starred": false,
+        "folderID": "f2",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p4",
+        "title": "dee",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p4",
+        "initial": "D",
+        "tint": 1,
+        "match": [
+         "dee"
+        ],
+        "name": "dee",
+        "starred": false,
+        "folderID": "f2",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p9",
+        "title": "hal",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p9",
+        "initial": "H",
+        "tint": 3,
+        "match": [
+         "hal"
+        ],
+        "name": "hal",
+        "starred": false,
+        "folderID": "f2",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 4
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p5",
+       "title": "eve",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p5",
+       "initial": "E",
+       "tint": 1,
+       "match": [
+        "eve"
+       ],
+       "name": "eve",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p8",
+       "title": "shell",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "shell",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "shell"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "shell"
+      },
+      {
+       "id": "p6",
+       "title": "fay",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p6",
+       "initial": "F",
+       "tint": 3,
+       "match": [
+        "fay"
+       ],
+       "name": "fay",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p8",
+        "title": "shell",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "shell",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "shell"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "shell"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p6",
+        "title": "fay",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p6",
+        "initial": "F",
+        "tint": 3,
+        "match": [
+         "fay"
+        ],
+        "name": "fay",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 2
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": [
+    {
+     "id": "f4",
+     "name": "Zero",
+     "open": false,
+     "waiting": 0,
+     "stopped": 0,
+     "count": "0 agents",
+     "summary": "empty",
+     "picture": []
+    },
+    {
+     "id": "f3",
+     "name": "Empty",
+     "open": false,
+     "waiting": 0,
+     "stopped": 0,
+     "count": "0 agents",
+     "summary": "empty",
+     "picture": []
+    }
+   ]
+  }
+ },
+ {
+  "name": "folders and stars, all closed",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "needsYou",
+     "label": "needs you",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p1",
+       "title": "ana",
+       "agent": "",
+       "status": "blocked",
+       "badge": "waiting",
+       "preview": "p1",
+       "initial": "A",
+       "tint": 0,
+       "match": [
+        "ana"
+       ],
+       "name": "ana",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "f1",
+        "name": "Review",
+        "open": false,
+        "waiting": 1,
+        "stopped": 0,
+        "count": "2 agents",
+        "summary": "ana needs you",
+        "picture": [
+         {
+          "id": "p1",
+          "title": "ana",
+          "agent": "",
+          "status": "blocked",
+          "badge": "waiting",
+          "preview": "p1",
+          "initial": "A",
+          "tint": 0,
+          "match": [
+           "ana"
+          ],
+          "name": "ana",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p5",
+          "title": "eve",
+          "agent": "",
+          "status": "idle",
+          "badge": "none",
+          "preview": "p5",
+          "initial": "E",
+          "tint": 1,
+          "match": [
+           "eve"
+          ],
+          "name": "eve",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      }
+     ],
+     "agentCount": 2
+    },
+    {
+     "key": "unrecognised",
+     "label": "unrecognised",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p7",
+       "title": "gus",
+       "agent": "",
+       "status": "unknown",
+       "badge": "unrecognised",
+       "preview": "p7",
+       "initial": "G",
+       "tint": 2,
+       "match": [
+        "gus"
+       ],
+       "name": "gus",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p7",
+        "title": "gus",
+        "agent": "",
+        "status": "unknown",
+        "badge": "unrecognised",
+        "preview": "p7",
+        "initial": "G",
+        "tint": 2,
+        "match": [
+         "gus"
+        ],
+        "name": "gus",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p2",
+       "title": "bo",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p2",
+       "initial": "B",
+       "tint": 1,
+       "match": [
+        "bo"
+       ],
+       "name": "bo",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p3",
+       "title": "cy",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "yard",
+       "initial": "C",
+       "tint": 2,
+       "match": [
+        "cy"
+       ],
+       "name": "cy",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p4",
+       "title": "dee",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p4",
+       "initial": "D",
+       "tint": 1,
+       "match": [
+        "dee"
+       ],
+       "name": "dee",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p9",
+       "title": "hal",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p9",
+       "initial": "H",
+       "tint": 3,
+       "match": [
+        "hal"
+       ],
+       "name": "hal",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p3",
+        "title": "cy",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "yard",
+        "initial": "C",
+        "tint": 2,
+        "match": [
+         "cy"
+        ],
+        "name": "cy",
+        "starred": true,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "f2",
+        "name": "Build",
+        "open": false,
+        "waiting": 0,
+        "stopped": 0,
+        "count": "3 agents",
+        "summary": "3 working",
+        "picture": [
+         {
+          "id": "p2",
+          "title": "bo",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p2",
+          "initial": "B",
+          "tint": 1,
+          "match": [
+           "bo"
+          ],
+          "name": "bo",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p4",
+          "title": "dee",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p4",
+          "initial": "D",
+          "tint": 1,
+          "match": [
+           "dee"
+          ],
+          "name": "dee",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p9",
+          "title": "hal",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p9",
+          "initial": "H",
+          "tint": 3,
+          "match": [
+           "hal"
+          ],
+          "name": "hal",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      }
+     ],
+     "agentCount": 4
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p5",
+       "title": "eve",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p5",
+       "initial": "E",
+       "tint": 1,
+       "match": [
+        "eve"
+       ],
+       "name": "eve",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p8",
+       "title": "shell",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "shell",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "shell"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "shell"
+      },
+      {
+       "id": "p6",
+       "title": "fay",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p6",
+       "initial": "F",
+       "tint": 3,
+       "match": [
+        "fay"
+       ],
+       "name": "fay",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p8",
+        "title": "shell",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "shell",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "shell"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "shell"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p6",
+        "title": "fay",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p6",
+        "initial": "F",
+        "tint": 3,
+        "match": [
+         "fay"
+        ],
+        "name": "fay",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 2
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": [
+    {
+     "id": "f4",
+     "name": "Zero",
+     "open": false,
+     "waiting": 0,
+     "stopped": 0,
+     "count": "0 agents",
+     "summary": "empty",
+     "picture": []
+    },
+    {
+     "id": "f3",
+     "name": "Empty",
+     "open": false,
+     "waiting": 0,
+     "stopped": 0,
+     "count": "0 agents",
+     "summary": "empty",
+     "picture": []
+    }
+   ]
+  }
+ },
+ {
+  "name": "stars without folders",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "needsYou",
+     "label": "needs you",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p1",
+       "title": "ana",
+       "agent": "",
+       "status": "blocked",
+       "badge": "waiting",
+       "preview": "p1",
+       "initial": "A",
+       "tint": 0,
+       "match": [
+        "ana"
+       ],
+       "name": "ana",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p1",
+        "title": "ana",
+        "agent": "",
+        "status": "blocked",
+        "badge": "waiting",
+        "preview": "p1",
+        "initial": "A",
+        "tint": 0,
+        "match": [
+         "ana"
+        ],
+        "name": "ana",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "unrecognised",
+     "label": "unrecognised",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p7",
+       "title": "gus",
+       "agent": "",
+       "status": "unknown",
+       "badge": "unrecognised",
+       "preview": "p7",
+       "initial": "G",
+       "tint": 2,
+       "match": [
+        "gus"
+       ],
+       "name": "gus",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p7",
+        "title": "gus",
+        "agent": "",
+        "status": "unknown",
+        "badge": "unrecognised",
+        "preview": "p7",
+        "initial": "G",
+        "tint": 2,
+        "match": [
+         "gus"
+        ],
+        "name": "gus",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p2",
+       "title": "bo",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p2",
+       "initial": "B",
+       "tint": 1,
+       "match": [
+        "bo"
+       ],
+       "name": "bo",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p3",
+       "title": "cy",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "yard",
+       "initial": "C",
+       "tint": 2,
+       "match": [
+        "cy"
+       ],
+       "name": "cy",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p4",
+       "title": "dee",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p4",
+       "initial": "D",
+       "tint": 1,
+       "match": [
+        "dee"
+       ],
+       "name": "dee",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p9",
+       "title": "hal",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p9",
+       "initial": "H",
+       "tint": 3,
+       "match": [
+        "hal"
+       ],
+       "name": "hal",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p2",
+        "title": "bo",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p2",
+        "initial": "B",
+        "tint": 1,
+        "match": [
+         "bo"
+        ],
+        "name": "bo",
+        "starred": true,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p3",
+        "title": "cy",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "yard",
+        "initial": "C",
+        "tint": 2,
+        "match": [
+         "cy"
+        ],
+        "name": "cy",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p4",
+        "title": "dee",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p4",
+        "initial": "D",
+        "tint": 1,
+        "match": [
+         "dee"
+        ],
+        "name": "dee",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p9",
+        "title": "hal",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p9",
+        "initial": "H",
+        "tint": 3,
+        "match": [
+         "hal"
+        ],
+        "name": "hal",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 4
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p5",
+       "title": "eve",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p5",
+       "initial": "E",
+       "tint": 1,
+       "match": [
+        "eve"
+       ],
+       "name": "eve",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p8",
+       "title": "shell",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "shell",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "shell"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "shell"
+      },
+      {
+       "id": "p6",
+       "title": "fay",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p6",
+       "initial": "F",
+       "tint": 3,
+       "match": [
+        "fay"
+       ],
+       "name": "fay",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p6",
+        "title": "fay",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p6",
+        "initial": "F",
+        "tint": 3,
+        "match": [
+         "fay"
+        ],
+        "name": "fay",
+        "starred": true,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p5",
+        "title": "eve",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p5",
+        "initial": "E",
+        "tint": 1,
+        "match": [
+         "eve"
+        ],
+        "name": "eve",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p8",
+        "title": "shell",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "shell",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "shell"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "shell"
+       }
+      }
+     ],
+     "agentCount": 3
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "search with folders",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p3",
+       "title": "cy",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "yard",
+       "initial": "C",
+       "tint": 2,
+       "match": [
+        "cy"
+       ],
+       "name": "cy",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p3",
+        "title": "cy",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "yard",
+        "initial": "C",
+        "tint": 2,
+        "match": [
+         "cy"
+        ],
+        "name": "cy",
+        "starred": true,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p6",
+       "title": "fay",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p6",
+       "initial": "F",
+       "tint": 3,
+       "match": [
+        "fay"
+       ],
+       "name": "fay",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p6",
+        "title": "fay",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p6",
+        "initial": "F",
+        "tint": 3,
+        "match": [
+         "fay"
+        ],
+        "name": "fay",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "search finds nothing",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "search without folders",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p4",
+       "title": "dee",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p4",
+       "initial": "D",
+       "tint": 1,
+       "match": [
+        "dee"
+       ],
+       "name": "dee",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p4",
+        "title": "dee",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p4",
+        "initial": "D",
+        "tint": 1,
+        "match": [
+         "dee"
+        ],
+        "name": "dee",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p5",
+       "title": "eve",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p5",
+       "initial": "E",
+       "tint": 1,
+       "match": [
+        "eve"
+       ],
+       "name": "eve",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p8",
+       "title": "shell",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "shell",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "shell"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "shell"
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p5",
+        "title": "eve",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p5",
+        "initial": "E",
+        "tint": 1,
+        "match": [
+         "eve"
+        ],
+        "name": "eve",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p8",
+        "title": "shell",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "shell",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "shell"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "shell"
+       }
+      }
+     ],
+     "agentCount": 2
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "folder ties a loose agent",
+  "displayNames": [
+   "jo",
+   "kim",
+   "lu",
+   "mo"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "q3",
+       "title": "lu",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "q3",
+       "initial": "L",
+       "tint": 1,
+       "match": [
+        "lu"
+       ],
+       "name": "lu",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "q1",
+       "title": "jo",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "q1",
+       "initial": "J",
+       "tint": 1,
+       "match": [
+        "jo"
+       ],
+       "name": "jo",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "q2",
+       "title": "kim",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "q2",
+       "initial": "K",
+       "tint": 1,
+       "match": [
+        "kim"
+       ],
+       "name": "kim",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "q4",
+       "title": "mo",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "q4",
+       "initial": "M",
+       "tint": 2,
+       "match": [
+        "mo"
+       ],
+       "name": "mo",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "q3",
+        "title": "lu",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "q3",
+        "initial": "L",
+        "tint": 1,
+        "match": [
+         "lu"
+        ],
+        "name": "lu",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "t1",
+        "name": "T",
+        "open": true,
+        "waiting": 0,
+        "stopped": 0,
+        "count": "2 agents",
+        "summary": "idle",
+        "picture": [
+         {
+          "id": "q2",
+          "title": "kim",
+          "agent": "",
+          "status": "idle",
+          "badge": "none",
+          "preview": "q2",
+          "initial": "K",
+          "tint": 1,
+          "match": [
+           "kim"
+          ],
+          "name": "kim",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "q4",
+          "title": "mo",
+          "agent": "",
+          "status": "idle",
+          "badge": "none",
+          "preview": "q4",
+          "initial": "M",
+          "tint": 2,
+          "match": [
+           "mo"
+          ],
+          "name": "mo",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "q2",
+        "title": "kim",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "q2",
+        "initial": "K",
+        "tint": 1,
+        "match": [
+         "kim"
+        ],
+        "name": "kim",
+        "starred": false,
+        "folderID": "t1",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "q4",
+        "title": "mo",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "q4",
+        "initial": "M",
+        "tint": 2,
+        "match": [
+         "mo"
+        ],
+        "name": "mo",
+        "starred": false,
+        "folderID": "t1",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "q1",
+        "title": "jo",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "q1",
+        "initial": "J",
+        "tint": 1,
+        "match": [
+         "jo"
+        ],
+        "name": "jo",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 4
+    }
+   ],
+   "archived": [],
+   "needsYou": 0,
+   "total": 4,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "folders by recency within a section",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "needsYou",
+     "label": "needs you",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p1",
+       "title": "ana",
+       "agent": "",
+       "status": "blocked",
+       "badge": "waiting",
+       "preview": "p1",
+       "initial": "A",
+       "tint": 0,
+       "match": [
+        "ana"
+       ],
+       "name": "ana",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p1",
+        "title": "ana",
+        "agent": "",
+        "status": "blocked",
+        "badge": "waiting",
+        "preview": "p1",
+        "initial": "A",
+        "tint": 0,
+        "match": [
+         "ana"
+        ],
+        "name": "ana",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "unrecognised",
+     "label": "unrecognised",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p7",
+       "title": "gus",
+       "agent": "",
+       "status": "unknown",
+       "badge": "unrecognised",
+       "preview": "p7",
+       "initial": "G",
+       "tint": 2,
+       "match": [
+        "gus"
+       ],
+       "name": "gus",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p7",
+        "title": "gus",
+        "agent": "",
+        "status": "unknown",
+        "badge": "unrecognised",
+        "preview": "p7",
+        "initial": "G",
+        "tint": 2,
+        "match": [
+         "gus"
+        ],
+        "name": "gus",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    },
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p2",
+       "title": "bo",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p2",
+       "initial": "B",
+       "tint": 1,
+       "match": [
+        "bo"
+       ],
+       "name": "bo",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p3",
+       "title": "cy",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "yard",
+       "initial": "C",
+       "tint": 2,
+       "match": [
+        "cy"
+       ],
+       "name": "cy",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p4",
+       "title": "dee",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p4",
+       "initial": "D",
+       "tint": 1,
+       "match": [
+        "dee"
+       ],
+       "name": "dee",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p9",
+       "title": "hal",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p9",
+       "initial": "H",
+       "tint": 3,
+       "match": [
+        "hal"
+       ],
+       "name": "hal",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "new",
+        "name": "New",
+        "open": false,
+        "waiting": 0,
+        "stopped": 0,
+        "count": "1 agent",
+        "summary": "1 working",
+        "picture": [
+         {
+          "id": "p2",
+          "title": "bo",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p2",
+          "initial": "B",
+          "tint": 1,
+          "match": [
+           "bo"
+          ],
+          "name": "bo",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p3",
+        "title": "cy",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "yard",
+        "initial": "C",
+        "tint": 2,
+        "match": [
+         "cy"
+        ],
+        "name": "cy",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "old",
+        "name": "Old",
+        "open": false,
+        "waiting": 0,
+        "stopped": 0,
+        "count": "1 agent",
+        "summary": "1 working",
+        "picture": [
+         {
+          "id": "p4",
+          "title": "dee",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p4",
+          "initial": "D",
+          "tint": 1,
+          "match": [
+           "dee"
+          ],
+          "name": "dee",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p9",
+        "title": "hal",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p9",
+        "initial": "H",
+        "tint": 3,
+        "match": [
+         "hal"
+        ],
+        "name": "hal",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 4
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p5",
+       "title": "eve",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p5",
+       "initial": "E",
+       "tint": 1,
+       "match": [
+        "eve"
+       ],
+       "name": "eve",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p8",
+       "title": "shell",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "shell",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "shell"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "shell"
+      },
+      {
+       "id": "p6",
+       "title": "fay",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p6",
+       "initial": "F",
+       "tint": 3,
+       "match": [
+        "fay"
+       ],
+       "name": "fay",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p5",
+        "title": "eve",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p5",
+        "initial": "E",
+        "tint": 1,
+        "match": [
+         "eve"
+        ],
+        "name": "eve",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p8",
+        "title": "shell",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "shell",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "shell"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "shell"
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p6",
+        "title": "fay",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p6",
+        "initial": "F",
+        "tint": 3,
+        "match": [
+         "fay"
+        ],
+        "name": "fay",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 3
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "search opens closed folders",
+  "displayNames": [
+   "ana",
+   "bo",
+   "cy",
+   "dee",
+   "eve",
+   "fay",
+   "gus",
+   "shell",
+   "hal",
+   "ivy"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "working",
+     "label": "working",
+     "collapsed": false,
+     "rows": [
+      {
+       "id": "p4",
+       "title": "dee",
+       "agent": "",
+       "status": "working",
+       "badge": "working",
+       "preview": "p4",
+       "initial": "D",
+       "tint": 1,
+       "match": [
+        "dee"
+       ],
+       "name": "dee",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "folder",
+       "folder": {
+        "id": "f1",
+        "name": "Review",
+        "open": true,
+        "waiting": 0,
+        "stopped": 0,
+        "count": "2 agents",
+        "summary": "1 working",
+        "picture": [
+         {
+          "id": "p4",
+          "title": "dee",
+          "agent": "",
+          "status": "working",
+          "badge": "working",
+          "preview": "p4",
+          "initial": "D",
+          "tint": 1,
+          "match": [
+           "dee"
+          ],
+          "name": "dee",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         },
+         {
+          "id": "p5",
+          "title": "eve",
+          "agent": "",
+          "status": "idle",
+          "badge": "none",
+          "preview": "p5",
+          "initial": "E",
+          "tint": 1,
+          "match": [
+           "eve"
+          ],
+          "name": "eve",
+          "starred": false,
+          "avatar": {
+           "kind": "initial"
+          }
+         }
+        ]
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p4",
+        "title": "dee",
+        "agent": "",
+        "status": "working",
+        "badge": "working",
+        "preview": "p4",
+        "initial": "D",
+        "tint": 1,
+        "match": [
+         "dee"
+        ],
+        "name": "dee",
+        "starred": false,
+        "folderID": "f1",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      },
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p5",
+        "title": "eve",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "p5",
+        "initial": "E",
+        "tint": 1,
+        "match": [
+         "eve"
+        ],
+        "name": "eve",
+        "starred": false,
+        "folderID": "f1",
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 2
+    },
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "p5",
+       "title": "eve",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "p5",
+       "initial": "E",
+       "tint": 1,
+       "match": [
+        "eve"
+       ],
+       "name": "eve",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      },
+      {
+       "id": "p8",
+       "title": "shell",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "shell",
+       "initial": "S",
+       "tint": 0,
+       "match": [
+        "shell"
+       ],
+       "name": "",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       },
+       "activity": "shell"
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "p8",
+        "title": "shell",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "shell",
+        "initial": "S",
+        "tint": 0,
+        "match": [
+         "shell"
+        ],
+        "name": "",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        },
+        "activity": "shell"
+       }
+      }
+     ],
+     "agentCount": 1
+    }
+   ],
+   "archived": [
+    {
+     "id": "p10",
+     "title": "ivy",
+     "agent": "",
+     "status": "idle",
+     "badge": "none",
+     "preview": "p10",
+     "initial": "I",
+     "tint": 0,
+     "archivedNote": "archived by ana",
+     "match": [
+      "ivy"
+     ],
+     "name": "ivy",
+     "starred": false,
+     "avatar": {
+      "kind": "initial"
+     }
+    }
+   ],
+   "needsYou": 1,
+   "total": 9,
+   "emptyFolders": []
+  }
+ },
+ {
+  "name": "search lowers as Go does",
+  "displayNames": [
+   "jo",
+   "kim",
+   "lu",
+   "mo"
+  ],
+  "board": {
+   "sections": [
+    {
+     "key": "idle",
+     "label": "idle",
+     "collapsed": true,
+     "rows": [
+      {
+       "id": "q2",
+       "title": "kim",
+       "agent": "",
+       "status": "idle",
+       "badge": "none",
+       "preview": "q2",
+       "initial": "K",
+       "tint": 1,
+       "match": [
+        "kim"
+       ],
+       "name": "kim",
+       "starred": false,
+       "avatar": {
+        "kind": "initial"
+       }
+      }
+     ],
+     "items": [
+      {
+       "kind": "agent",
+       "row": {
+        "id": "q2",
+        "title": "kim",
+        "agent": "",
+        "status": "idle",
+        "badge": "none",
+        "preview": "q2",
+        "initial": "K",
+        "tint": 1,
+        "match": [
+         "kim"
+        ],
+        "name": "kim",
+        "starred": false,
+        "avatar": {
+         "kind": "initial"
+        }
+       }
+      }
+     ],
+     "agentCount": 1
+    }
+   ],
+   "archived": [],
+   "needsYou": 0,
+   "total": 4,
+   "emptyFolders": []
+  }
  }
 ]

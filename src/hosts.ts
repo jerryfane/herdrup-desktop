@@ -1,4 +1,3 @@
-import { webGuest } from "./platform";
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
 import type { Machine, PairingOffer, SavedMachine, SyncedMachine } from "./mygo";
@@ -130,11 +129,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   syncedMachines = accountHint === null ? [] : await Desk.syncedMachines().catch(() => []);
   drawSynced();
  };
- if (!webGuest) {
-  events.syncedMachinesChanged.on(list => { syncedMachines = list; drawSynced(); });
-  events.accountChanged.on(() => { void refreshAccount(); });
-  void refreshAccount();
- }
+ events.syncedMachinesChanged.on(list => { syncedMachines = list; drawSynced(); });
+ events.accountChanged.on(() => { void refreshAccount(); });
+ void refreshAccount();
  const shared = element("section", "host-home-saved");
  const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
  const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite";
@@ -214,14 +211,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
  home.append(header, section, synced, shared, empty, pair, add, inviteActions, message);
- // The first-launch sign-in (1B) stands in front of the host home until it is answered; the web
- // guest's sign-in lives in Settings only.
+ // The first-launch sign-in (1B) stands in front of the host home until it is answered. (The
+ // browser has its own host home, web/hosts.ts.)
  const welcome = new AccountWelcome(() => { home.hidden = false; });
- container.replaceChildren(...(webGuest ? [home] : [welcome.root, home]));
+ container.replaceChildren(welcome.root, home);
  // "settled" once the first refresh has decided whether the first-launch welcome shows (its
  // provider lookup can take a while); the home stays visible meanwhile, so a launch without a
  // network still shows it. The first-run smoke waits for it.
- container.dataset.welcome = webGuest ? "settled" : "pending";
+ container.dataset.welcome = "pending";
  async function openPendingInvitation() {
   const text = await Desk.takeGuestInvitation();
   if (text) showGuestAccept(refresh, showAgents, text);
@@ -322,8 +319,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   void refreshPaste();
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
-   if (!webGuest && accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
-   const welcomed = webGuest ? null : await welcome.decide(machines.length === 0 && shares.length === 0);
+   if (accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
+   const welcomed = await welcome.decide(machines.length === 0 && shares.length === 0);
    // Only the newest refresh decides: an older lookup answering late changes nothing. The
    // welcome, the home and "settled" change together.
    if (generation !== version) return;

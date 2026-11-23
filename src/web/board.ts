@@ -1,9 +1,18 @@
-// The guest's status board, built in the browser: internal/herdr BuildBoard(agents, View{}) and
-// DisplayName, as desk_guest.go runGuest (:272-275) publishes them for the shared agent. With an
-// empty View there is no query, no folder and no star, so folders.go layout only turns each
-// section's rows into agent items. Pinned to Go by internal/herdr/testdata/web_board.golden.json.
+// The status board, built in the browser: internal/herdr BuildBoard(agents, view) and DisplayName,
+// as the desktop publishes them. A guest's link (desk_guest.go runGuest :272-275) has an empty view:
+// no query, no folder, no star. An owner's link has the machine's folder document (agent.groups.get,
+// groups.ts), the folders open on this browser and the sidebar search (folders.go layout).
+// Pinned to Go by internal/herdr/testdata/web_board.golden.json.
 
-import type { Avatar, AvatarFace, Board, Item, Row, Section } from "../mygo";
+import type { Avatar, AvatarFace, Board, Folder, Item, Row, Section } from "../mygo";
+
+/** herdrapi.AgentGroupFolder: one folder of the owner's document (herdr's JSON names). */
+export interface AgentGroupFolder { id: string; name: string; order: number; members?: string[] | null }
+/** herdrapi.ResponseResultAgentGroups untagged: the folders-and-stars document (folders.go Groups). */
+export interface Groups { folders: AgentGroupFolder[] | null; stars: string[] | null; revision: number }
+
+/** board.go View: the folder document (none: no folder, no star), the open folders, the search. */
+export interface BoardView { groups?: Groups | null; open?: Readonly<Record<string, boolean>>; query?: string }
 
 /** The agent.list agent fields the board reads (herdrapi.AgentInfo, herdr's JSON names). A
  *  pointer field is absent or null when Go's is nil. */
@@ -82,8 +91,8 @@ function goCompare(a: string, b: string): number {
 }
 const fold = (u: number) => u >= 0xe000 ? u - 0x800 : u >= 0xd800 ? u + 0x2000 : u;
 
-/** BuildBoard(agents, View{}) (board.go:183-247 with folders.go:281-414 for no document). */
-export function buildBoard(agents: AgentInfo[]): Board {
+/** BuildBoard(agents, view) (board.go:183-247 with folders.go:281-414). */
+export function buildBoard(agents: AgentInfo[], view: BoardView = {}): Board {
  const live: Array<{ info: AgentInfo; group: Group }> = [];
  const archived: Array<{ info: AgentInfo; arc: ArchivedInfo }> = [];
  for (const info of agents) {
@@ -108,20 +117,144 @@ export function buildBoard(agents: AgentInfo[]): Board {
   if (tx !== ty) return tx > ty ? -1 : 1;
   return goCompare(str(x.info.pane_id), str(y.info.pane_id));
  });
- // board.go:222-239; folders.go:362-411 with no folder or star: every row an unstarred agent item.
+ // board.go:222-239: the rows the query matches, by section.
+ const query = view.query ?? "";
+ const members: Member[] = [];
  let section: Section | undefined;
  for (const { info, group } of live) {
   if (group === Group.NeedsYou) board.needsYou++;
   const row = rowOf(info, group);
+  if (!matches(row.match, query)) continue;
   if (section === undefined || section.key !== groupKeys[group]) {
    section = { key: groupKeys[group]!, label: groupLabels[group]!, collapsed: group === Group.Idle, rows: [], items: [], agentCount: 0 };
    board.sections.push(section);
   }
   section.rows.push(row);
-  section.items.push({ kind: "agent", row: { ...row } } satisfies Item);
-  section.agentCount++;
+  members.push({ row, group, completed: completed(info) });
  }
+ // board.go:240-246: while searching every folder counts as open, and none is empty.
+ const open = (id: string) => query !== "" || view.open?.[id] === true;
+ [board.sections, board.emptyFolders] = layout(board.sections, members, view.groups ?? null, open);
+ if (query !== "") board.emptyFolders = [];
  return board;
+}
+
+/** board.go Matches: the query inside one of the row's match strings, ignoring case. */
+function matches(match: readonly string[], query: string): boolean {
+ if (query === "") return true;
+ const q = goLower(query);
+ return match.some((s) => goLower(s).includes(q));
+}
+
+// Go strings.ToLower: unicode.ToLower rune by rune. JS lowers in context (a final sigma) and maps
+// U+0130 to two runes; Go's simple mapping takes neither.
+const goLower = (s: string) => Array.from(s, (c) => c === "\u0130" ? "i" : c === "\u03a3" ? "\u03c3" : c.toLowerCase()).join("");
+
+// ---- folders.go: folders and stars ----
+
+/** folders.go member: a row with its group and its last completed turn (the list's recency). */
+interface Member { row: Row; group: Group; completed: number }
+
+// folders.go:215-256
+function summarise(f: AgentGroupFolder, members: readonly Member[], open: boolean): Folder {
+ const s: Folder = { id: f.id, name: f.name, open, waiting: 0, stopped: 0, count: "", summary: "", picture: [] };
+ const waiting: string[] = [], stopped: string[] = [];
+ let working = 0;
+ members.forEach((m, i) => {
+  if (i < 4) s.picture.push(m.row);
+  if (m.group === Group.NeedsYou) waiting.push(m.row.title);
+  else if (m.group === Group.Stopped) stopped.push(m.row.title);
+  else if (m.group === Group.Working) working++;
+ });
+ s.waiting = waiting.length; s.stopped = stopped.length;
+ s.count = members.length === 1 ? "1 agent" : `${members.length} agents`;
+ const parts: string[] = [];
+ if (waiting.length > 0) parts.push(phrase(waiting, "needs you", "need you"));
+ if (stopped.length > 0) parts.push(phrase(stopped, "stopped", "stopped"));
+ s.summary = members.length === 0 ? "empty" : parts.length > 0 ? parts.join(" · ") : working > 0 ? `${working} working` : "idle";
+ return s;
+}
+
+// folders.go:258-266
+function phrase(names: readonly string[], one: string, many: string): string {
+ if (names.length === 1) return `${names[0]} ${one}`;
+ if (names.length === 2) return `${names[0]} and ${names[1]} ${many}`;
+ return `${names.length} ${many}`;
+}
+
+/** folders.go layout (281-414), herdrup's AgentFolderLayout: a starred agent first within its state;
+ *  a folder's agents leave their sections, the folder row sitting in its most urgent agent's section
+ *  after the starred agents and among the others by recency (on a tie the folder first), its agents
+ *  following it when open; a folder with none of its agents listed goes to the empty folders. */
+function layout(sections: Section[], members: readonly Member[], g: Groups | null, open: (id: string) => boolean): [Section[], Folder[]] {
+ const doc: Groups = g ?? { folders: [], stars: [], revision: 0 };
+ const stars = new Set(doc.stars ?? []);
+ const starred = (r: Row) => r.name !== "" && stars.has(r.name);
+ // folders.go OrderedFolders: by order, then by their place in the document.
+ const ordered = [...doc.folders ?? []].sort((a, b) => a.order - b.order);
+ const folderOf = new Map<string, string>();
+ for (const f of ordered) for (const m of f.members ?? []) if (!folderOf.has(m)) folderOf.set(m, f.id);
+ const folderID = (r: Row) => r.name === "" ? "" : folderOf.get(r.name) ?? "";
+
+ // members holds every row in section order; split it back into sections.
+ const bySection: Member[][] = [];
+ let k = 0;
+ for (const s of sections) { bySection.push(members.slice(k, k + s.rows.length)); k += s.rows.length; }
+
+ const membersOf = new Map<string, Member[]>();
+ for (const rows of bySection) {
+  for (const m of [...rows.filter((m) => starred(m.row)), ...rows.filter((m) => !starred(m.row))]) {
+   const id = folderID(m.row);
+   if (id !== "") membersOf.set(id, [...membersOf.get(id) ?? [], m]);
+  }
+ }
+
+ const summaries = new Map<Group, Array<{ folder: Folder; members: Member[] }>>();
+ const empty: Folder[] = [];
+ for (const f of ordered) {
+  const ms = membersOf.get(f.id) ?? [];
+  const s = summarise(f, ms, open(f.id));
+  if (ms.length === 0) { empty.push(s); continue; }
+  const group = ms[0]!.group;
+  summaries.set(group, [...summaries.get(group) ?? [], { folder: s, members: ms }]);
+ }
+
+ // Go's omitempty: an agent outside any folder has no folderID.
+ const agent = (r: Row, star: boolean, folder: string): Item => {
+  const row: Row = { ...r, starred: star };
+  if (folder !== "") row.folderID = folder;
+  return { kind: "agent", row };
+ };
+ const recency = (ms: readonly Member[]) => ms.reduce((best, m) => Math.max(best, m.completed), -Infinity);
+ const out: Section[] = [];
+ sections.forEach((s, i) => {
+  const rows = bySection[i]!;
+  const loose = rows.filter((m) => folderID(m.row) === "");
+  const items: Item[] = loose.filter((m) => starred(m.row)).map((m) => agent(m.row, true, ""));
+  let others = loose.filter((m) => !starred(m.row));
+  let count = loose.length;
+  if (rows.length > 0) {
+   // Both lists are newest first (the board sorts agents by recency; folders stably here), so one
+   // merge interleaves them.
+   const folders = [...summaries.get(rows[0]!.group) ?? []].sort((a, b) => {
+    const ra = recency(a.members), rb = recency(b.members);
+    return ra === rb ? 0 : ra > rb ? -1 : 1;
+   });
+   for (const fs of folders) {
+    while (others.length > 0 && others[0]!.completed > recency(fs.members)) {
+     items.push(agent(others[0]!.row, false, ""));
+     others = others.slice(1);
+    }
+    items.push({ kind: "folder", folder: fs.folder });
+    count += fs.members.length;
+    if (fs.folder.open) for (const m of fs.members) items.push(agent(m.row, starred(m.row), fs.folder.id));
+   }
+  }
+  for (const m of others) items.push(agent(m.row, false, ""));
+  if (items.length === 0) return;
+  out.push({ ...s, items, agentCount: count });
+ });
+ return [out, empty];
 }
 
 // board.go:251-281

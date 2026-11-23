@@ -1,0 +1,34 @@
+{
+ "herds": {
+  "herd": [
+   {"pane_id": "p1", "terminal_id": "t-p1", "name": "ana", "agent_status": "blocked", "last_completed_turn": {"completed_unix_ms": 500, "turn": 1}},
+   {"pane_id": "p2", "terminal_id": "t-p2", "name": "bo", "agent_status": "working", "last_completed_turn": {"completed_unix_ms": 900, "turn": 1}},
+   {"pane_id": "p3", "terminal_id": "t-p3", "name": "cy", "agent_status": "working", "last_completed_turn": {"completed_unix_ms": 700, "turn": 1}, "cwd": "/srv/yard"},
+   {"pane_id": "p4", "terminal_id": "t-p4", "name": "dee", "agent_status": "working", "last_completed_turn": {"completed_unix_ms": 300, "turn": 1}},
+   {"pane_id": "p5", "terminal_id": "t-p5", "name": "eve", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 800, "turn": 1}},
+   {"pane_id": "p6", "terminal_id": "t-p6", "name": "fay", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 100, "turn": 1}},
+   {"pane_id": "p7", "terminal_id": "t-p7", "name": "gus", "agent_status": "unknown", "last_completed_turn": {"completed_unix_ms": 200, "turn": 1}},
+   {"pane_id": "p8", "terminal_id": "t-p8", "name": null, "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 600, "turn": 1}, "terminal_title_stripped": "shell"},
+   {"pane_id": "p9", "terminal_id": "t-p9", "name": "hal", "agent_status": "working"},
+   {"pane_id": "p10", "terminal_id": "t-p10", "name": "ivy", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 50, "turn": 1}, "archived": {"at": "2026-11-01T10:00:00Z", "by": "ana"}}
+  ],
+  "tie": [
+   {"pane_id": "q1", "terminal_id": "t-q1", "name": "jo", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 400, "turn": 1}},
+   {"pane_id": "q2", "terminal_id": "t-q2", "name": "kim", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 400, "turn": 1}},
+   {"pane_id": "q3", "terminal_id": "t-q3", "name": "lu", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 450, "turn": 1}},
+   {"pane_id": "q4", "terminal_id": "t-q4", "name": "mo", "agent_status": "idle", "last_completed_turn": {"completed_unix_ms": 400, "turn": 1}}
+  ]
+ },
+ "cases": [
+  {"name": "folders and stars, one open", "herd": "herd", "view": {"groups": {"folders": [{"id": "f1", "name": "Review", "order": 2, "members": ["bo", "eve", "ana"]}, {"id": "f2", "name": "Build", "order": 1, "members": ["dee", "hal", "bo"]}, {"id": "f3", "name": "Empty", "order": 3, "members": ["nobody", "ivy"]}, {"id": "f4", "name": "Zero", "order": 0}], "stars": ["cy", "eve", "ghost"], "revision": 7}, "open": {"f2": true}}},
+  {"name": "folders and stars, all closed", "herd": "herd", "view": {"groups": {"folders": [{"id": "f1", "name": "Review", "order": 2, "members": ["bo", "eve", "ana"]}, {"id": "f2", "name": "Build", "order": 1, "members": ["dee", "hal", "bo"]}, {"id": "f3", "name": "Empty", "order": 3, "members": ["nobody", "ivy"]}, {"id": "f4", "name": "Zero", "order": 0}], "stars": ["cy", "eve", "ghost"], "revision": 7}, "open": {"f1": false}}},
+  {"name": "stars without folders", "herd": "herd", "view": {"groups": {"folders": [], "stars": ["bo", "fay"], "revision": 2}}},
+  {"name": "search with folders", "herd": "herd", "view": {"groups": {"folders": [{"id": "f1", "name": "Review", "order": 2, "members": ["bo", "eve", "ana"]}, {"id": "f2", "name": "Build", "order": 1, "members": ["dee", "hal", "bo"]}, {"id": "f3", "name": "Empty", "order": 3, "members": ["nobody", "ivy"]}, {"id": "f4", "name": "Zero", "order": 0}], "stars": ["cy", "eve", "ghost"], "revision": 7}, "query": "Y"}},
+  {"name": "search finds nothing", "herd": "herd", "view": {"groups": {"folders": [{"id": "f1", "name": "Review", "order": 2, "members": ["bo", "eve", "ana"]}, {"id": "f2", "name": "Build", "order": 1, "members": ["dee", "hal", "bo"]}, {"id": "f3", "name": "Empty", "order": 3, "members": ["nobody", "ivy"]}, {"id": "f4", "name": "Zero", "order": 0}], "stars": ["cy", "eve", "ghost"], "revision": 7}, "query": "zzz"}},
+  {"name": "search without folders", "herd": "herd", "view": {"query": "e"}},
+  {"name": "folder ties a loose agent", "herd": "tie", "view": {"groups": {"folders": [{"id": "t1", "name": "T", "order": 0, "members": ["kim", "mo"]}], "stars": [], "revision": 1}, "open": {"t1": true}}},
+  {"name": "folders by recency within a section", "herd": "herd", "view": {"groups": {"folders": [{"id": "old", "name": "Old", "order": 0, "members": ["dee"]}, {"id": "new", "name": "New", "order": 1, "members": ["bo"]}], "stars": [], "revision": 3}}},
+  {"name": "search opens closed folders", "herd": "herd", "view": {"groups": {"folders": [{"id": "f1", "name": "Review", "order": 0, "members": ["eve", "dee"]}], "stars": [], "revision": 1}, "open": {"f1": false}, "query": "E"}},
+  {"name": "search lowers as Go does", "herd": "tie", "view": {"query": "K\u0130"}}
+ ]
+}

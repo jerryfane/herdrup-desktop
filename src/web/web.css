@@ -16,14 +16,15 @@
 
 /* A phone (the invite's main use): one column, as the iPhone app's stack. The list fills the
    screen; an open agent covers it, with its own back button; Settings and Gram sit between the
-   top bar and the floating tab bar, which stay. */
+   top bar and the floating tab bar, which stay. The guest page's only: the owner's shell
+   (html.desk, boot.ts) has style.css's own phone layout. */
 @media (max-width: 700px) {
-  .sidebar { width: 100vw !important; }
-  .sidebar-resizer { display: none; }
-  .detail { left: 0; bottom: 0; z-index: 2; }
-  .select { display: none; }
-  body:not([data-web-detail="page"]):not([data-web-detail="bars"]) .detail { display: none; }
-  body[data-web-detail="bars"] .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
+  :root:not(.desk) .sidebar { width: 100vw !important; }
+  :root:not(.desk) .sidebar-resizer { display: none; }
+  :root:not(.desk) .detail { left: 0; bottom: 0; z-index: 2; }
+  :root:not(.desk) .select { display: none; }
+  :root:not(.desk) body:not([data-web-detail="page"]):not([data-web-detail="bars"]) .detail { display: none; }
+  :root:not(.desk) body[data-web-detail="bars"] .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
 }
 
 /* Owner access: approving this browser (ownerScreen.ts; the owner's pick of the approval-flow
