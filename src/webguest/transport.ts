@@ -356,8 +356,9 @@ class Session {
  /** Keeps an account-bound session past its deadline (herdr link/session.rs refreshed): before
   *  each deadline a newer statement goes as one whole message, {"t":"account.refresh",…}, which
   *  never reaches the API and gets no reply. A statement that can't be had lets the host end the
-  *  session at its deadline; the next call connects with a fresh one. */
- keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<{ jws: string; expMs: number }>, now: () => number) {
+  *  session at its deadline; the next call connects with a fresh one. A statement whose session
+  *  is no longer the page's (live false: signed out meanwhile) is never sent, and refreshing stops. */
+ keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<{ jws: string; expMs: number; live?: () => boolean }>, now: () => number) {
   const life = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
   this.whenEnded(() => { life.abort(); if (timer !== null) clearTimeout(timer); });
@@ -365,9 +366,9 @@ class Session {
    if (life.signal.aborted) return;
    timer = setTimeout(async () => {
     timer = null;
-    let statement: { jws: string; expMs: number };
+    let statement: { jws: string; expMs: number; live?: () => boolean };
     try { statement = await next(life.signal); } catch { return; }
-    if (life.signal.aborted) return;
+    if (life.signal.aborted || (statement.live && !statement.live())) return;
     try { this.socket.send(this.noise.encrypt(new TextEncoder().encode(JSON.stringify({ t: "account.refresh", account: statement.jws })))); }
     catch { return; }
     arm(statement.expMs);
@@ -562,7 +563,7 @@ export interface TransportLink {
  hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void; live?: () => boolean }>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
- statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number }>;
+ statement?(signal: AbortSignal): Promise<{ jws: string; expMs: number; live?: () => boolean }>;
 }
 
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation. */
