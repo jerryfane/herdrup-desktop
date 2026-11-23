@@ -29,30 +29,87 @@ func shaOf(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-func TestAvatarCacheVerifiesOnStoreAndRead(t *testing.T) {
+// The cache verifies on read. Publishing takes bytes loadAvatar has checked
+// and hashes nothing again (#381): bytes published under another sha are
+// written as given, and the read refuses them.
+func TestAvatarCacheVerifiesOnRead(t *testing.T) {
 	dir := t.TempDir()
 	sha := shaOf(pngBytes)
-	if err := storeAvatar(dir, shaOf([]byte("other")), pngBytes); err == nil {
-		t.Fatal("stored bytes under a sha they do not hash to")
+	other := shaOf([]byte("other"))
+	if err := publishAvatar(dir, other, pngBytes); err != nil {
+		t.Fatal(err)
 	}
-	if err := storeAvatar(dir, sha, pngBytes); err != nil {
+	if got := readAvatar(dir, other); got != nil {
+		t.Fatalf("served bytes under a sha they do not hash to: %q", got)
+	}
+	if err := publishAvatar(dir, sha, pngBytes); err != nil {
 		t.Fatal(err)
 	}
 	if got := readAvatar(dir, sha); string(got) != string(pngBytes) {
 		t.Fatalf("read back %q", got)
 	}
-	// A damaged file is not served; a verified write replaces it.
+	// A damaged file is not served; a publish replaces it.
 	if err := os.WriteFile(filepath.Join(dir, sha), []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := readAvatar(dir, sha); got != nil {
 		t.Fatalf("served a damaged file: %q", got)
 	}
-	if err := storeAvatar(dir, sha, pngBytes); err != nil {
+	if err := publishAvatar(dir, sha, pngBytes); err != nil {
 		t.Fatal(err)
 	}
 	if got := readAvatar(dir, sha); string(got) != string(pngBytes) {
 		t.Fatalf("read back %q after replacing a damaged file", got)
+	}
+}
+
+// #381 review: a publish touches nothing but a regular cache entry. A
+// directory where the photo would go keeps its mode, and a link there is
+// replaced, its target neither followed nor changed. Modes are compared
+// before and after, as each OS reports them (#388).
+func TestAvatarPublishLeavesWhatIsNotARegularEntryAlone(t *testing.T) {
+	dir := t.TempDir()
+	sha := shaOf(pngBytes)
+	if err := os.Mkdir(filepath.Join(dir, sha), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(filepath.Join(dir, sha))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishAvatar(dir, sha, pngBytes); err == nil {
+		t.Fatal("published over a directory")
+	}
+	if after, err := os.Lstat(filepath.Join(dir, sha)); err != nil || !after.IsDir() || after.Mode() != before.Mode() {
+		t.Fatalf("the directory is now %v, %v; want it left at %v", after.Mode(), err, before.Mode())
+	}
+	// Through the store the verified photo is shown all the same.
+	var s avatarStore
+	photo, err := s.get(context.Background(), dir, new(int), "t1", sha, func(context.Context) (string, error) {
+		return base64.StdEncoding.EncodeToString(pngBytes), nil
+	})
+	if err != nil || !strings.HasPrefix(photo.URL, "data:image/png;base64,") {
+		t.Fatalf("%+v, %v; want the photo", photo, err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.WriteFile(outside, []byte("keep"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(linked, sha)); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	_ = publishAvatar(linked, sha, pngBytes)
+	if fi, err := os.Stat(outside); err != nil || fi.Mode() != target.Mode() {
+		t.Fatalf("the link's target is now %v, %v; want it left at %v", fi.Mode(), err, target.Mode())
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "keep" {
+		t.Fatalf("the link's target now reads %q, %v", got, err)
 	}
 }
 
@@ -71,7 +128,7 @@ func TestAvatarStaleReadKeepsAVerifiedReplacement(t *testing.T) {
 	// still holds the stale bytes.
 	staged := func(name string) ([]byte, error) {
 		stale, err := os.ReadFile(name)
-		if err := storeAvatar(dir, sha, pngBytes); err != nil {
+		if err := publishAvatar(dir, sha, pngBytes); err != nil {
 			t.Fatal(err)
 		}
 		return stale, err
@@ -102,9 +159,9 @@ func TestAvatarGetReturnsVerifiedBytesTheCacheCouldNotTake(t *testing.T) {
 		return base64.StdEncoding.EncodeToString(pngBytes), nil
 	}
 	for range 2 {
-		url, err := s.get(context.Background(), dir, owner, "t1", sha, fetch)
-		if err != nil || !strings.HasPrefix(url, "data:image/png;base64,") {
-			t.Fatalf("%q, %v; want the photo", url, err)
+		photo, err := s.get(context.Background(), dir, owner, "t1", sha, fetch)
+		if err != nil || !strings.HasPrefix(photo.URL, "data:image/png;base64,") {
+			t.Fatalf("%+v, %v; want the photo", photo, err)
 		}
 	}
 	if calls != 2 || len(s.failed) != 0 {
@@ -130,11 +187,11 @@ func TestAvatarGetFetchesOnceAndCaches(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			u, err := s.get(context.Background(), dir, owner, "t1", sha, fetch)
+			p, err := s.get(context.Background(), dir, owner, "t1", sha, fetch)
 			if err != nil {
 				t.Error(err)
 			}
-			urls[i] = u
+			urls[i] = p.URL
 		}()
 	}
 	waitFor(t, "a fetch in flight", func() bool { return calls.Load() >= 1 })
@@ -150,11 +207,11 @@ func TestAvatarGetFetchesOnceAndCaches(t *testing.T) {
 	}
 	// From disk afterwards, on a fresh store (a new launch).
 	var fresh avatarStore
-	if _, err := fresh.get(context.Background(), dir, owner, "t1", sha, func(context.Context) (string, error) {
+	if p, err := fresh.get(context.Background(), dir, owner, "t1", sha, func(context.Context) (string, error) {
 		t.Fatal("fetched a cached photo")
 		return "", nil
-	}); err != nil {
-		t.Fatal(err)
+	}); err != nil || p.URL == "" {
+		t.Fatal(p, err)
 	}
 }
 
@@ -169,15 +226,15 @@ func TestAvatarGetRemembersFailuresPerConnection(t *testing.T) {
 	}
 	conn1, conn2 := new(int), new(int)
 	for range 2 {
-		if _, err := s.get(context.Background(), dir, conn1, "t1", sha, failing); err == nil {
-			t.Fatal("no error")
+		if p, err := s.get(context.Background(), dir, conn1, "t1", sha, failing); err != nil || !p.Unavailable {
+			t.Fatalf("%+v, %v; want herdr's refusal as Unavailable", p, err)
 		}
 	}
 	if calls != 1 {
 		t.Fatalf("a failed photo was fetched %d times on one connection, want 1", calls)
 	}
-	if _, err := s.get(context.Background(), dir, conn2, "t1", sha, failing); err == nil || calls != 2 {
-		t.Fatalf("a new connection did not retry (calls %d)", calls)
+	if p, err := s.get(context.Background(), dir, conn2, "t1", sha, failing); err != nil || !p.Unavailable || calls != 2 {
+		t.Fatalf("a new connection did not retry (calls %d, %+v, %v)", calls, p, err)
 	}
 	// A failure on the way to herdr is not remembered: not being connected,
 	// a dropped connection, a timeout.
@@ -185,8 +242,11 @@ func TestAvatarGetRemembersFailuresPerConnection(t *testing.T) {
 		other := shaOf([]byte(cause.Error()))
 		before := calls
 		transient := func(context.Context) (string, error) { calls++; return "", cause }
-		s.get(context.Background(), dir, conn2, "t1", other, transient)
-		s.get(context.Background(), dir, conn2, "t1", other, transient)
+		for range 2 {
+			if p, err := s.get(context.Background(), dir, conn2, "t1", other, transient); err == nil || p != (AvatarPhoto{}) {
+				t.Fatalf("%v: %+v, %v; want the error", cause, p, err)
+			}
+		}
 		if calls != before+2 {
 			t.Fatalf("%v was remembered as a failure", cause)
 		}
@@ -196,13 +256,16 @@ func TestAvatarGetRemembersFailuresPerConnection(t *testing.T) {
 func TestDefinitiveAvatarFailure(t *testing.T) {
 	api := &bridge.APIError{Code: "not_found", Message: "avatar not found"}
 	_, notImage := dataURL([]byte("hello, not an image"))
+	_, mismatch := loadAvatar(context.Background(), t.TempDir(), shaOf([]byte("other")), func(context.Context) (string, error) {
+		return base64.StdEncoding.EncodeToString(pngBytes), nil
+	})
 	for _, err := range []error{
 		api,
 		fmt.Errorf("agent.avatar.get: %w", api),
 		&engine.ErrUnsupported{Method: "agent.avatar.get", Capability: "agent_avatar"},
 		&engine.ResultTagError{Method: "agent.avatar.get", Got: "pong", Want: []string{"agent_avatar_image"}},
 		notImage,
-		storeAvatar(t.TempDir(), shaOf([]byte("other")), pngBytes),
+		mismatch,
 	} {
 		if !definitiveAvatarFailure(err) {
 			t.Errorf("%v is herdr's answer", err)
@@ -215,27 +278,31 @@ func TestDefinitiveAvatarFailure(t *testing.T) {
 	}
 }
 
-func TestAvatarGetRejectsWrongBytes(t *testing.T) {
+func TestAvatarGetRefusesWrongBytes(t *testing.T) {
 	dir := t.TempDir()
 	var s avatarStore
 	owner := new(int)
-	// Bytes that do not hash to the sha asked for.
-	_, err := s.get(context.Background(), dir, owner, "t1", shaOf([]byte("expected")), func(context.Context) (string, error) {
+	// Bytes that do not hash to the sha asked for: refused, and not cached.
+	expected := shaOf([]byte("expected"))
+	p, err := s.get(context.Background(), dir, owner, "t1", expected, func(context.Context) (string, error) {
 		return base64.StdEncoding.EncodeToString(pngBytes), nil
 	})
-	if err == nil {
-		t.Fatal("accepted bytes that do not match their sha256")
+	if err != nil || !p.Unavailable {
+		t.Fatalf("bytes that do not match their sha256: %+v, %v", p, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, expected)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cached bytes that do not match their sha256: %v", err)
 	}
 	// Not an image.
 	text := []byte("hello, not an image")
-	_, err = s.get(context.Background(), dir, owner, "t1", shaOf(text), func(context.Context) (string, error) {
+	p, err = s.get(context.Background(), dir, owner, "t1", shaOf(text), func(context.Context) (string, error) {
 		return base64.StdEncoding.EncodeToString(text), nil
 	})
-	if err == nil {
-		t.Fatal("accepted a non-image")
+	if err != nil || !p.Unavailable {
+		t.Fatalf("a non-image: %+v, %v", p, err)
 	}
-	if _, err := s.get(context.Background(), dir, owner, "t1", "nope", nil); err == nil {
-		t.Fatal("accepted an invalid sha")
+	if p, err := s.get(context.Background(), dir, owner, "t1", "nope", nil); err != nil || !p.Unavailable {
+		t.Fatalf("an invalid sha: %+v, %v", p, err)
 	}
 }
 
@@ -249,31 +316,30 @@ func TestAvatarGetAsksEachAgentAndSharesWhatLoaded(t *testing.T) {
 	owner := new(int)
 	notFound := &bridge.APIError{Code: "not_found", Message: "avatar not found"}
 	var asked []string
-	ask := func(target string, answer func() (string, error)) (string, error) {
+	ask := func(target string, answer func() (string, error)) (AvatarPhoto, error) {
 		return s.get(context.Background(), dir, owner, target, sha, func(context.Context) (string, error) {
 			asked = append(asked, target)
 			return answer()
 		})
 	}
 	photo := func() (string, error) { return base64.StdEncoding.EncodeToString(pngBytes), nil }
-	// t2 no longer has it.
-	if _, err := ask("t2", func() (string, error) { return "", notFound }); err == nil {
-		t.Fatal("t2 had the photo")
-	}
-	if _, err := ask("t2", photo); !errors.Is(err, errAvatarFailed) {
-		t.Fatalf("t2's failure was not remembered: %v", err)
+	// t2 no longer has it, and that is remembered.
+	for range 2 {
+		if p, err := ask("t2", func() (string, error) { return "", notFound }); err != nil || !p.Unavailable {
+			t.Fatalf("t2: %+v, %v; want Unavailable", p, err)
+		}
 	}
 	// t4 has it now: asked all the same, and it loads.
-	if url, err := ask("t4", photo); err != nil || !strings.HasPrefix(url, "data:image/png;base64,") {
-		t.Fatalf("t4: %q, %v", url, err)
+	if p, err := ask("t4", photo); err != nil || !strings.HasPrefix(p.URL, "data:image/png;base64,") {
+		t.Fatalf("t4: %+v, %v", p, err)
 	}
 	if strings.Join(asked, ",") != "t2,t4" {
 		t.Fatalf("asked %v, want t2 then t4", asked)
 	}
 	// Loaded, it is any agent's without an ask, t2's included.
 	for _, target := range []string{"t2", "t9"} {
-		if _, err := ask(target, func() (string, error) { t.Fatalf("asked %s for a loaded photo", target); return "", nil }); err != nil {
-			t.Fatal(err)
+		if p, err := ask(target, func() (string, error) { t.Fatalf("asked %s for a loaded photo", target); return "", nil }); err != nil || p.URL == "" {
+			t.Fatal(p, err)
 		}
 	}
 }
@@ -291,32 +357,32 @@ func TestAvatarGetDoesNotJoinAnotherAgentsAsk(t *testing.T) {
 	defer release()
 	started := make(chan struct{})
 	type result struct {
-		url string
-		err error
+		photo AvatarPhoto
+		err   error
 	}
 	t2 := make(chan result, 1)
 	go func() {
-		url, err := s.get(context.Background(), dir, owner, "t2", sha, func(context.Context) (string, error) {
+		p, err := s.get(context.Background(), dir, owner, "t2", sha, func(context.Context) (string, error) {
 			close(started)
 			<-hang
 			return "", &bridge.APIError{Code: "not_found", Message: "avatar not found"}
 		})
-		t2 <- result{url, err}
+		t2 <- result{p, err}
 	}()
 	<-started
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	asked := false
-	url, err := s.get(ctx, dir, owner, "t4", sha, func(context.Context) (string, error) {
+	p, err := s.get(ctx, dir, owner, "t4", sha, func(context.Context) (string, error) {
 		asked = true
 		return base64.StdEncoding.EncodeToString(pngBytes), nil
 	})
-	if err != nil || !asked || !strings.HasPrefix(url, "data:image/png;base64,") {
-		t.Fatalf("t4: asked %v, %q, %v", asked, url, err)
+	if err != nil || !asked || !strings.HasPrefix(p.URL, "data:image/png;base64,") {
+		t.Fatalf("t4: asked %v, %+v, %v", asked, p, err)
 	}
 	release()
-	if late := <-t2; late.err != nil || late.url != url {
-		t.Fatalf("t2 after t4 loaded: %q, %v; want t4's photo", late.url, late.err)
+	if late := <-t2; late.err != nil || late.photo != p {
+		t.Fatalf("t2 after t4 loaded: %+v, %v; want t4's photo", late.photo, late.err)
 	}
 }
 
