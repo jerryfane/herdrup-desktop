@@ -101,13 +101,19 @@ test("For says the length in whole days and the day it ends; grants that end on 
 
 // ---- A fake document for the rows, the code field and the sheet (Bun has no DOM) ----
 
-/** An event target that keeps the listeners it holds, to see a press stop being followed. */
+/** An event target that keeps the listeners it holds, to see a press stop being followed. A
+ *  listener added with a signal goes when it aborts, and isn't added once it has. */
 class Listened extends EventTarget {
  readonly held = new Map<string, Set<unknown>>();
  count(type: string) { return this.held.get(type)?.size ?? 0; }
+ /** Every listener held, of any type. */
+ total() { return [...this.held.values()].reduce((n, s) => n + s.size, 0); }
  override addEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: AddEventListenerOptions | boolean) {
+  const signal = typeof o === "object" ? o.signal : undefined;
+  if (signal?.aborted) return;
   if (!this.held.has(type)) this.held.set(type, new Set());
   this.held.get(type)!.add(l);
+  signal?.addEventListener("abort", () => this.held.get(type)?.delete(l), { once: true });
   super.addEventListener(type, l, o);
  }
  override removeEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: EventListenerOptions | boolean) {
@@ -128,8 +134,10 @@ class FakeDocument extends EventTarget {
 
 /** The DOM the sheet uses, behaving as a browser's does where the sheet depends on it: events reach
  *  listeners and on* handlers; click() does nothing on a disabled or hidden control and ticks a
- *  radio or checkbox; focus() needs an enabled element in the document; showModal() needs a dialog
- *  in the document that isn't open; close() fires "close". */
+ *  radio (unticking the rest of its group) or checkbox, and a click on a label activates its
+ *  control (for/id, or the one inside it);
+ *  focus() needs an enabled element in the document; showModal() needs a dialog in the document
+ *  that isn't open; close() fires "close". */
 class FakeElement extends Listened {
  className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
  inputMode = ""; autocomplete = ""; maxLength = -1; selectionStart = 0; selectionEnd = 0; open = false;
@@ -159,9 +167,16 @@ class FakeElement extends Listened {
  click(): void {
   if (this.disabled || !this.shown()) return;
   const ticks = this.type === "checkbox" || (this.type === "radio" && !this.checked);
+  if (ticks && this.type === "radio") for (const r of this.ownerDocument.body.all()) if (r.type === "radio" && r.name === this.name) r.checked = false;
   if (ticks) this.checked = this.type === "radio" || !this.checked;
   this.dispatchEvent(new Event("click"));
   if (ticks) this.dispatchEvent(new Event("change"));
+  if (this.tagName === "label") this.control()?.click();
+ }
+ /** A label's control: the element in the document whose id is its for, else the input inside it. */
+ control(): FakeElement | undefined {
+  if (this.htmlFor) return this.connected() ? this.ownerDocument.body.all().find(n => n.id === this.htmlFor) : undefined;
+  return this.all().find(n => n.tagName === "input");
  }
  focus(): void { if (!this.disabled && this.connected()) this.ownerDocument.activeElement = this; }
  setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
@@ -334,11 +349,19 @@ test("the code field follows one primary press until release, cancel or close; a
  down(200); win.dispatchEvent(new Event("blur"));
  down(200, { pointerId: 3 }); at("pointerup", 200, { pointerId: 3 });
  expect(presses.plainClick({ ...click, pointerId: 3 })).toBe(true);
- // A press the sheet closed on stops being followed and is no click, and the window isn't watched.
+ // A press the sheet closed on stops being followed and is no click, and close() takes off every
+ // listener it put on the field and its window (#398 review): a field still in the document
+ // follows no further press, and nothing captures it.
+ expect(input.total()).toBeGreaterThan(0);
  expect(win.count("blur")).toBe(1);
  down(200); presses.close();
- expect(input.count("pointermove")).toBe(0);
- expect(win.count("blur")).toBe(0);
+ expect(input.total()).toBe(0);
+ expect(win.total()).toBe(0);
+ expect(presses.plainClick(click)).toBe(false);
+ const captures = input.captured.length;
+ down(200); at("pointermove", 60); at("pointerup", 200);
+ expect(input.captured.length).toBe(captures);
+ expect(input.total()).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
 });
 
@@ -388,7 +411,9 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
   const status = () => nodes().find(n => n.className === "web-access-status")?.textContent;
   const button = (text: string) => nodes().find(n => n.tagName === "button" && !n.hidden && n.textContent === text);
   const rowHead = (key: string) => nodes().find(n => n.tagName === "button" && n.children[0]?.textContent === key)!;
-  const oneDay = () => nodes().find(n => n.type === "radio" && n.value === "1d")!;
+  const forValue = () => rowHead("For").children[1]!.textContent;
+  // A choice as a person picks it: its radio isn't clickable (pointer-events: none), its label is.
+  const choose = (label: string) => nodes().find(n => n.tagName === "label" && n.textContent === label)!.click();
   const sent = (method: string) => calls.filter(c => c[0] === method).map(c => c.slice(1));
 
   await until("Ready in an open dialog with the code field focused", () =>
@@ -397,15 +422,25 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
   const field = code()!;
   field.value = "1234"; field.dispatchEvent(new Event("input"));
   await until("an enabled Approve", () => button("Approve")?.disabled === false);
+  // For opens and its labels pick the length: 1 day, then back to 30 days.
+  rowHead("For").click();
+  choose("1 day");
+  expect(forValue()).toStartWith("1 day, until ");
+  choose("30 days");
+  expect(forValue()).toStartWith("30 days, until ");
   button("Approve")!.click();
   await until("Approving…", () => button("Approving…") !== undefined);
-  // While the approval is out the choices are held: For opens, but 1 day can't be picked.
-  rowHead("For").click();
-  expect(oneDay().shown()).toBe(true);
-  oneDay().click();
-  expect(oneDay().checked).toBe(false);
+  // While the approval is out the choices are held: 1 day's label picks nothing.
+  choose("1 day");
+  expect(forValue()).toStartWith("30 days, until ");
   firstAnswer.resolve();
   await until("Try again", () => button("Try again")?.disabled === false);
+  // After the lost answer they're still held, and Try again is about that approval.
+  choose("1 day");
+  choose("Chat only");
+  expect(nodes().find(n => n.name === "web-access-time" && n.checked)?.value).toBe("30d");
+  expect(forValue()).toStartWith("30 days, until ");
+  expect(rowHead("Access").children[1]!.textContent).toBe("Chat and terminal");
   expect(sent("Desk.WebAccessCheckCode")).toEqual([["r1", "1234"]]);
   expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"]]);
   // Try again resends what the lost approval sent, without checking the code again.
