@@ -1,6 +1,7 @@
 // The browser Desk's owner link and the machine probe (web owner access D2c) against a local relay
 // whose host admits owner hellos as herdr's guest/owner.rs does and serves agent.list.
 import { expect, test } from "bun:test";
+import { isGuestPaused } from "../src/guestPaused";
 import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
@@ -181,7 +182,7 @@ test("an owner stream refused at its start with owner_paused pauses the open age
  try {
   await openP1(desk, relay);
   expect((await desk.state()).guest?.availability).toBeUndefined();
-  await expect(desk.startTerminal("view-1", "stream-1")).rejects.toThrow("owner_paused");
+  expect(isGuestPaused(String(await desk.startTerminal("view-1", "stream-1").catch(e => e)))).toBe(true);
   expect((await desk.state()).guest?.availability).toBe("paused");
   const running = stateWhere(s => s.phase === "connected" && s.guest?.availability === undefined);
   await listAgain(desk);
@@ -200,7 +201,7 @@ test("an owner's stream refused before it opens (owner_forbidden: the agent isn'
  const desk = await deskWithKey();
  try {
   await openP1(desk, relay);
-  await expect(desk.startTerminal("view-1", "stream-1")).rejects.toThrow("owner_paused");
+  expect(isGuestPaused(String(await desk.startTerminal("view-1", "stream-1").catch(e => e)))).toBe(true);
   expect((await desk.state()).guest?.availability).toBe("paused");
   const running = stateWhere(s => s.phase === "connected" && s.guest?.availability === undefined);
   await listAgain(desk);
@@ -236,7 +237,8 @@ test("an owner stream the host ends with owner_paused pauses the open agent", as
  try {
   await openP1(desk, relay);
   await desk.startTerminal("view-1", "stream-1");
-  expect(await ended.promise).toContain("owner_paused");
+  // The page reads the host's own refusal as paused (isGuestPaused, by its code).
+  expect(isGuestPaused(await ended.promise)).toBe(true);
   expect((await desk.state()).guest?.availability).toBe("paused");
  } finally { offTerm(); desk.disconnectOwner(); relay.stop(); }
 });
