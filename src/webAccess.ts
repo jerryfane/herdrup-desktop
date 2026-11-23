@@ -45,8 +45,9 @@ const systemClock: SheetClock = { now: Date.now, after: (ms, f) => { const t = s
 /** Machines, Access and For as rows: each says its choice and opens in place to change it. The
  *  terminal warning sits in the Access row outside the part that closes, so it shows whenever
  *  terminal access is chosen. For starts at the longest length. Access, For and the warning follow
- *  their own choices, and For's end date follows the clock until stop; the sheet writes the
- *  Machines row's summary (showMachines) and reads choice. */
+ *  their own choices; For's end date is a preview that follows the clock until granted says a
+ *  grant exists, or stop. The sheet writes the Machines row's summary (showMachines) and reads
+ *  choice. */
 export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: readonly WebAccessLength[], clock = systemClock) {
  const choice = { scope: "terminal", length: lengths.at(-1)?.id ?? "" };
  const rows = el("div", "web-access-rows");
@@ -73,19 +74,59 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
   accessRow.value.textContent = choiceLabel(ACCESS_CHOICES, choice.scope);
   terminalNote.hidden = choice.scope !== "terminal";
  }
- // The end date moves with the clock (past midnight it's a day later), so For looks again at each
- // minute's turn while the sheet is open.
+ // Until a grant exists, For's end date is a preview that moves with the clock (past midnight it's
+ // a day later), so it looks again at each minute's turn. Once one exists For says the expiry the
+ // grant was made with (a retry keeps it), or no date if that isn't known.
  let cancel = () => {};
+ let grant: { endMs: number | undefined } | null = null;
  function paintFor(): void {
-  cancel();
-  const now = clock.now();
+  cancel(); cancel = () => {};
   const length = lengths.find(l => l.id === choice.length);
-  forRow.value.textContent = length ? timeSummary(length.seconds, now) : "";
-  cancel = clock.after(60_000 - now % 60_000, paintFor);
+  if (!length) forRow.value.textContent = "";
+  else if (grant) forRow.value.textContent = grant.endMs ? timeSummary(length.seconds, grant.endMs) : lengthLabel(length.seconds);
+  else {
+   const now = clock.now();
+   forRow.value.textContent = timeSummary(length.seconds, now + length.seconds * 1000);
+   cancel = clock.after(60_000 - now % 60_000, paintFor);
+  }
  }
  paintAccess();
  paintFor();
- return { rows, choice: choice as Readonly<typeof choice>, showMachines: (summary: string) => { machinesRow.value.textContent = summary; }, stop: () => cancel() };
+ return {
+  rows, choice: choice as Readonly<typeof choice>,
+  showMachines: (summary: string) => { machinesRow.value.textContent = summary; },
+  granted: (endMs: number | undefined) => { grant = { endMs }; paintFor(); },
+  stop: () => cancel(),
+ };
+}
+
+/** Follows one primary-pointer press on the code for its owner, the sheet's dialog (modal, so
+ *  every pointer event in the window lands in it): moves count while the press is down; release
+ *  stops following, and a cancel or close also forgets the press, which then isn't a click. */
+export function followPresses(owner: EventTarget) {
+ let press: CodePress | null = null;
+ const follow = (event: Event) => {
+  const e = event as PointerEvent;
+  if (e.isPrimary) press?.move(e.clientX, e.clientY);
+ };
+ const release = () => owner.removeEventListener("pointermove", follow);
+ const drop = () => { release(); press = null; };
+ owner.addEventListener("pointerup", release);
+ owner.addEventListener("pointercancel", drop);
+ return {
+  down(e: PointerEvent): void {
+   if (!e.isPrimary || e.button !== 0) return;
+   press = new CodePress(e.clientX, e.clientY);
+   owner.addEventListener("pointermove", follow);
+  },
+  /** Whether this click ends a plain click on the code; the press is done either way. */
+  plainClick(click: { detail: number; shiftKey: boolean }): boolean {
+   const plain = press?.plainClick(click) ?? false;
+   press = null;
+   return plain;
+  },
+  close: drop,
+ };
 }
 
 export function initWebAccess(): void {
@@ -138,23 +179,20 @@ export function initWebAccess(): void {
    });
   };
   // A plain click on a box takes its digit; a drag (even one that came back to its start), a
-  // double click or a shift-click keeps the selection the field made. The second press of a double
-  // click lands on the digit the first one took, which would start dragging that selection, so
-  // it's dropped first and the press selects the code as in any field.
-  let press: CodePress | null = null;
-  const follow = (event: MouseEvent) => press?.move(event.clientX, event.clientY);
+  // double click or a shift-click keeps the selection the field made. The dialog follows the press
+  // (followPresses). The second press of a double click lands on the digit the first one took,
+  // which would start dragging that selection, so it's dropped first and the press selects the
+  // code as in any field.
+  const presses = followPresses(dialog);
+  code.addEventListener("pointerdown", event => presses.down(event));
   code.addEventListener("mousedown", event => {
    if (event.detail > 1) code.setSelectionRange(code.selectionStart, code.selectionStart);
-   press = new CodePress(event.clientX, event.clientY);
-   document.addEventListener("mousemove", follow);
-   document.addEventListener("mouseup", () => document.removeEventListener("mousemove", follow), { once: true });
   });
   code.addEventListener("click", event => {
-   if (press?.plainClick(event)) {
+   if (presses.plainClick(event)) {
     const slot = digits.findIndex(d => event.clientX < d.getBoundingClientRect().right);
     code.setSelectionRange(...slotSelection(slot < 0 ? 3 : slot, code.value.length));
    }
-   press = null;
    slots();
   });
   for (const type of ["keyup", "select", "focus"]) code.addEventListener(type, slots);
@@ -233,12 +271,14 @@ export function initWebAccess(): void {
     const { done: approved, unsure, lines } = resultLines(result);
     say(lines.join(" "));
     retry = unsure;
+    // The grants exist now: For says the expiry they were made with, no longer a preview.
+    if (approved || unsure) choices.granted(result.expiresMs);
     if (unsure) lock();
     if (approved) { end(); status.textContent = "Approved. The browser can open your machines now."; }
    } finally { approve.textContent = retry ? "Try again" : "Approve"; }
   });
   dialog.addEventListener("cancel", event => { if (!finished) event.preventDefault(); });
-  dialog.addEventListener("close", () => { off(); choices.stop(); dialog.remove(); done(); }, { once: true });
+  dialog.addEventListener("close", () => { off(); choices.stop(); presses.close(); dialog.remove(); done(); }, { once: true });
   document.body.append(dialog);
   update();
   dialog.showModal();

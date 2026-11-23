@@ -97,10 +97,10 @@ export function machinesSummary(machines: readonly { id: string; label: string }
  return names.length <= 3 ? names.join(", ") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"), from the duration
- *  the computer grants for the chosen length. */
-export function timeSummary(seconds: number, now: number): string {
- const end = new Date(now + seconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"); endMs is the
+ *  previewed end (now plus the duration the computer grants) or the grant's own expiry. */
+export function timeSummary(seconds: number, endMs: number): string {
+ const end = new Date(endMs).toLocaleDateString(undefined, { day: "numeric", month: "short" });
  return `${lengthLabel(seconds)}, until ${end}`;
 }
 

@@ -1349,6 +1349,11 @@ export interface WebAccessResult {
    */
   unsure?: boolean;
   problem?: string;
+  /**
+   * ExpiresMs is when the grants end (Unix ms), once any machine was
+   * granted. A retry after a lost answer sends, and returns, the same one.
+   */
+  expiresMs?: number;
 }
 
 /**
