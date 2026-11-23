@@ -182,6 +182,12 @@ function phrase(names: readonly string[], one: string, many: string): string {
  return `${names.length} ${many}`;
 }
 
+/** folders.go OrderedFolders: the folders in display order, by order, then by their place in the
+ *  document (the board's layout and the folder menus). */
+export function orderedFolders(g: Groups): AgentGroupFolder[] {
+ return [...g.folders ?? []].sort((a, b) => a.order - b.order);
+}
+
 /** folders.go layout (281-414), herdrup's AgentFolderLayout: a starred agent first within its state;
  *  a folder's agents leave their sections, the folder row sitting in its most urgent agent's section
  *  after the starred agents and among the others by recency (on a tie the folder first), its agents
@@ -190,8 +196,7 @@ function layout(sections: Section[], members: readonly Member[], g: Groups | nul
  const doc: Groups = g ?? { folders: [], stars: [], revision: 0 };
  const stars = new Set(doc.stars ?? []);
  const starred = (r: Row) => r.name !== "" && stars.has(r.name);
- // folders.go OrderedFolders: by order, then by their place in the document.
- const ordered = [...doc.folders ?? []].sort((a, b) => a.order - b.order);
+ const ordered = orderedFolders(doc);
  const folderOf = new Map<string, string>();
  for (const f of ordered) for (const m of f.members ?? []) if (!folderOf.has(m)) folderOf.set(m, f.id);
  const folderID = (r: Row) => r.name === "" ? "" : folderOf.get(r.name) ?? "";

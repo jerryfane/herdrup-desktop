@@ -1,6 +1,7 @@
 // The desktop's native popup menus (mygo.NewMenu(...).Popup, desk_groups.go popup) as an in-page
 // menu: it opens where the pointer last was (or the focused element, from the keyboard), and the
-// choice comes back as the Go menu item's Click would send it.
+// choice comes back as the entry itself, as the Go menu item's own Click runs: two items with the
+// same label are still two items.
 
 import "./menu.css";
 
@@ -11,12 +12,12 @@ addEventListener("pointerdown", (event) => { pointer = { x: event.clientX, y: ev
 addEventListener("contextmenu", (event) => { pointer = { x: event.clientX, y: event.clientY }; }, true);
 addEventListener("keydown", () => { pointer = null; }, true);
 
-let open: { close(choice: string | null): void } | null = null;
+let open: { close(choice: null): void } | null = null;
 
-/** Shows entries; resolves to the chosen label, or null when dismissed. */
-export function showMenu(entries: MenuEntry[]): Promise<string | null> {
+/** Shows entries; resolves to the chosen entry (one of entries, not a copy), or null when dismissed. */
+export function showMenu<T extends MenuEntry>(entries: readonly T[]): Promise<T | null> {
  open?.close(null);
- const { promise, resolve } = Promise.withResolvers<string | null>();
+ const { promise, resolve } = Promise.withResolvers<T | null>();
  const menu = document.createElement("div");
  menu.className = "web-menu"; menu.setAttribute("role", "menu");
  const items: HTMLButtonElement[] = [];
@@ -25,7 +26,7 @@ export function showMenu(entries: MenuEntry[]): Promise<string | null> {
   const item = document.createElement("button");
   item.type = "button"; item.textContent = entry.label; item.setAttribute("role", "menuitem");
   item.disabled = !!entry.disabled;
-  item.onclick = () => close(entry.label);
+  item.onclick = () => close(entry);
   if (!item.disabled) items.push(item);
   menu.append(item);
  }
@@ -39,7 +40,7 @@ export function showMenu(entries: MenuEntry[]): Promise<string | null> {
   items[next]?.focus();
  };
  const anchor = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
- function close(choice: string | null) {
+ function close(choice: T | null) {
   if (open !== handle) return;
   open = null;
   removeEventListener("pointerdown", dismiss, true); removeEventListener("keydown", keys, true); removeEventListener("blur", blur);

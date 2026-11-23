@@ -34,7 +34,7 @@ import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } 
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane } from "./topicsView";
-import { foldKey, nextTopicsOffer, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
+import { foldKey, nextTopicsOffer, ompHarness, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
 import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
 import lightbulbIcon from "../third_party/phosphor/web/lightbulb.svg?url";
@@ -635,7 +635,7 @@ class Detail {
    this.terminalTyping = !view.guest;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
-   const chatAvailable = /^omp(?:$| |-)/i.test(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
+   const chatAvailable = ompHarness(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
    if (this.disposed) return;
    this.chatAvailable = chatAvailable;
    this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
