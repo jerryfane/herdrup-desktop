@@ -48,9 +48,12 @@ func TestStartupWatchLogsAHeldProbeAndStartsNoSecond(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("lines = %q, want one per tick", lines)
 	}
-	for _, line := range lines {
-		if !strings.Contains(line, "no answer within") {
-			t.Errorf("line %q doesn't say the probe went unanswered", line)
+	if !strings.Contains(lines[0], "no answer within") {
+		t.Errorf("first line %q doesn't say the probe went unanswered", lines[0])
+	}
+	for _, line := range lines[1:] {
+		if !strings.Contains(line, "still has no answer") {
+			t.Errorf("line %q doesn't say the last probe is still out", line)
 		}
 	}
 	if n := calls.Load(); n != 1 {
@@ -64,5 +67,57 @@ func TestStartupWatchStopsOnceRendered(t *testing.T) {
 	runStartupWatch(eval, time.Millisecond, time.Second, 3, func(v ...any) { lines = append(lines, fmt.Sprint(v...)) })
 	if len(lines) != 0 {
 		t.Errorf("a rendered page logged %q", lines)
+	}
+}
+
+// Real time on purpose, in milliseconds: a probe answering after its deadline is the case.
+func TestStartupWatchProbesAgainOnceALateAnswerFreesTheSlot(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	eval := func(context.Context) (any, error) {
+		if calls.Add(1) == 1 {
+			<-release // held past its deadline, then the UI thread comes back
+			return `{"step":"fonts"}`, nil
+		}
+		return `{"step":"rendered"}`, nil
+	}
+	var lines []string
+	done := make(chan struct{})
+	go func() {
+		runStartupWatch(eval, 20*time.Millisecond, 5*time.Millisecond, 5, func(v ...any) {
+			lines = append(lines, fmt.Sprint(v...))
+			if len(lines) == 1 {
+				close(release)
+			}
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watch didn't finish")
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("%d probes, want a second one after the late answer freed the slot", n)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, `"step":"fonts"`) {
+			t.Errorf("the late answer was reported as a tick's result: %q", line)
+		}
+	}
+}
+
+// Real time on purpose: the reported time is what is measured.
+func TestStartupWatchReportsMeasuredElapsedTime(t *testing.T) {
+	var lines []string
+	eval := func(context.Context) (any, error) { time.Sleep(15 * time.Millisecond); return `{"step":"fonts"}`, nil }
+	runStartupWatch(eval, 10*time.Millisecond, time.Second, 2, func(v ...any) { lines = append(lines, fmt.Sprint(v...)) })
+	if len(lines) != 2 {
+		t.Fatalf("lines = %q", lines)
+	}
+	// The second probe answers no earlier than 10 ms + 15 ms (first answer) + 15 ms after start.
+	var ms int
+	if _, err := fmt.Sscanf(lines[1][strings.Index(lines[1], "after ")+len("after "):], "%dms", &ms); err != nil || ms < 35 {
+		t.Errorf("second line %q reports %d ms (err %v), want the measured time, at least 35 ms", lines[1], ms, err)
 	}
 }

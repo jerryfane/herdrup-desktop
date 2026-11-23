@@ -56,40 +56,49 @@ func watchStartup(win *mygo.Window) {
 const startupAnswerWithin = 5 * time.Second
 
 // runStartupWatch probes with eval every `every`, `times` at most, until the
-// page has rendered. Each answer is waited for on the watch's own deadline
+// page has rendered. Ticks are scheduled from one start time, and each line says
+// the time measured since. Each answer is waited for on the watch's own deadline
 // (within), not the evaluation's: mygo waits for the native UI thread before an
-// evaluation sees its context, so a held UI thread would otherwise leave
-// nothing in the log. At most one evaluation is in flight: a tick that finds the
-// last one still out waits on it again instead of starting another.
+// evaluation sees its context, so a held UI thread would otherwise leave nothing
+// in the log. At most one evaluation is in flight: a tick that finds the last
+// one still out says so and starts none; one that comes back late only frees the
+// slot, and the next tick asks the page again.
 func runStartupWatch(eval func(context.Context) (any, error), every, within time.Duration, times int, logf func(...any)) {
 	type result struct {
 		answer any
 		err    error
 	}
+	start := time.Now()
 	var pending chan result
 	for i := 1; i <= times; i++ {
-		time.Sleep(every)
-		after := time.Duration(i) * every
-		if pending == nil {
-			ch := make(chan result, 1)
-			pending = ch
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), within)
-				defer cancel()
-				answer, err := eval(ctx)
-				ch <- result{answer, err}
-			}()
+		time.Sleep(time.Until(start.Add(time.Duration(i) * every)))
+		if pending != nil {
+			select {
+			case <-pending: // answered after its deadline: stale, and the slot is free again
+				pending = nil
+			default:
+				logf(fmt.Sprintf("startup: no first render after %s; the last probe still has no answer (the window's UI thread or the page is held)", time.Since(start).Round(time.Millisecond)))
+				continue
+			}
 		}
+		ch := make(chan result, 1)
+		pending = ch
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), within)
+			defer cancel()
+			answer, err := eval(ctx)
+			ch <- result{answer, err}
+		}()
 		select {
-		case r := <-pending:
+		case r := <-ch:
 			pending = nil
-			line := startupReport(after, r.answer, r.err)
+			line := startupReport(time.Since(start).Round(time.Millisecond), r.answer, r.err)
 			if line == "" {
 				return
 			}
 			logf(line)
 		case <-time.After(within):
-			logf(fmt.Sprintf("startup: no first render after %s; no answer within %s (the window's UI thread or the page is held)", after, within))
+			logf(fmt.Sprintf("startup: no first render after %s; no answer within %s (the window's UI thread or the page is held)", time.Since(start).Round(time.Millisecond), within))
 		}
 	}
 }
