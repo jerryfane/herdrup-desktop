@@ -99,7 +99,9 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
   }
   case "unsupported":
    card.append(el("h1", "", "This browser can't be approved"),
-    el("p", "", "It can't keep a secure key for this page: one the page's scripts can't read, kept from one visit to the next. Use a current Chrome, Edge, Firefox or Safari to reach your machines from the web."), guest());
+    // Safari, and so every browser on iPhone and iPad (all WebKit), loses the stored X25519 key:
+    // WebKit can't read it back (state webkit-x25519-20261123). Chrome, Edge and Firefox keep it.
+    el("p", "", "It can't keep a secure key for this page from one visit to the next. Safari and the browsers on iPhone and iPad can't. Use Chrome, Edge or Firefox on a computer, or the HerdrUp app on iPhone and iPad."), guest());
    break;
   case "elsewhere":
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
