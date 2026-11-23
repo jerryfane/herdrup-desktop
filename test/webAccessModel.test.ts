@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { choiceRows } from "../src/webAccess";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS, resultLines, slotSelection,
- timeSummary, wrongCode } from "../src/webAccessModel";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS, plainClick, resultLines,
+ slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 
 const req = (id: string, claimed = "no", expiresIn = 600) => ({ id, browserName: "Chrome on macOS", claimed, expiresIn });
 
@@ -28,6 +28,15 @@ test("the code boxes follow the one input's caret and selection, and a click on 
  // A click past the digits puts the caret after the last one, ringing the box the next one fills.
  expect(slotSelection(3, 2)).toEqual([2, 2]);
  expect(codeSlots(2, 2, 2).map(s => [s.filled, s.active])).toEqual([[true, false], [true, false], [false, true], [false, false]]);
+});
+
+test("only a plain click takes a box's digit; a drag, double click or shift-click keeps its own selection", () => {
+ expect(plainClick({ detail: 1, shiftKey: false }, 2, 2)).toBe(true);
+ // Dragging across 12 of 1234 selected [0, 2]: releasing keeps it, so Backspace leaves 34.
+ expect(plainClick({ detail: 1, shiftKey: false }, 0, 2)).toBe(false);
+ expect(plainClick({ detail: 2, shiftKey: false }, 0, 4)).toBe(false);
+ expect(plainClick({ detail: 2, shiftKey: false }, 4, 4)).toBe(false);
+ expect(plainClick({ detail: 1, shiftKey: true }, 1, 1)).toBe(false);
 });
 
 test("an approval with no machine granted leaves the request open and says why", () => {
@@ -70,13 +79,12 @@ test("the sheet's rows, closed, say the choice: ticked machines by name, and acc
  expect(choiceLabel(ACCESS_CHOICES, "chat")).toBe("Chat only");
 });
 
-test("For says the length and the day it ends from the duration the computer grants, not from the choice's ID", () => {
+test("For says the length in whole days and the day it ends from the duration the computer grants", () => {
  const now = Date.UTC(2026, 10, 23, 12);
  const day = (d: number) => new Date(now + d * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
- expect(timeSummary({ id: "30d", seconds: 7 * 86_400 }, now)).toBe(`7 days, until ${day(7)}`);
- expect(timeSummary({ id: "7d", seconds: 86_400 }, now)).toBe(`1 day, until ${day(1)}`);
- expect(lengthLabel(12 * 3600)).toBe("12 hours");
- expect(lengthLabel(3600)).toBe("1 hour");
+ expect(timeSummary(7 * 86_400, now)).toBe(`7 days, until ${day(7)}`);
+ expect(timeSummary(86_400, now)).toBe(`1 day, until ${day(1)}`);
+ expect(lengthLabel(30 * 86_400)).toBe("30 days");
 });
 
 // ---- The rows as choiceRows draws them, on a fake document (Bun has no DOM) ----
@@ -101,24 +109,30 @@ const G = globalThis as { document?: unknown; devicePixelRatio?: unknown; mygo?:
 const saved = { document: G.document, devicePixelRatio: G.devicePixelRatio, mygo: G.mygo };
 afterEach(() => { G.document = saved.document; G.devicePixelRatio = saved.devicePixelRatio; G.mygo = saved.mygo; });
 
-test("the terminal warning shows with the Access row closed, and not with Chat only chosen", () => {
+test("the rows repaint their own choice and the terminal warning: shown with Access closed, not with Chat only", () => {
  G.document = { createElement: (tag: string) => new FakeElement(tag) };
  // The rows' chevron glyph asks the app for an image; here that answer never comes.
  G.devicePixelRatio = 1;
  G.mygo = { call: () => new Promise(() => {}) };
- const now = Date.UTC(2026, 10, 23, 12);
- const rows = choiceRows(new FakeElement("div") as unknown as HTMLElement, false, [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }], () => rows.show("hetzner", now));
- rows.show("hetzner", now);
+ const rows = choiceRows(new FakeElement("div") as unknown as HTMLElement, false, [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }]);
+ rows.showMachines("hetzner");
  const all = (rows.rows as unknown as FakeElement).all();
  const warning = all.find(n => n.className === "web-access-warning")!;
  const access = all.find(n => n.tagName === "button" && n.children[0]?.textContent === "Access")!;
  const pick = (value: string) => { const radio = all.find(n => n.type === "radio" && n.value === value)!; radio.checked = true; radio.onchange!(); };
+ const value = (key: string) => all.find(n => n.tagName === "button" && n.children[0]?.textContent === key)!.children[1]!.textContent;
  expect(rows.choice.length).toBe("30d");
+ expect(value("Machines")).toBe("hetzner");
+ expect(value("For")).toStartWith("30 days, until ");
+ pick("1d");
+ expect(rows.choice.length).toBe("1d");
+ expect(value("For")).toStartWith("1 day, until ");
  access.onclick!();
  expect(access.getAttribute("aria-expanded")).toBe("false");
  expect(warning.shown()).toBe(true);
  pick("chat");
- expect(access.children[1].textContent).toBe("Chat only");
+ expect(rows.choice.scope).toBe("chat");
+ expect(value("Access")).toBe("Chat only");
  expect(warning.shown()).toBe(false);
  pick("terminal");
  expect(warning.shown()).toBe(true);
