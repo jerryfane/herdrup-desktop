@@ -11,7 +11,7 @@ import { Desk, events, type AgentTarget, type BoardUpdate, type ConnState } from
 import { symbol } from "../symbol";
 import { avatar, placeInitials, spinnerSVG } from "../faces";
 import { barActions, barCount, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "../gram";
-import { commitTabBar, commitTopBar, placeTitle, tabNode } from "../bars";
+import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "../bars";
 import { initGuestHome } from "../guestHome";
 import { closeInteraction, initInteraction, interactionBoard, interactionVisible, selectInteraction, showInteraction } from "../interaction";
 import { closeWriter } from "../composer";
@@ -22,12 +22,15 @@ import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
-import { ownerAccess, signInReturned } from "./mygo";
+import { ownerAccess, ownerDesk, signInReturned } from "./mygo";
 import { AccountServiceError, SignedOutError } from "./account";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { OwnerRuns } from "./ownerRuns";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
-import { browserDeviceName, ownerCard } from "./ownerScreen";
+import { approvedMachines, browserDeviceName, ownerCard } from "./ownerScreen";
+import { probeList, type MachineStatus } from "./ownerProbe";
+import { statementCache } from "./statements";
+import type { EnvelopeMachine } from "../webguest/approve";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -58,7 +61,12 @@ const guestActions = {
  settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },
  // The guest's one Gram (#697): this browser's shared agents (one until accounts, #698).
  gram: (grant: string | null = null) => { closeWriter(); selectGuestGram(grant); guestTab = "gram"; render(); },
- hosts: () => { closeWriter(); closeInteraction(); showWelcome({ owner: localOwnerHint.get() }); },
+ hosts: () => {
+  closeWriter(); closeInteraction();
+  // An owner's machine: back to the machine list.
+  if (ownerOpen !== null) { ownerOpen = null; ownerAttempt++; ownerDesk.disconnectOwner(); showWelcome({ owner: null }); return; }
+  showWelcome({ owner: localOwnerHint.get() });
+ },
  open: (target: AgentTarget) => { guestTab = "agents"; void selectInteraction(target).then(render); },
 };
 
@@ -77,6 +85,59 @@ let ownerPhase: OwnerPhase | null = null;
 const ownerRuns = new OwnerRuns();
 /** The person chose "Use a guest invitation instead" on this load. */
 let guestInstead = false;
+/** The approved machine whose agents show (desk.ts connectOwner); null on the machine list. */
+let ownerOpen: EnvelopeMachine | null = null;
+/** Each opening of a machine, and each leaving of it, is a new attempt: a connect answers only
+ *  the attempt it was made for (opening the same machine twice is two attempts). */
+let ownerAttempt = 0;
+const statements = statementCache(ownerAccess.account);
+const statuses = new Map<string, MachineStatus>();
+/** The displayed machine list's probes (probeList): stopping them cancels the ones still out. */
+let probing: (() => Promise<void>) | null = null;
+/** The account session owner links and probes belong to: a sign-out or another sign-in ends it,
+ *  and with it the machine open or opening (desk.ts connectOwner) and the list's probes. */
+let ownerSession = new AbortController();
+
+/** Asks every approved machine how it is, while the machine list shows: one probeList per list
+ *  shown, so nothing a left list (or an ended session) asked for draws here. */
+function startProbes() {
+ if (probing !== null) return;
+ probing = probeList(async () => {
+  if (ownerPhase?.kind !== "approved") return null;
+  const record = ownerPhase.record;
+  const key = await ownerKey(ownerAccess.identities).catch(() => null);
+  return key === null ? null : { machines: approvedMachines(record).machines, key };
+ }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); redrawWelcome(); }, { signal: ownerSession.signal });
+}
+function stopProbes() { if (probing !== null) { void probing(); probing = null; } }
+
+/** Opens an approved machine: its agents in the guest home, chat on the agent page. */
+function openMachine(m: EnvelopeMachine) {
+ stopProbes();
+ ownerOpen = m;
+ const attempt = ++ownerAttempt;
+ guestTab = "agents";
+ // A connect another one, a sign-out or Machines replaced meanwhile says nothing here.
+ ownerDesk.connectOwner(m, statements, deviceName, ownerSession.signal).then(() => { if (ownerAttempt === attempt) showWelcome(null); }, (error: unknown) => {
+  if (ownerAttempt !== attempt) return;
+  ownerOpen = null;
+  statuses.set(m.hostID, { kind: "problem", message: errorText(error) });
+  redrawWelcome();
+ });
+}
+
+// The session ends (sign-out) or becomes another account's: the Desk drops the owner link, its
+// board and agent view (connectOwner's session), and the page goes back to the welcome screen,
+// which starts over for whoever is signed in now.
+ownerAccess.account.onSessionChange(() => {
+ ownerSession.abort();
+ ownerSession = new AbortController();
+ stopProbes();
+ if (ownerOpen === null) return;
+ ownerOpen = null; ownerAttempt++;
+ closeWriter(); closeInteraction();
+ showWelcome({ owner: null });
+});
 
 const redrawWelcome = () => { if (shownWelcome) showWelcome(shownWelcome); };
 
@@ -120,7 +181,7 @@ function beginApproval() {
 }
 
 /** Stops the approval and forgets what it showed: another sign-in starts from its own account. */
-function stopOwner() { ownerRuns.stop(); ownerPhase = null; }
+function stopOwner() { ownerRuns.stop(); ownerPhase = null; stopProbes(); statuses.clear(); }
 
 // ---- The plain screen without a grant ----
 
@@ -139,7 +200,9 @@ function showWelcome(shown: WelcomeState | null) {
   card = ownerCard(ownerPhase ?? { kind: "starting" }, deviceName, {
    again: () => { beginApproval(); redrawWelcome(); },
    guestInstead: () => { guestInstead = true; stopOwner(); redrawWelcome(); },
-  }, spinnerSVG);
+   open: openMachine,
+  }, spinnerSVG, statuses);
+  if (ownerPhase?.kind === "approved") startProbes(); else stopProbes();
   if (shown.error) { const error = el("p", "web-welcome-error", shown.error); error.setAttribute("role", "alert"); card.prepend(error); }
  } else {
   if (!account.signedIn) stopOwner();
@@ -179,8 +242,17 @@ async function buildBars(view: { tab: GuestTab; gram: boolean }) {
  if (generation !== barGeneration) return;
  const count = view.tab === "gram" ? barCount() : null;
  const title = view.tab === "settings" ? "Settings" : view.tab === "gram" ? "Gram" : "Agents";
- // No Back: the browser holds this one share and no machine list to go back to.
- commitTopBar(false, null, [document.createTextNode(title), ...(count ? [count] : [])], actions);
+ // No Back for a guest: the browser holds this one share and no machine list to go back to.
+ // An owner's machine goes back to the machine list.
+ let back: HTMLElement | null = null;
+ if (ownerOpen !== null && view.tab === "agents") {
+  back = await barSlot("chevron.left", "Machines");
+  back.tabIndex = 0; back.setAttribute("role", "button");
+  back.onclick = guestActions.hosts;
+  back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); guestActions.hosts(); } };
+ }
+ if (generation !== barGeneration) return;
+ commitTopBar(back !== null, back, [document.createTextNode(ownerOpen !== null && view.tab === "agents" ? ownerOpen.label : title), ...(count ? [count] : [])], actions);
  commitTabBar(tabs, items.findIndex(([key]) => key === view.tab));
  setTabBadge();
 }
@@ -209,7 +281,8 @@ function render() {
  const nextBar = guestVisible ? { tab: guestTab, gram: gramOffered } : null;
  if (nextBar && (nextBar.tab !== guestBar?.tab || nextBar.gram !== guestBar?.gram)) void buildBars(nextBar);
  guestBar = nextBar;
- guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null);
+ guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null,
+  ownerOpen !== null ? { scope: ownerOpen.scope, expiresUnix: ownerOpen.expiresUnix } : undefined);
  select.hidden = !guestVisible || guestTab !== "agents" || interactionVisible();
  showGram(guestVisible && guestTab === "gram");
  showInteraction(guestVisible && guestTab === "agents");

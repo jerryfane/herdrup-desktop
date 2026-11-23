@@ -49,6 +49,9 @@ function archivedOf(a: AgentInfo): ArchivedInfo | null {
  return typeof v === "object" && v !== null && !Array.isArray(v) ? v as ArchivedInfo : null;
 }
 
+/** Whether a listed agent is archived (compat.go:20). */
+export function isArchived(a: AgentInfo): boolean { return archivedOf(a) !== null; }
+
 // board.go:51-71, always live on the board.
 function groupOf(a: AgentInfo): Group {
  const status = a.agent_status ?? "";

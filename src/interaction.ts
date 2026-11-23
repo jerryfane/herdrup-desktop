@@ -18,9 +18,9 @@ import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
-import { canAnswer, chooser, guestQuestion, promptByline, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
+import { canAnswer, chooser, guestQuestion, promptByline, refusesResize, typesInTerminal, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
-import { guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
+import { connectionOfView, guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
 import type { AskForm, AskFormAnswer, AskFormStatus, FieldValue } from "./askFormModel";
@@ -164,7 +164,11 @@ events.stateChanged.on(state => {
  // removed machine or a left share (all "idle"). A reconnect keeps them; they are keyed by machine.
  if (state.phase === "idle") { forgetChats(); forgetScreens(); }
  const view = current?.view, access = state.guest?.access;
-  if (!current || !view?.guest || !access || current.target.machineID !== `guest:${access.endpoint.hostID}/${access.guestID}`) return;
+  // A guest's share or a web owner's machine (connectionOfView): the page's own connection only.
+  if (!current || !view?.guest || !connectionOfView(current.target.machineID, access)) return;
+  // A web owner's scope, as the newest session was admitted under (a renewal can change it).
+  current.applyOwnerScope(state.guest?.ownerScope);
+  current.applyTerminalTyping(typesInTerminal(view, state.guest));
   view.guestGram = !!state.guest?.features.gram;
   current.attach.hidden = !view.guestGram;
   if (current.guestGramButton) current.guestGramButton.hidden = !view.guestGram;
@@ -307,6 +311,9 @@ class Detail {
  streamGrid: { cols: number; rows: number } | null = null;
  // The shared agent isn't running (GuestPaneView availability .paused); null while it runs.
  guestPaused: GuestPausedPage | null = null;
+ // This page types into the terminal (typesInTerminal): the owner's own, or a terminal-scope web
+ // owner's; a guest and a chat-scope owner only watch it.
+ terminalTyping = true;
  // The terminal area holds the paused message rather than a stream (replaceTerminal).
  terminalPaused = false;
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
@@ -474,7 +481,7 @@ class Detail {
   return text === " " ? "\0" : text === "?" ? "\x7f" : code >= 64 && code <= 95 ? String.fromCharCode(code & 31) : null;
  }
  queueTerminalInput(text: string) {
-  if (!this.terminalReady || this.inputFailed || this.disposed || this.view?.guest) return;
+  if (!this.terminalReady || this.inputFailed || this.disposed || !this.terminalTyping) return;
   const generation = this.generation, streamID = this.terminalID, prediction = this.prediction;
   const batch = text ? prediction?.userBytes(text) : undefined;
   this.inputQueue = this.inputQueue.then(async () => {
@@ -563,7 +570,7 @@ class Detail {
   if (!view?.guest) return null;
   // Paused: NOT RUNNING, with no note line and no menu keys (GuestPaneView.swift:406-409, 571).
   const question: GuestQuestion = this.guestPaused ? { banner: null, tone: "faint", menuKeys: false, label: this.guestPaused.pill }
-   : guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal", this.resizeRefused);
+   : guestQuestion(view.name, view.guestOwner ?? "", this.shownStatus[0], this.answersRefused, this.mode === "terminal", this.resizeRefused, this.terminalTyping);
   this.guestBanner.textContent = question.banner ?? "";
   this.guestBanner.hidden = !question.banner;
   this.guestBanner.dataset.keys = String(question.menuKeys);
@@ -620,6 +627,9 @@ class Detail {
    const view = await (this.plainTerminal ? Desk.openTerminalView(this.target, this.token) : Desk.openAgentView(this.target, this.token));
    if (this.disposed) { await Desk.closeAgentView(this.token); return; }
    this.view = view; this.title.textContent = view.heading;
+   // A guest's page starts watching only; a terminal-scope web owner's learns it may type from
+   // the connection below, before the terminal opens.
+   this.terminalTyping = !view.guest;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
    const chatAvailable = /^omp(?:$| |-)/i.test(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
@@ -631,7 +641,10 @@ class Detail {
    this.attach.hidden = view.guest && !view.guestGram;
    modes.hidden = !chatAvailable && !view.guestGram;
    if (view.guest) {
-    this.guestPaused = guestPausedPage((await Desk.state().catch(() => null))?.guest?.availability, view.name);
+    const connection = (await Desk.state().catch(() => null))?.guest;
+    this.guestPaused = guestPausedPage(connection?.availability, view.name);
+    this.terminalTyping = typesInTerminal(view, connection);
+    this.ownerScope = connection?.ownerScope;
     if (this.disposed) return;
     this.guestChat = chatAvailable; this.guestModes = modes;
     // The guest's one Gram with this shared agent selected (#697); the grant is Access.ID().
@@ -648,6 +661,29 @@ class Detail {
    if (this.topicsCapable && this.mode !== "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
    if (view.guest) this.showGuestPaused();
   } catch (e) { if (!this.disposed) this.status.textContent = errorText(e); }
+ }
+ /** A web owner's grant scope as last admitted (GuestConnection.ownerScope). */
+ ownerScope: string | undefined;
+ /** Advances with each change of ownerScope: a resize answer from an earlier one is stale. */
+ scopeGeneration = 0;
+ /** A renewal admitted the owner under another scope: what the earlier grant refused (the
+  *  terminal size, resizeRefused) is asked again under this one, at once. */
+ applyOwnerScope(scope: string | undefined) {
+  if (scope === this.ownerScope) return;
+  this.ownerScope = scope;
+  this.scopeGeneration++;
+  if (!this.resizeRefused) return;
+  this.resizeRefused = false;
+  this.updateGuestQuestion();
+  this.fitTerminal?.();
+ }
+ /** A web owner's scope as last admitted: a terminal-scope grant types into the terminal shown
+  *  now, a chat-scope one (again) only watches it; a guest never types (typesInTerminal). */
+ applyTerminalTyping(typing: boolean) {
+  if (typing === this.terminalTyping) return;
+  this.terminalTyping = typing;
+  if (this.terminal) this.terminal.options.disableStdin = !typing;
+  this.updateGuestQuestion();
  }
  /** The share paused or resumed (GuestPaneView.setAvailability, GuestPaneView.swift:757-762). */
  applyGuestAvailability(availability: string | undefined) {
@@ -946,7 +982,7 @@ class Detail {
  jumpTerminalToTail() {
   const term = this.terminal;
   if (!term) return;
-  if (!this.view?.guest && (term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none")) this.queueTerminalInput("\x1b[1;5F");
+  if (this.terminalTyping && (term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none")) this.queueTerminalInput("\x1b[1;5F");
   term.scrollToBottom();
   this.updateTerminalJump();
  }
@@ -1125,9 +1161,10 @@ class Detail {
   const styles = getComputedStyle(document.documentElement);
   loadTerminalSymbols();
   // A guest never types into the terminal: herdr's guest gate refuses pane.send_text, so xterm's
-  // input and its own replies (focus reports, DA/DSR) stay off (iOS guests send no terminal input).
+  // input and its own replies (focus reports, DA/DSR) stay off (iOS guests send no terminal input);
+  // so does a chat-scope web owner's. A terminal-scope owner's types (applyTerminalTyping).
   // SearchAddon decorations require xterm's proposed decoration API.
-  const term = new Terminal({ fontFamily: terminalFontFamily(styles.getPropertyValue("--font-machine")), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme, disableStdin: !!this.view?.guest });
+  const term = new Terminal({ fontFamily: terminalFontFamily(styles.getPropertyValue("--font-machine")), fontSize: textSize("terminal"), scrollback: HISTORY_ROWS, allowProposedApi: true, theme: terminalTheme, disableStdin: !this.terminalTyping });
   this.terminal = term; this.fit = new FitAddon(); this.search = new SearchAddon(); this.sequence = new TerminalSequence(); this.inputFailed = false; this.streamGrid = null;
   term.options.linkHandler = { activate: (_event, uri) => { void Desk.openExternalURL(uri).catch(e => { this.status.textContent = errorText(e); }); } };
   term.loadAddon(this.fit); term.loadAddon(this.search);
@@ -1164,9 +1201,12 @@ class Detail {
    if (this.resizeRefused) { this.keepStreamGrid(); this.updateHistoryPaging(); this.updateTerminalJump(); return; }
    this.fit?.fit();
    this.updateHistoryPaging(); this.updateTerminalJump();
+   // Answered under the scope it was sent under: a refusal from before a scope change (a
+   // renewal) says nothing about the new grant (applyOwnerScope).
+   const scopeAsked = this.scopeGeneration;
    void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => {
-    if (generation !== this.generation || streamID !== this.terminalID) return;
-    if (this.view?.guest && String(e).includes("guest_forbidden")) { this.resizeRefused = true; this.keepStreamGrid(); this.updateGuestQuestion(); return; }
+    if (generation !== this.generation || streamID !== this.terminalID || scopeAsked !== this.scopeGeneration) return;
+    if (this.view?.guest && refusesResize(String(e))) { this.resizeRefused = true; this.keepStreamGrid(); this.updateGuestQuestion(); return; }
     const message = errorText(e);
     this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Resize: " + message;
    });
@@ -1175,7 +1215,13 @@ class Detail {
   this.resize = new ResizeObserver(() => { clearTimeout(this.resizeTimer); this.resizeTimer = window.setTimeout(fit, 120); });
   this.resize.observe(canvas);
   try { await Desk.startTerminal(this.token, streamID); if (generation !== this.generation || streamID !== this.terminalID || this.disposed) return; this.terminalReady = true; fit(); if (this.mode === "terminal") term.focus(); }
-  catch(e) { if (generation === this.generation && streamID === this.terminalID && !this.disposed) this.status.textContent = errorText(e); }
+  catch(e) {
+   if (generation !== this.generation || streamID !== this.terminalID || this.disposed) return;
+   // Refused at the start because the agent isn't running (guest_paused, a chat-scope owner's
+   // owner_paused): paused, as when the stream ends for it (frame), not an error line.
+   if (this.view?.guest && isGuestPaused(errorText(e))) this.applyGuestAvailability("paused");
+   else this.status.textContent = errorText(e);
+  }
  }
  frame(event: { streamID: string; frame?: ByteFrame; error?: string; reconnect?: boolean }) {
   if (!this.terminal || event.streamID !== this.terminalID) return;

@@ -5,11 +5,11 @@
 // approval it opens the machine list sealed to it by that device, whose key the code covered, and
 // keeps it (ownerStore.ts). Later loads take newer lists only from approvers kept that way.
 
+import { untilAborted } from "../webguest/abort";
 import { approveCode, approveCommit, newApproveNonce, openEnvelope, type Envelope } from "../webguest/approve";
 import { fromB64url, toB64url } from "../webguest/b64url";
 import { generateIdentity, staticKey, type IdentityStore } from "../webguest/identity";
 import type { StaticKey } from "../webguest/noise";
-import { untilAborted } from "../webguest/abort";
 import { AccountServiceError, type ApprovalStatus, type BrowserSelf, type WebAccount } from "./account";
 import type { OwnerRecord, OwnerStore, VerifiedApprover } from "./ownerStore";
 

@@ -7,21 +7,11 @@
 // asked for again once too little of it is left; callers that ask at once share one request,
 // and each stops waiting when its own signal aborts while the request goes on.
 
+import { untilAborted } from "../webguest/abort";
 import type { StatementSource } from "../webguest/owner";
 import { AccountServiceError, type WebAccount } from "./account";
 
 type Held = { jws: string; expMs: number };
-
-/** p, or the abort's reason as soon as signal aborts (p goes on for anyone else waiting on it,
- *  and its outcome is still observed, so a rejection nobody waits for doesn't go unhandled). */
-function waitFor<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
- if (signal.aborted) { p.catch(() => {}); return Promise.reject(signal.reason); }
- return new Promise<T>((resolve, reject) => {
-  const stop = () => reject(signal.reason);
-  signal.addEventListener("abort", stop, { once: true });
-  p.then(v => { signal.removeEventListener("abort", stop); resolve(v); }, e => { signal.removeEventListener("abort", stop); reject(e); });
- });
-}
 
 /** The session a statement was issued in is no longer this page's (signed out, or another
  *  sign-in): nothing from it is kept or used. */
@@ -42,7 +32,10 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
  return {
   async get(hostID, minLeftMs, signal) {
    signal.throwIfAborted();
-   const acct = await waitFor(account.currentAccount(), signal);
+   // The signal goes to the lookup itself: a cancelled caller's refresh, still queued, isn't sent.
+   const acct = await account.currentAccount(signal);
+   // Aborted as the lookup answered (at once, when already signed in): nothing is read or asked.
+   signal.throwIfAborted();
    const generation = account.generation;
    const live = () => account.generation === generation && account.current?.accountID === acct;
    if (!live()) throw stale();
@@ -63,7 +56,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
     asking.set(hostID, flight);
    }
    // The newest the service gives, even with less left than asked: it is all there is.
-   const got = await waitFor(flight, signal);
+   const got = await untilAborted(flight, signal);
    if (!live()) throw stale();
    return { ...got, live };
   },

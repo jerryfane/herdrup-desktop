@@ -25,10 +25,19 @@ export function guestPausedPage(availability: string | undefined, agent: string)
 
 /** herdr's guest_paused refusal, as Go words a herdr error ("herdr: guest_paused: …"). */
 export function isGuestPaused(message: string): boolean {
- return message.includes("guest_paused");
+ // owner_paused: a web owner's chat scope while the pane runs no local agent (herdr #497).
+ return message.includes("guest_paused") || message.includes("owner_paused");
 }
 
 /** failureNote for a send the host refused while paused (GuestPaneView.swift:918-920). */
 export function guestSendFailure(message: string, agent: string): string | null {
  return isGuestPaused(message) ? `${agent} isn't running, so it wasn't sent.` : null;
+}
+
+/** Whether a published connection (ConnState.guest's access) is the one an agent page's board
+ *  came from: a guest's share ("guest:<host>/<grant>", desk_guest.go) or a web owner's link to
+ *  that machine ("owner:<host>", web/desk.ts connectOwner). Its availability applies only then. */
+export function connectionOfView(machineID: string, access: { endpoint: { hostID: string }; guestID: string } | undefined): boolean {
+ if (!access) return false;
+ return machineID === `guest:${access.endpoint.hostID}/${access.guestID}` || machineID === `owner:${access.endpoint.hostID}`;
 }

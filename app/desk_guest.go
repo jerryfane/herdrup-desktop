@@ -38,6 +38,10 @@ type GuestConnection struct {
 	// with "connected": the owner's agent is not running or not listed
 	// (App/GuestPaneView.swift:737-753).
 	Availability string `json:"availability,omitempty"`
+	// OwnerScope is a web owner link's admitted grant scope, "chat" or
+	// "terminal" (herdr owner_gate.rs): only "terminal" types into the
+	// terminal. The browser Desk sets it; a guest's share never has one.
+	OwnerScope string `json:"ownerScope,omitempty"`
 }
 
 var GuestInvitationOpened = mygo.NewEvent[bool]("guest-invitation:opened")

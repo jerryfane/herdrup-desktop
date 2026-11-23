@@ -1,4 +1,4 @@
-import { Desk, type AgentTarget, type BoardUpdate, type ConnState, type Row } from "./mygo";
+import { Desk, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row } from "./mygo";
 import type { ShareSettings } from "./settings";
 import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
@@ -9,6 +9,26 @@ import { ACCOUNT_TITLE } from "./herdrupAccount";
 import "./settings.css";
 
 type GuestState = NonNullable<ConnState["guest"]>;
+
+/** The web owner's link to one of its approved machines (web owner access D2c): the guest home
+ *  lists every agent there, and says what the approval allows and until when. */
+export interface OwnerHome { scope: "chat" | "terminal"; expiresUnix: number }
+
+const ownerScope = (o: OwnerHome) => `${o.scope === "terminal" ? "Chat and terminal" : "Chat"} until ${new Date(o.expiresUnix * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+
+/** One agent of an owner's machine in the guest home: its display title (the board's: name, else
+ *  terminal title, else pane id), its row and the state under it. */
+export interface OwnerHomeRow { name: string; row: Row; state: string }
+
+/** An owner's machine in the guest home: every agent the machine listed, live ones with the
+ *  section they are listed under, then archived ones with their archived note. The machine list
+ *  (ownerProbe.ts) counts the same agents. */
+export function ownerHomeRows(board: Board): OwnerHomeRow[] {
+ return [
+  ...board.sections.flatMap(s => s.rows.map(row => ({ name: row.title, row, state: s.label }))),
+  ...board.archived.map(row => ({ name: row.title, row, state: row.archivedNote ?? "archived" })),
+ ];
+}
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the
  * roster's avatar with its status badge, the initial placement and the loading spinner. */
@@ -90,19 +110,21 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   return item;
  }
 
- function update(state: ConnState, latest: BoardUpdate | null, selected: "agents" | "settings", visible: boolean, openPane: string | null) {
+ function update(state: ConnState, latest: BoardUpdate | null, selected: "agents" | "settings", visible: boolean, openPane: string | null, owner?: OwnerHome) {
   navigation.hidden = !visible || selected !== "agents"; settings.hidden = !options.settings || !visible || selected !== "settings";
   if (!visible || !state.guest) { last = ""; return; }
   const guest = state.guest, access = guest.access;
   const id = `${access.endpoint.hostID}/${access.guestID}`;
   // Only this share's board (desk_guest.go publishes it as "guest:<id>"): an owner
   // board still held from before the switch must never show here.
-  const board = latest?.machineID === `guest:${id}` ? latest : null;
+  const board = latest?.machineID === (owner ? `owner:${access.endpoint.hostID}` : `guest:${id}`) ? latest : null;
   const section = board?.board.sections.find(s => s.rows.length > 0);
   const row = section?.rows[0] ?? board?.board.archived[0];
   const rowState = section ? section.label : row?.archivedNote;
+  // An owner's machine: every agent, live and archived (ownerHomeRows).
+  const ownerRows = owner && board ? ownerHomeRows(board.board) : [];
   // The account panel's presence too: the service's answer can come after Settings was drawn.
-  const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, rowState, selected, openPane === row?.id, !!options.account?.()]);
+  const signature = JSON.stringify([guest, state.phase, state.message, !!board, row, rowState, selected, openPane === row?.id, !!options.account?.(), owner, ownerRows, openPane]);
   if (signature === last) return; last = signature;
   const version = ++generation;
   void (async () => {
@@ -110,10 +132,19 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    // roster has its search field.
    const header = node("header", "guest-home-header");
    const title = node("h2", "", access.machineLabel); title.dataset.testid = "guest-home-title";
-   header.append(title, node("p", "", `Shared by ${access.ownerName} · 1 agent`));
+   // The count only once the machine listed its agents: none is not the same as not yet.
+   header.append(title, node("p", "", owner
+    ? (board ? `${ownerRows.length} ${ownerRows.length === 1 ? "agent" : "agents"} · ` : "") + ownerScope(owner)
+    : `Shared by ${access.ownerName} · 1 agent`));
    // content (GuestHomeView.swift 196-230), by the connection's phase.
    let content: HTMLElement;
-   if (state.phase === "error" && guest.availability === "offline") {
+   if (owner && state.phase === "error" && guest.availability === "offline") {
+    content = await message("wifi.slash", `${access.machineLabel} is offline`, "Its agents show here again when it's back.");
+   } else if (owner && state.phase === "error" && guest.availability === "lost") {
+    content = await message("xmark", `This browser can't reach ${access.machineLabel} any more`, state.message);
+   } else if (owner && state.phase === "error") {
+    content = await message("exclamationmark.triangle", `Can't reach ${access.machineLabel}`, state.message);
+   } else if (state.phase === "error" && guest.availability === "offline") {
     content = await message("wifi.slash", `${access.machineLabel} is offline`, `${access.agentName} will show here again when the machine is back.`);
    } else if (state.phase === "error" && guest.availability === "lost") {
     // person.crop.circle.badge.xmark has no stand-in on Windows and Linux (symbols.go).
@@ -129,6 +160,14 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     // .loading: ProgressView, 64 pt tall, 26 below the header.
     content = node("div", "guest-home-loading"); content.innerHTML = deps.spinner;
     content.setAttribute("role", "status"); content.setAttribute("aria-label", "Connecting");
+   } else if (owner && ownerRows.length === 0) {
+    content = await message("square.grid.2x2.fill", `No agents on ${access.machineLabel}`, "Agents started there show here.");
+   } else if (owner) {
+    content = node("div", "guest-owner-agents");
+    for (const r of ownerRows) {
+     const open = () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: r.row.id });
+     content.append(await agentRow(r.name, r.row, r.state, true, openPane === r.row.id, open));
+    }
    } else {
     const open = row ? () => callbacks.open({ machineID: board.machineID, session: board.session, paneID: row.id }) : null;
     content = await agentRow(access.agentName, row, rowState, guest.availability !== "paused", openPane === row?.id, open);
@@ -137,13 +176,14 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    const reconnecting = guest.availability === "reconnecting" && board ? node("p", "guest-home-note", `${RELAY_RECONNECTING} ${state.message}`) : null;
    reconnecting?.setAttribute("role", "status");
    // GuestShellStyle.note, 18 below; neutral here (no colour-coded cards).
-   const note = node("p", "guest-home-note", `You can see only the agents ${access.ownerName} shares with you.`);
+   const note = owner ? null : node("p", "guest-home-note", `You can see only the agents ${access.ownerName} shares with you.`);
    if (version !== generation) return;
-   navigation.replaceChildren(header, content, ...(reconnecting ? [reconnecting] : []), note);
-   const surface = content.classList.contains("selected") ? node("div", "row-selection") : null;
-   if (surface) {
-    surface.setAttribute("aria-hidden", "true"); content.prepend(surface);
-    paintShape(surface, { radius: parseFloat(getComputedStyle(content).getPropertyValue("--radius-selection")), fill: "var(--color-surface-raised)" });
+   navigation.replaceChildren(header, content, ...(reconnecting ? [reconnecting] : []), ...(note ? [note] : []));
+   const chosen = content.classList.contains("selected") ? content : content.querySelector<HTMLElement>(".guest-agent-row.selected");
+   const surface = chosen ? node("div", "row-selection") : null;
+   if (chosen && surface) {
+    surface.setAttribute("aria-hidden", "true"); chosen.prepend(surface);
+    paintShape(surface, { radius: parseFloat(getComputedStyle(chosen).getPropertyValue("--radius-selection")), fill: "var(--color-surface-raised)" });
    }
    await deps.placeInitials(navigation);
   })();
@@ -152,10 +192,12 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   // owner Settings' machine card (settings.ts): the 60 pt disc, the name, who shared it and
   // the machine.
   const card = node("div", "settings-machine-card");
-  const disc = node("span", "settings-machine-disc", (access.agentName.trim()[0] ?? "?").toUpperCase());
+  const cardName = owner ? access.machineLabel : access.agentName;
+  const disc = node("span", "settings-machine-disc", (cardName.trim()[0] ?? "?").toUpperCase());
   disc.style.setProperty("--disc-size", "var(--size-machine-card-avatar)"); disc.setAttribute("aria-hidden", "true");
   const lines = node("div", "settings-machine-card-lines");
-  lines.append(node("span", "settings-machine-card-name", access.agentName), node("span", "settings-machine-card-status", `Shared by ${access.ownerName}`), node("span", "settings-machine-version", access.machineLabel));
+  if (owner) lines.append(node("span", "settings-machine-card-name", access.machineLabel), node("span", "settings-machine-card-status", ownerScope(owner)));
+  else lines.append(node("span", "settings-machine-card-name", access.agentName), node("span", "settings-machine-card-status", `Shared by ${access.ownerName}`), node("span", "settings-machine-version", access.machineLabel));
   card.append(disc, lines);
   const body = node("div", "settings-page-body");
   // The HerdrUp account (herdrupAccount.ts HerdrUpAccountPanel), in the browser guest only, once
@@ -166,8 +208,16 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    const accountCard = node("div", "guest-card guest-settings-card guest-account"); accountCard.append(account);
    accountPart.push(node("h3", "guest-settings-section", ACCOUNT_TITLE), accountCard);
   }
-  body.append(card, ...accountPart, ...shareDetails(guest));
+  body.append(card, ...accountPart, ...(owner ? ownerDetails(guest) : shareDetails(guest)));
   settings.replaceChildren(node("h1", "settings-page-title", "Settings"), body);
+ }
+
+ /** An owner's machine: this browser's key, as the approving device saw it. */
+ function ownerDetails(guest: GuestState): HTMLElement[] {
+  const device = node("div", "guest-card guest-settings-card guest-device-key");
+  const fingerprint = node("span", "", guest.fingerprint || "Unavailable"); fingerprint.dataset.testid = "guest-settings-fingerprint";
+  device.append(node("span", "", "Device key"), fingerprint);
+  return [node("h3", "guest-settings-section", "This browser"), device];
  }
 
  /** The share's own settings (GuestSettingsView.swift 30-89): who shared what, this device's

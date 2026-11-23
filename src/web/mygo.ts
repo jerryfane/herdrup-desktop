@@ -17,11 +17,14 @@ type DeskFns = typeof GoDesk;
 const notAvailable = () => Promise.reject(new Error("Not available in the browser"));
 const account = createAccountDesk(browserAccountPage());
 const env = browserEnv();
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...createGuestDesk(env), ...account.desk, ...createPromptsDesk() };
+const guest = createGuestDesk(env);
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...createPromptsDesk() };
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
 export const signInReturned = account.signInReturned;
 /** What owner access (ownerApproval.ts) works with: this page's account session and the browser's key. */
 export const ownerAccess = { account: account.account, identities: env.identities };
+/** The owner's link to one approved machine at a time (desk.ts connectOwner). */
+export const ownerDesk = { connectOwner: guest.connectOwner, disconnectOwner: guest.disconnectOwner };
 
 /** Every Desk method: the guest's, else one that rejects. Its shape is the generated client's. */
 export const Desk = new Proxy(implemented, {

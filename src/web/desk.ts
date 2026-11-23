@@ -6,7 +6,7 @@
 import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestInvitation, GuestMenuKeyReply,
+ Access as PageAccess, AgentTarget, AgentView, AskFormValue, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestConnection, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
@@ -14,7 +14,10 @@ import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentitySt
 import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
 import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
-import { buildBoard, displayName, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
+import { fromB64url } from "../webguest/b64url";
+import { ownerLink, type StatementSource } from "../webguest/owner";
+import type { EnvelopeMachine } from "../webguest/approve";
+import { buildBoard, displayName, isArchived, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, untagged } from "./engine";
 import { emit } from "./events";
 import { setLink, transportLink, type WebLink } from "./link";
@@ -32,6 +35,11 @@ export const GUEST_STATUS_POLL_MS = 15_000;
 export const BROWSER_DEVICE = "Web browser";
 const ERR_SENDING = "a send is running"; // gramstore.ErrSending
 const GUEST_FORBIDDEN = "guest_forbidden"; // desk_guest_answers.go guestForbidden
+/** herdr owner_gate.rs: a chat-scope stream's agent isn't running (opening it, or while it runs). */
+const OWNER_PAUSED = "owner_paused";
+/** herdr owner_gate.rs: a method the owner browser's scope doesn't take; the session stays open. */
+const OWNER_FORBIDDEN = "owner_forbidden";
+const refusedHere = (code: string) => code === GUEST_FORBIDDEN || code === OWNER_FORBIDDEN;
 // desk_guest_answers.go guestMenuKeys
 const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab", "Enter"];
 // desk_interaction_compose.go promptWait
@@ -76,6 +84,38 @@ export function sharedListing(list: GuestList, target: string): { agents: AgentI
  const i = list.agents.findIndex((a) => a.terminal_id === target || a.pane_id === target);
  if (i < 0) return { agents: [], availability: "paused" };
  return { agents: [list.agents[i]!], availability: list.running[i] ? "" : "paused" };
+}
+
+/** engine.GuestAgentList through the link's client: agent.list's result checked for its
+ *  agent_list tag (anything else, e.g. a pong, is a protocol failure, never an empty list). The
+ *  Desk's lists and the machine probe (ownerProbe.ts) both read agents this way. */
+export async function listAgents(client: GuestClient, signal?: AbortSignal): Promise<GuestList> {
+ return guestList(await client.call("agent.list", {}, "agent_list", "", signal));
+}
+
+/** An owner link's availability for its open agent (herdr owner_gate.rs owner_paused): "paused"
+ *  once a list no longer has that pane, or has it archived; "" with no agent open. */
+export function ownerAvailability(agents: readonly AgentInfo[], paneID: string | null): string {
+ if (paneID === null) return "";
+ const agent = agents.find((a) => a.pane_id === paneID);
+ return agent && !isArchived(agent) ? "" : "paused";
+}
+
+/** An owner link to an approved machine (ownerConnection): the grant as an Access, its
+ *  transport, the link over it and the client the agent list goes through. */
+export interface OwnerConnection { access: Access; transport: GuestTransport; link: WebLink; client: GuestClient }
+
+/** An owner link to an approved machine, as the Desk (connectOwner) and the machine probe
+ *  (ownerProbe.ts) both open it: the machine's relay endpoint and the hello with this browser's
+ *  account statement (ownerLink). */
+export function ownerConnection(m: EnvelopeMachine, identity: StaticKey, statements: StatementSource, device: string, options: { now?: () => number; webSocket?: WebSocketFactory } = {}): OwnerConnection {
+ const hostPublicKey = fromB64url(m.nodePub, 32);
+ if (hostPublicKey === null) throw new Error("The approved machine's key is damaged.");
+ const endpoint = { relay: m.relay, hostID: m.hostID, hostPublicKey };
+ const access: Access = { guestID: m.grantID, guestName: "", machineLabel: m.label, ownerName: "", agentName: "", agentTarget: "", endpoint, acceptedAt: new Date(0) };
+ const transport = new GuestTransport(ownerLink(endpoint, device, statements), identity, options);
+ const link = transportLink(pageAccess(access), transport);
+ return { access, transport, link, client: new GuestClient(link) };
 }
 
 /** submitPanePrompt's receipt (desk_interaction_compose.go:117-159) for an agent prompt: the
@@ -162,7 +202,10 @@ export interface DeskEnv {
 
 interface Active {
  id: string;
+ /** A guest grant's, or for an owner link (D2c) one made from the approved machine. */
  access: Access;
+ /** The approved machine of an owner link: every agent there is listed, none filtered. */
+ owner?: EnvelopeMachine;
  transport: GuestTransport;
  link: WebLink;
  client: GuestClient;
@@ -170,8 +213,9 @@ interface Active {
  /** link.guestPoll: one pending kick. */
  kick: () => void;
  agents: AgentInfo[];
- /** link.guestKeyTaken: the host took one of this guest's menu keys (guestMenuKey). */
- keyTaken?: boolean;
+ /** link.guestKeyTaken: the panes where the host took one of this link's menu keys
+  *  (guestMenuKey). A guest's link has one pane; an owner's has the machine's, each its own. */
+ keyTaken?: Set<string>;
 }
 
 interface MountedView extends GuestView {
@@ -198,6 +242,8 @@ export function createGuestDesk(env: DeskEnv) {
  let active: Active | null = null;
  let mounted: MountedView | null = null;
  let accepting = Promise.resolve();
+ /** connectOwner while it reads the key: cancelled by a newer one, a disconnect or its session's end. */
+ let ownerPending: AbortController | null = null;
 
  const setState = (life: AbortSignal | null, s: ConnState) => {
   if (life?.aborted) return;
@@ -319,11 +365,27 @@ export function createGuestDesk(env: DeskEnv) {
   setLink(null);
  }
 
+ /** An owner link's connection published again between lists: the open agent's availability as
+  *  its stream says (owner_paused) or the last list does, or the scope a newer session of the
+  *  link was admitted under. Not while the relay holds connects back ("reconnecting") or the
+  *  link is down: those say more than the agent's state. */
+ function republish(l: Active, change: Pick<GuestConnection, "availability" | "ownerScope">) {
+  const guest = state.guest;
+  if (!l.owner || active !== l || state.phase !== "connected" || !guest || guest.availability === "reconnecting") return;
+  const next: GuestConnection = { ...guest, ...change };
+  if (!next.availability) delete next.availability;
+  if (!next.ownerScope) delete next.ownerScope;
+  if (next.availability === guest.availability && next.ownerScope === guest.ownerScope) return;
+  setState(l.life.signal, { ...state, guest: next });
+ }
+
  /** desk_guest.go runGuest. */
  async function runGuest(l: Active, print: string) {
   const signal = l.life.signal;
+  // An owner link also says the scope its grant was admitted under (ownerScope).
   const publish = (phase: string, msg: string, availability: string) =>
-   setState(signal, { phase, message: msg, machine: l.access.machineLabel, herdr: "", live: false, guest: { access: pageAccess(l.access), features: pageFeatures(l.transport.features), fingerprint: print, ...(availability !== "" ? { availability } : {}) } });
+   setState(signal, { phase, message: msg, machine: l.access.machineLabel, herdr: "", live: false, guest: { access: pageAccess(l.access), features: pageFeatures(l.transport.features), fingerprint: print, ...(availability !== "" ? { availability } : {}),
+    ...(l.owner && l.transport.scope !== "" ? { ownerScope: l.transport.scope } : {}) } });
   publish("connecting", "", "");
   let listed = false;
   let kicked = false;
@@ -332,7 +394,7 @@ export function createGuestDesk(env: DeskEnv) {
   while (!signal.aborted) {
    let wait = GUEST_STATUS_POLL_MS;
    let result: GuestList | null = null, failure: unknown = null;
-   try { result = guestList(await l.client.call("agent.list", {}, "agent_list", "", signal)); } catch (error) { failure = error; }
+   try { result = await listAgents(l.client, signal); } catch (error) { failure = error; }
    if (signal.aborted) return;
    if (failure instanceof GuestError && failure.kind === "rate_limited") {
     wait = Math.max(wait, (l.transport.rateLimitedUntil() ?? 0) - now());
@@ -342,12 +404,13 @@ export function createGuestDesk(env: DeskEnv) {
     if (failure instanceof GuestError && failure.kind === "revoked") return;
    } else {
     listed = true;
-    const { agents, availability } = sharedListing(result!, l.access.agentTarget);
+    // An owner's machine: every agent, and the open one's availability (owner_paused).
+    const { agents, availability } = l.owner ? { agents: result!.agents, availability: ownerAvailability(result!.agents, mounted?.active === l ? mounted.paneID : null) } : sharedListing(result!, l.access.agentTarget);
     publish("connected", "", availability);
     if (signal.aborted || active !== l) return;
     l.agents = agents;
     setSharedAgents(agents.map((a) => ({ pane_id: a.pane_id ?? "", name: a.name ?? null })));
-    if (agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
+    if (!l.owner && agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
     board = { board: buildBoard(agents), listedAt: goTime(new Date(now())).replace(/\.\d+Z$/, "Z"), session: "", machineID: l.id };
     emit("boardChanged", board);
    }
@@ -462,6 +525,8 @@ export function createGuestDesk(env: DeskEnv) {
    l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
    mounted = v;
    setView(v);
+   // An owner link's availability is its open agent's: this one's from the last list, at once.
+   republish(l, { availability: ownerAvailability(l.agents, view.paneID) });
    return view;
   },
 
@@ -652,7 +717,7 @@ export function createGuestDesk(env: DeskEnv) {
      const reply: ChatAnswerReply = {};
      if (error.code !== "") reply.code = error.code;
      if (error.apiMessage !== "") reply.message = error.apiMessage;
-     if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;
+     if (refusedHere(error.code)) reply.ownerAnswers = true;
      return reply;
     }
     throw error;
@@ -672,7 +737,7 @@ export function createGuestDesk(env: DeskEnv) {
      const reply: ChatAnswerFormReply = {};
      if (error.code !== "") reply.code = error.code;
      if (error.apiMessage !== "") reply.message = error.apiMessage;
-     if (error.code === GUEST_FORBIDDEN) reply.ownerAnswers = true;
+     if (refusedHere(error.code)) reply.ownerAnswers = true;
      return reply;
     }
     throw error;
@@ -708,14 +773,15 @@ export function createGuestDesk(env: DeskEnv) {
    if (!GUEST_MENU_KEYS.includes(key)) throw new Error(`${JSON.stringify(key)} is not a menu key`);
    try {
     await v.active.link.call("pane.send_keys", { pane_id: v.paneID, keys: [key] }, within(v));
-    v.active.keyTaken = true;
+    (v.active.keyTaken ??= new Set()).add(v.paneID);
     return {};
    } catch (error) {
-    if (!(error instanceof HerdrAPIError && error.code === GUEST_FORBIDDEN)) throw error;
-    if (v.active.keyTaken) return {};
+    if (!(error instanceof HerdrAPIError && refusedHere(error.code))) throw error;
+    if (v.active.keyTaken?.has(v.paneID)) return {};
     let list: GuestList;
-    try { list = guestList(await v.active.client.call("agent.list", {}, "agent_list", "", within(v))); } catch { return {}; }
-    const { agents, availability } = sharedListing(list, v.active.access.agentTarget);
+    try { list = await listAgents(v.active.client, within(v)); } catch { return {}; }
+    // The mounted pane: an owner link's access names no agent (agentTarget is "").
+    const { agents, availability } = sharedListing(list, v.paneID);
     return agents[0] && availability === "" && liveGroup(agents[0]).key === "needsYou" ? { ownerAnswers: true } : {};
    } finally {
     v.active.kick();
@@ -768,17 +834,35 @@ export function createGuestDesk(env: DeskEnv) {
     const value = ack.value;
     if (typeof value === "object" && value !== null && "error" in value && value.error != null) {
      const e = value.error as { code?: string; message?: string };
-     throw v.active.client.mapError("pane.stream", new Error(`pane.stream: herdr: ${e.code ?? ""}: ${e.message ?? ""}`));
+     // Structured, so the refusal below is told by its code, not by words in its message.
+     throw v.active.client.mapError("pane.stream", new HerdrAPIError(e.code ?? "", e.message ?? "", value.error));
     }
     checkTag("pane.stream", typeof value === "object" && value !== null && "result" in value ? value.result : null, "stream_started");
    } catch (error) {
     if (v.terminal === terminal) v.terminal = null;
     life.abort();
+    // herdr #497: a chat stream's agent isn't running (owner_paused): the open agent is paused
+    // until a list has it again (republish, runGuest). An owner's pane.stream on a local agent's
+    // pane is refused before it opens with owner_forbidden for the same reason, and only for it
+    // (owner_gate.rs: under the grant's current scope, which a renewal may have narrowed since the
+    // hello, a chat scope's pane methods need the agent running; pane.stream on a local pane is
+    // otherwise allowed in both scopes), so it reads as paused too. A remote agent's pane is
+    // refused for good: that stays an error.
+    const agent = v.active.agents.find(a => a.pane_id === v.paneID);
+    const code = error instanceof HerdrAPIError ? error.code : "";
+    const pausedAtOpen = code === OWNER_PAUSED || (!!v.active.owner && !agent?.machine_id && code === OWNER_FORBIDDEN);
+    if (pausedAtOpen) {
+     republish(v.active, { availability: "paused" });
+     if (code !== OWNER_PAUSED) throw new Error(`pane.stream: herdr: ${OWNER_PAUSED}: the agent this stream watches is no longer running`);
+    }
     throw error;
    }
+   // A session admitted under another scope than the one published (a renewal changed it and
+   // the page opened the stream again): the page hears the new one now, not at the next list.
+   republish(v.active, { ownerScope: v.active.transport.scope });
    void (async () => {
     for (;;) {
-     let event: { frame?: PaneStreamFrame; error?: string };
+     let event: { frame?: PaneStreamFrame; error?: string; reconnect?: boolean };
      try {
       const next = await lines.next();
       if (life.signal.aborted) return;
@@ -787,6 +871,10 @@ export function createGuestDesk(env: DeskEnv) {
       if (life.signal.aborted) return;
       event = { error: message(error) };
      }
+     // herdr #497: a renewal changed the grant's scope and ended the stream; it opens again
+     // under the new one (interaction.ts reconnects on reconnect, once per STREAM_RECONNECT_MS).
+     if (event.error?.includes("owner_scope_changed")) event = { ...event, reconnect: true };
+     if (event.error?.includes(OWNER_PAUSED)) republish(v.active, { availability: "paused" });
      emit("terminalChanged", { token, streamID, ...event });
      if (event.error !== undefined) { life.abort(); void lines.return?.(); return; }
     }
@@ -801,8 +889,9 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   /** TerminalInput through engine.PaneInput's fallback, pane.send_text in 8 KiB pieces: a guest
-   *  transport has no duplex input stream. herdr's guest gate refuses it; the first failure ends
-   *  input for the surface, as PaneInput.failed does. */
+   *  transport has no duplex input stream. herdr's guest gate and a chat-scope owner's refuse it
+   *  (the page sends only under a terminal-scope owner's grant); the first failure ends input for
+   *  the surface, as PaneInput.failed does. */
   async terminalInput(token: string, streamID: string, text: string): Promise<void> {
    const v = viewOf(token);
    if (new TextEncoder().encode(text).length > 256 * 1024) throw new Error("paste exceeds 256 KiB; paste smaller sections");
@@ -866,7 +955,44 @@ export function createGuestDesk(env: DeskEnv) {
   },
  } satisfies Partial<DeskFns>;
 
- return desk;
+ /** Owner access (web owner access D2c): this browser's link to one of the machines it was
+  *  approved for, through ownerLink (its account statement in the hello), listing every agent
+  *  there. The agent page, chat and Topics then work as for a guest's link. */
+ async function connectOwner(m: EnvelopeMachine, statements: StatementSource, device: string, session: AbortSignal): Promise<void> {
+  // One owner connect at a time: a newer one or a disconnect cancels this one while it reads
+  // the key, and so does the end of the account session it was asked in (a sign-out or another
+  // sign-in): it never links nor publishes a board.
+  ownerPending?.abort();
+  const pending = new AbortController();
+  ownerPending = pending;
+  const cancelled = AbortSignal.any([session, pending.signal]);
+  try {
+   const identity = await requireIdentity();
+   const print = await identityFingerprint();
+   cancelled.throwIfAborted();
+   const { access, transport, link, client } = ownerConnection(m, identity, statements, device, { now, webSocket: env.webSocket });
+   disconnect();
+   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [] };
+   active = l;
+   setLink(link);
+   // The session ending ends the link too: its board and agent view go, the page goes idle.
+   session.addEventListener("abort", () => { if (active === l) disconnectOwner(); }, { once: true, signal: l.life.signal });
+   void runGuest(l, print).finally(() => transport.close());
+  } finally {
+   if (ownerPending === pending) ownerPending = null;
+  }
+ }
+
+ /** Leaves the owner link, back to the machine list; an owner connect still reading the key ends too. */
+ function disconnectOwner() {
+  ownerPending?.abort();
+  ownerPending = null;
+  if (!active?.owner) return;
+  disconnect();
+  setState(null, { phase: "idle", message: "", machine: "", herdr: "", live: false });
+ }
+
+ return Object.assign(desk, { connectOwner, disconnectOwner });
 }
 
 /** desk_guest_invite.go shareRoute's details. */

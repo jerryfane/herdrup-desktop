@@ -9,6 +9,7 @@ import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { enrolProof } from "../src/webguest/enrol";
 import { staticKey } from "../src/webguest/identity";
 import { createAccountDesk } from "../src/web/accountDesk";
+import { statementCache } from "../src/web/statements";
 import { runApproval } from "../src/web/ownerApproval";
 import { MemoryOwnerStore } from "../src/web/ownerStore";
 import { MemoryIdentityStore } from "../src/webguest/identity";
@@ -443,6 +444,41 @@ test("an approval stopped while its account lookup waits for the lock sends no r
  await running;
  await Promise.all(lock.turns);
  expect(s.calls.filter(c => c.url.endsWith("/v1/auth/refresh")).length).toBe(0);
+});
+
+test("a statement lookup cancelled while its account lookup waits for the lock sends no refresh", async () => {
+ const s = service();
+ const lock = heldLock();
+ const cache = statementCache(new WebAccount(s.fetcher, undefined, Date.now, lock.locks));
+ const stop = new AbortController();
+ const pending = cache.get("H", 120_000, stop.signal);
+ await lock.asked;
+ stop.abort(new Error("left"));
+ lock.release();
+ await expect(pending).rejects.toThrow("left");
+ await Promise.all(lock.turns);
+ expect(s.calls.length).toBe(0);
+});
+
+test("a statement lookup aborted as an already signed-in account answers reads and asks nothing", async () => {
+ const s = service(url => url.endsWith("/v1/statements") ? Response.json({ statements: [{ host: "H", jws: "jws-1" }], exp: Math.floor(Date.now() / 1000) + 600 }) : null);
+ const account = new WebAccount(s.fetcher);
+ await account.accessToken();
+ const cache = statementCache(account);
+ const posts = () => s.calls.filter(c => c.url.endsWith("/v1/statements")).length;
+ // Cold cache: aborted right after the call, before the lookup's continuation runs.
+ const cold = new AbortController();
+ const first = cache.get("H", 120_000, cold.signal);
+ cold.abort(new Error("left"));
+ await expect(first).rejects.toThrow("left");
+ expect(posts()).toBe(0);
+ // Warm cache: a held statement isn't handed to a caller that has gone.
+ await cache.get("H", 120_000, new AbortController().signal);
+ const warm = new AbortController();
+ const second = cache.get("H", 120_000, warm.signal);
+ warm.abort(new Error("left"));
+ await expect(second).rejects.toThrow("left");
+ expect(posts()).toBe(1);
 });
 
 test("a refresh queued for the lock before a sign-out isn't sent once the lock comes; its caller is signed out", async () => {

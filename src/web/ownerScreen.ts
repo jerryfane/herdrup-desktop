@@ -4,6 +4,7 @@
 import type { EnvelopeMachine, EnvelopeSkipped } from "../webguest/approve";
 import type { OwnerPhase } from "./ownerApproval";
 import type { OwnerRecord } from "./ownerStore";
+import { statusText, type MachineStatus } from "./ownerProbe";
 
 /** What this browser is called on the account's devices and on the approval sheet: "Chrome on
  *  macOS", from the user agent; "Web browser" when it can't tell. */
@@ -15,7 +16,7 @@ export function browserDeviceName(ua: string): string {
  return browser || (os ? `Browser on ${os}` : "Web browser");
 }
 
-export interface OwnerActions { again(): void; guestInstead(): void }
+export interface OwnerActions { again(): void; guestInstead(): void; open(machine: EnvelopeMachine): void }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
  const e = document.createElement(tag);
@@ -62,8 +63,9 @@ export function approvedMachines(record: OwnerRecord): { machines: EnvelopeMachi
  return { machines: [...machines.values()], skipped: [...skipped.values()].filter(s => !granted.has(s.hostItemID)) };
 }
 
-/** The card for phase; deviceName is this browser's name. */
-export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerActions, spinnerSVG: string): HTMLElement {
+/** The card for phase; deviceName is this browser's name, statuses each machine's probe. */
+export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerActions, spinnerSVG: string,
+ statuses: ReadonlyMap<string, MachineStatus> = new Map()): HTMLElement {
  const card = el("div", "web-welcome-card web-owner-card");
  const guest = () => button("web-owner-link", "Use a guest invitation instead", actions.guestInstead);
  const again = (label = "Ask again") => button("web-owner-action", label, actions.again);
@@ -103,19 +105,25 @@ export function ownerCard(phase: OwnerPhase, deviceName: string, actions: OwnerA
    card.append(el("h1", "", "Approving in another tab"), el("p", "", "Finish there, or close that tab and try again here."), again("Try again"));
    break;
   case "approved":
-   card.append(...approvedList(phase.record));
+   card.append(...approvedList(phase.record, statuses, actions.open));
    break;
  }
  return card;
 }
 
-function approvedList(record: OwnerRecord): HTMLElement[] {
+function approvedList(record: OwnerRecord, statuses: ReadonlyMap<string, MachineStatus>, open: (m: EnvelopeMachine) => void): HTMLElement[] {
  const { machines, skipped } = approvedMachines(record);
  const names = [...new Set(record.approvers.map(a => a.name))].join(", ");
  const list = el("ul", "web-owner-machines");
  for (const m of machines) {
   const row = el("li");
-  row.append(el("strong", "", m.label), el("span", "", `${m.scope === "terminal" ? "Chat and terminal" : "Chat"} · until ${until(m.expiresUnix)}`));
+  const status = statuses.get(m.hostID);
+  const b = button("web-owner-machine", "", () => open(m));
+  const lines = el("span", "web-owner-machine-lines");
+  lines.append(el("strong", "", m.label), el("span", "", statusText(status)));
+  b.append(lines, el("span", "web-owner-machine-access", `${m.scope === "terminal" ? "Chat and terminal" : "Chat"} · until ${until(m.expiresUnix)}`));
+  b.disabled = status?.kind === "ended";
+  row.append(b);
   list.append(row);
  }
  for (const s of skipped) {
@@ -123,5 +131,5 @@ function approvedList(record: OwnerRecord): HTMLElement[] {
   row.append(el("strong", "", s.label), el("span", "", SKIP_TEXT[s.reason] + (s.version ? ` (herdr ${s.version})` : "")));
   list.append(row);
  }
- return [el("h1", "", "Approved"), el("p", "", `Approved by ${names}.`), list];
+ return [el("h1", "", "Your machines"), el("p", "", `Approved by ${names}. Open a machine to chat with its agents.`), list];
 }
