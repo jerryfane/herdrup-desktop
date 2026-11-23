@@ -1,15 +1,20 @@
 // Agent avatars as herdrup draws them (App/AgentAvatarViews.swift
 // AgentAvatarView): a bundled mascot, a photo fetched by sha256, or the
 // initial tile. The status badge goes on top of any of them (main.ts).
-import { Desk, type Avatar, type ConnState, type BoardUpdate, type events } from "./mygo";
+import { Desk, type Avatar, type ConnState, type events } from "./mygo";
 
-/** Photos by sha256: the data: URL once fetched, null after a failure, which
- * herdrup draws as the initial tile. Desk caches the bytes on disk. A failure
- * is remembered for the connection and session only, as Desk's own store
- * does: the first board after the connection comes back up, or another
- * session, forgets it (trackPhotoConnections, boardShown) and the photo is
- * asked for again (#36, #42). */
-const photos = new Map<string, string | null>();
+/** Photos that loaded, by sha256: a content address, so any agent with that
+ * sha shows the bytes whichever agent they came from. Desk caches them on disk. */
+const photos = new Map<string, string>();
+/** Asks that failed, by target and sha256 (photoKey), which herdrup draws as
+ * the initial tile: the same photo asked of another agent is asked anew, since
+ * a list can move a photo to another pane and herdr answers not_found for the
+ * old one. A failure is remembered for the connection and session only, as
+ * Desk's own store does: the connection coming back up, or another session,
+ * forgets it (trackPhotoConnections, boardShown) and it is asked again (#36,
+ * #42). Fetches in flight are keyed the same way, so an ask of one agent never
+ * waits on another's. */
+const failed = new Set<string>();
 const loading = new Map<string, Promise<string | null>>();
 /** Counts connections and sessions, so a fetch begun on an older one
  * records no failure. */
@@ -17,60 +22,59 @@ let connection = 0;
 /** The session of the last board shown, undefined before the first. */
 let shownSession: string | undefined;
 
-/** What is known of sha's photo: its URL, null after a failure on this
- * connection, undefined before it is fetched. */
-export function knownPhoto(sha: string): string | null | undefined {
-  return photos.get(sha);
+const photoKey = (a: Avatar) => `${a.target ?? ""} ${a.sha256 ?? ""}`;
+
+/** What is known of a's photo: its URL once any agent's ask for that sha
+ * loaded, null after a's own ask failed on this connection, undefined before
+ * it is asked for. */
+export function knownPhoto(a: Avatar): string | null | undefined {
+  return photos.get(a.sha256 ?? "") ?? (failed.has(photoKey(a)) ? null : undefined);
 }
 
-/** Forgets the photos that failed, for a new connection or session. */
+/** Forgets the asks that failed, for a new connection or session. */
 export function forgetFailedPhotos() {
   connection++;
-  for (const [sha, url] of photos) if (url === null) photos.delete(sha);
+  failed.clear();
   loading.clear();
 }
 
-/** Has the page's photos follow its connection: call once at startup, before
- * the page subscribes its own handlers to events, so these run first (both
- * runtimes call listeners in subscription order). The connection is up once a
- * list goes through: "connected", unless it is waiting out the relay's backoff
- * ("reconnecting", which the web desk and a desktop guest publish as
- * "connected" once they have listed). When it comes up after connecting, an
- * error or that backoff, the photos that failed are forgotten as the next
- * board arrives, before it is drawn: the desk publishes the state before the
- * board of the list that brought it up, and until that board the page draws
- * the old one, whose targets may be stale (an agent's photo can move to
- * another pane), so its failures stay and nothing is asked of them. A
- * republish while up (availability, scope) forgets nothing; photos that
+/** Has the page's photos follow its connection: call once at startup. The
+ * connection is up once a list goes through: "connected", unless it is
+ * waiting out the relay's backoff ("reconnecting", which the web desk and a
+ * desktop guest publish as "connected" once they have listed). When it comes
+ * up after connecting, an error or that backoff, the asks that failed are
+ * forgotten; a fetch the backoff refused fails before that, and one still out
+ * then records nothing. The page may still draw the board from before, even
+ * after this (an obsolete render): its asks are of the old agents' keys, so
+ * a failure there never stands for the agent the new list has the photo on.
+ * Whether this runs before or after the page's own handlers does not matter.
+ * A republish while up (availability, scope) forgets nothing; photos that
  * loaded always stay. Returns the unsubscribe. */
-export function trackPhotoConnections(on: Pick<typeof events, "stateChanged" | "boardChanged">): () => void {
+export function trackPhotoConnections(on: Pick<typeof events, "stateChanged">): () => void {
   let up = false;
-  let due = false;
-  const offState = on.stateChanged.on((s: ConnState) => {
+  return on.stateChanged.on((s: ConnState) => {
     const now = s.phase === "connected" && s.guest?.availability !== "reconnecting";
-    if (now && !up) due = true;
+    if (now && !up) forgetFailedPhotos();
     up = now;
   });
-  const offBoard = on.boardChanged.on((b: BoardUpdate) => {
-    if (due) forgetFailedPhotos();
-    due = false;
-    boardShown(b.session);
-  });
-  return () => { offState(); offBoard(); };
 }
 
-/** Notes the session a board shows. A switch keeps the SSH connection, so
- * no "connecting" state marks it: photos that failed on the session before
- * are forgotten here, whether the user switched or the board fell back to
- * the default session (#42). */
+/** Notes the session a board shows, before the page draws it. A switch keeps
+ * the SSH connection, so no "connecting" state marks it: asks that failed on
+ * the session before are forgotten here, whether the user switched or the
+ * board fell back to the default session (#42). */
 export function boardShown(session: string) {
   if (shownSession !== undefined && session !== shownSession) forgetFailedPhotos();
   shownSession = session;
 }
 
+/** a's photo, asked of a's agent unless that sha has loaded already. */
 export function loadPhoto(a: Avatar): Promise<string | null> {
   const sha = a.sha256 ?? "";
-  let p = loading.get(sha);
+  const done = photos.get(sha);
+  if (done !== undefined) return Promise.resolve(done);
+  const key = photoKey(a);
+  let p = loading.get(key);
   if (!p) {
     const on = connection;
     p = Desk.avatarImage(a.target ?? "", sha).then(
@@ -79,17 +83,19 @@ export function loadPhoto(a: Avatar): Promise<string | null> {
         return url;
       },
       (err) => {
-        console.error(`avatar ${sha}:`, err);
+        console.error(`avatar ${key}:`, err);
+        // The same photo may have loaded from another agent meanwhile.
+        const other = photos.get(sha) ?? null;
         // A lost connection is not a broken photo: try again later.
         if (String(err).includes("not connected") || on !== connection) {
-          if (loading.get(sha) === p) loading.delete(sha);
-          return null;
+          if (loading.get(key) === p) loading.delete(key);
+          return other;
         }
-        photos.set(sha, null);
-        return null;
+        failed.add(key);
+        return other;
       },
     );
-    loading.set(sha, p);
+    loading.set(key, p);
   }
   return p;
 }
@@ -117,7 +123,7 @@ export function avatarFace(a: Avatar | undefined, initial: () => HTMLElement): H
     return img;
   }
   if (a?.kind === "image" && a.sha256) {
-    const known = knownPhoto(a.sha256);
+    const known = knownPhoto(a);
     if (known === null) return initial();
     if (known !== undefined) return photo(known);
     const wait = document.createElement("div");

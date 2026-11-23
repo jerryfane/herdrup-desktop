@@ -7,12 +7,12 @@ import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/owner";
 import { createGuestDesk, avatarDataURL } from "../src/web/desk";
-import { avatarFace, loadPhoto, trackPhotoConnections } from "../src/avatars";
+import { knownPhoto, loadPhoto, trackPhotoConnections } from "../src/avatars";
 import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
-import type { BoardUpdate, ConnState } from "../src/mygo";
+import type { Avatar, BoardUpdate, ConnState } from "../src/mygo";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 const statements: StatementSource = { get: async () => ({ jws: "jws", expMs: Date.now() + 600_000 }), drop() {} };
@@ -404,17 +404,12 @@ test("a host that doesn't say it serves pictures isn't asked for one", async () 
 const PNG_B64_B = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQSDjwHwAEJAJA6qdhxgAAAABJRU5ErkJggg==";
 const PNG_B64_C = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM44KDwHwAFBAIgRs3qLwAAAABJRU5ErkJggg==";
 
-/** What avatarFace builds, in a test without a DOM: its class, an image's src, and what replaced it
- *  once its photo arrived. */
-type Face = { className: string; src: string; alt: string; children: Face[]; parentNode: object; now?: Face; append(...c: Face[]): void; replaceWith(f: Face): void };
-const element = (): Face => ({ className: "", src: "", alt: "", children: [], parentNode: {}, append(...c) { this.children.push(...c); }, replaceWith(f) { this.now = f; } });
-/** What a face shows: its photo's URL, "initial" or "loading". */
-const shows = (f: Face): string => f.now ? shows(f.now) : f.className === "face photo" ? f.children[0]!.src : f.className === "face loading" ? "loading" : f.className;
-
-// #335 review: a picture that failed is asked for again on the first list after an outage or the
-// relay's backoff, and on that list's board: the board before it may name a pane the picture has
-// left, which the host refuses.
-test("an owner link back up after an outage or the relay's backoff asks again for the pictures that failed, where the new list has them; loaded ones aren't fetched again", async () => {
+// #335 review: a list can move a picture to another pane, and herdr answers not_found for the old
+// one. After an outage or the relay's backoff the page may still draw the board from before (an
+// obsolete render) while the new list's board asks for the picture where it is now: the old
+// agent's ask, in flight or failed, must not stand for the new one's. A picture that failed where
+// it still is gets asked again once the link is back up; one that loaded is never fetched again.
+test("an owner link back up asks for a moved picture where the new list has it, whatever the board before asks; failures are asked again, loaded pictures shared", async () => {
  const pictures: Record<string, string> = { A: PNG_B64, B: PNG_B64_B, C: PNG_B64_C };
  const sha: Record<string, string> = {};
  for (const [name, b64] of Object.entries(pictures)) sha[name] = await sha256Hex(b64);
@@ -441,35 +436,21 @@ test("an owner link back up after an outage or the relay's backoff asks again fo
   },
  });
  const desk = await deskWithKey(undefined, () => clock);
- // The page as web/main.ts has it: trackPhotoConnections first, then its own handlers drawing the
- // board it has on each state and each board as it arrives. drawn holds the fetches faces wait for.
- const page = globalThis as unknown as { document?: { createElement: () => Face } };
- page.document = { createElement: element };
  const avatarImage = Desk.avatarImage;
  Desk.avatarImage = (target, sha256) => desk.avatarImage(target, sha256);
- let board: BoardUpdate | null = null, faces: Record<string, Face> = {};
- const drawn: Promise<unknown>[] = [];
- const draw = () => Object.fromEntries((board?.board.sections ?? []).flatMap(s => s.rows).map(row => {
-  const face = avatarFace(row.avatar, () => Object.assign(element(), { className: "initial" }) as unknown as HTMLElement) as unknown as Face;
-  // The fetch avatarFace started, to wait for.
-  if (face.className === "face loading") drawn.push(loadPhoto(row.avatar));
-  return [row.name, face];
- }));
- const shown = async () => {
-  await Promise.all(drawn.splice(0));
-  return Object.fromEntries(Object.entries(faces).map(([name, face]) => [name, shows(face)]));
+ /** A render's ask for agent n's picture, as avatarFace makes it: what is known, else a fetch. */
+ const ask = (n: number, picture: string) => {
+  const a: Avatar = { kind: "image", target: `t${n}`, sha256: sha[picture] };
+  const known = knownPhoto(a);
+  return known === undefined ? loadPhoto(a) : Promise.resolve(known);
  };
  const untrack = trackPhotoConnections(events);
- const offState = events.stateChanged.on(() => { draw(); });
- const offBoard = events.boardChanged.on(b => { board = b; faces = draw(); });
  /** The relay ends the open session and every new one with close, until a list hears it. */
  const relayEnds = async (close: [number, string], heard: (s: ConnState) => boolean) => {
   const state = stateWhere(heard);
   ends = close;
   await listAgain(desk).catch(() => {});
-  const s = await state;
-  await shown();
-  return s;
+  return state;
  };
  /** The backoff ends and the relay lets connects through: a fresh session lists now. */
  const recover = async () => {
@@ -478,36 +459,43 @@ test("an owner link back up after an outage or the relay's backoff asks again fo
   clock += 15_000;
   await listAgain(desk).catch(() => {});
   await back;
-  return shown();
  };
  const url = (picture: string) => `data:image/png;base64,${pictures[picture]}`;
  try {
   await openP1(desk, relay);
-  expect(await shown()).toEqual({ "agent-1": "initial", "agent-2": url("A"), "agent-3": "initial", "agent-4": "initial" });
+  expect(await Promise.all([ask(1, "B"), ask(2, "A"), ask(4, "C")])).toEqual([null, url("A"), null]);
   expect(fetched).toEqual({ "t1 B": 1, "t2 A": 1, "t4 C": 1 });
 
   // The machine goes offline, then the relay holds this network's connects back: having listed,
-  // the link stays "connected" while it waits.
+  // the link stays "connected" while it waits, and the failures stand.
   await relayEnds([4503, "host_offline"], s => s.phase === "error");
   expect((await relayEnds([4429, "rate_limited"], s => s.guest?.availability === "reconnecting")).phase).toBe("connected");
-  // Back, B is on agent 3 now and the host has it there: the new list's board asks t3, not the t1
-  // of the board before it. C, still where the host has none, is asked again and fails again.
+  expect(await Promise.all([ask(1, "B"), ask(4, "C")])).toEqual([null, null]);
+
+  // Back, B is on agent 3. The board from before asks t1 and t4 first; the new board asks t3 for B
+  // while t1's ask is still out, and gets it. C, still where the host has none, fails again.
   listed = [agent(1), agent(2, "A"), agent(3, "B"), agent(4, "C")];
   has = new Set(["t2 A", "t3 B"]);
-  expect(await recover()).toEqual({ "agent-1": "initial", "agent-2": url("A"), "agent-3": url("B"), "agent-4": "initial" });
-  expect(fetched).toEqual({ "t1 B": 1, "t2 A": 1, "t4 C": 2, "t3 B": 1 });
+  await recover();
+  const [, stale, moved, loaded] = await Promise.all([ask(1, "B"), ask(4, "C"), ask(3, "B"), ask(2, "A")]);
+  expect([stale, moved, loaded]).toEqual([null, url("B"), url("A")]);
+  expect(fetched).toEqual({ "t1 B": 2, "t2 A": 1, "t4 C": 2, "t3 B": 1 });
 
-  // The relay's backoff alone, from a link that was up, is as much an interruption: C, now on
-  // agent 1 where the host has it, is asked for there.
+  // The relay's backoff alone, from a link that was up, is as much an interruption. Back, C is on
+  // agent 1 as well as 4, and agent 5 shows A. The board from before asks t4 first and fails; the
+  // new one asks t1 for C all the same. A, loaded already, is not fetched for agent 5.
   expect((await relayEnds([4429, "rate_limited"], s => s.guest?.availability === "reconnecting")).phase).toBe("connected");
-  listed = [agent(1, "C"), agent(2, "A"), agent(3, "B"), agent(4)];
-  has = new Set(["t2 A", "t3 B", "t1 C"]);
-  expect(await recover()).toEqual({ "agent-1": url("C"), "agent-2": url("A"), "agent-3": url("B"), "agent-4": "initial" });
-  expect(fetched).toEqual({ "t1 B": 1, "t2 A": 1, "t4 C": 2, "t3 B": 1, "t1 C": 1 });
+  listed = [agent(1, "C"), agent(2, "A"), agent(3, "B"), agent(4, "C"), agent(5, "A")];
+  has = new Set(["t2 A", "t3 B", "t1 C", "t5 A"]);
+  await recover();
+  expect(await ask(4, "C")).toBeNull();
+  expect(await ask(1, "C")).toBe(url("C"));
+  // The next render: agent 4's C is the one agent 1's ask loaded.
+  expect(await Promise.all([ask(4, "C"), ask(5, "A"), ask(3, "B")])).toEqual([url("C"), url("A"), url("B")]);
+  expect(fetched).toEqual({ "t1 B": 2, "t2 A": 1, "t4 C": 3, "t3 B": 1, "t1 C": 1 });
  } finally {
-  untrack(); offState(); offBoard();
+  untrack();
   Desk.avatarImage = avatarImage;
-  delete page.document;
   desk.disconnectOwner(); relay.stop();
  }
 });

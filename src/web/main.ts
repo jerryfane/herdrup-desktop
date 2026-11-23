@@ -156,8 +156,7 @@ window.addEventListener("guest-gram", event => {
  guestActions.gram((event as CustomEvent<string | null>).detail ?? null);
 });
 
-// Before the handlers below, so a photo that failed is forgotten before the board it is asked for
-// again on renders (avatars.ts).
+// Photos that failed are asked for again once the connection is back up (avatars.ts).
 trackPhotoConnections(events);
 events.stateChanged.on((s) => {
  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
