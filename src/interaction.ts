@@ -664,11 +664,14 @@ class Detail {
  }
  /** A web owner's grant scope as last admitted (GuestConnection.ownerScope). */
  ownerScope: string | undefined;
+ /** Advances with each change of ownerScope: a resize answer from an earlier one is stale. */
+ scopeGeneration = 0;
  /** A renewal admitted the owner under another scope: what the earlier grant refused (the
   *  terminal size, resizeRefused) is asked again under this one, at once. */
  applyOwnerScope(scope: string | undefined) {
   if (scope === this.ownerScope) return;
   this.ownerScope = scope;
+  this.scopeGeneration++;
   if (!this.resizeRefused) return;
   this.resizeRefused = false;
   this.updateGuestQuestion();
@@ -1198,8 +1201,11 @@ class Detail {
    if (this.resizeRefused) { this.keepStreamGrid(); this.updateHistoryPaging(); this.updateTerminalJump(); return; }
    this.fit?.fit();
    this.updateHistoryPaging(); this.updateTerminalJump();
+   // Answered under the scope it was sent under: a refusal from before a scope change (a
+   // renewal) says nothing about the new grant (applyOwnerScope).
+   const scopeAsked = this.scopeGeneration;
    void Desk.terminalSize(this.token, streamID, term.cols, term.rows).catch(e => {
-    if (generation !== this.generation || streamID !== this.terminalID) return;
+    if (generation !== this.generation || streamID !== this.terminalID || scopeAsked !== this.scopeGeneration) return;
     if (this.view?.guest && refusesResize(String(e))) { this.resizeRefused = true; this.keepStreamGrid(); this.updateGuestQuestion(); return; }
     const message = errorText(e);
     this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Resize: " + message;

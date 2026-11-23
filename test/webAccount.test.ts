@@ -459,3 +459,24 @@ test("a statement lookup cancelled while its account lookup waits for the lock s
  await Promise.all(lock.turns);
  expect(s.calls.length).toBe(0);
 });
+
+test("a statement lookup aborted as an already signed-in account answers reads and asks nothing", async () => {
+ const s = service(url => url.endsWith("/v1/statements") ? Response.json({ statements: [{ host: "H", jws: "jws-1" }], exp: Math.floor(Date.now() / 1000) + 600 }) : null);
+ const account = new WebAccount(s.fetcher);
+ await account.accessToken();
+ const cache = statementCache(account);
+ const posts = () => s.calls.filter(c => c.url.endsWith("/v1/statements")).length;
+ // Cold cache: aborted right after the call, before the lookup's continuation runs.
+ const cold = new AbortController();
+ const first = cache.get("H", 120_000, cold.signal);
+ cold.abort(new Error("left"));
+ await expect(first).rejects.toThrow("left");
+ expect(posts()).toBe(0);
+ // Warm cache: a held statement isn't handed to a caller that has gone.
+ await cache.get("H", 120_000, new AbortController().signal);
+ const warm = new AbortController();
+ const second = cache.get("H", 120_000, warm.signal);
+ warm.abort(new Error("left"));
+ await expect(second).rejects.toThrow("left");
+ expect(posts()).toBe(1);
+});

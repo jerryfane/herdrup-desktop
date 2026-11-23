@@ -841,12 +841,15 @@ export function createGuestDesk(env: DeskEnv) {
     if (v.terminal === terminal) v.terminal = null;
     life.abort();
     // herdr #497: a chat stream's agent isn't running (owner_paused): the open agent is paused
-    // until a list has it again (republish, runGuest). A chat-scope owner's pane.stream is
-    // refused before it opens with owner_forbidden for the same reason (owner_gate.rs: pane
-    // methods need the agent running; pane.stream is otherwise allowed in both scopes), so it
-    // reads as paused too, not as a refusal for good.
+    // until a list has it again (republish, runGuest). An owner's pane.stream on a local agent's
+    // pane is refused before it opens with owner_forbidden for the same reason, and only for it
+    // (owner_gate.rs: under the grant's current scope, which a renewal may have narrowed since the
+    // hello, a chat scope's pane methods need the agent running; pane.stream on a local pane is
+    // otherwise allowed in both scopes), so it reads as paused too. A remote agent's pane is
+    // refused for good: that stays an error.
+    const agent = v.active.agents.find(a => a.pane_id === v.paneID);
     const pausedAtOpen = message(error).includes(OWNER_PAUSED)
-     || (!!v.active.owner && v.active.transport.scope === "chat" && message(error).includes(OWNER_FORBIDDEN));
+     || (!!v.active.owner && !agent?.machine_id && message(error).includes(OWNER_FORBIDDEN));
     if (pausedAtOpen) {
      republish(v.active, { availability: "paused" });
      if (!message(error).includes(OWNER_PAUSED)) throw new Error(`pane.stream: herdr: ${OWNER_PAUSED}: the agent this stream watches is no longer running`);

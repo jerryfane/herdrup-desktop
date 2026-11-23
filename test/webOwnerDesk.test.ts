@@ -189,9 +189,14 @@ test("an owner stream refused at its start with owner_paused pauses the open age
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
-test("a chat-scope owner's stream refused before it opens (owner_forbidden: the agent isn't running) pauses until a list has it running; a terminal scope's is an error", async () => {
- let scope = "chat";
- const relay = host({ scope: () => scope, stream: (session, req) => answer(session, req, { error: { code: "owner_forbidden", message: "not allowed for this owner" } }) });
+test("an owner's stream refused before it opens (owner_forbidden: the agent isn't running) pauses until a list has it running, whatever scope the hello had; a remote agent's pane is an error", async () => {
+ // Admitted under terminal scope: a renewal may have narrowed it to chat since, and herdr checks
+ // pane.stream against the current scope.
+ const relay = host({
+  scope: () => "terminal",
+  agents: () => [...agents, { pane_id: "p4", terminal_id: "t4", name: "far", agent: "claude", machine_id: "m2" }],
+  stream: (session, req) => answer(session, req, { error: { code: "owner_forbidden", message: "not allowed for this owner" } }),
+ });
  const desk = await deskWithKey();
  try {
   await openP1(desk, relay);
@@ -200,10 +205,8 @@ test("a chat-scope owner's stream refused before it opens (owner_forbidden: the 
   const running = stateWhere(s => s.phase === "connected" && s.guest?.availability === undefined);
   await listAgain(desk);
   await running;
-  desk.disconnectOwner();
-  scope = "terminal";
-  await openP1(desk, relay);
-  const error = await desk.startTerminal("view-1", "stream-2").catch(e => e);
+  await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p4" }, "view-4");
+  const error = await desk.startTerminal("view-4", "stream-4").catch(e => e);
   expect(String(error)).toContain("owner_forbidden");
   expect(String(error)).not.toContain("owner_paused");
   expect((await desk.state()).guest?.availability).toBeUndefined();
