@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { choiceRows, followPresses, initWebAccess, type SheetClock } from "../src/webAccess";
 import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
@@ -99,27 +99,83 @@ test("For says the length in whole days and the day it ends; grants that end on 
  expect(lengthLabel(30 * 86_400)).toBe("30 days");
 });
 
-// ---- The rows as choiceRows draws them, on a fake document (Bun has no DOM) ----
+// ---- A fake document for the rows, the code field and the sheet (Bun has no DOM) ----
 
-/** The few DOM calls the rows make: createElement, plain properties, attributes, append, and the
- *  onclick/onchange handlers the test calls as a click or a pick would. */
-class FakeElement {
- className = ""; textContent = ""; hidden = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false; disabled = false;
- onclick: (() => void) | null = null; onchange: (() => void) | null = null;
+/** An event target that keeps the listeners it holds, to see a press stop being followed. */
+class Listened extends EventTarget {
+ readonly held = new Map<string, Set<unknown>>();
+ count(type: string) { return this.held.get(type)?.size ?? 0; }
+ override addEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: AddEventListenerOptions | boolean) {
+  if (!this.held.has(type)) this.held.set(type, new Set());
+  this.held.get(type)!.add(l);
+  super.addEventListener(type, l, o);
+ }
+ override removeEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: EventListenerOptions | boolean) {
+  this.held.get(type)?.delete(l);
+  super.removeEventListener(type, l, o);
+ }
+}
+
+/** The document: its body, the element with focus, visibility, and its window (defaultView). */
+class FakeDocument extends EventTarget {
+ readonly body: FakeElement;
+ readonly defaultView = new Listened();
+ activeElement: FakeElement | null = null;
+ visibilityState = "visible";
+ constructor() { super(); this.body = new FakeElement("body", this); }
+ createElement(tag: string) { return new FakeElement(tag, this); }
+}
+
+/** The DOM the sheet uses, behaving as a browser's does where the sheet depends on it: events reach
+ *  listeners and on* handlers; click() does nothing on a disabled or hidden control and ticks a
+ *  radio or checkbox; focus() needs an enabled element in the document; showModal() needs a dialog
+ *  in the document that isn't open; close() fires "close". */
+class FakeElement extends Listened {
+ className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
+ inputMode = ""; autocomplete = ""; maxLength = -1; selectionStart = 0; selectionEnd = 0; open = false;
+ onclick: ((e: Event) => void) | null = null; onchange: ((e: Event) => void) | null = null; oninput: ((e: Event) => void) | null = null;
  parent: FakeElement | null = null;
  readonly children: FakeElement[] = [];
  readonly attributes = new Map<string, string>();
- constructor(readonly tagName: string) {}
+ readonly classList = { toggle() {} };
+ /** The pointers captured on this element, in order. */
+ readonly captured: number[] = [];
+ constructor(readonly tagName: string, readonly ownerDocument: FakeDocument) { super(); }
  setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
- append(...nodes: FakeElement[]) { for (const n of nodes) { n.parent = this; this.children.push(n); } }
+ append(...nodes: FakeElement[]) { for (const n of nodes) { n.remove(); n.parent = this; this.children.push(n); } }
+ appendChild(n: FakeElement) { this.append(n); return n; }
+ remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; }
  all(): FakeElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
+ querySelectorAll(tag: string) { return this.all().filter(n => n !== this && n.tagName === tag); }
  /** Drawn: neither it nor anything it sits in is hidden. */
  shown(): boolean { return !this.hidden && (this.parent?.shown() ?? true); }
+ connected(): boolean { return this === this.ownerDocument.body || (this.parent?.connected() ?? false); }
+ override dispatchEvent(e: Event): boolean {
+  const ok = super.dispatchEvent(e);
+  ({ click: this.onclick, change: this.onchange, input: this.oninput } as Record<string, ((e: Event) => void) | null>)[e.type]?.call(this, e);
+  return ok;
+ }
+ click(): void {
+  if (this.disabled || !this.shown()) return;
+  const ticks = this.type === "checkbox" || (this.type === "radio" && !this.checked);
+  if (ticks) this.checked = this.type === "radio" || !this.checked;
+  this.dispatchEvent(new Event("click"));
+  if (ticks) this.dispatchEvent(new Event("change"));
+ }
+ focus(): void { if (!this.disabled && this.connected()) this.ownerDocument.activeElement = this; }
+ setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
+ getBoundingClientRect() { return { right: 0 }; }
+ setPointerCapture(id: number) { this.captured.push(id); }
+ showModal(): void {
+  if (this.open || !this.connected()) throw new Error("InvalidStateError: showModal on a dialog that's open or not in the document");
+  this.open = true;
+ }
+ close(): void { if (!this.open) return; this.open = false; this.dispatchEvent(new Event("close")); }
 }
-const G = globalThis as { document?: unknown; devicePixelRatio?: unknown; mygo?: unknown };
-const saved = { document: G.document, devicePixelRatio: G.devicePixelRatio, mygo: G.mygo };
-afterEach(() => { G.document = saved.document; G.devicePixelRatio = saved.devicePixelRatio; G.mygo = saved.mygo; });
+const G = globalThis as { document?: unknown; devicePixelRatio?: unknown; mygo?: unknown; window?: unknown };
+const saved = { document: G.document, devicePixelRatio: G.devicePixelRatio, mygo: G.mygo, window: G.window };
+afterEach(() => { G.document = saved.document; G.devicePixelRatio = saved.devicePixelRatio; G.mygo = saved.mygo; G.window = saved.window; });
 
 /** A clock the test moves by hand: after() queues a call, to() moves the time and runs what's due. */
 function handClock(start: number) {
@@ -141,11 +197,12 @@ function handClock(start: number) {
 }
 
 function drawRows(clock: SheetClock) {
- G.document = { createElement: (tag: string) => new FakeElement(tag) };
+ const doc = new FakeDocument();
+ G.document = doc;
  // The rows' chevron glyph asks the app for an image; here that answer never comes.
  G.devicePixelRatio = 1;
  G.mygo = { call: () => new Promise(() => {}) };
- const rows = choiceRows(new FakeElement("div") as unknown as HTMLElement, false, [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }], clock);
+ const rows = choiceRows(doc.createElement("div") as unknown as HTMLElement, false, [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }], clock);
  const all = (rows.rows as unknown as FakeElement).all();
  const value = (key: string) => all.find(n => n.tagName === "button" && n.children[0]?.textContent === key)!.children[1]!.textContent;
  return { rows, all, value };
@@ -215,33 +272,20 @@ test("once grants exist For says the length sent and the machines' recorded expi
  expect(radios.some(r => r.disabled)).toBe(false);
 });
 
-/** A target that keeps the listeners it holds, to see the press stop being followed. */
-class Owner extends EventTarget {
- readonly held = new Map<string, Set<unknown>>();
- count(type: string) { return this.held.get(type)?.size ?? 0; }
- override addEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: AddEventListenerOptions | boolean) {
-  if (!this.held.has(type)) this.held.set(type, new Set());
-  this.held.get(type)!.add(l);
-  super.addEventListener(type, l, o);
- }
- override removeEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: EventListenerOptions | boolean) {
-  this.held.get(type)?.delete(l);
-  super.removeEventListener(type, l, o);
- }
-}
-
-test("the dialog follows one primary press until release, cancel or close; a cancelled or closed press is no click", () => {
- const owner = new Owner(), win = new Owner();
- const presses = followPresses(owner, win);
- const captured: number[] = [];
- const code = { setPointerCapture: (id: number) => captured.push(id) };
+test("the code field follows one primary press until release, cancel or close; a cancelled or closed press is no click", () => {
+ const doc = new FakeDocument();
+ // A window other than the field's own, as a page's might be: the field's own is the one watched.
+ G.window = new Listened();
+ const input = doc.createElement("input");
+ const presses = followPresses(input as unknown as HTMLInputElement);
+ const win = doc.defaultView;
  const pointer = (type: string, x: number, more = {}) => Object.assign(new Event(type), { clientX: x, clientY: 40, isPrimary: true, button: 0, pointerId: 1, ...more });
- const at = (type: string, x: number, more = {}) => owner.dispatchEvent(pointer(type, x, more));
- const down = (x: number, more = {}) => presses.down({ clientX: x, clientY: 40, isPrimary: true, button: 0, pointerId: 1, target: code, ...more } as unknown as PointerEvent);
+ const at = (type: string, x: number, more = {}) => input.dispatchEvent(pointer(type, x, more));
+ const down = (x: number, more = {}) => at("pointerdown", x, more);
  const click = { detail: 1, shiftKey: false };
  // Out and back from where it went down is a drag (#362).
  down(200); at("pointermove", 60); at("pointermove", 200); at("pointerup", 200);
- expect(owner.count("pointermove")).toBe(0);
+ expect(input.count("pointermove")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
  // Moves after the release aren't this press's.
  down(200); at("pointerup", 200); at("pointermove", 60);
@@ -249,7 +293,7 @@ test("the dialog follows one primary press until release, cancel or close; a can
  // Another pointer's moves, release and cancel don't touch the press (#376 review): it's still
  // followed, and released where it went down it's a plain click.
  down(200); at("pointermove", 60, { pointerId: 2 }); at("pointerup", 60, { pointerId: 2 }); at("pointercancel", 60, { pointerId: 2 });
- expect(owner.count("pointermove")).toBe(1);
+ expect(input.count("pointermove")).toBe(1);
  at("pointerup", 200);
  expect(presses.plainClick(click)).toBe(true);
  // Another device's primary pointer (a pen or a touch while the mouse is held) can't take the
@@ -267,82 +311,56 @@ test("the dialog follows one primary press until release, cancel or close; a can
  expect(presses.plainClick(click)).toBe(true);
  // A press that was cancelled stops being followed and is no click.
  down(200); at("pointercancel", 200);
- expect(owner.count("pointermove")).toBe(0);
+ expect(input.count("pointermove")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
  // Only the primary pointer's primary button presses.
  down(200, { button: 2 }); down(200, { isPrimary: false });
- expect(owner.count("pointermove")).toBe(0);
+ expect(input.count("pointermove")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
- // The code captures the pressing pointer, so its release arrives even off the window (#389 review).
- expect(captured.length).toBeGreaterThan(0);
- expect(captured.every(id => id === 1)).toBe(true);
+ // The field captures the pressing pointer on itself, so its release arrives even off the window
+ // (#389 review).
+ expect(input.captured.length).toBeGreaterThan(0);
+ expect(input.captured.every(id => id === 1)).toBe(true);
  // Capture lost before the release (the window took the pointer): the press is over, and a touch
  // pressing next is followed and its tap is a click.
  down(200); at("lostpointercapture", 200);
- expect(owner.count("pointermove")).toBe(0);
+ expect(input.count("pointermove")).toBe(0);
  down(200, { pointerId: 3 }); at("pointerup", 200, { pointerId: 3 });
  expect(presses.plainClick({ ...click, pointerId: 3 })).toBe(true);
  // Capture is always lost after the release; that keeps the press for its click.
  down(200); at("pointerup", 200); at("lostpointercapture", 200);
  expect(presses.plainClick(click)).toBe(true);
- // The window losing focus ends a press still down.
+ // The field's window losing focus ends a press still down.
  down(200); win.dispatchEvent(new Event("blur"));
  down(200, { pointerId: 3 }); at("pointerup", 200, { pointerId: 3 });
  expect(presses.plainClick({ ...click, pointerId: 3 })).toBe(true);
  // A press the sheet closed on stops being followed and is no click, and the window isn't watched.
  expect(win.count("blur")).toBe(1);
  down(200); presses.close();
- expect(owner.count("pointermove")).toBe(0);
+ expect(input.count("pointermove")).toBe(0);
  expect(win.count("blur")).toBe(0);
  expect(presses.plainClick(click)).toBe(false);
 });
 
-// ---- The sheet itself (initWebAccess) on a fake document and app runtime ----
-
-/** The DOM the sheet uses: elements with plain properties, attributes, children, class toggles,
- *  listeners, the dialog's showModal and close, and querySelectorAll("input"). */
-class SheetElement {
- className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
- inputMode = ""; autocomplete = ""; maxLength = 0; placeholder = ""; selectionStart = 0; selectionEnd = 0;
- onclick: (() => void) | null = null; onchange: (() => void) | null = null; oninput: (() => void) | null = null;
- parent: SheetElement | null = null;
- children: SheetElement[] = [];
- readonly attributes = new Map<string, string>();
- readonly listeners = new Map<string, ((e: unknown) => void)[]>();
- readonly classList = { toggle: () => {} };
- constructor(readonly tagName: string) {}
- setAttribute(n: string, v: string) { this.attributes.set(n, String(v)); }
- getAttribute(n: string) { return this.attributes.get(n) ?? null; }
- append(...nodes: SheetElement[]) { for (const n of nodes) { n.parent = this; this.children.push(n); } }
- appendChild(n: SheetElement) { this.append(n); return n; }
- remove() { if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); this.parent = null; }
- addEventListener(type: string, l: (e: unknown) => void) { this.listeners.set(type, [...this.listeners.get(type) ?? [], l]); }
- removeEventListener() {}
- focus() {}
- setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }
- getBoundingClientRect() { return { right: 0 }; }
- showModal() {}
- close() { for (const l of this.listeners.get("close") ?? []) l({}); }
- all(): SheetElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
- querySelectorAll(selector: string) { return this.all().filter(n => n !== this && n.tagName === selector); }
+/** Waits for the sheet to reach a state a person would see; what says what never came. */
+async function until(what: string, reached: () => boolean): Promise<void> {
+ for (let i = 0; i < 1000 && !reached(); i++) { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
+ if (!reached()) throw new Error(`the sheet never showed ${what}`);
 }
 
-test("Approve checks the code and sends the choices; after a lost answer Try again resends them without a code check (#389 review)", async () => {
- const swap: Record<string, unknown> = {};
- const set = (k: string, v: unknown) => { swap[k] = (globalThis as Record<string, unknown>)[k]; (globalThis as Record<string, unknown>)[k] = v; };
- const body = new SheetElement("body");
- const onDocument = new Map<string, () => void>();
- const runtime = new Map<string, (p: unknown) => void>();
- const calls: [string, ...unknown[]][] = [];
+test("the sheet opens on Ready; Approve checks the code and sends the choices, held while it's out; after a lost answer Try again resends them without a second check", async () => {
+ // The sheet's poll and For's clock: the runner's timers, not run during the test.
+ jest.useFakeTimers();
+ const doc = new FakeDocument();
+ const on = new Map<string, (payload: unknown) => void>();
+ const calls: unknown[][] = [];
+ const firstAnswer = Promise.withResolvers<void>();
  let approvals = 0;
- set("document", { createElement: (t: string) => new SheetElement(t), body, visibilityState: "visible", addEventListener: (t: string, l: () => void) => onDocument.set(t, l) });
- set("window", new EventTarget());
- set("devicePixelRatio", 1);
- // The sheet's poll and the For row's clock: held, not run.
- set("setTimeout", () => 0);
- set("clearTimeout", () => {});
- set("mygo", {
-  on: (name: string, l: (p: unknown) => void) => { runtime.set(name, l); return () => runtime.delete(name); },
+ G.document = doc;
+ G.devicePixelRatio = 1;
+ // Only the app's IPC is stubbed.
+ G.mygo = {
+  on: (name: string, l: (payload: unknown) => void) => { on.set(name, l); return () => on.delete(name); },
   call: async (method: string, ...args: unknown[]) => {
    calls.push([method, ...args]);
    switch (method) {
@@ -351,49 +369,56 @@ test("Approve checks the code and sends the choices; after a lost answer Try aga
     case "Desk.WebAccessRequests": return [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }];
     case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
-    case "Desk.WebAccessStart": return undefined;
+    case "Desk.WebAccessStart": queueMicrotask(() => on.get("web-access:update")?.({ id: "r1", state: "ready" })); return undefined;
     case "Desk.WebAccessCheckCode": return { ok: true, left: 3, denied: false };
-    case "Desk.WebAccessApprove": return ++approvals === 1
-     ? { granted: ["hetzner"], skipped: [], failed: [], unsure: true, problem: "account service: 503", expires: [Date.UTC(2026, 11, 22)] }
-     : { granted: ["hetzner"], skipped: [], failed: [], expires: [Date.UTC(2026, 11, 22)] };
-    default: return new Promise(() => {});
+    case "Desk.WebAccessApprove":
+     if (++approvals > 1) return { granted: ["hetzner"], skipped: [], failed: [], expires: [Date.UTC(2026, 11, 22)] };
+     await firstAnswer.promise;
+     return { granted: ["hetzner"], skipped: [], failed: [], unsure: true, problem: "account service: 503", expires: [Date.UTC(2026, 11, 22)] };
+    default: return Promise.withResolvers<never>().promise;
    }
   },
- });
- const settle = async () => {
-  for (let i = 0; i < 20; i++) { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
  };
  try {
   initWebAccess();
-  onDocument.get("visibilitychange")!();
-  await settle();
-  runtime.get("web-access:update")!({ id: "r1", state: "ready" });
-  const dialog = body.children.find(c => c.tagName === "dialog")!;
-  const nodes = () => dialog.all();
-  const code = nodes().find(n => n.className === "web-access-code")!;
-  const main = () => nodes().find(n => n.tagName === "button" && n.className === "")!;
+  doc.dispatchEvent(new Event("visibilitychange"));
+  const dialog = () => doc.body.children.find(c => c.tagName === "dialog");
+  const nodes = () => dialog()?.all() ?? [];
+  const code = () => nodes().find(n => n.className === "web-access-code");
+  const status = () => nodes().find(n => n.className === "web-access-status")?.textContent;
+  const button = (text: string) => nodes().find(n => n.tagName === "button" && !n.hidden && n.textContent === text);
+  const rowHead = (key: string) => nodes().find(n => n.tagName === "button" && n.children[0]?.textContent === key)!;
+  const oneDay = () => nodes().find(n => n.type === "radio" && n.value === "1d")!;
   const sent = (method: string) => calls.filter(c => c[0] === method).map(c => c.slice(1));
-  code.value = "1234"; code.oninput!();
-  expect(main().textContent).toBe("Approve");
-  main().onclick!();
-  await settle();
+
+  await until("Ready in an open dialog with the code field focused", () =>
+   dialog()?.open === true && status() === "The browser shows a code now." && code() !== undefined && doc.activeElement === code());
+  // Typed into the focused field, as a person would.
+  const field = code()!;
+  field.value = "1234"; field.dispatchEvent(new Event("input"));
+  await until("an enabled Approve", () => button("Approve")?.disabled === false);
+  button("Approve")!.click();
+  await until("Approving…", () => button("Approving…") !== undefined);
+  // While the approval is out the choices are held: For opens, but 1 day can't be picked.
+  rowHead("For").click();
+  expect(oneDay().shown()).toBe(true);
+  oneDay().click();
+  expect(oneDay().checked).toBe(false);
+  firstAnswer.resolve();
+  await until("Try again", () => button("Try again")?.disabled === false);
   expect(sent("Desk.WebAccessCheckCode")).toEqual([["r1", "1234"]]);
   expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"]]);
-  // The answer was lost: Try again, the choices held.
-  expect(main().textContent).toBe("Try again");
-  expect(main().disabled).toBe(false);
-  expect(nodes().filter(n => n.type === "radio" || n.type === "checkbox").every(n => n.disabled)).toBe(true);
-  // Even were For moved on screen meanwhile, Try again resends what the lost approval sent, and
-  // doesn't check the code again.
-  const oneDay = nodes().find(n => n.type === "radio" && n.value === "1d")!; oneDay.checked = true; oneDay.onchange!();
-  main().onclick!();
-  await settle();
+  // Try again resends what the lost approval sent, without checking the code again.
+  button("Try again")!.click();
+  await until("Approved", () => status() === "Approved. The browser can open your machines now.");
   expect(sent("Desk.WebAccessCheckCode")).toHaveLength(1);
   expect(sent("Desk.WebAccessApprove")).toEqual([["r1", ["a"], "terminal", "30d"], ["r1", ["a"], "terminal", "30d"]]);
-  expect(nodes().find(n => n.className === "web-access-status")!.textContent).toBe("Approved. The browser can open your machines now.");
-  expect(main().hidden).toBe(true);
+  expect(button("Try again") ?? button("Approve")).toBeUndefined();
+  button("Done")!.click();
+  expect(dialog()).toBeUndefined();
  } finally {
-  for (const [k, v] of Object.entries(swap)) (globalThis as Record<string, unknown>)[k] = v;
+  jest.clearAllTimers();
+  jest.useRealTimers();
  }
 });
 
