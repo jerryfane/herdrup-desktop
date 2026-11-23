@@ -9,6 +9,7 @@ import "./webAccess.css";
 import { Desk, events } from "./mygo";
 import type { WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
+import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
 import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, machinesNote, machinesSummary, nextRequest, resultLines, showsTerminalWarning, skipReason, TIME_CHOICES, timeSummary,
  wrongCode, type WebAccessRequestView } from "./webAccessModel";
@@ -107,7 +108,10 @@ export function initWebAccess(): void {
   const row = (key: string, open: boolean, ...nodes: HTMLElement[]) => {
    const head = el("button", "web-access-row-head"); head.type = "button";
    const value = el("span", "web-access-row-value");
-   head.append(el("span", "web-access-row-key", key), value, el("span", "web-access-chevron"));
+   // The app's chevron glyph (as hosts.ts draws its disclosure), turned up while the row is open.
+   const chevron = el("span", "web-access-chevron"); chevron.setAttribute("aria-hidden", "true");
+   chevron.append(symbolNow("chevron.down", 11, "semibold"));
+   head.append(el("span", "web-access-row-key", key), value, chevron);
    const body = el("div", "web-access-row-body"); body.append(...nodes);
    const show = (o: boolean) => { head.setAttribute("aria-expanded", String(o)); body.hidden = !o; };
    head.onclick = () => show(head.getAttribute("aria-expanded") !== "true");
