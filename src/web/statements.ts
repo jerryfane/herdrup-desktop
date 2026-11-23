@@ -27,6 +27,10 @@ function waitFor<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
  *  sign-in): nothing from it is kept or used. */
 const stale = () => new AccountServiceError(409, "account_changed");
 
+/** Empties a session's map in place (a request still running holds it, and would keep its signed
+ *  statements alive) and gives the next session a new one. */
+function drop<K, V>(old: Map<K, V>): Map<K, V> { old.clear(); return new Map(); }
+
 export function statementCache(account: Pick<WebAccount, "statements" | "currentAccount" | "current" | "generation" | "onSessionChange">, now: () => number = Date.now): StatementSource {
  // The current session's statements and requests, by host; replaced when the session changes.
  let session = "";
@@ -34,7 +38,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
  let asking = new Map<string, Promise<Held>>();
  // Nothing signed is kept past its session: a sign-out or another sign-in empties the cache
  // at once, not at the next lookup.
- account.onSessionChange(() => { session = ""; held = new Map(); asking = new Map(); });
+ account.onSessionChange(() => { session = ""; held = drop(held); asking = drop(asking); });
  return {
   async get(hostID, minLeftMs, signal) {
    signal.throwIfAborted();
@@ -42,7 +46,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
    const generation = account.generation;
    const live = () => account.generation === generation && account.current?.accountID === acct;
    if (!live()) throw stale();
-   if (session !== `${generation}\n${acct}`) { session = `${generation}\n${acct}`; held = new Map(); asking = new Map(); }
+   if (session !== `${generation}\n${acct}`) { session = `${generation}\n${acct}`; held = drop(held); asking = drop(asking); }
    const mine = { held, asking };
    const h = held.get(hostID);
    if (h !== undefined && h.expMs - now() >= minLeftMs) return { ...h, live };

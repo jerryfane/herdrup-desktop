@@ -6,12 +6,12 @@
 
 import { other } from "./errors";
 import type { Endpoint } from "./invite";
-import type { TransportLink } from "./transport";
+import type { AccountStatement, TransportLink } from "./transport";
 
 /** A statement the hello or a refresh sends: enough of it left, or a fresh one; live says
  *  whether the session it was issued in is still the page's. */
 export interface StatementSource {
- get(hostID: string, minLeftMs: number, signal: AbortSignal): Promise<{ jws: string; expMs: number; live(): boolean }>;
+ get(hostID: string, minLeftMs: number, signal: AbortSignal): Promise<AccountStatement>;
  /** Forgets jws for hostID if it is still the statement held: the machine refused it. A newer
   *  one another connection already took stays. */
  drop(hostID: string, jws: string): void;
