@@ -118,6 +118,11 @@ export class WebAccount {
   private readonly locks: AccountLocks | null = browserLocks()) {}
 
  get current(): WebSession | null { return this.session; }
+ /** Changes whenever this page's session ends (sign-out, a refresh the service refused) or a
+  *  refresh brings another account's: anything issued for an earlier session, even for the same
+  *  account, isn't this one's. */
+ get generation(): number { return this.sessionGeneration; }
+ private sessionGeneration = 0;
 
  /** A current access token, refreshing through the cookie when the one held is missing or within
   *  a minute of expiry. Callers in this page share one refresh, and tabs take turns (the lock).
@@ -179,7 +184,10 @@ export class WebAccount {
   // The last hint only for the same account: another account's session never shows it.
   const hint = typeof pair.display_hint === "string" ? pair.display_hint : before === pair.account_id ? this.session?.displayHint : undefined;
   this.session = { accountID: pair.account_id, ...(hint ? { displayHint: hint } : {}) };
-  if (before !== pair.account_id) this.notify();
+  if (before !== pair.account_id) {
+   if (before !== undefined) this.sessionGeneration++;
+   this.notify();
+  }
   return this.access;
  }
 
@@ -293,7 +301,7 @@ export class WebAccount {
 
  private forget() {
   const had = this.session !== null;
-  this.epoch++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null;
+  this.epoch++; this.sessionGeneration++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null;
   if (had) this.notify();
  }
 }

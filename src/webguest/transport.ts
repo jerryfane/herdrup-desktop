@@ -20,7 +20,7 @@
 // before it opened is read as the relay's 429 (relayRefused) and starts Go's backoff: at worst a
 // shared machine that is offline, or a dropped network, is retried 15 s later instead of at once.
 
-import { closed, expired, GuestError, HerdrAPIError, hostOffline, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
+import { closed, expired, GuestError, HerdrAPIError, hostOffline, other, ownerRefusal, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
 
@@ -129,7 +129,7 @@ class RelaySocket {
  #wake: (() => void) | null = null;
  #signal: AbortSignal;
  #onAbort = () => this.abort(this.#signal.reason);
- #onEnd: (() => void) | null = null;
+ #onEnd: (() => void)[] = [];
 
  private constructor(ws: RelayWebSocket, signal: AbortSignal) {
   this.#ws = ws;
@@ -198,17 +198,19 @@ class RelaySocket {
   this.#end ??= end;
   this.#notify();
   const onEnd = this.#onEnd;
-  this.#onEnd = null;
-  onEnd?.();
+  this.#onEnd = [];
+  for (const run of onEnd) run();
  }
 
  /** Whether the socket is open with nothing unread: an idle session herdr has not ended or sent on. */
  get quiet(): boolean { return this.#end === null && this.#inbox.length === 0; }
 
- /** Calls onEnd once the socket ends, however it does; at once if it has. */
- whenEnded(onEnd: () => void) {
-  if (this.#end !== null) { onEnd(); return; }
-  this.#onEnd = onEnd;
+ /** Calls onEnd once the socket ends, however it does; at once if it has. Returns what takes
+  *  onEnd back off the socket (a parked session's cleanup, once the session is taken). */
+ whenEnded(onEnd: () => void): () => void {
+  if (this.#end !== null) { onEnd(); return () => {}; }
+  this.#onEnd.push(onEnd);
+  return () => { this.#onEnd = this.#onEnd.filter(f => f !== onEnd); };
  }
 
  /** Sends a frame, or throws when it cannot go out: the socket ended, or is closing, which a
@@ -250,10 +252,14 @@ class RelaySocket {
  }
 }
 
-/** The admission reply, message 2's payload (session.go:47-59). */
-interface HelloReply {
+/** The admission reply, message 2's payload (session.go:47-59; an owner's: herdr guest/owner.rs
+ *  admit_in, with mode "owner", the grant, and the statement's deadline). */
+export interface HelloReply {
  ok: boolean;
  error: string;
+ mode: string;
+ /** When the host ends an account-bound session unless a newer statement arrives in-band; 0 for none. */
+ deadlineUnix: number;
  guestID: string;
  name: string;
  machineLabel: string;
@@ -287,11 +293,17 @@ function parseHelloReply(plaintext: Uint8Array): HelloReply {
   if (typeof field !== "object" || Array.isArray(field)) throw invalid();
   return field as Record<string, unknown>;
  };
+ const whole = (from: Record<string, unknown>, key: string): number => {
+  const field = from[key];
+  if (field === undefined || field === null) return 0;
+  if (!Number.isSafeInteger(field) || (field as number) < 0) throw invalid();
+  return field as number;
+ };
  if (typeof object.ok !== "boolean") throw invalid();
  const agent = record(object.agent);
  const features = record(object.features) ?? {};
  const reply: HelloReply = {
-  ok: object.ok, error: text("error"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
+  ok: object.ok, error: text("error"), mode: text("mode"), deadlineUnix: whole(record(object.account) ?? {}, "deadline_unix"), guestID: text("guest_id"), name: text("name"), machineLabel: text("machine_label"), ownerName: text("owner_name"),
   agent: null, features: { gram: flag(features, "gram"), push: flag(features, "push"), multiRequest: flag(features, "multi_request") },
  };
  if (agent !== null) {
@@ -302,8 +314,9 @@ function parseHelloReply(plaintext: Uint8Array): HelloReply {
  return reply;
 }
 
-/** session.go:68-81. */
+/** session.go:68-81; an owner hello's codes are ownerRefusal's. */
 function refusal(code: string): GuestError {
+ if (code.startsWith("owner_") || code.startsWith("account_") || code.startsWith("statement_")) return ownerRefusal(code);
  switch (code) {
   case "unknown": case "revoked": return revoked();
   case "invite_used": return other("This invitation was already used. Ask the owner for a new one.");
@@ -312,6 +325,9 @@ function refusal(code: string): GuestError {
   default: return other("The shared machine refused this guest connection.");
  }
 }
+
+/** Before an account-bound session's deadline, the in-band refresh goes this long ahead. */
+export const REFRESH_AHEAD_MS = 120_000;
 
 /** An authenticated relay connection (session.go:61-66). */
 class Session {
@@ -324,7 +340,7 @@ class Session {
  abort(reason: unknown) { this.socket.abort(reason); }
  /** Open, and herdr sent nothing on it since the last reply: fit to carry the next request. */
  get quiet(): boolean { return this.socket.quiet; }
- whenEnded(onEnd: () => void) { this.socket.whenEnded(onEnd); }
+ whenEnded(onEnd: () => void): () => void { return this.socket.whenEnded(onEnd); }
 
  /** session.go sendLine: the line and its "\n", split at the plaintext limit. onFrame hears each
   *  frame about to be handed to the socket: until one is, herdr cannot have the request. */
@@ -335,6 +351,30 @@ class Session {
   for (let at = 0; at < framed.length; at += MAX_NOISE_PLAINTEXT) {
    this.socket.send(this.noise.encrypt(framed.subarray(at, at + MAX_NOISE_PLAINTEXT)), onFrame);
   }
+ }
+
+ /** Keeps an account-bound session past its deadline (herdr link/session.rs refreshed): before
+  *  each deadline a newer statement goes as one whole message, {"t":"account.refresh",…}, which
+  *  never reaches the API and gets no reply. A statement that can't be had lets the host end the
+  *  session at its deadline; the next call connects with a fresh one. A statement whose session
+  *  is no longer the page's (live false: signed out meanwhile) is never sent, and refreshing stops. */
+ keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<AccountStatement>, now: () => number) {
+  const life = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  this.whenEnded(() => { life.abort(); if (timer !== null) clearTimeout(timer); });
+  const arm = (until: number) => {
+   if (life.signal.aborted) return;
+   timer = setTimeout(async () => {
+    timer = null;
+    let statement: AccountStatement;
+    try { statement = await next(life.signal); } catch { return; }
+    if (life.signal.aborted || !statement.live()) return;
+    try { this.socket.send(this.noise.encrypt(new TextEncoder().encode(JSON.stringify({ t: "account.refresh", account: statement.jws })))); }
+    catch { return; }
+    arm(statement.expMs);
+   }, Math.max(1_000, until - REFRESH_AHEAD_MS - now()));
+  };
+  arm(deadlineMs);
  }
 
  /** session.go:199-212: the next decrypted frame, or null after a clean close. */
@@ -351,7 +391,10 @@ class Session {
 }
 
 /** session.go:125-178: dial, handshake, and the host's admission. */
-async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory): Promise<Session> {
+/** The hello's session ended before it went out. */
+const helloStale = () => closed();
+
+async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory, live?: () => boolean): Promise<Session> {
  const address = socketURL(endpoint);
  if (endpoint.hostPublicKey.length !== 32) throw other("The shared machine's saved identity is damaged.");
  const handshake = new Initiator({ hostID: endpoint.hostID, hostPublicKey: endpoint.hostPublicKey, staticKey: identity });
@@ -361,8 +404,10 @@ async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8
  } catch (error) {
   throw other(`prepare secure guest hello: ${error instanceof Error ? error.message : String(error)}`);
  }
+ if (live && !live()) throw helloStale();
  const socket = await RelaySocket.connect(address, factory, signal);
  try {
+  if (live && !live()) throw helloStale();
   socket.send(message);
   const reply = await socket.read();
   if (reply === null) throw other("The shared machine closed the connection during the secure handshake.");
@@ -506,6 +551,36 @@ export function decodeReply(line: string): unknown {
  return "result" in reply ? reply.result ?? null : null;
 }
 
+/** What a transport connects to and how it is admitted: the hello each connect sends, and the
+ *  check of the host's reply (a guest grant's id; an owner's mode). An account-bound link also
+ *  gives the in-band refresh its statements, and may drop a statement the host refused. */
+/** An account statement for an owner hello or refresh (POST /v1/statements): its JWS, when it
+ *  expires (ms), and whether the session it was issued in is still the page's. live() is required:
+ *  nothing is sent with a statement whose session has ended. */
+export interface AccountStatement { jws: string; expMs: number; live(): boolean }
+
+export interface TransportLink {
+ endpoint: Endpoint;
+ /** The hello for one connect. refused, when given, opts into one more connect after the host
+  *  refuses the hello's statement, and drops that exact statement first. live, when given, is
+  *  checked just before dialing and before sending: a hello whose session ended (sign-out)
+  *  is never sent. */
+ hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void; live?: () => boolean }>;
+ /** Throws to refuse a session the host admitted. */
+ admit(reply: HelloReply): void;
+ statement?(signal: AbortSignal): Promise<AccountStatement>;
+}
+
+/** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation. */
+export function guestLink(access: Access): TransportLink {
+ const payload = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));
+ return {
+  endpoint: access.endpoint,
+  hello: async () => ({ payload }),
+  admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
+ };
+}
+
 export interface TransportOptions {
  /** The clock, in milliseconds; default Date.now. */
  now?: () => number;
@@ -517,14 +592,16 @@ export interface TransportOptions {
 export interface RequestOptions { signal?: AbortSignal }
 
 /** The idle session a call left for the next one, since `since`, with its expiry timer. */
-interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout> }
+interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout>; unpark: () => void }
 
 /** What a request on a session came to (transport.go roundTrip): its reply line and whether the
  *  session is still open, or its failure and whether a frame of it went out (so herdr may have it). */
 type RoundTrip = { line: string; open: boolean } | { error: unknown; sent: boolean };
 
-/** guest_gate.rs serve_session (herdr #356) ends the session after these replies. */
-const SESSION_ENDING_CODES = new Set(["guest_paused", "guest_revoked", "invalid_request"]);
+/** guest_gate.rs serve_session (herdr #356) ends the session after these replies; owner_gate.rs
+ *  (herdr #497) re-reads the grant before each request and ends it on owner_not_granted or
+ *  owner_expired. */
+const SESSION_ENDING_CODES = new Set(["guest_paused", "guest_revoked", "invalid_request", "owner_not_granted", "owner_expired"]);
 
 /** Whether herdr serves further requests after a reply that decoded to error (transport.go
  *  keepsSession): not after the codes that end the session, nor after a reply that did not decode. */
@@ -542,7 +619,7 @@ function keepsSession(error: unknown): boolean {
  *  request that needs a connect fails with a rate_limited GuestError, without connecting, until the
  *  backoff ends. */
 export class GuestTransport {
- #access: Access;
+ #link: TransportLink;
  #identity: StaticKey;
  #now: () => number;
  #factory: WebSocketFactory;
@@ -558,8 +635,8 @@ export class GuestTransport {
  #refusals = 0;
  #idle: IdleSession | null = null;
 
- constructor(access: Access, identity: StaticKey, options: TransportOptions = {}) {
-  this.#access = access;
+ constructor(link: TransportLink, identity: StaticKey, options: TransportOptions = {}) {
+  this.#link = link;
   this.#identity = identity;
   this.#now = options.now ?? Date.now;
   this.#factory = options.webSocket ?? browserWebSocket;
@@ -648,15 +725,25 @@ export class GuestTransport {
  async #connect(signal: AbortSignal): Promise<Session> {
   const refusals = this.#refusals;
   if (this.#now() < this.#retryAt) throw rateLimited();
-  const hello = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: this.#access.guestID }));
   let session: Session;
-  try {
-   session = await openSession(this.#access.endpoint, this.#identity, hello, signal, this.#factory);
-  } catch (error) {
-   if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
-   throw error;
+  for (let attempt = 0; ; attempt++) {
+   let hello: { payload: Uint8Array; refused?: () => void; live?: () => boolean } | null = null;
+   try {
+    hello = await this.#link.hello(signal);
+    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live);
+    break;
+   } catch (error) {
+    if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
+    // A refused statement once more with a fresh one: it may have gone stale on the way.
+    if (attempt === 0 && error instanceof GuestError && error.kind === "statement" && hello?.refused) { hello.refused(); continue; }
+    throw error;
+   }
   }
-  if (session.reply.guestID !== this.#access.guestID) { session.close(); throw revoked(); }
+  try { this.#link.admit(session.reply); } catch (error) { session.close(); throw error; }
+  if (session.reply.deadlineUnix > 0 && this.#link.statement) {
+   const statement = this.#link.statement.bind(this.#link);
+   session.keepAccount(session.reply.deadlineUnix * 1000, statement, this.#now);
+  }
   this.#admitted(refusals, session.reply.features);
   session.handshook = this.#now();
   return session;
@@ -680,6 +767,7 @@ export class GuestTransport {
   this.#idle = null;
   if (idle === null) return null;
   clearTimeout(idle.timer);
+  idle.unpark();
   const now = this.#now();
   if (!idle.session.quiet || now - idle.since >= REUSE_IDLE_LIMIT_MS || now - idle.session.handshook >= REUSE_AGE_LIMIT_MS) { idle.session.close(); return null; }
   return idle.session;
@@ -698,9 +786,9 @@ export class GuestTransport {
    clearTimeout(idle.timer);
    session.close();
   };
-  const idle: IdleSession = { session, since: this.#now(), timer: setTimeout(drop, REUSE_IDLE_LIMIT_MS) };
+  const idle: IdleSession = { session, since: this.#now(), timer: setTimeout(drop, REUSE_IDLE_LIMIT_MS), unpark: () => {} };
   this.#idle = idle;
-  session.whenEnded(drop);
+  idle.unpark = session.whenEnded(drop);
  }
 }
 

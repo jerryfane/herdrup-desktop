@@ -98,6 +98,13 @@ export class HostSession {
   }
  }
 
+ /** The guest's next whole message, as text (an in-band {"t":"account.refresh",…}, not a line). */
+ async readMessage(): Promise<string | null> {
+  const frame = await this.conn.read();
+  if (frame === null || typeof frame === "string") return null;
+  return new TextDecoder().decode(this.receive.decryptWithAd(new Uint8Array(0), frame));
+ }
+
  write(text: string) { this.conn.send(this.send.encryptWithAd(new Uint8Array(0), new TextEncoder().encode(text))); }
 }
 

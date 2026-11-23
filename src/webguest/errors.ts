@@ -12,6 +12,7 @@ export type GuestErrorKind =
  | "rate_limited" // ErrRateLimited
  | "timeout" // a call's round-trip limit (session.go:18)
  | "closed" // the transport or socket was closed (context.Canceled)
+ | "statement" // an owner hello's account statement was refused (missing, stale, another account)
  | "other";
 
 export class GuestError extends Error {
@@ -34,6 +35,18 @@ export const relayRefused = () => new GuestError("rate_limited", "Couldn't conne
 export const timedOut = () => new GuestError("timeout", "The shared machine did not answer in time.");
 export const closed = () => new GuestError("closed", "The shared connection was closed.");
 export const other = (message: string) => new GuestError("other", message);
+
+/** An owner hello refused (herdr guest/owner.rs admit_in): the grant, the cap, or the statement. */
+export function ownerRefusal(code: string): GuestError {
+ switch (code) {
+  case "owner_not_granted": return new GuestError("revoked", "This browser isn't approved on this machine any more. Approve it again from HerdrUp.");
+  case "owner_expired": return new GuestError("revoked", "This browser's access to this machine has ended. Renew it from HerdrUp.");
+  case "owner_busy": return other("This browser has too many connections open to this machine. Close some tabs and try again.");
+  case "account_required": case "statement_invalid": case "statement_expired": case "account_keys_stale": case "account_mismatch":
+   return new GuestError("statement", "The machine didn't accept this browser's account statement. Sign in again if this persists.");
+  default: return other("The machine refused this browser's connection.");
+ }
+}
 
 /** herdr's API error object (internal/bridge/client.go:59-68): code and message, and the whole
  *  object as sent for the fields some errors add. */
