@@ -1,24 +1,54 @@
-/* "Approve a browser?" (webAccess.ts): the folder-naming dialog's neutral surface; no coloured
-   panels, only the app's hairlines. */
-dialog.folder-naming.web-access { width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
-.web-access-lead, .web-access-status { margin: 0 0 var(--space-stack-small); color: var(--color-text-dim); font: 400 13px/1.45 var(--font-app); }
-.web-access-status { color: var(--color-text); }
-.web-access-field { display: flex; flex-direction: column; gap: 6px; margin: var(--space-stack-medium) 0; font: 400 13px var(--font-app); color: var(--color-text-dim); }
-input.web-access-code { width: 8ch; padding: 6px 10px; border: 1px solid var(--color-hairline); border-radius: 8px; background: var(--color-surface); color: var(--color-text); font: 600 22px var(--font-machine); letter-spacing: 0.4em; text-align: center; }
-input.web-access-code:disabled { opacity: 0.5; }
-.web-access-section { margin-top: var(--space-stack-medium); }
-.web-access-section > .settings-section-label { margin: 0 0 6px; }
+/* "Approve a browser?" (webAccess.ts), proposal D's compact sheet: the code first, then Machines,
+   Access and For as rows that open in place. The folder-naming dialog's neutral surface; no
+   coloured panels or status pills, only the app's hairlines and plain dim text. */
+dialog.folder-naming.web-access { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; box-sizing: border-box; padding-bottom: 16px; }
+dialog.folder-naming.web-access h2 { margin: 0 0 6px; font-size: 19px; text-align: center; }
+.web-access-lead, .web-access-status { margin: 0; color: var(--color-text-dim); font: 400 14px/1.45 var(--font-app); text-align: center; }
+.web-access-status { margin-top: 12px; font-size: 13px; }
+
+/* The code: four boxes drawn under the one input, which is there but clear, and takes the typing. */
+.web-access-field { display: flex; flex-direction: column; align-items: center; gap: 18px; margin: 0; font: 400 14px/1.45 var(--font-app); color: var(--color-text-dim); }
+.web-access-codebox { position: relative; display: inline-flex; }
+.web-access-boxes { display: inline-flex; gap: 10px; }
+.web-access-box { display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 76px; border-radius: 12px; background: var(--color-ground); box-shadow: inset 0 0 0 1px var(--color-hairline); color: var(--color-text); font: 600 40px var(--font-machine); }
+.web-access-box:empty::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--color-hairline); }
+.web-access-codebox:focus-within .web-access-box.next { box-shadow: inset 0 0 0 1.5px var(--color-text); }
+.web-access-codebox:focus-within .web-access-box.next::after { display: none; }
+input.web-access-code { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; opacity: 0; cursor: text; }
+.web-access-codebox:has(input.web-access-code:disabled) .web-access-box { opacity: 0.5; }
+
+/* Machines, Access, For: a key, the choice, and a chevron; open, the controls under it. */
+.web-access-rows { margin-top: 16px; overflow: hidden; border-radius: 12px; background: var(--color-surface); }
+.web-access-row + .web-access-row { border-top: 1px solid var(--color-hairline-quiet); }
+button.web-access-row-head { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 0 14px; border-radius: 0; background: none; color: var(--color-text); font: 500 14px var(--font-app); text-align: left; }
+button.web-access-row-head:focus-visible { outline: 2px solid var(--color-text-faint); outline-offset: -2px; }
+.web-access-row-key { flex: none; width: 84px; color: var(--color-text-dim); font-weight: 400; }
+.web-access-row-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.web-access-chevron { flex: none; display: flex; margin: 0 2px; color: var(--color-text-faint); transition: transform .2s ease; }
+.web-access-row-head[aria-expanded="true"] .web-access-chevron { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .web-access-chevron { transition: none; } }
+.web-access-row-body { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 14px; }
+.web-access-row-body[hidden] { display: none; }
+.web-access-warning { margin: 0 14px 14px; padding: 9px 12px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--color-hairline); color: var(--color-text-dim); font: 400 12.5px/1.45 var(--font-app); }
+.web-access-warning[hidden] { display: none; }
+
 .web-access-machines { display: flex; flex-direction: column; border: 1px solid var(--color-hairline); border-radius: 10px; }
 .web-access-machine { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font: 400 14px var(--font-app); }
 .web-access-machine + .web-access-machine { border-top: 1px solid var(--color-hairline-quiet); }
 .web-access-machine-text { display: flex; flex-direction: column; }
 .web-access-dim { margin: 4px 0 0; color: var(--color-text-faint); font: 400 12px/1.4 var(--font-app); }
 .web-access-machines > .web-access-dim { padding: 10px 12px; margin: 0; }
+.web-access-note { margin-top: 10px; font-size: 12.5px; }
 /* Segments sit 1px apart over the hairline colour, so the dividers are the gaps (no per-segment border). */
-.web-access-segmented { display: inline-flex; gap: 1px; border: 1px solid var(--color-hairline); border-radius: 8px; overflow: hidden; background: var(--color-hairline); }
+.web-access-segmented { display: flex; gap: 1px; border: 1px solid var(--color-hairline); border-radius: 8px; overflow: hidden; background: var(--color-hairline); }
 .web-access-segmented input { position: absolute; opacity: 0; pointer-events: none; }
-.web-access-segmented label { padding: 5px 12px; background: var(--color-surface-raised); font: 400 13px var(--font-app); color: var(--color-text-dim); cursor: pointer; }
-.web-access-segmented input:checked + label { background: var(--color-surface); color: var(--color-text); }
+.web-access-segmented label { flex: 1; padding: 7px 12px; background: var(--color-surface-raised); font: 400 13px var(--font-app); color: var(--color-text-dim); text-align: center; cursor: pointer; }
+.web-access-segmented input:checked + label { background: var(--color-surface); color: var(--color-text); font-weight: 500; }
 .web-access-segmented input:focus-visible + label { outline: 2px solid var(--color-text-faint); outline-offset: -2px; }
 .web-access-problem { margin: var(--space-stack-medium) 0 0; color: var(--color-text); font: 400 13px/1.45 var(--font-app); }
-dialog.folder-naming.web-access .buttons { margin-top: var(--space-stack-large); }
+
+/* Deny and Approve share the footer, under a hairline. */
+dialog.folder-naming.web-access .buttons { margin: 20px calc(-1 * var(--space-stack-large)) 0; padding: 16px var(--space-stack-large) 0; border-top: 1px solid var(--color-hairline); }
+dialog.folder-naming.web-access .buttons button { flex: 1; height: 42px; }
+dialog.folder-naming.web-access .buttons button:disabled { opacity: 0.45; cursor: default; }
+dialog.folder-naming.web-access .buttons button.ghost { color: var(--color-text); }

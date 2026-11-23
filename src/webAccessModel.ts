@@ -43,6 +43,41 @@ export function skipReason(reason: string): string {
  return SKIP_REASONS[reason] ?? reason;
 }
 
+/** The sheet's choices, value and label: access, and how long it lasts (app/desk_web_access.go
+ *  webAccessTTLs: whole days). */
+export const ACCESS_CHOICES: readonly (readonly [string, string])[] = [["terminal", "Chat and terminal"], ["chat", "Chat only"]];
+export const TIME_CHOICES: readonly (readonly [string, string])[] = [["1d", "1 day"], ["7d", "7 days"], ["30d", "30 days"]];
+
+export function choiceLabel(choices: readonly (readonly [string, string])[], value: string): string {
+ return choices.find(([v]) => v === value)?.[1] ?? value;
+}
+
+/** The terminal warning shows whenever terminal access is chosen, the Access row open or not. */
+export function showsTerminalWarning(scope: string): boolean {
+ return scope === "terminal";
+}
+
+/** The Machines row, closed: the ticked machines by name, the first two and a count past three. */
+export function machinesSummary(machines: readonly { id: string; label: string }[], ticked: ReadonlySet<string>): string {
+ if (!machines.length) return "None yet";
+ const names = machines.filter(m => ticked.has(m.id)).map(m => m.label);
+ if (!names.length) return "None ticked";
+ return names.length <= 3 ? names.join(", ") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
+}
+
+/** The For row, closed: how long, and the day it ends ("30 days, until 23 Dec"). */
+export function timeSummary(length: string, now: number): string {
+ const days = Number(length.replace(/d$/, ""));
+ const end = new Date(now + days * 86_400_000).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+ return `${choiceLabel(TIME_CHOICES, length)}, until ${end}`;
+}
+
+/** The line under the rows: what Approve turns on, and why any machine can't be ticked, so both
+ *  show with the Machines row closed. */
+export function machinesNote(machines: readonly { label: string; available: boolean; unavailable?: string }[]): string {
+ return ["Approving turns on web access on the machines you tick.", ...machines.filter(m => !m.available).map(m => `${m.label} ${skipReason(m.unavailable ?? "")}.`)].join(" ");
+}
+
 export interface WebAccessResultView {
  granted: string[]; skipped: { label: string; reason: string }[]; failed: { label: string; reason: string }[];
  unsure?: boolean; problem?: string;
