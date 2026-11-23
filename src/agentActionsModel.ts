@@ -2,6 +2,10 @@
 // field, the avatar photo's crop and encoding, and the harness transfer's
 // states, each ported from herdrup so bun can test them.
 
+import { errorText } from "./errors";
+import type { SheetOpening } from "./sheetOpening";
+import type { SwitchRequest, SwitchStatus } from "./topicSuggestionsModel";
+
 /** herdr's agent-name grammar `^[a-z][a-z0-9_-]{0,31}$` (herdrup
  * Sources/HerdrKit/AgentName.swift 11-29; Go normalizeAgentName in
  * desk_create.go): lowercased, anything before the first letter dropped, any
@@ -178,23 +182,50 @@ export class SheetSupersededError extends SheetStaleError {
   }
 }
 
-/** What a sheet's failed action shows: the error's text, or nothing for one a newer choice of the
- *  same sheet replaced. */
+/** What a sheet's failed action shows: the error's text (errorText), or nothing for one a newer
+ *  opening of the same sheet replaced. */
 export function sheetFailure(error: unknown): string | null {
-  if (error instanceof SheetSupersededError) return null;
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof SheetSupersededError ? null : errorText(error);
 }
 
-/** The Switch harness sheet's opening lookups (AgentSessionTransferSheet init): the accounts,
- * then the agent, either failing reads as none, as before. A step refused as stale stops the sheet
- * instead: null, and the agent isn't asked. The account lookup starts at once (the browser Desk
- * binds it to the newest Switch harness chosen). */
-export async function transferSheetOpening(desk: { transferAccounts(): Promise<string>; transferAgentInfo(paneID: string, terminalID: string): Promise<string> },
+/** A sheet that asks to confirm, then makes its one call (Restart, Swap; the Topics switch through
+ * topicsSwitch): cancelled, it releases its opening and nothing starts; confirmed, its opening
+ * starts (it now speaks for this sheet) and makes the call; either way it is released once done.
+ * The call's failure goes to failed unless a later opening started meanwhile. */
+export async function confirmedStep<T>(opening: SheetOpening, confirm: () => Promise<boolean>, call: () => Promise<T>,
+  failed: (why: string) => void): Promise<T | undefined> {
+  try {
+    if (!await confirm()) return undefined;
+    opening.start();
+    try { return await opening.run(call); } catch (error) {
+      const why = sheetFailure(error);
+      if (why !== null) failed(why);
+      return undefined;
+    }
+  } finally { opening.release(); }
+}
+
+/** The Topics switch (herdrup #788 TopicsSwitch.swift) once its request arrived: confirmed, the
+ * banner says it is restarting, then what came of it; cancelled, the banner is left as it was, for
+ * the opening whose restart is still on its way. */
+export async function topicsSwitch(opening: SheetOpening, request: SwitchRequest, confirm: () => Promise<boolean>,
+  setEnabled: (paneID: string, enable: boolean) => Promise<{ changed: boolean }>, show: (status: SwitchStatus) => void): Promise<void> {
+  await confirmedStep(opening, confirm, async () => {
+    show({ kind: "working", request });
+    const result = await setEnabled(request.paneID, request.enable);
+    show({ kind: "done", request, changed: result.changed });
+  }, why => show({ kind: "failed", request, why }));
+}
+
+/** The Switch harness sheet's opening lookups (AgentSessionTransferSheet init), through its
+ * opening: the accounts, then the agent, either failing reads as none, as before. A step refused
+ * as stale stops the sheet instead: null, and the agent isn't asked. */
+export async function transferSheetOpening(opening: SheetOpening, desk: { transferAccounts(): Promise<string>; transferAgentInfo(paneID: string, terminalID: string): Promise<string> },
   paneID: string, terminalID: string): Promise<{ accountsJSON: string; agentJSON: string } | null> {
   const orNone = (error: unknown) => { if (error instanceof SheetStaleError) throw error; return ""; };
   try {
-    const accountsJSON = await desk.transferAccounts().catch(orNone);
-    const agentJSON = await desk.transferAgentInfo(paneID, terminalID).catch(orNone);
+    const accountsJSON = await opening.run(() => desk.transferAccounts()).catch(orNone);
+    const agentJSON = await opening.run(() => desk.transferAgentInfo(paneID, terminalID)).catch(orNone);
     return { accountsJSON, agentJSON };
   } catch (error) {
     if (error instanceof SheetStaleError) return null;

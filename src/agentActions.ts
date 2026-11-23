@@ -9,10 +9,11 @@ import { Desk, events, type AgentAction, type AvatarChoice, type Row } from "./m
 import { avatarFace, MASCOTS, mascotName, mascotURL } from "./avatars";
 import {
   agentFrom, AVATAR_PIXEL_SIZE, clampZoom, CROP_VIEWPORT, dragOffset, encodeWithinLimit, existingTransfer, harnessDisplayName,
-  integralCropRect, renameField, sheetFailure, SheetStaleError, transferPhaseIsConclusive, transferPhaseIsTerminal, transferSheetOpening, workingSize,
+  confirmedStep, integralCropRect, renameField, sheetFailure, SheetStaleError, topicsSwitch, transferPhaseIsConclusive, transferPhaseIsTerminal, transferSheetOpening, workingSize,
   type TransferAgent, type TransferInfo,
 } from "./agentActionsModel";
 import { switchAction, switchMessage, switchStatusText, switchTitle, type SwitchRequest, type SwitchStatus } from "./topicSuggestionsModel";
+import { openSheet } from "./sheetOpening";
 import "./agentActions.css";
 import { errorText } from "./errors";
 
@@ -85,7 +86,9 @@ function confirmAction(title: string, message: string, action: string, destructi
  * changes it, Save and Cancel. Saving renames, then Go refreshes the folder
  * and star membership the server moved to the new name. */
 function renameAgent(action: AgentAction) {
+  const opening = openSheet("rename", action.paneID);
   const { dialog, leading, title } = sheet("agent-rename-sheet");
+  dialog.addEventListener("close", () => opening.release());
   title.textContent = "Rename agent";
   leading.append(button("Cancel", "dim", () => dialog.close()));
   const form = el("form", "agent-sheet-body agent-rename");
@@ -107,8 +110,9 @@ function renameAgent(action: AgentAction) {
     event.preventDefault();
     const field = renameField(input.value);
     if (!field.canSave) return;
+    opening.start();
+    void perform("rename", action.title, () => opening.run(() => Desk.renameAgent(action.paneID, field.effective)));
     dialog.close();
-    void perform("rename", action.title, () => Desk.renameAgent(action.paneID, field.effective));
   });
   dialog.append(form);
   dialog.showModal();
@@ -118,26 +122,21 @@ function renameAgent(action: AgentAction) {
 /** Restart agent? (HerdrApp.swift 3434-3452): a plain agent.restart, no
  * account. */
 async function restartAgent(action: AgentAction) {
-  if (!await confirmAction("Restart agent?", `Interrupts ${action.title}'s current turn. Its session is preserved and reopened with --resume.`, "Restart")) return;
-  await perform("restart", action.title, () => Desk.restartAgent(action.paneID, ""));
+  const opening = openSheet("restart", action.paneID);
+  await confirmedStep(opening,
+    () => confirmAction("Restart agent?", `Interrupts ${action.title}'s current turn. Its session is preserved and reopened with --resume.`, "Restart"),
+    () => Desk.restartAgent(action.paneID, ""),
+    why => void Desk.alertAgentFailure(`Couldn't restart ${action.title}`, why));
 }
 
 /** Turn on/off topics (herdrup #788 TopicsSwitch.swift): confirmed first, since the switch
  * restarts the agent; then agent.topics.set_enabled, its progress and result in a neutral banner
  * at the foot of the agents list, which clears itself a few seconds after it ends. */
 async function switchTopics(action: AgentAction) {
+  const opening = openSheet("topics", action.paneID);
   const request: SwitchRequest = { paneID: action.paneID, title: action.title, enable: !!action.enable };
-  if (!await confirmAction(switchTitle(request), switchMessage(request), switchAction(request), false)) return;
-  const show = switchBanner();
-  show({ kind: "working", request });
-  try {
-    const result = await Desk.topicsSetEnabled(request.paneID, request.enable);
-    show({ kind: "done", request, changed: result.changed });
-  } catch (error) {
-    // A newer Topics choice for this agent owns the banner now.
-    const why = sheetFailure(error);
-    if (why !== null) show({ kind: "failed", request, why });
-  }
+  await topicsSwitch(opening, request, () => confirmAction(switchTitle(request), switchMessage(request), switchAction(request), false),
+    (paneID, enable) => Desk.topicsSetEnabled(paneID, enable), status => switchBanner()(status));
 }
 
 let bannerShown: SwitchStatus | null = null;
@@ -166,11 +165,14 @@ function switchBanner() {
 /** Swap subscription? (HerdrApp.swift 3453-3473): agent.restart on the
  * chosen account. */
 async function swapSubscription(action: AgentAction) {
+  const opening = openSheet("swap", action.paneID);
   const account = action.account;
-  if (!account) return;
-  if (!await confirmAction("Swap subscription?",
-    `Switches ${action.title} to ${account.label} and restarts it. This interrupts its current turn. The session is reopened with --resume on the new subscription.`, "Swap")) return;
-  await perform("swap", action.title, () => Desk.restartAgent(action.paneID, account.id));
+  if (!account) { opening.release(); return; }
+  await confirmedStep(opening,
+    () => confirmAction("Swap subscription?",
+      `Switches ${action.title} to ${account.label} and restarts it. This interrupts its current turn. The session is reopened with --resume on the new subscription.`, "Swap"),
+    () => Desk.restartAgent(action.paneID, account.id),
+    why => void Desk.alertAgentFailure(`Couldn't swap ${action.title}`, why));
 }
 
 /** An avatar at a diameter as herdrup's AgentAvatar draws it: the face with
@@ -199,7 +201,9 @@ function base64(bytes: Uint8Array) {
 export function openAvatarSheet(paneID: string, name: string) {
   const r = deps.row(paneID);
   if (!r) return;
+  const own = openSheet("avatar", paneID);
   const { dialog, leading, title, trailing } = sheet("agent-avatar-sheet");
+  dialog.addEventListener("close", () => own.release());
   // The appearance shown as current: the row's, then this sheet's own
   // choices as they apply (AgentAvatarDirectory's pending change).
   let current: { kind: string; mascot?: string; photo?: string } = { kind: r.avatar?.kind ?? "initial", mascot: r.avatar?.mascot };
@@ -255,7 +259,8 @@ export function openAvatarSheet(paneID: string, name: string) {
   // returns herdrup's describe() text).
   const apply = (choice: AvatarChoice | null, photo?: string) => {
     error = "";
-    void Desk.setAgentAvatar(paneID, choice ?? { kind: "default" }).then(() => {
+    own.start();
+    void own.run(() => Desk.setAgentAvatar(paneID, choice ?? { kind: "default" })).then(() => {
       current = choice === null ? { kind: "initial" } : choice.kind === "mascot" ? { kind: "mascot", mascot: choice.mascot } : { kind: "image", photo };
     }, reason => { const why = sheetFailure(reason); if (why !== null) error = `Couldn't change the picture: ${why}`; }).finally(() => { if (dialog.open && !cropping) void main(); });
     void main();
@@ -387,13 +392,16 @@ function sleep(ms: number) {
 async function switchHarness(action: AgentAction) {
   const to = action.target, from = action.source;
   if (!to || !from) return;
+  const own = openSheet("transfer", action.paneID);
   const paneID = action.paneID;
   let terminalID = action.terminalID;
   let source = from, target = to.id;
-  // The accounts and the agent. A browser sheet refused as stale (chosen again since, or its
-  // machine closed) stops here: no dialog, nothing more asked.
-  const opening = await transferSheetOpening(Desk, paneID, terminalID);
-  if (opening === null) return;
+  // The accounts and the agent. A browser sheet refused as stale (its machine closed, or a later
+  // one shown meanwhile) stops here: no dialog, nothing more asked.
+  const opening = await transferSheetOpening(own, Desk, paneID, terminalID);
+  if (opening === null) { own.release(); return; }
+  // The sheet shows: it now speaks for this agent's Switch harness.
+  own.start();
   const accountsJSON = opening.accountsJSON;
   // accounts.list as Go passes it on.
   const reply: { accounts?: { id: string; kind: string; label: string; active: boolean }[] } = accountsJSON ? JSON.parse(accountsJSON) : {};
@@ -409,7 +417,7 @@ async function switchHarness(action: AgentAction) {
   const { dialog, leading, title } = sheet("agent-transfer-sheet");
   title.textContent = "Switch harness";
   leading.append(button("Close", "dim", () => dialog.close()));
-  dialog.addEventListener("close", () => { closed = true; });
+  dialog.addEventListener("close", () => { closed = true; own.release(); });
   /** A step refused as stale (SheetStaleError, the browser's): the sheet closes and asks nothing
    * more; any other failure is the sheet's to show or retry, as before. */
   const stopped = (error: unknown) => {
@@ -559,7 +567,7 @@ async function switchHarness(action: AgentAction) {
   };
 
   /** The agent.list entry for this agent: by pane, or by terminal id. */
-  const listed = async () => agentFrom(await Desk.transferAgentInfo(paneID, terminalID));
+  const listed = async () => agentFrom(await own.run(() => Desk.transferAgentInfo(paneID, terminalID)));
 
   // synchronizeTransfer (618-628).
   const synchronizeTransfer = (durable: TransferInfo, agentStatus: string | null | undefined) => {
@@ -587,7 +595,7 @@ async function switchHarness(action: AgentAction) {
     if (!sourceIsIdle()) return;
     busy = true; errorText = null; render();
     try {
-      const updated = agentFrom(await Desk.prepareSessionTransfer(paneID, target, selectedAccount() ?? ""));
+      const updated = agentFrom(await own.run(() => Desk.prepareSessionTransfer(paneID, target, selectedAccount() ?? "")));
       const info = updated?.session_transfer;
       if (!info) throw new Error("Herdr returned no session-transfer state. The source was not treated as switched.");
       synchronizeTransfer(info, updated.agent_status); render();
@@ -612,7 +620,7 @@ async function switchHarness(action: AgentAction) {
     if (!current || current.phase !== "ready") return;
     busy = true; errorText = null; render();
     try {
-      const updated = agentFrom(await Desk.confirmSessionTransfer(paneID, current.target, current.target_account ?? "", current.id));
+      const updated = agentFrom(await own.run(() => Desk.confirmSessionTransfer(paneID, current.target, current.target_account ?? "", current.id)));
       const info = updated?.session_transfer;
       if (!info) throw new Error("Herdr returned no session-transfer state. The source was not treated as switched.");
       synchronizeTransfer(info, updated.agent_status); render();
