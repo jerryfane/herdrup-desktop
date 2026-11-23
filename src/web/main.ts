@@ -4,6 +4,7 @@
 // boot.ts runs it for a guest; a signed-in owner gets the desktop shell itself (src/main.ts), whose
 // host home is the approved machines (hosts.ts).
 
+import { trackPhotoConnections } from "../avatars";
 import { enableLongPress } from "../longPress";
 import { Desk, events, type AgentTarget, type BoardUpdate, type ConnState } from "../mygo";
 import { symbol } from "../symbol";
@@ -155,6 +156,8 @@ window.addEventListener("guest-gram", event => {
  guestActions.gram((event as CustomEvent<string | null>).detail ?? null);
 });
 
+// Photos that failed are asked for again once the connection is back up (avatars.ts).
+trackPhotoConnections(events);
 events.stateChanged.on((s) => {
  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
   guestTab = "agents";

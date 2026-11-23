@@ -7,7 +7,7 @@ import { loadGlyphFieldFonts } from "./glyphField";
 import { LiveGlyphField, Tone, type FieldLine } from "./glyphFieldLive";
 import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star, type FolderDeps } from "./folders";
 import { initAgentActions } from "./agentActions";
-import { avatarFace, boardShown, forgetFailedPhotos } from "./avatars";
+import { avatarFace, boardShown, trackPhotoConnections } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 import { rowPreview } from "./rowStatus";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
@@ -586,6 +586,8 @@ window.addEventListener("guest-gram", event => {
   guestActions.gram((event as CustomEvent<string | null>).detail ?? null);
 });
 
+// Photos that failed are asked for again once the connection is back up (avatars.ts).
+trackPhotoConnections(events);
 events.stateChanged.on((s) => {
   // A web owner's link admitted under another scope: the bar's create buttons follow it.
   const writesChanged = ownerWrites(s) !== ownerWrites(state);
@@ -596,9 +598,6 @@ events.stateChanged.on((s) => {
   if (writesChanged) void buildTopBar();
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
-  // Each connection attempt is a new connection: photos that failed on the
-  // last one are asked for again, as Desk's own store does.
-  if (s.phase === "connecting") forgetFailedPhotos();
   render();
 });
 events.boardChanged.on((b) => {
