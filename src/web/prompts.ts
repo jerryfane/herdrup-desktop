@@ -593,7 +593,13 @@ export function mergePrompts(local: SavedPrompt[], old: RemotePrompt[], mirror: 
  const agreed = (id: string): PromptFields | undefined => agreedKnown(id) ?? oldCopy(id);
  /** Whether the saved copy p was edited here since: compared with what is agreed (agreedKnown),
   *  then (none agreed) what this browser sent last (a conflict's server row is in old on the next
-  *  pass: the saved copy is compared with what was sent, not with that), then the old mirror. */
+  *  pass: the saved copy is compared with what was sent, not with that), then the old mirror.
+  *  After a restore (a reset pull or full readback) the same rule holds, on purpose: a saved copy
+  *  equal to the last agreed version takes the restored row, and only edits made since that
+  *  agreement survive. An accepted upload is the last agreed version, whether accepted long ago or
+  *  in this very round (an acknowledgement applied before a full readback keeps its baseline), so
+  *  a restore that rolls it back wins; treating it as an edit here would push again what the
+  *  restore removed (#359 round-12 review finding 1, job local-review-review-router-18eade224b01da40-1). */
  const editedHere = (p: SavedPrompt): boolean => {
   const fields = fieldsOf(p), agreedHere = agreedKnown(p.id);
   if (agreedHere !== undefined) return !sameFields(fields, agreedHere);
@@ -1142,7 +1148,9 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
     // after it (a pruned tombstone is no row at all, and no pull would show it went).
     after.mirror = applyPull(adoptRows(after.mirror, adopted), readBack);
     // The account's history started over (a restore) during the readback: present is what the
-    // restored account holds, and it is another history (SyncState.history).
+    // restored account holds, and it is another history (SyncState.history). The baselines this
+    // round's acknowledgements wrote stay: the next merge gives the restored rows the prompts
+    // still equal to them (editedHere: intended, #359 round-12 review finding 1).
     const present = readBack.full ? new Set(after.mirror.prompts.map(r => r.id)) : null;
     if (readBack.full) after.history = (after.history ?? 0) + 1;
     // A delete the service took stays pending when the restored history still holds the prompt:
