@@ -2,7 +2,7 @@
 // small functions, and the unsupported notice as ownerCard draws it, on a minimal fake document.
 import { afterEach, expect, test } from "bun:test";
 import jsQR from "jsqr";
-import { arrives, copyText, guideSteps, IOS_APP_URL, machineRows, ownerCard, ownerLayout, pageLink, thisBrowser, timeLeft, unsupportedNotice } from "../src/web/ownerScreen";
+import { arrives, copyText, guideCode, guideSteps, IOS_APP_URL, machineRows, ownerCard, ownerLayout, pageLink, thisBrowser, timeLeft, unsupportedNotice } from "../src/web/ownerScreen";
 import type { OwnerPhase } from "../src/web/ownerApproval";
 import type { MachineStatus } from "../src/web/ownerProbe";
 import type { OwnerRecord } from "../src/web/ownerStore";
@@ -60,7 +60,8 @@ test("each phase has its screen, decided once: the guide until it ends, the list
  expect(ownerLayout({ kind: "approved", record })).toEqual({ view: "list", record });
  expect(ownerLayout({ kind: "unsupported" })).toEqual({ view: "notice" });
  const code = ownerLayout(LIVE[2]);
- expect(code.view === "guide" && code.code).toBe("4827");
+ expect(code.view === "guide" && guideCode(code.phase)).toBe("4827");
+ for (const p of [...LIVE.slice(0, 2), ...ENDED]) { const l = ownerLayout(p); expect(l.view === "guide" && guideCode(l.phase)).toBeNull(); }
 });
 
 test("the guide's steps show only while a request is live; once it ended, the guide says to ask again instead", () => {
@@ -78,6 +79,18 @@ test("the guide's steps show only while a request is live; once it ended, the gu
 test("a failure's retry words claim nothing about the failure, which may come after the approval", () => {
  const l = ownerLayout({ kind: "failed", problem: "HerdrUp approved this browser, but its list of machines didn't arrive or didn't open." });
  expect(l.view === "guide" && l.retry).toEqual({ action: "Try again", text: "Try again for a new code, then approve it in HerdrUp." });
+});
+
+test("another tab holding the request: the words promise no new code (that tab may finish the approval), and say what Try again does either way", () => {
+ const l = ownerLayout({ kind: "elsewhere" });
+ expect(l.view === "guide" && l.retry).toEqual({ action: "Try again", text: "Another tab is approving this browser. Finish there, then choose Try again here, or close that tab and choose Try again to start over." });
+});
+
+test("the guide shows one code: the phase's, in the left side's digits and in the drawing's boxes", () => {
+ const nodes = draw({ kind: "code", code: "4827", approver: "Mac", expiresAt: Date.now() + 60_000 }, UA.macChrome).all();
+ const left = one(nodes, "div", "web-owner-code").children.map(c => (c as FakeElement).text()).join("");
+ const drawn = one(nodes, "span", "wod-boxes").children.map(c => (c as FakeElement).text()).join("");
+ expect([left, drawn]).toEqual(["4827", "4827"]);
 });
 
 test("the rows rise in only on the way from the code to the list, not on a redraw or a list kept from before", () => {
