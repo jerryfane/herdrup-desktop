@@ -1099,9 +1099,11 @@ on, it also fails the build unless, for that app and its `Contents/Resources/her
 - `spctl -a -vv -t exec` on the app and `spctl -a -vv -t open --context context:primary-signature`
   on the disk image say `source=Notarized Developer ID`;
 - `xcrun stapler validate` accepts, each on its own, the disk image, the app mygo built and stapled
-  (`build/darwin-universal/herdrup.app`) and, with signed updates, the app in each update archive
-  (`build/darwin-universal/*.tar.gz`). The app inside the image stays unstapled (mygo staples the
-  image, not its copy of the app), so its staple is not checked.
+  (`build/darwin-universal/herdrup.app`, which must be the only app there and have the name of the
+  image's app) and, with signed updates, the app in each update archive
+  (`build/darwin-universal/*.tar.gz`), which must be that bundle as the archive's only root entry,
+  as the updater requires. The app inside the image stays unstapled (mygo staples the image, not
+  its copy of the app), so its staple is not checked.
 
 ## License
 
