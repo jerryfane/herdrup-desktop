@@ -1069,18 +1069,27 @@ test("a guest head list that reached the store's end supersedes an older walk", 
  expect([s.unreadCount, s.messages[0]?.unread]).toEqual([1, true]);
 });
 
-test("a guest walk that fails partway publishes nothing: the badge keeps its count", async () => {
- // The reviewer's second probe: the badge says 7 (a head list of the whole store); the next walk's
- // first page is all read and its second page fails.
+// The ways a walk's second page stops it short of the last page (has_more still true).
+const shortWalks: [string, (firstPage: readonly unknown[]) => unknown][] = [
+ ["fails", () => { throw new Error("relay dropped the page"); }],
+ // The page after the cursor ends on the cursor itself (it doesn't advance).
+ ["repeats its cursor", firstPage => ({ messages: firstPage.slice(-1), has_more: true })],
+ ["is empty yet says has_more", () => ({ messages: [], has_more: true })],
+];
+
+test.each(shortWalks)("a guest walk whose second page %s publishes nothing: the badge keeps its count", async (_how, pageTwoAnswer) => {
+ // The reviewer's probes: the badge says 7 (a head list of the whole store); the next walk's
+ // first page is all read and its second page doesn't reach the last page.
  const pageTwo = Promise.withResolvers<void>(), nextHead = Promise.withResolvers<void>();
- let failWalks = false, holdHeads = false;
+ let shortWalk = false, holdHeads = false;
  const sevenUnread = guestRows(Array.from({ length: 7 }, (_, i) => `u${i}`), new Set());
- const firstPage = guestRows(Array.from({ length: 100 }, (_, i) => `r${String(i).padStart(3, "0")}`), new Set(Array.from({ length: 100 }, (_, i) => `r${String(i).padStart(3, "0")}`)));
+ const firstIDs = Array.from({ length: 100 }, (_, i) => `r${String(i).padStart(3, "0")}`);
+ const firstPage = guestRows(firstIDs, new Set(firstIDs));
  guestLink(async (method, params) => {
   if (method !== "gram.list") throw new Error("unexpected " + method);
   if (Number(params.limit) === 100) {
-   if (!failWalks) return { messages: sevenUnread, has_more: false };
-   if (params.before_id) { pageTwo.resolve(); throw new Error("relay dropped the page"); }
+   if (!shortWalk) return { messages: sevenUnread, has_more: false };
+   if (params.before_id) { pageTwo.resolve(); return pageTwoAnswer(firstPage); }
    return { messages: firstPage, has_more: true };
   }
   if (holdHeads) { nextHead.resolve(); return await new Promise(() => {}); }
@@ -1088,15 +1097,25 @@ test("a guest walk that fails partway publishes nothing: the badge keeps its cou
  });
  await opened();
  expect((await gramDesk.gramState!()).unreadCount).toBe(7);
- failWalks = true;
+ shortWalk = true;
  holdHeads = true;
- // Back to Agents: the hidden poll walks; its second page fails.
+ // Back to Agents: the hidden poll walks; its second page stops it short.
  await gramDesk.gramSetVisible!(false);
  await pageTwo.promise;
  // Gram shown again: the poll's next step, a head list (held), goes out once that walk is done.
  await gramDesk.gramSetVisible!(true);
  await nextHead.promise;
  expect((await gramDesk.gramState!()).unreadCount).toBe(7);
+});
+
+test("an owner's unread-only list is herdr's count of the whole store, has_more or not", async () => {
+ const three = until(s => s.unreadCount === 3);
+ ownerLink((method, params) => {
+  if (method !== "gram.list") throw new Error("unexpected " + method);
+  if (params.unread_only) return list([row("m1")], { unread_count: 3, has_more: true });
+  return list([]);
+ });
+ await three;
 });
 
 test("the same Saved failure moved to newest over a Delete refusal is published", async () => {

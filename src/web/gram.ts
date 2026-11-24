@@ -365,13 +365,14 @@ async function refresh(state: State, link: WebLink) {
 }
 
 /** gramBadge: an unread-only list while Gram does not show; the owner's counts the whole store. A
- *  guest's walk counts only once it has walked every page: one that failed partway publishes
- *  nothing and the badge stays as it is. */
+ *  guest's walk counts only once its last page said has_more false: one that stopped short (a page
+ *  that failed, an empty page or a cursor that didn't advance while has_more was still true)
+ *  publishes nothing and the badge stays as it is. */
 async function badge(state: State, link: WebLink) {
  const sent = { ...state.writes }, counted = state.counted;
- let answer, error: unknown;
- try { ({ answer, error } = await gramAnswer(state, link, 0, true)); } catch { return; }
- if (error !== undefined) return;
+ let answer;
+ try { ({ answer } = await gramAnswer(state, link, 0, true)); } catch { return; }
+ if (!state.owner && answer.hasMore) return;
  if (g !== state || !accepted(state, sent, "badge")) return;
  // A head list or page accepted since this was asked set a newer count.
  if (state.counted !== counted) return;
