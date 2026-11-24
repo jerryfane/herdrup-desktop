@@ -213,8 +213,9 @@ test("ownerCard draws the notice: any other browser gets the site-data reason an
  expect(one(android, "button", "web-owner-link").textContent).toBe("Use a guest invitation instead");
 });
 
-test("the App Store QR code as drawn has the four-module quiet zone on every side and reads as the App Store link", () => {
- const svg = one(drawUnsupported(UA.macSafari), "span", "web-owner-qr-code").innerHTML;
+test("the App Store QR code as drawn has the four-module quiet zone on every side and reads as the badge's own link", () => {
+ const nodes = drawUnsupported(UA.macSafari);
+ const svg = one(nodes, "span", "web-owner-qr-code").innerHTML;
  const [x, y, w, h] = svg.match(/viewBox="([^"]+)"/)![1].split(" ").map(Number);
  expect(w).toBe(h);
  const cells: number[][] = [];
@@ -224,7 +225,7 @@ test("the App Store QR code as drawn has the four-module quiet zone on every sid
  // The symbol as a camera sees it: 4 px a module, dark on white.
  const px = 4, side = w * px, image = new Uint8ClampedArray(side * side * 4).fill(255);
  for (const [c, r] of cells) for (let dy = 0; dy < px; dy++) for (let dx = 0; dx < px; dx++) image.fill(0, ((r * px + dy) * side + c * px + dx) * 4, ((r * px + dy) * side + c * px + dx) * 4 + 3);
- expect(jsQR(image, side, side)?.data).toBe(IOS_APP_URL);
+ expect(jsQR(image, side, side)?.data).toBe(one(nodes, "a").href);
 });
 
 test("the platform switch is radios kept in place: choosing iPhone or iPad draws only the drawing and the steps again", () => {
@@ -243,11 +244,13 @@ test("the platform switch is radios kept in place: choosing iPhone or iPad draws
 });
 
 test("an ended request's guide keeps its layout but shows what to do instead of the steps, beside the same button", () => {
- for (const [phase, action] of [[{ kind: "expired" }, "Ask again"], [{ kind: "failed", problem: "x" }, "Try again"]] as const) {
+ for (const [phase, action] of [[{ kind: "expired" }, "Ask again"], [{ kind: "failed", problem: "x" }, "Try again"], [{ kind: "elsewhere" }, "Try again"]] as const) {
   const nodes = draw(phase, UA.macChrome).all();
   expect(nodes.some(n => n.className === "web-owner-steps")).toBe(false);
   expect(one(nodes, "p", "web-owner-howto-ended").textContent).toContain(action);
   expect(one(nodes, "button", "web-owner-primary").text()).toBe(action);
+  // One sentence says what the button does: no other paragraph repeats its words.
+  expect(nodes.filter(n => n.tagName === "p" && n.text().toLowerCase().includes(action.toLowerCase())).map(n => n.className)).toEqual(["web-owner-howto-ended"]);
   expect(nodes.some(n => n.text().includes("No request was made"))).toBe(false);
  }
 });
@@ -263,16 +266,19 @@ const machine = (hostID: string, label: string) => ({ hostItemID: "i-" + hostID,
 const listOf = (...machines: ReturnType<typeof machine>[]): OwnerRecord => ({ v: 2, account: "a", devicePub: "B", approvers: [{ pub: "A", name: "Mac", envelope: { seq: 1, issuedUnix: 1, approver: "x", machines, skipped: [] } }] });
 const oneMachine = listOf(machine("h1", "hetzner"));
 
-test("a machine's new status shows in its row of the card it was drawn on, in place", () => {
+test("a machine's new status shows in its row of the card it was drawn on, in place; other cards are left as they are", () => {
  const first = card({ kind: "approved", record: oneMachine }, UA.macChrome);
  const status = one(first.root.all(), "span", "web-owner-status");
  expect(status.text()).toBe("Checking…");
  // Another card drawn meanwhile (a list without that machine, or the guide) takes nothing from it.
  const other = card({ kind: "approved", record: listOf(machine("h2", "mini")) }, UA.macChrome);
+ const otherRows = () => other.root.all().filter(n => n.className === "web-owner-status").map(n => [n.dataset.state, n.text()]);
+ const before = otherRows();
  const guide = card({ kind: "waiting" }, UA.macChrome);
- expect(first.showStatus("h1", { kind: "ended", message: "gone" })).toBe(true);
+ expect(guide.showStatus).toBeUndefined();
+ first.showStatus!("h1", { kind: "ended", message: "gone" });
  expect([status.dataset.state, status.text(), one(first.root.all(), "button", "web-owner-action").disabled]).toEqual(["ended", "Not approved on this machine any more", true]);
- expect(other.showStatus("h1", { kind: "online", agents: 1 })).toBe(false);
- expect(guide.showStatus("h1", { kind: "online", agents: 1 })).toBe(false);
+ other.showStatus!("h1", { kind: "online", agents: 1 });
+ expect(otherRows()).toEqual(before);
  expect(status.text()).toBe("Not approved on this machine any more");
 });

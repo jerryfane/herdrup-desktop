@@ -145,11 +145,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    const note = node("p", "guest-home-note", `You can see only the agents ${access.ownerName} shares with you.`);
    if (version !== generation) return;
    navigation.replaceChildren(header, content, ...(reconnecting ? [reconnecting] : []), note);
-   const chosen = content.classList.contains("selected") ? content : content.querySelector<HTMLElement>(".guest-agent-row.selected");
-   const surface = chosen ? node("div", "row-selection") : null;
-   if (chosen && surface) {
-    surface.setAttribute("aria-hidden", "true"); chosen.prepend(surface);
-    paintShape(surface, { radius: parseFloat(getComputedStyle(chosen).getPropertyValue("--radius-selection")), fill: "var(--color-surface-raised)" });
+   // The content is the shared agent's row, a message or the spinner: only the row is ever selected.
+   if (content.classList.contains("selected")) {
+    const surface = node("div", "row-selection");
+    surface.setAttribute("aria-hidden", "true"); content.prepend(surface);
+    paintShape(surface, { radius: parseFloat(getComputedStyle(content).getPropertyValue("--radius-selection")), fill: "var(--color-surface-raised)" });
    }
    await deps.placeInitials(navigation);
   })();
