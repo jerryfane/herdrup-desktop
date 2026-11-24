@@ -16,17 +16,19 @@
 .topics-rule { flex: none; width: 1px; background: var(--color-hairline-quiet); }
 .topics-surface[data-layout="narrow"] > .topics-rule, .topics-column[hidden] + .topics-rule { display: none; }
 
-/* The bar: [fold] Topics (i) … Organise  New topic, 50 px. */
-.topics-head { display: flex; align-items: center; gap: 6px; flex: none; height: 50px; padding: 0 12px 0 10px; }
+/* The bar: [fold] Topics (i) … Organise  New topic, 50 px. The heading never shrinks under its
+   content, so About's box and the capsules never overlap; when the capsules don't fit beside it (a
+   busy Organise in the 320 px column), they wrap to a line of their own, at the trailing edge. */
+.topics-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 6px; flex: none; min-height: 50px; box-sizing: border-box; padding: 9px 10px 9px 8px; }
 .topics-surface[data-layout="narrow"] .topics-head { padding-left: 16px; }
 .agent-detail .topics-fold { display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-right: -6px; padding: 0; border: 0; background: none; color: var(--color-text-dim); }
 .agent-detail .topics-fold:hover { color: var(--color-text); background: var(--color-surface); }
 .agent-detail .topics-fold[hidden] { display: none; }
-.topics-heading { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.topics-heading { display: flex; align-items: center; gap: 4px; flex: 1 0 auto; }
 .topics-heading > strong { font: 600 17px var(--font-app); letter-spacing: -0.02em; }
-/* The "i": 15 px info.circle in the faint ink, centred in a 28 px button: its hit area is its own
+/* The "i": 15 px info.circle in the faint ink, centred in a 24 px button: its hit area is its own
    box, never reaching into Organise beside the heading. */
-.agent-detail .topics-about-button { display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-faint); cursor: pointer; }
+.agent-detail .topics-about-button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-faint); cursor: pointer; }
 .agent-detail .topics-about-button:hover, .agent-detail .topics-about-button[aria-expanded="true"] { color: var(--color-text); }
 .topics-about-glyph { display: block; width: 15px; height: 15px; background: currentColor; mask: var(--about-icon) center/contain no-repeat; }
 .agent-detail :is(.topics-new, .topics-organise) { display: inline-flex; align-items: center; gap: 4px; flex: none; white-space: nowrap; }
@@ -38,7 +40,7 @@
 .topics-problem[hidden] { display: none; }
 .topics-problem-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--status-died); }
 .topics-list { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 24px; }
-.topics-section { margin: 0; padding: 14px 10px 4px; color: var(--color-text-faint); font: 600 12px var(--font-app); }
+.topics-section { margin: 0; padding: 14px 10px 4px; color: var(--color-text-dim); font: 600 12px var(--font-app); }
 .topics-empty { margin: 0; padding: 16px 10px 0; color: var(--color-text-dim); font: 400 13px var(--font-app); }
 
 /* Rows: rounded when selected or hovered, a quiet hairline between neighbours (not beside the
@@ -49,9 +51,9 @@
 .agent-detail .topic-row[aria-current="true"], .agent-detail :is(.topics-inbox, .topic-row):hover { background: var(--color-surface-raised); }
 .topics-row-lines { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .topic-row-title { font: 600 15px/20px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topic-row-line { display: flex; align-items: center; width: 100%; min-width: 0; color: var(--color-text-faint); font: 400 13px/18px var(--font-app); }
+.topic-row-line { display: flex; align-items: center; width: 100%; min-width: 0; color: var(--color-text-dim); font: 400 13px/18px var(--font-app); }
 .topic-row-sep { flex: none; padding: 0 5px; color: var(--color-text-faint); }
-.topics-row-activity { min-width: 0; color: var(--color-text-faint); font: 400 13px/18px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topics-row-activity { min-width: 0; color: var(--color-text-dim); font: 400 13px/18px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-row-top { display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; }
 .topic-row-title { flex: 1; min-width: 0; }
 .topic-row[data-closed] .topic-row-title { color: var(--color-text-dim); font-weight: 500; }

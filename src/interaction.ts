@@ -1665,7 +1665,8 @@ class Detail {
    const link = el("a", "chat-suggestion-continued", title);
    if (s.topicID) {
     const topicID = s.topicID;
-    link.href = "#"; link.onclick = event => { event.preventDefault(); void this.openTopic(topicID); };
+    // The target names the topic (copied or opened elsewhere); a click here opens it in place.
+    link.href = `#topic=${encodeURIComponent(topicID)}`; link.onclick = event => { event.preventDefault(); void this.openTopic(topicID); };
    }
    line.append("Continued in topic ", link); return line;
   }
@@ -1685,7 +1686,7 @@ class Detail {
   if (interactive) {
    const busy = this.suggestionBusy !== null;
    const later = button("Not now", () => { void this.settleSuggestion(s.id, false); }); later.className = "button-secondary"; later.disabled = busy;
-   const start = button("Start", () => { void this.settleSuggestion(s.id, true); }); start.disabled = busy;
+   const start = button("Start", () => { void this.settleSuggestion(s.id, true); }); start.className = "button-filled"; start.disabled = busy;
    const actions = el("div", "chat-suggestion-actions"); actions.append(later, start); card.append(actions);
   }
   return card;

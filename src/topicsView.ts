@@ -345,8 +345,8 @@ export class TopicsPane {
   this.bar.hidden = suggestions.length === 0;
   if (this.bar.hidden) { this.bar.replaceChildren(); return; }
   const count = tickedCount(suggestions, this.unticked);
-  const dismiss = button("Not now", "topics-proposals-dismiss button-secondary", () => void this.settle(false));
-  const create = button(createLabel(count), "topics-proposals-create button-filled", () => void this.settle(true));
+  const dismiss = button("Not now", "button-secondary", () => void this.settle(false));
+  const create = button(createLabel(count), "button-filled", () => void this.settle(true));
   dismiss.disabled = this.settling; create.disabled = this.settling || count === 0;
   this.bar.replaceChildren(dismiss, create);
  }

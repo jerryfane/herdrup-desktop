@@ -77,15 +77,14 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    item.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } };
   }
   let face: HTMLElement;
-  if (row) {
-   face = deps.rowAvatar(running ? row : { ...row, badge: "" });
-   // The second line already says the status in words; the badge's label would say it twice.
-   face.querySelector(".badge")?.setAttribute("aria-hidden", "true");
-  } else {
+  if (row) face = deps.rowAvatar(running ? row : { ...row, badge: "" });
+  else {
    // No listed agent: the default tile with the share's initial (AgentAvatarView(agent: nil)).
    face = node("div", "avatar"); const tile = node("div", "tile tint-0");
    tile.append(node("span", "initial", (name.trim()[0] ?? "?").toUpperCase())); face.append(tile);
   }
+  // Decorative: the name and the second line beside it say who it is and its status.
+  face.setAttribute("aria-hidden", "true");
   const text = node("div", "text"), line1 = node("div", "line1"), chev = node("span", "chev");
   chev.setAttribute("aria-hidden", "true");
   void deps.symbol("chevron.right", 12, "semibold").then(s => chev.append(s));

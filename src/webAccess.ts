@@ -226,7 +226,8 @@ export function initWebAccess(): void {
    }
    slots();
   });
-  for (const type of ["input", "keyup", "select", "focus"]) code.addEventListener(type, slots);
+  // Typing renders through oninput (update), after the value is cleaned; these follow the caret.
+  for (const type of ["keyup", "select", "focus"]) code.addEventListener(type, slots);
 
   const ticked = new Set(machines.filter(m => m.available).map(m => m.id));
   const list = el("div", "web-access-machines"); list.setAttribute("role", "group"); list.setAttribute("aria-label", "Machines");

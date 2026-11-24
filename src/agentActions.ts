@@ -143,7 +143,8 @@ async function switchTopics(action: AgentAction) {
 let bannerShown: SwitchStatus | null = null;
 /** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced.
  * It sits in the sidebar's foot, over the glass tab bar (style.css .sidebar-foot); while it shows,
- * the sidebar's lists end above it too (--foot-notice), so it never covers their last row. */
+ * the sidebar's lists end above it too (--foot-notice), measured live: it shows, hides and rewraps
+ * as the sidebar narrows, and the room it leaves follows. */
 function switchBanner() {
   const foot = document.getElementById("sidebar-foot") ?? document.body;
   let banner = foot.querySelector<HTMLElement>(":scope > .topics-switch-banner");
@@ -151,6 +152,8 @@ function switchBanner() {
     banner = el("div", "topics-switch-banner");
     banner.setAttribute("role", "status");
     foot.prepend(banner);
+    const notice = banner;
+    new ResizeObserver(() => reserve(notice)).observe(notice);
   }
   const node = banner;
   return (status: SwitchStatus) => {
@@ -160,8 +163,7 @@ function switchBanner() {
     mark.setAttribute("aria-hidden", "true");
     node.replaceChildren(...(status.kind === "done" ? [] : [mark]), el("span", "topics-switch-text", switchStatusText(status)));
     node.hidden = false;
-    reserve(node);
-    if (status.kind !== "working") setTimeout(() => { if (bannerShown === status) { node.hidden = true; bannerShown = null; reserve(node); } }, 6000);
+    if (status.kind !== "working") setTimeout(() => { if (bannerShown === status) { node.hidden = true; bannerShown = null; } }, 6000);
   };
 }
 
