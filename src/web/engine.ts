@@ -6,6 +6,12 @@ import type { WebLink } from "./link";
 
 export interface Pong { version?: string; protocol?: number; capabilities?: Record<string, unknown> | null }
 
+/** One session's requests (GuestClient.onOneSession): its pong, and calls mapped and tag-checked. */
+export interface OneSession {
+ pong(): Promise<Pong>;
+ call<R>(method: string, params: unknown, tag: string): Promise<R>;
+}
+
 /** engine.go ErrUnsupported. */
 export class ErrUnsupported extends Error {
  constructor(readonly method: string, readonly capability: string, serverVersion: string) {
@@ -53,6 +59,8 @@ function presendCheck(unsent?: AbortSignal): void {
 
 export class GuestClient {
  #probed: Pong | null = null;
+ /** The pong a session answered in onOneSession, with that session: it holds for that one only. */
+ #sessionPong: { session: object; pong: Pong } | null = null;
  constructor(private readonly link: WebLink) {}
 
  /** engine.go mapError. */
@@ -67,10 +75,29 @@ export class GuestClient {
   return pong;
  }
 
- /** engine.go probe: the pong a ping already answered, else a new ping's (kept). A ping that
-  *  fails throws its error: nothing but the ping was sent. */
- async probe(signal?: AbortSignal): Promise<Pong> {
-  return this.#probed ?? await this.ping(signal);
+ /** work's requests on one session of the link (WebLink.onOneSession), each mapped and checked as
+  *  call's (no capability gate). pong() is that session's: the one it answered before, else a ping
+  *  on it now (a ping that fails throws). A capability a pong shows holds for the herdr process
+  *  that answered it only, and another session may reach another (a restart, a rollback): a pong
+  *  from another session is never used. */
+ onOneSession<T>(work: (session: OneSession) => Promise<T>, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T> {
+  return this.link.onOneSession(async (held) => {
+   const call = async <R>(method: string, params: unknown, tag: string): Promise<R> => {
+    let result: unknown;
+    try { result = await held.call(method, params); } catch (error) { throw this.mapError(method, error); }
+    checkTag(method, result, tag);
+    return result as R;
+   };
+   const pong = async (): Promise<Pong> => {
+    const known = this.#sessionPong;
+    if (known !== null && known.session === held.id) return known.pong;
+    const answered = await call<Pong>("ping", {}, "pong");
+    this.#sessionPong = { session: held.id, pong: answered };
+    this.#probed = answered;
+    return answered;
+   };
+   return work({ pong, call });
+  }, signal, sendSignal);
  }
 
  /** engine.go gate: refuses a call the host's pong says it lacks; an unanswered ping lets it through.

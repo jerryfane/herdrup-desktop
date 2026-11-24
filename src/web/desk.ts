@@ -871,14 +871,18 @@ export function createGuestDesk(env: DeskEnv) {
       if (v.active.transport.scope !== "terminal") throw new OwnerRefusedError("pane.send_text");
       // app writeToTerminal: one line goes as it is; a draft with a line break goes as one
       // bracketed paste, so the break doesn't run the text before it, and only where the
-      // machine's pong says it can write one (an older herdr may ignore bracketed).
-      const lines = /[\r\n]/.test(prompt);
-      if (lines) {
-       const pong = await v.active.client.probe(within(v)).catch(() => { throw notSent(new Error(TERMINAL_UNCHECKED)); });
-       if (pong.capabilities?.[BRACKETED_WRITE] !== true) throw notSent(new Error(TERMINAL_TEXT_REFUSED));
-      }
+      // machine's pong says it can write one (an older herdr may ignore bracketed). That pong and
+      // the write go on one session: another session may reach another herdr process (a restart,
+      // a rollback), so a pong another session answered is never relied on, and a session that
+      // ends after its pong writes nothing (#471).
+      const params = { pane_id: v.paneID, text: prompt };
       try {
-       await v.active.client.call("pane.send_text", { pane_id: v.paneID, text: prompt, ...(lines ? { bracketed: true } : {}) }, "ok", "", within(v));
+       if (!/[\r\n]/.test(prompt)) await v.active.client.call("pane.send_text", params, "ok", "", within(v));
+       else await v.active.client.onOneSession(async (session) => {
+        const pong = await session.pong().catch(() => { throw notSent(new Error(TERMINAL_UNCHECKED)); });
+        if (pong.capabilities?.[BRACKETED_WRITE] !== true) throw notSent(new Error(TERMINAL_TEXT_REFUSED));
+        await session.call("pane.send_text", { ...params, bracketed: true }, "ok");
+       }, within(v));
       } catch (error) {
        // herdr wrote nothing: the pane's program hasn't turned bracketed paste on.
        failure = error instanceof HerdrAPIError && error.code === "bracketed_paste_unavailable" ? notSent(new Error(TERMINAL_PASTE_REFUSED)) : error;

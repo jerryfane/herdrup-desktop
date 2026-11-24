@@ -630,6 +630,13 @@ function keepsSession(error: unknown): boolean {
  return error instanceof HerdrAPIError && !SESSION_ENDING_CODES.has(error.code);
 }
 
+/** A session callOn holds: its requests (call) all go on it. id is that session, opaque: it tells
+ *  answers from one herdr process apart from another's. */
+export interface HeldSession {
+ readonly id: object;
+ call(method: string, params?: unknown): Promise<unknown>;
+}
+
 /** Opens authenticated Noise sessions for API requests (transport.go Transport). A host that answers
  *  further requests on a session (features.multi_request) keeps the one a call ends with for the
  *  next call, so polling stays under the relay's connect limit; otherwise every request has a fresh
@@ -731,6 +738,53 @@ export class GuestTransport {
   } finally {
    disposeUnsent();
    dispose();
+  }
+ }
+
+ /** work's requests, all on one session: the herdr process that session reached answers each of
+  *  them, so what one answer says (a ping's capabilities) holds for the next. The session is taken
+  *  first (the idle one, else a fresh one, connected under sendSignal: NotSentError if it can't
+  *  be had), and work knows it (HeldSession.id) before any request goes. Each request is as call's
+  *  (within ROUND_TRIP_LIMIT_MS, sendSignal ending it only while unsent, NotSentError for any
+  *  failure before a frame was handed over), but goes on that session or not at all: a session
+  *  that ended, or that herdr won't carry another request on, is never swapped for another, which
+  *  could reach another herdr. The session is left idle for the next call when work ends with it
+  *  still fit to carry one. */
+ async callOn<T>(work: (session: HeldSession) => Promise<T>, options: RequestOptions = {}): Promise<T> {
+  const opening = linkSignals([options.sendSignal, this.#life.signal, options.signal], this.#callLimitMs);
+  let held: Session;
+  try {
+   if (opening.signal.aborted) throw notSent(opening.signal.reason);
+   held = this.#takeIdle() ?? await beforeSend(() => this.#connect(opening.signal));
+  } finally {
+   opening.dispose();
+  }
+  let spent = false;
+  const request = async (method: string, params?: unknown): Promise<unknown> => {
+   const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
+   const { signal: unsent, dispose: disposeUnsent } = linkSignals([options.sendSignal, signal]);
+   try {
+    const line = await beforeSend(() => this.#request(method, params));
+    if (unsent.aborted) throw notSent(unsent.reason);
+    if (spent) throw notSent(other("The shared machine's connection for this request ended before it was sent."));
+    const outcome = await roundTrip(held, line, { signal, unsent, detach: disposeUnsent });
+    if (!("line" in outcome)) { spent = true; throw outcome.error; }
+    let result: unknown, failure: unknown = null;
+    try { result = decodeReply(outcome.line); } catch (error) { failure = error; }
+    // transport.go decode, without parking: herdr ended or spent the session, or serves no more.
+    if (!outcome.open || !held.reply.features.multiRequest || !keepsSession(failure)) spent = true;
+    if (failure !== null) throw failure;
+    return result;
+   } finally {
+    disposeUnsent();
+    dispose();
+   }
+  };
+  try {
+   return await work({ id: held, call: request });
+  } finally {
+   if (!spent && held.reply.features.multiRequest) this.#park(held);
+   else held.close();
   }
  }
 
