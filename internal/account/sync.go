@@ -37,6 +37,19 @@ type Change struct {
 	Body       any    `json:"body,omitempty"`
 }
 
+// Write is a change writing body to collection/id, based on revision base
+// (the item's live or tombstone revision as last seen; 0 for one the
+// account never held). Planners build every change through Write or
+// Delete, so none goes out without its base.
+func Write(collection, id string, base int64, body any) Change {
+	return Change{Collection: collection, ID: id, Base: base, Body: body}
+}
+
+// Delete is a change deleting collection/id, based on revision base.
+func Delete(collection, id string, base int64) Change {
+	return Change{Collection: collection, ID: id, Base: base, Deleted: true}
+}
+
 // HostBody is the hosts collection's allowlist (§5.1) and nothing else: a
 // saved machine's key path, pins and session never travel.
 type HostBody struct {
@@ -82,14 +95,17 @@ var ErrResetRequired = errors.New("account: sync reset required")
 const maxPullPages = 64 // 64 × 500 items, past the 2,000-item account cap
 
 // PullSince reads every change after since, following the cursor. A 410
-// restarts from 0 and the result is Full and Reset.
+// on any page (a pull from 0 included) restarts once from 0, and the
+// result is Full and Reset. Reset is reported with the error too when the
+// restart fails: the account's history may have been replaced all the
+// same, and the caller must say so before it returns.
 // Every request (each page) is for r's session (Round): ErrAccountChanged
 // once it ended, a sign-in again to the same account included.
 func (c *Client) PullSince(ctx context.Context, r Round, since int64) (Pull, error) {
 	p, err := c.pull(ctx, r, since)
-	if errors.Is(err, ErrResetRequired) && since != 0 {
+	if errors.Is(err, ErrResetRequired) {
 		p, err = c.pull(ctx, r, 0)
-		p.Reset = err == nil
+		p.Reset = true
 	}
 	return p, err
 }
@@ -250,13 +266,16 @@ type pushBody struct {
 type PushResult struct {
 	Rev int64 `json:"rev"`
 	// NowMs is the service's clock as it answered, 0 for none (#826).
-	NowMs   int64 `json:"now_ms"`
-	Applied []struct {
-		Collection string `json:"collection"`
-		ID         string `json:"id"`
-		Rev        int64  `json:"rev"`
-	} `json:"applied"`
+	NowMs     int64      `json:"now_ms"`
+	Applied   []Applied  `json:"applied"`
 	Conflicts []Conflict `json:"conflicts"`
+}
+
+// Applied is a change the service wrote, at Rev.
+type Applied struct {
+	Collection string `json:"collection"`
+	ID         string `json:"id"`
+	Rev        int64  `json:"rev"`
 }
 
 // Conflict is a change the service didn't write because its Base was

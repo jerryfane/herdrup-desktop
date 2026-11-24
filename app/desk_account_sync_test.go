@@ -61,6 +61,9 @@ type syncWorker struct {
 	// losePush applies the next push and then answers it 503, as if the
 	// answer was lost on its way.
 	losePush bool
+	// muteApplied applies the next push and answers it without its applied
+	// list: an answer that doesn't say what became of the changes.
+	muteApplied bool
 	// stall, while set, holds every pull until it is closed or the request
 	// ends; stalled hears of each held pull.
 	stall, stalled chan struct{}
@@ -507,6 +510,10 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			reply(503, map[string]string{"error": "unavailable"})
 			return
 		}
+		if w.muteApplied {
+			w.muteApplied = false
+			applied = nil
+		}
 		reply(200, w.withNow(map[string]any{"rev": w.rev, "applied": applied, "conflicts": conflicts}, w.nowMs()))
 	default:
 		reply(404, map[string]string{"error": "not_found"})
@@ -947,17 +954,21 @@ func TestConnectKeepsTheSyncIDSoARemovalReachesTheAccount(t *testing.T) {
 }
 
 // #257 review P2: a fork's higher member also pending delete here makes one
-// change, not two (the service refuses a push naming an id twice).
+// change, not two (the service refuses a push naming an id twice); #390
+// e8debfe review: it is built on its base revision.
 func TestOneChangePerID(t *testing.T) {
 	hostA := account.RemoteHost{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Rev: 1, Body: account.HostBody{Host: "pi", Username: "root"}}
 	hostB := account.RemoteHost{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Rev: 2, Body: account.HostBody{Host: "PI", Username: "root"}}
 	mirror := account.Mirror{Rev: 2, Hosts: []account.RemoteHost{hostA, hostB}}
 	st := machineStore{Machines: []Machine{{Host: "pi", User: "root", Port: 22, KeyPath: "/k", SyncID: hostA.ID}}}
-	changes, _, _, _ := mergeMachines(&st, mirror, mirror, map[string]bool{hostA.ID: true, hostB.ID: true}, []string{hostB.ID}, nil)
+	changes, _, _, _ := mergeMachines(&st, mirror, mirror, map[string]bool{hostA.ID: true, hostB.ID: true}, []string{hostB.ID}, nil, baseRevs(mirror, nil))
 	n := 0
 	for _, c := range changes {
 		if c.ID == hostB.ID {
 			n++
+			if c.Base != hostB.Rev {
+				t.Fatalf("the delete of %s is based on %d; want its revision %d", hostB.ID, c.Base, hostB.Rev)
+			}
 		}
 	}
 	if n != 1 {
@@ -1298,7 +1309,7 @@ func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
 		t.Fatalf("mac's prompts after the sync: %+v; want both kept", got)
 	}
 	empty := SavedPrompt{ID: "00000000-0000-4000-8000-000000000009"}
-	if _, changes, _, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
+	if _, changes, _, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
 		t.Fatalf("an empty prompt was sent: %+v", changes)
 	}
 
@@ -2507,10 +2518,10 @@ func TestNoOpJournalUpdatesLeaveTheStateAlone(t *testing.T) {
 	if err != nil || len(sent) != 0 || len(part) != 1 {
 		t.Fatalf("recording a delete-only batch: %v, %v, %v", part, sent, err)
 	}
-	if err := d.settleSend(context.Background(), "acct", sent, nil, nil); err != nil {
+	if err := d.settleSend(context.Background(), "acct", 0, sent, nil); err != nil {
 		t.Fatalf("a refusal of no records: %v", err)
 	}
-	if err := d.settleSend(context.Background(), "acct", nil, hosts, nil); err != nil {
+	if err := d.settleSend(context.Background(), "acct", 0, nil, &pushOutcome{applied: []appliedChange{{Change: hosts[0], Rev: 4}}}); err != nil {
 		t.Fatalf("an answer to a host-only delete: %v", err)
 	}
 }
@@ -2895,10 +2906,8 @@ func TestOnlyAnAnswerAtANewRevisionSettlesEarlierSends(t *testing.T) {
 	}
 	answer := func(send string, rev int64) {
 		t.Helper()
-		var res account.PushResult
-		_ = json.Unmarshal(fmt.Appendf(nil, `{"applied":[{"collection":"prompts","id":%q,"rev":%d}]}`, id, rev), &res)
-		applied := []account.Change{{Collection: "prompts", ID: id, Body: account.PromptBody{Text: "B"}}}
-		if err := d.settleSend(context.Background(), "acct", map[string]sentAttempt{id: {ID: send, Base: 5}}, applied, &res); err != nil {
+		out := &pushOutcome{applied: []appliedChange{{Change: account.Change{Collection: "prompts", ID: id, Body: account.PromptBody{Text: "B"}}, Rev: rev}}}
+		if err := d.settleSend(context.Background(), "acct", 0, map[string]sentAttempt{id: {ID: send, Base: 5}}, out); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3044,7 +3053,7 @@ func BenchmarkMergeWithoutLandings(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		mergePrompts(local, mirror, mirror, nil, nil, baseline, nil, attempts, nil)
+		mergePrompts(local, mirror, mirror, nil, nil, baseline, nil, attempts, nil, nil)
 	}
 }
 
@@ -4062,12 +4071,10 @@ func TestAStaleAnswerNeverPutsABaselineBack(t *testing.T) {
 		}
 	}
 	answer := func(send string, prompt, host int64) owedAnswer {
-		var res account.PushResult
-		_ = json.Unmarshal(fmt.Appendf(nil, `{"applied":[{"collection":"prompts","id":%q,"rev":%d},{"collection":"hosts","id":%q,"rev":%d}]}`, p, prompt, h, host), &res)
-		return owedAnswer{acct: "acct", sent: map[string]sentAttempt{p: {ID: send, Base: 5}}, res: &res, applied: []account.Change{
-			{Collection: "prompts", ID: p, Body: account.PromptBody{Text: "v1"}},
-			{Collection: "hosts", ID: h, Body: account.HostBody{Host: "old", Username: "root"}},
-		}}
+		return owedAnswer{acct: "acct", sent: map[string]sentAttempt{p: {ID: send, Base: 5}}, out: &pushOutcome{applied: []appliedChange{
+			{Change: account.Change{Collection: "prompts", ID: p, Body: account.PromptBody{Text: "v1"}}, Rev: prompt},
+			{Change: account.Change{Collection: "hosts", ID: h, Body: account.HostBody{Host: "old", Username: "root"}}, Rev: host},
+		}}}
 	}
 	for _, c := range []struct {
 		name         string
@@ -4233,6 +4240,51 @@ func TestAStoreWaitEndsWithItsRound(t *testing.T) {
 	}
 }
 
+// #390 e8debfe review: work for a round that ended doesn't take even a
+// free lock (LockCtx); writing down an answer already received does
+// (LockBestEffort), but doesn't wait for a held one once the round ended.
+func TestTheStoreLocksTwoPolicies(t *testing.T) {
+	var l storeLock
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 64 { // a free slot and an ended ctx are both ready: never the slot
+		if l.LockCtx(ended) {
+			t.Fatal("work for a round that ended took the free lock")
+		}
+	}
+	if !l.LockBestEffort(ended) {
+		t.Fatal("an answer already received was not written down with the lock free")
+	}
+	if l.LockBestEffort(ended) {
+		t.Fatal("an answer for a round that ended waited for, and took, a held lock")
+	}
+	l.Unlock()
+}
+
+// #390 e8debfe review: a hold of the store looks for a commit record to
+// replay once, at its first file access; later loads in the same hold
+// don't look again, and the next hold does.
+func TestAStoreHoldReplaysOnce(t *testing.T) {
+	d := newDesk(t.TempDir())
+	d.storeMu.Lock()
+	if _, err := d.loadSyncState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.commitPath(), []byte("{damaged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.loadSyncState(); err != nil {
+		t.Fatalf("%v; want the hold's second load not to replay again", err)
+	}
+	d.storeMu.Unlock()
+	d.storeMu.Lock()
+	_, err := d.loadSyncState()
+	d.storeMu.Unlock()
+	if err == nil {
+		t.Fatal("the next hold didn't replay the record left")
+	}
+}
+
 // signInAgainOnPost is a transport that signs d out and in again to the
 // same account once, just as d's first push goes out.
 type signInAgainOnPost struct {
@@ -4309,8 +4361,8 @@ func TestAMixedAnswerIsOwedWhole(t *testing.T) {
 	}
 	owed := slices.Clone(mac.accountSync.owed)
 	mac.storeMu.Unlock()
-	if len(owed) != 1 || owed[0].res == nil || len(owed[0].applied) != 1 || owed[0].applied[0].ID != p.ID ||
-		len(owed[0].res.Conflicts) != 1 || owed[0].res.Conflicts[0].ID != q.ID {
+	if len(owed) != 1 || owed[0].out == nil || len(owed[0].out.applied) != 1 || owed[0].out.applied[0].ID != p.ID ||
+		len(owed[0].out.conflicts) != 1 || owed[0].out.conflicts[0].ID != q.ID {
 		t.Fatalf("owed %+v; want one answer with p's write and q's conflict", owed)
 	}
 	transport.mu.Lock()
@@ -4839,11 +4891,7 @@ func TestASendsMarkerNeverGrows(t *testing.T) {
 		return info.Size()
 	}
 	reserved := size()
-	var res account.PushResult
-	if err := json.Unmarshal(fmt.Appendf(nil, `{"applied":[{"collection":"prompts","id":%q,"rev":%d}]}`, p, int64(math.MaxInt64)), &res); err != nil {
-		t.Fatal(err)
-	}
-	d.markAnswered(sent, []account.Change{{Collection: "prompts", ID: p, Body: account.PromptBody{Text: "v1"}}}, &res)
+	d.markAnswered(sent, &pushOutcome{applied: []appliedChange{{Change: account.Change{Collection: "prompts", ID: p, Body: account.PromptBody{Text: "v1"}}, Rev: math.MaxInt64}}})
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -4894,5 +4942,260 @@ func TestAnAcknowledgementFromBeforeARestoreSetsNoBaseline(t *testing.T) {
 	syncEach(t, reopened)
 	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "old" || !strings.Contains(body, `"old"`) {
 		t.Fatalf("the reopened app's prompt %+v, the account's %s; want the restored old in both", got, body)
+	}
+}
+
+// #390 e8debfe review (the reviewer's sequence for #443): on an empty
+// account, the held upload of v1 lands just before the saved v2 is turned
+// down with v1's row; an unrelated write goes in, and another device
+// saves v3 before the readback. The readback from revision 0 is no
+// restart: v1 stays the agreed copy, so the saved v2 is an edit, and it
+// goes over v3.
+func TestAReadbackFromRevisionZeroKeepsASavedEdit(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never answered
+	savePrompt(t, mac, p.ID, "", "v2")
+	savePrompt(t, mac, "", "", "q") // the unrelated write, taken
+	w.mu.Lock()
+	w.onPush = func() { w.landHeldLocked() }
+	w.afterPush = func() { w.otherDeviceWritesLocked(p.ID, "v3") }
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v2" || !strings.Contains(body, `"v2"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the saved v2 in both", got, body)
+	}
+}
+
+// #390 e8debfe review: the service takes the upload of v1 and only the
+// journal write recording its answer fails; the app is opened again with
+// v1 still saved, and its first pull is told to start over (410): the
+// account was restored to a backup holding v0. The acknowledgement (of
+// the history the restore discarded) still makes v1 an agreed body, so
+// the saved v1 is no edit, and the restored v0 is taken, not overwritten.
+func TestAnUneditedAcknowledgedPromptDoesNotUndoARestore(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backup := w.items[p.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v1")
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	w.mu.Lock()
+	w.restoreTo(backup.Rev)
+	w.items[p.ID] = backup
+	w.floor = backup.Rev + 1 // the next pull is told to start over
+	posts := w.posts
+	w.mu.Unlock()
+	reopened := reopen(t, srv, mac)
+	syncEach(t, reopened)
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) || sent != 0 {
+		t.Fatalf("the reopened app's prompt %+v, the account's %s, %d uploads; want the restored v0 in both and none", got, body, sent)
+	}
+}
+
+// #390 e8debfe review: a draft's first upload is turned down with a
+// tombstone (another device created and deleted its id meanwhile); the
+// readback then finds the account restored to a backup that never held
+// that id (a 410). The tombstone was of the history the restore
+// discarded: it deletes nothing here, and the draft goes up.
+func TestATurnedDownTombstoneFromADiscardedHistoryKeepsADraft(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	q := savePrompt(t, mac, "", "", "q0")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backupRev, backupQ := w.rev, w.items[q.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, q.ID, "", "q1")
+	syncEach(t, mac) // the mirror moves past the backup
+	const draft = "00000000-0000-4000-8000-0000000000bb"
+	savePrompt(t, mac, draft, "", "draft")
+	savePrompt(t, mac, q.ID, "", "q2") // taken, so the round reads back
+	w.mu.Lock()
+	w.onPush = func() {
+		w.otherDeviceWritesLocked(draft, "elsewhere")
+		w.tombstone(draft)
+	}
+	w.afterPush = func() {
+		w.restoreTo(backupRev)
+		w.items[q.ID] = backupQ
+	}
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[draft], w.livePrompts()[draft]; got.Text != "draft" || !strings.Contains(body, `"draft"`) {
+		t.Fatalf("mac's draft %+v, the account's %s; want the draft in both", got, body)
+	}
+}
+
+// #390 e8debfe review: an answer that names neither a write nor a
+// conflict for a change sent doesn't say whether it landed: the round
+// fails, and the upload's send stays open (it may have landed).
+func TestAnAnswerWithoutAnOutcomeLeavesTheSendOpen(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.muteApplied = true
+	w.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil || !strings.Contains(err.Error(), "no outcome") {
+		t.Fatalf("%v; want the round failed for the answer's missing outcome", err)
+	}
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(state.PromptAttempts[p.ID], func(a promptAttempt) bool { return len(a.Open) == 1 }) {
+		t.Fatalf("journal %+v; want the upload's send still open", state.PromptAttempts[p.ID])
+	}
+}
+
+// failGet is a transport that fails the nth GET of /v1/sync once armed.
+type failGet struct {
+	base      http.RoundTripper
+	mu        sync.Mutex
+	nth, seen int
+}
+
+func (f *failGet) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/sync" {
+		f.mu.Lock()
+		f.seen++
+		fail := f.nth > 0 && f.seen == f.nth
+		f.mu.Unlock()
+		if fail {
+			return nil, errors.New("connection reset")
+		}
+	}
+	return f.base.RoundTrip(r)
+}
+
+// heldConflictOf is a turned-down answer of history 0 holding a live row
+// of prompt id at rev.
+func heldConflictOf(id string, rev int64) heldConflict {
+	return heldConflict{Conflict: account.Conflict{Collection: "prompts", ID: id, Server: &account.Item{Collection: "prompts", ID: id, Rev: rev, Body: json.RawMessage(`{"text":"old","order":0}`)}}}
+}
+
+// #448 review: a pull told to start over (410) whose restart then fails
+// still says the history may have been replaced, before the round returns:
+// the history moves on, and the conflicts held from the old one go.
+func TestA410WhoseRestartFailsStillEndsTheHistory(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &failGet{base: srv.Client().Transport}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.HeldConflicts = []heldConflict{heldConflictOf(p.ID, state.Mirror.Rev+1)}
+	if err := mac.storeSyncState(state); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.otherDeviceWritesLocked(p.ID, "v1")
+	w.floor = w.rev + 1 // the pull is told to start over
+	w.mu.Unlock()
+	transport.mu.Lock()
+	transport.nth, transport.seen = 2, 0 // the restart
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose restarted pull failed reported success")
+	}
+	if state, err := mac.loadSyncState(); err != nil || state.History != 1 || len(state.HeldConflicts) != 0 {
+		t.Fatalf("history %d, held %+v (%v); want the history moved on and nothing held", state.History, state.HeldConflicts, err)
+	}
+}
+
+// #448 review: a pull from revision 0 told to start over on a later page
+// (the account restored between its pages) restarts too, and ends the
+// history it began in.
+func TestA410OnALaterPageOfAPullFromZeroEndsTheHistory(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("00000000-0000-4000-8000-0000000000a1", `{"text":"a","order":0}`)
+	w.seedPrompt("00000000-0000-4000-8000-0000000000a2", `{"text":"b","order":1}`)
+	mac := device(t, srv)
+	if err := mac.storeSyncState(syncState{AccountID: "acct", PromptsPulled: true}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.pageSize = 1
+	w.onNextPage = func() { w.restoreTo(0) }
+	w.mu.Unlock()
+	syncEach(t, mac)
+	if state, err := mac.loadSyncState(); err != nil || state.History != 1 {
+		t.Fatalf("history %d (%v); want the restart to end the first", state.History, err)
+	}
+}
+
+// #448 review: a held conflict's row no newer than the copy the state
+// already holds (live or a tombstone) never rewinds it: it is landing
+// evidence only.
+func TestAnOldConflictRowNeverRewindsTheMirror(t *testing.T) {
+	const p, q = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+	state := &syncState{
+		Mirror:        account.Mirror{Rev: 9, Prompts: []account.RemotePrompt{{ID: p, Rev: 9, Body: account.PromptBody{Text: "new"}}}},
+		Removed:       map[string]int64{"prompts/" + q: 8},
+		HeldConflicts: []heldConflict{heldConflictOf(p, 5), heldConflictOf(q, 6)},
+	}
+	if confirmed := confirmConflicts(state); len(confirmed) != 0 || state.Removed["prompts/"+q] != 8 {
+		t.Fatalf("adopted %+v, removed %v; want neither older row taken", confirmed, state.Removed)
+	}
+}
+
+// #448 review: a marker whose send an earlier fold already retired is
+// replayed as nothing: only the fold that retires a still-open send
+// records what it wrote.
+func TestAMarkerOfARetiredSendRecordsNothing(t *testing.T) {
+	const p = "00000000-0000-4000-8000-000000000001"
+	d := newDesk(t.TempDir())
+	state := &syncState{
+		Mirror:         account.Mirror{Prompts: []account.RemotePrompt{{ID: p, Rev: 5, Body: account.PromptBody{Text: "v0"}}}},
+		PromptBaseline: map[string]promptFields{p: {Text: "v0"}},
+		PromptAttempts: map[string][]promptAttempt{p: {{Base: 5, Hash: "h", Open: []string{"s1", "s2"}}}},
+	}
+	if err := os.MkdirAll(d.sendMarkersDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for send, marker := range map[string]string{"s1": "a:6:H1:0", "s2": "a:7:H2:0"} {
+		if err := os.WriteFile(filepath.Join(d.sendMarkersDir(), send), []byte(marker), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.foldMarkers(state)
+	if got := state.PromptBaselineHash[p]; got != "H1" {
+		t.Fatalf("agreed hash %q; want H1, from the fold that retired the open sends", got)
 	}
 }

@@ -95,10 +95,10 @@ type syncState struct {
 	// that send (owedAnswer.apply): its rows and revisions are of a history
 	// that is gone.
 	History int64 `json:"history,omitempty"`
-	// HeldRows are conflict rows whose history no later step has confirmed
-	// yet (heldRow): kept here, so a failed readback or a restart doesn't
-	// lose them.
-	HeldRows []heldRow `json:"heldRows,omitempty"`
+	// HeldConflicts are the service's turned-down answers (conflicts)
+	// whose history no later step has confirmed yet (heldConflict): kept
+	// here, so a failed readback or a restart doesn't lose them.
+	HeldConflicts []heldConflict `json:"heldConflicts,omitempty"`
 	// LastSync is the newest sync of AccountID that finished well: when,
 	// and the items the account held then.
 	LastSync *AccountSyncStatus `json:"lastSync,omitempty"`
@@ -389,10 +389,15 @@ func (d *Desk) commitMerge(machines []byte, ps *promptStore, renamed map[string]
 	if err != nil {
 		return false, err
 	}
+	d.storeMu.replayed = false // a record may be in place until applied
 	if err := writeFileAtomic(d.commitPath(), raw); err != nil {
 		return false, err
 	}
-	return true, d.applyCommit(c)
+	if err := d.applyCommit(c); err != nil {
+		return true, err
+	}
+	d.storeMu.replayed = true
+	return true, nil
 }
 
 // applyCommit writes a commit record's files and moves the board cache of
@@ -421,11 +426,17 @@ func (d *Desk) applyCommit(c syncCommit) error {
 }
 
 // replayCommit finishes a merge's commit a failure left half applied, so
-// the files are read as all after it. Each load calls it first. d.storeMu
-// must be held.
+// the files are read as all after it. It runs once per hold of d.storeMu
+// (which must be held), at the hold's first file access: every loader and
+// writer calls it, and the later ones in the same hold find it done (no
+// record can appear inside a hold that isn't that hold's own commit).
 func (d *Desk) replayCommit() error {
+	if d.storeMu.replayed {
+		return nil
+	}
 	raw, err := os.ReadFile(d.commitPath())
 	if errors.Is(err, os.ErrNotExist) {
+		d.storeMu.replayed = true
 		return nil
 	}
 	if err != nil {
@@ -435,7 +446,11 @@ func (d *Desk) replayCommit() error {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return fmt.Errorf("account sync commit %s: %w", d.commitPath(), err)
 	}
-	return d.applyCommit(c)
+	if err := d.applyCommit(c); err != nil {
+		return err
+	}
+	d.storeMu.replayed = true
+	return nil
 }
 
 // sharedFields are the fields one device's edit of a machine changes for
@@ -704,15 +719,70 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		return errSyncAbandoned
 	}
 	if err != nil {
+		if pull.Reset {
+			return errors.Join(err, d.noteRestart(ctx, acct))
+		}
 		return err
 	}
-	old := state.Mirror
+	// The lock may be long in coming: the wait ends with the round, and a
+	// round past its deadline applies nothing.
+	if !d.storeMu.LockCtx(ctx) {
+		return ctx.Err()
+	}
+	if !still() {
+		d.storeMu.Unlock()
+		return errSyncAbandoned
+	}
+	st, err := d.load()
+	if err != nil {
+		d.storeMu.Unlock()
+		return err
+	}
+	// To tell whether the merge changed the machines (Machine is
+	// comparable).
+	loadedActive, loadedMachines := st.Active, slices.Clone(st.Machines)
+	latest, err := d.loadSyncState()
+	if err != nil {
+		d.storeMu.Unlock()
+		return err
+	}
+	ps, err := d.loadPrompts()
+	if err != nil {
+		d.storeMu.Unlock()
+		return err
+	}
+	var confirmed []account.Conflict
+	if !switched {
+		// A pull told to start over (410) replaced the history.
+		if pull.Reset {
+			latest.History++
+		}
+		// Answers to requests an earlier round sent not yet written
+		// (settleSend), those only send markers hold (foldMarkers: a run
+		// of the app that ended first), the turned-down answers of this
+		// history (confirmConflicts), then the pull's rows, page by page in
+		// the order they came: the first row of a prompt past a send's
+		// base decides that send, landed or not, and no later row revives
+		// it (decideSends).
+		d.payOwed(acct, &latest)
+		d.foldMarkers(&latest)
+		confirmed = confirmConflicts(&latest)
+		for _, it := range pull.Items {
+			if it.Collection == "prompts" {
+				decideSends(&latest, it, "")
+			}
+		}
+	}
+	// The account's copies: the turned-down answers' rows confirmed, then
+	// the pull.
+	old := state.Mirror.Adopt(confirmed)
 	mirror, tombstoned := old.Apply(pull)
 	// The ids the account is known to have held: a machine with one of
 	// these that the account no longer lists was deleted elsewhere; any
 	// other id it doesn't list was never acknowledged, and is pushed again.
 	// The last readback may have passed other devices' deletes (HostsGone;
-	// none for another account, whose state starts over).
+	// none for another account, whose state starts over), and so may a
+	// confirmed turned-down answer (a tombstone).
 	known := map[string]bool{}
 	for _, h := range old.Hosts {
 		known[h.ID] = true
@@ -738,57 +808,14 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			knownPrompts[id] = true
 		}
 	}
-
-	// The lock may be long in coming: the wait ends with the round, and a
-	// round past its deadline applies nothing.
-	if !d.storeMu.LockCtx(ctx) {
-		return ctx.Err()
-	}
-	if !still() {
-		d.storeMu.Unlock()
-		return errSyncAbandoned
-	}
-	if err := ctx.Err(); err != nil {
-		d.storeMu.Unlock()
-		return err
-	}
-	st, err := d.load()
-	if err != nil {
-		d.storeMu.Unlock()
-		return err
-	}
-	// To tell whether the merge changed the machines (Machine is
-	// comparable).
-	loadedActive, loadedMachines := st.Active, slices.Clone(st.Machines)
-	latest, err := d.loadSyncState()
-	if err != nil {
-		d.storeMu.Unlock()
-		return err
-	}
-	ps, err := d.loadPrompts()
-	if err != nil {
-		d.storeMu.Unlock()
-		return err
-	}
-	if !switched {
-		// A pull told to start over (410) replaced the history.
-		if pull.Reset {
-			latest.History++
+	for _, c := range confirmed {
+		if c.Server == nil || !c.Server.Deleted {
+			continue
 		}
-		// Answers to requests an earlier round sent not yet written
-		// (settleSend), those only send markers hold (foldMarkers: a run
-		// of the app that ended first), the conflict rows of this history
-		// (confirmRows), then the pull's rows, page by page in the order
-		// they came: the first row of a prompt past a send's base decides
-		// that send, landed or not, and no later row revives it
-		// (decideSends).
-		d.payOwed(acct, &latest)
-		d.foldMarkers(&latest)
-		confirmRows(&latest)
-		for _, it := range pull.Items {
-			if it.Collection == "prompts" {
-				decideSends(&latest, it, "")
-			}
+		if c.Collection == "hosts" {
+			known[c.ID] = true
+		} else if state.PromptsPulled {
+			knownPrompts[c.ID] = true
 		}
 	}
 	pending, baseline := latest.Deletes, latest.Baseline
@@ -805,17 +832,14 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 	}
 	removed = noteRemoved(removed, pull.Full, tombstoned, mirror)
-	changes, deletes, renamed, baseline := mergeMachines(&st, old, mirror, known, pending, baseline)
-	prompts, promptChanges, promptDeletes, promptBaseline, unsendable := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, baselineHash, attempts, lastSent)
-	promptsChanged := !slices.Equal(prompts, ps.Prompts)
-	// Every change is based on the revision this device last saw of its
+	// Every change is built on the revision this device last saw of its
 	// item (base_rev: the service writes it only from there): the
 	// mirror's, a tombstone's, or 0 for one the account never held.
-	changes = append(changes, promptChanges...)
 	revs := baseRevs(mirror, removed)
-	for i := range changes {
-		changes[i].Base = revs[changes[i].Collection+"/"+changes[i].ID]
-	}
+	changes, deletes, renamed, baseline := mergeMachines(&st, old, mirror, known, pending, baseline, revs)
+	prompts, promptChanges, promptDeletes, promptBaseline, unsendable := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, baselineHash, attempts, lastSent, revs)
+	promptsChanged := !slices.Equal(prompts, ps.Prompts)
+	changes = append(changes, promptChanges...)
 	// The writes that may still land: those the pull is past, or past
 	// their deadline (promptAttempt), are settled.
 	attempts = settleAttempts(attempts, revs, pull.NowMs)
@@ -898,6 +922,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		return errSyncConflicted
 	}
 
+	history := state.History // the one this pass's requests go to
 	queue, err := account.Batches(slices.Concat(dels, writes))
 	if err != nil {
 		return err
@@ -936,7 +961,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			// The dispatch provably wrote nothing (refused, told by its
 			// status line before its body, or never connected): its sends
 			// are settled now, before any refresh and replay.
-			err := d.settleSend(ctx, acct, sent, nil, nil)
+			err := d.settleSend(ctx, acct, history, sent, nil)
 			sent = nil
 			return err
 		})
@@ -946,20 +971,18 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		if len(part) == 0 {
 			return nil, nil
 		}
-		stale := map[string]bool{}
-		for _, c := range res.Conflicts {
-			stale[c.Collection+"/"+c.ID] = true
+		out, err := joinOutcomes(part, res)
+		if err != nil {
+			return part, err // its sends stay open: they may have landed
 		}
-		conflicts = append(conflicts, res.Conflicts...)
-		var applied []account.Change
+		conflicts = append(conflicts, out.conflicts...)
 		for _, c := range part {
 			settled[c.Collection+"/"+c.ID] = true
-			if !stale[c.Collection+"/"+c.ID] {
-				applied = append(applied, c)
-			}
 		}
-		acked = append(acked, applied...)
-		return part, d.settleSend(ctx, acct, sent, applied, &res)
+		for _, a := range out.applied {
+			acked = append(acked, a.Change)
+		}
+		return part, d.settleSend(ctx, acct, history, sent, &out)
 	}
 	for len(queue) > 0 {
 		part := queue[0]
@@ -1033,6 +1056,9 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			return errSyncAbandoned
 		}
 		if err != nil {
+			if readBack.Reset {
+				return errors.Join(err, d.noteRestart(ctx, acct))
+			}
 			return err
 		}
 	}
@@ -1046,10 +1072,6 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		d.storeMu.Unlock()
 		return errSyncAbandoned
 	}
-	if err := ctx.Err(); err != nil {
-		d.storeMu.Unlock()
-		return err
-	}
 	state, err = d.loadSyncState()
 	if err != nil {
 		d.storeMu.Unlock()
@@ -1060,22 +1082,24 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// account's for that item, whatever this device held: none (the next
 	// write creates it), a tombstone (deleted elsewhere), or a newer copy.
 	// An empty pull can't bring it (a pruned tombstone). The next pass
-	// merges it as usual, a local edit against the account's copy.
-	state.Mirror = state.Mirror.Adopt(conflicts)
+	// merges it as usual, a local edit against the account's copy. All of
+	// that is of the history the request went to: it applies once the
+	// readback confirms that history (none after a restart), else at the
+	// next merge (confirmConflicts).
 	var turnedDownGone []account.Conflict
-	for _, c := range conflicts {
-		key := c.Collection + "/" + c.ID
-		delete(state.Removed, key)
-		if c.Server != nil && c.Server.Deleted {
-			if state.Removed == nil {
-				state.Removed = map[string]int64{}
-			}
-			state.Removed[key] = c.Server.Rev
-			turnedDownGone = append(turnedDownGone, c)
-		}
-	}
-	newTombstones := len(turnedDownGone) > 0 // added since the merge's prune
+	newTombstones := false
 	if len(acked) > 0 {
+		if readBack.Reset {
+			state.History++ // a restore under the push: another history (not a since=0 snapshot)
+		}
+		confirmed := confirmConflicts(&state)
+		state.Mirror = state.Mirror.Adopt(confirmed)
+		for _, c := range confirmed {
+			if c.Server != nil && c.Server.Deleted {
+				turnedDownGone = append(turnedDownGone, c)
+			}
+		}
+		newTombstones = len(turnedDownGone) > 0 // added since the merge's prune
 		pushed, wrote := map[string]bool{}, map[string]bool{}
 		for _, c := range acked {
 			if c.Deleted {
@@ -1087,16 +1111,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		held := state.Mirror
 		var readGone account.Tombstones
 		state.Mirror, readGone = state.Mirror.Apply(readBack)
-		if readBack.Reset {
-			state.History++ // a restore under the push: another history (not a since=0 snapshot)
-		}
 		state.Removed = noteRemoved(state.Removed, readBack.Full, readGone, state.Mirror)
 		newTombstones = newTombstones || len(readGone.Hosts)+len(readGone.Prompts) > 0
-		// The conflict rows of the history the readback confirms, then the
-		// readback's rows, decide the held uploads below them as the pull's
-		// do, at once: the next pull may already hold another device's
-		// write over a landing.
-		confirmRows(&state)
+		// The readback's rows decide the held uploads below them as the
+		// pull's do, at once: the next pull may already hold another
+		// device's write over a landing.
 		for _, it := range readBack.Items {
 			if it.Collection == "prompts" {
 				decideSends(&state, it, "")
@@ -1323,9 +1342,6 @@ func (d *Desk) recordAttempts(ctx context.Context, acct string, part []account.C
 		return nil, nil, nil, ctx.Err()
 	}
 	defer d.storeMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, nil, nil, err
-	}
 	ps, err := d.loadPrompts()
 	if err != nil {
 		return nil, nil, nil, err
@@ -1415,35 +1431,70 @@ func (d *Desk) recordAttempts(ctx context.Context, acct string, part []account.C
 	return out, sent, held, d.storeSyncState(state)
 }
 
-// settleSend records the service's answer (res) to one request's sends
-// (sent, as recordAttempts returned them), as the journal's invariant has
-// it (promptAttempt): what it wrote (applied) is what this device and the
-// account now agree on. An applied answer at a revision other than the
-// send's base settles every open send of the prompt at that base; an
-// applied answer at the base itself and a refusal (res nil) settle only
-// that send. A conflict's row decides the sends below its revision
-// (decideSends: another of them landed as it, or none did) once a later
-// step confirms its history (heldRow), before that step's own rows, so a
-// later pull of another device's write can't hide a landing nor be taken
-// for one. An entry with no open send goes. An answer that changes none of
-// that leaves the state file alone. The answer is kept in memory first
-// (owedAnswer) and let go only once a write holding it succeeded: a wait
-// for the store the round gave up, or a state that couldn't be read or
-// written, leaves it for the next merge's commit (payOwed); writing one
-// twice changes nothing. The answer for each send is also put in its
-// marker first (markAnswered), so a run of the app that ends before any
-// write holding it still knows how the send ended.
-func (d *Desk) settleSend(ctx context.Context, acct string, sent map[string]sentAttempt, applied []account.Change, res *account.PushResult) error {
-	if len(sent) == 0 && !slices.ContainsFunc(applied, func(c account.Change) bool { return c.Body != nil }) {
+// pushOutcome is the service's answer to one request, joined once to the
+// changes it sent (joinOutcomes): what it wrote, each at its revision, and
+// what it turned down. Markers, settlement and the readback all use it.
+type pushOutcome struct {
+	applied   []appliedChange
+	conflicts []account.Conflict
+}
+
+// appliedChange is a change the service wrote, at Rev.
+type appliedChange struct {
+	account.Change
+	Rev int64
+}
+
+// joinOutcomes gives each change of part its outcome in res: written (in
+// Applied, at its revision) or turned down (in Conflicts). A change with
+// neither is an error: the answer doesn't say whether it landed.
+func joinOutcomes(part []account.Change, res account.PushResult) (pushOutcome, error) {
+	var out pushOutcome
+	for _, c := range part {
+		if i := slices.IndexFunc(res.Conflicts, func(x account.Conflict) bool { return x.Collection == c.Collection && x.ID == c.ID }); i >= 0 {
+			out.conflicts = append(out.conflicts, res.Conflicts[i])
+			continue
+		}
+		i := slices.IndexFunc(res.Applied, func(a account.Applied) bool { return a.Collection == c.Collection && a.ID == c.ID })
+		if i < 0 {
+			return pushOutcome{}, fmt.Errorf("account service: the answer has no outcome for %s/%s", c.Collection, c.ID)
+		}
+		out.applied = append(out.applied, appliedChange{Change: c, Rev: res.Applied[i].Rev})
+	}
+	return out, nil
+}
+
+// settleSend records the service's answer (out; nil when the request was
+// refused or never sent) to one request's sends (sent, as recordAttempts
+// returned them), as the journal's invariant has it (promptAttempt): what
+// it wrote is what this device and the account now agree on. A write at
+// a revision other than the send's base settles every open send of the
+// prompt at that base; a write at the base itself and a refusal settle
+// only that send. A conflict (its row, its tombstone, and the sends below
+// its revision it decides: another of them landed as it, or none did)
+// applies once a later step confirms its history (heldConflict), before
+// that step's own rows, so a later pull of another device's write can't
+// hide a landing nor be taken for one. An entry with no open send goes.
+// An answer that changes none of that leaves the state file alone. The
+// answer is kept in memory first (owedAnswer) and let go only once a
+// write holding it succeeded: a wait for the store the round gave up, or
+// a state that couldn't be read or written, leaves it for the next merge's
+// commit (payOwed); writing one twice changes nothing. The answer for each
+// send is also put in its marker first (markAnswered), so a run of the app
+// that ends before any write holding it still knows how the send ended.
+func (d *Desk) settleSend(ctx context.Context, acct string, history int64, sent map[string]sentAttempt, out *pushOutcome) error {
+	if len(sent) == 0 && (out == nil || len(out.conflicts) == 0 && !slices.ContainsFunc(out.applied, func(a appliedChange) bool { return a.Body != nil })) {
 		return nil
 	}
 	// Only this round touches owed until it ends (accountSync), so the
 	// answer is still the last one when it is written.
 	n := len(d.accountSync.owed)
-	answer := owedAnswer{acct: acct, sent: sent, applied: applied, res: res}
+	answer := owedAnswer{acct: acct, history: history, sent: sent, out: out}
 	d.accountSync.owed = append(d.accountSync.owed, answer)
-	d.markAnswered(sent, applied, res)
-	if !d.storeMu.LockCtx(ctx) {
+	d.markAnswered(sent, out)
+	// The answer already came: it is written down while the round lives,
+	// or if the store is free even after (else it stays owed).
+	if !d.storeMu.LockBestEffort(ctx) {
 		return ctx.Err()
 	}
 	defer d.storeMu.Unlock()
@@ -1460,37 +1511,81 @@ func (d *Desk) settleSend(ctx context.Context, acct string, sent map[string]sent
 	return nil
 }
 
-// heldRow is a conflict's row (owedAnswer.apply) for the sends of its
-// prompt other than Except: in the history the request went to, it
-// decides them (decideSends), but a restore may have discarded that
-// history since. It waits in the state (HeldRows) until a step learns the
-// account's history (a merge's pull, a readback that came back), which
-// applies the rows of that history first (confirmRows) and drops the
-// others.
-type heldRow struct {
-	History int64        `json:"history"`
-	Row     account.Item `json:"row"`
-	Except  string       `json:"except"`
+// heldConflict is a turned-down answer (owedAnswer.apply), of the history
+// the request went to: the item's row there (Mirror.Adopt), its tombstone
+// (Removed, HostsGone, PromptsGone), and for a prompt the sends below it
+// other than Except (decideSends). A restore may have discarded that
+// history since, so it waits in the state (HeldConflicts) until a step
+// learns the account's history (a readback that came back, or the next
+// merge's pull), which applies those of that history first
+// (confirmConflicts) and drops the others.
+type heldConflict struct {
+	History  int64            `json:"history"`
+	Conflict account.Conflict `json:"conflict"`
+	Except   string           `json:"except,omitempty"`
 }
 
-// confirmRows applies the held rows of state's history and lets every
-// held row go.
-func confirmRows(state *syncState) {
-	for _, h := range state.HeldRows {
-		if h.History == state.History {
-			decideSends(state, h.Row, h.Except)
+// confirmConflicts applies the held conflicts of state's history to its
+// journal and tombstones, lets every held one go, and returns those it
+// applied: the caller adopts their rows into its mirror and notes the
+// items they deleted. A row no newer than what state already holds of
+// its item (live or a tombstone) is landing evidence only: it never
+// rewinds a newer copy.
+func confirmConflicts(state *syncState) []account.Conflict {
+	var confirmed []account.Conflict
+	revs := baseRevs(state.Mirror, state.Removed)
+	for _, h := range state.HeldConflicts {
+		if h.History != state.History {
+			continue
+		}
+		c := h.Conflict
+		if c.Collection == "prompts" && c.Server != nil {
+			decideSends(state, *c.Server, h.Except)
+		}
+		key := c.Collection + "/" + c.ID
+		if c.Server != nil && c.Server.Rev <= revs[key] {
+			continue
+		}
+		confirmed = append(confirmed, c)
+		delete(state.Removed, key)
+		if c.Server != nil && c.Server.Deleted {
+			if state.Removed == nil {
+				state.Removed = map[string]int64{}
+			}
+			state.Removed[key] = c.Server.Rev
 		}
 	}
-	state.HeldRows = nil
+	state.HeldConflicts = nil
+	return confirmed
+}
+
+// noteRestart records a 410 a pull saw before it failed: the account's
+// history may have been replaced, so the history moves on and the held
+// conflicts (of the old one) go, before the round returns. An answer
+// owed in memory is of the old history too, and its conflicts go when it
+// is applied.
+func (d *Desk) noteRestart(ctx context.Context, acct string) error {
+	if !d.storeMu.LockBestEffort(ctx) {
+		return ctx.Err()
+	}
+	defer d.storeMu.Unlock()
+	state, err := d.loadSyncState()
+	if err != nil || state.AccountID != acct {
+		return err
+	}
+	state.History++
+	state.HeldConflicts = nil
+	return d.storeSyncState(state)
 }
 
 // owedAnswer is a service's answer to one request (settleSend), kept in
-// memory until a write holding it succeeds.
+// memory until a write holding it succeeds; history is the one the
+// request went to.
 type owedAnswer struct {
 	acct    string
+	history int64
 	sent    map[string]sentAttempt
-	applied []account.Change
-	res     *account.PushResult
+	out     *pushOutcome // nil: refused, or never sent
 }
 
 // payOwed applies the answers owed for acct to state, in the order they
@@ -1537,26 +1632,23 @@ func (d *Desk) reserveSends(sent map[string]sentAttempt) error {
 	return syncDir(dir)
 }
 
-// markAnswered writes the markers of sent as the answer res (nil: none,
+// markAnswered writes the markers of sent as the answer out (nil: none,
 // the request refused or never sent) settles them: "r" for a send not
-// written (no answer, or its conflict), "a" for one it wrote (applied).
+// written (no answer, or its conflict), "a" for one it wrote.
 // One that fails leaves the answer to the one owed in memory.
-func (d *Desk) markAnswered(sent map[string]sentAttempt, applied []account.Change, res *account.PushResult) {
+func (d *Desk) markAnswered(sent map[string]sentAttempt, out *pushOutcome) {
 	for id, s := range sent {
 		path := filepath.Join(d.sendMarkersDir(), s.ID)
-		if res == nil || slices.ContainsFunc(res.Conflicts, func(c account.Conflict) bool { return c.Collection == "prompts" && c.ID == id }) {
+		if out == nil || slices.ContainsFunc(out.conflicts, func(c account.Conflict) bool { return c.Collection == "prompts" && c.ID == id }) {
 			_ = writeMarker(path, 0, "r")
 			continue
 		}
-		i := slices.IndexFunc(applied, func(c account.Change) bool { return c.Collection == "prompts" && c.ID == id })
+		i := slices.IndexFunc(out.applied, func(a appliedChange) bool { return a.Collection == "prompts" && a.ID == id })
 		if i < 0 {
 			continue
 		}
-		b, ok := applied[i].Body.(account.PromptBody)
-		for _, a := range res.Applied {
-			if ok && a.Collection == "prompts" && a.ID == id {
-				_ = writeMarker(path, 0, fmt.Sprintf("a:%d:%s:%d", a.Rev, promptHash(bodyFields(b)), s.History))
-			}
+		if b, ok := out.applied[i].Body.(account.PromptBody); ok {
+			_ = writeMarker(path, 0, fmt.Sprintf("a:%d:%s:%d", out.applied[i].Rev, promptHash(bodyFields(b)), s.History))
 		}
 	}
 }
@@ -1579,12 +1671,14 @@ func writeMarker(path string, flag int, v string) error {
 }
 
 // foldMarkers settles each open send of state by its marker, with an owed
-// answer's guards: "r" retires it; "a" is its acknowledgement. In the
-// history the send was journaled in, that retires every open send at its
-// base (the write landed past it) and, unless the mirror holds the prompt
-// past the write, makes what it wrote the copy the saved one is judged
-// against (PromptBaselineHash; the older baseline goes). In another history
-// it retires only its own send.
+// answer's guards: "r" retires it; "a" is its acknowledgement, which makes
+// what it wrote an agreed body (PromptBaselineHash: a saved copy equal to
+// it is no edit, #359 round-12 finding 1). In the history the send was
+// journaled in, it also retires every open send at its base (the write
+// landed past it) and, unless the mirror holds the prompt past the write,
+// takes the older baseline's place. In another history it retires only
+// its own send and leaves the baseline (its revisions are of a history
+// that is gone).
 func (d *Desk) foldMarkers(state *syncState) {
 	type marked struct {
 		prompt, send string
@@ -1620,11 +1714,15 @@ func (d *Desk) foldMarkers(state *syncState) {
 		}
 		same := history == state.History
 		retireSends(state, m.prompt, m.base, m.send, same && rev != m.base)
-		if same && !slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == m.prompt && r.Rev > rev }) {
-			if state.PromptBaselineHash == nil {
-				state.PromptBaselineHash = map[string]string{}
-			}
-			state.PromptBaselineHash[m.prompt] = f[2]
+		newer := slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == m.prompt && r.Rev > rev })
+		if same && newer {
+			continue
+		}
+		if state.PromptBaselineHash == nil {
+			state.PromptBaselineHash = map[string]string{}
+		}
+		state.PromptBaselineHash[m.prompt] = f[2]
+		if same {
 			delete(state.PromptBaseline, m.prompt)
 		}
 	}
@@ -1685,42 +1783,43 @@ func (d *Desk) dropSendMarkers(state syncState) {
 // baseline is never put back: a write's is applied only while the answer
 // is the newest news of its item (stale).
 func (ans owedAnswer) apply(state *syncState) bool {
-	sent, applied, res := ans.sent, ans.applied, ans.res
+	sent, out := ans.sent, ans.out
+	if out == nil {
+		out = &pushOutcome{}
+	}
 	changed := false
-	for _, c := range applied {
-		if ans.stale(state, c) {
+	for _, a := range out.applied {
+		if ans.stale(state, a) {
 			continue
 		}
-		switch b := c.Body.(type) {
+		switch b := a.Body.(type) {
 		case account.HostBody:
 			if state.Baseline == nil {
 				state.Baseline = map[string]account.HostBody{}
 			}
-			state.Baseline[c.ID], changed = sharedOf(b), true
+			state.Baseline[a.ID], changed = sharedOf(b), true
 		case account.PromptBody:
 			if state.PromptBaseline == nil {
 				state.PromptBaseline = map[string]promptFields{}
 			}
-			state.PromptBaseline[c.ID], changed = bodyFields(b), true
+			state.PromptBaseline[a.ID], changed = bodyFields(b), true
 		}
 	}
+	// A conflict waits for its history to be confirmed (heldConflict).
+	for _, c := range out.conflicts {
+		h := heldConflict{History: ans.history, Conflict: c}
+		if s, ok := sent[c.ID]; ok && c.Collection == "prompts" {
+			h.Except = s.ID
+		}
+		state.HeldConflicts, changed = append(state.HeldConflicts, h), true
+	}
 	for id, s := range sent {
-		all := false // the answer settles every open send at s.Base
-		// Its revisions speak of the history it was sent in: in another
-		// one, it settles only its own send. A conflict's row waits for
-		// its history to be confirmed (heldRow).
-		if res != nil {
-			for _, c := range res.Conflicts {
-				if c.Collection == "prompts" && c.ID == id && c.Server != nil {
-					state.HeldRows, changed = append(state.HeldRows, heldRow{History: s.History, Row: *c.Server, Except: s.ID}), true
-				}
-			}
-		}
-		if res != nil && s.History == state.History {
-			for _, a := range res.Applied {
-				all = all || a.Collection == "prompts" && a.ID == id && a.Rev != s.Base
-			}
-		}
+		// The answer settles every open send at s.Base when it wrote the
+		// prompt past it. Its revisions speak of the history it was sent
+		// in: in another one, it settles only its own send.
+		all := s.History == state.History && slices.ContainsFunc(out.applied, func(a appliedChange) bool {
+			return a.Collection == "prompts" && a.ID == id && a.Rev != s.Base
+		})
 		if retireSends(state, id, s.Base, s.ID, all) {
 			changed = true
 		}
@@ -1728,33 +1827,25 @@ func (ans owedAnswer) apply(state *syncState) bool {
 	return changed
 }
 
-// stale is whether state already knows newer of c than this answer's write
-// of it: the mirror holds the item at a revision past the one the answer
-// gave, or (a prompt) the send it answers is no longer open (a pull or
-// another answer settled it). Its baseline would then go back. Answers
-// owed by an ended round (settleSend) are written later, so this matters
-// most for them.
-func (ans owedAnswer) stale(state *syncState, c account.Change) bool {
-	if ans.res != nil {
-		for _, a := range ans.res.Applied {
-			if a.Collection != c.Collection || a.ID != c.ID {
-				continue
-			}
-			newer := func(rev int64) bool { return rev > a.Rev }
-			switch c.Collection {
-			case "prompts":
-				if slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == c.ID && newer(r.Rev) }) {
-					return true
-				}
-			case "hosts":
-				if slices.ContainsFunc(state.Mirror.Hosts, func(h account.RemoteHost) bool { return h.ID == c.ID && newer(h.Rev) }) {
-					return true
-				}
-			}
+// stale is whether state already knows newer of a than this answer's
+// write of it: the mirror holds the item at a revision past a.Rev, or (a
+// prompt) the send it answers is no longer open (a pull or another answer
+// settled it). Its baseline would then go back. Answers owed by an ended
+// round (settleSend) are written later, so this matters most for them.
+func (ans owedAnswer) stale(state *syncState, a appliedChange) bool {
+	newer := func(rev int64) bool { return rev > a.Rev }
+	switch a.Collection {
+	case "prompts":
+		if slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == a.ID && newer(r.Rev) }) {
+			return true
+		}
+	case "hosts":
+		if slices.ContainsFunc(state.Mirror.Hosts, func(h account.RemoteHost) bool { return h.ID == a.ID && newer(h.Rev) }) {
+			return true
 		}
 	}
-	if s, sent := ans.sent[c.ID]; sent && c.Collection == "prompts" {
-		return s.History != state.History || !slices.ContainsFunc(state.PromptAttempts[c.ID], func(a promptAttempt) bool { return slices.Contains(a.Open, s.ID) })
+	if s, sent := ans.sent[a.ID]; sent && a.Collection == "prompts" {
+		return s.History != state.History || !slices.ContainsFunc(state.PromptAttempts[a.ID], func(p promptAttempt) bool { return slices.Contains(p.Open, s.ID) })
 	}
 	return false
 }
@@ -1873,7 +1964,8 @@ func promptBody(p SavedPrompt, order *float64) account.PromptBody {
 // attempts and lastSent are the journal of writes sent (promptAttempt),
 // read here; the caller consumes what this merge used. baselineHash are
 // the agreements known only by their hash (syncState.PromptBaselineHash).
-func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known map[string]bool, deletes []string, baseline map[string]promptFields, baselineHash map[string]string, attempts map[string][]promptAttempt, lastSent map[string]lastSend) (next []SavedPrompt, changes []account.Change, left []string, nextBaseline map[string]promptFields, unsendable bool) {
+// Each change is built on its base revision (revs, baseRevs).
+func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known map[string]bool, deletes []string, baseline map[string]promptFields, baselineHash map[string]string, attempts map[string][]promptAttempt, lastSent map[string]lastSend, revs map[string]int64) (next []SavedPrompt, changes []account.Change, left []string, nextBaseline map[string]promptFields, unsendable bool) {
 	// held is the account's prompts by id, read only: the rows still to
 	// add here are the ones no saved prompt kept (inUse); before, the
 	// copies last synced.
@@ -1947,6 +2039,11 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 		return hash, !isLanded && !hasBaseline && hash != ""
 	}
 	edited := func(p SavedPrompt) bool {
+		// A saved copy equal to an acknowledged write, of this history or
+		// one a restore discarded, is no edit.
+		if hash := baselineHash[p.ID]; hash != "" && promptHash(fieldsOf(p)) == hash {
+			return false
+		}
 		if hash, ok := hashAgreed(p.ID); ok {
 			return promptHash(fieldsOf(p)) != hash
 		}
@@ -1980,7 +2077,7 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 			unsendable = true
 			return nil
 		}
-		changes = append(changes, account.Change{Collection: "prompts", ID: p.ID, Body: body})
+		changes = append(changes, account.Write("prompts", p.ID, revs["prompts/"+p.ID], body))
 		return body.Order
 	}
 	var fresh []SavedPrompt
@@ -2008,7 +2105,7 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 	}
 	for _, id := range deletes {
 		if _, ok := held[id]; ok && !inUse[id] {
-			changes = append(changes, account.Change{Collection: "prompts", ID: id, Deleted: true})
+			changes = append(changes, account.Delete("prompts", id, revs["prompts/"+id]))
 			left = append(left, id)
 		}
 	}
@@ -2076,9 +2173,10 @@ func cmpOrder(a, b *float64) int {
 
 // mergeMachines applies the account's hosts (mirror; old is the copy last
 // synced, known the ids the account is known to have held) to the saved
-// machines and returns the changes to push, one per id. deletes are
-// machines removed here and not yet pushed; it returns those left.
-func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[string]bool, deletes []string, baseline map[string]account.HostBody) (changes []account.Change, left []string, renamed map[string]string, nextBaseline map[string]account.HostBody) {
+// machines and returns the changes to push, one per id, each on its base
+// revision (revs, baseRevs). deletes are machines removed here and not
+// yet pushed; it returns those left.
+func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[string]bool, deletes []string, baseline map[string]account.HostBody, revs map[string]int64) (changes []account.Change, left []string, renamed map[string]string, nextBaseline map[string]account.HostBody) {
 	renamed = map[string]string{}
 	now := map[string]account.HostBody{}
 	for _, h := range mirror.Hosts {
@@ -2128,7 +2226,7 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 	}
 	for i, id := range plan.Push {
 		st.Machines[i].SyncID = id
-		add(account.Change{Collection: "hosts", ID: id, Body: hostBody(st.Machines[i], account.HostBody{})})
+		add(account.Write("hosts", id, revs["hosts/"+id], hostBody(st.Machines[i], account.HostBody{})))
 	}
 	for i, m := range st.Machines {
 		body, ok := now[m.SyncID]
@@ -2137,7 +2235,7 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 		}
 		switch {
 		case edited[i] && !sameHost(m, body):
-			add(account.Change{Collection: "hosts", ID: m.SyncID, Body: hostBody(m, body)})
+			add(account.Write("hosts", m.SyncID, revs["hosts/"+m.SyncID], hostBody(m, body)))
 		case !edited[i] && !sameHost(m, body):
 			// Changed on another device: take its fields. The machine's key
 			// path and session stay this device's. Its saved id
@@ -2187,12 +2285,12 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 	}
 	for _, id := range plan.Delete {
 		if !inUse[id] {
-			add(account.Change{Collection: "hosts", ID: id, Deleted: true})
+			add(account.Delete("hosts", id, revs["hosts/"+id]))
 		}
 	}
 	for _, id := range deletes {
 		if _, ok := now[id]; ok && !inUse[id] {
-			add(account.Change{Collection: "hosts", ID: id, Deleted: true})
+			add(account.Delete("hosts", id, revs["hosts/"+id]))
 			left = append(left, id)
 		}
 	}

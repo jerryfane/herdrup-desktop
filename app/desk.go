@@ -117,10 +117,13 @@ var (
 
 // storeLock serialises reads and writes of the desk's files (machines.json,
 // prompts.json, account-sync.json). It is one slot: a wait for it can end
-// with a ctx (LockCtx), leaving nothing behind.
+// with a ctx (LockCtx, LockBestEffort), leaving nothing behind.
 type storeLock struct {
 	once sync.Once
 	slot chan struct{}
+	// replayed is whether this hold has replayed a commit record a failure
+	// left (Desk.replayCommit): once per hold. Only the holder touches it.
+	replayed bool
 }
 
 func (l *storeLock) ch() chan struct{} {
@@ -128,22 +131,48 @@ func (l *storeLock) ch() chan struct{} {
 	return l.slot
 }
 
-func (l *storeLock) Lock()   { l.ch() <- struct{}{} }
+func (l *storeLock) Lock() {
+	l.ch() <- struct{}{}
+	l.held()
+}
+
 func (l *storeLock) Unlock() { <-l.ch() }
 
-// LockCtx takes the lock, waiting only while ctx lives; false (not held)
-// once ctx ended first.
+// held begins a hold: it replays afresh.
+func (l *storeLock) held() { l.replayed = false }
+
+// LockCtx takes the lock for work done for ctx: true (held) only while ctx
+// lives, so the caller need not ask ctx again; false (not held) once ctx
+// ended, before or during the wait.
 func (l *storeLock) LockCtx(ctx context.Context) bool {
 	select {
 	case l.ch() <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	if ctx.Err() != nil {
+		l.Unlock()
+		return false
+	}
+	l.held()
+	return true
+}
+
+// LockBestEffort takes the lock for writing down what already happened
+// (an answer the service gave a round that may have ended since): a free
+// lock is taken even once ctx ended, and a held one is waited for only
+// while ctx lives; false (not held) when the wait ended first, and the
+// caller keeps the work for later.
+func (l *storeLock) LockBestEffort(ctx context.Context) bool {
+	select {
+	case l.ch() <- struct{}{}:
+		l.held()
 		return true
 	default:
 	}
-	if ctx.Err() != nil {
-		return false
-	}
 	select {
 	case l.ch() <- struct{}{}:
+		l.held()
 		return true
 	case <-ctx.Done():
 		return false
