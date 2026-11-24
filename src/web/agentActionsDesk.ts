@@ -19,7 +19,7 @@
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
 import { harnessDisplayName, normalizeAgentName, SheetStaleError, SheetSupersededError, transferPhaseIsConclusive } from "../agentActionsModel";
-import { setSheetOpenings, type SheetOpening } from "../sheetOpening";
+import { setSheetOpenings, SheetSelection, type SheetOpening, type SheetRequest } from "../sheetOpening";
 import { ompHarness } from "../topicsModel";
 import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
@@ -166,10 +166,14 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 /** The sheet an agent item opens: its kind, as its Desk calls are told apart with its agent. */
 export type SheetKind = "rename" | "restart" | "swap" | "avatar" | "topics" | "transfer";
 
-/** A menu item's request for a sheet (the event payload): the link it was chosen on. */
-const chosenOn = new WeakMap<object, OwnerLink>();
-/** The newest request selected for each agent's sheet of each kind, by kind and pane, and its link. */
-const selected = new Map<string, { request: object; link: OwnerLink }>();
+/** A menu item's choice of a sheet (sheetOpening.ts SheetSelection): the link it was chosen on,
+ *  and its place among the selections (seq), the newest of a sheet winning. */
+class WebSelection extends SheetSelection {
+ constructor(kind: SheetKind, paneID: string, readonly link: OwnerLink, readonly seq: number) { super(kind, paneID); }
+}
+let selections = 0;
+/** The newest selection of each agent's sheet of each kind, by kind and pane. */
+const selected = new Map<string, WebSelection>();
 /** The started opening that owns each agent's sheet's result, by kind and pane. */
 const speaking = new Map<string, WebOpening>();
 /** Links whose end retires their records. */
@@ -187,27 +191,33 @@ function watch(link: OwnerLink) {
 }
 
 /** One opening of a sheet (sheetOpening.ts), for the menu request it was opened with: on the link
- *  that request was chosen on (none for a request this Desk didn't send: every call is refused).
- *  Its calls go to that link, refused once it is no longer the open one; it never falls back to
- *  the open link. Before its dialog shows, a newer selection of the same sheet replaces it; once
- *  started (confirmed) it owns the sheet's result until a later one starts. A call whose opening was
- *  replaced ends as SheetSupersededError, which the page keeps quiet about; one whose machine
- *  changed as SheetStaleError, the sheet's refusal. */
+ *  its selection was made on (none for a request without one this Desk made, or one for another
+ *  sheet: every call is refused). Its calls go to that link, refused once it is no longer the open
+ *  one; it never falls back to the open link. Before its dialog shows, a newer selection of the
+ *  same sheet replaces it; once started (confirmed) it owns the sheet's result until a later one
+ *  starts. A call whose opening lost its result ends as SheetSupersededError (whatever else is
+ *  true), which the page keeps quiet about; one whose machine changed as SheetStaleError, the
+ *  sheet's refusal; one replaced by a newer selection before it showed as SheetSupersededError. */
 class WebOpening implements SheetOpening {
+ readonly selection: WebSelection | null;
  readonly link: OwnerLink | null;
+ readonly paneID: string;
  readonly key: string;
  superseded = false;
  shown = false;
  released = false;
  steps = 0;
- constructor(readonly kind: string, readonly paneID: string, readonly request: object) {
-  this.link = chosenOn.get(request) ?? null;
-  this.key = kind + "\u0000" + paneID;
+ constructor(readonly kind: string, request: SheetRequest) {
+  const s = request.sheet;
+  this.selection = s instanceof WebSelection && s.kind === kind && s.paneID === request.paneID ? s : null;
+  this.link = this.selection?.link ?? null;
+  this.paneID = request.paneID;
+  this.key = kind + "\u0000" + request.paneID;
  }
  /** A newer selection of this sheet replaced it before its dialog showed. */
- #reselected(): boolean { return !this.shown && selected.get(this.key)?.request !== this.request; }
+ #reselected(): boolean { return !this.shown && selected.get(this.key)?.seq !== this.selection?.seq; }
  show(): boolean {
-  if (this.released || this.#reselected()) return false;
+  if (this.released || this.selection === null || this.#reselected()) return false;
   this.shown = true;
   return true;
  }
@@ -220,7 +230,7 @@ class WebOpening implements SheetOpening {
  }
  release(): void {
   this.released = true;
-  if (selected.get(this.key)?.request === this.request) selected.delete(this.key);
+  if (this.selection !== null && selected.get(this.key) === this.selection) selected.delete(this.key);
   this.#settle();
  }
  /** Its record goes once it is released and nothing of it is on its way. */
@@ -232,7 +242,8 @@ class WebOpening implements SheetOpening {
   if (this.paneID === "") throw new Error("no agent");
   const link = this.link;
   if (link === null || this.kind !== kind) throw new SheetStaleError();
-  const ended = () => link !== currentOwnerLink() ? new SheetStaleError() : this.superseded || this.#reselected() ? new SheetSupersededError() : null;
+  const ended = () => this.superseded ? new SheetSupersededError() : link !== currentOwnerLink() ? new SheetStaleError()
+   : this.#reselected() ? new SheetSupersededError() : null;
   const before = this.released ? new SheetSupersededError() : ended();
   if (before) throw before;
   this.steps++;
@@ -338,14 +349,16 @@ class WebOpening implements SheetOpening {
  }
 }
 
-setSheetOpenings({ open: (_desk, kind, paneID, request) => new WebOpening(kind, paneID, request) });
+setSheetOpenings({ open: (_desk, kind, request) => new WebOpening(kind, request) });
 
-/** A sheet of kind for paneID selected on link (a row menu item, or the ••• menu's Avatar…), for
- *  the request about to be sent (the event's payload): the page opens its sheet with it. */
-export function sheetChosen(link: OwnerLink, kind: SheetKind, paneID: string, request: object): void {
- chosenOn.set(request, link);
- selected.set(kind + "\u0000" + paneID, { request, link });
+/** A sheet of kind for paneID selected on link (a row menu item, or the ••• menu's Avatar…): the
+ *  selection the event about to be sent carries (its `sheet`), which the page opens the sheet with.
+ *  It is now the newest of that sheet. */
+export function selectSheet(link: OwnerLink, kind: SheetKind, paneID: string): SheetSelection {
+ const selection = new WebSelection(kind, paneID, link, ++selections);
+ selected.set(kind + "\u0000" + paneID, selection);
  watch(link);
+ return selection;
 }
 
 /** Sheet records still held (a test seam for their lifetime): results owned, selections pending. */
@@ -393,7 +406,11 @@ export async function closeAgent(link: OwnerLink | null, paneID: string): Promis
 /** desk_agent_actions.go chooseAgentAction: stop and archive here, the rest in the page's sheets. */
 function chooseAgentAction(link: OwnerLink, a: AgentAction) {
  const run = a.kind === "stop" ? stopAgent : a.kind === "archive" ? archiveAgent : null;
- if (run === null) { sheetChosen(link, a.kind as SheetKind, a.paneID, a); emit("agentActionRequested", a); return; }
+ if (run === null) {
+  const request: AgentAction & SheetRequest = { ...a, sheet: selectSheet(link, a.kind as SheetKind, a.paneID) };
+  emit("agentActionRequested", request);
+  return;
+ }
  run(a.paneID, link).catch((error) => { if (!link.signal.aborted) showWarning(`Couldn't ${a.kind} ${a.title}`, errorText(error)); });
 }
 
