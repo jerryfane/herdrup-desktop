@@ -25,7 +25,7 @@ import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
 import { avatarTarget, displayName, isArchived, orderedFolders, trimSpace, type AgentInfo, type Groups } from "./board";
 import { ErrUnsupported } from "./engine";
-import { emit } from "./events";
+import { emit, type Payload } from "./events";
 import { folderName, folderOf, isStarred, type Edit } from "./groups";
 import { showMenu } from "./menu";
 import { currentOwnerLink, ownerCall, OwnerRefusedError, type OwnerLink } from "./ownerLink";
@@ -166,12 +166,18 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 /** The sheet an agent item opens: its kind, as its Desk calls are told apart with its agent. */
 export type SheetKind = "rename" | "restart" | "swap" | "avatar" | "topics" | "transfer";
 
-/** A menu item's choice of a sheet (sheetOpening.ts SheetSelection): the link it was chosen on,
- *  and its place among the selections (seq), the newest of a sheet winning. */
+/** A menu item's choice of a sheet (sheetOpening.ts SheetSelection): the link it was chosen on. It
+ *  is its own identity: the newest selection of a sheet is the one in `selected`. It also counts
+ *  the openings made with it, to say when all of them settled (sheetSettled). */
 class WebSelection extends SheetSelection {
- constructor(kind: SheetKind, paneID: string, readonly link: OwnerLink, readonly seq: number) { super(kind, paneID); }
+ #openings = 0;
+ readonly #settled = Promise.withResolvers<void>();
+ constructor(kind: SheetKind, paneID: string, readonly link: OwnerLink) { super(kind, paneID); }
+ get settled(): Promise<void> { return this.#settled.promise; }
+ opened(): void { this.#openings++; }
+ /** One of its openings settled: released, nothing of it on its way. */
+ closed(): void { if (--this.#openings === 0) this.#settled.resolve(); }
 }
-let selections = 0;
 /** The newest selection of each agent's sheet of each kind, by kind and pane. */
 const selected = new Map<string, WebSelection>();
 /** The started opening that owns each agent's sheet's result, by kind and pane. */
@@ -207,15 +213,17 @@ class WebOpening implements SheetOpening {
  shown = false;
  released = false;
  steps = 0;
+ #idle = false;
  constructor(readonly kind: string, request: SheetRequest) {
   const s = request.sheet;
   this.selection = s instanceof WebSelection && s.kind === kind && s.paneID === request.paneID ? s : null;
+  this.selection?.opened();
   this.link = this.selection?.link ?? null;
   this.paneID = request.paneID;
   this.key = kind + "\u0000" + request.paneID;
  }
  /** A newer selection of this sheet replaced it before its dialog showed. */
- #reselected(): boolean { return !this.shown && selected.get(this.key)?.seq !== this.selection?.seq; }
+ #reselected(): boolean { return !this.shown && selected.get(this.key) !== this.selection; }
  show(): boolean {
   if (this.released || this.selection === null || this.#reselected()) return false;
   this.shown = true;
@@ -233,9 +241,12 @@ class WebOpening implements SheetOpening {
   if (this.selection !== null && selected.get(this.key) === this.selection) selected.delete(this.key);
   this.#settle();
  }
- /** Its record goes once it is released and nothing of it is on its way. */
+ /** Once it is released and nothing of it is on its way, its record goes and it has settled. */
  #settle(): void {
-  if (this.released && this.steps === 0 && speaking.get(this.key) === this) speaking.delete(this.key);
+  if (!this.released || this.steps > 0 || this.#idle) return;
+  this.#idle = true;
+  if (speaking.get(this.key) === this) speaking.delete(this.key);
+  this.selection?.closed();
  }
  /** One call of this sheet of kind (Switch harness's for "transfer", Restart's or Swap's for theirs). */
  async #step<T>(kind: SheetKind, call: (link: OwnerLink) => Promise<T>): Promise<T> {
@@ -355,7 +366,7 @@ setSheetOpenings({ open: (_desk, kind, request) => new WebOpening(kind, request)
  *  selection the event about to be sent carries (its `sheet`), which the page opens the sheet with.
  *  It is now the newest of that sheet. */
 export function selectSheet(link: OwnerLink, kind: SheetKind, paneID: string): SheetSelection {
- const selection = new WebSelection(kind, paneID, link, ++selections);
+ const selection = new WebSelection(kind, paneID, link);
  selected.set(kind + "\u0000" + paneID, selection);
  watch(link);
  return selection;
@@ -363,6 +374,12 @@ export function selectSheet(link: OwnerLink, kind: SheetKind, paneID: string): S
 
 /** Sheet records still held (a test seam for their lifetime): results owned, selections pending. */
 export function openSheets(): number { return speaking.size + selected.size; }
+
+/** Resolves once every opening the page made with selection has settled: released, nothing of it on
+ *  its way (a test seam: a reply it was waiting for has been dealt with). */
+export function sheetSettled(selection: SheetSelection): Promise<void> {
+ return selection instanceof WebSelection ? selection.settled : Promise.resolve();
+}
 
 /** desk_agent_actions.go agentLink, without the roster: the link a menu brought, or the open one,
  *  for an action on paneID. */
@@ -407,7 +424,7 @@ export async function closeAgent(link: OwnerLink | null, paneID: string): Promis
 function chooseAgentAction(link: OwnerLink, a: AgentAction) {
  const run = a.kind === "stop" ? stopAgent : a.kind === "archive" ? archiveAgent : null;
  if (run === null) {
-  const request: AgentAction & SheetRequest = { ...a, sheet: selectSheet(link, a.kind as SheetKind, a.paneID) };
+  const request: Payload<"agentActionRequested"> = { ...a, sheet: selectSheet(link, a.kind as SheetKind, a.paneID) };
   emit("agentActionRequested", request);
   return;
  }
