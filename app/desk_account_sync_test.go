@@ -3005,34 +3005,31 @@ func TestAnEditTheOrderWouldMakeTooLargeGoesWithoutOne(t *testing.T) {
 
 // #359 r7 and r11, #390 r3, r6 and r7: which sends may have written a row
 // (promptAttempt.mayHaveWritten), the rule the one matcher applies before
-// it hashes anything (landedEntry): an open send other than the one turned
-// down, or the trimmed ones, based below the row, with no deadline or one
-// the row's stamp is not past (or no stamp).
+// it hashes anything (landedEntry): an open send, or the trimmed ones,
+// based below the row, with no deadline or one the row's stamp is not past
+// (or no stamp).
 func TestWhichSendsMayHaveWrittenARow(t *testing.T) {
 	a := promptAttempt{Base: 3, Open: []string{"s1", "s2"}, Deadlines: map[string]int64{"s1": 1000, "s2": 2000}}
 	for _, c := range []struct {
 		name           string
 		a              promptAttempt
 		rev, updatedMs int64
-		except         string
 		want           bool
 	}{
-		{"a row past the base, within a deadline", a, 4, 1500, "", true},
-		{"a row at the base", a, 3, 500, "", false},
-		{"a row stamped past every deadline", a, 4, 2500, "", false},
-		{"a row with no stamp", a, 4, 0, "", true},
-		{"within only the turned-down send's deadline", a, 4, 1500, "s2", false},
-		{"a send with no deadline", promptAttempt{Base: 3, Open: []string{"s"}}, 4, 9000, "", true},
-		{"only the turned-down send open", promptAttempt{Base: 3, Open: []string{"s"}}, 4, 0, "s", false},
-		{"a trimmed send within its deadline", promptAttempt{Base: 3, Open: []string{"s"}, Deadlines: map[string]int64{"s": 1000, "": 3000}}, 4, 2500, "", true},
+		{"a row past the base, within a deadline", a, 4, 1500, true},
+		{"a row at the base", a, 3, 500, false},
+		{"a row stamped past every deadline", a, 4, 2500, false},
+		{"a row with no stamp", a, 4, 0, true},
+		{"a send with no deadline", promptAttempt{Base: 3, Open: []string{"s"}}, 4, 9000, true},
+		{"a trimmed send within its deadline", promptAttempt{Base: 3, Open: []string{"s"}, Deadlines: map[string]int64{"s": 1000, "": 3000}}, 4, 2500, true},
 	} {
-		if got := c.a.mayHaveWritten(c.rev, c.updatedMs, c.except); got != c.want {
+		if got := c.a.mayHaveWritten(c.rev, c.updatedMs); got != c.want {
 			t.Errorf("%s: %v; want %v", c.name, got, c.want)
 		}
 	}
 	row := account.RemotePrompt{ID: "p", Rev: 4, Body: account.PromptBody{Text: "t"}}
 	entries := []promptAttempt{{Base: 3, Hash: "another", Open: []string{"s"}}, {Base: 3, Hash: sendHash(row.Body), Open: []string{"s"}}}
-	if got := landedEntry(row, entries, ""); got != 1 {
+	if got := landedEntry(row, entries); got != 1 {
 		t.Fatalf("landed entry %d; want the one with the row's body", got)
 	}
 }
@@ -5320,5 +5317,91 @@ func TestAnAcknowledgedPromptARestoreDropsIsNotUploadedAgain(t *testing.T) {
 	_, there := w.livePrompts()[p.ID]
 	if here || there || sent != 0 {
 		t.Fatalf("here %v, in the account %v, %d uploads; want the prompt gone from both and nothing uploaded", here, there, sent)
+	}
+}
+
+// #390 r18: the service takes the upload of v1 while the revert v0 is
+// saved here, and only the writes recording its answer fail. Account B
+// then signs in on the same data; its first pull is told to start over
+// (410) on its second page, and its restart fails before the switch is
+// committed. Back on A, another device writes x. B's 410 is B's: A's
+// history goes on, so its acknowledgement still makes v0 an edit over
+// v1, and the revert goes over x.
+func TestAnotherAccountsResetIsNotThisOnes(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	savePrompt(t, mac, "", "", "q") // so a pull of one item a page has two
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.onPush = func() { savePrompt(t, mac, p.ID, "", "v0") } // the revert, as v1 goes
+	w.mu.Unlock()
+	acceptedButUnwritten(t, mac, transport)
+	gets := &failGet{base: srv.Client().Transport, nth: 3} // page one, page two (410), the restart
+	b := newDesk(mac.dir)
+	raw, _ := json.Marshal(map[string]string{"refresh_token": fmt.Sprintf("r1.%022d.%043d", 2, 0), "account_id": "acct-2"})
+	b.account = account.New(srv.URL, "linux", &signedInStore{raw: raw}, &http.Client{Transport: gets})
+	b.accountStore = account.NewSecretsStore(noSecrets{}, errors.New("not found"))
+	w.mu.Lock()
+	w.pageSize = 1
+	w.onNextPage = func() { w.floor = w.rev + 1 }
+	w.mu.Unlock()
+	if err := b.SyncMachines(context.Background()); err == nil {
+		t.Fatal("B's round whose restarted pull failed reported success")
+	}
+	w.mu.Lock()
+	w.pageSize, w.floor = 0, 0
+	w.mu.Unlock()
+	a := reopen(t, srv, mac)
+	w.anotherDeviceWrites(p.ID, "x")
+	syncEach(t, a)
+	if got, body := promptsOf(t, a)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("A's prompt %+v, the account's %s; want the revert v0 in both", got, body)
+	}
+}
+
+// #390 r18: a 410 was folded and committed (ResetsSeen 1) but the reset
+// record's write failed (it says 0); the app is opened again. A later 410
+// whose restart fails is numbered past the committed one (2), so the next
+// ordinary pull folds it, and the discarded history's tombstone doesn't
+// delete the saved draft.
+func TestAResetIsNumberedPastTheOneCommitted(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &failGet{base: srv.Client().Transport}
+	mac := deviceVia(t, srv, transport)
+	savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	const draft = "00000000-0000-4000-8000-0000000000bb"
+	savePrompt(t, mac, draft, "", "draft")
+	state, err := mac.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ResetsSeen = 1
+	state.HeldConflicts = []heldConflict{{Conflict: turnedDown{Conflict: account.Conflict{Collection: "prompts", ID: draft,
+		Server: &account.Item{Collection: "prompts", ID: draft, Rev: state.Mirror.Rev + 1, Deleted: true}}}}}
+	if err := mac.storeSyncState(state); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.floor = w.rev + 1 // the pull is told to start over
+	w.mu.Unlock()
+	transport.mu.Lock()
+	transport.nth, transport.seen = 2, 0 // the restart
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose restarted pull failed reported success")
+	}
+	w.mu.Lock()
+	w.floor = 0
+	w.mu.Unlock()
+	reopened := reopen(t, srv, mac)
+	syncEach(t, reopened)
+	if got, body := promptsOf(t, reopened)[draft], w.livePrompts()[draft]; got.Text != "draft" || !strings.Contains(body, `"draft"`) {
+		t.Fatalf("the draft here %+v, in the account %s; want it in both", got, body)
 	}
 }

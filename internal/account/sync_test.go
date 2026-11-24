@@ -164,6 +164,34 @@ func TestPullFollowsTheCursorAndARemovedFloorRestartsAFullPull(t *testing.T) {
 	}
 }
 
+// #448 review: a 410 whose body stalls until the request ends is still a
+// reset: the status line decides, before the body is read, so the caller
+// is told Reset with the error and can note it.
+func TestA410WhoseBodyStallsIsStillAReset(t *testing.T) {
+	s := &syncService{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/sync" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGone)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done() // the body never comes
+			return
+		}
+		s.serve(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	store := &memStore{}
+	store.raw, _ = json.Marshal(stored{RefreshToken: token("r1", 1), Session: Session{AccountID: "acct"}})
+	c := New(srv.URL, "linux", store, srv.Client())
+	c.now = func() time.Time { return time.Unix(1_800_000_000, 0) }
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	p, err := c.PullSince(ctx, acctRound, 3)
+	if err == nil || !p.Reset {
+		t.Fatalf("%+v, %v; want the pull failed and the 410 reported (Reset)", p, err)
+	}
+}
+
 // A pull carries the service's clock as of its earliest page, and none
 // when a page came without one (#826); each push's not_after is the newest
 // now_ms seen plus two minutes, none before any, and none again once an

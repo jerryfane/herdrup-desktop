@@ -199,10 +199,9 @@ type promptAttempt struct {
 	Legacy    bool             `json:"legacy,omitempty"`
 }
 
-// mayHaveWritten is whether one of a's sends, other than except, may have
-// written a row stamped updatedMs (0: unknown) at revision rev
-// (promptAttempt).
-func (a promptAttempt) mayHaveWritten(rev, updatedMs int64, except string) bool {
+// mayHaveWritten is whether one of a's sends may have written a row
+// stamped updatedMs (0: unknown) at revision rev (promptAttempt).
+func (a promptAttempt) mayHaveWritten(rev, updatedMs int64) bool {
 	if rev <= a.Base {
 		return false
 	}
@@ -213,16 +212,16 @@ func (a promptAttempt) mayHaveWritten(rev, updatedMs int64, except string) bool 
 	if fold, trimmed := a.Deadlines[""]; trimmed && inTime(fold) {
 		return true
 	}
-	return slices.ContainsFunc(a.Open, func(id string) bool { return id != except && inTime(a.Deadlines[id]) })
+	return slices.ContainsFunc(a.Open, func(id string) bool { return inTime(a.Deadlines[id]) })
 }
 
 // landedEntry is the index in entries of the one whose send landed as row
-// (promptAttempt's rule; except, a send the service turned down), or -1.
-// The row is hashed only once an entry may have written it.
-func landedEntry(row account.RemotePrompt, entries []promptAttempt, except string) int {
+// (promptAttempt's rule), or -1. The row is hashed only once an entry may
+// have written it.
+func landedEntry(row account.RemotePrompt, entries []promptAttempt) int {
 	var body, fields string
 	return slices.IndexFunc(entries, func(a promptAttempt) bool {
-		if !a.mayHaveWritten(row.Rev, row.UpdatedMs, except) {
+		if !a.mayHaveWritten(row.Rev, row.UpdatedMs) {
 			return false
 		}
 		if a.Legacy {
@@ -525,11 +524,12 @@ type accountSync struct {
 	failedMu sync.Mutex
 	failed   map[string]bool
 	// owed are answers to sent requests not yet written (settleSend);
-	// the next merge's commit writes them. resets is the newest 410 this
-	// run observed (noteReset), owed to the next store step until folded.
-	// Only the round holding turn touches them, so turn is their lock too.
+	// the next merge's commit writes them. resets are the newest 410 this
+	// run observed per account (noteReset), owed to the next store step of
+	// that account until folded. Only the round holding turn touches
+	// them, so turn is their lock too.
 	owed   []owedAnswer
-	resets int64
+	resets map[string]int64
 }
 
 // syncRoundTimeout bounds each sync round, its wait for the turn included:
@@ -700,7 +700,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	if !still() {
 		return errSyncAbandoned
 	}
-	d.reserveResets()
+	d.reserveResets(acct)
 	if !d.storeMu.LockCtx(ctx) {
 		return ctx.Err()
 	}
@@ -722,7 +722,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	pull, err := d.account.PullSince(ctx, round, since)
 	if pull.Reset {
-		d.noteReset() // whatever comes of the pull, before anything else
+		d.noteReset(acct) // whatever comes of the pull, before anything else
 	}
 	if errors.Is(err, account.ErrAccountChanged) {
 		return errSyncAbandoned
@@ -774,7 +774,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		confirmed = confirmConflicts(&latest)
 		for _, it := range pull.Items {
 			if it.Collection == "prompts" {
-				decideSends(&latest, it, "")
+				decideSends(&latest, it)
 			}
 		}
 	}
@@ -903,6 +903,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline, PromptsPulled: true,
 		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptBaselineHash: baselineHash, PromptAttempts: attempts, PromptLastSent: lastSent,
 		Removed: removed, PushFrom: pushFrom, LastSync: lastSync, History: latest.History, ResetsSeen: latest.ResetsSeen}
+	if switched {
+		// Another account's state starts its own count: its first pull
+		// was a whole one, so every 410 it saw is behind it.
+		state.History, state.ResetsSeen = 0, d.resetsOf(acct)
+	}
 	// The machines, prompts and the state that classifies them, as one
 	// (syncState).
 	var changedPrompts *promptStore
@@ -940,12 +945,13 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	if err != nil {
 		return err
 	}
-	// acked are the changes the service wrote (or already held), conflicts
-	// the ones it turned down because their base was stale, and settled
-	// the writes this round is done with. unsent is why a change is still
-	// here unsent at the end of the round, which then fails.
+	// acked are the changes the service wrote (or already held), and
+	// turnedDown whether it turned any down because its base was stale;
+	// settled are the writes this round is done with. unsent is why a
+	// change is still here unsent at the end of the round, which then
+	// fails.
 	var acked []account.Change
-	var conflicts []account.Conflict
+	turnedDown := false
 	settled := map[string]bool{}
 	// heldBack are the writes prepare held back at dispatch (a prompt's
 	// variants at maxVariants): no work for a resumed round to start from.
@@ -988,9 +994,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		if err != nil {
 			return part, err // its sends stay open: they may have landed
 		}
-		for _, c := range out.conflicts {
-			conflicts = append(conflicts, c.Conflict)
-		}
+		turnedDown = turnedDown || len(out.conflicts) > 0
 		for _, c := range part {
 			settled[c.Collection+"/"+c.ID] = true
 		}
@@ -1068,7 +1072,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		// Read our own writes back, so the mirror holds what the account holds.
 		readBack, err = d.account.PullSince(ctx, round, mirror.Rev)
 		if readBack.Reset {
-			d.noteReset() // whatever comes of the readback, before anything else
+			d.noteReset(acct) // whatever comes of the readback, before anything else
 		}
 		if errors.Is(err, account.ErrAccountChanged) {
 			return errSyncAbandoned
@@ -1133,7 +1137,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		// device's write over a landing.
 		for _, it := range readBack.Items {
 			if it.Collection == "prompts" {
-				decideSends(&state, it, "")
+				decideSends(&state, it)
 			}
 		}
 		// A full readback is the account's history started over (a
@@ -1201,7 +1205,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// A round that left a change unsent did not finish well: the status
 	// keeps the last one that did, and so does a pass whose turned-down
 	// changes the next pass sends again.
-	if unsent == nil && len(conflicts) == 0 && !unsendable {
+	if unsent == nil && !turnedDown && !unsendable {
 		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	}
 	err = d.storeSyncState(state)
@@ -1213,7 +1217,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	switch {
 	case unsent != nil:
 		return unsent
-	case len(conflicts) > 0:
+	case turnedDown:
 		return errTurnedDown
 	case unsendable:
 		return errUnsendable
@@ -1566,7 +1570,7 @@ func confirmConflicts(state *syncState) []account.Conflict {
 		}
 		c := h.Conflict
 		if c.Collection == "prompts" && c.Server != nil {
-			decideSends(state, *c.Server, "")
+			decideSends(state, *c.Server)
 		}
 		key := c.Collection + "/" + c.ID
 		if c.Server != nil && c.Server.Rev <= revs[key] || c.Server == nil && revs[key] != c.Base {
@@ -1585,33 +1589,39 @@ func confirmConflicts(state *syncState) []account.Conflict {
 	return confirmed
 }
 
-func (d *Desk) resetsPath() string { return filepath.Join(d.dir, "sync-reset") }
+// A reset record is sync-reset-<account hash>: one account's newest 410
+// observation number and its id, at a fixed width (resetsWidth digits, a
+// space, the id), reserved when a pass starts and rewritten in place,
+// synced. A fold reads only its own account's.
+func (d *Desk) resetsPath(acct string) string {
+	sum := sha256.Sum256([]byte(acct))
+	return filepath.Join(d.dir, "sync-reset-"+hex.EncodeToString(sum[:8]))
+}
 
-// resetsWidth is sync-reset's fixed size: a zero-padded observation
-// number, rewritten in place.
 const resetsWidth = 20
 
-// reserveResets creates sync-reset at its full size, synced, if it isn't
-// there: a later observation then overwrites it in place, needing no new
-// room. A failure leaves noteReset to create it.
-func (d *Desk) reserveResets() {
-	if _, err := os.Stat(d.resetsPath()); errors.Is(err, os.ErrNotExist) {
-		_ = d.writeResets(0)
+// reserveResets creates acct's reset record at its full size, synced, if
+// it isn't there: a later observation then overwrites it in place,
+// needing no new room. A failure leaves noteReset to create it.
+func (d *Desk) reserveResets(acct string) {
+	if _, err := os.Stat(d.resetsPath(acct)); errors.Is(err, os.ErrNotExist) {
+		_ = d.writeResets(acct, 0)
 	}
 }
 
-// writeResets writes n as sync-reset's content, in place, and syncs it
+// writeResets writes n as acct's reset record, in place, and syncs it
 // (and the folder, when it creates the file).
-func (d *Desk) writeResets(n int64) error {
-	_, statErr := os.Stat(d.resetsPath())
+func (d *Desk) writeResets(acct string, n int64) error {
+	path := d.resetsPath(acct)
+	_, statErr := os.Stat(path)
 	if err := os.MkdirAll(d.dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(d.resetsPath(), os.O_WRONLY|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteAt(fmt.Appendf(nil, "%0*d", resetsWidth, n), 0)
+	_, err = f.WriteAt(fmt.Appendf(nil, "%0*d %s", resetsWidth, n, acct), 0)
 	if err == nil {
 		err = f.Sync()
 	}
@@ -1624,35 +1634,73 @@ func (d *Desk) writeResets(n int64) error {
 	return err
 }
 
-// readResets is sync-reset's observation number, 0 for none.
-func (d *Desk) readResets() int64 {
-	raw, err := os.ReadFile(d.resetsPath())
+// resetsOf is acct's newest 410 observation number known here: its
+// record's, and this run's (0 for none). A record naming another account
+// is none.
+func (d *Desk) resetsOf(acct string) int64 {
+	n := d.accountSync.resets[acct]
+	raw, err := os.ReadFile(d.resetsPath(acct))
 	if err != nil {
-		return 0
+		return n
 	}
-	n, _ := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	num, id, ok := strings.Cut(string(raw), " ")
+	if !ok || id != acct {
+		return n
+	}
+	stored, _ := strconv.ParseInt(num, 10, 64)
+	return max(n, stored)
+}
+
+// committedResets is the ResetsSeen account-sync.json, or a commit record
+// not yet applied, holds for acct: a number a fold already used, which a
+// record whose write failed may lag behind. It reads without the store
+// lock (both files are replaced whole).
+func (d *Desk) committedResets(acct string) int64 {
+	var n int64
+	read := func(raw []byte) {
+		var s struct {
+			AccountID  string `json:"accountId"`
+			ResetsSeen int64  `json:"resetsSeen"`
+		}
+		if json.Unmarshal(raw, &s) == nil && s.AccountID == acct {
+			n = max(n, s.ResetsSeen)
+		}
+	}
+	if raw, err := os.ReadFile(d.syncStatePath()); err == nil {
+		read(raw)
+	}
+	if raw, err := os.ReadFile(d.commitPath()); err == nil {
+		var c syncCommit
+		if json.Unmarshal(raw, &c) == nil {
+			read(c.Sync)
+		}
+	}
 	return n
 }
 
-// noteReset records a 410 a pull saw, whatever then came of the pull: the
-// account's history may have been replaced. It takes no lock: the next
-// observation number is owed in memory and written to sync-reset in
+// noteReset records a 410 a pull for acct saw, whatever then came of the
+// pull: the account's history may have been replaced. It takes no lock:
+// the next observation number (past every one acct's record, this run or
+// a fold already used) is owed in memory and written to acct's record in
 // place (synced), so a busy store, a round that ends, or a store write
-// that fails can't lose it. The next store step that confirms anything
-// folds it first (foldResets). It is lost only if the file write fails
-// and the app ends before a store step.
-func (d *Desk) noteReset() {
-	n := max(d.readResets(), d.accountSync.resets) + 1
-	d.accountSync.resets = n
-	_ = d.writeResets(n)
+// that fails can't lose it. The next store step of acct that confirms
+// anything folds it first (foldResets). It is lost only if the record
+// write fails and the app ends before a store step.
+func (d *Desk) noteReset(acct string) {
+	n := max(d.resetsOf(acct), d.committedResets(acct)) + 1
+	if d.accountSync.resets == nil {
+		d.accountSync.resets = map[string]int64{}
+	}
+	d.accountSync.resets[acct] = n
+	_ = d.writeResets(acct, n)
 }
 
-// foldResets folds the 410s observed since state last folded one
-// (noteReset): the history moves on, and the held conflicts (of the old
-// one) go. An answer owed in memory is of the old history too, and its
-// conflicts go when it is applied. d.storeMu must be held.
+// foldResets folds the 410s observed for state's account since state last
+// folded one (noteReset): the history moves on, and the held conflicts
+// (of the old one) go. An answer owed in memory is of the old history
+// too, and its conflicts go when it is applied. d.storeMu must be held.
 func (d *Desk) foldResets(state *syncState) {
-	n := max(d.readResets(), d.accountSync.resets)
+	n := d.resetsOf(state.AccountID)
 	if n <= state.ResetsSeen {
 		return
 	}
@@ -1949,21 +1997,21 @@ func (ans owedAnswer) stale(state *syncState, a appliedChange) bool {
 // decideSends takes row (a prompts item the service answered, or a pull or
 // readback read, in the order they came) as the first word on its prompt's
 // sends based below its revision: one of them landed as row if it holds
-// that send's body (landedEntry; except, a send the service turned down),
-// and then row becomes the baseline; either way every send below row's
+// that send's body (landedEntry), and then row becomes the baseline;
+// either way every send below row's
 // revision is settled (a tombstone's too): the row moved past their base,
 // so none lands after it, and no later row can be taken for one. Recorded
 // at once, a later pull of another device's write can't hide a landing;
 // the mirror's row is only the next write's base. It reports whether it
 // changed state.
-func decideSends(state *syncState, row account.Item, except string) bool {
+func decideSends(state *syncState, row account.Item) bool {
 	entries := state.PromptAttempts[row.ID]
 	if !slices.ContainsFunc(entries, func(a promptAttempt) bool { return a.Base < row.Rev }) {
 		return false
 	}
 	var b account.PromptBody
 	if !row.Deleted && json.Unmarshal(row.Body, &b) == nil {
-		if j := landedEntry(account.RemotePrompt{ID: row.ID, Rev: row.Rev, UpdatedMs: row.UpdatedMs, Body: b}, entries, except); j >= 0 {
+		if j := landedEntry(account.RemotePrompt{ID: row.ID, Rev: row.Rev, UpdatedMs: row.UpdatedMs, Body: b}, entries); j >= 0 {
 			if state.PromptBaseline == nil {
 				state.PromptBaseline = map[string]promptFields{}
 			}
@@ -2094,7 +2142,7 @@ func mergePrompts(local []SavedPrompt, old, mirror []account.RemotePrompt, known
 			return promptFields{}, false
 		}
 		var c landedCopy
-		if landedEntry(r, attempts[id], "") >= 0 {
+		if landedEntry(r, attempts[id]) >= 0 {
 			c = landedCopy{bodyFields(r.Body), true}
 		}
 		landedCopies[id] = c
