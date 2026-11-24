@@ -135,11 +135,16 @@ func newAppUpdates() *appUpdates {
 		exe, _ := os.Executable()
 		return appUpdateDisabledReason(runtime.GOOS, exe)
 	}
-	if kioskEnabled() {
+	switch {
+	case kioskEnabled():
 		// The device's system updates herdrup with itself (kiosk.go): no
 		// self-update, and no GitHub release to download either.
 		updater = kioskUpdater{}
 		reason = func() (string, bool) { return kioskUpdateReason, false }
+	case storeEnabled():
+		// The Microsoft Store updates its package (store.go): the same.
+		updater = storeUpdater{}
+		reason = func() (string, bool) { return storeUpdateReason, false }
 	}
 	return &appUpdates{
 		updater: updater,
