@@ -1675,10 +1675,16 @@ class Detail {
   if (s.reason) card.append(el("p", "chat-suggestion-reason", s.reason));
   if (s.messageCount > 0) { const count = el("p", "chat-suggestion-count"); count.append(chatGlyph("text.bubble", 12, chatTextIcon), el("span", "", carriedText(s.messageCount))); card.append(count); }
   const problem = this.suggestionProblem?.id === s.id ? this.suggestionProblem.message : null;
-  if (problem) { const note = el("p", "chat-suggestion-problem", problem); note.setAttribute("role", "status"); card.append(note); }
+  if (problem) {
+   // In the card (Before, owner picks 2026-11-24, item 9), with its own Dismiss capsule.
+   const note = el("div", "chat-suggestion-problem"); note.setAttribute("role", "status");
+   const dismiss = button("Dismiss", () => { this.suggestionProblem = null; this.drawChat(false); }); dismiss.className = "chat-suggestion-problem-dismiss button-compact";
+   note.append(el("span", "chat-suggestion-problem-text", problem), dismiss);
+   card.append(note);
+  }
   if (interactive) {
    const busy = this.suggestionBusy !== null;
-   const later = button("Not now", () => { void this.settleSuggestion(s.id, false); }); later.className = "chat-suggestion-later"; later.disabled = busy;
+   const later = button("Not now", () => { void this.settleSuggestion(s.id, false); }); later.className = "button-secondary"; later.disabled = busy;
    const start = button("Start", () => { void this.settleSuggestion(s.id, true); }); start.disabled = busy;
    const actions = el("div", "chat-suggestion-actions"); actions.append(later, start); card.append(actions);
   }

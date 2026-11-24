@@ -196,9 +196,9 @@ export function initWebAccess(): void {
   const status = el("p", "web-access-status", "Waiting for the browser to show its code…");
   const code = el("input", "web-access-code"); code.inputMode = "numeric"; code.autocomplete = "one-time-code";
   code.maxLength = 4; code.disabled = true; code.setAttribute("aria-label", "Code shown in the browser");
-  // The code first (proposal D): four boxes drawn under the one input, which takes the typing and
-  // draws its digits in the boxes (webAccess.css), so its caret sits in the box it edits. The
-  // boxes show the caret and selection, and a click on a box takes that box's digit.
+  // The code first (proposal D): four boxes drawn under the one input, which takes the typing; the
+  // boxes draw its digits, each centred in its own box whatever the font's metrics, and show the
+  // caret and selection (webAccess.css), and a click on a box takes that box's digit.
   const boxes = el("span", "web-access-boxes"); boxes.setAttribute("aria-hidden", "true");
   const digits = [0, 1, 2, 3].map(() => boxes.appendChild(el("span", "web-access-box")));
   const codeBox = el("span", "web-access-codebox"); codeBox.append(boxes, code);
@@ -207,6 +207,7 @@ export function initWebAccess(): void {
    const n = code.value.length;
    codeSlots(n, code.selectionStart ?? n, code.selectionEnd ?? n).forEach((s, i) => {
     const d = digits[i]!;
+    d.textContent = code.value[i] ?? "";
     d.classList.toggle("filled", s.filled); d.classList.toggle("selected", s.selected); d.classList.toggle("active", s.active);
    });
   };
@@ -225,7 +226,7 @@ export function initWebAccess(): void {
    }
    slots();
   });
-  for (const type of ["keyup", "select", "focus"]) code.addEventListener(type, slots);
+  for (const type of ["input", "keyup", "select", "focus"]) code.addEventListener(type, slots);
 
   const ticked = new Set(machines.filter(m => m.available).map(m => m.id));
   const list = el("div", "web-access-machines"); list.setAttribute("role", "group"); list.setAttribute("aria-label", "Machines");

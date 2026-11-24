@@ -156,7 +156,7 @@ function switchBanner() {
   return (status: SwitchStatus) => {
     bannerShown = status;
     node.dataset.kind = status.kind;
-    const mark = el("span", status.kind === "working" ? "topics-switch-spinner" : "topics-switch-dot");
+    const mark = el("span", status.kind === "working" ? "ring-spinner" : "topics-switch-dot");
     mark.setAttribute("aria-hidden", "true");
     node.replaceChildren(...(status.kind === "done" ? [] : [mark]), el("span", "topics-switch-text", switchStatusText(status)));
     node.hidden = false;

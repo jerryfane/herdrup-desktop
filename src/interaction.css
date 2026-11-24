@@ -506,9 +506,13 @@ button.ask-form-other-caption { cursor:pointer; }
 .chat-suggestion-card > p { margin:0; }
 .chat-suggestion-title { font:400 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text); }
 .chat-suggestion-reason { font:400 calc(13.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-dim); }
-.chat-suggestion-count, .chat-suggestion-problem { display:flex; align-items:center; gap:6px; font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+.chat-suggestion-count { display:flex; align-items:center; gap:6px; font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+/* A refused start or set-aside: dim ink (at least 4.5:1 on the card) and a Dismiss capsule. */
+.chat-suggestion-problem { display:flex; align-items:center; gap:10px; font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-dim); }
+.chat-suggestion-problem-text { flex:1; min-width:0; }
+.chat-suggestion-problem-dismiss { flex:none; }
 .chat-suggestion-actions { display:flex; justify-content:flex-end; gap:8px; }
-.agent-detail .chat-suggestion-later { background:transparent; color:var(--color-text-dim); }
 .chat-suggestion-continued-row { width:min(100%, calc(var(--gram-column, 720px) - 32px)); margin:0 auto 10px; color:var(--color-text-dim); font:400 13px/16px var(--font-app); text-align:center; }
-.chat-suggestion-continued[href] { color:var(--status-working); text-decoration:none; }
+/* Underlined: the tint alone is not enough to tell the link from the line (1.11:1). */
+.chat-suggestion-continued[href] { color:var(--status-working); text-decoration:underline; text-underline-offset:2px; }
 .chat-suggestion-continued[href]:focus-visible { outline:2px solid var(--color-text-dim); outline-offset:2px; border-radius:4px; }

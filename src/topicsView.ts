@@ -282,7 +282,7 @@ export class TopicsPane {
   b.hidden = !this.update?.suggestionsServed;
   b.disabled = this.organising;
   b.replaceChildren();
-  if (this.organising) { const spin = el("span", "topics-organise-spinner"); spin.setAttribute("aria-hidden", "true"); b.append(spin); }
+  if (this.organising) { const spin = el("span", "ring-spinner"); spin.setAttribute("aria-hidden", "true"); b.append(spin); }
   b.append(document.createTextNode("Organise"));
  }
 
@@ -345,7 +345,7 @@ export class TopicsPane {
   this.bar.hidden = suggestions.length === 0;
   if (this.bar.hidden) { this.bar.replaceChildren(); return; }
   const count = tickedCount(suggestions, this.unticked);
-  const dismiss = button("Not now", "topics-proposals-dismiss button-plain", () => void this.settle(false));
+  const dismiss = button("Not now", "topics-proposals-dismiss button-secondary", () => void this.settle(false));
   const create = button(createLabel(count), "topics-proposals-create button-filled", () => void this.settle(true));
   dismiss.disabled = this.settling; create.disabled = this.settling || count === 0;
   this.bar.replaceChildren(dismiss, create);

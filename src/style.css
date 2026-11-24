@@ -333,7 +333,7 @@ html, body {
 /* The activity indicator (Apple clean, owner picks 2026-11-24, items 6 and 12): eight spokes fading
    round in the working blue, one step per spoke, 0.8 s a turn; the in-progress mark beside
    "Working" in the agent's header, the topic rows and the topic's header. Still while status motion
-   is off, slower under reduced motion. */
+   is off and with reduced motion, as the roster's working ring. */
 .activity-spinner {
   display: inline-block;
   flex: none;
@@ -353,8 +353,15 @@ html, body {
   animation: activity-turn 0.8s steps(8) infinite;
 }
 .holds-still .activity-spinner { animation: none; }
-@media (prefers-reduced-motion: reduce) { .activity-spinner { animation-duration: 2.4s; } }
+@media (prefers-reduced-motion: reduce) { .activity-spinner { animation: none; } }
 @keyframes activity-turn { to { transform: rotate(360deg); } }
+
+/* The small busy ring: Organise while the agent sorts (topicsView.ts) and the Topics switch's
+   notice while it restarts (agentActions.ts). One look and one motion policy; each placement sets
+   its --ring-size. */
+.ring-spinner { flex: none; width: var(--ring-size, 12px); height: var(--ring-size, 12px); border: 2px solid var(--color-hairline); border-top-color: var(--color-text-dim); border-radius: 50%; animation: status-turn 0.8s linear infinite; }
+.holds-still .ring-spinner { animation: none; }
+@media (prefers-reduced-motion: reduce) { .ring-spinner { animation: none; } }
 
 /* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
 .disclosure {
