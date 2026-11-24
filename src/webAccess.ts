@@ -219,7 +219,7 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  function notify(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): void {
   open = req.id;
   const notice = el("div", "web-access-notice"); notice.setAttribute("role", "status");
-  const review = el("button", "", "Review"); review.type = "button";
+  const review = el("button", "button-secondary button-compact", "Review"); review.type = "button";
   notice.append(el("span", "web-access-notice-text", "A browser wants to reach your machines."), review);
   (document.getElementById("sidebar-foot") ?? document.body).prepend(notice);
   let cancel = () => {};
