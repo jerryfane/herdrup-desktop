@@ -77,10 +77,12 @@ export interface PromptFields { title: string; text: string }
  *    is retried or split; an abort before the request was sent; an applied answer; a conflict.
  *    Every open send of the prompt at that base is settled at once by an applied answer whose rev
  *    isn't the base. An applied answer at the base itself (an identical write keeps its rev,
- *    sync.ts:16, :355) settles nothing but its own send. A conflict whose row is one of this
- *    prompt's open contents past their base is that send landing: recorded at once (the row's
- *    content becomes the agreed one, and every send at that base settles), before a later pull
- *    can fold another device's write over the row. Any other conflict settles only its own send.
+ *    sync.ts:16, :355) settles nothing but its own send. A conflict settles only its own send at
+ *    once; its row is kept pending (PendingConflict) until the next pull that completes, which
+ *    takes it in ahead of its own rows unless it restarted (another history): a row that is one
+ *    of this prompt's open contents past their base is that send landing (the row's content
+ *    becomes the agreed one, and every send at that base settles), recorded before the pull's
+ *    rows can fold another device's write over it.
  *  - Pulls never remove an entry: only the merge consumes it, after using it, once nothing of it
  *    is open or the prompt's revision on the account (its row's, its tombstone's, 0 for none) has
  *    moved off its base. A pulled copy whose hash is an open entry's and whose rev is past the
@@ -171,6 +173,16 @@ export interface SyncState {
  promptDeletes?: string[];
  /** Each prompt's fields as this browser last agreed them with the account. */
  promptBaseline?: Record<string, PromptFields>;
+ /** Each prompt's agreement known only by the hash of what was written (fieldsHash): an
+  *  acceptance recovered from its marker (settleAccepted). It stands as the prompt's baseline
+  *  until a later agreement replaces it (a fields baseline, which comes first, or the prompt
+  *  going). */
+ promptBaselineHash?: Record<string, string>;
+ /** Each prompt's body accepted in a history since replaced (a restore), by its hash: it was this
+  *  browser's last agreed version there, so a saved copy equal to it is no edit (the restored row
+  *  wins, #359 round-12 review finding 1), though it agrees no revision in this history. Used by
+  *  the next merge, and consumed by it. */
+ promptPriorHash?: Record<string, string>;
  /** Each prompt's unsettled sends, oldest first (PromptAttempt). */
  promptAttempts?: Record<string, PromptAttempt[]>;
  /** Each prompt's newest send (LastSend), kept until the merge has used it. */
@@ -178,14 +190,16 @@ export interface SyncState {
  /** Prompts the readback after this browser's push showed deleted elsewhere: the mirror is past
   *  their tombstones, so the next sync takes them as known (consumed by its first state write). */
  promptsGone?: string[];
+ /** Each prompt's push conflict a pull has yet to confirm (PendingConflict, takeConflicts). */
+ promptConflicts?: Record<string, PendingConflict>;
  /** The write a round starts from when the last one stopped short (out of pushes): every write
   *  gets its turn, however many before it don't fit the account's quota. */
  promptsTurn?: string;
  /** The newest sync of accountId that finished well: when, and what the account held then. */
  lastSync?: AccountSyncStatus;
- /** The account history's generation as this browser saw it: bumped by every pull that came back
-  *  full after a reset (a 410, or a readback that started over). An answer read in another
-  *  history settles only its own sends: what its rows showed belongs to the history replaced. */
+ /** The account history's generation as this browser saw it: bumped by every pull that
+  *  restarted after a 410 (Pull.restarted). An answer read in another history settles only its
+  *  own sends: what its rows showed belongs to the history replaced. */
  history?: number;
 }
 
@@ -253,28 +267,34 @@ const readSyncState = (storage: KeyValue): SyncState | null => readPrompts(stora
 
 /** Each send's marker (PromptAttempt), a key of its own, `herdrup.sync.send.<prompt>.<send id>`:
  *  "o" while it may be open, "r" once it was definitely not written (a 4xx, a conflict, or never
- *  sent), "a:<rev>:<hash>" once the service answered it applied at rev (hash: fieldsHash of what it
- *  wrote). The "o" is written before the send is journaled or dispatched (a send whose marker
- *  storage refuses isn't sent), so its refusal later only overwrites a value with one of the same
- *  length, in place, with no lock: that can't take storage over its quota (browsers count a key's
- *  and its value's length: replacing a value with one as long adds nothing; WHATWG HTML Web
+ *  sent), "a:<rev>:<hash>:<history>" once the service answered it applied at rev (hash: fieldsHash
+ *  of what it wrote; history: SyncState.history when it was sent). Every value is MARKER_WIDTH
+ *  long: "o" and "r" are padded to it, and an acceptance's numbers are zero-padded to their widest.
+ *  The "o" is written before the send is journaled or dispatched (a send whose marker storage
+ *  refuses isn't sent), so whatever its answer, it later only overwrites a value with one of the
+ *  same length, in place, with no lock: that can't take storage over its quota (browsers count a
+ *  key's and its value's length: replacing a value with one as long adds nothing; WHATWG HTML Web
  *  Storage setItem throws QuotaExceededError only "if the new value couldn't be set"), and a throw
- *  is still handled (the record, owed). An acceptance is longer: at a full store it can fail, and
- *  then lives only in this page's memory (owed) until its settlement is written; a reload in that
- *  window loses it, and the send stays open until it expires or a pull shows it landed. No other
- *  tab writes the key, so none is lost, and every tab sees the answer before the record has it: a
- *  send marked "r" never landed. Whatever holds the storage lock next folds "r"s and "a"s into the
- *  record (foldMarkers), and removes them and every marker of a send the record no longer holds
- *  open (settled, or retired); the "o" of a send still open stays however old, as its refusal's
- *  reserved place. */
+ *  is still handled (the record, owed). No other tab writes the key, so none is lost, and every
+ *  tab sees the answer before the record has it: a send marked "r" never landed. Whatever holds
+ *  the storage lock next folds "r"s and "a"s into the record (foldMarkers), and removes them and
+ *  every marker of a send the record no longer holds open (settled, or retired); the "o" of a send
+ *  still open stays however old, as its answer's reserved place. */
 const SEND_PREFIX = "herdrup.sync.send.";
 const sendMarker = (prompt: string, send: string) => `${SEND_PREFIX}${prompt}.${send}`;
+/** Digits of a revision or history in an acceptance's marker: Number.MAX_SAFE_INTEGER's. */
+const MARK_DIGITS = 16;
+const markNumber = (n: number) => String(n).padStart(MARK_DIGITS, "0");
 /** An acceptance's marker value (sendMarkers): the revision written, the hash of what it wrote,
  *  and the account history it was written in (SyncState.history). */
-const acceptedMarker = (rev: number, hash: string, history: number) => `a:${rev}:${hash}:${history}`;
+const acceptedMarker = (rev: number, hash: string, history: number) => `a:${markNumber(rev)}:${hash}:${markNumber(history)}`;
+/** Every marker value's length (sendMarker): an acceptance's, its hash a SHA-256 in hex. */
+const MARKER_WIDTH = acceptedMarker(0, "0".repeat(64), 0).length;
+const MARK_OPEN = "o".padEnd(MARKER_WIDTH, "-"), MARK_REFUSED = "r".padEnd(MARKER_WIDTH, "-");
 type Accepted = { rev: number; hash: string; history: number };
 type SendMark = { prompt: string; send: string; refused: boolean; accepted?: Accepted };
-/** The markers in storage: prompt, send id, and whether it was refused or accepted. */
+/** The markers in storage: prompt, send id, and whether it was refused or accepted (by its first
+ *  letter; a marker from before isn't padded). */
 function sendMarkers(storage: KeyValue): SendMark[] {
  const out: SendMark[] = [];
  for (let i = 0; i < storage.length; i++) {
@@ -283,7 +303,7 @@ function sendMarkers(storage: KeyValue): SendMark[] {
   const rest = key.slice(SEND_PREFIX.length), dot = rest.lastIndexOf("."), value = storage.getItem(key) ?? "";
   if (dot <= 0) continue;
   const [kind, rev, hash, history] = value.split(":");
-  out.push({ prompt: rest.slice(0, dot), send: rest.slice(dot + 1), refused: value === "r", ...(kind === "a" && hash ? { accepted: { rev: Number(rev), hash, history: Number(history ?? 0) } } : {}) });
+  out.push({ prompt: rest.slice(0, dot), send: rest.slice(dot + 1), refused: value[0] === "r", ...(kind === "a" && hash ? { accepted: { rev: Number(rev), hash, history: Number(history ?? 0) } } : {}) });
  }
  return out;
 }
@@ -301,39 +321,82 @@ function settleRefused(state: SyncState, refused: ReadonlyMap<string, string>): 
  }
  return changed;
 }
-/** An acceptance a marker kept (an owed acknowledgement), applied with the acknowledgement's guards:
- *  only while its send is still open and the mirror doesn't hold the prompt past its revision. The
- *  send settles as applied (and every send at its base with it); what the account then holds is
- *  what it wrote, known by its hash alone: the merge judges the saved copy against that (LastSend),
- *  not against an older baseline. Written in another history (a restore since), it retires only its
- *  own send: what it wrote is no part of the account now. Returns whether state changed. */
-function settleAccepted(state: SyncState, mark: SendMark & { accepted: Accepted }): boolean {
- const attempts = state.promptAttempts ?? {}, list = Object.hasOwn(attempts, mark.prompt) ? attempts[mark.prompt]! : [];
- const entry = list.find(a => a.open.includes(mark.send));
- if (entry === undefined) return false;
- if (mark.accepted.history !== (state.history ?? 0)) return settleRefused(state, new Map([[mark.send, mark.prompt]]));
- if ((state.mirror.prompts.find(r => r.id === mark.prompt)?.rev ?? -1) > mark.accepted.rev) return false;
- const left = settleSends(list, mark.send, entry.base, { applied: mark.accepted.rev });
- if (left.length > 0) attempts[mark.prompt] = left; else delete attempts[mark.prompt];
- (state.promptsLastSent ??= {})[mark.prompt] = { hash: mark.accepted.hash };
- if (state.promptBaseline) delete state.promptBaseline[mark.prompt];
+/** One write the service took: its prompt and send, the revision it wrote (rev), the hash of what
+ *  it wrote (fieldsHash), the history it was sent in, and what it wrote when known (an answer read
+ *  here; a marker keeps only the hash). */
+interface Acceptance { prompt: string; send: string; rev: number; hash: string; history: number; fields?: PromptFields }
+/** The one settlement of an acceptance, whether its answer is read here (live) or found in its
+ *  marker (recovered), in either order:
+ *   - sent in another history (a restore since), it retires only its own send: what it wrote is no
+ *     part of the account now, and it agrees nothing there; what it wrote was the last version
+ *     agreed, though, which a saved copy can't be an edit of (promptPriorHash);
+ *   - while its send is open, the send settles as applied (and every send at its base with it);
+ *     unless the mirror holds the prompt past rev (a later agreement), what it wrote is agreed: its
+ *     fields (promptBaseline) when known, else its hash alone (promptBaselineHash), which the merge
+ *     judges the saved copy against until a later agreement replaces it;
+ *   - once settled, it agrees nothing more, but the live answer of an acceptance recovered first
+ *     turns its hash into the fields it agreed.
+ *  Returns whether state changed. */
+function settleAccepted(state: SyncState, a: Acceptance): boolean {
+ if (a.history !== (state.history ?? 0)) {
+  const prior = state.promptPriorHash ??= {}, retired = settleRefused(state, new Map([[a.send, a.prompt]]));
+  if (prior[a.prompt] === a.hash) return retired;
+  prior[a.prompt] = a.hash;
+  return true;
+ }
+ const attempts = state.promptAttempts ?? {}, list = Object.hasOwn(attempts, a.prompt) ? attempts[a.prompt]! : [];
+ const entry = list.find(e => e.open.includes(a.send)), hashes = state.promptBaselineHash;
+ if (entry === undefined) {
+  if (a.fields === undefined || hashes?.[a.prompt] !== a.hash) return false;
+  (state.promptBaseline ??= {})[a.prompt] = a.fields;
+  delete hashes[a.prompt];
+  return true;
+ }
+ const left = settleSends(list, a.send, entry.base, { applied: a.rev });
+ if (left.length > 0) attempts[a.prompt] = left; else delete attempts[a.prompt];
+ if ((state.mirror.prompts.find(r => r.id === a.prompt)?.rev ?? -1) > a.rev) return true;
+ if (a.fields !== undefined) {
+  (state.promptBaseline ??= {})[a.prompt] = a.fields;
+  if (hashes) delete hashes[a.prompt];
+ } else {
+  (state.promptBaselineHash ??= {})[a.prompt] = a.hash;
+  if (state.promptBaseline) delete state.promptBaseline[a.prompt];
+ }
  return true;
 }
-/** The markers folded into state (in memory): refusals first, then between's change (an owed
- *  settlement, which applies an acknowledgement with what it wrote, when it can), then acceptances
- *  still unsettled; changed says whether state changed. Once the record is written with written as
- *  its state, clear removes the markers folded and those of sends written no longer holds open. */
-function foldMarkers(storage: KeyValue, state: SyncState, between: (state: SyncState) => boolean = () => false): { changed: boolean; clear: (written: SyncState) => void } {
+/** The markers folded into state (in memory): refusals, then acceptances (settleAccepted);
+ *  changed says whether state changed. Once the record is written with written as its state,
+ *  clear removes the markers folded and those of sends written no longer holds open. */
+function foldMarkers(storage: KeyValue, state: SyncState): { changed: boolean; clear: (written: SyncState) => void } {
  const markers = sendMarkers(storage);
  let changed = settleRefused(state, new Map(markers.filter(m => m.refused).map(m => [m.send, m.prompt])));
- if (between(state)) changed = true;
- for (const m of markers) if (m.accepted && settleAccepted(state, { ...m, accepted: m.accepted })) changed = true;
+ for (const m of markers) if (m.accepted && settleAccepted(state, { prompt: m.prompt, send: m.send, ...m.accepted })) changed = true;
  return {
   changed,
   clear: written => {
    for (const m of markers) if (m.refused || m.accepted || !(written.promptAttempts?.[m.prompt] ?? []).some(a => a.open.includes(m.send))) storage.removeItem(sendMarker(m.prompt, m.send));
   },
  };
+}
+
+/** A push's conflict, kept per prompt until a later pull establishes the history it came from
+ *  (SyncState.promptConflicts): the history it was answered in, the account's row for the prompt
+ *  then (null: none), and the conflicting send (no evidence: refused). */
+export interface PendingConflict { history: number; row: SyncItem | null; send?: string }
+/** Takes state's pending conflicts out for a pull that just completed: dropped when the pull
+ *  restarted (a 410: another history) or they came from another history; otherwise each row is
+ *  matched against the open sends (landItems) ahead of the pull's own rows, and they are returned
+ *  (by prompt), to be taken into the mirror ahead of the pull's fold (adoptRows). */
+function takeConflicts(state: SyncState, restarted: boolean): Map<string, SyncItem | null> {
+ const pending = state.promptConflicts ?? {}, out = new Map<string, SyncItem | null>();
+ delete state.promptConflicts;
+ if (restarted) return out;
+ for (const [id, c] of Object.entries(pending)) {
+  if (c.history !== (state.history ?? 0)) continue;
+  out.set(id, c.row);
+  if (c.row !== null) landItems(state, [c.row], new Map(c.send === undefined ? [] : [[id, c.send]]));
+ }
+ return out;
 }
 
 /** A body's field as Go's decoder takes it into a struct: absent or null is undefined; the wrong
@@ -369,11 +432,13 @@ function hostRow(it: SyncItem): RemoteHost | null | undefined {
  return { id: it.id, rev: it.rev };
 }
 
-/** Reading the service's changes (account.Pull): Full means items are the whole account. nowMs is
- *  the service's clock when the pull began (its earliest page's now_ms), null when a page had none
+/** Reading the service's changes (account.Pull): full means items are the whole account (a pull
+ *  since 0); restarted that it is so because the service answered 410 (a reset: the account's
+ *  history started over, SyncState.history), not because it was asked from 0. nowMs is the
+ *  service's clock when the pull began (its earliest page's now_ms), null when a page had none
  *  (a service without now_ms: themartianapp/herdrup#826); newestMs the latest now_ms of its pages
  *  (null: none had one), which the next push's not_after counts from. */
-export interface Pull { rev: number; items: SyncItem[]; full: boolean; nowMs: number | null; newestMs: number | null }
+export interface Pull { rev: number; items: SyncItem[]; full: boolean; restarted: boolean; nowMs: number | null; newestMs: number | null }
 
 /** Patches one collection with a pull's items (ordered: oldest revision first), each replacing
  *  what is held (all of them when full): a pull's pages are read one at a time, so an item can
@@ -434,7 +499,7 @@ const MAX_PULL_PAGES = 64; // 64 × 500 items, past the 2,000-item account cap
  *  (WebAccount.syncPage). Its items keep the order they came in: landItems matches them that way,
  *  once the pull completed (a reset's restart brings only the full pull's). */
 async function pull(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number): Promise<Pull> {
- const out: Pull = { rev: 0, items: [], full: since === 0, nowMs: null, newestMs: null };
+ const out: Pull = { rev: 0, items: [], full: since === 0, restarted: false, nowMs: null, newestMs: null };
  let query = `since=${since}`, told = true;
  for (let page = 0; page < MAX_PULL_PAGES; page++) {
   let answer;
@@ -455,11 +520,11 @@ async function pull(account: WebAccount, acct: string, since: number, signal?: A
  throw new Error(`account service: more than ${MAX_PULL_PAGES} sync pages`);
 }
 
-/** Every change after since, following the cursor (PullSince). A 410 restarts from 0, and the
- *  result is full: what the pages before it held is dropped with them. */
+/** Every change after since, following the cursor (PullSince). A 410 restarts from 0: the result
+ *  is full and restarted, and what the pages before it held is dropped with them. */
 export async function pullSince(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number): Promise<Pull> {
  try { return await pull(account, acct, since, signal, generation); }
- catch (error) { if (error instanceof ResetRequired && since !== 0) return await pull(account, acct, 0, signal, generation); throw error; }
+ catch (error) { if (error instanceof ResetRequired && since !== 0) return { ...await pull(account, acct, 0, signal, generation), restarted: true }; throw error; }
 }
 
 // ---- The service's limits (AccountService sync.ts; account/prompts.go, account/sync.go) ----
@@ -523,6 +588,8 @@ function cmpOrder(a: number | undefined, b: number | undefined): number {
 
 export interface PromptMerge {
  next: SavedPrompt[]; changes: SyncChange[]; left: string[]; baseline: Record<string, PromptFields>;
+ /** The agreements known by hash alone left (SyncState.promptBaselineHash). */
+ baselineHash: Record<string, string>;
  /** The sent-write record left once the merge has used it (PromptAttempt, LastSend). */
  attempts: Record<string, PromptAttempt[]>; lastSent: Record<string, LastSend>;
  /** Saved prompts the service would refuse (no text, too long), kept here unsent. */
@@ -530,10 +597,12 @@ export interface PromptMerge {
 }
 
 /** The sent-write record the merge reads (SyncState): open sends, each prompt's newest send, the
- *  account's tombstone revisions (Mirror.gone), and the service's clock when the pull began (Pull
- *  nowMs, null when unknown). */
+ *  agreements known by hash alone (SyncState.promptBaselineHash), the bodies accepted in a history
+ *  since replaced (SyncState.promptPriorHash), the account's tombstone revisions (Mirror.gone), and
+ *  the service's clock when the pull began (Pull nowMs, null when unknown). */
 export interface MergeRecord {
  attempts?: Readonly<Record<string, PromptAttempt[]>>; lastSent?: Readonly<Record<string, LastSend>>;
+ baselineHash?: Readonly<Record<string, string>>; priorHash?: Readonly<Record<string, string>>;
  gone?: Readonly<Record<string, number>>; pulledNow?: number | null;
 }
 
@@ -553,14 +622,16 @@ export interface MergeRecord {
  *  caps: the service's quota answer decides which fit (the push loop). A body keeps its order
  *  unless the order alone makes it too large. record is this browser's sent-write record
  *  (MergeRecord): a pulled copy whose hash is an open send's that it moved forward is that write
- *  landing, and is what both agree on, ahead of baseline and old; otherwise the newest send's hash
- *  tells whether a prompt with no baseline was edited here since. A prompt deleted here with a
- *  send that may still land stays a pending delete although the account doesn't hold it. It
- *  returns the record left: sends with nothing open, or whose prompt's revision moved off their
- *  base, are consumed, and a newest send once its prompt has none left. */
+ *  landing, and is what both agree on, ahead of baseline and old; then an agreement known by hash
+ *  alone; otherwise the newest send's hash tells whether a prompt with no baseline was edited
+ *  here since. A prompt deleted here with a send that may still land stays a pending delete
+ *  although the account doesn't hold it. It returns the record left: sends with nothing open, or
+ *  whose prompt's revision moved off their base, are consumed, and a newest send once its prompt
+ *  has none left; an agreement known by hash alone stays while its prompt is written again (until
+ *  an agreement by fields replaces it). */
 export function mergePrompts(local: SavedPrompt[], old: RemotePrompt[], mirror: RemotePrompt[], known: ReadonlySet<string>,
  deletes: readonly string[], baseline: Readonly<Record<string, PromptFields>>, record: MergeRecord = {}): PromptMerge {
- const { attempts = {}, lastSent = {}, gone = {}, pulledNow = null } = record;
+ const { attempts = {}, lastSent = {}, baselineHash = {}, priorHash = {}, gone = {}, pulledNow = null } = record;
  // The account's prompts by id, read only: the rows still to add here are the ones no saved
  // prompt kept (inUse).
  const held = new Map<string, RemotePrompt>();
@@ -591,18 +662,27 @@ export function mergePrompts(local: SavedPrompt[], old: RemotePrompt[], mirror: 
  };
  /** What this browser and the account last agreed on for id: agreedKnown, else the old mirror. */
  const agreed = (id: string): PromptFields | undefined => agreedKnown(id) ?? oldCopy(id);
- /** Whether the saved copy p was edited here since: compared with what is agreed (agreedKnown),
-  *  then (none agreed) what this browser sent last (a conflict's server row is in old on the next
-  *  pass: the saved copy is compared with what was sent, not with that), then the old mirror.
-  *  After a restore (a reset pull or full readback) the same rule holds, on purpose: a saved copy
+ /** An agreement known by its hash alone (SyncState.promptBaselineHash), when none is known by
+  *  its fields (agreedKnown, which is later). */
+ const agreedHash = (id: string): string | undefined => agreedKnown(id) === undefined && Object.hasOwn(baselineHash, id) ? baselineHash[id] : undefined;
+ /** Whether the saved copy p was edited here since: compared with what is agreed (agreedKnown,
+  *  then agreedHash), then (none agreed) what this browser sent last (a conflict's server row is
+  *  in old on the next pass: the saved copy is compared with what was sent, not with that), then
+  *  the old mirror.
+  *  After a restore (a pull that restarted after a 410) the same rule holds, on purpose: a saved copy
   *  equal to the last agreed version takes the restored row, and only edits made since that
   *  agreement survive. An accepted upload is the last agreed version, whether accepted long ago or
-  *  in this very round (an acknowledgement applied before a full readback keeps its baseline), so
+  *  in this very round (an acknowledgement applied before a readback that restarted keeps its baseline), so
   *  a restore that rolls it back wins; treating it as an edit here would push again what the
-  *  restore removed (#359 round-12 review finding 1, job local-review-review-router-18eade224b01da40-1). */
+  *  restore removed (#359 round-12 review finding 1, job local-review-review-router-18eade224b01da40-1).
+  *  So is one accepted in the history a restore replaced whose acceptance comes to light only
+  *  after it (its marker: promptPriorHash): a saved copy equal to it is no edit either. */
  const editedHere = (p: SavedPrompt): boolean => {
   const fields = fieldsOf(p), agreedHere = agreedKnown(p.id);
+  if (Object.hasOwn(priorHash, p.id) && priorHash[p.id] === fieldsHash(fields)) return false;
   if (agreedHere !== undefined) return !sameFields(fields, agreedHere);
+  const hash = agreedHash(p.id);
+  if (hash !== undefined) return fieldsHash(fields) !== hash;
   const newest = Object.hasOwn(lastSent, p.id) ? lastSent[p.id] : undefined;
   if (newest !== undefined) return fieldsHash(fields) !== newest.hash;
   const was = oldCopy(p.id);
@@ -660,10 +740,13 @@ export function mergePrompts(local: SavedPrompt[], old: RemotePrompt[], mirror: 
   .sort((a, b) => cmpOrder(a.body.order, b.body.order) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
  for (const r of added) next.push({ id: r.id, nickname: r.body.title ?? "", text: r.body.text });
  // What this browser and the account now agree on: each prompt the account holds, as it stands
- // after the merge.
- const nextBaseline: Record<string, PromptFields> = {};
+ // after the merge. One written again keeps what was agreed, by its hash when that is all that is
+ // known (not the older copy in old: the write may not land this time, as when out of pushes).
+ const nextBaseline: Record<string, PromptFields> = {}, nextHash: Record<string, string> = {};
  for (const p of next) {
-  if (writing.has(p.id)) { const f = agreed(p.id); if (f) nextBaseline[p.id] = f; }
+  const hash = writing.has(p.id) ? agreedHash(p.id) : undefined;
+  if (hash !== undefined) nextHash[p.id] = hash;
+  else if (writing.has(p.id)) { const f = agreed(p.id); if (f) nextBaseline[p.id] = f; }
   else if (held.has(p.id)) nextBaseline[p.id] = fieldsOf(p);
  }
  // The record left: sends consumed once nothing of them is open, the prompt's revision moved off
@@ -680,7 +763,7 @@ export function mergePrompts(local: SavedPrompt[], old: RemotePrompt[], mirror: 
  }
  const leftLastSent: Record<string, LastSend> = {};
  for (const [id, send] of Object.entries(lastSent)) if (Object.hasOwn(leftAttempts, id)) leftLastSent[id] = send;
- return { next, changes, left, baseline: nextBaseline, attempts: leftAttempts, lastSent: leftLastSent, unsendable };
+ return { next, changes, left, baseline: nextBaseline, baselineHash: nextHash, attempts: leftAttempts, lastSent: leftLastSent, unsendable };
 }
 
 const samePrompts = (a: SavedPrompt[], b: SavedPrompt[]) =>
@@ -808,8 +891,8 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
  const editStateNow = (acct: string, change: (state: SyncState) => boolean) => {
   const storage = place.storage(), stored = readPrompts(storage), state = stored.sync ?? null;
   if (state === null || state.accountId !== acct) return;
-  const folded = foldMarkers(storage, state, change);
-  if (!folded.changed) return;
+  const folded = foldMarkers(storage, state), changed = change(state);
+  if (!folded.changed && !changed) return;
   writePrompts(storage, { ...stored, sync: state });
   folded.clear(state);
  };
@@ -829,24 +912,6 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
  };
  const owe = (acct: string, edit: (state: SyncState) => boolean, signal: AbortSignal) => { owed.push({ acct, edit }); return payOwed(acct, signal); };
 
- /** Acknowledged writes (batch): what was written is what this browser and the account now agree
-  *  on. An acknowledgement may be written late (owed), after this or another tab has gone on: it
-  *  applies only while its send (sends, by prompt) is still open in state and the mirror doesn't
-  *  hold the prompt past its revision (revs, by prompt), so it never takes a baseline back. */
- const applyAck = (state: SyncState, batch: readonly SyncChange[], sends: ReadonlyMap<string, string>, revs: ReadonlyMap<string, number>): boolean => {
-  const baseline = state.promptBaseline ??= {};
-  let changed = false;
-  for (const c of batch) {
-   if (c.collection !== "prompts" || c.body === undefined) continue;
-   const send = sends.get(c.id), rev = revs.get(c.id) ?? c.base_rev ?? 0;
-   const open = send !== undefined && (state.promptAttempts?.[c.id] ?? []).some(a => a.open.includes(send));
-   const past = (state.mirror.prompts.find(r => r.id === c.id)?.rev ?? -1) > rev;
-   if (!open || past) continue;
-   const f = bodyFields(c.body as PromptBody), was = Object.hasOwn(baseline, c.id) ? baseline[c.id] : undefined;
-   if (was === undefined || !sameFields(was, f)) { baseline[c.id] = f; changed = true; }
-  }
-  return changed;
- };
  /** The answers about some sends (settleSends): each send id of a prompt, and what its POST was
   *  answered. Returns whether state changed. */
  const applyAnswers = (state: SyncState, answers: readonly { prompt: string; send: string; base: number; answer: SendAnswer }[]): boolean => {
@@ -922,31 +987,38 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   const pulled = await abandonedOnChange(pullSince(account, acct, state.promptsPulled ? state.mirror.rev : 0, signal, generation));
   // A pull with a page lacking now_ms forgets the newest one (sawNow).
   sawNow(pulled.nowMs === null ? null : pulled.newestMs);
-  const old = state.mirror;
-  const mirror = applyPull(old, pulled);
+  const synced = state.mirror;
   // The ids the account is known to have held: a prompt with one of these that the account no
   // longer lists was deleted elsewhere. On this browser's first prompt sync none is known: the
   // account's old deletes don't take prompts it never synced.
-  const known = new Set(old.prompts.map(p => p.id));
+  const known = new Set(synced.prompts.map(p => p.id));
   // The readback after the last push may have passed other devices' deletes (promptsGone).
   if (state.promptsPulled) for (const id of [...promptTombstones(pulled.items), ...state.promptsGone ?? []]) known.add(id);
 
   // Read, merged and written in one step under the storage lock (a save or delete in another tab
   // comes wholly before it or after it), with one write of the record (Stored).
-  const { merged, changes, promptsChanged } = await underLock(place.locks, () => {
+  const { merged, changes, promptsChanged, mirror } = await underLock(place.locks, () => {
    if (!still()) throw new SyncAbandoned();
    const stored = readPrompts(storage);
    const latest = switched ? null : stored.sync ?? null;
-   // Refusals written since go in first (a refused send never landed); then the completed pull's
-   // rows, in the order they came, before the fold: one of this browser's sends landing, though a
-   // later row folds another device's write over it, is recorded (landItems). Another account's
-   // state starts over: its markers are only cleaned up.
+   // A pull that restarted after a 410 is another history: that goes in first, so nothing
+   // answered in the history replaced agrees anything in this one (settleAccepted).
+   if (latest !== null && pulled.restarted) latest.history = (latest.history ?? 0) + 1;
+   // Then the markers written since (a refused send never landed; an accepted one did); then the
+   // conflicts a push met that no readback confirmed (takeConflicts); then the completed pull's
+   // rows, in the order they came, before the fold: one of this browser's sends landing, though
+   // a later row folds another device's write over it, is recorded (landItems). Another
+   // account's state starts over: its markers are only cleaned up.
    const folded = foldMarkers(storage, latest ?? { accountId: acct, mirror: { rev: 0, hosts: [], prompts: [] } });
+   const conflicts = latest === null ? new Map<string, SyncItem | null>() : takeConflicts(latest, pulled.restarted);
    if (latest !== null) landItems(latest, pulled.items);
+   // The conflicts' rows are what the account held after the copy last synced: in it, as a
+   // readback would have put them, before the pull's fold.
+   const old = adoptRows(synced, conflicts), mirror = applyPull(old, pulled);
    // A service without now_ms: no send expires (PromptAttempt, Expiry).
    if (pulled.nowMs === null && Object.keys(latest?.promptAttempts ?? {}).length > 0) console.warn("account sync: the service gives no now_ms; unanswered sends can't expire (themartianapp/herdrup#826)");
    const merged = mergePrompts(stored.prompts, old.prompts, mirror.prompts, known, latest?.promptDeletes ?? [], latest?.promptBaseline ?? {},
-    { attempts: latest?.promptAttempts ?? {}, lastSent: latest?.promptsLastSent ?? {}, gone: mirror.gone ?? {}, pulledNow: pulled.nowMs });
+    { attempts: latest?.promptAttempts ?? {}, lastSent: latest?.promptsLastSent ?? {}, baselineHash: latest?.promptBaselineHash ?? {}, priorHash: latest?.promptPriorHash ?? {}, gone: mirror.gone ?? {}, pulledNow: pulled.nowMs });
    const lastSync = latest?.lastSync;
    // Each change names the revision it is based on (base_rev): the prompt's in the mirror, its
    // tombstone's, or 0 for none. The service writes it only while the prompt is still at that
@@ -962,13 +1034,13 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
     accountId: acct, mirror: tombstonesFor(mirror, () => [...merged.next.map(p => p.id), ...merged.left, ...Object.keys(merged.attempts)]),
     promptsPulled: true, promptDeletes: merged.left, promptBaseline: merged.baseline, promptAttempts: merged.attempts,
     promptsLastSent: merged.lastSent,
+    ...(Object.keys(merged.baselineHash).length > 0 ? { promptBaselineHash: merged.baselineHash } : {}),
     ...(lastSync ? { lastSync } : {}),
-    // A pull that came back full once prompts were pulled before is a reset: another history.
-    history: (latest?.history ?? 0) + (latest?.promptsPulled && pulled.full ? 1 : 0),
+    history: latest?.history ?? 0,
    };
    writePrompts(storage, { ...stored, prompts: merged.next, sync: written });
    folded.clear(written);
-   return { merged, changes, promptsChanged };
+   return { merged, changes, promptsChanged, mirror };
   }, signal);
   if (promptsChanged) emit("savedPromptsChanged", merged.next);
   // A prompt the service would refuse stays here, and the round doesn't finish well.
@@ -985,11 +1057,9 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   }
 
   // acked: what the service took; answered: every change it answered for, taken or not;
-  // adopted: each conflict's server row (null: none), which is what the account holds for it;
-  // conflictRows: those rows with the sends of their request, for landItems once the readback
-  // confirms the history they came from.
-  const acked: SyncChange[] = [], answered = new Set<string>(), adopted = new Map<string, SyncItem | null>();
-  const conflictRows: { rows: SyncItem[]; sends: ReadonlyMap<string, string> }[] = [];
+  // conflictIds: the prompts whose write met a conflict (the account holds a newer copy: kept as
+  // pending conflicts, SyncState.promptConflicts, until a pull confirms their history).
+  const acked: SyncChange[] = [], answered = new Set<string>(), conflictIds = new Set<string>();
   let stopped = false;
   // A newer content held back at the variant cap: the newest send went again instead.
   let deferred = false;
@@ -1030,7 +1100,7 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
     dispatched = sent;
     const notAfter = newestNow === null ? 0 : newestNow + NOT_AFTER_MS;
     const ids = new Map(sent.filter(c => !c.deleted).map(c => [c.id, crypto.randomUUID()]));
-    for (const [prompt, id] of ids) storage.setItem(sendMarker(prompt, id), "o");
+    for (const [prompt, id] of ids) storage.setItem(sendMarker(prompt, id), MARK_OPEN);
     journal(state, sent, notAfter, ids, hashes);
     // One write, of the snapshot, when it changed (a delete-only push journals nothing).
     if (ids.size > 0 || folded.changed) { writePrompts(storage, { ...stored, sync: state }); folded.clear(state); }
@@ -1046,7 +1116,7 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
    const refuse = async () => {
     const refusals = refusedAll();
     made = new Map();
-    try { for (const r of refusals) storage.setItem(sendMarker(r.prompt, r.send), "r"); }
+    try { for (const r of refusals) storage.setItem(sendMarker(r.prompt, r.send), MARK_REFUSED); }
     catch { await owe(acct, state => applyAnswers(state, refusals), signal); }
    };
    let answer;
@@ -1060,40 +1130,39 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
    sawNow(answer.now_ms);
    // A conflict was not written: the prompt isn't at the revision the change named any more. It
    // is a definite refusal of that prompt's send, marked at once (as a 4xx's), before any wait:
-   // no tab can take the send for landed meanwhile. The writes taken keep their "o" until their
-   // settlement is written.
-   const lost = answer.conflicts.filter(c => c.collection === "prompts");
+   // no tab can take the send for landed meanwhile. Its row, what the account holds for the
+   // prompt, is kept pending with the history it was answered in: a later pull confirms or drops
+   // it (takeConflicts).
+   const from = history, lost = answer.conflicts.filter(c => c.collection === "prompts");
+   const pending = new Map<string, PendingConflict>();
    for (const c of lost) {
-    adopted.set(c.id, c.server);
     const send = made.get(c.id);
-    if (send !== undefined) try { storage.setItem(sendMarker(c.id, send), "r"); } catch { /* the settlement records it */ }
+    pending.set(c.id, { history: from, row: c.server, ...(send !== undefined ? { send } : {}) });
+    conflictIds.add(c.id);
+    if (send !== undefined) try { storage.setItem(sendMarker(c.id, send), MARK_REFUSED); } catch { /* the settlement records it */ }
    }
-   const taken = sent.filter(c => !adopted.has(c.id)), sends = made;
+   const taken = sent.filter(c => !pending.has(c.id)), sends = made;
    const revs = new Map(answer.applied.filter(a => a.collection === "prompts").map(a => [a.id, a.rev]));
    // Each write taken is marked accepted at once, before any wait (sendMarker): a reload before
-   // its settlement is written still knows it landed. (At a full store the longer value may not
-   // fit: the settlement alone, owed, then holds it.)
-   for (const c of taken) {
+   // its settlement is written still knows it landed. Its marker's place was reserved at its
+   // widest, so a full store takes it too.
+   const accepted = taken.flatMap((c): Acceptance[] => {
     const send = sends.get(c.id);
-    if (send !== undefined && !c.deleted) try { storage.setItem(sendMarker(c.id, send), acceptedMarker(revs.get(c.id) ?? c.base_rev ?? 0, fieldsHash(bodyFields(c.body as PromptBody)), history)); } catch { /* owed */ }
-   }
-   const answers = [...sends].map(([prompt, id]) => {
-    const base = sent.find(c => c.id === prompt)?.base_rev ?? 0;
-    return { prompt, send: id, base, answer: adopted.has(prompt) ? "conflict" as const : { applied: revs.get(prompt) ?? base } };
+    if (send === undefined || c.deleted) return [];
+    const fields = bodyFields(c.body as PromptBody);
+    return [{ prompt: c.id, send, rev: revs.get(c.id) ?? c.base_rev ?? 0, hash: fieldsHash(fields), history: from, fields }];
    });
-   const from = history;
-   // What the conflict rows show (landItems) waits for the readback: it holds only if the account
-   // is still that history then (conflictRows).
-   const rows = lost.flatMap(c => c.server ? [c.server] : []);
-   if (rows.length > 0) conflictRows.push({ rows, sends });
-   // The answer's acknowledgements and what each send was answered are one settlement, queued
-   // before any wait and written whole (owe). Written in another history (a reset since:
-   // SyncState.history), it settles only its own sends, definitely: no baseline, no settling of
-   // other sends at a base.
+   for (const a of accepted) try { storage.setItem(sendMarker(a.prompt, a.send), acceptedMarker(a.rev, a.hash, a.history)); } catch { /* owed */ }
+   const refusals = [...pending].flatMap(([prompt, c]) => c.send === undefined ? [] : [{ prompt, send: c.send, base: 0, answer: "conflict" as const }]);
+   // The answer is one settlement, queued before any wait and written whole (owe): each conflict
+   // settles its own send (applyAnswers) and is kept pending, unless the account's history moved
+   // on meanwhile (SyncState.history: what it showed is no part of this one); each write taken
+   // settles as its marker would have (settleAccepted, which knows what it wrote).
    await owe(acct, state => {
-    if ((state.history ?? 0) !== from) return applyAnswers(state, answers.map(a => ({ ...a, answer: "refused" as const })));
-    const ack = applyAck(state, taken, sends, revs), settled = applyAnswers(state, answers);
-    return ack || settled;
+    let changed = applyAnswers(state, refusals);
+    for (const a of accepted) if (settleAccepted(state, a)) changed = true;
+    if (pending.size > 0 && (state.history ?? 0) === from) { state.promptConflicts = { ...state.promptConflicts, ...Object.fromEntries(pending) }; changed = true; }
+    return changed;
    }, signal);
    acked.push(...taken);
   };
@@ -1125,7 +1194,7 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   }
   // Read our own writes back, and what came after the conflicts' rows, so the mirror holds what
   // the account holds.
-  const conflicted = adopted.size > 0;
+  const conflicted = conflictIds.size > 0;
   const readBack = acked.length > 0 || conflicted ? await abandonedOnChange(pullSince(account, acct, mirror.rev, signal, generation)) : null;
   if (readBack !== null) sawNow(readBack.nowMs === null ? null : readBack.newestMs);
   // A delete the service took whose prompt a restore brought back (set by the step below).
@@ -1134,25 +1203,29 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   await underLock(place.locks, () => {
    if (!still()) throw new SyncAbandoned();
    const stored = readPrompts(storage), after = stored.sync!;
+   // A readback that restarted after a 410 is another history, which goes in first (as the
+   // merge's).
+   const restarted = readBack?.restarted === true;
+   if (restarted) after.history = (after.history ?? 0) + 1;
    const folded = foldMarkers(storage, after);
    if (readBack !== null) {
     const pushed = new Set(acked.filter(c => c.deleted).map(c => c.id));
     const pending = (after.promptDeletes ?? []).length;
     const held = after.mirror.prompts;
-    // The conflicts' rows first, in the order they came, then the readback's, before its fold
-    // (landItems). The conflicts' only while the account is still their history: a readback that
-    // came back full is another, and what they showed goes with the history it replaced.
-    if (!readBack.full) for (const c of conflictRows) landItems(after, c.rows, c.sends);
+    // The pending conflicts' rows first (this pass's, and any a readback before missed), then
+    // the readback's, in the order they came, before its fold (landItems). The conflicts' only
+    // while the account is still their history: after a restart, what they showed goes with the
+    // history it replaced (takeConflicts).
+    const adopted = takeConflicts(after, restarted);
     landItems(after, readBack.items);
     // A conflict's server row is what the account holds for that id: taken in before what came
     // after it (a pruned tombstone is no row at all, and no pull would show it went).
     after.mirror = applyPull(adoptRows(after.mirror, adopted), readBack);
     // The account's history started over (a restore) during the readback: present is what the
-    // restored account holds, and it is another history (SyncState.history). The baselines this
-    // round's acknowledgements wrote stay: the next merge gives the restored rows the prompts
-    // still equal to them (editedHere: intended, #359 round-12 review finding 1).
-    const present = readBack.full ? new Set(after.mirror.prompts.map(r => r.id)) : null;
-    if (readBack.full) after.history = (after.history ?? 0) + 1;
+    // restored account holds. The baselines this round's acknowledgements wrote stay: the next
+    // merge gives the restored rows the prompts still equal to them (editedHere: intended, #359
+    // round-12 review finding 1).
+    const present = restarted ? new Set(after.mirror.prompts.map(r => r.id)) : null;
     // A delete the service took stays pending when the restored history still holds the prompt:
     // the next round deletes it there again, and this one isn't complete.
     after.promptDeletes = (after.promptDeletes ?? []).filter(id => !pushed.has(id) || present?.has(id) === true);
@@ -1176,10 +1249,13 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
     if (brought || settled) after.mirror = tombstonesFor(after.mirror, () => [...stored.prompts.map(p => p.id), ...after.promptDeletes ?? [], ...Object.keys(after.promptAttempts ?? {})]);
    }
    // Stopped short: the next round starts with the first write not answered that can go (one held
-   // back at the variant cap, which may stay held while no upload of it settles, never pins it).
-   const saved = new Map(stored.prompts.map(p => [p.id, fieldsOf(p)]));
-   const turn = stopped ? changes.find(c => !c.deleted && !answered.has(c.id) && !sendable(c, saved, after).deferred)?.id : undefined;
-   if (turn !== undefined) after.promptsTurn = turn;
+   // back at the variant cap, which may stay held while no upload of it settles, never pins it);
+   // with none, where the merge puts it.
+   if (stopped) {
+    const saved = new Map(stored.prompts.map(p => [p.id, fieldsOf(p)]));
+    const turn = changes.find(c => !c.deleted && !answered.has(c.id) && !sendable(c, saved, after).deferred)?.id;
+    if (turn !== undefined) after.promptsTurn = turn;
+   }
    // A round that left a write unsent, held one back at the variant cap, kept a delete waiting (or
    // found one back after a restore), or one the account refused for a newer copy did not finish
    // well: SYNCED keeps the last one that did.
