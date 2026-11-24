@@ -22,6 +22,25 @@ export class GuestError extends Error {
  }
 }
 
+/** A call that failed before any frame of its request was handed to the socket, so herdr cannot have
+ *  it and a mutating request may be made again. GuestTransport.call throws it for EVERY such failure:
+ *  a refused or failed connect (relay admission 429, relay or host unreachable, a refused hello), a
+ *  session that ended before the send, an abort or cancellation of the call before the send, the
+ *  transport closed before the send. Once a frame was handed to the socket no failure is a
+ *  NotSentError, whatever followed (a lost reply, a timeout, an abort, a closed connection): the
+ *  request may have reached herdr. error is the failure itself; a GuestError's kind and message are
+ *  kept, any other failure's message with kind "other". */
+export class NotSentError extends GuestError {
+ constructor(readonly error: unknown) {
+  super(error instanceof GuestError ? error.kind : "other", error instanceof Error ? error.message : String(error));
+ }
+}
+
+/** error marked as not sent (NotSentError), unless it already is. */
+export function notSent(error: unknown): NotSentError {
+ return error instanceof NotSentError ? error : new NotSentError(error);
+}
+
 export const notInvite = () => new GuestError("not_invite", "That isn't a herdr guest invitation. Open the invitation link sent by the owner.");
 export const expired = () => new GuestError("expired", "This invitation has expired. Ask the owner for a new invitation.");
 export const inviteRevoked = () => new GuestError("invite_revoked", "This invite has expired or was revoked.");

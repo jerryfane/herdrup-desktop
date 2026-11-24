@@ -16,6 +16,8 @@ import { currentOwnerLink } from "../src/web/ownerLink";
 import { closingLink } from "../src/web/ownerSession";
 import type { Avatar, BoardUpdate, ConnState } from "../src/mygo";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
+import { ComposerDrafts, type DraftStore } from "../src/composerDraft";
+import { ErrUnsupported } from "../src/web/engine";
 
 const statements: StatementSource = { get: async () => ({ jws: "jws", expMs: Date.now() + 600_000 }), drop() {} };
 const agents = [{ pane_id: "p1", terminal_id: "t1", name: "herdr-app", agent: "claude" }, { pane_id: "p2", terminal_id: "t2", name: "web-owner", agent: "codex" }, { pane_id: "p3", terminal_id: "t3", name: "relay", agent: "claude" }];
@@ -629,3 +631,23 @@ test("an ask whose socket the relay closed is asked again on the next render, th
   desk.disconnectOwner(); relay.stop();
  }
 }, 20_000);
+
+// The reviewer's case: an authenticated host that has no agent.prompt (unknown_method).
+test("an agent prompt the host has no method for definitely failed: the send's text comes back, not consumed", async () => {
+ const relay = host({ other: (session, req) => answer(session, req, req.method === "ping"
+  ? { result: { type: "pong", version: "0.9.8", protocol: 7, capabilities: {} } }
+  : { error: { code: "unknown_method", message: `unknown method ${req.method}` } }) });
+ const desk = await deskWithKey();
+ const kept = new Map<string, string>();
+ const store: DraftStore = { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => { kept.set(k, v); }, removeItem: (k) => { kept.delete(k); } };
+ const draft = new ComposerDrafts(() => store, () => store, "move", () => null).pane("p1");
+ try {
+  await openP1(desk, relay);
+  draft.attach({ showField() {}, unsentChanged() {}, olderChanged() {} });
+  draft.saveDraft("make deploy");
+  const send = draft.reserve("make deploy");
+  const sent = send.dispatch(() => desk.chatPrompt("view-1", "make deploy"));
+  expect(await sent.catch((e: unknown) => e)).toBeInstanceOf(ErrUnsupported);
+  expect(draft.draft()).toBe("make deploy");
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});

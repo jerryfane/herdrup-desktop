@@ -18,6 +18,7 @@ import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
 import { canAnswer, chooser, guestQuestion, promptByline, refusesResize, typesInTerminal, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
 import { connectionOfView, guestPausedPage, guestSendFailure, isGuestPaused, type GuestPausedPage } from "./guestPaused";
@@ -165,10 +166,15 @@ events.stateChanged.on(state => {
  const view = current?.view, access = state.guest?.access;
   // A guest's share or a web owner's machine (connectionOfView): the page's own connection only.
   if (!current || !view?.guest || !connectionOfView(current.target.machineID, access)) return;
+  // A web owner's plain terminal opens under a terminal-scope grant only (desk.ts openTerminalView):
+  // a renewal to another scope closes it, and its row offers Forget (terminals.ts).
+  const scope = state.guest?.ownerScope;
+  if (current.plainTerminal && scope !== undefined && scope !== "terminal") { closeInteraction(); document.getElementById("select")!.hidden = false; return; }
   // A web owner's scope, as the newest session was admitted under (a renewal can change it).
   current.applyOwnerScope(state.guest?.ownerScope);
   current.applyTerminalTyping(typesInTerminal(view, state.guest));
-  view.guestGram = !!state.guest?.features.gram;
+  // A web owner's plain terminal is no agent: no Gram with it (desk.ts openTerminalView).
+  view.guestGram = !current.plainTerminal && !!state.guest?.features.gram;
   current.attach.hidden = !view.guestGram;
   if (current.guestGramButton) current.guestGramButton.hidden = !view.guestGram;
   if (current.guestModes) current.guestModes.hidden = !current.guestChat && !view.guestGram;
@@ -296,7 +302,7 @@ class Detail {
  more: HTMLButtonElement | null = null;
  status = el("div", "interaction-status");
  body = el("div", "interaction-body");
- column = new ConversationColumn(this.body, () => this.input.dispatchEvent(new Event("input")));
+ column = new ConversationColumn(this.body, () => this.relayout());
  terminalSurface = el("div", "terminal-surface");
  keyRow = el("div", "terminal-key-row");
  // A guest's question line above the composer (GuestPaneView.noteRow, GuestPaneView.swift:557-581).
@@ -450,31 +456,96 @@ class Detail {
   this.send.disabled = paused || this.sending || busy; this.prompts.button.disabled = paused || this.sending || busy;
   // Dictation's render sets the field's disabled state from its own busy flag alone.
   if (paused) this.input.disabled = true;
-  this.input.dispatchEvent(new Event("input"));
+  this.relayout();
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
- draftKey: string;
- // A text-only prompt cleared from the composer but not yet given to herdr. The composer stays
- // editable meanwhile (as Swift's replyBar), so the stored draft holds this prompt ahead of
- // whatever is typed next until dispatch: closing first loses neither.
- unsentPrompt = "";
+ /** The pane's draft and unsent text (composerDraft.ts); the composer stays editable while a write
+  *  is out (as Swift's replyBar), and the write's outcome settles there. */
+ draft: PaneDraft;
+ /** The send whose click is queued behind earlier terminal input, not yet dispatched: closing
+  *  the composer cancels it, its text coming back (sendPrompt, rule 2). */
+ queuedSend: DraftSend | null = null;
+ readonly draftView: ComposerView = {
+  showField: (text) => { this.input.value = text; this.relayout(); },
+  unsentChanged: () => this.drawUnsent(),
+  olderChanged: () => this.drawOlder(),
+ };
+ /** The composer's layout (openChat's), for a field or line that changed without typing. */
+ relayout: () => void = () => {};
+ // Under the composer, muted lines: the unsent text and Restore (composerDraft.ts restore); in
+ // the browser, an older page's draft, read-only, with Copy and Dismiss (never sent).
+ composerLines = el("div", "composer-lines");
+ unsentRow = el("div", "composer-unsent");
+ unsentText = el("span", "composer-unsent-text");
+ unsentRestore = el("button", "composer-line-action", "Restore");
+ olderRow = el("div", "composer-older");
+ olderText = el("span", "composer-older-text");
+ olderCopy = el("button", "composer-line-action", "Copy");
+ olderDismiss = el("button", "composer-line-action", "Dismiss");
  constructor(readonly target: AgentTarget, initialDraft?: string, readonly plainTerminal = false) {
-  this.draftKey = "herdrup.prompt." + JSON.stringify(target);
+  this.draft = composerDrafts.pane(JSON.stringify(target));
   this.input.rows = 1; this.input.placeholder = plainTerminal ? "Write text without running it" : "Type a reply…"; this.input.autocapitalize = "off"; this.input.spellcheck = false;
-  try { this.input.value = localStorage.getItem(this.draftKey) ?? ""; } catch { /* storage unavailable; keep in memory */ }
+  this.unsentRestore.type = "button";
+  this.unsentRestore.onclick = () => this.stored(this.draft.restore());
+  this.unsentRow.append(this.unsentText, this.unsentRestore);
+  this.olderCopy.type = "button"; this.olderDismiss.type = "button";
+  this.olderRow.append(this.olderText, this.olderCopy, this.olderDismiss);
+  this.composerLines.append(this.unsentRow, this.olderRow);
+  // Opening reads the pane's texts as stored now (another tab may have changed them).
+  this.draft.attach(this.draftView);
+  this.input.value = this.draft.draft();
+  this.drawUnsent();
+  this.drawOlder();
   this.input.addEventListener("beforeinput", event => {
    if (!this.ctrlArmed || !event.data || event.isComposing) return;
    const code = this.controlByte(event.data);
    if (code === null) return;
    event.preventDefault(); this.setCtrl(false); this.queueTerminalInput(code);
   });
+  // Every change to the field is an edit, typed or the page's (a saved prompt, dictation).
   this.input.addEventListener("input", () => this.saveDraft());
   if (initialDraft !== undefined) { this.input.value = initialDraft; this.saveDraft(); }
   this.input.addEventListener("keydown", e => { if (composerEnterSends(e)) { e.preventDefault(); void this.sendPrompt(); } });
  }
+ /** An edit: the field's text is the pane's draft. */
  saveDraft() {
-  const draft = [this.unsentPrompt, this.input.value].filter(Boolean).join("\n\n");
-  try { if (draft) localStorage.setItem(this.draftKey, draft); else localStorage.removeItem(this.draftKey); }
-  catch { this.status.textContent = "Draft is kept in this window only: local storage is unavailable."; }
+  this.stored(this.draft.saveDraft(this.input.value));
+ }
+ /** stored: false when storage refused the pane's texts, which this page still holds. */
+ stored(stored: boolean) {
+  if (!stored && !this.disposed) this.status.textContent = "Draft is kept in this window only: local storage is unavailable.";
+ }
+ /** The unsent line as the pane's draft has it; the composer's layout makes room for it. */
+ drawUnsent() {
+  const unsent = this.draft.unsent();
+  this.unsentRow.hidden = unsent === null;
+  this.unsentText.textContent = unsent === null ? "" : unsentLine(unsent);
+  this.unsentText.title = unsent?.text ?? "";
+  this.drawLines();
+ }
+ /** The older page's draft (browser), as stored now: one line, read-only. Copy puts all of it on
+  *  the clipboard; Dismiss removes it while it is still the text shown (a newer one is drawn
+  *  instead). It never reaches the field or a send. */
+ drawOlder() {
+  const older = this.draft.older();
+  this.olderRow.hidden = older === null;
+  this.olderText.textContent = older === null ? "" : `Older draft: ${older.replace(/\s+/g, " ").trim()}`;
+  this.olderText.title = older ?? "";
+  this.olderCopy.textContent = "Copy";
+  this.olderCopy.onclick = older === null ? null : () => {
+   navigator.clipboard.writeText(older).then(
+    () => { if (!this.disposed) this.olderCopy.textContent = "Copied"; },
+    () => { if (!this.disposed) this.status.textContent = "Couldn't copy the older draft."; });
+  };
+  this.olderDismiss.onclick = older === null ? null : () => {
+   if (this.draft.dismissOlder(older) === "refused") { this.status.textContent = "Couldn't dismiss the older draft: local storage is unavailable."; return; }
+   this.drawOlder();
+  };
+  this.drawLines();
+ }
+ /** The lines under the composer show when either has something; the layout makes room. */
+ drawLines() {
+  this.composerLines.hidden = this.unsentRow.hidden && this.olderRow.hidden;
+  this.relayout();
  }
  setCtrl(armed: boolean) {
   this.ctrlArmed = armed; this.ctrlButton.setAttribute("aria-pressed", String(armed));
@@ -714,14 +785,14 @@ class Detail {
   if (paused) this.dictation.stop();
   this.updateStatus(...this.shownStatus);
   this.input.disabled = paused;
-  this.input.placeholder = this.guestPaused?.placeholder ?? "Type a reply…";
+  this.input.placeholder = this.guestPaused?.placeholder ?? (this.plainTerminal ? "Write text without running it" : "Type a reply…");
   this.send.disabled = paused || this.sending || this.dictation.busy;
   this.attach.disabled = paused || this.sending || this.picking;
   this.prompts.button.disabled = paused || this.sending || this.dictation.busy;
   this.dictation.button.disabled = paused || this.sending;
   // The working row goes with the poll (ChatView live).
   if (this.chat && this.mode === "chat") this.drawChat(false);
-  this.input.dispatchEvent(new Event("input"));
+  this.relayout();
  }
  changeTextSize(surface: TextSurface, delta: number | "reset") {
   try { changeTextSize(surface, delta); }
@@ -789,7 +860,7 @@ class Detail {
   if (this.terminal) this.terminal.options.fontSize = textSize("terminal");
   this.fitTerminal?.();
   this.promptLayoutDirty = true;
-  this.input.dispatchEvent(new Event("input"));
+  this.relayout();
   this.followChat();
  }
  updateStatus(group: string, label: string, since?: number) {
@@ -1019,7 +1090,7 @@ class Detail {
   this.prediction?.dispose(); this.prediction = null;
   this.disposeTerminal(); this.fit = null;
  }
- dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.saveDraft(); void Desk.closeAgentView(this.token); }
+ dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.stored(this.draft.flush()); this.queuedSend?.cancel(); this.draft.detach(this.draftView); void Desk.closeAgentView(this.token); }
  /** Topics' text follows the chat's size. */
  textSurface(): TextSurface { return this.mode === "terminal" ? "terminal" : "chat"; }
  topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions); }
@@ -1097,7 +1168,7 @@ class Detail {
   } else {
    this.terminal?.focus();
   }
-  this.input.dispatchEvent(new Event("input"));
+  this.relayout();
  }
  /** Opens the terminal the first time it is shown (herdrup slow-network fix 6): under Chat its
   *  stream, backfill and input stream would compete with the chat's first page on the link. */
@@ -1307,7 +1378,7 @@ class Detail {
   this.attachmentStrip.replaceChildren(...this.attachments.map(file => composerAttachment(file, this.sending,
    () => { void Desk.paneRemoveAttachment(this.token, file.path).catch(failed); },
    () => { void Desk.paneRetryAttachment(this.token, file.path).catch(failed); })));
-  this.input.dispatchEvent(new Event("input"));
+  this.relayout();
  }
  async pickFiles(paths?: string[]) {
   if (this.disposed || this.sending || this.picking || !this.token) return;
@@ -1361,7 +1432,10 @@ class Detail {
    // Swift gives the writer the warm terminal's room, including its key-row allowance.
    const room = this.terminalSurface.clientHeight;
    this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
-   const composerHeight = composer.offsetHeight + 12;
+   // The lines under the composer: the composer and what stands on it move up by them.
+   const unsentHeight = this.composerLines.hidden ? 0 : this.composerLines.offsetHeight;
+   composer.style.bottom = `${unsentHeight}px`;
+   const composerHeight = composer.offsetHeight + 12 + unsentHeight;
    this.body.style.setProperty("--composer-height", `${composerHeight}px`);
    // The note takes layout height, as in herdrup (it is part of bottomChromeHeight there).
    this.body.style.setProperty("--note-height", `${this.status.offsetHeight}px`);
@@ -1369,6 +1443,7 @@ class Detail {
   };
   this.editor = new ComposerEditor(composer, this.input, layout);
   this.input.oninput = layout;
+  this.relayout = layout;
   this.composerResize = new ResizeObserver(layout);
   this.composerResize.observe(composer);
   this.composerResize.observe(this.body);
@@ -1392,7 +1467,7 @@ class Detail {
   };
   this.chatResize = new ResizeObserver(() => this.followChat());
   this.chatResize.observe(this.transcript); this.chatResize.observe(this.chatScroll);
-  this.body.append(composer);
+  this.body.append(composer, this.composerLines);
   // The chat as last read draws at once; the first read asks only for what came after it.
   const remembered = recallChat(JSON.stringify(this.target));
   if (remembered) {
@@ -2292,6 +2367,22 @@ class Detail {
   details.append(markdown(entry.text ?? entry.body ?? entry.detail ?? entry.error ?? entry.status ?? JSON.stringify(entry, null, 2)));
   return details;
  }
+ /** A send and the pane's stored draft, in this order:
+  *  (1) at the click the composer's text becomes the send's reservation (PaneDraft.reserve),
+  *      stored in click order, before any edit that follows: a reload brings it back
+  *      (composerDraft.ts: Not sent when this page said, going away, that it never went out;
+  *      else "Might have been sent"). A reservation storage refused leaves the text in the field;
+  *  (2) only the dispatch waits, behind earlier terminal input (inputQueue); a send cancelled
+  *      before it (the composer closed) brings its text back;
+  *  (3) the send's dispatch (DraftSend.dispatch) marks it sending, makes the Desk call, and
+  *      settles it: the Desk resolving takes it out, the Desk rejecting brings it back
+  *      (Desk.chatPrompt rejects only a write that definitely didn't go out, or the host refused).
+  *      Stored while the Desk has it, a reload shows it as text that may have been sent. A
+  *      reservation "gone" (released first) sends and puts back nothing; one storage "refused"
+  *      to mark sending sends nothing and is released. A failure after the dispatch resolved
+  *      puts nothing back (the text went out).
+  *  The composer itself refuses no text: each Desk decides what a pane takes (a plain terminal's
+  *  line break: bracketed paste on the desktop, refused before sending in the browser). */
  async sendPrompt() {
   const text = this.input.value;
   if (this.guestPaused || this.sending || this.dictation.busy || (!text.trim() && !this.attachments.length)) return;
@@ -2305,7 +2396,16 @@ class Detail {
    this.input.style.transition = `height ${SPEC.bubble.duration}ms ${SPEC.bubble.ease}`;
    window.setTimeout(() => { this.input.style.transition = ""; }, SPEC.bubble.duration + 20);
   }
-  if (!hasAttachments) { this.unsentPrompt = text; this.input.value = ""; this.input.dispatchEvent(new Event("input")); }
+  // The reservation (rule 1) is taken now, ahead of the next edit; the field clears with it (the
+  // draft shows without the text). Refused by storage, the text stays in the field, unsent.
+  const send = hasAttachments ? null : this.draft.reserve(text);
+  if (send && send.outcome !== "reserved") {
+   if (send.outcome === "refused") this.status.textContent = "Couldn't save the draft; not sent.";
+   return;
+  }
+  this.queuedSend = send;
+  // True once Desk.chatPrompt resolved: the text went out, and nothing puts it back.
+  let dispatched = false;
   if (mode === "full") {
    // Clearing the field swaps Send for Saved Prompts in this frame, so the press plays on the
    // trailing action slot: whichever of the two now shows (spec §3, as iOS).
@@ -2333,29 +2433,51 @@ class Detail {
   }
   this.sending = true; this.dictation.button.disabled = true; this.send.disabled = true; this.attach.disabled = true; this.prompts.button.disabled = true; this.renderAttachments();
   try {
-   await this.inputQueue;
-   if (this.disposed) return; // never dispatched: the stored draft still holds it
-   if (this.inputFailed) throw new Error("An earlier key send failed. Reconnect before sending again.");
-   this.unsentPrompt = ""; this.saveDraft();
-   const ownerSend = this.view?.guest === false;
+   // The send's turn, behind earlier terminal input; or its end, when its page gave it up (back
+   // from the back/forward cache: its text is back), which frees the composer at once.
+   const turn = await (send ? Promise.race([this.inputQueue.then(() => true), send.gaveUp.then(() => false)]) : this.inputQueue.then(() => true));
+   if (!turn) { setOutgoing(null); return; }
+   // Closed while queued: dispose released the reservation.
+   if (this.disposed) return;
+   if (this.inputFailed) {
+    send?.cancel();
+    throw new Error("An earlier key send failed. Reconnect before sending again.");
+   }
+   // The dispatch (rule 3): from here closing the composer doesn't cancel the send.
+   this.queuedSend = null;
    // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
    this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
-   const result = JSON.parse(await Desk.chatPrompt(this.token, text));
+   const call = (prompt: string) => Desk.chatPrompt(this.token, prompt);
+   // Rule 3: the send's dispatch puts the text back only when the Desk call rejects (it throws then).
+   const outcome = send ? await send.dispatch(call) : { sent: true as const, value: await call(text) };
+   if (!outcome.sent) {
+    this.sendFollow = null;
+    setOutgoing(null);
+    if (outcome.outcome === "refused" && !this.disposed) this.status.textContent = "Couldn't save the draft; not sent.";
+    return;
+   }
+   dispatched = true;
+   const ownerSend = this.view?.guest === false;
+   const result = JSON.parse(outcome.value);
    setOutgoing(result.delivery === "submitted" ? "submitted" : "unconfirmed");
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
-   if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.saveDraft(); this.input.dispatchEvent(new Event("input")); }
+   if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.input.dispatchEvent(new Event("input")); }
    if (!this.disposed) this.status.textContent = result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again.");
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
    // A guest has no events: look for the prompt now rather than at the next poll (GuestPaneView.swift:882-886).
    if (!this.disposed && this.view?.guest && this.mode === "chat") void this.refreshChat(this.generation);
   } catch(e) {
+   if (dispatched) {
+    // The text went out: the failure is this page's (the receipt, the drawing), not the send's.
+    console.error("after a send", e);
+    if (!this.disposed) this.status.textContent = errorText(e);
+    return;
+   }
    this.sendFollow = null;
-   // A failed send keeps today's error: the text back in the field and the reason (spec §1.5).
+   // A failed send keeps today's error: the text back (rule 3, above) and the reason (spec §1.5).
    setOutgoing(null);
    if (!this.disposed) {
-    this.unsentPrompt = ""; this.saveDraft();
-    if (!hasAttachments && !this.input.value) { this.input.value = text; this.input.dispatchEvent(new Event("input")); }
     const message = errorText(e);
     this.status.textContent = (this.view?.guest && guestSendFailure(message, this.view.name)) || message;
     // A refused send moves the page to paused at once (failureNote's apply, GuestPaneView.swift:915-917).
@@ -2363,6 +2485,8 @@ class Detail {
    }
   }
   finally {
+   send?.cancel();
+   if (this.queuedSend === send) this.queuedSend = null;
    const paused = !!this.guestPaused;
    this.sending = false; this.dictation.button.disabled = paused; this.send.disabled = paused || this.dictation.busy; this.attach.disabled = paused || this.picking; this.prompts.button.disabled = paused || this.dictation.busy;
    if (!this.disposed) this.renderAttachments();

@@ -5,9 +5,10 @@
 
 import { sleep } from "../webguest/abort";
 import type { EnvelopeMachine } from "../webguest/approve";
-import { HerdrAPIError } from "../webguest/errors";
+import { HerdrAPIError, notSent } from "../webguest/errors";
 import type { AgentInfo } from "./board";
 import type { OwnerGroups } from "./groups";
+import type { StartWatch } from "./startedAgents";
 import { untagged, type GuestClient, type Pong } from "./engine";
 import { currentOwnerLink, settingsScope, type SettingsScope } from "./link";
 
@@ -17,6 +18,8 @@ export { currentOwnerLink, settingsScope, type SettingsScope };
 export interface OwnerLink {
  /** The approved machine: hostID, label, the grant's scope and expiry. */
  readonly machine: EnvelopeMachine;
+ /** The board this link publishes (BoardUpdate.machineID, "owner:<hostID>"; its session is ""). */
+ readonly board: string;
  /** The engine client over the link (ping, the capability gate, tagged calls). */
  readonly client: GuestClient;
  /** Ends with the link: a leave, another machine, the account session's end. */
@@ -28,8 +31,27 @@ export interface OwnerLink {
  agents(): readonly AgentInfo[];
  /** Lists again now and publishes the board (after a change a group made). */
  relist(): void;
+ /** A creation's watch of the roster from before its split (startedAgents.ts): its acknowledged
+  *  agent is provisional on this link until the roster decides, and the link lists again then. */
+ watchStart(): StartWatch;
  /** The machine's folders and stars (groups.ts): the menus' document and the edits' queue. */
  readonly groups?: OwnerGroups;
+}
+
+/** app/federation.go ErrSessionChanged, as the desktop says it. */
+export const SESSION_CHANGED = "the herdr session changed while machine status was read";
+
+/** Whether a page's machineID and session name board (the owner link has one session, ""). */
+export function onBoard(board: string, machineID: string, session: string): boolean {
+ return board === machineID && (session === "" || session === "default");
+}
+
+/** desk_terminals.go terminalClient: the open link, when machineID and session name its board. */
+export function boardLink(machineID: string, session: string): OwnerLink {
+ const link = currentOwnerLink();
+ if (link === null) throw new Error("not connected");
+ if (!onBoard(link.board, machineID, session)) throw new Error(SESSION_CHANGED);
+ return link;
 }
 
 /** linkClosing's longest wait for the groups' cleanup before the connection closes. */
@@ -77,16 +99,22 @@ export const LINK_CHANGED = "the machine changed; the request was not sent";
 
 /** One herdr call on the open link: the result without its tag. options.link is the link the
  *  operation began on: when it is no longer the open one the call is not sent (LINK_CHANGED), so an
- *  operation never reaches the machine opened after it. Throws "not connected" without a link,
- *  OwnerRefusedError on owner_forbidden, ErrUnsupported for a capability the host lacks, else the
- *  transport's or herdr's error. It ends with the link, or with signal. */
-export async function ownerCall<T>(method: string, params: unknown, tag: string, options: { capability?: string; signal?: AbortSignal; link?: OwnerLink | null } = {}): Promise<T> {
+ *  operation never reaches the machine opened after it. That and "not connected" (no link) are
+ *  NotSentError, as the transport's failures before a send are. Throws OwnerRefusedError on
+ *  owner_forbidden, ErrUnsupported for a capability the host lacks, else the transport's or
+ *  herdr's error. It ends with the link, or with signal. With unsent, the call has two lifetimes:
+ *  until it is handed to the transport it ends with the link or unsent (not sent); once sent,
+ *  only signal (its reply's window) ends it, the link's end included: herdr may have acted, and
+ *  its answer is still wanted. */
+export async function ownerCall<T>(method: string, params: unknown, tag: string, options: { capability?: string; signal?: AbortSignal; unsent?: AbortSignal; link?: OwnerLink | null } = {}): Promise<T> {
  const link = currentOwnerLink();
- if (options.link !== undefined && options.link !== link) throw new Error(LINK_CHANGED);
- if (link === null) throw new Error("not connected");
- const signal = options.signal ? AbortSignal.any([link.signal, options.signal]) : link.signal;
+ if (options.link !== undefined && options.link !== link) throw notSent(new Error(LINK_CHANGED));
+ if (link === null) throw notSent(new Error("not connected"));
+ const capability = options.capability ?? "";
  try {
-  return untagged<T>(await link.client.call(method, params, tag, options.capability ?? "", signal));
+  if (options.unsent !== undefined) return untagged<T>(await link.client.call(method, params, tag, capability, options.signal, AbortSignal.any([link.signal, options.unsent])));
+  const signal = options.signal ? AbortSignal.any([link.signal, options.signal]) : link.signal;
+  return untagged<T>(await link.client.call(method, params, tag, capability, signal));
  } catch (error) {
   throw error instanceof HerdrAPIError && error.code === "owner_forbidden" ? new OwnerRefusedError(method) : error;
  }

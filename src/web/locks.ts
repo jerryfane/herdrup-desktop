@@ -3,8 +3,9 @@
 // localStorage takes turns on its key (withStorageLock).
 
 export interface Locks { request<T>(name: string, callback: () => Promise<T>): Promise<T> }
-/** Locks in both forms the page uses: with a signal, a request still waiting for the lock leaves
- *  when it aborts (the account sync's turn, prompts.ts). */
+/** Locks in the forms the page uses: with a signal, a request still waiting for the lock leaves
+ *  when it aborts (the account sync's turn, prompts.ts; a composer waiting for another tab's send,
+ *  composerDraft.ts). */
 export interface AbortableLocks extends Locks {
  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
  request<T>(name: string, options: { signal?: AbortSignal }, callback: () => Promise<T>): Promise<T>;

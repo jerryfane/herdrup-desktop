@@ -20,7 +20,7 @@
 // before it opened is read as the relay's 429 (relayRefused) and starts Go's backoff: at worst a
 // shared machine that is offline, or a dropped network, is retried 15 s later instead of at once.
 
-import { closed, expired, GuestError, HerdrAPIError, hostOffline, other, ownerRefusal, rateLimited, relayRefused, revoked, timedOut } from "./errors";
+import { closed, expired, GuestError, HerdrAPIError, hostOffline, notSent, other, ownerRefusal, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
 
@@ -609,8 +609,14 @@ type UnaryOptionsAreNoStreamOptions = Holds<RequestOptions extends StreamOptions
 interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout>; unpark: () => void }
 
 /** What a request on a session came to (transport.go roundTrip): its reply line and whether the
- *  session is still open, or its failure and whether a frame of it went out (so herdr may have it). */
+ *  session is still open, or its failure and whether a frame of it went out (so herdr may have it;
+ *  a failure with none out is a NotSentError). */
 type RoundTrip = { line: string; open: boolean } | { error: unknown; sent: boolean };
+
+/** work before a request's first frame is handed to the socket: any failure is NotSentError. */
+async function beforeSend<T>(work: () => T | Promise<T>): Promise<T> {
+ try { return await work(); } catch (error) { throw notSent(error); }
+}
 
 /** guest_gate.rs serve_session (herdr #356) ends the session after these replies; owner_gate.rs
  *  (herdr #497) re-reads the grant before each request and ends it on owner_not_granted or
@@ -696,25 +702,30 @@ export class GuestTransport {
   *  the idle session if there is one; when that session was known to have ended before any frame of
   *  the request was handed to the socket, so herdr cannot have it, the request goes once more on a
   *  fresh session. Once a frame was handed over the request is never sent again, whatever the socket
-  *  did: it could be an agent.prompt (herdrup#612 review). */
+  *  did: it could be an agent.prompt (herdrup#612 review). Every failure before a frame was handed
+  *  over comes as NotSentError (errors.ts): the steps before the send run in beforeSend, and the
+  *  hand-off itself is handOff's, on both sessions; any failure after it comes as itself. */
  async call(method: string, params?: unknown, options: RequestOptions = {}): Promise<unknown> {
   const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
-  const { signal: unsent, dispose: disposeUnsent } = linkSignals([signal, options.sendSignal]);
+  // sendSignal first: a caller's pre-send signal that holds signal too (GuestClient.call's) already
+  // has the reason that came first, also when both had ended before this call.
+  const { signal: unsent, dispose: disposeUnsent } = linkSignals([options.sendSignal, signal]);
+  const ends: Ends = { signal, unsent, detach: disposeUnsent };
   try {
-   if (unsent.aborted) throw unsent.reason;
-   const request = this.#request(method, params);
+   const request = await beforeSend(() => this.#request(method, params));
+   // In the turn the idle session is taken and the request handed over: a call ended before then
+   // sends nothing and leaves the idle session to the next call.
+   if (unsent.aborted) throw notSent(unsent.reason);
    const reused = this.#takeIdle();
    if (reused !== null) {
-    const outcome = await roundTrip(reused, request, signal);
+    const outcome = await roundTrip(reused, request, ends);
     if ("line" in outcome) return this.#decode(reused, outcome);
-    if (outcome.sent || signal.aborted) throw outcome.error;
+    if (outcome.sent || unsent.aborted) throw outcome.error;
    }
-   // The connection is made under sendSignal too (the relay's admission and the handshake), then
-   // unlinked from it: the frame goes out next, and from then on only signal ends the request.
-   const session = await this.#connect(unsent);
-   disposeUnsent();
-   if (unsent.aborted) { session.close(); throw unsent.reason; }
-   const outcome = await roundTrip(session, request, signal);
+   // The connection is made under sendSignal too (the relay's admission and the handshake); the
+   // hand-off unlinks it, and from then on only signal ends the request.
+   const session = await beforeSend(() => this.#connect(unsent));
+   const outcome = await roundTrip(session, request, ends);
    if (!("line" in outcome)) throw outcome.error;
    return this.#decode(session, outcome);
   } finally {
@@ -817,19 +828,41 @@ export class GuestTransport {
  }
 }
 
-/** Sends request on session and reads its reply line (transport.go roundTrip). On a failure the
- *  session is closed; aborting signal closes it with the signal's reason. */
-async function roundTrip(session: Session, request: Uint8Array, signal: AbortSignal): Promise<RoundTrip> {
+/** What ends a call's request (RequestOptions): signal at any point; unsent (signal and sendSignal,
+ *  with the reason that ended it first) before the hand-off, which detaches sendSignal from it. */
+interface Ends { signal: AbortSignal; unsent: AbortSignal; detach: () => void }
+
+/** The one hand-off of a request to its session's socket, on a reused session and a fresh one
+ *  alike. Synchronous, so nothing comes between its check and the send: a request whose pre-send
+ *  signal (unsent, the one its admission waited under) has ended is never handed over, nor is one
+ *  whose socket took no frame of it (both NotSentError, the first with unsent's reason); once a
+ *  frame is out sendSignal is detached, and herdr may have the request. null when it went out
+ *  whole, else the failure (the session is closed). */
+function handOff(session: Session, request: Uint8Array, ends: Ends): { error: unknown; sent: boolean } | null {
+ let sent = false;
+ try {
+  if (ends.unsent.aborted) throw ends.unsent.reason;
+  session.sendLine(request, () => { sent = true; });
+  return null;
+ } catch (error) {
+  session.close();
+  return { error: sent ? error : notSent(error), sent };
+ } finally {
+  if (sent) ends.detach();
+ }
+}
+
+/** Sends request on session (handOff) and reads its reply line (transport.go roundTrip). On a
+ *  failure the session is closed; signal ending closes it with its reason, whether it ended before
+ *  this began (handOff sends nothing then) or after. */
+async function roundTrip(session: Session, request: Uint8Array, ends: Ends): Promise<RoundTrip> {
+ const { signal } = ends;
  const abort = () => session.abort(signal.reason);
+ // The listener is in place before handOff checks signal: no end goes unheard in between.
  signal.addEventListener("abort", abort, { once: true });
  try {
-  let sent = false;
-  try {
-   session.sendLine(request, () => { sent = true; });
-  } catch (error) {
-   session.close();
-   return { error, sent };
-  }
+  const failed = handOff(session, request, ends);
+  if (failed !== null) return failed;
   const lines = new LineReader(session);
   let line: string | null;
   try {

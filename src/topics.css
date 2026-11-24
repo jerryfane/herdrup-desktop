@@ -4,7 +4,7 @@
    sentence-case section labels and rounded selected rows. The column folds fully away (⌥⌘T). */
 .topics-surface { position: absolute; inset: 0; z-index: 3; display: flex; background: var(--color-ground-machine); color: var(--color-text); }
 .topics-surface[hidden] { display: none; }
-.interaction-body[data-mode="topics"] > :is(.chat-composer, .terminal-key-row, .guest-question-banner, .interaction-status) { display: none; }
+.interaction-body[data-mode="topics"] > :is(.chat-composer, .composer-lines, .terminal-key-row, .guest-question-banner, .interaction-status) { display: none; }
 .topics-column { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .topics-side { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .topics-column[hidden], .topics-side[hidden] { display: none; }

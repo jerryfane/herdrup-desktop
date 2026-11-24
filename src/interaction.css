@@ -81,6 +81,16 @@
 .terminal-surface.covered { opacity: 0; pointer-events: none; }
 .chat-surface[hidden] { display: none; }
 .interaction-body > .chat-composer { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; }
+/* Under the composer, muted lines with plain actions: a write that didn't go out (Restore), and in
+   the browser an older page's draft (Copy, Dismiss). */
+.interaction-body > .composer-lines { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: 0 28px 8px; font: 400 12px/var(--leading-app) var(--font-app); color: var(--color-text-dim); }
+.interaction-body > .composer-lines[hidden], .composer-lines > [hidden] { display: none; }
+.interaction-body[data-mode="chat"] > .composer-lines { width: min(calc(var(--gram-column, 720px) - 24px), calc(100% - 24px)); margin: 0 auto; padding-inline: 16px; box-sizing: border-box; }
+.composer-unsent, .composer-older { display: flex; align-items: baseline; gap: 8px; }
+.composer-unsent-text, .composer-older-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Plain text: it outranks `.agent-detail button` (the window's button look). */
+.agent-detail .composer-line-action, .composer-line-action { flex: none; padding: 0; border: 0; border-radius: 0; background: none; color: var(--color-text); font: inherit; cursor: pointer; }
+.agent-detail .composer-line-action:hover { text-decoration: underline; }
 .terminal-canvas { flex: 1; min-height: 0; min-width: 0; padding: 0 8px; background: var(--color-ground-machine); overflow: hidden; }
 .terminal-tools { font-size: 12px; }
 .terminal-tools input { width: 160px; }

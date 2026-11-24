@@ -842,6 +842,25 @@ is not offered.
   before anything else, redeems it, and keeps the grant and a non-extractable WebCrypto key in
   IndexedDB: one browser holds one guest. Later visits resume it; without one the page says whose
   invite link to open.
+- A composer's draft, its unsent line and a send's text until its outcome is known are each tab's
+  own (sessionStorage, src/composerDraft.ts): they outlive a reload of the tab, not its close, and
+  two tabs on one pane have a draft each, as two desktop windows would. The desktop keeps them in
+  localStorage, as before. A page going away (pagehide) gives up each send it never dispatched, in
+  the page at once and then in storage: that send never dispatches, and comes back as Not sent
+  (after a reload, in a duplicated tab, or in the page itself back from the back/forward cache,
+  even when storage refused the mark). A page back from the back/forward cache reads its records
+  again first, and every write starts from the record as stored (a revision in it): another page
+  of the tab may have recovered and edited the draft meanwhile, and its newer record stands. Any
+  other send found later (a duplicated tab's copy, a crash, a refused write, a dispatch that was
+  out) shows as "Might have been sent", never as the draft. A duplicate leaves the original's
+  send alone while its dispatch holds the send lock
+  (`herdrup.send.<id>`); its open composer waits for that lock (the wait given up when it closes)
+  and then shows the send by those rules, if it is still there. An older page's draft
+  (localStorage `herdrup.prompt.<target>`) is never moved into a tab's draft: a composer shows it
+  as one muted read-only line, "Older draft: …", with Copy (the whole text to the clipboard) and
+  Dismiss (removes the key while it still holds the text shown; a newer text there is shown
+  instead); it can't be sent. Every tab on the pane shows the same line, redrawn when another tab
+  changes it. The desktop moves it into the record.
 - The build is deterministic and writes `dist-web/manifest.json` (source commit, build command,
   SHA-256 of every file) for the relay's copy. No inline script and no `eval`: the relay sends
   `default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' wss://guest.herdrup.app wss://guest.herdrup.themartian.app; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,

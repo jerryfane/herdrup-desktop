@@ -9,7 +9,7 @@ import type {
  Access as PageAccess, AgentTarget, AgentView, AskFormValue, AvatarPhoto, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestConnection, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
-import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
+import { GuestError, HerdrAPIError, NotSentError, notSent, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
 import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
@@ -24,8 +24,10 @@ import { closeSettings, openSettings, setLink, transportLink, type WebLink } fro
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, machineLists, type GrantStore, type MachineLists, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
-import { currentOwnerLink, linkClosing, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
+import { currentOwnerLink, linkClosing, onBoard, OwnerRefusedError, SESSION_CHANGED, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
 import { closeAgent, selectSheet } from "./agentActionsDesk";
+import { findTerminal } from "./terminalsDesk";
+import { StartedAgents } from "./startedAgents";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
@@ -121,17 +123,45 @@ export function ownerConnection(m: EnvelopeMachine, identity: StaticKey, stateme
  return { access, transport, link, client: new GuestClient(link) };
 }
 
+/** Whether a failed send definitely didn't deliver (desk_interaction_compose.go's kept draft):
+ *  herdr refused it (not with an unconfirmed code), the host has no such method (ErrUnsupported),
+ *  or the request never left this page (NotSentError). Anything else may have reached the host:
+ *  "unconfirmed", never resent. Agent prompts and terminal writes alike. */
+function sendFailed(error: unknown): boolean {
+ return error instanceof NotSentError || error instanceof ErrUnsupported || (error instanceof HerdrAPIError && !UNCONFIRMED_CODES.includes(error.code));
+}
+
+/** submitPanePrompt's receipt (desk_interaction_compose.go:200) for a write, agent prompt or
+ *  terminal text alike, whose outcome a resend could duplicate. */
+const UNCONFIRMED_RECEIPT = JSON.stringify({ delivery: "unconfirmed", note: "Couldn't confirm delivery — check the terminal before sending again." });
+
 /** submitPanePrompt's receipt (desk_interaction_compose.go:117-159) for an agent prompt: the
- *  delivery herdr reports, or "unconfirmed" for an outcome a resend could duplicate. */
+ *  delivery herdr reports, the error of a prompt that definitely didn't deliver (sendFailed), else
+ *  unconfirmed (UNCONFIRMED_RECEIPT). */
 export function promptReceipt(result: { delivery?: string | null } | null, error: unknown): string {
- let delivery = "submitted", note = "";
- if (result?.delivery != null) delivery = result.delivery;
- if (delivery === "written_to_pty") note = "Sent to terminal; agent submission not verified";
  if (error !== null) {
-  if (error instanceof HerdrAPIError && !UNCONFIRMED_CODES.includes(error.code)) throw error;
-  delivery = "unconfirmed"; note = "Couldn't confirm delivery — check the terminal before sending again.";
+  if (sendFailed(error)) throw error;
+  return UNCONFIRMED_RECEIPT;
  }
- return JSON.stringify(note === "" ? { delivery } : { delivery, note });
+ const delivery = result?.delivery ?? "submitted";
+ return JSON.stringify(delivery === "written_to_pty" ? { delivery, note: "Sent to terminal; agent submission not verified" } : { delivery });
+}
+
+/** submitPanePrompt's receipt for a plain terminal (pane.send_text, no Enter): written, the error of
+ *  a write that definitely didn't deliver (sendFailed), else unconfirmed as for a prompt
+ *  (UNCONFIRMED_RECEIPT). */
+export function terminalWriteReceipt(error: unknown): string {
+ if (error === null) return JSON.stringify({ delivery: "written", note: "Written to terminal; press Enter to run it." });
+ if (sendFailed(error)) throw error;
+ return UNCONFIRMED_RECEIPT;
+}
+
+/** Why this page won't write text to a plain terminal as it stands, or null. herdr writes a
+ *  terminal's text to its PTY byte for byte (pane.send_text), and this page asks no bracketed
+ *  paste: a line break or any control character (C0, DEL, C1: Ctrl-O, ESC sequences) acts on the
+ *  shell at once, before the Enter the page promises. */
+function terminalTextProblem(text: string): string | null {
+ return /[\u0000-\u001f\u007f-\u009f]/.test(text) ? "Write plain text on one line: line breaks and control characters would act on the terminal before Enter." : null;
 }
 
 /** herdrapi.DecodePaneStreamLine and the frame Go re-encodes for TerminalChanged: the frame, or
@@ -236,6 +266,9 @@ interface Active {
  keyTaken?: Set<string>;
  /** An owner link's folders and stars (groups.ts); a guest's link has none. */
  groups?: OwnerGroups;
+ /** An owner link's agents a start acknowledged (OwnerLink.started, startedAgents.ts): a
+  *  provisional one opens and runs before a list has it, never shown on the board until listed. */
+ started?: StartedAgents;
  /** When the last list answered, as the board says (BoardUpdate.listedAt); "" before it. */
  listedAt: string;
  /** An owner link as its groups know it (ownerLink.ts). */
@@ -397,6 +430,21 @@ export function createGuestDesk(env: DeskEnv) {
   return l.ended ??= (l.ownerLink ? linkClosing(l.ownerLink) : Promise.resolve()).then(() => l.transport.close());
  }
 
+ /** Mounts view as the one open view on l (desk_interaction.go mountInteractionLocked). An owner
+  *  link's availability is its open view's, at once: an agent's from the last list, a plain
+  *  terminal's "". */
+ function mountView(l: Active, view: AgentView, details: GuestShareDetails, availability: string) {
+  unmount();
+  const life = new AbortController();
+  const token = view.token;
+  const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details }, life, sending: false, terminal: null,
+   topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0 } };
+  l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
+  mounted = v;
+  setView(v);
+  republish(l, { availability });
+ }
+
  function disconnect() {
   unmount();
   if (active) {
@@ -449,7 +497,11 @@ export function createGuestDesk(env: DeskEnv) {
    } else {
     listed = true;
     // An owner's machine: every agent, and the open one's availability (owner_paused).
-    const { agents, availability } = l.owner ? { agents: result!.agents, availability: ownerAvailability(result!.agents, mounted?.active === l ? mounted.paneID : null) } : sharedListing(result!, l.access.agentTarget);
+    // A plain terminal's pane isn't an agent: its availability is the link's. A provisional
+    // started agent runs until the roster decides (startedAgents.ts).
+    if (l.owner) l.started?.listed(result!.agents);
+    const open = mounted?.active === l && !mounted.view.plainTerminal ? mounted.paneID : null;
+    const { agents, availability } = l.owner ? { agents: result!.agents, availability: open !== null && l.started?.get(open) ? "" : ownerAvailability(result!.agents, open) } : sharedListing(result!, l.access.agentTarget);
     publish("connected", "", availability);
     if (signal.aborted || active !== l) return;
     l.agents = agents;
@@ -583,7 +635,8 @@ export function createGuestDesk(env: DeskEnv) {
    if (token === "" || token.length > 128) throw new Error("invalid view token");
    const l = active;
    if (!l || l.id !== target.machineID || (target.session !== "" && target.session !== "default")) throw new Error("agent belongs to another connection or session");
-   const agent = l.agents.find((a) => a.pane_id === target.paneID);
+   // An agent a start acknowledged opens before a list has it (OwnerLink.started).
+   const agent = l.agents.find((a) => a.pane_id === target.paneID) ?? l.started?.get(target.paneID);
    if (!agent) throw new Error("agent is no longer on this board");
    const name = displayName(agent), harness = agent.agent ?? "";
    const parts = [name];
@@ -602,15 +655,24 @@ export function createGuestDesk(env: DeskEnv) {
     topicSessions: (agent.topic_sessions ?? []).some(t => !!t.topic_id),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
-   unmount();
-   const life = new AbortController();
-   const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details: shareDetails(agent, name, state.machine) }, life, sending: false, terminal: null,
-    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0 } };
-   l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
-   mounted = v;
-   setView(v);
-   // An owner link's availability is its open agent's: this one's from the last list, at once.
-   republish(l, { availability: ownerAvailability(l.agents, view.paneID) });
+   mountView(l, view, shareDetails(agent, name, state.machine), ownerAvailability([agent], view.paneID));
+   return view;
+  },
+
+  /** desk_terminals.go OpenTerminalView: an owner's saved terminal (terminalsDesk.ts) as a plain
+   *  terminal; its pane is no agent, so the link's availability is its own. */
+  async openTerminalView(target: AgentTarget, token: string): Promise<AgentView> {
+   if (token === "" || token.length > 128) throw new Error("invalid view token");
+   const l = active;
+   if (!l?.owner) throw new Error("not connected");
+   if (!onBoard(l.id, target.machineID, target.session)) throw new Error(SESSION_CHANGED);
+   // herdr's owner gate streams and writes a plain shell under a terminal-scope grant only; the
+   // page offers the shell there only (terminals.ts), Forget everywhere.
+   if (l.transport.scope !== "terminal") throw new OwnerRefusedError("pane.stream");
+   const saved = findTerminal(l.owner.hostID, target.paneID);
+   const view: AgentView = { token, paneID: saved.paneID, name: saved.label, harness: "", heading: saved.label, group: "terminal", status: "Terminal",
+    guest: true, guestGram: false, askForm: false, topicSessions: false, plainTerminal: true };
+   mountView(l, view, { agentName: saved.label, machineLabel: state.machine }, "");
    return view;
   },
 
@@ -777,6 +839,17 @@ export function createGuestDesk(env: DeskEnv) {
    try {
     const submit = async (prompt: string) => {
      let result: { delivery?: string | null } | null = null, failure: unknown = null;
+     // A plain terminal is no agent: its text is written to the pane without Enter.
+     if (v.view.plainTerminal) {
+      // herdr writes it to the PTY byte for byte (terminalTextProblem), and this page writes no
+      // bracketed paste: such text is refused here, never sent, so the composer puts it back.
+      const problem = terminalTextProblem(prompt);
+      if (problem !== null) throw notSent(new Error(problem));
+      // As opening it (openTerminalView): a link renewed to another scope writes no shell.
+      if (v.active.transport.scope !== "terminal") throw new OwnerRefusedError("pane.send_text");
+      try { await v.active.client.call("pane.send_text", { pane_id: v.paneID, text: prompt }, "ok", "", within(v)); } catch (error) { failure = error; }
+      return terminalWriteReceipt(failure);
+     }
      try { result = await v.active.client.call("agent.prompt", { target: v.paneID, text: prompt, wait: PROMPT_WAIT }, "agent_prompted", "", within(v)); } catch (error) { failure = error; }
      return promptReceipt(result, failure);
     };
@@ -975,9 +1048,16 @@ export function createGuestDesk(env: DeskEnv) {
     // hello, a chat scope's pane methods need the agent running; pane.stream on a local pane is
     // otherwise allowed in both scopes), so it reads as paused too. A remote agent's pane is
     // refused for good: that stays an error.
+    // A refusal can come from a session admitted under a narrowed scope: the page hears the
+    // scope now, not at the next list (a mounted shell closes under chat scope).
+    republish(v.active, { ownerScope: v.active.transport.scope });
     const agent = v.active.agents.find(a => a.pane_id === v.paneID);
     const code = error instanceof HerdrAPIError ? error.code : "";
-    const pausedAtOpen = code === OWNER_PAUSED || (!!v.active.owner && !agent?.machine_id && code === OWNER_FORBIDDEN);
+    // Only pane_not_found / agent_not_found retire a started agent (startedAgents.ts); the open
+    // view hears it now, not at the next list.
+    if (code !== "" && v.active.started?.refused(v.paneID, code)) republish(v.active, { availability: ownerAvailability(v.active.agents, v.paneID) });
+    // A plain terminal is never paused: its pane runs no agent, and a refusal stays an error.
+    const pausedAtOpen = !v.view.plainTerminal && (code === OWNER_PAUSED || (!!v.active.owner && !agent?.machine_id && code === OWNER_FORBIDDEN));
     if (pausedAtOpen) {
      republish(v.active, { availability: "paused" });
      if (code !== OWNER_PAUSED) throw new Error(`pane.stream: herdr: ${OWNER_PAUSED}: the agent this stream watches is no longer running`);
@@ -1068,7 +1148,9 @@ export function createGuestDesk(env: DeskEnv) {
    // herdr's owner and guest gates both take recent or visible only (owner_gate.rs,
    // guest_gate.rs): recent text keeps the terminal's line wraps on the web.
    const source = recent ? "recent" : "visible";
-   const result = await v.active.client.call<{ read?: { text?: string } }>("agent.read", { target: v.paneID, source, format: "text" }, "pane_read", "", within(v));
+   // desk_interaction.go ReadAgentText: a plain terminal's screen is the pane's (pane.read).
+   const [method, target] = v.view.plainTerminal ? ["pane.read", { pane_id: v.paneID }] : ["agent.read", { target: v.paneID }];
+   const result = await v.active.client.call<{ read?: { text?: string } }>(method, { ...target, source, format: "text" }, "pane_read", "", within(v));
    viewOf(token);
    return result.read?.text ?? "";
   },
@@ -1102,10 +1184,12 @@ export function createGuestDesk(env: DeskEnv) {
    cancelled.throwIfAborted();
    const { access, transport, link, client } = ownerConnection(m, identity, statements, device, { now, webSocket: env.webSocket });
    disconnect();
-   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
+   const started = new StartedAgents();
+   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], listedAt: "", started };
    l.groups = new OwnerGroups(client, m.hostID, l.life.signal, () => publishBoard(l), now, env.openFolders);
    active = l;
-   l.ownerLink = { machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups };
+   l.ownerLink = { machine: m, board: l.id, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups,
+    watchStart: () => { const watch = started.watch(); return { started: (agent) => { watch.started(agent); l.kick(); }, end: watch.end }; } };
    // One publication: the link with its owner context (link.ts; ownerLink.ts is its owner view),
    // so Gram and every owner group start once, on the same link.
    setLink(link, l.ownerLink);
