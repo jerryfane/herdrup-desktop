@@ -172,6 +172,30 @@ test("a failed delete's banner is its own: a send's error shows over it and goes
  expect((await gramDesk.gramState!()).status ?? "").not.toContain("Couldn't delete");
 });
 
+test("the newest action's failure wins the banner: a later Save failure shows over an old Delete refusal", async () => {
+ ownerLink(method => {
+  if (method === "gram.list") return list([row("m1"), row("m2")]);
+  if (method === "gram.delete") throw new HerdrAPIError("owner_forbidden", "no", null);
+  throw new Error("unexpected " + method);
+ });
+ await opened();
+ await expect(gramDesk.gramDelete!("m1")).rejects.toBeInstanceOf(OwnerRefusedError);
+ refuseWrites = true;
+ await expect(gramDesk.gramSetSaved!("m1", true)).rejects.toThrow("The quota has been exceeded.");
+ let s = await gramDesk.gramState!();
+ expect([s.status, s.messages[0]?.saved]).toEqual(["Couldn't update the saved messages: The quota has been exceeded.", false]);
+ // Delete refused again: that refusal is now the newest.
+ await expect(gramDesk.gramDelete!("m2")).rejects.toBeInstanceOf(OwnerRefusedError);
+ expect((await gramDesk.gramState!()).status).toBe("Couldn't delete: " + OWNER_REFUSED);
+ await expect(gramDesk.gramSetSaved!("m1", true)).rejects.toThrow("The quota has been exceeded.");
+ expect((await gramDesk.gramState!()).status).toBe("Couldn't update the saved messages: The quota has been exceeded.");
+ // The Save that lands clears its own; the Delete refusal, still standing, shows again.
+ refuseWrites = false;
+ await gramDesk.gramSetSaved!("m1", true);
+ s = await gramDesk.gramState!();
+ expect([s.status, s.messages[0]?.saved]).toEqual(["Couldn't delete: " + OWNER_REFUSED, true]);
+});
+
 test("the owner's saved copies are one list on this browser, kept as the sender shows", async () => {
  // A copy without its machine (no owner copy) is not shown, nor kept.
  store.set("herdrup.gram.saved", JSON.stringify([{ id: "old", text: "", from: "docs", fromAgent: true, createdUnixMs: 1 }]));
@@ -912,6 +936,73 @@ test("a refused Saved lock is a failed write: the list still loads, the banner s
   s = await gramDesk.gramState!();
   expect([(s.status ?? "").includes("Couldn't update"), s.saved[0]?.expiredFile?.name]).toEqual([false, "notes.txt"]);
  });
+});
+
+test("an expiry queued on a link that has since ended writes nothing once it has the lock", async () => {
+ const file = { name: "notes.txt", mime: "text/plain", size: 5, sha256: "" };
+ store.set("herdrup.gram.saved", JSON.stringify([{ id: "x", text: "", from: "docs", fromAgent: true, createdUnixMs: 1, file, hostID: "h", machine: "dev" }]));
+ const requested = Promise.withResolvers<void>(), held = Promise.withResolvers<void>();
+ await withBrowserLocks({ request: async (_name, callback) => { requested.resolve(); await held.promise; return await callback(); } }, async () => {
+  let live = false;
+  const handle = (method: string) => {
+   if (method !== "gram.list") throw new Error("unexpected " + method);
+   return list([row("x", live ? { file } : { expired_file: file })], { digest: live ? "d2" : "d1", store_id: "s1" });
+  };
+  ownerLink(handle);
+  void opened();
+  await requested.promise;
+  // Disconnected and the same host opened again: its list shows the file live.
+  setLink(null);
+  live = true;
+  ownerLink(handle);
+  await opened();
+  held.resolve();
+  for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  const s = await gramDesk.gramState!();
+  expect([s.messages[0]?.file?.name, s.saved[0]?.file?.name, s.saved[0]?.expiredFile]).toEqual(["notes.txt", "notes.txt", undefined]);
+  expect(JSON.parse(store.get("herdrup.gram.saved")!)[0].expiredFile).toBeUndefined();
+ });
+});
+
+test("an unread-only list asked before a head list the owner's Gram accepted doesn't put back its older count", async () => {
+ const badgeAsked = Promise.withResolvers<void>(), badgeReply = Promise.withResolvers<unknown>();
+ let holdHeads = false;
+ ownerLink((method, params) => {
+  if (method !== "gram.list") throw new Error("unexpected " + method);
+  if (params.unread_only) { badgeAsked.resolve(); return badgeReply.promise; }
+  // Head lists after the refresh stay out: only the old unread-only reply could change the count.
+  if (holdHeads) return new Promise(() => {});
+  return list([row("m1")], { unread_count: 1 });
+ });
+ await badgeAsked.promise;
+ await gramDesk.gramSetVisible!(true);
+ await gramDesk.gramRefresh!();
+ expect((await gramDesk.gramState!()).unreadCount).toBe(1);
+ holdHeads = true;
+ badgeReply.resolve(list([], { unread_count: 0 }));
+ for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+ const s = await gramDesk.gramState!();
+ expect([s.unreadCount, s.messages[0]?.unread]).toEqual([1, true]);
+});
+
+test("an unread-only list asked before an older page the owner's Gram accepted doesn't put back its older count", async () => {
+ const badgeAsked = Promise.withResolvers<void>(), badgeReply = Promise.withResolvers<unknown>();
+ let hidden = false;
+ ownerLink((method, params) => {
+  if (method !== "gram.list") throw new Error("unexpected " + method);
+  if (params.unread_only) { if (!hidden) return list([], { unread_count: 1 }); badgeAsked.resolve(); return badgeReply.promise; }
+  if (params.before_id) return list([row("old")], { unread_count: 4 });
+  return list([row("new")], { unread_count: 1, has_more: true });
+ });
+ await opened();
+ hidden = true;
+ await gramDesk.gramSetVisible!(false);
+ await badgeAsked.promise;
+ expect(await gramDesk.gramLoadOlder!()).toBe(true);
+ expect((await gramDesk.gramState!()).unreadCount).toBe(4);
+ badgeReply.resolve(list([], { unread_count: 0 }));
+ for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+ expect((await gramDesk.gramState!()).unreadCount).toBe(4);
 });
 
 test("a Save keeps what another document saved since this one read Saved", async () => {

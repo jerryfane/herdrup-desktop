@@ -3,7 +3,6 @@
 // reads, and the saved copies this browser keeps (gramstore.Saved, the desktop's saved-grams.json).
 
 import type { GramAgent, SavedGram } from "../mygo";
-import { agentName } from "../gramText";
 import { isArchived, type AgentInfo } from "./board";
 import { AGENT_TO_OWNER, type GramInfo, type WireFile } from "./gramInbox";
 
@@ -29,11 +28,13 @@ export function ownerAddressable(to: string): boolean { return to !== "" && !to.
  *  that wrote first in feed order, then the rest. Senders no longer in the roster (removed, archived,
  *  federated) keep their messages in the feed but are not offered. */
 export function ownerAgents(feed: readonly GramInfo[], roster: readonly AgentInfo[], machine: string): GramAgent[] {
- const live = new Set(roster.filter(a => a.name && !isArchived(a) && ownerAddressable(a.name)).map(a => a.name!));
+ // Roster order; a sender leaves the set as it is placed, so the rest follow in roster order.
+ const rest = new Set(roster.filter(a => a.name && !isArchived(a) && ownerAddressable(a.name)).map(a => a.name!));
  const order: string[] = [];
- for (const m of feed) if (m.direction === AGENT_TO_OWNER && live.has(m.from) && !order.includes(m.from)) order.push(m.from);
- for (const name of live) if (!order.includes(name)) order.push(name);
- return order.map(name => ({ from: name, name: agentName(name), machine }));
+ for (const m of feed) if (m.direction === AGENT_TO_OWNER && rest.delete(m.from)) order.push(m.from);
+ order.push(...rest);
+ // An addressable name has no "alias/": its display name is itself.
+ return order.map(name => ({ from: name, name, machine }));
 }
 
 /** A saved copy as the owner's browser keeps it: always with the machine its message is on (hostID,
