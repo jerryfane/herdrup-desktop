@@ -699,9 +699,12 @@ test("a prompt deleted here that a restored history still holds is deleted there
  await syncEach(mac);
  const body = JSON.parse(w.livePrompts()[a.id]!) as object;
  await mac.deletePrompt(a.id);
- // The service takes the delete, then its history is restored to one that still holds a.
+ // The service takes the delete, then its history is restored to one that still holds a: that
+ // round isn't complete, and the next deletes a there again.
  w.afterPush = () => { w.reset(); w.seedPrompt(a.id, body); };
- await syncEach(mac, mac);
+ await expect(mac.accountSyncNow()).rejects.toThrow("back after the account was restored");
+ w.afterPush = null;
+ await syncEach(mac);
  expect([a.id in await byID(mac), a.id in w.livePrompts()]).toEqual([false, false]);
 });
 
@@ -2233,4 +2236,118 @@ test("a delete kept for an upload that may still land leaves the round incomplet
  w.landHeld();
  await mac.accountSyncNow();
  expect(q.id in w.livePrompts()).toBe(false);
+});
+
+// ---- #390 round 15 on the web ----
+
+test("a reload between an upload's answer and its settlement keeps what landed: a revert saved after it beats another device's later edit", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const mac = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ await syncEach(mac);
+ await save(mac, p.id, "", "v1");
+ // v1 is taken; as the answer comes another tab holds the storage lock, and the page is gone
+ // before its settlement is written (a new page on the same storage).
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ expect(markers(storage).map(([, v]) => v![0])).toEqual(["a"]);
+ release.resolve();
+ await other;
+ const reloaded = await browser(w, storage, { locks });
+ // A revert here; then another device edits.
+ await save(reloaded, p.id, "", "v0");
+ w.seedPrompt(p.id, { text: "v2", order: 0 });
+ await reloaded.accountSyncNow();
+ expect([(await byID(reloaded))[p.id]!.text, JSON.parse(w.livePrompts()[p.id]!).text, markers(storage)]).toEqual(["v0", "v0", []]);
+});
+
+test("an acceptance kept from before a restore only retires its send: what it wrote is no part of the restored account", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const mac = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ await syncEach(mac);
+ await save(mac, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ // While the page is gone, another tab's pull found the account restored (a new history).
+ const record = JSON.parse(storage.getItem(SAVED_PROMPTS_KEY)!) as { sync: { history?: number } };
+ record.sync.history = (record.sync.history ?? 0) + 1;
+ storage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(record));
+ release.resolve();
+ await other;
+ const reloaded = await browser(w, storage, { locks });
+ await save(reloaded, p.id, "", "v0");
+ w.seedPrompt(p.id, { text: "v2", order: 0 });
+ await reloaded.accountSyncNow();
+ // v0 is what this browser last agreed in that history: the other device's v2 is newer.
+ expect([(await byID(reloaded))[p.id]!.text, JSON.parse(w.livePrompts()[p.id]!).text, openSends(storage, p.id), markers(storage)]).toEqual(["v2", "v2", [], []]);
+});
+
+test("what a conflict's row showed is dropped when the readback finds the account restored: the restored prompt isn't judged against it", async () => {
+ const w = worker();
+ const mac = await browser(w, memory(), { roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ w.seedPrompt("00000000-0000-4000-8000-0000000000ff", { text: "unrelated", order: 9 });
+ await syncEach(mac);
+ // v1 is held; then v2 is sent, and lands its conflict on the held v1 as it lands (that row shows
+ // the held send landing) while v1 is saved here again; as the answer comes, the account is
+ // restored to an older backup.
+ await save(mac, p.id, "", "v1");
+ w.holdNextPush = true;
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ await save(mac, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.onPush = null; w.landHeld(); saving = save(mac, p.id, "", "v1"); };
+ w.afterPush = () => { w.afterPush = null; w.reset(); w.seedPrompt(p.id, { text: "restored", order: 0 }); };
+ await mac.accountSyncNow().catch(() => {});
+ await saving;
+ await mac.accountSyncNow();
+ // v1 landing was never agreed in the restored history: v1 is this browser's edit, and goes.
+ expect([(await byID(mac))[p.id]!.text, JSON.parse(w.livePrompts()[p.id]!).text]).toEqual(["v1", "v1"]);
+});
+
+test("a draft held at the variant cap doesn't pin the rate-limit cursor: the round after resumes from the write that can go", async () => {
+ const w = worker();
+ w.omitNow = true;
+ const storage = memory();
+ const mac = await browser(w, storage);
+ const p = await save(mac, "", "", "v0");
+ await syncEach(mac);
+ w.failPush = true;
+ for (const v of ["L1", "L2"]) {
+  await save(mac, p.id, "", v);
+  await expect(mac.accountSyncNow()).rejects.toThrow("503");
+ }
+ w.failPush = false;
+ // p's newest edit is held at the cap; an unrelated new prompt comes after it; the push is out of
+ // requests (429).
+ await save(mac, p.id, "", "L3");
+ const q = await save(mac, "", "", "unrelated");
+ w.rateLimit = 1; w.windowPosts = 1;
+ await expect(mac.accountSyncNow()).rejects.toThrow("429");
+ expect(syncOf(storage).promptsTurn).toBe(q.id);
+});
+
+test("a readback that finds a deleted prompt back after a restore leaves the round incomplete; the next deletes it again", async () => {
+ const w = worker();
+ const mac = await browser(w);
+ const p = await save(mac, "", "", "v0");
+ w.seedPrompt("00000000-0000-4000-8000-0000000000fe", { text: "unrelated", order: 9 });
+ await syncEach(mac);
+ const before = (await mac.accountSyncStatus()).lastSyncedMs;
+ await mac.deletePrompt(p.id);
+ // As the delete is taken, the account is restored to a backup that holds p.
+ w.afterPush = () => { w.reset(); w.seedPrompt(p.id, { text: "v0", order: 0 }); };
+ await expect(mac.accountSyncNow()).rejects.toThrow("back after the account was restored");
+ expect((await mac.accountSyncStatus()).lastSyncedMs).toBe(before);
+ await mac.accountSyncNow();
+ expect(p.id in w.livePrompts()).toBe(false);
 });
