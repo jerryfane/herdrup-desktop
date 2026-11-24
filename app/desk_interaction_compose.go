@@ -125,16 +125,42 @@ var promptWait = func() herdrapi.AgentPromptWaitOptions {
 		herdrapi.AgentStatusDone, herdrapi.AgentStatusUnknown}}
 }()
 
+// A draft with a line break, written raw to a plain terminal, runs the text
+// before the break. These keep the draft: nothing was written.
+var (
+	errTerminalLineBreak    = errors.New("Write one line at a time: a line break would run the text before it.")
+	errTerminalPasteRefused = errors.New("This program can't take a pasted block. Write one line at a time.")
+)
+
+// writeToTerminal writes a draft to a plain terminal without running it. One
+// line goes as it is. A draft with a line break goes as one bracketed paste
+// where the machine can send one (pane_send_text_bracketed), and otherwise
+// not at all.
+func writeToTerminal(ctx context.Context, v *interaction, text string) error {
+	if !strings.ContainsAny(text, "\r\n") {
+		return v.client.PaneSendText(ctx, v.PaneID, text)
+	}
+	if ok, _ := v.client.Supports(ctx, herdrapi.CapabilityPaneSendTextBracketed); !ok {
+		return errTerminalLineBreak
+	}
+	err := v.client.PaneSendBracketedText(ctx, v.PaneID, text)
+	var api *bridge.APIError
+	if errors.As(err, &api) && api.Code == "bracketed_paste_unavailable" {
+		return errTerminalPasteRefused
+	}
+	return err
+}
+
 // Delivery uncertainty consumes the draft, just as native PromptRejection does:
 // resending a timeout or a lost response can duplicate a PTY write.
 func submitPanePrompt(ctx context.Context, v *interaction, text string) (string, error) {
 	delivery, note := "submitted", ""
 	var err error
 	if v.PlainTerminal {
-		err = v.client.PaneSendText(ctx, v.PaneID, text)
+		err = writeToTerminal(ctx, v, text)
 		delivery, note = "written", "Written to terminal; press Enter to run it."
 		var unsupported *engine.ErrUnsupported
-		if errors.As(err, &unsupported) {
+		if errors.As(err, &unsupported) || errors.Is(err, errTerminalLineBreak) || errors.Is(err, errTerminalPasteRefused) {
 			return "", err
 		}
 	} else {
