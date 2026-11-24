@@ -3,7 +3,7 @@
 // desk_guest_invite.go, desk_updates.go) against a fake herdr behind the link's real engine client,
 // and once over a real owner link to a relay host refusing the method (an older herdr).
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { HerdrAPIError } from "../src/webguest/errors";
+import { HerdrAPIError, NotSentError } from "../src/webguest/errors";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1148,7 +1148,7 @@ test("a call's sendSignal ends the capability ping before it, and the call is ne
  await plain;
 });
 
-test("a call cancelled before it is sent ends with its reason, its capability's pong cached, probed, or answered after the cancel", async () => {
+test("a call cancelled before it is sent is a NotSentError with its reason, its capability's pong cached, probed, or answered after the cancel", async () => {
  let answer: Promise<void> | null = null;
  const sent: string[] = [];
  const web = {
@@ -1162,12 +1162,12 @@ test("a call cancelled before it is sent ends with its reason, its capability's 
   stream() { throw new Error("no streams"); },
  } as unknown as WebLink;
  const reason = new Error("Settings changed");
- const outcome = (call: Promise<unknown>) => call.then(() => "sent", (error: unknown) => error);
+ const outcome = (call: Promise<unknown>) => call.then(() => "sent", (error: unknown) => error instanceof NotSentError && error.error === reason ? "not sent, its reason" : error);
  const split = (client: GuestClient, sendSignal?: AbortSignal) => outcome(client.call("pane.split", {}, "pane_info", "pane_split", undefined, sendSignal));
- expect(await split(new GuestClient(web), AbortSignal.abort(reason))).toBe(reason); // no pong yet
+ expect(await split(new GuestClient(web), AbortSignal.abort(reason))).toBe("not sent, its reason"); // no pong yet
  const warm = new GuestClient(web);
  await warm.ping();
- expect(await split(warm, AbortSignal.abort(reason))).toBe(reason); // a pong cached
+ expect(await split(warm, AbortSignal.abort(reason))).toBe("not sent, its reason"); // a pong cached
  const held = Promise.withResolvers<void>();
  answer = held.promise;
  const unsent = new AbortController();
@@ -1175,9 +1175,35 @@ test("a call cancelled before it is sent ends with its reason, its capability's 
  await tick();
  unsent.abort(reason);
  held.resolve(); // the probe's pong comes after the cancel
- expect(await probing).toBe(reason);
+ expect(await probing).toBe("not sent, its reason");
  expect(sent.filter((method) => method !== "ping")).toEqual([]);
  expect(await split(warm)).toBeInstanceOf(ErrUnsupported); // not cancelled: the cached pong still refuses it
+});
+
+test.each(["rejects", "answers late"] as const)("a call whose sendSignal then signal end while its capability probe waits, the probe then %s: the NotSentError has the first reason", async (probeEnds) => {
+ const sent: string[] = [];
+ const web = {
+  access: {}, features: () => ({}),
+  async call(method: string, _params?: unknown, signal?: AbortSignal) {
+   sent.push(method);
+   if (method !== "ping") return { type: "pane_info", pane: { pane_id: "made" } };
+   // The probe ends only when its signal does: rejected with its reason, or answered just after.
+   await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }));
+   if (probeEnds === "rejects") throw signal!.reason;
+   return { type: "pong", version: "0.9.6", capabilities: { pane_split: true } };
+  },
+  stream() { throw new Error("no streams"); },
+ } as unknown as WebLink;
+ const first = new Error("Settings changed"), second = new Error("link ended");
+ const send = new AbortController(), life = new AbortController();
+ const calling = new GuestClient(web).call("pane.split", {}, "pane_info", "pane_split", life.signal, send.signal).then(() => "sent", (error: unknown) => error);
+ await tick();
+ send.abort(first);
+ life.abort(second);
+ const error = await calling;
+ expect(error).toBeInstanceOf(NotSentError);
+ expect((error as NotSentError).error).toBe(first);
+ expect(sent).toEqual(["ping"]);
 });
 
 test("an accounts.list refusal clears the row labels, and the poll asks again at its pace while the link is terminal", async () => {

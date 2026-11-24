@@ -1,7 +1,7 @@
 // internal/engine's Client for one guest link: the herdr call, its capability gate (one ping,
 // cached) and its result tag, with Go's error texts (engine.go).
 
-import { HerdrAPIError } from "../webguest/errors";
+import { HerdrAPIError, notSent } from "../webguest/errors";
 import type { WebLink } from "./link";
 
 export interface Pong { version?: string; protocol?: number; capabilities?: Record<string, unknown> | null }
@@ -46,11 +46,9 @@ export function untagged<T>(result: unknown): T {
  return rest as T;
 }
 
-/** A call cancelled before it is sent ends with its signal's reason (#361's rebase maps it to
- *  NotSentError through beforeSend). */
-function presendCheck(signal?: AbortSignal, sendSignal?: AbortSignal): void {
- signal?.throwIfAborted();
- sendSignal?.throwIfAborted();
+/** A call cancelled before it is sent ends as NotSentError (errors.ts), with unsent's reason. */
+function presendCheck(unsent?: AbortSignal): void {
+ if (unsent?.aborted) throw notSent(unsent.reason);
 }
 
 export class GuestClient {
@@ -70,26 +68,30 @@ export class GuestClient {
  }
 
  /** engine.go gate: refuses a call the host's pong says it lacks; an unanswered ping lets it through.
-  *  The ping is the call's pre-send work, so sendSignal (the call's, if it has one) ends it too. A
-  *  call cancelled before it is sent ends with its signal's reason, its pong cached or probed. */
- async gate(method: string, capability: string, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<void> {
+  *  The ping is the call's pre-send work, so unsent (the call's pre-send signal) ends it too, and
+  *  every check reads unsent: a call cancelled before it is sent is a NotSentError with the reason
+  *  that ended it first, its pong cached or probed. */
+ async gate(method: string, capability: string, unsent?: AbortSignal): Promise<void> {
   if (capability === "") return;
-  presendCheck(signal, sendSignal);
+  presendCheck(unsent);
   let pong = this.#probed;
   if (pong === null) {
-   const probe = sendSignal === undefined ? signal : signal === undefined ? sendSignal : AbortSignal.any([signal, sendSignal]);
-   try { pong = await this.ping(probe); } catch { presendCheck(signal, sendSignal); return; }
-   presendCheck(signal, sendSignal);
+   try { pong = await this.ping(unsent); } catch { presendCheck(unsent); return; }
+   presendCheck(unsent);
   }
   if (pong.capabilities?.[capability] !== true) throw new ErrUnsupported(method, capability, pong.version ?? "");
  }
 
  /** engine.go doRaw: gate, call, map the error, check the result's tag; the result keeps its tag.
-  *  sendSignal ends the call only while it is unsent (WebLink.call), its gate's ping included. */
+  *  sendSignal ends the call only while it is unsent (WebLink.call). One pre-send signal (signal
+  *  and sendSignal), made before the gate, is the gate's and goes to the link as the call's
+  *  sendSignal: the gate and the hand-off read the same first reason, and the link detaches it at
+  *  the hand-off, so sendSignal never ends the call past it. */
  async call<T>(method: string, params: unknown, tag: string, capability = "", signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T> {
-  await this.gate(method, capability, signal, sendSignal);
+  const unsent = sendSignal === undefined ? undefined : signal === undefined ? sendSignal : AbortSignal.any([signal, sendSignal]);
+  await this.gate(method, capability, unsent ?? signal);
   let result: unknown;
-  try { result = await this.link.call(method, params, signal, sendSignal); } catch (error) { throw this.mapError(method, error); }
+  try { result = await this.link.call(method, params, signal, unsent); } catch (error) { throw this.mapError(method, error); }
   checkTag(method, result, tag);
   return result as T;
  }

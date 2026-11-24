@@ -2,14 +2,21 @@ import { Desk, events, type AgentTarget, type BoardUpdate, type SavedTerminal } 
 import { savedTerminalChanged, selectInteraction } from "./interaction";
 import "./terminals.css";
 import { errorText } from "./errors";
-import { deskOffers } from "./shellModel";
+import { deskOffers, ownerWrites } from "./shellModel";
 
 type Scope = Pick<BoardUpdate, "machineID" | "session">;
 type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
 const session = (value: string) => value === "default" ? "" : value;
-let active: { scope: Scope; close(): void } | null = null;
+let active: { scope: Scope; writes: boolean; close(): void } | null = null;
 events.boardChanged.on(board => { if (active && (active.scope.machineID !== board.machineID || session(active.scope.session) !== session(board.session))) active.close(); });
-events.stateChanged.on(state => { if (state.phase !== "connected") active?.close(); });
+// Renaming and closing write on the machine: a web owner's link may only under a terminal-scope
+// grant (shellModel.ts ownerWrites); forgetting stays on this device. A sheet built for other
+// writes than the connection now has closes, its confirmation too.
+let writes = ownerWrites({});
+events.stateChanged.on(state => {
+  writes = ownerWrites(state);
+  if (active && (state.phase !== "connected" || active.writes !== writes)) active.close();
+});
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") { const node = document.createElement(tag); node.className = cls; node.textContent = text; return node; }
 function button(text: string, action: () => void) { const node = el("button", "", text); node.type = "button"; node.onclick = action; return node; }
 
@@ -29,8 +36,10 @@ export async function terminalRows(scope: Scope, query: string, symbol: SymbolRe
     const icon = el("span", "saved-terminal-icon"); icon.setAttribute("aria-hidden", "true"); icon.append(await symbol("terminal", 17, "semibold"));
     const label = el("span", "saved-terminal-label t-card-title", entry.label);
     const text = el("span", "saved-terminal-text"); text.append(label, el("span", "saved-terminal-kind t-card-subtitle", "shell"));
-    const open = () => { void selectInteraction(target, undefined, true).then(() => { document.getElementById("select")!.hidden = true; }).catch(error => { label.textContent = `${entry.label}: ${errorText(error)}`; }); };
     const manage = () => manageTerminal(target, entry, changed);
+    // The shell opens where the connection may stream and write it (ownerWrites, as Rename and
+    // Close); elsewhere the row offers what this device can do: Forget.
+    const open = writes ? () => { void selectInteraction(target, undefined, true).then(() => { document.getElementById("select")!.hidden = true; }).catch(error => { label.textContent = `${entry.label}: ${errorText(error)}`; }); } : manage;
     const options = button("…", manage); options.setAttribute("aria-label", `${entry.label} options`);
     options.onclick = event => { event.stopPropagation(); manage(); };
     row.onclick = open;
@@ -75,12 +84,13 @@ function manageTerminal(target: AgentTarget, terminal: SavedTerminal, changed: (
       button("Cancel", () => { confirmation.hidden = true; actions.hidden = false; label.hidden = false; }),
       button(closeRemote ? "Close terminal" : "Forget terminal", () => { void perform(() => closeRemote ? Desk.closeTerminal(target) : Desk.forgetTerminal(target), null); }));
   }
-  actions.append(button("Save name", () => {
+  const rename = button("Save name", () => {
     const name = label.value.trim(); if (!name) { report("Enter a terminal name."); label.focus(); return; }
     void perform(() => Desk.renameTerminal(target, name), name);
-  }), button("Close terminal…", () => confirm(true)), button("Forget without closing…", () => confirm(false)));
-  modal.append(header, label, actions, confirmation, status);
-  const owner = { scope: target, close: () => modal.close() }; active = owner;
+  });
+  actions.append(...(writes ? [rename, button("Close terminal…", () => confirm(true))] : []), button("Forget without closing…", () => confirm(false)));
+  modal.append(header, ...(writes ? [label] : []), actions, confirmation, status);
+  const owner = { scope: target, writes, close: () => modal.close() }; active = owner;
   modal.addEventListener("cancel", event => { if (busy) event.preventDefault(); });
   modal.addEventListener("close", () => {
     disposed = true; if (active === owner) active = null; modal.remove();

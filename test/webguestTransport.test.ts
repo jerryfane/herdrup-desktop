@@ -2,12 +2,15 @@
 // over real WebSockets.
 import { afterEach, expect, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
-import { GuestError, HerdrAPIError } from "../src/webguest/errors";
+import { GuestError, HerdrAPIError, NotSentError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { Invite } from "../src/webguest/invite";
 import { MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT } from "../src/webguest/noise";
-import { acceptInvite, guestLink, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type WebSocketFactory } from "../src/webguest/transport";
+import { acceptInvite, guestLink, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type RelayWebSocket, type WebSocketFactory } from "../src/webguest/transport";
 import { memoryRelay, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
+import { GuestClient } from "../src/web/engine";
+import { transportLink } from "../src/web/link";
+import type { GuestAccess } from "../src/mygo";
 
 let relays: TestRelay[] = [];
 afterEach(() => { for (const relay of relays) relay.stop(); relays = []; });
@@ -321,6 +324,227 @@ test("a connect the relay admits ends the backoff", async () => {
  refuse = true;
  expect(await kindOf(transport.call("ping"))).toBe("rate_limited");
  expect(transport.rateLimitedUntil()).toBe(clock + 15_000);
+});
+
+test("a call fails as NotSentError for every failure before its request reaches the socket, and never after", async () => {
+ let mode = "", helloed = Promise.withResolvers<void>(), received = Promise.withResolvers<void>();
+ const relay = track(startRelay({
+  admit: () => mode === "refuse" ? new Response(null, { status: 429 }) : undefined,
+  async serve(conn, handshake) {
+   const h = await handshake();
+   helloed.resolve();
+   if (mode === "hold") return;
+   if (mode === "refuseHello") { h.reply({ ok: false, error: "revoked" }); return; }
+   const host = h.reply({ ok: true, guest_id: "grant-1" });
+   await host.readLine();
+   received.resolve();
+   if (mode === "close") conn.close();
+  },
+ }));
+ const gone = startRelay({ async serve() {} });
+ gone.stop();
+ const transportOn = async (r: TestRelay, callLimitMs?: number) => new GuestTransport(guestLink(accessOn(r)), await identity(), callLimitMs ? { callLimitMs } : {});
+ /** A call aborted (with reason) through its signal, or its sendSignal, once the host has reached at. */
+ const cancelled = async (at: () => Promise<void>, through: "signal" | "sendSignal" = "signal") => {
+  const transport = await transportOn(relay), call = new AbortController();
+  const pending = transport.call("agent.start", {}, { [through]: call.signal });
+  await at();
+  call.abort(new Error("sheet dismissed"));
+  return pending;
+ };
+ const cases: [string, string, "not sent" | "maybe sent", () => Promise<unknown>][] = [
+  ["the relay refuses the connect (429)", "refuse", "not sent", async () => (await transportOn(relay)).call("agent.start")],
+  ["the relay can't be reached", "", "not sent", async () => (await transportOn(gone)).call("agent.start")],
+  ["the host refuses the hello", "refuseHello", "not sent", async () => (await transportOn(relay)).call("agent.start")],
+  ["the call was aborted before it began", "", "not sent", async () => {
+   const transport = await transportOn(relay), call = new AbortController();
+   call.abort(new Error("sheet dismissed"));
+   return transport.call("agent.start", {}, { signal: call.signal });
+  }],
+  ["the call is cancelled while its hello waits", "hold", "not sent", () => cancelled(() => helloed.promise)],
+  ["the call's sendSignal ends while its hello waits", "hold", "not sent", () => cancelled(() => helloed.promise, "sendSignal")],
+  ["the transport closed before the call", "", "not sent", async () => { const transport = await transportOn(relay); transport.close(); return transport.call("agent.start"); }],
+  ["the host closes once it has the request", "close", "maybe sent", async () => (await transportOn(relay)).call("agent.start")],
+  ["the call is cancelled once the host has the request", "wait", "maybe sent", () => cancelled(() => received.promise)],
+  ["the round-trip limit passes while its hello waits", "hold", "not sent", async () => (await transportOn(relay, 200)).call("agent.start")],
+ ];
+ for (const [name, m, want, run] of cases) {
+  mode = m; helloed = Promise.withResolvers(); received = Promise.withResolvers();
+  const error = await run().then(() => "answered", (e: unknown) => e);
+  expect(`${name}: ${error instanceof NotSentError ? "not sent" : error instanceof Error ? "maybe sent" : String(error)}`).toBe(`${name}: ${want}`);
+ }
+});
+
+// The hand-off (transport.ts handOff): a request's signal or sendSignal ending at any point before
+// its first frame reaches the socket sends nothing, on a reused session and a fresh one; once the
+// host has it, signal ends the call (maybe sent) and sendSignal no longer does. The points: the
+// caller's own turn (call() returned, nothing awaited yet), the host holding the hello, the host's
+// admission on its way, and the admission arrived at the page's socket (its message handled).
+type HandOffPoint = "the caller's turn" | "the held hello" | "the admission on its way" | "the admission arrived" | "the host has it";
+const handOffCases = (["signal", "sendSignal"] as const).flatMap(through => ([
+ ["reused", "the caller's turn"], ["fresh", "the caller's turn"], ["fresh", "the held hello"], ["fresh", "the admission on its way"],
+ ["fresh", "the admission arrived"], ["reused", "the host has it"], ["fresh", "the host has it"],
+] as const).map(([session, at]) => [session, through, at] as [string, "signal" | "sendSignal", HandOffPoint]));
+
+/** A page socket over a real WebSocket that runs after(), once, right after the page handled the
+ *  first message (on a fresh socket, the host's admission). */
+class AfterFirstMessage implements RelayWebSocket {
+ #handled = false;
+ #onmessage: ((event: MessageEvent) => void) | null = null;
+ constructor(private readonly ws: WebSocket, private readonly after: () => void) {}
+ get binaryType() { return this.ws.binaryType; }
+ set binaryType(type: BinaryType) { this.ws.binaryType = type; }
+ get readyState() { return this.ws.readyState; }
+ send(data: Uint8Array<ArrayBuffer>) { this.ws.send(data); }
+ close() { this.ws.close(); }
+ get onopen() { return this.ws.onopen; }
+ set onopen(f) { this.ws.onopen = f; }
+ get onerror() { return this.ws.onerror; }
+ set onerror(f) { this.ws.onerror = f; }
+ get onclose() { return this.ws.onclose; }
+ set onclose(f) { this.ws.onclose = f; }
+ get onmessage() { return this.#onmessage; }
+ set onmessage(f: ((event: MessageEvent) => void) | null) {
+  this.#onmessage = f;
+  this.ws.onmessage = f === null ? null : (event) => { f(event); if (!this.#handled) { this.#handled = true; this.after(); } };
+ }
+}
+
+test.each(handOffCases)("a request on a %s session, its %s ended at %s", async (sessionKind, through, at) => {
+ const prompts: string[] = [], serving: Promise<void>[] = [];
+ const got = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+ const end = new AbortController();
+ let armed = false;
+ const ending = (point: HandOffPoint) => { if (armed && at === point) end.abort(new Error("sheet dismissed")); };
+ const relay = track(startRelay({
+  admit: () => undefined, // counts the connects
+  serve(_conn, handshake) {
+   const run = (async () => {
+    const hello = await handshake();
+    ending("the held hello");
+    const host = hello.reply({ ok: true, guest_id: "grant-1", features: { multi_request: true } });
+    ending("the admission on its way");
+    for (;;) {
+     const line = await host.readLine();
+     if (line === null) return;
+     const request = JSON.parse(line) as { id: string; method: string };
+     if (request.method === "agent.prompt") { prompts.push(request.id); got.resolve(); await release.promise; }
+     host.write(JSON.stringify({ id: request.id, result: { type: request.method === "ping" ? "pong" : "ok" } }) + "\n");
+    }
+   })();
+   serving.push(run.catch(() => {}));
+   return run;
+  },
+ }));
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity(), {
+  webSocket: url => new AfterFirstMessage(new WebSocket(url), () => ending("the admission arrived")),
+ });
+ try {
+  if (sessionKind === "reused") expect(await transport.call("ping")).toEqual({ type: "pong" });
+  armed = true;
+  const calling = transport.call("agent.prompt", { text: "deploy" }, { [through]: end.signal })
+   .then(() => "answered", (error: unknown) => error instanceof NotSentError ? "not sent" : "maybe sent");
+  ending("the caller's turn");
+  if (at === "the host has it") {
+   await got.promise;
+   end.abort(new Error("sheet dismissed"));
+   release.resolve();
+   expect(await calling).toBe(through === "signal" ? "maybe sent" : "answered");
+   expect(prompts.length).toBe(1);
+  } else {
+   expect(await calling).toBe("not sent");
+   transport.close();
+   await Promise.all(serving);
+   expect(prompts).toEqual([]);
+  }
+  // A reused session's request connects no more; a fresh one ended in the caller's turn never dials.
+  expect(relay.connects).toBe(sessionKind === "fresh" && at === "the caller's turn" ? 0 : 1);
+ } finally { release.resolve(); transport.close(); }
+});
+
+// One pre-send signal (signal and sendSignal) decides the hand-off: its reason is the one that
+// ended it first, whichever of the two that was.
+test.each(["sendSignal", "signal"] as const)("a reused session's request whose %s ends first, the other next, before its hand-off: NotSentError with the first reason", async (first) => {
+ const relay = track(startRelay({
+  async serve(_conn, handshake) {
+   const host = (await handshake()).reply({ ok: true, guest_id: "grant-1", features: { multi_request: true } });
+   for (;;) {
+    const line = await host.readLine();
+    if (line === null) return;
+    const request = JSON.parse(line) as { id: string; method: string };
+    host.write(JSON.stringify({ id: request.id, result: { type: request.method === "ping" ? "pong" : "ok" } }) + "\n");
+   }
+  },
+ }));
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ try {
+  expect(await transport.call("ping")).toEqual({ type: "pong" });
+  const sendEnd = new AbortController(), lifeEnd = new AbortController();
+  const reasons = { sendSignal: new Error("Settings changed"), signal: new Error("link ended") };
+  const calling = transport.call("agent.prompt", { text: "deploy" }, { signal: lifeEnd.signal, sendSignal: sendEnd.signal }).catch((error: unknown) => error);
+  const ends = { sendSignal: () => sendEnd.abort(reasons.sendSignal), signal: () => lifeEnd.abort(reasons.signal) };
+  ends[first]();
+  ends[first === "signal" ? "sendSignal" : "signal"]();
+  const error = await calling;
+  expect(error).toBeInstanceOf(NotSentError);
+  expect((error as NotSentError).error).toBe(reasons[first]);
+ } finally { transport.close(); }
+});
+
+/** A multi-request host that answers ping (a pong with every capability) and ok to anything else,
+ *  and keeps every method it received. */
+function answeringHost() {
+ const received: string[] = [];
+ const relay = track(startRelay({
+  admit: () => undefined, // counts the connects
+  async serve(_conn, handshake) {
+   const host = (await handshake()).reply({ ok: true, guest_id: "grant-1", features: { multi_request: true } });
+   for (;;) {
+    const line = await host.readLine();
+    if (line === null) return;
+    const request = JSON.parse(line) as { id: string; method: string };
+    received.push(request.method);
+    host.write(JSON.stringify({ id: request.id, result: request.method === "ping" ? { type: "pong", capabilities: { pane_send_text: true } } : { type: "ok" } }) + "\n");
+   }
+  },
+ }));
+ return { relay, received };
+}
+
+test("a call cancelled before it is sent leaves the idle session to the next call", async () => {
+ const { relay, received } = answeringHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ try {
+  await transport.call("ping");
+  const end = new AbortController();
+  const writing = transport.call("pane.send_text", { text: "make lint" }, { signal: end.signal }).catch((error: unknown) => error);
+  end.abort(new Error("sheet dismissed"));
+  expect(await writing).toBeInstanceOf(NotSentError);
+  await transport.call("ping");
+  expect(received).toEqual(["ping", "ping"]);
+  expect(relay.connects).toBe(1);
+ } finally { transport.close(); }
+});
+
+// GuestClient's gate and the transport's hand-off read one pre-send signal: with the capability's
+// pong cached, a call whose two signals both end before it crosses its gate has the first reason.
+test.each(["sendSignal", "signal"] as const)("through GuestClient with a cached pong, a call whose %s ends first and the other next before the gate is crossed: NotSentError with the first reason", async (first) => {
+ const { relay, received } = answeringHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ const client = new GuestClient(transportLink({} as GuestAccess, transport));
+ try {
+  await client.ping();
+  const sendEnd = new AbortController(), lifeEnd = new AbortController();
+  const reasons = { sendSignal: new Error("Settings changed"), signal: new Error("link ended") };
+  const calling = client.call("pane.send_text", { text: "make lint" }, "ok", "pane_send_text", lifeEnd.signal, sendEnd.signal).catch((error: unknown) => error);
+  const ends = { sendSignal: () => sendEnd.abort(reasons.sendSignal), signal: () => lifeEnd.abort(reasons.signal) };
+  ends[first]();
+  ends[first === "signal" ? "sendSignal" : "signal"]();
+  const error = await calling;
+  expect(error).toBeInstanceOf(NotSentError);
+  expect((error as NotSentError).error).toBe(reasons[first]);
+  expect(received).toEqual(["ping"]);
+ } finally { transport.close(); }
 });
 
 // guest_test.go:292-395, the F1 fix: request A passes the relay and waits for the host's reply;
