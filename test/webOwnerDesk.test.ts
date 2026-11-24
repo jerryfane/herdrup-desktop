@@ -144,6 +144,28 @@ test("a new owner link is usable from the moment its watchers hear of it, by its
  } finally { off(); desk.disconnectOwner(); relay.stop(); }
 });
 
+test("switching machines, the new link's watchers find it usable and Desk.state() on that same machine", async () => {
+ const alpha = host(), beta = host();
+ const desk = await deskWithKey();
+ const seen: [boolean, Promise<ConnState>][] = [];
+ try {
+  const alphaListed = boardOf(alpha);
+  await desk.connectOwner({ ...machineOn(alpha), label: "alpha" }, statements, "x", new AbortController().signal);
+  await alphaListed;
+  expect(await desk.state()).toMatchObject({ phase: "connected", machine: "alpha" });
+  const off = onLinkChanged((_link, owner) => { if (owner) seen.push([desk.ownerLinkUsable(owner.machine.hostID), desk.state()]); });
+  const betaListed = boardOf(beta);
+  await desk.connectOwner({ ...machineOn(beta), label: "beta" }, statements, "x", new AbortController().signal);
+  off();
+  expect(seen).toHaveLength(1);
+  expect([seen[0]![0], await seen[0]![1]]).toMatchObject([true, { phase: "connecting", machine: "beta" }]);
+  await betaListed;
+  expect([desk.ownerLinkUsable(beta.hostID), await desk.state()]).toMatchObject([true, { phase: "connected", machine: "beta" }]);
+  desk.disconnectOwner();
+  expect([desk.ownerLinkUsable(beta.hostID), await desk.state()]).toMatchObject([false, { phase: "idle", machine: "" }]);
+ } finally { desk.disconnectOwner(); alpha.stop(); beta.stop(); }
+});
+
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;
  const relay = host({ list: (session, req) => fail
