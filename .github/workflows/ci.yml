@@ -107,20 +107,25 @@ jobs:
         run: |
           pkgs="libwebkit2gtk-4.1-0 xvfb"
           opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20"
-          cached() { sudo du -sb /var/cache/apt/archives | cut -f1; }
+          # Measure the archive cache; a failed measurement is an error, not a stalled download.
+          cached() {
+            local out
+            out=$(sudo du -sb /var/cache/apt/archives) || { echo "::error::cannot measure the apt cache" >&2; return 1; }
+            printf '%s\n' "${out%%[[:space:]]*}"
+          }
           updated=
           for attempt in 1 2 3; do
             [ "$attempt" -gt 1 ] && sleep 5
-            if sudo timeout 60 apt-get $opts update; then updated=1; break; fi
+            if sudo timeout 60 apt-get $opts update --error-on=any; then updated=1; break; fi
             echo "::warning::apt update attempt $attempt failed or timed out"
           done
           [ -n "$updated" ] || exit 1
-          fetched=; stalled=0; attempt=0; before=$(cached)
+          fetched=; stalled=0; attempt=0; before=$(cached) || exit 1
           while [ "$stalled" -lt 2 ]; do
             attempt=$((attempt + 1))
             [ "$attempt" -gt 1 ] && sleep 5
             if sudo timeout 120 apt-get $opts install -y --download-only $pkgs; then fetched=1; break; fi
-            after=$(cached)
+            after=$(cached) || exit 1
             if [ "$after" -gt "$before" ]; then stalled=0; else stalled=$((stalled + 1)); fi
             echo "::warning::apt download attempt $attempt incomplete ($before -> $after bytes cached)"
             before=$after
