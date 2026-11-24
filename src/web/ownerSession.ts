@@ -113,7 +113,9 @@ export class PageExit {
    do await this.account.signOutSettled(); while (this.account.signOutAttempt?.phase === "sending");
    const pending = this.#pending!;
    this.#pending = null;
-   this.#left = pending.exit() !== "stayed";
+   // Claimed before it runs: a leave from inside the exit finds the page left, and queues nothing.
+   this.#left = true;
+   if (pending.exit() === "stayed") this.#left = false;
   })();
  }
 }

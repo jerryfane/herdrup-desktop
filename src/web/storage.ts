@@ -132,6 +132,7 @@ export function machineLists(key: string, storage: () => Pick<Storage, "getItem"
    let changes = pending.get(hostID);
    if (!changes) pending.set(hostID, changes = new Map());
    changes.set(id, on);
+   // false: the lock was refused and write didn't run; the changes stay pending, for the next write.
    return withStorageLock(key, write, locks).then(() => {});
   },
  };

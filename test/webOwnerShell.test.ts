@@ -6,7 +6,7 @@ import { boardAfter, boardOf, connectionChanged, ownerWrites, shareShown, shellP
 import { bootMarks, choosePage, loadPage, signedInBefore } from "../src/web/bootChoice";
 import { GROUPS_REFRESH_MS, OwnerGroups } from "../src/web/groups";
 import { machineLists } from "../src/web/storage";
-import type { Locks } from "../src/web/locks";
+import { withStorageLock, type Locks } from "../src/web/locks";
 import { ErrUnsupported } from "../src/web/engine";
 import { HerdrAPIError } from "../src/webguest/errors";
 import type { ConnState } from "../src/mygo";
@@ -398,4 +398,15 @@ test("a lock the browser refuses is a write not made: set settles, the change ho
  refuse = false;
  await lists.set("alpha", "A2", true);
  expect(JSON.parse(shared().getItem("open")!)).toEqual({ alpha: ["A1", "A2"] });
+});
+
+test("the storage lock: true once update ran, false only when the lock was refused (update didn't run); an update that throws rejects with or without Web Locks", async () => {
+ const granted: Locks = { request: <T>(_name: string, run: () => Promise<T>) => run() };
+ const refused: Locks = { request: () => Promise.reject(new DOMException("denied", "SecurityError")) };
+ let runs = 0;
+ const update = () => { runs++; };
+ const fails = () => { throw new Error("quota"); };
+ expect([await withStorageLock("k", update, granted), await withStorageLock("k", update, null), await withStorageLock("k", update, refused), runs]).toEqual([true, true, false, 2]);
+ expect(await withStorageLock("k", fails, granted).catch((e: Error) => e.message)).toBe("quota");
+ expect(await withStorageLock("k", fails, null).catch((e: Error) => e.message)).toBe("quota");
 });

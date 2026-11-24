@@ -14,7 +14,6 @@ import { AccountServiceError, SignedOutError } from "./account";
 import { bootMarks } from "./bootChoice";
 import { approvalRunning, closingLink, followSession, OwnerWork } from "./ownerSession";
 import { currentOwnerLink } from "./ownerLink";
-import { events } from "./events";
 import { ownerAccess, ownerDesk, pageExit } from "./mygo";
 import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { probeList, type MachineStatus } from "./ownerProbe";
@@ -62,9 +61,6 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
  let attempt = 0;
  /** The run whose list refresh is out (refreshShown), null when none is. */
  let refreshing: AbortSignal | null = null;
- /** The open link's last state: picking its machine goes straight back to it unless it failed. */
- let linkPhase = "";
- events.stateChanged.on(s => { linkPhase = s.phase; });
 
  // The owner screen's account row (as the guest page's welcome has it): signing out there, or in
  // Settings, ends the session.
@@ -124,12 +120,13 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
  }
 
  /** Opens an approved machine: its owner link, then the shell's agents (show; a link opened again
-  *  in place doesn't change what shows). Picking the machine whose link is open (and not failed)
-  *  goes straight back to it; again (Reconnect, a restored session) opens it anew. */
+  *  in place doesn't change what shows). Picking the machine whose link is open and usable (the
+  *  owner Desk says, from that link's own state) goes straight back to it; again (Reconnect, a
+  *  restored session) opens it anew. */
  function open(m: EnvelopeMachine, again = false, show = true) {
   const signal = work.signal;
   if (signal === null) return;
-  if (!again && currentOwnerLink()?.machine.hostID === m.hostID && linkPhase !== "error") { showAgents(); return; }
+  if (!again && ownerDesk.ownerLinkUsable(m.hostID)) { showAgents(); return; }
   opened = m;
   opening = m;
   statuses.delete(m.hostID);
