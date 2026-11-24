@@ -99,23 +99,30 @@ export interface MachineLists {
  set(hostID: string, id: string, on: boolean): Promise<void>;
 }
 
-/** Whether value is a record of id lists by machine: an object (not an array) whose every entry
- *  is an array of strings. */
-function idLists(value: unknown): value is Record<string, string[]> {
- return typeof value === "object" && value !== null && !Array.isArray(value)
-  && Object.values(value).every(ids => Array.isArray(ids) && ids.every(id => typeof id === "string"));
+/** Whether value is an object, not an array: the shape of a record by machine. */
+function byMachine(value: unknown): value is Record<string, unknown> {
+ return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Whether ids is one machine's list: an array of strings. */
+function idList(ids: unknown): ids is string[] {
+ return Array.isArray(ids) && ids.every(id => typeof id === "string");
 }
 
 export function machineLists(key: string, storage: () => Pick<Storage, "getItem" | "setItem"> = () => localStorage,
  locks: Locks | null = browserLocks()): MachineLists {
  /** hostID → id → on: changes not yet stored. */
  const pending = new Map<string, Map<string, boolean>>();
- /** What storage holds, null when it can't be read: also when it isn't lists of ids by machine
-  *  (another version's or a damaged record is not written over; edits stay pending). */
+ /** What storage holds, decoded (an absent key is an empty record); undefined when it can't be
+  *  read or isn't JSON. */
+ const decoded = (): unknown => {
+  try { const raw = storage().getItem(key); return raw === null ? {} : JSON.parse(raw); } catch { return undefined; }
+ };
+ /** What storage holds for writing, null unless every machine's entry is a list of ids: another
+  *  version's or a damaged record is not written over (edits stay pending). */
  const stored = (): Record<string, string[]> | null => {
-  let value: unknown;
-  try { const raw = storage().getItem(key); value = raw === null ? {} : JSON.parse(raw); } catch { return null; }
-  return idLists(value) ? value : null;
+  const value = decoded();
+  return byMachine(value) && Object.values(value).every(idList) ? value as Record<string, string[]> : null;
  };
  /** ids (just decoded, so this page's own) with hostID's pending changes: as they are when there
   *  are none, else through one set, made a list once. */
@@ -137,7 +144,13 @@ export function machineLists(key: string, storage: () => Pick<Storage, "getItem"
   try { storage().setItem(key, JSON.stringify(now)); pending.clear(); } catch { /* kept in pending */ }
  };
  return {
-  get(hostID) { return applied(hostID, stored()?.[hostID] ?? []); },
+  // Only hostID's entry need be a list of ids: another machine's damaged entry doesn't hide this
+  // one's (it only stops writes, above).
+  get(hostID) {
+   const value = decoded();
+   const ids = byMachine(value) && Object.hasOwn(value, hostID) ? value[hostID] : undefined;
+   return applied(hostID, idList(ids) ? ids : []);
+  },
   set(hostID, id, on) {
    let changes = pending.get(hostID);
    if (!changes) pending.set(hostID, changes = new Map());
