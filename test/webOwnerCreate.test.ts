@@ -393,6 +393,39 @@ for (const locks of ["Web Locks", "no Web Locks"] as const) {
  });
 }
 
+for (const locks of ["Web Locks", "no Web Locks"] as const) {
+ test(`a rename waiting its turn while the terminal is forgotten sends nothing; a rename after a failed one still runs (${locks})`, async () => {
+  let held: (() => void) | null = null;
+  const firstAsked = Promise.withResolvers<void>();
+  const h = host({ answers: req => {
+   if (req.method !== "pane.rename") return undefined;
+   const { pane_id, label } = req.params as { pane_id: string; label: string };
+   const answer = ok({ type: "pane_info", pane: { pane_id, label } });
+   if (label !== "first") return answer;
+   firstAsked.resolve();
+   return new Promise<Answer>((done) => { held = () => done(answer); });
+  } });
+  const desk = await connected(h.relay);
+  const machineID = `owner:${h.relay.hostID}`, t7 = { machineID, session: "", paneID: "p7" };
+  const saved = JSON.stringify({ [h.relay.hostID]: [{ id: "a", paneID: "p7", label: "Terminal 1", createdUnixMs: 1 }] });
+  kept.set(SAVED_TERMINALS_KEY, saved);
+  if (locks === "Web Locks") Object.defineProperty(globalThis.navigator, "locks", { configurable: true, value: fifoLocks() });
+  try {
+   const first = terminalsDesk.renameTerminal(t7, "first").catch(e => e);
+   await firstAsked.promise;
+   const second = terminalsDesk.renameTerminal(t7, "second").catch(e => e);
+   await terminalsDesk.forgetTerminal(t7);
+   held!();
+   expect(String(await first)).toContain("no longer saved");
+   expect(String(await second)).toContain("no longer saved");
+   expect(h.called("pane.rename").map(c => (c.params as { label: string }).label)).toEqual(["first"]);
+   kept.set(SAVED_TERMINALS_KEY, saved);
+   await terminalsDesk.renameTerminal(t7, "third");
+   expect([h.called("pane.rename").map(c => (c.params as { label: string }).label), savedOn(h.relay.hostID).map(e => e.label)]).toEqual([["first", "third"], ["third"]]);
+  } finally { Reflect.deleteProperty(globalThis.navigator, "locks"); desk.disconnectOwner(); h.relay.stop(); }
+ });
+}
+
 test("a close the machine refuses keeps the terminal saved; forgetting drops it without closing", async () => {
  const h = host({ answers: req => req.method === "pane.split" ? split("p7") : req.method === "pane.close" ? fail("pane_not_found") : undefined });
  const desk = await connected(h.relay);
@@ -854,8 +887,8 @@ test("a plain terminal on a machine without bracketed writes takes plain text on
 
 /** A machine whose pong is pong(), writing terminal text; a bracketed write to text with
  *  "paste-off" in it is refused as its program has bracketed paste off. */
-async function terminalOn(pong: () => Answer) {
- const h = host({ ping: pong, answers: req => {
+async function terminalOn(pong: () => Answer, extra: { endAfter?: string } = {}) {
+ const h = host({ ping: pong, ...extra, answers: req => {
   if (req.method === "pane.split") return split("p7");
   if (req.method !== "pane.send_text") return undefined;
   const { text, bracketed } = req.params as { text: string; bracketed?: boolean };
@@ -874,7 +907,7 @@ test("a draft with line breaks goes to a plain terminal as one bracketed paste w
  const { h, desk, writes } = await terminalOn(bracketedPong);
  try {
   expect(JSON.parse(await desk.chatPrompt("term-1", "echo one\necho two")).delivery).toBe("written");
-  // The machine's pong, once had, is kept: the next draft asks no ping.
+  // The machine's pong, once had on the session the next draft goes on, is kept: no ping.
   const pings = h.called("ping").length;
   for (const draft of ["make\r\ntest", "ls"]) expect(JSON.parse(await desk.chatPrompt("term-1", draft)).delivery).toBe("written");
   expect(h.called("ping")).toHaveLength(pings);
@@ -908,6 +941,33 @@ test("a draft with line breaks writes nothing when the machine's pong can't be h
   expect(writes()).toEqual([]);
   // One line needs no capability.
   expect(JSON.parse(await desk.chatPrompt("term-1", "ls")).delivery).toBe("written");
+ } finally { desk.disconnectOwner(); h.relay.stop(); }
+});
+
+// #471: the owner link stays, but herdr behind it restarts as one without bracketed writes (a
+// rollback): the next session reaches the new process, which would write the line breaks raw. The
+// old process ends its session with the write's answer (spent), so the next draft connects anew.
+test("a pong holds for the session that answered it: after herdr restarts without bracketed writes, a draft with line breaks is asked again and refused, nothing written", async () => {
+ let bracketed = true;
+ const { h, desk, writes } = await terminalOn(() => ok({ type: "pong", version: bracketed ? "0.9.9" : "0.9.0", capabilities: bracketed ? { pane_send_text_bracketed: true } : {} }), { endAfter: "pane.send_text" });
+ try {
+  expect(JSON.parse(await desk.chatPrompt("term-1", "echo one\necho two")).delivery).toBe("written");
+  const pings = h.called("ping").length;
+  bracketed = false;
+  const refused = await desk.chatPrompt("term-1", "echo three\necho four").catch(e => e);
+  expect(refused).toBeInstanceOf(NotSentError);
+  expect(String(refused)).toContain("line breaks and control characters");
+  expect([h.called("ping").length, writes().length]).toEqual([pings + 1, 1]);
+ } finally { desk.disconnectOwner(); h.relay.stop(); }
+});
+
+test("a session that herdr ends right after its pong carries no write: the draft comes back, nothing written", async () => {
+ // The host ends each session it answers a ping on (the reply, then the connection is spent).
+ const { h, desk, writes } = await terminalOn(bracketedPong, { endAfter: "ping" });
+ try {
+  const refused = await desk.chatPrompt("term-1", "echo one\necho two").catch(e => e);
+  expect(refused).toBeInstanceOf(NotSentError);
+  expect(writes()).toEqual([]);
  } finally { desk.disconnectOwner(); h.relay.stop(); }
 });
 

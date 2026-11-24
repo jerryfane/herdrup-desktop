@@ -130,7 +130,9 @@ function oneRenameAtATime<T>(host: string, pane: string, run: () => Promise<T>):
  const name = `herdrup.web.terminal-rename.${host}.${pane}`;
  const locks = browserLocks();
  if (locks !== null) return locks.request(name, run);
- const turn = (renamesHere.get(name) ?? Promise.resolve()).catch(() => {}).then(run);
+ // Each turn follows the one before's settlement (which never rejects), and its own settlement,
+ // its one catch, is what the next follows.
+ const turn = (renamesHere.get(name) ?? Promise.resolve()).then(run);
  const settled = turn.catch(() => {});
  renamesHere.set(name, settled);
  void settled.then(() => { if (renamesHere.get(name) === settled) renamesHere.delete(name); });
@@ -143,13 +145,14 @@ export const terminalsDesk = {
  },
  /** desk_terminals.go RenameTerminal: the pane renamed on the machine, then its saved label set
   *  to the label herdr acknowledged, as one operation per pane (oneRenameAtATime), so renames
-  *  answered out of order never leave the saved label behind the machine's. */
+  *  answered out of order never leave the saved label behind the machine's. The saved record is
+  *  looked up in that turn, just before the request: a Forget that ran meanwhile sends nothing. */
  async renameTerminal(target: AgentTarget, label: string): Promise<void> {
   label = label.trim();
   if (label === "") throw new Error("terminal label is empty");
   const link = boardLink(target.machineID, target.session), host = link.machine.hostID;
-  findTerminal(host, target.paneID);
   await oneRenameAtATime(host, target.paneID, async () => {
+   findTerminal(host, target.paneID);
    const renamed = await ownerCall<{ pane?: { label?: string | null } }>("pane.rename", { pane_id: target.paneID, label }, "pane_info", { link });
    await modifyTerminal(host, target.paneID, renamed.pane?.label || label);
   });
