@@ -72,8 +72,14 @@ func main() {
 		if !mygo.App.RequestSingleInstanceLock() {
 			return
 		}
-		if err := mygo.App.RegisterURLScheme("herdrup"); err != nil {
-			log.Printf("Could not register invitation links: %v", err)
+		// The Store's package declares herdrup:// in its manifest
+		// (packaging/msix/AppxManifest.xml), which Windows registers with the
+		// package and removes with it; a registration of the app's own would
+		// outlive an uninstall, pointing at a folder that is gone.
+		if !storeEnabled() {
+			if err := mygo.App.RegisterURLScheme("herdrup"); err != nil {
+				log.Printf("Could not register invitation links: %v", err)
+			}
 		}
 		mygo.App.OnSecondInstance(func([]string, string) {
 			if win != nil {

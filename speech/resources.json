@@ -1,0 +1,4 @@
+{
+  "helper": "herdrup-speech",
+  "files": ["ggml-tiny.bin", "whisper-LICENSE", "speech-LICENSES"]
+}

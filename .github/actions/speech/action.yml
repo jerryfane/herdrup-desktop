@@ -1,0 +1,38 @@
+name: Offline speech resources
+description: >
+  Fetches whisper.cpp at the commit speech/whisper.rev pins and builds
+  herdrup's offline speech resources (speech/build.ts) for one platform,
+  into the runner's temporary folder. speech/build.ts sets
+  HERDRUP_SPEECH_RESOURCES for the later steps, where mygo.config.ts ships
+  the files speech/resources.json lists. Runs after the repository's
+  checkout.
+inputs:
+  platform:
+    description: The GOOS/GOARCH target, as speech/build.ts takes it (windows/amd64, darwin/universal, …).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Read the pinned offline speech engine's commit
+      id: whisper
+      shell: bash
+      run: |
+        rev=$(tr -d '[:space:]' < speech/whisper.rev)
+        if ! [[ $rev =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::speech/whisper.rev must hold a 40-character commit hash, not \"$rev\""
+          exit 1
+        fi
+        echo "rev=$rev" >> "$GITHUB_OUTPUT"
+    - name: Fetch pinned offline speech engine
+      uses: actions/checkout@v5
+      with:
+        repository: ggml-org/whisper.cpp
+        ref: ${{ steps.whisper.outputs.rev }}
+        path: .speech-source
+    - name: Build offline speech resources
+      shell: bash
+      env:
+        WHISPER_SOURCE: ${{ github.workspace }}/.speech-source
+        HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
+        PLATFORM: ${{ inputs.platform }}
+      run: bun speech/build.ts "$PLATFORM"

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The package manifest of herdrup's Microsoft Store package (README.md,
+  "Microsoft Store package"). `go run ./packaging/msix pack` fills in the
+  template's fields, XML-escaped: the identity Partner Center reserved (or
+  the CI check's placeholder) and the version made from package.json's
+  (msix.go, msixVersion). Element order follows the schema: Capability
+  elements come before DeviceCapability ones.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 rescap">
+  <!-- x64: the release builds windows/amd64 only. -->
+  <Identity Name="{{xml .Name}}" Publisher="{{xml .Publisher}}" Version="{{xml .Version}}" ProcessorArchitecture="x64" />
+  <!-- DisplayName must be a name reserved for the app in Partner Center. -->
+  <Properties>
+    <DisplayName>herdrup</DisplayName>
+    <PublisherDisplayName>{{xml .PublisherDisplayName}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <!-- Windows 11 and later: they include the WebView2 Runtime the app
+       needs, which the package does not carry. Windows 10 has the installer. -->
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Applications>
+    <Application Id="App" Executable="herdrup.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="herdrup" Description="Answer your herdr coding agents from the desktop" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- herdrup:// links run herdrup.exe "<url>", as the installer's
+             registration does: Parameters, which only uap3:Protocol has,
+             passes the URL to a full trust app. The package owns the
+             scheme: the Store build doesn't register it (app/main.go). -->
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="herdrup" Parameters="&quot;%1&quot;" />
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <!-- Offline dictation (herdrup-speech) and the pairing code scanner. -->
+    <DeviceCapability Name="microphone" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

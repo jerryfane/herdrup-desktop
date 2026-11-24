@@ -195,6 +195,72 @@ bun test && go test ./...                    # page and Go tests
 The full feature reference, the transport, the release and signing setup, and the design system
 are in **[docs/DESIGN.md](docs/DESIGN.md)**.
 
+## Microsoft Store package
+
+The Windows app also ships through the Microsoft Store as an MSIX package. It is the same app
+built with `-X main.distribution=store`: it never updates itself or reads GitHub's releases, and
+Settings, App updates says "Updates come from the Microsoft Store." The package declares the
+`herdrup://` protocol, so the Store's app doesn't register it itself. [`packaging/msix`](packaging/msix)
+stages exactly `herdrup.exe` and the offline speech engine that
+[`speech/resources.json`](speech/resources.json) lists (`herdrup-speech.exe`, `ggml-tiny.bin`,
+`whisper-LICENSE`, `speech-LICENSES`; `mygo.config.ts` ships the same list), logos made from
+`resources/icon.png`, and [`AppxManifest.xml`](packaging/msix/AppxManifest.xml), for x64, and
+packs them with the Windows SDK's `makeappx`. Every release run checks it (the `msix` job's `ci`
+variant): packed with a placeholder identity and signed with a throwaway certificate, it installs,
+opens from a `herdrup://` link with its window and keeps running, and uninstalls.
+
+The package installs on Windows 11 and later (`MinVersion` 10.0.22000.0): the app needs the
+WebView2 Runtime, which the package doesn't carry and
+[Windows 11 includes](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
+On Windows 10, people use the installer from the GitHub release.
+
+What the owner sets up, once:
+
+1. In [Partner Center](https://partner.microsoft.com/dashboard), create the app and reserve its
+   name: `herdrup`, the manifest's `DisplayName`, which must be a name reserved for the app.
+2. From **Product identity**, set three repository variables, all three required (Settings →
+   Secrets and variables → Actions → Variables; none is a secret):
+   - `MSIX_IDENTITY_NAME`: `Package/Identity/Name`
+   - `MSIX_PUBLISHER`: `Package/Identity/Publisher` (`CN=…`)
+   - `MSIX_PUBLISHER_DISPLAY_NAME`: `Package/Properties/PublisherDisplayName`
+3. Give the Store listing a privacy policy URL: the Store asks for one, and the app records the
+   microphone for dictation, uses the camera to scan pairing codes, and sends usage pings and
+   crash reports.
+
+From then on each release also has `herdrup-<version>-store.msix` (the `msix` job's `store`
+variant, which fails at once if any of the three variables is empty; without `MSIX_IDENTITY_NAME`
+there is none, and the release is as before). Submitting it
+stays manual: upload it in Partner Center (the app's submission, Packages). It is not signed: the
+Store signs the packages it publishes
+([app package requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msix/app-package-requirements)).
+The package declares the restricted capability `runFullTrust`, as every packaged desktop app does,
+so the submission asks why it needs it.
+
+The Store takes a package version of four numbers up to 65535, the first not 0 and the last 0,
+and serves the highest one it has, so `package.json`'s version maps to one that keeps releases in
+order, each preview before its release:
+
+| `package.json` | package |
+|---|---|
+| `X.Y.Z-preview.N` | `(X+1).Y.(Z×1000+N).0` |
+| `X.Y.Z` | `(X+1).Y.(Z×1000+999).0` |
+
+So `0.1.0-preview.23` is `1.1.23.0` and `0.1.0` is `1.1.999.0`; previews go up to 998, and Z up
+to 64. To pack one on Windows, with Visual Studio's C++ tools and the Windows SDK, build the
+offline speech resources first (the package needs them; see "Develop" in
+[docs/DESIGN.md](docs/DESIGN.md)), then the app in Store mode, then the package. The packer deletes
+and overwrites nothing: the staging folder must be new or empty and the package a new file, so
+remove both before packing again:
+
+```bash
+export WHISPER_SOURCE=/path/to/whisper.cpp   # at the commit in speech/whisper.rev
+export HERDRUP_SPEECH_RESOURCES=/path/to/owned/local-build-scratch/speech-windows
+bun speech/build.ts windows/amd64
+MYGO_LDFLAGS="-X main.distribution=store" bun run build -- -platform windows/amd64
+go run ./packaging/msix pack -from build/windows-amd64 -stage build/msix -out build/herdrup-store.msix \
+  -name HerdrupCI -publisher CN=HerdrupCI -publisher-display-name HerdrupCI
+```
+
 ## Credits
 
 Herdrup Desktop stands on:

@@ -1,20 +1,19 @@
 import { defineConfig } from "mygo-cli";
 import pkg from "./package.json" with { type: "json" };
+import speechResources from "./speech/resources.json" with { type: "json" };
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 const speech = process.env.HERDRUP_SPEECH_RESOURCES;
 // The helper as packaged, flat among the resources: its name is also the key
-// of its entitlements below.
+// of its entitlements below. speech/resources.json lists the speech files
+// once, for this and the Microsoft Store package (packaging/msix).
 const speechHelper = speech
-  ? existsSync(join(speech, "herdrup-speech.exe")) ? "herdrup-speech.exe" : "herdrup-speech"
+  ? existsSync(join(speech, `${speechResources.helper}.exe`)) ? `${speechResources.helper}.exe` : speechResources.helper
   : undefined;
-const speechFiles = speech && speechHelper ? [
-  join(speech, speechHelper),
-  join(speech, "ggml-tiny.bin"),
-  join(speech, "whisper-LICENSE"),
-  join(speech, "speech-LICENSES"),
-] : [];
+const speechFiles = speech && speechHelper
+  ? [speechHelper, ...speechResources.files].map((name) => join(speech, name))
+  : [];
 
 // The public key that app updates are signed with: mygo-update.pub of
 // `mygo keygen` (README.md, "Signing app updates"). Until it is committed
