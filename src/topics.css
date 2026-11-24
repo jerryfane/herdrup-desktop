@@ -1,76 +1,84 @@
-/* The Topics view (herdrup #745 TopicsView.swift), drawn as Topics A-v2 (owner 2026-11-23,
-   ui-proposals-20261123/topics-A-v2.html): no pills, badges or chips; a status is plain muted
-   words with one small dot only while working; text buttons; icons only on working controls;
-   sentence-case section labels and rounded selected rows. The column folds fully away (⌥⌘T). */
+/* The Topics view (herdrup #745 TopicsView.swift), drawn as the owner picked on 2026-11-24
+   (ui-compare-20261124/OWNER-PICKS.md, items 11-15): Apple clean, one quiet list with dim section
+   labels, two-line rows whose status leads with the activity indicator or a grey idle dot, a plain
+   search field with its glyph, and every button a capsule (Before's buttons). The column folds
+   fully away (⌥⌘T). */
 .topics-surface { position: absolute; inset: 0; z-index: 3; display: flex; background: var(--color-ground-machine); color: var(--color-text); }
 .topics-surface[hidden] { display: none; }
 .interaction-body[data-mode="topics"] > :is(.chat-composer, .composer-lines, .terminal-key-row, .guest-question-banner, .interaction-status) { display: none; }
 .topics-column { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .topics-side { display: flex; flex: 1; min-width: 0; min-height: 0; }
 .topics-column[hidden], .topics-side[hidden] { display: none; }
-.topics-surface[data-layout="wide"] > .topics-column { flex: none; width: 299px; }
+/* Apple clean's 299 px column (owner picks 2026-11-24, item 11) widened to 320: the capsules
+   (Before's buttons) need the room beside the fold and the heading. */
+.topics-surface[data-layout="wide"] > .topics-column { flex: none; width: 320px; }
 /* The list and the chat meet at a 1px rule; folded, the rule goes with the column. */
 .topics-rule { flex: none; width: 1px; background: var(--color-hairline-quiet); }
 .topics-surface[data-layout="narrow"] > .topics-rule, .topics-column[hidden] + .topics-rule { display: none; }
 
-/* The bar: [fold] Topics (i) … Organise  New topic, 50 px. */
-.topics-head { display: flex; align-items: center; gap: 14px; flex: none; height: 50px; padding: 0 16px 0 10px; }
+/* The bar: [fold] Topics (i) … Organise  New topic, 50 px. The heading never shrinks under its
+   content, so About's box and the capsules never overlap; when the capsules don't fit beside it (a
+   busy Organise in the 320 px column), they wrap to a line of their own, at the trailing edge. */
+.topics-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 6px; flex: none; min-height: 50px; box-sizing: border-box; padding: 9px 10px 9px 8px; }
 .topics-surface[data-layout="narrow"] .topics-head { padding-left: 16px; }
 .agent-detail .topics-fold { display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-right: -6px; padding: 0; border: 0; background: none; color: var(--color-text-dim); }
 .agent-detail .topics-fold:hover { color: var(--color-text); background: var(--color-surface); }
 .agent-detail .topics-fold[hidden] { display: none; }
-.topics-heading { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-.topics-heading > strong { font: 600 15px var(--font-app); }
-/* The "i": 15 px info.circle in the faint ink; its hit area reaches past it without moving the heading. */
-.agent-detail .topics-about-button { position: relative; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-faint); cursor: pointer; }
-.agent-detail .topics-about-button::after { content: ""; position: absolute; inset: -11px; }
+.topics-heading { display: flex; align-items: center; gap: 4px; flex: 1 0 auto; }
+.topics-heading > strong { font: 600 17px var(--font-app); letter-spacing: -0.02em; }
+/* The "i": 15 px info.circle in the faint ink, centred in a 24 px button: its hit area is its own
+   box, never reaching into Organise beside the heading. */
+.agent-detail .topics-about-button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-faint); cursor: pointer; }
 .agent-detail .topics-about-button:hover, .agent-detail .topics-about-button[aria-expanded="true"] { color: var(--color-text); }
 .topics-about-glyph { display: block; width: 15px; height: 15px; background: currentColor; mask: var(--about-icon) center/contain no-repeat; }
-.agent-detail :is(.topics-new, .topics-organise) { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 32px; padding: 0; border: 0; background: none; color: var(--color-text); font: 500 14px var(--font-app); white-space: nowrap; }
-.agent-detail input.topics-search { flex: none; height: 32px; margin: 0 16px 8px; padding: 0 12px; border: 0; border-radius: 8px; background: var(--color-surface); font: 400 14px var(--font-app); }
+.agent-detail :is(.topics-new, .topics-organise) { display: inline-flex; align-items: center; gap: 4px; flex: none; white-space: nowrap; }
+.topics-search-field { display: flex; align-items: center; gap: 7px; flex: none; height: 30px; margin: 0 16px 8px; padding: 0 9px; border-radius: 9px; background: var(--color-surface); color: var(--color-text-faint); }
+.topics-search-field:focus-within { outline: 2px solid var(--color-text-dim); outline-offset: -1px; }
+.topics-search-glyph { display: grid; place-items: center; flex: none; }
+.agent-detail input.topics-search { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; border-radius: 0; background: none; outline: none; font: 400 13px var(--font-app); }
 .topics-problem { display: flex; align-items: center; gap: 6px; margin: 0 16px 6px; color: var(--color-text-dim); font: 400 12px var(--font-app); }
 .topics-problem[hidden] { display: none; }
 .topics-problem-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--status-died); }
 .topics-list { flex: 1; min-height: 0; overflow: auto; padding: 0 8px 24px; }
-.topics-section { margin: 0; padding: 14px 10px 4px; color: var(--color-text-dim); font: 600 12.5px var(--font-app); }
+.topics-section { margin: 0; padding: 14px 10px 4px; color: var(--color-text-dim); font: 600 12px var(--font-app); }
 .topics-empty { margin: 0; padding: 16px 10px 0; color: var(--color-text-dim); font: 400 13px var(--font-app); }
 
 /* Rows: rounded when selected or hovered, a quiet hairline between neighbours (not beside the
    selected one), title and time, then status · newest step. */
-.agent-detail :is(.topics-inbox, .topic-row) { position: relative; display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 10px 10px 11px; border: 0; border-radius: 9px; background: none; color: var(--color-text); text-align: left; font: inherit; }
+.agent-detail :is(.topics-inbox, .topic-row) { position: relative; display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; color: var(--color-text); text-align: left; font: inherit; }
 .agent-detail :is(.topics-inbox, .topic-row) + .topic-row::before { content: ""; position: absolute; left: 10px; right: 10px; top: 0; height: 1px; background: var(--color-hairline-quiet); }
 .agent-detail .topic-row:is([aria-current="true"], :hover)::before, .agent-detail :is(.topics-inbox, .topic-row):is([aria-current="true"], :hover) + .topic-row::before { display: none; }
 .agent-detail .topic-row[aria-current="true"], .agent-detail :is(.topics-inbox, .topic-row):hover { background: var(--color-surface-raised); }
-.topics-row-lines { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
-.topic-row-title { font: 600 14.5px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topic-row-line { display: flex; align-items: center; width: 100%; min-width: 0; color: var(--color-text-faint); font: 400 13px var(--font-app); }
+.topics-row-lines { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.topic-row-title { font: 600 15px/20px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topic-row-line { display: flex; align-items: center; width: 100%; min-width: 0; color: var(--color-text-dim); font: 400 13px/18px var(--font-app); }
 .topic-row-sep { flex: none; padding: 0 5px; color: var(--color-text-faint); }
-.topics-row-activity { min-width: 0; color: var(--color-text-faint); font: 400 13px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topics-inbox .topics-row-activity { color: var(--color-text-dim); }
+.topics-row-activity { min-width: 0; color: var(--color-text-dim); font: 400 13px/18px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-row-top { display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; }
 .topic-row-title { flex: 1; min-width: 0; }
 .topic-row[data-closed] .topic-row-title { color: var(--color-text-dim); font-weight: 500; }
-.topic-row-time { flex: none; color: var(--color-text-faint); font: 400 12.5px var(--font-app); }
+.topic-row-time { flex: none; color: var(--color-text-faint); font: 400 12px/20px var(--font-app); font-variant-numeric: tabular-nums; }
 
-/* A status: muted words, one small dot only while working. */
+/* A status: muted words after its mark, the activity indicator (style.css) while working or a grey
+   7 px dot while idle. */
 .topic-status { display: inline-flex; align-items: center; gap: 5px; flex: none; color: var(--color-text-dim); font: 400 13px var(--font-app); white-space: nowrap; }
-.topic-status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--status-working); }
+.topic-status-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-faint); }
 .topics-placeholder { margin: auto; padding: 24px; max-width: 320px; color: var(--color-text-dim); font: 400 14px var(--font-app); text-align: center; }
 
-/* The topic's header, 48 px: [Topics ⌥⌘T |] ‹ Inbox | title • status … •••. */
+/* The topic's header, 48 px: [sidebar Topics ⌥⌘T |] ‹ Inbox | title, status … •••. */
 .topic-chat { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .topic-chat-header { display: flex; align-items: center; gap: 12px; flex: none; min-height: 48px; box-sizing: border-box; padding: 4px 12px 4px 16px; border-bottom: 1px solid var(--color-hairline-quiet); }
 .topic-list-button { display: flex; align-items: center; gap: 12px; flex: none; }
 .topic-list-button[hidden] { display: none; }
-.agent-detail .topic-list-open { flex: none; height: 32px; padding: 0; border: 0; background: none; color: var(--color-text); font: 500 14px var(--font-app); white-space: nowrap; }
+.agent-detail .topic-list-open { display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap; }
 .topic-list-hint { flex: none; color: var(--color-text-faint); font: 400 12px var(--font-app); letter-spacing: .5px; }
 .topic-chat-rule { flex: none; width: 1px; height: 18px; background: var(--color-hairline); }
-.agent-detail .topic-inbox-link { display: flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0; border: 0; background: none; color: var(--color-text); font: 500 14px var(--font-app); }
+.agent-detail .topic-inbox-link { display: inline-flex; align-items: center; gap: 2px; flex: none; padding-left: 8px; }
 .topic-inbox-chevron { display: grid; place-items: center; }
 /* The title keeps the room; a status that doesn't fit beside it goes to a second line (#345), and
    ends in an ellipsis rather than running into the ••• button. */
 .topic-chat-heading { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 0; flex: 1; min-width: 0; }
-.topic-chat-title { flex: 0 1 auto; min-width: 0; max-width: 100%; font: 600 15px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topic-chat-title { flex: 0 1 auto; min-width: 0; max-width: 100%; font: 600 16px var(--font-app); letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-chat-status { display: flex; min-width: 0; max-width: 100%; }
 .topic-chat-status .topic-status { flex: 0 1 auto; min-width: 0; }
 .topic-chat-status .topic-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -114,23 +122,20 @@ dialog.topics-about:focus { outline: none; }
 .topics-about-popover .topics-about-body h3 { font-size: 13px; }
 .topics-about-popover .topics-about-body p { font-size: 13px; }
 
-/* Organise and the agent's proposals (herdrup #788, TopicsView.swift proposal 3): a text button in
-   the bar, proposals ticked in the list itself, and Not now (text) · Create N topics (filled)
-   under it, as the Inbox's suggestion card draws its Not now and Start. */
+/* Organise and the agent's proposals (herdrup #788, TopicsView.swift proposal 3): a capsule in the
+   bar, proposals ticked in the list itself, and under it the Apple-clean quiet bar (55 px, a
+   hairline on top) with Not now and Create N topics as Before's capsules (owner picks 2026-11-24,
+   item 13: "Apple clean dimensions, curved like Before"). */
 .agent-detail .topics-organise[hidden] { display: none; }
 .agent-detail .topics-organise:disabled { color: var(--color-text-dim); }
-.topics-organise-spinner { flex: none; width: 10px; height: 10px; border: 2px solid var(--color-hairline); border-top-color: var(--color-text-dim); border-radius: 50%; animation: agent-turn .8s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .topics-organise-spinner { animation: none; } }
+.topics-organise .ring-spinner { --ring-size: 10px; }
 .agent-detail .topics-proposal { display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 10px; border: 0; border-radius: 9px; background: none; color: var(--color-text); text-align: left; font: inherit; }
 .agent-detail .topics-proposal:hover { background: var(--color-surface-raised); }
 .agent-detail .topics-proposal[aria-checked="false"] .topic-row-title { color: var(--color-text-dim); }
 .topics-proposal-tick { display: grid; place-items: center; flex: none; width: 24px; height: 24px; color: var(--color-text); }
 .topics-proposal[aria-checked="false"] .topics-proposal-tick { color: var(--color-text-faint); }
 .topics-proposal-reason { color: var(--color-text-dim); font: 400 13px var(--font-app); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.topics-proposals-bar { display: flex; justify-content: flex-end; align-items: center; gap: 18px; padding: 10px 16px 12px; border-top: 1px solid var(--color-hairline-quiet); background: var(--color-ground-machine); }
+.topics-proposals-bar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex: none; box-sizing: border-box; height: 55px; padding: 0 16px; border-top: 1px solid var(--color-hairline-quiet); background: color-mix(in srgb, var(--color-surface) 55%, var(--color-ground)); }
 .topics-proposals-bar[hidden] { display: none; }
-.agent-detail .topics-proposals-bar > button { height: 32px; border: 0; font: 500 14px var(--font-app); }
-.agent-detail .topics-proposals-dismiss { padding: 0; background: none; color: var(--color-text-dim); }
-.agent-detail .topics-proposals-create { padding: 0 16px; background: var(--color-text); color: var(--color-ground); font-weight: 600; }
-.agent-detail .topics-proposals-bar > button:disabled { opacity: .5; }
+.agent-detail .topics-proposals-bar > button { min-height: 30px; padding: 0 14px; font-size: 13px; }
 .topics-proposal-glyph { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--tick-icon) center/contain no-repeat; }

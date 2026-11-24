@@ -17,21 +17,15 @@
 .interaction-toolbar { position: relative; display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px; min-height: calc(var(--pane-header-content-height, 44px) + 14px); background: var(--color-ground-machine); }
 .interaction-toolbar strong { flex: 1; min-width: 0; font: 600 16px var(--font-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane-title-block { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-/* The agent's status under its name (Topics A-v2): sentence-case muted words, one small dot only
-   for Needs you and Working. The label is the board's group label ("needs you"). */
-.pane-state { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
-.pane-state-label { display: inline-block; font: 400 12.5px var(--font-app); color: var(--color-text-dim); }
+/* The agent's status under its name (Apple clean, owner picks 2026-11-24, item 5): sentence-case
+   dim words, 13/16, 6 apart from a 7 px dot for Needs you; Working has the activity indicator
+   instead (item 6, style.css .activity-spinner). The label is the board's group label ("needs you"). */
+.pane-state { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.pane-state-label { display: inline-block; font: 400 13px/16px var(--font-app); letter-spacing: -0.005em; color: var(--color-text-dim); }
 .pane-state-label::first-letter { text-transform: uppercase; }
-.pane-state-age { font: 400 12.5px var(--font-app); font-variant-numeric: tabular-nums; color: var(--color-text-faint); }
-.pane-state-dot { display: none; width: 6px; height: 6px; border-radius: 50%; }
-.pane-state:is([data-group="needsYou"], [data-group="working"]) .pane-state-dot { display: block; }
-.pane-state[data-group="needsYou"] .pane-state-dot { background: var(--status-waiting); }
-.pane-state[data-group="working"] .pane-state-dot { background: var(--status-working); }
-/* PulsingDot (DesignSystem.swift 349-383): the working dot fades to 0.4 and grows to 1.35,
-   easeInOut 0.8 s, back and forth; still while status motion is off. */
-.pane-state[data-group="working"] .pane-state-dot { animation: status-pulse 0.8s ease-in-out infinite alternate; }
-.holds-still .pane-state-dot { animation: none !important; }
-@keyframes status-pulse { to { opacity: 0.4; transform: scale(1.35); } }
+.pane-state-age { font: 400 13px/16px var(--font-app); font-variant-numeric: tabular-nums; color: var(--color-text-faint); }
+.pane-state-dot { display: none; width: 7px; height: 7px; border-radius: 50%; }
+.pane-state[data-group="needsYou"] .pane-state-dot { display: block; background: var(--status-waiting); }
 .pane-state[data-group="stopped"] .pane-state-label { color: var(--color-text-dim); }
 .pane-find { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .agent-detail .pane-find input { flex: 1; min-width: 40px; border: 0; background: none; padding: 0; outline: none; font: 400 16px var(--font-app); }
@@ -58,13 +52,12 @@
 /* PaneActionsMenuLabel (PaneHeaderControls.swift 66-77): the struck bell in waiting while muted. */
 .agent-detail .pane-header-capsule button.muted { color: var(--status-waiting); }
 .pane-muted-glyph { width: 15px; height: 15px; background: currentColor; mask: var(--muted-icon) center/contain no-repeat; -webkit-mask: var(--muted-icon) center/contain no-repeat; }
-/* Topics | Chat | Terminal as a native segmented control (Topics A-v2): a 9 px rounded track, the
-   chosen segment raised with a soft shadow, over a full-width quiet rule. */
-.chat-terminal-switch { display: flex; align-self: center; flex: none; gap: 0; padding: 2px; margin: 2px 0 10px; border: 0; border-radius: 9px; background: var(--color-surface); }
+/* Topics | Chat | Terminal as Before's outlined pill (owner picks 2026-11-24, item 7; 1182f1e4): a
+   hairline capsule track, 26 px capsule segments, the chosen one raised. */
+.chat-terminal-switch { display: flex; align-self: center; flex: none; gap: 0; padding: 3px; margin: 2px 0 4px; border: 0; outline: 1px solid var(--color-hairline); outline-offset: -1px; border-radius: 99px; background: var(--color-surface); }
 .chat-terminal-switch[hidden] { display: none; }
-.chat-terminal-switch:not([hidden]) + .interaction-body { border-top: 1px solid var(--color-hairline-quiet); }
-.agent-detail .chat-terminal-switch button { height: 27px; padding: 0 18px; border: 0; border-radius: 7px; font: 500 13px var(--font-app); color: var(--color-text-dim); background: none; }
-.agent-detail .chat-terminal-switch button[aria-pressed="true"] { background: var(--color-surface-raised); color: var(--color-text); text-decoration: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--color-ground-machine) 60%, transparent); }
+.agent-detail .chat-terminal-switch button { height: 26px; padding: 0 16px; border: 0; border-radius: 99px; font: 600 13px var(--font-app); color: var(--color-text-dim); background: none; }
+.agent-detail .chat-terminal-switch button[aria-pressed="true"] { background: var(--color-surface-raised); color: var(--color-text); text-decoration: none; }
 .agent-detail input, .agent-detail select, .host-password input { min-width: 0; color: var(--color-text); background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 7px; padding: 7px; font: inherit; }
 /* herdrup's actionNote (HerdrApp.swift 5849-5855): app 12 in textDim, leading, 16 sides, 4 above and
    below, just above the quick keys (Terminal) or the composer (Chat). */
@@ -504,28 +497,22 @@ button.ask-form-other-caption { cursor:pointer; }
 .terminal-canvas { position: relative; }
 /* Its own layer over xterm, whose opaque canvas would otherwise paint over it (review of #213). */
 .terminal-last-screen { position: absolute; inset: 0; z-index: 1; margin: 0; padding: 0 8px; overflow: hidden; background: var(--color-ground-machine); font-family: var(--font-machine); line-height: 1.2; color: var(--color-text-dim); white-space: pre; pointer-events: none; }
-/* Topic suggestions (herdrup #788 ChatTopicSuggestion.swift) as Topics A-v2 draws them: a plain
-   card with a hairline, Not now as text and Start filled; a quiet "starts here" mark, a faint
-   Not now line, "Continued in topic" as a link; a failed Start or Not now as one line under the
-   card, a red dot and Dismiss. No tint, no icons. */
+/* Topic suggestions (herdrup #788 ChatTopicSuggestion.swift). Owner picks 2026-11-24: the card is
+   Before's (1182f1e4, items 8 and 9): an outlined 16 px card, the message count with its glyph, a
+   failed Start or Not now as a faint line in the card, Not now (hairline) and Start as capsules.
+   "Continued in topic" is Apple clean (item 10): one quiet line, the topic's name a tinted link. */
 .chat-suggestion-mark .chat-summary-text { font-weight:500; font-size:calc(12px * var(--chat-text-scale, 1)); }
-.chat-suggestion-card { box-sizing:border-box; display:flex; flex-direction:column; gap:6px; padding:14px 16px 12px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
+.chat-suggestion-card { box-sizing:border-box; display:flex; flex-direction:column; gap:8px; padding:12px 14px; outline:1px solid var(--color-hairline); outline-offset:-1px; border-radius:16px; background:var(--color-surface); }
 .chat-suggestion-card > p { margin:0; }
-.chat-suggestion-title { font:400 calc(15px * var(--chat-text-scale, 1))/1.45 var(--font-app); color:var(--color-text); }
-.chat-suggestion-title strong { font-weight:600; }
-.chat-suggestion-reason { font:400 calc(14px * var(--chat-text-scale, 1))/1.45 var(--font-app); color:var(--color-text-dim); }
-.chat-suggestion-count { font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
-.chat-suggestion-actions { display:flex; justify-content:flex-end; align-items:center; gap:18px; margin-top:4px; }
-.agent-detail .chat-suggestion-actions > button { height:32px; border:0; font:500 14px var(--font-app); }
-.agent-detail .chat-suggestion-later { padding:0; background:none; color:var(--color-text-dim); }
-.agent-detail .chat-suggestion-start { padding:0 16px; background:var(--color-text); color:var(--color-ground); font-weight:600; }
-.chat-suggestion-block { display:flex; flex-direction:column; gap:12px; width:min(100%, calc(var(--gram-column, 720px) - 32px)); margin:0 auto 10px; }
-.chat-suggestion-block > .chat-suggestion-card { width:100%; margin:0; }
-.chat-suggestion-problem { display:flex; align-items:baseline; gap:8px; color:var(--color-text-dim); font:400 calc(14px * var(--chat-text-scale, 1))/1.5 var(--font-app); }
-.chat-suggestion-problem-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--status-died); transform:translateY(-2px); }
+.chat-suggestion-title { font:400 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text); }
+.chat-suggestion-reason { font:400 calc(13.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-dim); }
+.chat-suggestion-count { display:flex; align-items:center; gap:6px; font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-faint); }
+/* A refused start or set-aside: dim ink (at least 4.5:1 on the card) and a Dismiss capsule. */
+.chat-suggestion-problem { display:flex; align-items:center; gap:10px; font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); color:var(--color-text-dim); }
 .chat-suggestion-problem-text { flex:1; min-width:0; }
-.chat-suggestion-problem-text strong { color:var(--color-text); font-weight:500; }
-.agent-detail .chat-suggestion-problem-dismiss { flex:none; margin-left:auto; padding:0 0 0 12px; border:0; background:none; color:var(--color-text); font:500 14px var(--font-app); white-space:nowrap; }
-.chat-suggestion-continued-row { display:flex; justify-content:center; width:min(100%, calc(var(--gram-column, 720px) - 32px)); margin:0 auto 10px; }
-.agent-detail .chat-suggestion-continued { padding:0; border:0; background:none; color:var(--color-text-dim); font:400 13.5px var(--font-app); }
-.chat-suggestion-continued strong { color:var(--color-text); font-weight:500; text-decoration:underline; text-decoration-color:var(--color-hairline); text-underline-offset:3px; }
+.chat-suggestion-problem-dismiss { flex:none; }
+.chat-suggestion-actions { display:flex; justify-content:flex-end; gap:8px; }
+.chat-suggestion-continued-row { width:min(100%, calc(var(--gram-column, 720px) - 32px)); margin:0 auto 10px; color:var(--color-text-dim); font:400 13px/16px var(--font-app); text-align:center; }
+/* Underlined: the tint alone is not enough to tell the link from the line (1.11:1). */
+.chat-suggestion-continued[href] { color:var(--status-working); text-decoration:underline; text-underline-offset:2px; }
+.chat-suggestion-continued[href]:focus-visible { outline:2px solid var(--color-text-dim); outline-offset:2px; border-radius:4px; }
