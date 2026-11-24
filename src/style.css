@@ -330,6 +330,32 @@ html, body {
 @media (prefers-reduced-motion: reduce) { .badge.working > svg { animation: none; } }
 @keyframes status-turn { to { transform: rotate(360deg); } }
 
+/* The activity indicator (Apple clean, owner picks 2026-11-24, items 6 and 12): eight spokes fading
+   round in the working blue, one step per spoke, 0.8 s a turn; the in-progress mark beside
+   "Working" in the agent's header, the topic rows and the topic's header. Still while status motion
+   is off, slower under reduced motion. */
+.activity-spinner {
+  display: inline-block;
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: conic-gradient(from -10deg,
+    var(--status-working) 0 20deg, transparent 0 45deg,
+    color-mix(in srgb, var(--status-working) 86%, transparent) 0 65deg, transparent 0 90deg,
+    color-mix(in srgb, var(--status-working) 72%, transparent) 0 110deg, transparent 0 135deg,
+    color-mix(in srgb, var(--status-working) 58%, transparent) 0 155deg, transparent 0 180deg,
+    color-mix(in srgb, var(--status-working) 46%, transparent) 0 200deg, transparent 0 225deg,
+    color-mix(in srgb, var(--status-working) 36%, transparent) 0 245deg, transparent 0 270deg,
+    color-mix(in srgb, var(--status-working) 28%, transparent) 0 290deg, transparent 0 315deg,
+    color-mix(in srgb, var(--status-working) 22%, transparent) 0 335deg, transparent 0);
+  mask: radial-gradient(circle closest-side, transparent 38%, currentColor 40%);
+  animation: activity-turn 0.8s steps(8) infinite;
+}
+.holds-still .activity-spinner { animation: none; }
+@media (prefers-reduced-motion: reduce) { .activity-spinner { animation-duration: 2.4s; } }
+@keyframes activity-turn { to { transform: rotate(360deg); } }
+
 /* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
 .disclosure {
   position: relative;

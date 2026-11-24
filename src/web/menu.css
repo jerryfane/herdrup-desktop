@@ -1,7 +1,8 @@
-/* The in-page stand-in for the desktop's native popup menus (menu.ts), drawn as the host list's
-   context menu (hosts.css .host-context-menu). */
-.web-menu { position:fixed; z-index:100; min-width:180px; max-width:min(320px, 90vw); padding:6px; border:1px solid var(--color-hairline); border-radius:12px; background:var(--color-surface); }
-.web-menu button { display:block; width:100%; text-align:left; border:0; border-radius:8px; background:none; color:var(--color-text); font:400 15px/var(--leading-app) var(--font-app); padding:8px 12px; }
-.web-menu button:not(:disabled):is(:hover, :focus-visible) { background:var(--color-surface-raised); outline:none; }
+/* The in-page stand-in for the desktop's native popup menus (menu.ts), drawn as a native macOS
+   menu (Apple clean, owner picks 2026-11-24, "Agent row menu"): a translucent raised surface,
+   13 px items with a 6 px highlight, hairline group separators. */
+.web-menu { position:fixed; z-index:100; min-width:172px; max-width:min(320px, 90vw); box-sizing:border-box; padding:5px; border-radius:10px; background:color-mix(in srgb, var(--color-surface-raised) 86%, transparent); -webkit-backdrop-filter:blur(30px) saturate(180%); backdrop-filter:blur(30px) saturate(180%); box-shadow:0 0 0 0.5px var(--color-hairline), 0 10px 30px color-mix(in srgb, var(--color-ground) 70%, transparent); }
+.web-menu button { display:flex; align-items:center; width:100%; min-height:22px; text-align:left; border:0; border-radius:6px; background:none; color:var(--color-text); font:400 13px/1.2 var(--font-app); padding:3px 9px 3px 10px; }
+.web-menu button:not(:disabled):is(:hover, :focus-visible) { background:color-mix(in srgb, var(--color-text) 10%, transparent); outline:none; }
 .web-menu button:disabled { color:var(--color-text-faint); }
-.web-menu hr { margin:4px 0; border:0; border-top:1px solid var(--color-hairline); }
+.web-menu hr { margin:5px 10px; border:0; border-top:0.5px solid var(--color-hairline); }

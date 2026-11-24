@@ -62,13 +62,14 @@ function popup(items: string[], chosen: (item: string) => void) {
  void Desk.gramMenu(id, items).then(shown => { if (!shown) menus.delete(id); }, () => menus.delete(id));
 }
 
-/** A topic's status as plain muted words, with one small dot only while it works (Topics A-v2:
- *  no pills, badges or chips). */
+/** A topic's status as muted words after its mark (Apple clean, owner picks 2026-11-24, item 12):
+ *  the activity indicator while it works, a grey dot while it idles, none otherwise. */
 export function topicStatus(t: TopicInfo): HTMLElement | null {
  const text = statusText(t);
  if (text === null) return null;
  const status = el("span", "topic-status");
- if (statusDot(t)) { const dot = el("span", "topic-status-dot"); dot.setAttribute("aria-hidden", "true"); status.append(dot); }
+ const mark = statusDot(t);
+ if (mark) { const node = el("span", mark === "working" ? "activity-spinner" : "topic-status-dot"); node.setAttribute("aria-hidden", "true"); status.append(node); }
  status.append(el("span", "topic-status-text", text));
  return status;
 }
@@ -102,7 +103,7 @@ export class TopicsPane {
  private readonly resize: ResizeObserver;
  private sheet: HTMLDialogElement | null = null;
  // Organise (herdrup #788, TopicsView.swift proposal 3): the agent proposes topics from its Inbox.
- private readonly organiseButton = button("", "topics-organise", () => void this.organise());
+ private readonly organiseButton = button("", "topics-organise button-compact", () => void this.organise());
  private readonly bar = el("div", "topics-proposals-bar");
  private organising = false;
  private organiseText: string | null = null;
@@ -117,22 +118,29 @@ export class TopicsPane {
  private settling = false;
  constructor(private readonly host: TopicsHost) {
   const head = el("div", "topics-head");
-  // The one icon in the bar: it works (folds the column). Shown where there is a column to fold.
+  // The fold: a circle (an icon-only button), shown where there is a column to fold.
   this.foldButton.setAttribute("aria-label", "Hide topics"); this.foldButton.title = `Hide topics (${FOLD_HINT})`;
   void host.symbol("sidebar.leading", 16, "medium").then(icon => this.foldButton.append(icon));
   const heading = el("span", "topics-heading");
   heading.append(el("strong", "", "Topics"), this.aboutButton());
   head.append(this.foldButton, heading);
-  // Text buttons (Topics A-v2): Organise only where the agent's suggestions are served.
-  const create = button("New topic", "topics-new", () => this.openNewTopic());
+  // Organise and New topic as capsules (owner picks 2026-11-24: all buttons are capsules); Organise
+  // only where the agent's suggestions are served. No plus glyph: beside an open topic the 320 px
+  // column holds the fold, the heading and both capsules on one line only without it.
+  const create = button("New topic", "topics-new button-compact", () => this.openNewTopic());
   this.organiseButton.hidden = true;
   head.append(this.organiseButton, create);
   this.searchInput.type = "search"; this.searchInput.placeholder = "Search topics";
   this.searchInput.setAttribute("aria-label", "Search topics");
   this.searchInput.oninput = () => this.drawList();
+  // The search field with its glyph (Apple clean, item 11).
+  const search = el("label", "topics-search-field");
+  const glyph = el("span", "topics-search-glyph"); glyph.setAttribute("aria-hidden", "true");
+  void host.symbol("magnifyingglass", 13, "semibold").then(icon => glyph.append(icon));
+  search.append(glyph, this.searchInput);
   this.problem.setAttribute("role", "status"); this.problem.hidden = true;
   this.bar.hidden = true;
-  this.column.append(head, this.searchInput, this.problem, this.rows, this.bar);
+  this.column.append(head, search, this.problem, this.rows, this.bar);
   const rule = el("div", "topics-rule"); rule.setAttribute("aria-hidden", "true");
   this.root.append(this.column, rule, this.side);
   this.resize = new ResizeObserver(() => {
@@ -337,8 +345,8 @@ export class TopicsPane {
   this.bar.hidden = suggestions.length === 0;
   if (this.bar.hidden) { this.bar.replaceChildren(); return; }
   const count = tickedCount(suggestions, this.unticked);
-  const dismiss = button("Not now", "topics-proposals-dismiss", () => void this.settle(false));
-  const create = button(createLabel(count), "topics-proposals-create", () => void this.settle(true));
+  const dismiss = button("Not now", "topics-proposals-dismiss button-plain", () => void this.settle(false));
+  const create = button(createLabel(count), "topics-proposals-create button-filled", () => void this.settle(true));
   dismiss.disabled = this.settling; create.disabled = this.settling || count === 0;
   this.bar.replaceChildren(dismiss, create);
  }
@@ -544,13 +552,14 @@ class TopicChat {
  private timer: number | undefined;
 
  constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void) {
-  // Topics A-v2 header: [Topics ⌥⌘T |] ‹ Inbox | title · status … •••. Text buttons; the only
-  // icons are the back chevron and the ••• menu, both working controls.
-  this.listButton = button("Topics", "topic-list-open", showList);
+  // The topic's header (Apple clean, owner picks 2026-11-24, items 14 and 15): [sidebar Topics ⌥⌘T |]
+  // ‹ Inbox | title, status … •••, its text buttons capsules.
+  this.listButton = button("Topics", "topic-list-open button-compact", showList);
+  void host.symbol("sidebar.leading", 16, "medium").then(icon => { icon.setAttribute("aria-hidden", "true"); this.listButton.prepend(icon); });
   this.hint.setAttribute("aria-hidden", "true");
   const rule = () => { const r = el("span", "topic-chat-rule"); r.setAttribute("aria-hidden", "true"); return r; };
   this.list.append(this.listButton, this.hint, rule());
-  const inbox = button("", "topic-inbox-link", () => host.openInbox());
+  const inbox = button("", "topic-inbox-link button-compact", () => host.openInbox());
   inbox.title = "Opens the agent's own conversation";
   const chevron = el("span", "topic-inbox-chevron"); chevron.setAttribute("aria-hidden", "true");
   void host.symbol("chevron.left", 13, "semibold").then(icon => chevron.append(icon));

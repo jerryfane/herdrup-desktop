@@ -35,10 +35,10 @@ test("open topics fall under Today, This week and Earlier by local day; closed o
  expect(topicSections([topic("x", { last_activity_unix_ms: now.getTime() })], now).map(s => s.id)).toEqual(["Today"]);
 });
 
-test("the status reads the state, with what waits; a dot only while working (Topics A-v2)", () => {
+test("the status reads the state, with what waits; the activity indicator while working, a dot while idle", () => {
  expect([statusText(topic("a", { state: "running" })), statusDot(topic("a", { state: "running" }))]).toEqual(["Working", "working"]);
  expect([statusText(topic("a", { state: "starting" })), statusDot(topic("a", { state: "starting" }))]).toEqual(["Starting", "working"]);
- expect([statusText(topic("a", { state: "idle", queued: 2 })), statusDot(topic("a"))]).toEqual(["Idle · 2 queued", null]);
+ expect([statusText(topic("a", { state: "idle", queued: 2 })), statusDot(topic("a"))]).toEqual(["Idle · 2 queued", "idle"]);
  expect([statusText(topic("a", { state: "dead" })), statusDot(topic("a", { state: "dead" }))]).toEqual(["Stopped", null]);
  expect([statusText(topic("a", { state: "closed" })), statusDot(topic("a", { state: "closed" }))]).toEqual(["Closed", null]);
  expect([statusText(topic("a", { state: "unknown" })), statusDot(topic("a", { state: "unknown" }))]).toEqual([null, null]);

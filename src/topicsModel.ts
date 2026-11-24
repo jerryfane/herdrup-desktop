@@ -39,10 +39,11 @@ export function statusText(t: TopicInfo): string | null {
  return t.queued > 0 ? `${label} · ${t.queued} queued` : label;
 }
 
-/** The status's one small dot (Topics A-v2, owner 2026-11-23): only a working topic has one;
- *  every other state is plain muted words. */
-export function statusDot(t: TopicInfo): "working" | null {
- return t.state === "starting" || t.state === "running" ? "working" : null;
+/** The mark before a status (Apple clean, owner picks 2026-11-24, item 12): the activity indicator
+ *  while a topic works, a grey dot while it idles; no mark for Stopped or Closed. */
+export function statusDot(t: TopicInfo): "working" | "idle" | null {
+ if (t.state === "starting" || t.state === "running") return "working";
+ return t.state === "idle" ? "idle" : null;
 }
 
 /** Which parts of the Topics view show (Topics A-v2 "fold the column"). Wide: the open topic (or
