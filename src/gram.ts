@@ -1010,7 +1010,7 @@ function setupCard(): HTMLElement {
   close.append(icon("xmark", 12, "semibold"));
   top.append(lines, close);
   const cmd = el("div", "gsetup-command", SETUP_COMMAND);
-  const copy = button("gsetup-copy", "Copy command", () => {
+  const copy = button("gsetup-copy button-filled", "Copy command", () => {
     void Desk.gramCopyText(SETUP_COMMAND);
     setupCopied = true;
     copy.textContent = "Copied ✓";
@@ -1794,7 +1794,7 @@ function openAgentsSheet() {
     const a = address();
     const head = el("div", "gsheet-head");
     head.append(el("span", "gsheet-title", "Gram"));
-    const done = button("gsheet-done", "Done", () => d.close());
+    const done = button("gsheet-done button-plain button-compact", "Done", () => d.close());
     done.textContent = "Done";
     head.append(done);
     const first = el("div", "gsheet-group");

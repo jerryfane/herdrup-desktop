@@ -30,7 +30,7 @@ export async function showNewAgent(scope: Scope) {
   const folder = el("input"); folder.type = "text"; folder.placeholder = "Current remote folder"; folder.autocomplete = "off"; folder.spellcheck = false;
   const kind = el("select");
   const task = el("textarea"); task.rows = 5; task.placeholder = "What should the agent do?";
-  const start = el("button", "new-agent-start", "Start agent"); start.type = "submit";
+  const start = el("button", "new-agent-start button-filled button-large", "Start agent"); start.type = "submit";
   const fields = [folder, kind, task];
   function field(label: string, control: HTMLElement) { const wrapper = el("label", "new-agent-field"); wrapper.append(el("span", "new-agent-label", label), control); return wrapper; }
   function error(reason: unknown) { status.textContent = String(reason); status.hidden = false; }

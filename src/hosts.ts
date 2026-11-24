@@ -66,22 +66,22 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const sheet = element("dialog", "host-editor");
  const sheetHeader = element("header", "host-editor-header");
  const title = element("strong", "");
- const cancel = action("Cancel", () => sheet.close()); sheetHeader.append(cancel, title);
+ const cancel = action("Cancel", () => sheet.close()); cancel.className = "button-plain button-compact"; sheetHeader.append(cancel, title);
  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
  const saveOnly = action("Save without connecting", () => { void save(false); });
- saveOnly.className = "host-save-only";
+ saveOnly.className = "host-save-only button-plain button-large";
  const error = element("p", "host-editor-error"); error.setAttribute("role", "alert"); error.hidden = true;
  const nicknameLabel = element("label", "", "Nickname");
  const nickname = element("input", ""); nickname.name = "nickname"; nickname.placeholder = "My Mac"; nickname.autocomplete = "off";
  nicknameLabel.append(nickname); form.prepend(nicknameLabel);
  form.append(saveOnly, error);
  sheet.append(sheetHeader, form); document.body.append(sheet);
- const add = action("Add host", () => edit()); add.className = "host-add";
+ const add = action("Add host", () => edit()); add.className = "host-add button-secondary button-large";
  // The first-run smoke (app/smoke.go) finds the host actions and the welcome by these hooks.
  add.dataset.smoke = "host-action";
  void symbol("plus", 15, "semibold").then(icon => { icon.setAttribute("aria-hidden", "true"); add.prepend(icon); });
  const startPairing = (offer?: PairingOffer) => showPairing(refresh, async machine => { await Desk.selectMachine(machine.id, ""); showAgents(); }, () => edit(), offer);
- const pair = action("Scan pairing code", () => startPairing()); pair.className = "host-pair";
+ const pair = action("Scan pairing code", () => startPairing()); pair.className = "host-pair button-filled button-large";
  pair.dataset.smoke = "host-action";
  // 1B-dk "Welcome back": the account's machines this device hasn't saved, each to pair here.
  // Rows are the saved rows' neutral style (no colour per machine).
@@ -134,12 +134,12 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  void refreshAccount();
  const shared = element("section", "host-home-saved");
  const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
- const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite";
+ const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite button-secondary button-large";
  let pasting = false;
  const paste = action("Paste", () => {
   pasting = true; paste.disabled = true;
   void Desk.readGuestInvitationClipboard().then(text => showGuestAccept(refresh, showAgents, text)).catch(report).finally(() => { pasting = false; void refreshPaste(); });
- }); paste.className = "host-invite-paste"; paste.setAttribute("aria-label", "Paste invite link"); paste.disabled = true;
+ }); paste.className = "host-invite-paste button-plain"; paste.setAttribute("aria-label", "Paste invite link"); paste.disabled = true;
  async function refreshPaste() {
   try { const hasText = await Desk.hasGuestInvitationClipboardText(); paste.disabled = pasting || !hasText; }
   catch (error) { paste.disabled = true; report(error); }

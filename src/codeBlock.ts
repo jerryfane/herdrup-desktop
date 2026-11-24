@@ -48,7 +48,7 @@ export function codeBlock(code: string, language: string | null, copied: boolean
     const head = el("div", "gcode-head");
     if (language) head.append(el("span", "gcode-lang", language));
     head.append(el("span", "gcode-spacer"));
-    const c = button("gcode-copy");
+    const c = button("gcode-copy button-plain button-compact");
     c.append(symbolNow(copied ? "checkmark" : "doc.on.doc", 11, "semibold"), el("span", "", copied ? "Copied" : "Copy"));
     head.append(c);
     b.append(head, scroll);

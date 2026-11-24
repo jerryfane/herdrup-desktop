@@ -24,7 +24,7 @@
           <label>Password <span class="faint">(if no key, never saved)</span><input name="password" type="password" /></label>
           <label>herdr session <span class="faint">(optional)</span><input name="session" autocomplete="off" placeholder="default" /></label>
           <div class="form-actions">
-            <button type="submit">Connect</button>
+            <button type="submit" class="button-filled button-large">Connect</button>
           </div>
         </form>
       </section>
@@ -45,7 +45,7 @@
         </label>
         <div id="rows"></div>
       </div>
-      <!-- The foot stacks a notice (agentActions.ts) over the tab bar; bars.ts reserves its height. -->
+      <!-- The foot floats the glass tab bar and any notice (agentActions.ts) over the lists' end. -->
       <div class="sidebar-foot" id="sidebar-foot"><nav class="tabbar" id="tabbar"></nav></div>
     </aside>
     <script type="module" src="./src/main.ts"></script>

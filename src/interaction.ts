@@ -1617,10 +1617,10 @@ class Detail {
    e.replaceChildren(el("span", "chat-earlier-spinner"), el("span", "", "Loading earlier messages"));
    e.setAttribute("role", "status");
   } else if (state === "failed") {
-   e.replaceChildren(button("Couldn't load earlier messages · Retry", () => { this.olderLoad = "idle"; void this.loadEarlier(this.generation); }));
+   e.replaceChildren(Object.assign(button("Couldn't load earlier messages · Retry", () => { this.olderLoad = "idle"; void this.loadEarlier(this.generation); }), { className: "button-plain button-compact" }));
    e.removeAttribute("role");
   } else if (state === "offer") {
-   e.replaceChildren(button("Earlier messages", () => { void this.loadEarlier(this.generation); }));
+   e.replaceChildren(Object.assign(button("Earlier messages", () => { void this.loadEarlier(this.generation); }), { className: "button-plain button-compact" }));
    e.removeAttribute("role");
   } else e.replaceChildren();
  }
@@ -2020,7 +2020,7 @@ class Detail {
   this.subagentSheet = dialog;
   const header = el("header"); header.append(el("strong", "", id), button("Done", () => dialog.close()));
   const messages = el("div", "chat-transcript"), notice = el("p", "interaction-status");
-  const earlier = button("Earlier messages", () => { void load(true); }); earlier.className = "chat-earlier"; earlier.hidden = true;
+  const earlier = button("Earlier messages", () => { void load(true); }); earlier.className = "chat-earlier button-plain button-compact"; earlier.hidden = true;
   dialog.append(header, notice, messages); document.body.append(dialog);
   let open = true, busy = false, page: TranscriptPage | null = null, entries: Entry[] = [], before: string | undefined, timer: number | undefined;
   const load = async (older: boolean) => {
@@ -2110,7 +2110,7 @@ class Detail {
   row.append(card);
   if (showLink) {
    const open = button("Open question", () => this.openQuestion(entry.id));
-   open.className = "chat-question-open"; row.append(open);
+   open.className = "chat-question-open button-plain button-compact"; row.append(open);
   }
   // A guest answers as the owner does unless the host keeps answers for the owner (ChatAskCard,
   // ChatView.swift:1738-1870).
@@ -2154,7 +2154,7 @@ class Detail {
   // dismissable alone decides, a guest waiting for the owner included (herdrup #787).
   if (active.dismissable === true) {
    const dismiss = button("Dismiss", () => { void this.dismissAsk(active.id); });
-   dismiss.className = "chat-question-dismiss"; dismiss.disabled = this.answering; card.append(dismiss);
+   dismiss.className = "chat-question-dismiss button-plain"; dismiss.disabled = this.answering; card.append(dismiss);
   }
   return row;
  }

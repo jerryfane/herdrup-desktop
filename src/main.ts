@@ -1,6 +1,6 @@
 import "core-js/actual/promise/with-resolvers";
 import { errorDetail, startWithFallback } from "./startup";
-import { symbol } from "./symbol";
+import { symbol, symbolNow } from "./symbol";
 import { Desk, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { paintShape } from "./continuous";
 import { loadGlyphFieldFonts } from "./glyphField";
@@ -9,7 +9,6 @@ import { agentMenu, folderRow, initFolders, rosterEmptyLine, rosterEntries, star
 import { initAgentActions } from "./agentActions";
 import { avatarFace, boardShown, trackPhotoConnections } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
-import { rowPreview } from "./rowStatus";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
 import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
 import { initHosts } from "./hosts";
@@ -239,7 +238,7 @@ function setTabBadge() {
     settings.closest(".tab")?.setAttribute("aria-label", appUpdateWaiting ? "Settings, update available" : "Settings");
   }
 }
-/** The tabs, text only (bars.ts tabNode): built and committed at once. */
+/** The tabs, each an icon over its label (bars.ts tabNode): built and committed at once. */
 function buildTabBar() {
   const guestView = guestBar, selectedTab = guestView ? guestView.tab : tab;
   // A guest's TabView: Agents, Gram while a shared agent shares it (#697), and Settings.
@@ -299,13 +298,15 @@ async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
   row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(); } });
   const text = el("div", "text");
   const line1 = el("div", "line1");
+  const chev = el("span", "chev");
+  chev.setAttribute("aria-hidden", "true");
+  chev.append(symbolNow("chevron.right", 12, "semibold"));
   const age = rowAge(r, Date.now());
   line1.append(el("span", "name t-row-name", r.title));
   if (r.starred) line1.append(await star(folderDeps));
-  line1.append(...rowMarkers(r), el("span", "spacer"), ...(age ? [age] : []));
+  line1.append(...rowMarkers(r), el("span", "spacer"), ...(age ? [age] : []), chev);
   agentMenu(row, r);
-  // Topics A-v2: status as words on the preview line, the avatar's face with no badge, no chevron.
-  text.append(line1, rowPreview(r, r.preview));
+  text.append(line1, el("div", "preview t-row-preview", r.preview));
   const account = accountLine(r);
   if (account) text.append(account);
   row.append(rowAvatar(r), text);

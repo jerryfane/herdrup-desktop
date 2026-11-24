@@ -1,0 +1,86 @@
+/* The one button (owner, 2026-11-24): every button is a capsule, in the
+   look of the app before Topics A (1182f1e4). A <button> is the filled
+   regular capsule; the variants below change its fill or its size, never its
+   shape. An icon-only button is a circle: the same capsule with equal width
+   and height. List rows, menu items and the segments of a segmented control
+   draw their own shapes (each rule says so). Colours only from tokens.css. */
+:root {
+  --button-radius: 999px;
+  --button-weight: 600;
+  /* Regular: a toolbar or card action. */
+  --button-height: 34px;
+  --button-font-size: 14px;
+  --button-padding-x: 16px;
+  /* Large: a sheet's or dialog's main actions. */
+  --button-height-large: 44px;
+  --button-font-size-large: 15px;
+  --button-padding-x-large: 22px;
+  /* Compact: an action inside a line of text or a dense bar. */
+  --button-height-compact: 28px;
+  --button-font-size-compact: 13px;
+  --button-padding-x-compact: 12px;
+}
+
+/* No min-height here: icon buttons and rows set their own height. 8 px
+   above and below a 14 px line come to the regular height. */
+button {
+  box-sizing: border-box;
+  font: var(--button-weight) var(--button-font-size) var(--font-app);
+  color: var(--color-ground);
+  background: var(--color-text);
+  border: 0;
+  border-radius: var(--button-radius);
+  padding: 8px var(--button-padding-x);
+  cursor: pointer;
+}
+/* Secondary: raised fill and a hairline, ink text. The agent pane, the
+   hosts list, the host password row, Settings' sheets, the update card and
+   the agent sheets' Done default to it. */
+button.button-secondary, .agent-detail button, .host-list button, .host-password button,
+.settings-sheet button, .settings-update-card button, .subagent-sheet > header button {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-hairline);
+}
+/* Filled where the place defaults to secondary: its main action. */
+button.button-filled, .save-prompt-sheet button[type="submit"] {
+  color: var(--color-ground);
+  background: var(--color-text);
+  border: 0;
+}
+/* Plain: the quiet capsule, a subtle see-through fill and no border, for
+   text-weight actions (Cancel, Dismiss, Copy…); it shows on the ground and
+   on a card alike. */
+button.button-plain, .save-prompt-sheet header button {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  border: 0;
+}
+/* Destructive: no fill, the died ink on the label and a tinted hairline. */
+button.button-destructive {
+  color: var(--status-died);
+  background: none;
+  border: 0;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status-died) 45%, transparent);
+}
+/* Large: a sheet's main action and every dialog's buttons. */
+button.button-large, dialog .buttons > button, .subagent-sheet > header button, .save-prompt-sheet button[type="submit"] {
+  min-height: var(--button-height-large);
+  padding: 0 var(--button-padding-x-large);
+  font-size: var(--button-font-size-large);
+}
+button.button-compact, .save-prompt-sheet header button {
+  min-height: var(--button-height-compact);
+  padding: 0 var(--button-padding-x-compact);
+  font-size: var(--button-font-size-compact);
+}
+/* A button with a variant keeps the capsule and the weight under a place's
+   reset (Gram's .gram button draws its own controls bare). */
+button:is(.button-secondary, .button-filled, .button-plain, .button-destructive, .button-large, .button-compact) {
+  border-radius: var(--button-radius);
+  font-family: var(--font-app);
+  font-weight: var(--button-weight);
+  cursor: pointer;
+}
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible { outline: 2px solid var(--color-text-dim); outline-offset: 2px; }

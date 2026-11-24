@@ -39,15 +39,15 @@
 .agent-detail .pane-find button { display: flex; align-items: center; justify-content: center; width: 24px; height: 32px; border: 0; padding: 0; background: none; }
 .pane-find-hit { color: inherit; background: color-mix(in srgb, var(--status-waiting) 18%, transparent); text-decoration: underline; text-decoration-color: var(--status-waiting); }
 .pane-find-hit.current { background: color-mix(in srgb, var(--status-waiting) 36%, transparent); }
-.agent-detail button, .host-list button, .host-password button { font: inherit; color: var(--color-text); background: var(--color-surface-raised); border: 1px solid var(--color-hairline); border-radius: 8px; padding: 7px 11px; cursor: pointer; }
-.agent-detail button:disabled { opacity: .5; cursor: default; }
+/* The pane's buttons are the secondary capsule (buttons.css). */
 .agent-detail button[aria-pressed="true"] { background: var(--color-surface); text-decoration: underline; }
 .agent-detail .pane-back { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; padding: 0; border: 0; border-radius: 50%; }
 .pane-header-capsule { display: flex; padding: 0 2px; background: var(--color-surface-raised); border-radius: 22px; }
 .agent-detail .pane-header-capsule button { display: flex; align-items: center; justify-content: center; width: 40px; height: 44px; padding: 0; border: 0; background: none; }
-/* GramCodeBlock's copy controls and the attachment chip's remove, as gram.css draws them in Gram. */
-.agent-detail .gcode-copy, .agent-detail .gcode-copy-glyph, .agent-detail .gchip-remove { border: 0; border-radius: 0; background: none; cursor: default; }
-.agent-detail .gcode-copy { display: flex; align-items: center; gap: 4px; padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
+/* GramCodeBlock's copy controls and the attachment chip's remove, as gram.css draws them in Gram:
+   Copy the compact plain capsule, the glyphs bare circles (buttons.css). */
+.agent-detail .gcode-copy-glyph, .agent-detail .gchip-remove { border: 0; background: none; cursor: default; }
+.agent-detail .gcode-copy { display: flex; align-items: center; gap: 4px; }
 .agent-detail .gcode-copy-glyph { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center; flex: none; color: var(--color-text-dim); }
 .agent-detail .gcode-copy.copied, .agent-detail .gcode-copy-glyph.copied { color: var(--status-done); }
 .agent-detail .gchip-remove { width: 36px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; flex: none; color: var(--color-text-dim); }
@@ -97,10 +97,16 @@
 .terminal-key-row { position: absolute; left: 0; right: 0; bottom: var(--composer-height, 68px); display: flex; align-items: center; gap: 8px; height: 50px; }
 .interaction-body[data-mode="chat"] .terminal-key-row { display: none; }
 .terminal-key-scroll { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 8px 12px 8px 24px; mask-image: linear-gradient(to right, currentColor calc(100% - 16px), transparent); }
-.terminal-key-group { display: flex; flex: none; align-items: center; gap: 1px; overflow: hidden; border-radius: 8px; background: var(--color-surface); }
-.terminal-key-row button { display: flex; align-items: center; justify-content: center; flex: none; min-width: 44px; height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: var(--color-surface); color: var(--color-text-dim); font: 400 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+/* The quick keys are capsules (buttons.css); a group of keys shares one capsule, its keys its segments. */
+.terminal-key-group { display: flex; flex: none; align-items: center; gap: 1px; overflow: hidden; border-radius: var(--button-radius); background: var(--color-surface); }
+.terminal-key-row button { display: flex; align-items: center; justify-content: center; flex: none; min-width: 44px; height: 34px; padding: 0 10px; border: 0; background: var(--color-surface); color: var(--color-text-dim); font: 400 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .terminal-key-group button { position: relative; border-radius: 0; background: transparent; }
 .terminal-key-group button + button::before { content: ""; position: absolute; left: -1px; top: 8px; height: 18px; width: 1px; background: var(--color-hairline); }
+/* The group clips its keys to the capsule, so a key's focus ring is drawn inside it, following the
+   capsule's ends on the first and last key. */
+.terminal-key-group button:first-child { border-radius: var(--button-radius) 0 0 var(--button-radius); }
+.terminal-key-group button:last-child { border-radius: 0 var(--button-radius) var(--button-radius) 0; }
+.terminal-key-group button:focus-visible { outline-offset: -2px; }
 .terminal-key-row button:hover { background: var(--color-surface-raised); }
 .terminal-key-row button[aria-pressed="true"] { background: var(--status-working); color: var(--color-ground-machine); }
 .terminal-key-row .terminal-space-key { min-width: 84px; }
@@ -285,7 +291,7 @@
 .gcard.has-editor-handle, .chat-composer.has-editor-handle { padding-top: 20px; }
 .host-password { color: var(--color-text); background: var(--color-ground); border: 1px solid var(--color-hairline); border-radius: 14px; padding: 22px; }
 .host-password::backdrop { background: color-mix(in srgb, var(--color-ground-machine) 75%, transparent); }
-.agent-detail .terminal-history-load { position:absolute; z-index:2; top:12px; left:50%; transform:translateX(-50%); border-radius:18px; padding:8px 14px; font:600 12px var(--font-app); }
+.agent-detail .terminal-history-load { position:absolute; z-index:2; top:12px; left:50%; transform:translateX(-50%); padding:8px 14px; font:600 12px var(--font-app); }
 .terminal-history-load[hidden] { display:none; }
 /* TerminalHistoryCapsule's states cross-fade (HerdrApp.swift 5952, .easeInOut(duration: 0.15)). */
 .terminal-history-load:not([hidden]) { animation: motion-fade var(--motion-quick-duration) var(--motion-quick-ease) both; }
@@ -296,12 +302,11 @@
 .host-row button { margin-right: 6px; }
 .host-password label { display: flex; flex-direction: column; gap: 8px; }
 .host-password form { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-.subagent-sheet .chat-earlier { display: block; margin: 0 auto 12px; padding: 4px 8px; border: 0; background: none; color: var(--color-text-faint); font: 400 13px var(--font-app); }
+.subagent-sheet .chat-earlier { display: block; margin: 0 auto 12px; }
 /* ChatView.topSentinel: "Loading earlier messages" with a small spinner, or the Retry, in the dim
  * text colour at 13 pt × the chat's text size. */
 .agent-detail .chat-earlier { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 20px; margin: 0 0 12px; color: var(--color-text-dim); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .agent-detail .chat-earlier[hidden] { display: none; }
-.agent-detail .chat-earlier button { padding: 4px 8px; border: 0; background: none; color: inherit; font: 500 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); cursor: pointer; }
 .chat-earlier-spinner { width: 12px; height: 12px; box-sizing: border-box; border: 2px solid var(--color-hairline); border-top-color: currentColor; border-radius: 50%; animation: chat-earlier-spin .8s linear infinite; }
 @keyframes chat-earlier-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .chat-earlier-spinner { animation: none; } }
@@ -322,7 +327,7 @@
 .subagent-sheet { width: min(580px, calc(100vw - 32px)); height: min(660px, calc(100vh - 32px)); padding: 0; overflow: hidden; color: var(--color-text); background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 20px; }
 .subagent-sheet[open] { display: flex; flex-direction: column; }
 .subagent-sheet > header { position: relative; display: flex; align-items: center; justify-content: center; flex: none; height: 64px; padding: 10px; font: 600 16px var(--font-app); }
-.subagent-sheet > header button { position: absolute; right: 10px; height: 44px; padding: 0 16px; border: 0; border-radius: 22px; background: var(--color-surface-raised); color: var(--color-brand); font: 600 16px var(--font-app); }
+.subagent-sheet > header button { position: absolute; right: 10px; }
 .subagent-sheet::backdrop { background: color-mix(in srgb, var(--color-ground-machine) 75%, transparent); }
 .composer-actions { display: flex; gap: 4px; flex: none; align-self: flex-end; }
 .agent-detail .composer-actions > button { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--color-text-dim); text-decoration: none; }
@@ -336,13 +341,12 @@
 .save-prompt-sheet { width: min(540px, calc(100vw - 32px)); padding: 0; color: var(--color-text); background: var(--color-ground-machine); border: 1px solid var(--color-hairline); border-radius: 20px; }
 .save-prompt-sheet::backdrop { background: color-mix(in srgb, var(--color-ground-machine) 75%, transparent); }
 .save-prompt-sheet header { position: relative; display: flex; align-items: center; justify-content: center; height: 56px; font: 600 17px var(--font-app); }
-.save-prompt-sheet header button { position: absolute; left: 16px; padding: 0; border: 0; background: none; color: var(--color-text-dim); font: 400 17px var(--font-app); cursor: pointer; }
+.save-prompt-sheet header button { position: absolute; left: 16px; }
 .save-prompt-sheet form { display: flex; flex-direction: column; gap: 10px; padding: 20px; }
 .save-prompt-sheet label { display: flex; flex-direction: column; gap: 10px; color: var(--color-text-faint); font: 600 11px var(--font-app); letter-spacing: 1px; }
 .save-prompt-sheet input, .save-prompt-sheet textarea { width: 100%; box-sizing: border-box; padding: 14px 16px; border: 1px solid var(--color-hairline); border-radius: 12px; color: var(--color-text); background: var(--color-surface); font: 400 15px var(--font-app); }
 .save-prompt-sheet textarea { resize: vertical; min-height: 90px; font: 400 14px/1.5 var(--font-machine); }
-.save-prompt-sheet button[type="submit"] { margin-top: 6px; padding: 14px; border: 0; border-radius: 14px; color: var(--color-ground-machine); background: var(--color-text); font: 600 16px var(--font-app); cursor: pointer; }
-.save-prompt-sheet button:disabled { opacity: .5; cursor: default; }
+.save-prompt-sheet button[type="submit"] { margin-top: 6px; }
 .save-prompt-sheet p:empty { display: none; }
 .pane-attachments[hidden] { display: none; }
 .agent-detail .gchip-remove { width: 36px; height: 44px; padding: 0; border: 0; background: none; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
@@ -373,7 +377,7 @@
 .chat-question-title { margin:0 0 10px; font:600 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); white-space:pre-wrap; }
 .chat-question[data-state="open"] > .chat-question-title { margin:-1px 0 9px; line-height:calc(1em * var(--leading-app) + 2px); }
 .chat-question-options { display:flex; flex-direction:column; gap:8px; }
-.agent-detail .chat-question-option, .chat-question-option { display:flex; align-items:center; width:100%; min-height:40px; padding:0 14px; border:0; border-radius:12px; background:var(--color-surface-raised); color:var(--color-text); text-align:left; font:500 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.agent-detail .chat-question-option, .chat-question-option { display:flex; align-items:center; width:100%; min-height:40px; padding:0 16px; border:0; background:var(--color-surface-raised); color:var(--color-text); text-align:left; font:500 calc(15px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-question-option > span { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
 .agent-detail .chat-question-option.primary, .chat-question-sheet .chat-question-option.primary { color:var(--color-ground); background:var(--color-text); }
 .chat-question-option.readonly { outline:1px solid var(--color-hairline-quiet); outline-offset:-1px; background:none; color:var(--color-text-dim); }
@@ -383,12 +387,11 @@
    and machine 10.5 semibold, tracking 1.2, in waiting, 10 pt above. */
 .chat-question-waiting { display:flex; align-items:center; gap:8px; margin:10px 0 0; font:600 calc(10.5px * var(--chat-text-scale, 1)) var(--font-machine); letter-spacing:1.2px; color:var(--status-waiting); }
 .chat-question-waiting-dot { width:7px; height:7px; border-radius:50%; background:var(--status-waiting); flex:none; }
-.agent-detail .chat-question-terminal, .chat-question-sheet .chat-question-terminal { margin-top:10px; border:0; border-radius:18px; padding:8px 14px; font:600 14px var(--font-app); color:var(--color-text); background:var(--color-surface-raised); }
-/* ChatAskCard.dismissButton (herdrup #781): a secondary text button on its own line, 8 under the
-   card's last control; textDim, never a destructive colour; half opacity while a send is out. */
-.chat-question .chat-question-dismiss { display:block; margin-top:8px; padding:6px 0; border:0; background:none; color:var(--color-text-dim); font:600 calc(14px * var(--chat-text-scale, 1)) var(--font-app); cursor:pointer; }
-.chat-question .chat-question-dismiss:disabled { opacity:.5; cursor:default; }
-.agent-detail .chat-question-open { display:block; margin-top:6px; padding:0; border:0; background:none; color:var(--color-brand); font:400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.agent-detail .chat-question-terminal, .chat-question-sheet .chat-question-terminal { margin-top:10px; border:0; padding:8px 14px; font:600 14px var(--font-app); color:var(--color-text); background:var(--color-surface-raised); }
+/* ChatAskCard.dismissButton (herdrup #781): the plain capsule on its own line, 8 under the
+   card's last control; never a destructive colour; half opacity while a send is out. */
+.chat-question .chat-question-dismiss { display:block; margin-top:8px; }
+.agent-detail .chat-question-open { display:block; margin-top:6px; }
 .chat-question-context { margin-top:12px; font:400 14px var(--font-app); }
 .chat-question-context summary { cursor:pointer; }
 .chat-question-sheet button:disabled { opacity:.6; cursor:default; }
@@ -430,14 +433,14 @@ button.ask-form-other-caption { cursor:pointer; }
 .chat-question .ask-form-input:focus { outline:none; border-color:var(--color-text-dim); }
 .ask-form-problem { margin:8px 0 0; color:var(--color-text-dim); font:400 13px/1.4 var(--font-app); }
 .ask-form-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin-top:12px; }
-.chat-question .ask-form-link { display:flex; align-items:center; gap:3px; padding:0; border:0; background:none; color:var(--color-text-dim); font:600 calc(14px * var(--chat-text-scale, 1)) var(--font-app); cursor:pointer; }
+.chat-question .ask-form-link { display:flex; align-items:center; gap:3px; }
 .chat-question .ask-form-link:disabled { color:var(--color-hairline); cursor:default; }
 /* Dismiss right after Back, 14 apart (the foot's 12 gap and 2), the next control pushed right. */
 .ask-form-foot .ask-form-dismiss { margin-left:2px; margin-right:auto; }
 .ask-form-foot .ask-form-dismiss:only-child { margin-left:0; }
 .ask-form-hint { color:var(--color-text-faint); font:400 13px var(--font-app); }
-.chat-question .ask-form-next, .chat-question .ask-form-submit { height:34px; padding:0 20px; border:0; border-radius:17px; background:var(--color-text); color:var(--color-ground); font:600 14px var(--font-app); cursor:pointer; }
-.chat-question .ask-form-submit { width:100%; height:40px; border-radius:12px; font-size:15px; }
+.chat-question .ask-form-next, .chat-question .ask-form-submit { height:34px; padding:0 20px; border:0; background:var(--color-text); color:var(--color-ground); font:600 14px var(--font-app); cursor:pointer; }
+.chat-question .ask-form-submit { width:100%; height:40px; font-size:15px; }
 .chat-question .ask-form-next:disabled, .chat-question .ask-form-submit:disabled { opacity:.6; cursor:default; }
 .ask-form-review { display:flex; flex-direction:column; margin:8px 0 12px; }
 .chat-question .ask-form-review-row { display:flex; align-items:center; gap:10px; width:100%; padding:9px 0; border:0; border-top:1px solid var(--color-hairline-quiet); background:none; color:var(--color-text); text-align:left; cursor:pointer; }
@@ -515,7 +518,7 @@ button.ask-form-other-caption { cursor:pointer; }
 .chat-suggestion-actions { display:flex; justify-content:flex-end; align-items:center; gap:18px; margin-top:4px; }
 .agent-detail .chat-suggestion-actions > button { height:32px; border:0; font:500 14px var(--font-app); }
 .agent-detail .chat-suggestion-later { padding:0; background:none; color:var(--color-text-dim); }
-.agent-detail .chat-suggestion-start { padding:0 16px; border-radius:8px; background:var(--color-text); color:var(--color-ground); font-weight:600; }
+.agent-detail .chat-suggestion-start { padding:0 16px; background:var(--color-text); color:var(--color-ground); font-weight:600; }
 .chat-suggestion-block { display:flex; flex-direction:column; gap:12px; width:min(100%, calc(var(--gram-column, 720px) - 32px)); margin:0 auto 10px; }
 .chat-suggestion-block > .chat-suggestion-card { width:100%; margin:0; }
 .chat-suggestion-problem { display:flex; align-items:baseline; gap:8px; color:var(--color-text-dim); font:400 calc(14px * var(--chat-text-scale, 1))/1.5 var(--font-app); }

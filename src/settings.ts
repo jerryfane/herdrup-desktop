@@ -435,6 +435,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         const controls = el("div", "settings-size-controls");
         for (const [label, delta] of [["A−", -size.step], ["Reset", "reset"], ["A+", size.step]] as const) {
           const control = button(label, () => { try { size.change(delta); } catch (error) { report(error); } });
+          control.classList.add("button-secondary");
           control.dataset.textControl = `${size.key}-${label}`;
           control.disabled = delta === "reset" ? size.value === size.default : delta < 0 ? size.value <= size.min : size.value >= size.max;
           controls.append(control);
@@ -470,6 +471,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         if (saved.hasFederationPolicy) void setFederation(saved, false);
         else confirmFederation(saved);
       });
+      change.classList.add("button-plain", "button-compact");
       change.disabled = state?.phase !== "connected" || !!busy || (saved.savedState === "disabled" && !saved.hasFederationPolicy);
       item.append(identityTile(saved.displayLabel), lines);
       if (saved.peer) item.append(peerBadge(saved.peer));

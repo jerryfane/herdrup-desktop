@@ -15,7 +15,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text = "
  */
 export function agentGuideFooter(prompt: string, glyph: Glyph, report: (error: unknown) => void, close: () => void): HTMLElement {
   const footer = el("footer", "settings-agent-footer");
-  const done = el("button", "settings-agent-done", "Got it"); done.type = "button"; done.onclick = close;
+  const done = el("button", "settings-agent-done button-plain button-large", "Got it"); done.type = "button"; done.onclick = close;
   footer.append(copyForAgentCard(prompt, glyph, report), done);
   return footer;
 }
@@ -28,7 +28,7 @@ export function agentGuideFooter(prompt: string, glyph: Glyph, report: (error: u
  */
 function copyForAgentCard(prompt: string, glyph: Glyph, report: (error: unknown) => void): HTMLElement {
   const card = el("div", "settings-agent-card");
-  const copy = el("button", "settings-agent-copy"); copy.type = "button"; copy.setAttribute("aria-live", "polite");
+  const copy = el("button", "settings-agent-copy button-filled button-large"); copy.type = "button"; copy.setAttribute("aria-live", "polite");
   // CopyForAgentButton.swift 19-22.
   const paint = (copied: boolean) => copy.replaceChildren(
     glyph(copied ? "checkmark" : "sparkles", 14, "semibold"),

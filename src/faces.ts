@@ -1,10 +1,11 @@
 // The roster's faces, shared by the owner's roster (main.ts) and the guest home in both builds
-// (guestHome.ts deps, web/main.ts): an agent row's avatar (its face, no badge), the status badge
-// still drawn elsewhere, the initial tile and its placement, and the loading spinner.
+// (guestHome.ts deps, web/main.ts): an agent row's avatar with its status badge, the initial tile
+// and its placement, and the loading spinner.
 
 import type { Row } from "./mygo";
 import { avatarFace } from "./avatars";
 import { continuousPath } from "./continuous";
+import { rowStatus } from "./rowStatus";
 import { symbol } from "./symbol";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -39,38 +40,36 @@ function badgeShape(square: boolean): HTMLElement {
   return shape;
 }
 
-export async function badge(kind: string): Promise<HTMLElement | null> {
+/** The status badge on an avatar's bottom trailing corner (AgentAvatar.glyph): "!" for Needs you,
+ * "?" unrecognised, × stopped, offline, and the turning ring while working; none when idle. Drawn
+ * at once, its glyph filling in when the symbol arrives. The row doesn't say its status in words,
+ * so the badge names it (an image labelled "Needs you", "Working", …). */
+export function badge(kind: string): HTMLElement | null {
+  const name = kind === "waiting" ? "exclamationmark" : kind === "unrecognised" ? "questionmark" : kind === "stopped" ? "xmark" : kind === "offline" ? "wifi.slash" : null;
+  if (!name && kind !== "working") return null;
   const b = el("div", "badge " + kind);
+  b.setAttribute("role", "img");
+  b.setAttribute("aria-label", rowStatus(kind));
   b.append(badgeShape(kind === "stopped" || kind === "offline"));
-  switch (kind) {
-    case "waiting":
-      b.append(await symbol("exclamationmark", 10, "heavy"));
-      return b;
-    case "unrecognised":
-      b.append(await symbol("questionmark", 10, "heavy"));
-      return b;
-    case "stopped":
-      b.append(await symbol("xmark", 10, "heavy"));
-      return b;
-    case "offline":
-      b.append(await symbol("wifi.slash", 10, "heavy"));
-      return b;
-    case "working": {
-      // TurningRing(diameter: 12, lineWidth: 2) at rest (herdrup
-      // App/DesignSystem.swift): Circle().trim(0, 0.72) in a 12 pt frame, so
-      // the path's radius is 6 and the 2 pt round-capped stroke reaches 7,
-      // past the frame (overflow: visible); from 3 o'clock clockwise, over
-      // the ground-filled circle the other badges also have.
-      const r = 6;
-      const len = 2 * Math.PI * r;
-      b.insertAdjacentHTML(
-        "beforeend",
-        `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${len * 0.72} ${len}"/></svg>`,
-      );
-      return b;
-    }
+  if (name) {
+    // The glyph's own layer over the shape (style.css .badge-glyph), filled in when it arrives.
+    const glyph = el("span", "badge-glyph");
+    void symbol(name, 10, "heavy").then(s => glyph.append(s));
+    b.append(glyph);
+    return b;
   }
-  return null;
+  // TurningRing(diameter: 12, lineWidth: 2) at rest (herdrup
+  // App/DesignSystem.swift): Circle().trim(0, 0.72) in a 12 pt frame, so
+  // the path's radius is 6 and the 2 pt round-capped stroke reaches 7,
+  // past the frame (overflow: visible); from 3 o'clock clockwise, over
+  // the ground-filled circle the other badges also have. style.css turns it.
+  const r = 6;
+  const len = 2 * Math.PI * r;
+  b.insertAdjacentHTML(
+    "beforeend",
+    `<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="${r}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${len * 0.72} ${len}"/></svg>`,
+  );
+  return b;
 }
 
 const measure = document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D;
@@ -110,11 +109,13 @@ export async function placeInitials(root: ParentNode) {
   }
 }
 
-/** An agent row's avatar: its face alone. The row says its status in words (sessions.ts
- *  rowPreview, Topics A-v2), so neither the owner's roster nor the guest's list badges it. */
+/** An agent row's avatar: its face with its status badge (herdrup AgentAvatarView), in the
+ *  owner's roster and the guest's list alike. */
 export function rowAvatar(r: Row): HTMLElement {
   const a = el("div", "avatar");
   a.append(avatarFace(r.avatar, () => initialTile(r)));
+  const b = badge(r.badge);
+  if (b) a.append(b);
   return a;
 }
 

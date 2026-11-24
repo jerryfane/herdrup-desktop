@@ -16,7 +16,7 @@
 /* The bar: [fold] Topics (i) … Organise  New topic, 50 px. */
 .topics-head { display: flex; align-items: center; gap: 14px; flex: none; height: 50px; padding: 0 16px 0 10px; }
 .topics-surface[data-layout="narrow"] .topics-head { padding-left: 16px; }
-.agent-detail .topics-fold { display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-right: -6px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--color-text-dim); }
+.agent-detail .topics-fold { display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-right: -6px; padding: 0; border: 0; background: none; color: var(--color-text-dim); }
 .agent-detail .topics-fold:hover { color: var(--color-text); background: var(--color-surface); }
 .agent-detail .topics-fold[hidden] { display: none; }
 .topics-heading { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
@@ -74,7 +74,7 @@
 .topic-chat-status { display: flex; min-width: 0; max-width: 100%; }
 .topic-chat-status .topic-status { flex: 0 1 auto; min-width: 0; }
 .topic-chat-status .topic-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.agent-detail .topic-actions { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--color-text); }
+.agent-detail .topic-actions { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; background: none; color: var(--color-text); }
 .topic-notice:empty { display: none; }
 .topic-transcript { width: min(var(--gram-column, 720px), 100%); margin: 0 auto; }
 .topic-send-note { margin: 0; padding: 4px 16px; color: var(--color-text-dim); font: 400 12px var(--font-app); }
@@ -131,6 +131,6 @@ dialog.topics-about:focus { outline: none; }
 .topics-proposals-bar[hidden] { display: none; }
 .agent-detail .topics-proposals-bar > button { height: 32px; border: 0; font: 500 14px var(--font-app); }
 .agent-detail .topics-proposals-dismiss { padding: 0; background: none; color: var(--color-text-dim); }
-.agent-detail .topics-proposals-create { padding: 0 16px; border-radius: 8px; background: var(--color-text); color: var(--color-ground); font-weight: 600; }
+.agent-detail .topics-proposals-create { padding: 0 16px; background: var(--color-text); color: var(--color-ground); font-weight: 600; }
 .agent-detail .topics-proposals-bar > button:disabled { opacity: .5; }
 .topics-proposal-glyph { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--tick-icon) center/contain no-repeat; }
