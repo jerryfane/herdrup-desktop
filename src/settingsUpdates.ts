@@ -45,10 +45,10 @@ export class ServerUpdateSettings {
   private timer?: number;
   private generation = 0;
   private rendered = "";
-  private pending = false;
-  /** This page's apply is out (from the confirmation to its result): view-only, the card's offer
-   *  reads "Updating…" meanwhile. The Desk's snapshot stays idle until herdr's answer. */
-  private applying = false;
+  /** The card's own action under way, from the person's click to its result (view-only: the
+   *  Desk's snapshot stays as herdr last said): every button is disabled meanwhile, and during an
+   *  apply the idle offer reads "Updating…". */
+  private acting: "apply" | "recheck" | null = null;
   private modal?: HTMLDialogElement;
   private state?: UpdateState;
 
@@ -59,7 +59,7 @@ export class ServerUpdateSettings {
   }
   setScope(token: string, host = "Machine") {
     this.generation++; this.token = token; this.host = host;
-    clearTimeout(this.timer); this.modal?.close(); this.pending = false; this.applying = false;
+    clearTimeout(this.timer); this.modal?.close(); this.acting = null;
     this.state = undefined; this.rendered = ""; this.root.hidden = true; this.root.replaceChildren(); this.suggest(null);
     this.root.setAttribute("aria-busy", "true");
     if (token) void this.read(true);
@@ -68,15 +68,18 @@ export class ServerUpdateSettings {
     if (this.host === host) return;
     this.host = host; this.render();
   }
-  private async read(refresh: boolean) {
+  /** Reads the snapshot (again, with refresh) and renders it when it changed; false when the read
+   *  failed or the scope changed meanwhile. */
+  private async read(refresh: boolean): Promise<boolean> {
     const at = this.generation, token = this.token;
-    if (!token) return;
+    if (!token) return false;
     try {
       const raw = await Desk.settingsServerUpdate(token, refresh);
-      if (at !== this.generation) return;
+      if (at !== this.generation) return false;
       this.state = JSON.parse(raw) as UpdateState;
       if (raw !== this.rendered) { this.rendered = raw; this.render(); }
-    } catch (error) { if (at === this.generation) this.report(error); }
+      return true;
+    } catch (error) { if (at === this.generation) this.report(error); return false; }
     finally {
       if (at === this.generation) {
         this.root.setAttribute("aria-busy", "false");
@@ -87,7 +90,7 @@ export class ServerUpdateSettings {
   }
   private button(label: string, action: () => void, id = "") {
     const b = node("button", label); b.type = "button"; b.id = id;
-    b.disabled = this.pending; b.onclick = action; return b;
+    b.disabled = this.acting !== null; b.onclick = action; return b;
   }
   private text(text: string, faint = false) { this.root.append(node("p", text, faint ? "settings-update-faint" : "")); }
   private header(text: string) { this.root.append(node("h2", text)); }
@@ -103,14 +106,18 @@ export class ServerUpdateSettings {
     if (reason === "windows") return "herdr on Windows can't switch while running.";
     return `${this.host} can't switch herdr while it's running.`;
   }
-  private async action(run: (token: string) => Promise<void>, applying = false) {
-    if (this.pending || !this.token) return;
+  private async action(kind: "apply" | "recheck", run: (token: string) => Promise<void>) {
+    if (this.acting !== null || !this.token) return;
     const at = this.generation, token = this.token;
-    this.pending = true; this.applying = applying; this.render();
+    this.acting = kind; this.render();
     try { await run(token); }
     catch (error) { if (at === this.generation) this.report(error); }
     finally {
-      if (at === this.generation) { this.pending = false; this.applying = false; this.rendered = ""; await this.read(false); }
+      if (at === this.generation) {
+        this.acting = null; this.rendered = "";
+        // The snapshot read again; when that read fails too, the card it last had, without the action.
+        if (!await this.read(false) && at === this.generation) this.render();
+      }
     }
   }
   private confirm(buildID: string, restartLater: boolean, old: string, next: string) {
@@ -124,7 +131,7 @@ export class ServerUpdateSettings {
       : `From ${old} to ${next}. Terminals and agents keep running; the app reconnects in a few seconds.`));
     modal.append(this.button("Cancel", () => modal.close()), this.button(restartLater ? "Download" : "Update", () => {
       modal.close();
-      if (at === this.generation) void this.action(token => Desk.applySettingsServerUpdate(token, buildID, restartLater), true);
+      if (at === this.generation) void this.action("apply", token => Desk.applySettingsServerUpdate(token, buildID, restartLater));
     }, "server-update-confirm-apply"));
     modal.addEventListener("close", () => { modal.remove(); if (this.modal === modal) this.modal = undefined; }, { once: true });
     document.body.append(modal); modal.showModal();
@@ -142,9 +149,9 @@ export class ServerUpdateSettings {
     }
     const why = s.attempt?.message || s.message; if (why) this.text(why, true);
     const actions = node("div", "", "settings-update-actions");
-    if (s.flow === "lostTrack") actions.append(this.button("Look again", () => { void this.action(token => Desk.recheckSettingsServerUpdate(token, true)); }, "server-update-look-again"));
+    if (s.flow === "lostTrack") actions.append(this.button("Look again", () => { void this.action("recheck", token => Desk.recheckSettingsServerUpdate(token, true)); }, "server-update-look-again"));
     else if (outcome !== "rolled_back" && outcome !== "needs_attention" && s.code !== "update_unsupported_install" && s.code !== "update_not_available") {
-      actions.append(this.button("Try again", () => { void this.action(token => Desk.recheckSettingsServerUpdate(token, false)); }, "server-update-retry"));
+      actions.append(this.button("Try again", () => { void this.action("recheck", token => Desk.recheckSettingsServerUpdate(token, false)); }, "server-update-retry"));
     }
     const copy = this.button("Copy details", () => {
       const details = `herdr update on ${this.host}\n${s.attempt ? JSON.stringify(s.attempt, null, 2) : `refused: ${s.code}\nmessage: ${s.message}`}`;
@@ -223,7 +230,7 @@ export class ServerUpdateSettings {
     if (c.latest.notes) this.text(`New in ${next}: ${c.latest.notes}`, true);
     if (restart) this.text(`${this.cantSwitch(c.reason)} It finishes the next time herdr restarts.`, true);
     const buildID = c.latest.build_id;
-    const label = this.applying && s.flow === "idle" ? "Updating…" : restart ? "Download now, finish on restart" : "Update herdr";
+    const label = this.acting === "apply" && s.flow === "idle" ? "Updating…" : restart ? "Download now, finish on restart" : "Update herdr";
     this.root.append(this.button(label, () => this.confirm(buildID, restart, old, next), "server-update-apply"));
     this.text(restart ? "Restarting herdr closes terminals. Your layout comes back." : "Takes about a minute. Terminals and agents keep running; the app reconnects by itself.", true);
   }
