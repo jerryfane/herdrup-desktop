@@ -43,12 +43,13 @@ interface Kept {
 }
 
 /** A pane a creation splits that runs nothing so far, owned by its creation and link from before
- *  the split is asked until it is closed or an agent may run in it. While owned, the creation's
- *  end (closeCreation, the next openCreation, its sheet gone) or the link's takes it back and
- *  closes it, the link's end before its connection goes (onLinkClosing): it waits first for the
- *  split's answer (an end while it is out still closes the pane it made), then for a start out on
- *  the pane (within the link's closing wait): one that never went out or herdr refused leaves the
- *  pane empty and it closes; one that may have reached herdr leaves it alone. */
+ *  the split is asked until it is closed or an agent may run in it. Its one cleanup (cleanup) is
+ *  shared by whoever ends it: the creation's end (closeCreation, the next openCreation, its sheet
+ *  gone), the link's (before its connection goes, onLinkClosing), and the creation's own failure
+ *  paths. It waits first for the split's answer (an end while it is out still closes the pane it
+ *  made), then for a start out on the pane (within the link's closing wait): one that never went
+ *  out or herdr refused leaves the pane empty and it closes; one that may have reached herdr
+ *  leaves it alone. */
 class EmptyPane {
  /** The pane's id once the split answered. */
  id = "";
@@ -58,27 +59,19 @@ class EmptyPane {
  startOut = false;
  /** Settles once the last start's outcome is classified (startOut set). */
  #starting: Promise<void> = Promise.resolve();
- #closing: Promise<unknown> | null = null;
- /** The one decision on the pane between its owners' end and a save (createTerminal): "closing"
-  *  from the moment the creation or its link ends (the pane closes, and nothing keeps it after, a
-  *  split answered later included), "kept" once a save's record was written (the end leaves it).
-  *  Whichever comes first stands. */
+ #cleanup: Promise<unknown> | null = null;
+ /** The one decision on the pane between its cleanup and a save (createTerminal): "closing" from
+  *  the moment its cleanup begins (the pane closes, and nothing keeps it after, a split answered
+  *  later included), "kept" once a save's record was written (the cleanup leaves it). Whichever
+  *  comes first stands. */
  #claim: "closing" | "kept" | null = null;
  readonly #off: () => void;
 
  /** Owns the pane split asks for on link, until end (the creation's requests' signal: its end and
   *  its link's): split runs once the ownership is in place. */
  constructor(readonly link: OwnerLink, end: AbortSignal, split: () => Promise<string>) {
-  const takeBack = async () => {
-   if (this.#claim === "kept") return;
-   this.#claim = "closing";
-   if (!await this.made.then(() => true, () => false)) return;
-   await this.#starting;
-   if (this.startOut) return;
-   await this.close();
-  };
-  const offLink = onLinkClosing(link, takeBack);
-  const ended = () => { void takeBack(); };
+  const offLink = onLinkClosing(link, () => this.cleanup());
+  const ended = () => { void this.cleanup(); };
   end.addEventListener("abort", ended, { once: true });
   this.#off = () => { offLink(); end.removeEventListener("abort", ended); };
   this.made = split().then((id) => this.id = id);
@@ -89,18 +82,27 @@ class EmptyPane {
  /** The creation or its link ended: the pane closes, and a save keeps nothing (persistAndKeep). */
  get taken(): boolean { return this.#claim === "closing"; }
 
- /** A save's record was written: the pane is kept (the end leaves it). persistAndKeep checks
+ /** A save's record was written: the pane is kept (its cleanup leaves it). persistAndKeep checks
   *  taken, writes and keeps in one synchronous step under the terminal store's lock; a write
-  *  storage refused throws first, so the end still closes the pane. */
+  *  storage refused throws first, so the cleanup still closes the pane. */
  keep() { this.#claim = "kept"; }
 
- /** desk_create.go cleanupCreatedPane's close, on the pane's own link whatever its life: the
-  *  close's failure, or null once closed. Once only; the link's end waits for it (up to
-  *  CLOSING_WAIT_MS), and the pane is the link's no more once it settled. */
- close(): Promise<unknown> {
-  this.#closing ??= this.link.client.call("pane.close", { pane_id: this.id }, "ok", "", AbortSignal.timeout(CLOSING_WAIT_MS)).then(
-   () => null, (error: unknown) => error instanceof HerdrAPIError && error.code === "owner_forbidden" ? new OwnerRefusedError("pane.close") : error).finally(this.#off);
-  return this.#closing;
+ /** desk_create.go cleanupCreatedPane, once, whoever asks: unless a save kept the pane, it is
+  *  taken back (taken), and once the split and any start settled, closed on its own link whatever
+  *  that link's life, unless a start may have reached herdr. The close's failure, or null (closed,
+  *  kept, no pane, or left to a start). The link's end waits for it (up to CLOSING_WAIT_MS), and
+  *  the pane is the link's no more once it settled. */
+ cleanup(): Promise<unknown> {
+  this.#cleanup ??= (async () => {
+   if (this.#claim === "kept") return null;
+   this.#claim = "closing";
+   if (!await this.made.then(() => true, () => false)) return null;
+   await this.#starting;
+   if (this.startOut) return null;
+   return await this.link.client.call("pane.close", { pane_id: this.id }, "ok", "", AbortSignal.timeout(CLOSING_WAIT_MS)).then(
+    () => null, (error: unknown) => error instanceof HerdrAPIError && error.code === "owner_forbidden" ? new OwnerRefusedError("pane.close") : error).finally(this.#off);
+  })();
+  return this.#cleanup;
  }
 
  /** An agent runs, or may run, in the pane: it is the roster's or the user's now. */
@@ -143,11 +145,10 @@ function call<T>(v: Creation, method: string, params: unknown, tag: string, sign
 }
 
 /** A pane a start left empty (busy, or the request never sent): kept for the next Start while its
- *  sheet lives, else its watch ends and the pane is closed now. */
+ *  sheet lives, else its watch ends; the creation's end has the pane cleaned up (EmptyPane). */
 function keepEmpty(v: Creation, pane: EmptyPane, folder: string, watch: StartWatch) {
  if (creation === v && !v.signal.aborted) { v.kept = { pane, folder, watch }; return; }
  watch.end();
- void pane.close();
 }
 
 /** The kept pane, taken back from the creation (its link still owns it). */
@@ -157,13 +158,11 @@ function takeKept(v: Creation): Kept | null {
  return kept;
 }
 
-/** A creation's end: its requests stop, and the pane it kept for another start is closed. */
+/** A creation's end: its requests stop (which has each of its panes cleaned up, EmptyPane), and
+ *  the roster watch of the pane it kept for another start ends. */
 function endCreation(v: Creation) {
  v.life.abort(new Error(CHANGED));
- const kept = takeKept(v);
- if (kept === null) return;
- kept.watch.end();
- void kept.pane.close();
+ takeKept(v)?.watch.end();
 }
 
 /** herdr's pane.process_info result (herdrapi PaneProcessInfo). */
@@ -186,7 +185,7 @@ function shellName(name: string): boolean {
 }
 
 /** engine shellInitializing: the pane's shell still owns the foreground (its rc files run). */
-export function shellInitializing(info: PaneProcessInfo | undefined): boolean {
+function shellInitializing(info: PaneProcessInfo | undefined): boolean {
  const shell = info?.shell_pid;
  if (shell == null || info!.foreground_process_group_id == null || shell !== info!.foreground_process_group_id) return false;
  return (info!.foreground_processes ?? []).some(p => p.pid === shell && (shellName(p.name) || (!!p.argv?.length && shellName(p.argv[0]!))));
@@ -209,7 +208,7 @@ export interface Clock {
 const realClock: Clock = { sleep, timeout: (ms) => AbortSignal.timeout(ms) };
 
 /** engine StartAgentWhenShellReady's bounded wait for a starting shell. */
-export const SHELL_READY_MS = 2000;
+const SHELL_READY_MS = 2000;
 
 /** An agent.start herdr refused as busy (agent_pane_busy) while this link can't see whether the new
  *  pane's shell is still starting: an owner gate refusing pane.process_info, a host without it, or
@@ -293,7 +292,7 @@ function notMutated(error: unknown): boolean {
 
 /** cleanupCreatedPane for an agent that didn't start: failed once its pane is closed, else uncertain. */
 async function agentNotStarted(v: Creation, pane: EmptyPane, cause: unknown): Promise<AgentCreationResult> {
- const failure = await pane.close();
+ const failure = await pane.cleanup();
  if (failure !== null) return { phase: "uncertain", paneID: pane.id, name: "", message: `Agent did not start: ${text(cause)}. Could not close empty pane ${pane.id}: ${text(failure)}` };
  v.used = false;
  return { phase: "failed", paneID: "", name: "", message: text(cause) };
@@ -345,7 +344,7 @@ export const createDesk = {
    else {
     // Another folder needs another pane: the one kept in the old folder goes first.
     kept?.watch.end();
-    const failure = kept === null ? null : await kept.pane.close();
+    const failure = kept === null ? null : await kept.pane.cleanup();
     if (failure !== null) return { phase: "uncertain", paneID: kept!.pane.id, name: "", message: `Could not close empty pane ${kept!.pane.id}: ${text(failure)}` };
     // The roster's lists from here on may have the new pane (startedAgents.ts).
     watch = v.link.watchStart();
@@ -404,7 +403,7 @@ export const createDesk = {
    } catch (error) {
     // The save's failure says what was lost; the close's outcome is said here, once.
     const lost = `The new terminal wasn't saved on this device: ${text(error)}.`;
-    const failure = await pane.close();
+    const failure = await pane.cleanup();
     if (failure !== null) return { phase: "uncertain", message: `${lost} Could not close its pane ${pane.id}: ${text(failure)}` };
     if (!(error instanceof TerminalNotKeptError)) v.used = false;
     return { phase: "failed", message: `${lost} Its pane was closed.` };

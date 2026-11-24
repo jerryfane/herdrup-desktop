@@ -67,6 +67,12 @@ export class GuestClient {
   return pong;
  }
 
+ /** engine.go probe: the pong a ping already answered, else a new ping's (kept). A ping that
+  *  fails throws its error: nothing but the ping was sent. */
+ async probe(signal?: AbortSignal): Promise<Pong> {
+  return this.#probed ?? await this.ping(signal);
+ }
+
  /** engine.go gate: refuses a call the host's pong says it lacks; an unanswered ping lets it through.
   *  The ping is the call's pre-send work, so unsent (the call's pre-send signal) ends it too, and
   *  every check reads unsent: a call cancelled before it is sent is a NotSentError with the reason
