@@ -65,6 +65,10 @@ type Pull struct {
 	// Full means Items is the whole account: anything held locally that it
 	// does not list is gone (a since=0 pull, or a reset_required restart).
 	Full bool
+	// Reset means the service told the pull to start over (410): the
+	// account's history may have been replaced (a restore), unlike a plain
+	// since=0 pull, which is Full only.
+	Reset bool
 	// NowMs is the service's clock as of the pull (themartianapp/herdrup
 	// #826): the earliest of its pages' now_ms, 0 when a page had none (a
 	// service without it).
@@ -78,13 +82,14 @@ var ErrResetRequired = errors.New("account: sync reset required")
 const maxPullPages = 64 // 64 × 500 items, past the 2,000-item account cap
 
 // PullSince reads every change after since, following the cursor. A 410
-// restarts from 0 and the result is Full.
+// restarts from 0 and the result is Full and Reset.
 // Every request (each page) is for r's session (Round): ErrAccountChanged
 // once it ended, a sign-in again to the same account included.
 func (c *Client) PullSince(ctx context.Context, r Round, since int64) (Pull, error) {
 	p, err := c.pull(ctx, r, since)
 	if errors.Is(err, ErrResetRequired) && since != 0 {
-		return c.pull(ctx, r, 0)
+		p, err = c.pull(ctx, r, 0)
+		p.Reset = err == nil
 	}
 	return p, err
 }

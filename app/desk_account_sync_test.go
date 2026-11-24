@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1297,7 +1298,7 @@ func TestPromptsTheServiceWouldRefuseAreNotSent(t *testing.T) {
 		t.Fatalf("mac's prompts after the sync: %+v; want both kept", got)
 	}
 	empty := SavedPrompt{ID: "00000000-0000-4000-8000-000000000009"}
-	if _, changes, _, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
+	if _, changes, _, _, _ := mergePrompts([]SavedPrompt{empty}, nil, nil, nil, nil, nil, nil, nil, nil); len(changes) != 0 {
 		t.Fatalf("an empty prompt was sent: %+v", changes)
 	}
 
@@ -3043,7 +3044,7 @@ func BenchmarkMergeWithoutLandings(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		mergePrompts(local, mirror, mirror, nil, nil, baseline, attempts, nil)
+		mergePrompts(local, mirror, mirror, nil, nil, baseline, nil, attempts, nil)
 	}
 }
 
@@ -4689,7 +4690,7 @@ func TestAMarkersAcknowledgementKeepsTheGuards(t *testing.T) {
 		}
 		d.foldMarkers(state)
 		judgedBy := "baseline"
-		if _, kept := state.PromptBaseline[p]; !kept && state.PromptLastSent[p].Hash == "H" {
+		if _, kept := state.PromptBaseline[p]; !kept && state.PromptBaselineHash[p] == "H" {
 			judgedBy = "hash"
 		}
 		left := 0
@@ -4699,5 +4700,199 @@ func TestAMarkersAcknowledgementKeepsTheGuards(t *testing.T) {
 		if judgedBy != c.judgedBy || left != c.left {
 			t.Errorf("%s: judged by the %s, %d sends open; want the %s, %d", c.name, judgedBy, left, c.judgedBy, c.left)
 		}
+	}
+}
+
+// #443: on an empty account, the held first upload of v1 lands just
+// before the upload of v2, which is turned down with v1's row; v1 is saved
+// here again meanwhile, and another device writes v3. The readback (from
+// revision 0, a plain snapshot, not a restart) confirms the conflict's
+// history: v1 is the agreed copy, so v3 is taken, not overwritten.
+func TestAReadbackFromRevisionZeroKeepsConflictEvidence(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	mac := device(t, srv)
+	p := savePrompt(t, mac, "", "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never answered
+	savePrompt(t, mac, p.ID, "", "v2")
+	savePrompt(t, mac, "", "", "q") // taken, so the round reads back
+	w.mu.Lock()
+	w.onPush = func() {
+		w.landHeldLocked()
+		savePrompt(t, mac, p.ID, "", "v1")
+	}
+	w.afterPush = func() { w.otherDeviceWritesLocked(p.ID, "v3") }
+	w.mu.Unlock()
+	for round := 0; mac.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v3" || !strings.Contains(body, `"v3"`) {
+		t.Fatalf("mac's prompt %+v, the account's %s; want the other device's v3 in both", got, body)
+	}
+}
+
+// #442: the held upload of v1 lands just before the upload of v2, which is
+// turned down with v1's row; v0 is saved here again meanwhile, another
+// device writes v3, and the readback never comes back (the round ends);
+// the app is then opened again. The conflict's row was kept: the next
+// pull confirms its history, so v1 is the agreed copy and v0 an edit,
+// which goes over v3.
+func TestConflictEvidenceOutlivesAFailedReadbackAndARestart(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodGet}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	syncGivingUpTheUpload(t, w, mac) // held, never answered
+	savePrompt(t, mac, p.ID, "", "v2")
+	savePrompt(t, mac, "", "", "q") // taken, so the round reads back
+	w.mu.Lock()
+	w.onPush = func() {
+		w.landHeldLocked()
+		savePrompt(t, mac, p.ID, "", "v0")
+	}
+	w.afterPush = func() { w.otherDeviceWritesLocked(p.ID, "v3") }
+	w.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport.mu.Lock()
+	transport.nth, transport.seen, transport.cancel = 2, 0, cancel // the pull, then the readback
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want the round ended before its readback was applied", err)
+	}
+	reopened := reopen(t, srv, mac)
+	for round := 0; reopened.SyncMachines(context.Background()) != nil; round++ {
+		if round == 3 {
+			t.Fatal("still failing three rounds on")
+		}
+	}
+	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("the reopened app's prompt %+v, the account's %s; want the revert v0 in both", got, body)
+	}
+}
+
+// #439: as in TestAnAcceptedUploadOutlivesARestart, the reopened app
+// recovers the acknowledgement of v1 from its marker, and the revert v0 is
+// an edit over another device's x; but its upload is refused (429). The
+// acknowledgement stays what v0 is judged against (no older copy stands
+// in for it), so the next round sends v0 again instead of taking x.
+func TestARecoveredAcknowledgementOutlivesARateLimitedRevert(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.onPush = func() { savePrompt(t, mac, p.ID, "", "v0") } // the revert, as v1 goes
+	w.mu.Unlock()
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	reopened := reopen(t, srv, mac)
+	w.anotherDeviceWrites(p.ID, "x")
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 1
+	w.mu.Unlock()
+	var api *account.APIError
+	if err := reopened.SyncMachines(context.Background()); !errors.As(err, &api) || api.Status != http.StatusTooManyRequests {
+		t.Fatalf("%v; want the revert's upload refused by the rate limit", err)
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+	syncEach(t, reopened)
+	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) {
+		t.Fatalf("the reopened app's prompt %+v, the account's %s; want the revert v0 in both", got, body)
+	}
+}
+
+// #441: a send's marker is reserved at its full size before dispatch, and
+// every answer, the longest acknowledgement included, overwrites it in
+// place at that size: recording an answer never needs room a disk that
+// filled after dispatch no longer has.
+func TestASendsMarkerNeverGrows(t *testing.T) {
+	const p = "00000000-0000-4000-8000-000000000001"
+	d := newDesk(t.TempDir())
+	sent := map[string]sentAttempt{p: {ID: "s1", Base: 1, History: math.MaxInt64}}
+	if err := d.reserveSends(sent); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(d.sendMarkersDir(), "s1")
+	size := func() int64 {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Size()
+	}
+	reserved := size()
+	var res account.PushResult
+	if err := json.Unmarshal(fmt.Appendf(nil, `{"applied":[{"collection":"prompts","id":%q,"rev":%d}]}`, p, int64(math.MaxInt64)), &res); err != nil {
+		t.Fatal(err)
+	}
+	d.markAnswered(sent, []account.Change{{Collection: "prompts", ID: p, Body: account.PromptBody{Text: "v1"}}}, &res)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := size(); got != reserved || !strings.HasPrefix(string(raw), fmt.Sprintf("a:%d:", int64(math.MaxInt64))) || !strings.HasSuffix(strings.TrimRight(string(raw), " "), fmt.Sprintf(":%d", int64(math.MaxInt64))) {
+		t.Fatalf("marker %q, %d bytes; want the whole acknowledgement in the %d bytes reserved", raw, got, reserved)
+	}
+}
+
+// #440: the upload of v1 is taken while v0 (agreed before it) is saved
+// here again, and only the journal write recording the answer fails; the
+// app is opened again, and its first pull is told to start over (410):
+// the account was restored to a backup holding old. The pull's history is
+// worked out before the marker's acknowledgement is folded, so that
+// acknowledgement (of the history the restore discarded) retires only its
+// send: v0, agreed before it, is no edit, and the restored old is taken.
+func TestAnAcknowledgementFromBeforeARestoreSetsNoBaseline(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost, nth: 1}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "old")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backup := w.items[p.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v0")
+	syncEach(t, mac)
+	savePrompt(t, mac, p.ID, "", "v1")
+	w.mu.Lock()
+	w.onPush = func() { savePrompt(t, mac, p.ID, "", "v0") }
+	w.mu.Unlock()
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	w.mu.Lock()
+	w.restoreTo(backup.Rev)
+	w.items[p.ID] = backup
+	w.floor = backup.Rev + 1 // the next pull is told to start over
+	w.mu.Unlock()
+	reopened := reopen(t, srv, mac)
+	syncEach(t, reopened)
+	if got, body := promptsOf(t, reopened)[p.ID], w.livePrompts()[p.ID]; got.Text != "old" || !strings.Contains(body, `"old"`) {
+		t.Fatalf("the reopened app's prompt %+v, the account's %s; want the restored old in both", got, body)
 	}
 }

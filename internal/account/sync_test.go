@@ -143,18 +143,18 @@ func TestPullFollowsTheCursorAndARemovedFloorRestartsAFullPull(t *testing.T) {
 	c := syncClient(t, s)
 	ctx := context.Background()
 	p, err := c.PullSince(ctx, acctRound, 0)
-	if err != nil || !p.Full || p.Rev != 5 || len(p.Items) != 5 {
+	if err != nil || !p.Full || p.Reset || p.Rev != 5 || len(p.Items) != 5 {
 		t.Fatalf("full pull: %+v, %v", p, err)
 	}
 	p, err = c.PullSince(ctx, acctRound, 3)
-	if err != nil || p.Full || len(p.Items) != 2 || !p.Items[0].Deleted {
+	if err != nil || p.Full || p.Reset || len(p.Items) != 2 || !p.Items[0].Deleted {
 		t.Fatalf("incremental: %+v, %v", p, err)
 	}
 	s.mu.Lock()
 	s.floor = 4
 	s.mu.Unlock()
 	p, err = c.PullSince(ctx, acctRound, 3)
-	if err != nil || !p.Full || len(p.Items) != 5 {
+	if err != nil || !p.Full || !p.Reset || len(p.Items) != 5 {
 		t.Fatalf("after a prune: %+v, %v; want a full pull", p, err)
 	}
 	for _, a := range s.auth {
