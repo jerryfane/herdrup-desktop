@@ -711,7 +711,8 @@ bun speech/build.ts linux/amd64
 bun run build -- -platform linux/amd64
 ```
 
-The speech source must be at `927cfce34f31707e17f2bff35c349632fb9e2c3a`.
+The speech source must be at the commit in `speech/whisper.rev` (v1.9.4), which
+`speech/build.ts` checks and CI checks out (`.github/actions/speech`).
 The resource builder requires CMake and a C++17 compiler. It verifies the model's
 SHA-256 and bundles the helper, multilingual tiny model and license notices.
 Model downloads use a backpressured Node stream pipeline: Bun 1.3.14 on Linux

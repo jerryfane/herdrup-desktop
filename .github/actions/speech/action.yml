@@ -1,9 +1,11 @@
 name: Offline speech resources
 description: >
-  Fetches the pinned whisper.cpp and builds herdrup's offline speech
-  resources (speech/build.ts) for one platform, into the runner's temporary
-  folder. speech/build.ts sets HERDRUP_SPEECH_RESOURCES for the later steps,
-  where mygo.config.ts ships the files speech/resources.json lists.
+  Fetches whisper.cpp at the commit speech/whisper.rev pins and builds
+  herdrup's offline speech resources (speech/build.ts) for one platform,
+  into the runner's temporary folder. speech/build.ts sets
+  HERDRUP_SPEECH_RESOURCES for the later steps, where mygo.config.ts ships
+  the files speech/resources.json lists. Runs after the repository's
+  checkout.
 inputs:
   platform:
     description: The GOOS/GOARCH target, as speech/build.ts takes it (windows/amd64, darwin/universal, …).
@@ -11,16 +13,22 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Read the pinned offline speech engine's commit
+      id: whisper
+      shell: bash
+      run: |
+        read -r rev < speech/whisper.rev
+        echo "rev=$rev" >> "$GITHUB_OUTPUT"
     - name: Fetch pinned offline speech engine
       uses: actions/checkout@v5
       with:
         repository: ggml-org/whisper.cpp
-        ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
-        path: speech-source
+        ref: ${{ steps.whisper.outputs.rev }}
+        path: .speech-source
     - name: Build offline speech resources
       shell: bash
       env:
-        WHISPER_SOURCE: ${{ github.workspace }}/speech-source
+        WHISPER_SOURCE: ${{ github.workspace }}/.speech-source
         HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
         PLATFORM: ${{ inputs.platform }}
       run: bun speech/build.ts "$PLATFORM"

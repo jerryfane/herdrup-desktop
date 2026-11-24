@@ -433,7 +433,8 @@ jobs:
           if (Test-Path (Join-Path $pkg.InstallLocation '.herdrup-msix-stage')) { throw 'the staging marker was packed' }
           # A herdrup:// link opens it, through the package's protocol
           # (the Store build doesn't register one itself): the process that
-          # runs from the package, until it has its window, and keeps running.
+          # runs from the package with the link on its command line, until it
+          # has its window, and keeps running.
           Start-Process 'herdrup://ci-check'
           $root = $pkg.InstallLocation.TrimEnd('\') + '\'
           $app = $null
@@ -447,11 +448,13 @@ jobs:
             Get-Process -Name herdrup -ErrorAction SilentlyContinue | Format-List Id, Path, MainWindowHandle
             throw 'no herdrup.exe from the package with a window within 30 s'
           }
-          Write-Host "herdrup.exe $($app.Id) runs from $($app.Path) with window $($app.MainWindowHandle)"
+          $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($app.Id)").CommandLine
+          Write-Host "herdrup.exe $($app.Id) runs from $($app.Path) with window $($app.MainWindowHandle): $cmd"
+          if (-not $cmd -or -not $cmd.Contains('herdrup://ci-check')) { throw "herdrup.exe was not opened by the link: $cmd" }
           Start-Sleep -Seconds 15
-          if (-not (Get-Process -Id $app.Id -ErrorAction SilentlyContinue)) { throw 'herdrup.exe exited' }
-          Stop-Process -Id $app.Id -Force
-          Wait-Process -Id $app.Id -Timeout 30
+          if ($app.HasExited) { throw "herdrup.exe exited with $($app.ExitCode)" }
+          $app | Stop-Process -Force
+          if (-not $app.WaitForExit(30000)) { throw 'herdrup.exe still running 30 s after Stop-Process' }
           Remove-AppxPackage -Package $pkg.PackageFullName
           if (Get-AppxPackage -Name HerdrupCI) { throw 'HerdrupCI left after Remove-AppxPackage' }
       - uses: actions/upload-artifact@v4

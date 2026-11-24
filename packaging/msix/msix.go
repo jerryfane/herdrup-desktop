@@ -123,29 +123,30 @@ func packageVersion(path string) (string, error) {
 // appExe is the Windows build's executable, the manifest's Executable.
 const appExe = "herdrup.exe"
 
-// loadPayload returns what the package holds of the Windows build, as the
+// speechList lists the offline speech resources, relative to the
+// repository, the folder pack runs in: the one list, for mygo.config.ts and
+// the package.
+const speechList = "speech/resources.json"
+
+// parsePayload returns what the package holds of the Windows build, as the
 // installer installs it: herdrup.exe, and the offline speech resources that
-// speech/resources.json lists at path, the list mygo.config.ts ships (built
-// first by speech/build.ts). Nothing else in the build's folder goes in.
-func loadPayload(path string) ([]string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+// list, speechList's contents, names (built first by speech/build.ts).
+// Nothing else in the build's folder goes in.
+func parsePayload(list []byte) ([]string, error) {
 	var r struct {
 		Helper string   `json:"helper"`
 		Files  []string `json:"files"`
 	}
-	if err := json.Unmarshal(b, &r); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if err := json.Unmarshal(list, &r); err != nil {
+		return nil, fmt.Errorf("%s: %w", speechList, err)
 	}
 	if r.Helper == "" || len(r.Files) == 0 {
-		return nil, fmt.Errorf("%s: want a helper and files", path)
+		return nil, fmt.Errorf("%s: want a helper and files", speechList)
 	}
 	payload := append([]string{appExe, r.Helper + ".exe"}, r.Files...)
 	for _, f := range payload {
 		if f == "" || f == "." || f == ".." || strings.ContainsAny(f, `/\:`) {
-			return nil, fmt.Errorf("%s: %q is not a file name", path, f)
+			return nil, fmt.Errorf("%s: %q is not a file name", speechList, f)
 		}
 	}
 	return payload, nil
@@ -179,7 +180,7 @@ var logos = []logo{
 // sources is what stage reads, and the other paths the command takes.
 type sources struct {
 	// from is the Windows build's folder, and payload the files of it the
-	// package holds (loadPayload).
+	// package holds (parsePayload).
 	from    string
 	payload []string
 	// icon is the PNG the logos are made from.
@@ -192,13 +193,18 @@ type sources struct {
 // stage makes dir the package's contents: the payload of the build, the
 // logos made from the icon, and AppxManifest.xml for id. It returns them,
 // relative to dir. Before writing or deleting anything it checks the
-// identity, that dir is apart from every input, that the build has the
-// whole payload, and that dir is new, empty or stage's own.
+// identity, that dir is apart from every input (each path given, and each
+// payload file of the build), that the build has the whole payload, and
+// that dir is new, empty or stage's own.
 func stage(src sources, dir string, id identity) ([]string, error) {
 	if err := id.check(); err != nil {
 		return nil, err
 	}
-	for _, in := range append([]string{src.from, src.icon}, src.others...) {
+	inputs := append([]string{src.from, src.icon}, src.others...)
+	for _, name := range src.payload {
+		inputs = append(inputs, filepath.Join(src.from, name))
+	}
+	for _, in := range inputs {
 		if err := apart(in, dir); err != nil {
 			return nil, err
 		}
@@ -238,20 +244,41 @@ func stage(src sources, dir string, id identity) ([]string, error) {
 }
 
 // apart refuses a staging folder that is an input, holds it or is inside
-// it, symbolic links followed: replacing the folder would delete the input.
+// it: replacing the folder would delete the input. Each is compared as
+// written and with its symbolic links resolved, every form of one against
+// every form of the other, so neither a link inside the folder to an input
+// elsewhere nor a link elsewhere into the folder gets through.
 func apart(input, dir string) error {
-	a, err := resolved(input)
+	ins, err := forms(input)
 	if err != nil {
 		return err
 	}
-	b, err := resolved(dir)
+	dirs, err := forms(dir)
 	if err != nil {
 		return err
 	}
-	if within(a, b) || within(b, a) {
-		return fmt.Errorf("-stage %s and the input %s overlap: stage in a folder of its own", dir, input)
+	for _, a := range ins {
+		for _, b := range dirs {
+			if within(a, b) || within(b, a) {
+				return fmt.Errorf("-stage %s and the input %s overlap: stage in a folder of its own", dir, input)
+			}
+		}
 	}
 	return nil
+}
+
+// forms returns p absolute as written (cleaned, no links followed) and
+// resolved.
+func forms(p string) ([2]string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return [2]string{}, err
+	}
+	r, err := resolved(abs)
+	if err != nil {
+		return [2]string{}, err
+	}
+	return [2]string{abs, r}, nil
 }
 
 // resolved returns p absolute, with the symbolic links of its longest

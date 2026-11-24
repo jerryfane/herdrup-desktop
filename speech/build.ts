@@ -3,7 +3,8 @@ import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { resolve, join } from "node:path";
 
-const revision = "927cfce34f31707e17f2bff35c349632fb9e2c3a";
+// The pinned whisper.cpp commit (v1.9.4), the one that release.yml and ci.yml check out (.github/actions/speech).
+const revision = (await Bun.file(join(import.meta.dir, "whisper.rev")).text()).trim();
 const modelHash = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21";
 const platform = process.argv[2];
 if (!["linux/amd64", "linux/arm64", "windows/amd64", "darwin/universal"].includes(platform ?? "")) throw new Error("Usage: bun speech/build.ts linux/amd64|linux/arm64|windows/amd64|darwin/universal");

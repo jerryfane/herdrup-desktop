@@ -224,13 +224,17 @@ func writeFile(t *testing.T, path, content string) {
 
 const (
 	testIcon   = "../../resources/icon.png"
-	testSpeech = "../../speech/resources.json"
+	testSpeech = "../../" + speechList
 )
 
 // testPayload is the repository's payload.
 func testPayload(t *testing.T) []string {
 	t.Helper()
-	p, err := loadPayload(testSpeech)
+	b, err := os.ReadFile(testSpeech)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := parsePayload(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,10 +281,14 @@ var ciIdentity = identity{Name: "HerdrupCI", Publisher: "CN=HerdrupCI", Publishe
 // The payload is herdrup.exe and the speech resources mygo.config.ts ships,
 // from the one list, speech/resources.json; a list naming anything but a
 // file of the build's folder is refused.
-func TestLoadPayload(t *testing.T) {
+func TestParsePayload(t *testing.T) {
 	want := []string{"herdrup.exe", "herdrup-speech.exe", "ggml-tiny.bin", "whisper-LICENSE", "speech-LICENSES"}
 	if got := testPayload(t); !slices.Equal(got, want) {
 		t.Errorf("payload %v, want %v", got, want)
+	}
+	got, err := parsePayload([]byte(`{"helper": "h", "files": ["a", "b.bin"]}`))
+	if want := []string{"herdrup.exe", "h.exe", "a", "b.bin"}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("another list: %v, %v; want %v", got, err, want)
 	}
 	for _, bad := range []string{
 		`{"files": ["a"]}`,
@@ -293,10 +301,8 @@ func TestLoadPayload(t *testing.T) {
 		`{"helper": "../h", "files": ["a"]}`,
 		`not json`,
 	} {
-		p := filepath.Join(t.TempDir(), "resources.json")
-		writeFile(t, p, bad)
-		if got, err := loadPayload(p); err == nil {
-			t.Errorf("loadPayload(%s) = %v, want an error", bad, got)
+		if got, err := parsePayload([]byte(bad)); err == nil {
+			t.Errorf("parsePayload(%s) = %v, want an error", bad, got)
 		}
 	}
 }
@@ -436,6 +442,66 @@ func TestStageRefusesInputsInside(t *testing.T) {
 	}
 }
 
+// An input reached through a symbolic link is apart from the staging folder
+// both where it is read and where it resolves, and so is a staging folder
+// reached through one: a link in the folder to the icon elsewhere, or a
+// build whose payload file links into the folder, is refused before
+// anything is deleted.
+func TestStageRefusesLinksIntoTheStage(t *testing.T) {
+	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
+	buildDir(t, from)
+	if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
+		t.Fatal(err)
+	}
+	icon, err := filepath.Abs(testIcon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iconLink := filepath.Join(dir, "icon.png")
+	if err := os.Symlink(icon, iconLink); err != nil {
+		t.Fatal(err)
+	}
+	linkedBuild := t.TempDir()
+	buildDir(t, linkedBuild)
+	exe := filepath.Join(linkedBuild, appExe)
+	if err := os.Remove(exe); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, appExe), exe); err != nil {
+		t.Fatal(err)
+	}
+	parentLink := filepath.Join(t.TempDir(), "parent")
+	if err := os.Symlink(filepath.Dir(dir), parentLink); err != nil {
+		t.Fatal(err)
+	}
+	withIcon := func(icon string) sources {
+		s := testSources(t, from)
+		s.icon = icon
+		return s
+	}
+	for name, c := range map[string]struct {
+		src   sources
+		stage string
+	}{
+		"-icon, a link in the stage to the icon":         {withIcon(iconLink), dir},
+		"the build's herdrup.exe, a link into the stage": {testSources(t, linkedBuild), dir},
+		"both through a link to the stage's parent": {
+			withIcon(filepath.Join(parentLink, "stage", "icon.png")), filepath.Join(parentLink, "stage"),
+		},
+	} {
+		before := files(t, dir)
+		if _, err := stage(c.src, c.stage, ciIdentity); err == nil || !strings.Contains(err.Error(), "overlap") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if after := files(t, dir); !slices.Equal(after, before) || !ownStage(dir) {
+			t.Fatalf("%s: the stage now holds %v\nwas %v", name, after, before)
+		}
+	}
+	if !fileExists(icon) {
+		t.Fatal("the icon is gone")
+	}
+}
+
 // pack checks -out with the inputs, and only when it is given: without it
 // pack stages, even in a folder inside the working one.
 func TestPackChecksTheOutput(t *testing.T) {
@@ -449,15 +515,20 @@ func TestPackChecksTheOutput(t *testing.T) {
 		return a
 	}
 	args := []string{"pack", "-from", from, "-stage", "stage",
-		"-icon", abs(testIcon), "-package", abs("../../package.json"), "-speech", abs(testSpeech),
+		"-icon", abs(testIcon), "-package", abs("../../package.json"),
 		"-name", "HerdrupCI", "-publisher", "CN=HerdrupCI", "-publisher-display-name", "HerdrupCI"}
+	list, err := os.ReadFile(testSpeech)
+	if err != nil {
+		t.Fatal(err)
+	}
 	work := t.TempDir()
 	t.Chdir(work)
+	writeFile(t, speechList, string(list))
 	if err := run(args); err != nil {
 		t.Fatalf("pack without -out: %v", err)
 	}
 	before := files(t, "stage")
-	err := run(append(slices.Clone(args), "-out", filepath.Join("stage", "herdrup.msix")))
+	err = run(append(slices.Clone(args), "-out", filepath.Join("stage", "herdrup.msix")))
 	if err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Fatalf("-out inside the stage: %v", err)
 	}

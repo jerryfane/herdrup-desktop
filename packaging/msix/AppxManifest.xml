@@ -38,7 +38,7 @@
         <!-- herdrup:// links run herdrup.exe "<url>", as the installer's
              registration does: Parameters, which only uap3:Protocol has,
              passes the URL to a full trust app. The package owns the
-             scheme: the Store build doesn't register it (app/store.go). -->
+             scheme: the Store build doesn't register it (app/main.go). -->
         <uap3:Extension Category="windows.protocol">
           <uap3:Protocol Name="herdrup" Parameters="&quot;%1&quot;" />
         </uap3:Extension>

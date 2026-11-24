@@ -48,22 +48,3 @@ func TestDefaultBuildKeepsTheSelfUpdater(t *testing.T) {
 		}
 	}
 }
-
-// The Store's package owns herdrup:// (its manifest): the Store's build
-// leaves it alone, so no registration outlives the package.
-func TestStoreBuildLeavesTheURLSchemeToThePackage(t *testing.T) {
-	setDistribution(t, "store")
-	if registersURLScheme() {
-		t.Fatal("the Store's build registers herdrup:// itself")
-	}
-}
-
-// Every other build has no package to declare herdrup://: it registers it.
-func TestDefaultBuildRegistersTheURLScheme(t *testing.T) {
-	for _, d := range []string{"", "nsis"} {
-		setDistribution(t, d)
-		if !registersURLScheme() {
-			t.Fatalf("distribution %q: herdrup:// not registered", d)
-		}
-	}
-}

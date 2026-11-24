@@ -5,11 +5,11 @@
 //	go run ./packaging/msix pack -from build/windows-amd64 -stage DIR \
 //	  -name NAME -publisher CN=... -publisher-display-name NAME [-out FILE.msix]
 //
-// stages the app's payload (herdrup.exe and speech/resources.json's files),
-// its logos and AppxManifest.xml in DIR, a new or empty folder or one it
-// staged before, apart from every input, and, with -out, packs them into an
-// x64 package with the Windows SDK's makeappx, unsigned: the Store signs
-// what it publishes.
+// run from the repository, stages the app's payload (herdrup.exe and
+// speech/resources.json's files), its logos and AppxManifest.xml in DIR, a
+// new or empty folder or one it staged before, apart from every input, and,
+// with -out, packs them into an x64 package with the Windows SDK's makeappx,
+// unsigned: the Store signs what it publishes.
 // `go run ./packaging/msix tool NAME` prints the path of a Windows SDK tool,
 // such as signtool.
 package main
@@ -49,7 +49,6 @@ func run(args []string) error {
 		out := flags.String("out", "", "the package to make with makeappx; none when empty")
 		icon := flags.String("icon", "resources/icon.png", "the app icon the logos are made from")
 		pkg := flags.String("package", "package.json", "the package.json whose version the package has")
-		speech := flags.String("speech", "speech/resources.json", "the offline speech resources the package holds")
 		var id identity
 		flags.StringVar(&id.Name, "name", "", "Package/Identity/Name (Partner Center, Product identity)")
 		flags.StringVar(&id.Publisher, "publisher", "", "Package/Identity/Publisher, CN=…")
@@ -67,11 +66,15 @@ func run(args []string) error {
 		if id.Version, err = msixVersion(v); err != nil {
 			return err
 		}
-		payload, err := loadPayload(*speech)
+		list, err := os.ReadFile(speechList)
 		if err != nil {
 			return err
 		}
-		others := []string{*pkg, *speech}
+		payload, err := parsePayload(list)
+		if err != nil {
+			return err
+		}
+		others := []string{*pkg, speechList}
 		if *out != "" {
 			others = append(others, *out)
 		}

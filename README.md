@@ -253,7 +253,7 @@ must be new, empty, or one the packer staged before, and apart from the build an
 input:
 
 ```bash
-export WHISPER_SOURCE=/path/to/whisper.cpp   # at 927cfce34f31707e17f2bff35c349632fb9e2c3a
+export WHISPER_SOURCE=/path/to/whisper.cpp   # at the commit in speech/whisper.rev
 export HERDRUP_SPEECH_RESOURCES=/path/to/owned/local-build-scratch/speech-windows
 bun speech/build.ts windows/amd64
 MYGO_LDFLAGS="-X main.distribution=store" bun run build -- -platform windows/amd64
