@@ -2743,12 +2743,13 @@ test("a prompt whose first upload was accepted goes when a restore to a backup f
 
 // ---- #448 review (local-review-review-router-18eaeeb2086a5688-1) ----
 
-test("a 410 is counted on its status line though its body stalls until the round ends", async () => {
+test("a 410 is counted on its status line, and its body, which never ends, isn't waited for", async () => {
  const w = worker();
  const storage = memory();
  const a = await browser(w, storage, { roundMs: 300 });
  await syncEach(a);
- // As in the held-lock case, but the readback's 410 comes with a body that never ends.
+ // As in the held-lock case, but the readback's 410 comes with a body that never ends: the
+ // round counts the 410, leaves the body and starts the pull over at once.
  const p = await save(a, "", "", "v1");
  w.holdNextPush = true;
  await expect(a.accountSyncNow()).rejects.toThrow();
@@ -2760,10 +2761,10 @@ test("a 410 is counted on its status line though its body stalls until the round
   w.pageSize = 1;
   w.onNextPage = () => { w.reset(); w.seedPrompt(p.id, { text: "restored", order: 0 }); w.stallResetBody = true; };
  };
- await expect(a.accountSyncNow()).rejects.toThrow();
+ await a.accountSyncNow();
  await saving;
  expect(Number(storage.getItem("herdrup.sync.reset.acct"))).toBe(1);
- // Another page pulls from 0 and meets no 410 of its own: the evidence is gone, and v1 goes.
+ // Another page pulls from 0 and meets no 410 of its own: the evidence is gone, and v1 is there.
  w.pageSize = 500;
  const b = await browser(w, storage);
  await b.accountSyncNow();
@@ -2825,4 +2826,40 @@ test("a 410 is counted past what the record took in, though the key's last write
  w.seedPrompt(p.id, { text: "v0", order: 0 });
  await mac.accountSyncNow();
  expect([syncOf(storage).history, syncOf(storage).resetsFolded]).toEqual([history + 1, 2]);
+});
+
+// ---- #454 (local-review-review-router-18eaf1c35f25a1ca-1) ----
+
+test("a 410 whose count storage refuses fails the round as itself, starting nothing over: the saved edit goes next round", async () => {
+ const w = worker();
+ const storage = memory();
+ const mac = await browser(w, storage, { roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ await save(mac, "", "", "other");
+ await syncEach(mac);
+ // v1 is held; v2 is sent, and the held v1 lands just before it (the conflict's row: v1 agreed).
+ // v1 is saved here again. The readback is read a page at a time; between its pages the account
+ // is restored to a backup holding p as "restored", and storage refuses the 410's count.
+ await save(mac, p.id, "", "v1");
+ w.holdNextPush = true;
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ await save(mac, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.landHeld(); saving = save(mac, p.id, "", "v1"); };
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000fa", { text: "later", order: 9 });
+  w.pageSize = 1;
+  w.onNextPage = () => {
+   w.reset();
+   w.seedPrompt(p.id, { text: "restored", order: 0 });
+   storage.refuses = key => key.startsWith("herdrup.sync.reset.");
+  };
+ };
+ await expect(mac.accountSyncNow()).rejects.toThrow("quota");
+ await saving;
+ storage.refuses = null;
+ w.pageSize = 500;
+ // The next round's pull meets the 410 itself: v1 was never agreed in the restored history.
+ await mac.accountSyncNow();
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
 });
