@@ -43,7 +43,7 @@ function memory(quota = Infinity) {
 const syncOf = (storage: Pick<Storage, "getItem">) => JSON.parse(storage.getItem(SAVED_PROMPTS_KEY)!).sync;
 /** A prompt's sends still open: in the record and not marked refused (a marker not folded yet). */
 const openSends = (storage: ReturnType<typeof memory>, id: string): string[] =>
- ((syncOf(storage).promptAttempts?.[id] ?? []) as PromptAttempt[]).flatMap(e => e.open).filter(s => storage.getItem(`herdrup.sync.send.${id}.${s}`) !== "r");
+ ((syncOf(storage).promptAttempts?.[id] ?? []) as PromptAttempt[]).flatMap(e => e.open).filter(s => storage.getItem(`herdrup.sync.send.${id}.${s}`)?.[0] !== "r");
 /** The send markers in storage (prompts.ts: herdrup.sync.send.<prompt>.<send>), with their values. */
 const markers = (storage: ReturnType<typeof memory>) => Array.from({ length: storage.length }, (_, i) => storage.key(i)!).filter(k => k.startsWith("herdrup.sync.send.")).map(k => [k, storage.getItem(k)] as const);
 
@@ -70,6 +70,9 @@ function worker() {
   losePush: false,
   /** GET /v1/sync answers nothing until its request is aborted. */
   stallPull: false,
+  /** The next 410 to a GET /v1/sync comes with its status line, and a body that never ends
+   *  until its request is aborted. */
+  stallResetBody: false,
   /** The next push is answered 401 (its token no longer good: nothing written); onUnauthorized
    *  runs then, before the browser refreshes and tries again. */
   pushUnauthorized: false, onUnauthorized: null as (() => void) | null,
@@ -166,7 +169,14 @@ function worker() {
      // the floor (a pruned tombstone may be missed), start over.
      const base = cursor !== null ? Number(cursor.split(".")[1]) : position === 0 ? w.rev : position;
      const complete = Math.max(position, base);
-     if (complete > w.rev || complete < w.floor) return Response.json({ error: "reset_required" }, { status: 410 });
+     if (complete > w.rev || complete < w.floor) {
+      if (w.stallResetBody) {
+       w.stallResetBody = false;
+       const body = new ReadableStream<Uint8Array>({ start(c) { init.signal!.addEventListener("abort", () => c.error(init.signal!.reason)); } });
+       return new Response(body, { status: 410, headers: { "Content-Type": "application/json" } });
+      }
+      return Response.json({ error: "reset_required" }, { status: 410 });
+     }
      // now_ms is read before the rows (themartianapp/herdrup#826): nothing the page holds was
      // written after it.
      const told = now();
@@ -1243,20 +1253,19 @@ test("an edit whose order alone would make it too large goes without one", async
  expect(JSON.parse(w.livePrompts()[p.id]!)).toEqual({ text: big });
 });
 
-test("the one landing match: only an open send other than the refused one, past its base and written by its deadline, and then only the same body", () => {
+test("the one landing match: only an open send past its base and written by its deadline, and then only the same body", () => {
  const body = { text: "v1", order: 0 }, row = { id: "p", rev: 5, body, updated_ms: 1_000 };
  const entry = (base: number, open: string[], deadlines?: Record<string, number>, hash = sentHash(body)): PromptAttempt => ({ base, hash, open, ...(deadlines ? { deadlines } : {}) });
  const found = entry(3, ["s1"]);
  expect([
   matchLanding(row, []),
   matchLanding(row, [entry(5, ["s1"])]),
-  matchLanding(row, [entry(3, ["s1"])], "s1"),
   matchLanding(row, [entry(3, ["s1"], undefined, sentHash({ text: "v1", order: 7 }))]),
   matchLanding(row, [entry(3, ["s1"], { s1: 999 })]),
   matchLanding(row, [entry(3, ["s1"], { s1: 1_000 })]) !== undefined,
   matchLanding({ id: "p", rev: 5, body }, [entry(3, ["s1"], { s1: 999 })]) !== undefined,
   matchLanding(row, [found]),
- ]).toEqual([undefined, undefined, undefined, undefined, undefined, true, true, found]);
+ ]).toEqual([undefined, undefined, undefined, undefined, true, true, found]);
 });
 
 // ---- #359 round 9 ----
@@ -1842,7 +1851,7 @@ test("a round cancelled while it waits for another tab's storage lock after a re
  await expect(mac.accountSyncNow()).rejects.toThrow();
  // Another tab gets the round lock; the refusal is already in storage, with no lock taken.
  await locks.request("herdrup-account-sync", async () => {});
- expect(markers(storage).map(([, v]) => v)).toEqual(["r"]);
+ expect(markers(storage).map(([, v]) => v![0])).toEqual(["r"]);
  release.resolve();
  await other;
  // The next round folds it: the send it then makes (503) is the only one open.
@@ -2116,7 +2125,7 @@ test("a refusal at a full store overwrites its reserved marker in place: another
  w.bodyLimit = 4 * 1024;
  w.onRefusal = () => { storage.quota = storage.used(); other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
  await expect(tabA.accountSyncNow()).rejects.toThrow();
- expect(markers(storage).map(([, v]) => v)).toEqual(["r"]);
+ expect(markers(storage).map(([, v]) => v![0])).toEqual(["r"]);
  release.resolve();
  await other;
  storage.quota = Infinity; w.bodyLimit = 256 * 1024;
@@ -2137,7 +2146,7 @@ test("an open send's reserved marker survives another tab's merge, and goes once
  await expect(tabA.accountSyncNow()).rejects.toThrow("503");
  // B's round (its push fails too) merges with A's send still open: its "o" stays.
  await expect(tabB.accountSyncNow()).rejects.toThrow("503");
- expect(markers(storage).map(([, v]) => v)).toEqual(["o", "o"]);
+ expect(markers(storage).map(([, v]) => v![0])).toEqual(["o", "o"]);
  w.failPush = false;
  await tabB.accountSyncNow();
  expect(markers(storage)).toEqual([]);
@@ -2350,4 +2359,470 @@ test("a readback that finds a deleted prompt back after a restore leaves the rou
  expect((await mac.accountSyncStatus()).lastSyncedMs).toBe(before);
  await mac.accountSyncNow();
  expect(p.id in w.livePrompts()).toBe(false);
+});
+
+// ---- #432 post-merge review (#439-#443) ----
+
+/** v0 synced, then v1 taken by the account while another tab holds the storage lock: the page is
+ *  gone (its round cancelled) before the answer's settlement is written, with the acceptance in
+ *  its marker only. full, if set, fills the storage as the answer comes. Returns a new page on the
+ *  same storage. */
+async function acceptedThenReloaded(w: Worker, storage: ReturnType<typeof memory>, full = false) {
+ const { locks } = lockQueue();
+ const mac = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ // Another prompt, so a restore to a backup with p alone is behind this browser's mirror (410).
+ await save(mac, "", "", "other");
+ await syncEach(mac);
+ await save(mac, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => {
+  if (full) storage.quota = storage.used();
+  other = locks.request(SAVED_PROMPTS_KEY, () => release.promise);
+ };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ expect(markers(storage).map(([, v]) => v![0])).toEqual(["a"]);
+ storage.quota = Infinity;
+ release.resolve();
+ await other;
+ return { p, reloaded: await browser(w, storage, { locks }) };
+}
+const liveText = (w: Worker, id: string) => (JSON.parse(w.livePrompts()[id]!) as { text: string }).text;
+
+test("#439: an acceptance recovered after a reload stays the agreement while the revert it makes an edit is out of pushes", async () => {
+ const w = worker(), storage = memory();
+ const { p, reloaded } = await acceptedThenReloaded(w, storage);
+ await save(reloaded, p.id, "", "v0");
+ w.seedPrompt(p.id, { text: "v2", order: 0 });
+ // The revert's push is answered 429; the next minute it goes.
+ w.rateLimit = 1; w.windowPosts = 1;
+ await expect(reloaded.accountSyncNow()).rejects.toThrow("429");
+ w.newWindow();
+ await reloaded.accountSyncNow();
+ expect([(await byID(reloaded))[p.id]!.text, liveText(w, p.id), syncOf(storage).promptBaselineHash?.[p.id]]).toEqual(["v0", "v0", undefined]);
+});
+
+test("#440: the first pull to find the account restored makes an acceptance kept from before it agree nothing: the restored prompt stays", async () => {
+ const w = worker(), storage = memory();
+ const { p, reloaded } = await acceptedThenReloaded(w, storage);
+ // Back at v0, what was agreed before v1; then the account is restored to a backup holding p.
+ await save(reloaded, p.id, "", "v0");
+ w.reset();
+ w.seedPrompt(p.id, { text: "restored", order: 0 });
+ const posts = w.posts;
+ await reloaded.accountSyncNow();
+ expect([(await byID(reloaded))[p.id]!.text, liveText(w, p.id), w.posts - posts, openSends(storage, p.id), markers(storage)]).toEqual(["restored", "restored", 0, [], []]);
+});
+
+test("#441: an acceptance is recorded though the storage is full by the time it is answered", async () => {
+ const w = worker(), storage = memory();
+ const { p, reloaded } = await acceptedThenReloaded(w, storage, true);
+ await save(reloaded, p.id, "", "v0");
+ w.seedPrompt(p.id, { text: "v2", order: 0 });
+ await reloaded.accountSyncNow();
+ expect([(await byID(reloaded))[p.id]!.text, liveText(w, p.id), markers(storage)]).toEqual(["v0", "v0", []]);
+});
+
+test("#442: a conflict showing an earlier upload landed still counts after its readback timed out", async () => {
+ const w = worker();
+ const mac = await browser(w, memory(), { roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ await syncEach(mac);
+ // v1 is held; then v2 is sent, and the held v1 lands just before it: the conflict's row is v1,
+ // the held send landing. A revert to v0 is saved here and another device writes v3; the
+ // readback doesn't come back within the round.
+ await save(mac, p.id, "", "v1");
+ w.holdNextPush = true;
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ await save(mac, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ const gate = Promise.withResolvers<void>();
+ w.onPush = () => w.landHeld();
+ w.afterPush = () => {
+  saving = save(mac, p.id, "", "v0");
+  w.seedPrompt(p.id, { text: "v3", order: 0 });
+  w.holdPull = gate.promise;
+ };
+ await expect(mac.accountSyncNow()).rejects.toThrow("timed out");
+ gate.resolve();
+ await saving;
+ // v1 was agreed: v0 is an edit here, and goes over v3.
+ await mac.accountSyncNow();
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v0", "v0"]);
+});
+
+test("#443: a readback from revision 0 that the service didn't restart keeps the conflict's evidence", async () => {
+ const w = worker();
+ const mac = await browser(w, memory(), { roundMs: 300 });
+ await syncEach(mac);
+ // An empty account. v1, the first prompt, is held; v2 is saved and sent, and the held v1 lands
+ // just before it: the conflict's row is v1. Meanwhile v1 is saved here again, and another
+ // device writes v3.
+ const p = await save(mac, "", "", "v1");
+ w.holdNextPush = true;
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ await save(mac, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.landHeld(); saving = save(mac, p.id, "", "v1"); };
+ w.afterPush = () => w.seedPrompt(p.id, { text: "v3", order: 0 });
+ await mac.accountSyncNow().catch(() => {});
+ await saving;
+ await mac.accountSyncNow();
+ // v1 is what was agreed: v3, newer, is taken.
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v3", "v3"]);
+});
+
+// ---- #390 review of e8debfe, on the web ----
+
+test("an acceptance that comes to light only after a restore makes the copy it wrote no edit: the restored row stays", async () => {
+ const w = worker(), storage = memory();
+ const { p, reloaded } = await acceptedThenReloaded(w, storage);
+ // v1, accepted, is still saved here; the account is restored to a backup holding v0 (the
+ // first pull gets 410).
+ w.reset();
+ w.seedPrompt(p.id, { text: "v0", order: 0 });
+ const posts = w.posts;
+ await reloaded.accountSyncNow();
+ expect([(await byID(reloaded))[p.id]!.text, liveText(w, p.id), w.posts - posts, openSends(storage, p.id), markers(storage)]).toEqual(["v0", "v0", 0, [], []]);
+});
+
+test("a conflict's tombstone from a history a restore replaced doesn't delete a draft", async () => {
+ const w = worker();
+ const mac = await browser(w);
+ const a = await save(mac, "", "", "a");
+ await save(mac, "", "", "b");
+ await syncEach(mac);
+ const body = JSON.parse(w.livePrompts()[a.id]!) as object;
+ // The draft's first upload meets a tombstone of its id; the account is then restored to a
+ // backup without it (the readback gets 410).
+ const d = await save(mac, "", "", "draft");
+ w.onPush = () => w.seedTombstone(d.id);
+ w.afterPush = () => { w.reset(); w.seedPrompt(a.id, body); };
+ await mac.accountSyncNow().catch(() => {});
+ await mac.accountSyncNow();
+ expect([(await byID(mac))[d.id]?.text, liveText(w, d.id)]).toEqual(["draft", "draft"]);
+});
+
+// ---- #448 review (local-review-review-router-18eaec999e4a12ca-1) ----
+
+test("a 410 on a later page of a readback from revision 0 starts a new history at once: the conflict evidence before it goes", async () => {
+ const w = worker();
+ const mac = await browser(w, memory(), { roundMs: 300 });
+ await syncEach(mac);
+ // An empty account. v1, the first prompt, is held; v2 is sent, and the held v1 lands just before
+ // it (the conflict's row: v1 agreed). v1 is saved here again. The readback from 0 comes a page at
+ // a time, and between its pages the account is restored to a backup holding p as "restored".
+ const p = await save(mac, "", "", "v1");
+ w.holdNextPush = true;
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ await save(mac, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.landHeld(); saving = save(mac, p.id, "", "v1"); };
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000fd", { text: "other", order: 1 });
+  w.pageSize = 1;
+  w.onNextPage = () => { w.reset(); w.seedPrompt(p.id, { text: "restored", order: 0 }); };
+ };
+ await mac.accountSyncNow().catch(() => {});
+ await saving;
+ await mac.accountSyncNow();
+ // v1 was never agreed in the restored history: it is this browser's edit, and goes.
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+test("an acceptance replayed after another tab retired its send in a restore does nothing: the same text saved again is an edit", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(a, "", "", "v0");
+ await save(a, "", "", "other");
+ await syncEach(a);
+ // A's v1 is taken; its settlement stays owed in A (another tab holds the storage lock).
+ await save(a, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // The account is restored to a backup holding v0: tab B's pull gets 410 and folds A's
+ // acceptance (v1 was agreed, so no edit): v0 is taken.
+ w.reset();
+ w.seedPrompt(p.id, { text: "v0", order: 0 });
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow();
+ expect((await byID(b))[p.id]!.text).toBe("v0");
+ // v1 is saved again, on purpose; A then writes what it owed, and syncs.
+ await save(b, p.id, "", "v1");
+ await a.accountSyncNow();
+ expect([(await byID(a))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+test("a conflict written late doesn't rewind the mirror past what another tab synced since", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(a, "", "", "v0");
+ await syncEach(a);
+ // A's v1 meets another device's v2; the conflict's settlement waits for another tab's lock,
+ // past A's round.
+ await save(a, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.onPush = () => w.seedPrompt(p.id, { text: "v2", order: 0 });
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // Another device writes v3; tab B syncs (v1, edited here, goes over it). A then writes the
+ // conflict it owed, and syncs.
+ w.seedPrompt(p.id, { text: "v3", order: 0 });
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow();
+ await a.accountSyncNow();
+ const held = (syncOf(storage).mirror.prompts as { id: string; body: { text: string } }[]).find(r => r.id === p.id);
+ expect([(await byID(a))[p.id]!.text, liveText(w, p.id), held?.body.text]).toEqual(["v1", "v1", "v1"]);
+});
+
+// ---- #448 review (local-review-review-router-18eaed9e674e221d-1), and #390's r17 on the web ----
+
+test("a 410 met while another tab holds the storage lock is still counted: the next pull from 0 drops the evidence it ended", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ await syncEach(a);
+ // An empty account. v1, the first prompt, is held; v2 is sent, and the held v1 lands just before
+ // it (the conflict's row: v1 agreed). v1 is saved here again. The readback from 0 comes a page at
+ // a time; between its pages the account is restored to a backup holding p as "restored", and
+ // another tab holds the storage lock past A's round.
+ const p = await save(a, "", "", "v1");
+ w.holdNextPush = true;
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ await save(a, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve(), other: Promise<unknown> = Promise.resolve();
+ const release = Promise.withResolvers<void>();
+ w.onPush = () => { w.landHeld(); saving = save(a, p.id, "", "v1"); };
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000fc", { text: "other", order: 1 });
+  w.pageSize = 1;
+  w.onNextPage = () => {
+   w.reset();
+   w.seedPrompt(p.id, { text: "restored", order: 0 });
+   other = locks.request(SAVED_PROMPTS_KEY, () => release.promise);
+  };
+ };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ await saving;
+ release.resolve();
+ await other;
+ // Tab B pulls from 0 and meets no 410 of its own.
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow();
+ // v1 was never agreed in the restored history: it is this browser's edit, and goes.
+ expect([(await byID(b))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+test("a draft turned down by a tombstone stays and is uploaded when the restore that ends that history is met while the lock is held", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const kept = ["00000000-0000-4000-8000-0000000000e1", "00000000-0000-4000-8000-0000000000e2", "00000000-0000-4000-8000-0000000000e3"];
+ kept.forEach((id, i) => w.seedPrompt(id, { text: `kept ${i}`, order: i }));
+ await syncEach(a);
+ // The draft's first upload meets a tombstone of its id. The readback is read a page at a time;
+ // after its first page (the tombstone) the account is restored to a backup as of this browser's
+ // last pull, without the draft, and another tab holds the storage lock past A's round.
+ const d = await save(a, "", "", "draft");
+ let other: Promise<unknown> = Promise.resolve();
+ const release = Promise.withResolvers<void>();
+ w.onPush = () => w.seedTombstone(d.id);
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000e4", { text: "later", order: 9 });
+  w.pageSize = 1;
+  w.onNextPage = () => {
+   w.reset();
+   kept.forEach((id, i) => w.seedPrompt(id, { text: `kept ${i}`, order: i }));
+   other = locks.request(SAVED_PROMPTS_KEY, () => release.promise);
+  };
+ };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ w.pageSize = 500;
+ // Tab B's pull meets no 410 of its own.
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow().catch(() => {});
+ await b.accountSyncNow();
+ expect([(await byID(b))[d.id]?.text, w.livePrompts()[d.id] && liveText(w, d.id)]).toEqual(["draft", "draft"]);
+});
+
+test("a null conflict written late doesn't drop a prompt another tab synced since", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(a, "", "", "v0");
+ await syncEach(a);
+ // Another device deletes p; v1, edited here, keeps it and goes again, based on its tombstone.
+ // As it goes, the tombstone is pruned (no row at all: a null conflict), and the settlement waits
+ // for another tab's lock past A's round.
+ await save(a, p.id, "", "v1");
+ w.seedTombstone(p.id);
+ const tombstone = w.rev;
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.onPush = () => w.prune(tombstone);
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // Another device makes p again; tab B syncs it, in the same history. A then writes the conflict
+ // it owed, and syncs.
+ w.seedPrompt(p.id, { text: "again", order: 0 });
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow();
+ await a.accountSyncNow();
+ const held = (syncOf(storage).mirror.prompts as { id: string; body: { text: string } }[]).find(r => r.id === p.id);
+ expect([(await byID(a))[p.id]?.text, liveText(w, p.id), held?.body.text]).toEqual(["v1", "v1", "v1"]);
+});
+
+test("an unchanged acknowledged prompt doesn't undo a restore when its settlement failed with the page still open", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(a, "", "", "v0");
+ await save(a, "", "", "other");
+ await syncEach(a);
+ // v1 is taken; its settlement can't be written within the round (another tab holds the lock).
+ await save(a, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // The account is restored to a backup holding v0; the same page syncs again.
+ w.reset();
+ w.seedPrompt(p.id, { text: "v0", order: 0 });
+ const posts = w.posts;
+ await a.accountSyncNow();
+ expect([(await byID(a))[p.id]!.text, liveText(w, p.id), w.posts - posts]).toEqual(["v0", "v0", 0]);
+});
+
+test("a prompt whose first upload was accepted goes when a restore to a backup from before it is met after a reload", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const first = await save(a, "", "", "first");
+ await save(a, "", "", "second");
+ await syncEach(a);
+ // p's first upload is taken; the page is gone before its settlement is written.
+ const p = await save(a, "", "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // The account is restored to a backup from before p (the reloaded page's pull gets 410).
+ const body = { text: "first", order: 0 };
+ w.reset();
+ w.seedPrompt(first.id, body);
+ const reloaded = await browser(w, storage, { locks });
+ const posts = w.posts;
+ await reloaded.accountSyncNow();
+ expect([p.id in await byID(reloaded), p.id in w.livePrompts(), w.posts - posts]).toEqual([false, false, 0]);
+});
+
+// ---- #448 review (local-review-review-router-18eaeeb2086a5688-1) ----
+
+test("a 410 is counted on its status line though its body stalls until the round ends", async () => {
+ const w = worker();
+ const storage = memory();
+ const a = await browser(w, storage, { roundMs: 300 });
+ await syncEach(a);
+ // As in the held-lock case, but the readback's 410 comes with a body that never ends.
+ const p = await save(a, "", "", "v1");
+ w.holdNextPush = true;
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ await save(a, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.landHeld(); saving = save(a, p.id, "", "v1"); };
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000fb", { text: "other", order: 1 });
+  w.pageSize = 1;
+  w.onNextPage = () => { w.reset(); w.seedPrompt(p.id, { text: "restored", order: 0 }); w.stallResetBody = true; };
+ };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ await saving;
+ expect(Number(storage.getItem("herdrup.sync.reset.acct"))).toBe(1);
+ // Another page pulls from 0 and meets no 410 of its own: the evidence is gone, and v1 goes.
+ w.pageSize = 500;
+ const b = await browser(w, storage);
+ await b.accountSyncNow();
+ expect([(await byID(b))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+// ---- #390 r18 on the web ----
+
+test("a 410 met for another account isn't taken into this account's history: a revert saved here still goes", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const mac = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ await save(mac, "", "", "other");
+ await syncEach(mac);
+ // v1 is taken while a revert to v0 is saved here; only the settlement can't be written within
+ // the round (another tab holds the storage lock).
+ await save(mac, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve(), saving: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { saving = save(mac, p.id, "", "v0"); other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await Promise.all([other, saving]);
+ // Account B signs in here; its first pull meets a 410 on its second page (and again as it starts
+ // over): the round ends before anything of B is written.
+ w.accountId = "acct-b";
+ await mac.account.signOut().catch(() => {});
+ await mac.account.check();
+ w.pageSize = 1;
+ w.onNextPage = () => { w.floor = Number.MAX_SAFE_INTEGER; };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ w.floor = 0; w.pageSize = 500;
+ // Back on A; another device writes x.
+ w.accountId = "acct";
+ await mac.account.signOut().catch(() => {});
+ await mac.account.check();
+ w.seedPrompt(p.id, { text: "x", order: 0 });
+ await mac.accountSyncNow();
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v0", "v0"]);
+});
+
+test("a 410 is counted past what the record took in, though the key's last write was lost", async () => {
+ const w = worker();
+ const storage = memory();
+ const mac = await browser(w, storage);
+ const p = await save(mac, "", "", "v0");
+ await save(mac, "", "", "other");
+ await syncEach(mac);
+ // The record took in one 410 whose count never reached the key.
+ const record = JSON.parse(storage.getItem(SAVED_PROMPTS_KEY)!) as { sync: { history?: number; resetsFolded?: number } };
+ record.sync.resetsFolded = 1;
+ storage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(record));
+ storage.setItem("herdrup.sync.reset.acct", "0".repeat(16));
+ const history = record.sync.history ?? 0;
+ // A real 410: the account is restored to a backup holding p alone.
+ w.reset();
+ w.seedPrompt(p.id, { text: "v0", order: 0 });
+ await mac.accountSyncNow();
+ expect([syncOf(storage).history, syncOf(storage).resetsFolded]).toEqual([history + 1, 2]);
 });
