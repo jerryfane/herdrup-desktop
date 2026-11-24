@@ -155,7 +155,7 @@ computer: over [Tailscale](https://tailscale.com) or your local network.
 
 | | Download | Notes |
 |---|---|---|
-| **macOS** (Apple silicon and Intel) | `herdrup-<version>.dmg` | Not notarized yet: open it once, then System Settings → Privacy & Security → Open Anyway. |
+| **macOS** (Apple silicon and Intel) | `herdrup-<version>.dmg` | Signed with a Developer ID and notarized by Apple from 0.1.0-preview.24 on: it opens like any other app. |
 | **Windows** (x64) | `herdrup-setup-<version>-amd64.exe` | Installs for the current user, no admin rights. SmartScreen asks first: More info → Run anyway. |
 | **Debian, Ubuntu** (x64, arm64) | `herdrup_<version>_amd64.deb` | `sudo apt install ./herdrup_<version>_amd64.deb` |
 | **Any Linux**, no root | `herdrup-<version>-linux-amd64.tar.gz` + `install.sh` | `sh install.sh` in the folder holding both. Needs WebKitGTK 4.1. |
