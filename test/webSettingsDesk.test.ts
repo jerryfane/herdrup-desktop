@@ -414,10 +414,11 @@ test("an apply herdr refuses is shown as refused, not followed", async () => {
 
 // ---- #360 P3 (after #361): an apply that never went out ----
 
-/** An update host whose apply runs into `onApply` when it is the next frame (its status read first). */
+/** An update host whose apply runs into `onApply` when it is the next frame (its status read
+ *  first). Its offer needs a restart (mode restart_required: confirmed with restartLater true). */
 function applyHost(onApply: (host: ReturnType<typeof ownerLink>) => void) {
  const host: ReturnType<typeof ownerLink> = ownerLink((method) => {
-  if (method === "server.update_check") return { type: "update_check", ...offered().check };
+  if (method === "server.update_check") return { type: "update_check", ...offered().check, mode: "restart_required" };
   if (method === "server.update_status") { if (applying) { applying = false; onApply(host); } return { type: "update_status" }; }
   if (method === "server.update_apply") return { type: "update_apply", attempt_id: "at1" };
  });
@@ -425,17 +426,18 @@ function applyHost(onApply: (host: ReturnType<typeof ownerLink>) => void) {
  return { host, arm: () => { applying = true; } };
 }
 
-test("an apply whose connection closes before it goes out leaves the update offered, not running", async () => {
+test("an apply whose connection closes before it goes out leaves the card's snapshot as it was: idle, the update offered", async () => {
  const { host, arm } = applyHost((h) => { h.host.dead = true; });
  const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
- await desk.settingsServerUpdate("tok", true);
+ const before = JSON.parse(await desk.settingsServerUpdate("tok", true));
  arm();
- expect(await desk.applySettingsServerUpdate("tok", "b6", false).then(() => null, (e: unknown) => e)).toBeInstanceOf(NotSentError);
+ expect(await desk.applySettingsServerUpdate("tok", "b6", true).then(() => null, (e: unknown) => e)).toBeInstanceOf(NotSentError);
  expect(host.of("server.update_apply")).toEqual([]);
- expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "idle", check: { latest: { build_id: "b6" } } });
+ // Nothing of the attempt (its mode, what the host lacks) is left in the idle snapshot.
+ expect([before, JSON.parse(await desk.settingsServerUpdate("tok", false))]).toEqual([expect.objectContaining({ flow: "idle", check: expect.objectContaining({ latest: expect.objectContaining({ build_id: "b6" }) }) }), before]);
  // Offered again: the same confirmation goes out once the machine is reachable.
  host.host.dead = false;
- await desk.applySettingsServerUpdate("tok", "b6", false);
+ await desk.applySettingsServerUpdate("tok", "b6", true);
  expect(host.of("server.update_apply")).toHaveLength(1);
 });
 
@@ -443,9 +445,9 @@ test("an apply Settings closed before it went out leaves the card idle when Sett
  const admission = Promise.withResolvers<void>();
  const { host, arm } = applyHost((h) => { h.host.admission = admission.promise; });
  const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
- await desk.settingsServerUpdate("tok", true);
+ const before = JSON.parse(await desk.settingsServerUpdate("tok", true));
  arm();
- const applying = desk.applySettingsServerUpdate("tok", "b6", false).then(() => null, (e: unknown) => e);
+ const applying = desk.applySettingsServerUpdate("tok", "b6", true).then(() => null, (e: unknown) => e);
  await tick(); await tick();
  closeSettings("tok");
  host.host.admission = null;
@@ -453,7 +455,7 @@ test("an apply Settings closed before it went out leaves the card idle when Sett
  expect(await applying).toBeInstanceOf(NotSentError);
  openSettings("tok");
  expect(host.of("server.update_apply")).toEqual([]);
- expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "idle" });
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toEqual(before);
 });
 
 test("an apply that went out but got no answer is still followed, never sent again", async () => {
