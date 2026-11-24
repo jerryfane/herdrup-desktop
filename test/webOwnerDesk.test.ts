@@ -166,6 +166,28 @@ test("switching machines, the new link's watchers find it usable and Desk.state(
  } finally { desk.disconnectOwner(); alpha.stop(); beta.stop(); }
 });
 
+test("a new link tells the connecting snapshot it was made with, then a new one only when the connection changes", async () => {
+ let lists = 0;
+ const listed = [Promise.withResolvers<void>(), Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+ const relay = host({ list: (session, req) => { answer(session, req, { result: { type: "agent_list", agents } }); listed[lists++]?.resolve(); } });
+ const desk = await deskWithKey();
+ const told: ConnState[] = [];
+ const offState = events.stateChanged.on(s => told.push(s));
+ let seeded: Promise<ConnState> | null = null;
+ const offLink = onLinkChanged((_link, owner) => { if (owner) seeded = desk.state(); });
+ try {
+  await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
+  await listed[0]!.promise;
+  // Two more lists with the same answer: the connection hasn't changed, nothing more is told.
+  currentOwnerLink()!.relist(); await listed[1]!.promise;
+  currentOwnerLink()!.relist(); await listed[2]!.promise;
+  await new Promise(r => setTimeout(r, 20));
+  expect(told.map(s => s.phase)).toEqual(["connecting", "connected"]);
+  expect(told[0]).toBe(await seeded!); // the very snapshot the link's watchers read
+  expect(await desk.state()).toBe(told[1]!);
+ } finally { offState(); offLink(); desk.disconnectOwner(); relay.stop(); }
+});
+
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;
  const relay = host({ list: (session, req) => fail

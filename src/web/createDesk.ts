@@ -11,7 +11,7 @@ import { sleep } from "../webguest/abort";
 import { HerdrAPIError, NotSentError } from "../webguest/errors";
 import { pathBase, type AgentInfo } from "./board";
 import { ErrUnsupported, ResultTagError } from "./engine";
-import { boardLink, CLOSING_WAIT_MS, currentOwnerLink, onLinkClosing, ownerCall, OwnerRefusedError, type OwnerLink } from "./ownerLink";
+import { boardLink, CLOSING_WAIT_MS, currentOwnerLink, onLinkClosing, ownerCall, OwnerRefusedError, ownerSplit, type OwnerLink } from "./ownerLink";
 import type { StartWatch } from "./startedAgents";
 import { persistAndKeep, TerminalNotKeptError } from "./terminalsDesk";
 
@@ -263,24 +263,12 @@ export async function startAgentWhenShellReady(ops: ShellReadyOps, signal: Abort
  }
 }
 
-/** engine SplitPane: a pane below the focused one, focused, in cwd when given. Until it is handed
- *  to the transport it is the creation's request like any other: the creation or its link ending
- *  drops it unsent (NotSentError). Once sent, herdr may make the pane and only its answer names
- *  it: that is waited for past their end, up to CLOSING_WAIT_MS more (ownerCall's unsent and reply
- *  window), and the pane it names is closed by its owners' end (EmptyPane). The window's listener
- *  and timer last only while the split is out. */
-async function splitPane(v: Creation, cwd: string): Promise<string> {
- const params = { direction: "down", ...(cwd !== "" ? { cwd } : {}), focus: true };
- const reply = new AbortController();
- let timer: ReturnType<typeof setTimeout> | undefined;
- const arm = () => { timer = setTimeout(() => reply.abort(v.signal.reason), CLOSING_WAIT_MS); };
- if (v.signal.aborted) arm(); else v.signal.addEventListener("abort", arm, { once: true });
- try {
-  return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", params, "pane_info", { link: v.link, unsent: v.signal, signal: reply.signal })).pane.pane_id;
- } finally {
-  v.signal.removeEventListener("abort", arm);
-  clearTimeout(timer);
- }
+/** engine SplitPane: a pane below the focused one, focused, in cwd when given, for the creation
+ *  (ownerLink.ts ownerSplit: unsent it ends with the creation or its link; once sent its answer is
+ *  awaited up to CLOSING_WAIT_MS past their end). The pane it names is closed by its owners' end
+ *  (EmptyPane). */
+function splitPane(v: Creation, cwd: string): Promise<string> {
+ return ownerSplit(v.link, v.signal, { direction: "down", ...(cwd !== "" ? { cwd } : {}), focus: true });
 }
 
 /** Whether a failed creation call (pane.split, agent.start) definitely changed nothing: herdr
