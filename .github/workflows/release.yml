@@ -120,6 +120,7 @@ jobs:
       - name: Check the disk image
         if: matrix.name == 'macOS'
         run: |
+          set -euo pipefail
           dmg="$(ls build/darwin-universal/*.dmg)"
           mnt="$RUNNER_TEMP/dmg"
           hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mnt"
@@ -143,60 +144,59 @@ jobs:
           # entitlement on the app and the speech helper, the notarized verdict
           # of the app and the disk image, and the stapled tickets. Skipped
           # with ad hoc signing.
-          if [ -n "$HERDRUP_SIGNING_IDENTITY" ]; then
-            # run <command…>: prints the command and its output into $out, and
-            # fails the job when it fails; need <regex> fails without a match.
-            run() {
+          if [ -n "${HERDRUP_SIGNING_IDENTITY:-}" ]; then
+            # check <regex…> -- <command…>: prints the command and its output,
+            # and fails unless the command succeeds and each regex matches a
+            # line of that output.
+            check() {
+              local patterns=() pattern output status=0
+              while [ "$1" != -- ]; do patterns+=("$1"); shift; done
+              shift
               echo "+ $*"
-              local status=0
-              out="$("$@" 2>&1)" || status=$?
-              printf '%s\n' "$out"
-              [ "$status" -eq 0 ] || { echo "::error::$1 failed with status $status"; exit 1; }
+              output="$("$@" 2>&1)" || status=$?
+              printf '%s\n' "$output"
+              if [ "$status" -ne 0 ]; then echo "::error::$1 failed with status $status"; return 1; fi
+              for pattern in ${patterns[@]+"${patterns[@]}"}; do
+                grep -Eq -- "$pattern" <<<"$output" || { echo "::error::$1: no line matching $pattern"; return 1; }
+              done
             }
-            need() {
-              grep -Eq -- "$1" <<<"$out" || { echo "::error::expected a line matching $1"; exit 1; }
+            # audio_input <code>: fails unless the signature of code holds
+            # com.apple.security.device.audio-input as boolean true (JSON
+            # keeps the plist type, so a string "true" fails).
+            audio_input() {
+              local code="$1" plist="$RUNNER_TEMP/entitlements.plist" json
+              echo "+ codesign -d --entitlements :- $code"
+              codesign -d --entitlements :- "$code" > "$plist" || { echo "::error::no entitlements of $code"; return 1; }
+              json="$(plutil -convert json -o - "$plist")" || { echo "::error::unreadable entitlements of $code"; return 1; }
+              printf '%s\n' "$json"
+              jq -e '."com.apple.security.device.audio-input" == true' <<<"$json" > /dev/null \
+                || { echo "::error::com.apple.security.device.audio-input of $code is not boolean true"; return 1; }
             }
             helper="$app/Contents/Resources/herdrup-speech"
             for code in "$app" "$helper"; do
-              run codesign -d --verbose=2 "$code"
-              need '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'
-              need '^Timestamp='
-              # The app is the helper's responsible process: both need the
-              # entitlement, set to true.
-              entitlements="$RUNNER_TEMP/entitlements.plist"
-              echo "+ codesign -d --entitlements :- $code"
-              codesign -d --entitlements :- "$code" > "$entitlements"
-              cat "$entitlements"
-              run /usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$entitlements"
-              [ "$out" = true ] || { echo "::error::audio-input of $code is not true"; exit 1; }
+              check '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime' '^Timestamp=' -- codesign -d --verbose=2 "$code"
+              # The app is the helper's responsible process: both need it.
+              audio_input "$code"
             done
             # Online Gatekeeper accepts the notarized app without a staple.
-            run spctl -a -vv -t exec "$app"
-            need '^source=Notarized Developer ID'
-            run spctl -a -vv -t open --context context:primary-signature "$dmg"
-            need '^source=Notarized Developer ID'
+            check '^source=Notarized Developer ID' -- spctl -a -vv -t exec "$app"
+            check '^source=Notarized Developer ID' -- spctl -a -vv -t open --context context:primary-signature "$dmg"
             # mygo v0.7.1 staples the disk image and the app it built, which
             # updates install, but not the copy in the image ("The image's
-            # copy stays without it", cmd/mygo/dmg.go): validate the staples
-            # of the disk image, the built app and the app of each update
-            # archive (made from the built app, when updates are signed).
-            run xcrun stapler validate "$dmg"
-            stapled=0
-            for built in build/darwin-universal/*.app; do
-              [ -d "$built" ] || continue
-              run xcrun stapler validate "$built"
-              stapled=$((stapled + 1))
-            done
+            # copy stays without it", cmd/mygo/dmg.go). Each staple is
+            # required on its own: the disk image, the built app, and the app
+            # of each update archive (made from the built app, when updates
+            # are signed).
+            check -- xcrun stapler validate "$dmg"
+            check -- xcrun stapler validate build/darwin-universal/herdrup.app
             for archive in build/darwin-universal/*.tar.gz; do
               [ -f "$archive" ] || continue
-              dir="$(mktemp -d "$RUNNER_TEMP/update.XXXXXX")"
-              run tar -xzf "$archive" -C "$dir"
-              updated="$(find "$dir" -maxdepth 2 -type d -name '*.app' | head -n 1)"
+              unpacked="$(mktemp -d "$RUNNER_TEMP/update.XXXXXX")"
+              check -- tar -xzf "$archive" -C "$unpacked"
+              updated="$(find "$unpacked" -maxdepth 2 -type d -name '*.app' -print -quit)"
               [ -n "$updated" ] || { echo "::error::no app in $archive"; exit 1; }
-              run xcrun stapler validate "$updated"
-              stapled=$((stapled + 1))
+              check -- xcrun stapler validate "$updated"
             done
-            [ "$stapled" -gt 0 ] || { echo "::error::no stapled app in build/darwin-universal"; exit 1; }
           fi
       # Into one folder, so that the artifact holds the files themselves and
       # not the build/<os>-<arch>/ folders around them. With signed updates,

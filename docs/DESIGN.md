@@ -1092,14 +1092,14 @@ on, it also fails the build unless, for that app and its `Contents/Resources/her
 
 - `codesign -d --verbose=2` shows the hardened runtime (`flags=…(runtime)`) and a secure timestamp
   (`Timestamp=`) on both;
-- `com.apple.security.device.audio-input` is `true` in the entitlements of both
-  (`codesign -d --entitlements :-`, read with `PlistBuddy`): the helper records the microphone, and
-  macOS checks the entitlement of the app, its responsible process, too
-  (`NSMicrophoneUsageDescription` is the text it asks with);
+- `com.apple.security.device.audio-input` is boolean `true` in the entitlements of both
+  (`codesign -d --entitlements :-`, converted with `plutil -convert json` and checked with `jq`, so a
+  string `"true"` fails): the helper records the microphone, and macOS checks the entitlement of the
+  app, its responsible process, too (`NSMicrophoneUsageDescription` is the text it asks with);
 - `spctl -a -vv -t exec` on the app and `spctl -a -vv -t open --context context:primary-signature`
   on the disk image say `source=Notarized Developer ID`;
-- `xcrun stapler validate` accepts the disk image, the app mygo built and stapled
-  (`build/darwin-universal/herdrup.app`) and, with signed updates, the app in the update archive
+- `xcrun stapler validate` accepts, each on its own, the disk image, the app mygo built and stapled
+  (`build/darwin-universal/herdrup.app`) and, with signed updates, the app in each update archive
   (`build/darwin-universal/*.tar.gz`). The app inside the image stays unstapled (mygo staples the
   image, not its copy of the app), so its staple is not checked.
 

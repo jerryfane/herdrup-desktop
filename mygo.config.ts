@@ -4,8 +4,13 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 const speech = process.env.HERDRUP_SPEECH_RESOURCES;
-const speechFiles = speech ? [
-  join(speech, existsSync(join(speech, "herdrup-speech.exe")) ? "herdrup-speech.exe" : "herdrup-speech"),
+// The helper as packaged, flat among the resources: its name is also the key
+// of its entitlements below.
+const speechHelper = speech
+  ? existsSync(join(speech, "herdrup-speech.exe")) ? "herdrup-speech.exe" : "herdrup-speech"
+  : undefined;
+const speechFiles = speech && speechHelper ? [
+  join(speech, speechHelper),
   join(speech, "ggml-tiny.bin"),
   join(speech, "whisper-LICENSE"),
   join(speech, "speech-LICENSES"),
@@ -70,9 +75,10 @@ export default defineConfig({
     // responsible process, the app, as well as asking with its usage text.
     entitlements: "resources/app.entitlements.plist",
     // mygo refuses entitlements for code that isn't among the resources, so
-    // only builds with the speech resources name the helper.
-    helperEntitlements: speechFiles.length
-      ? { "herdrup-speech": "resources/speech.entitlements.plist" }
+    // only builds with the speech resources name the helper, by the file
+    // name they package.
+    helperEntitlements: speechHelper
+      ? { [speechHelper]: "resources/speech.entitlements.plist" }
       : undefined,
     signingIdentity: process.env.HERDRUP_SIGNING_IDENTITY,
     notarize: process.env.HERDRUP_NOTARY_KEYCHAIN
