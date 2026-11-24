@@ -1,6 +1,7 @@
 // The open owner link (desk.ts connectOwner), for the browser Desk's method groups
-// (web/mygo.ts): a group calls herdr on it with ownerCall, reads the machine, scope and last
-// agent list, and hears each new link. desk.ts alone sets it; one link at a time, as Go's Desk.
+// (web/mygo.ts): a group calls herdr on it with ownerCall and reads the machine, scope and last
+// agent list. It is the owner view of link.ts's one active link record (desk.ts publishes the link
+// with its owner context there), one link at a time, as Go's Desk.
 
 import { sleep } from "../webguest/abort";
 import type { EnvelopeMachine } from "../webguest/approve";
@@ -8,6 +9,10 @@ import { HerdrAPIError } from "../webguest/errors";
 import type { AgentInfo } from "./board";
 import type { OwnerGroups } from "./groups";
 import { untagged, type GuestClient, type Pong } from "./engine";
+import { currentOwnerLink, settingsScope, type SettingsScope } from "./link";
+
+// The active link record's owner accessors (link.ts), here as the owner groups import them.
+export { currentOwnerLink, settingsScope, type SettingsScope };
 
 export interface OwnerLink {
  /** The approved machine: hostID, label, the grant's scope and expiry. */
@@ -25,34 +30,6 @@ export interface OwnerLink {
  relist(): void;
  /** The machine's folders and stars (groups.ts): the menus' document and the edits' queue. */
  readonly groups?: OwnerGroups;
-}
-
-let current: OwnerLink | null = null;
-let settingsToken = "";
-/** Ends with the open Settings scope: its token replaced or cleared, or its link gone. */
-let settingsLife = new AbortController();
-function setSettingsToken(token: string) {
- if (token === settingsToken) return;
- settingsLife.abort(new Error("Settings changed: open it again"));
- settingsLife = new AbortController();
- settingsToken = token;
-}
-const watchers = new Set<(link: OwnerLink | null) => void>();
-
-export function currentOwnerLink(): OwnerLink | null { return current; }
-
-/** Calls f with each new link, and null once none is open; returns the unsubscribe. */
-export function onOwnerLinkChanged(f: (link: OwnerLink | null) => void): () => void {
- watchers.add(f);
- return () => { watchers.delete(f); };
-}
-
-/** For desk.ts only. A new link (or none) also ends the Settings scope opened on the last one. */
-export function setOwnerLink(link: OwnerLink | null): void {
- if (link === current) return;
- current = link;
- setSettingsToken("");
- for (const f of [...watchers]) f(link);
 }
 
 /** linkClosing's longest wait for the groups' cleanup before the connection closes. */
@@ -79,22 +56,10 @@ export function linkClosing(link: OwnerLink): Promise<void> {
  return Promise.race([work.then(() => undefined), sleep(CLOSING_WAIT_MS)]);
 }
 
-/** For desk.ts only (openSettings / closeSettings): the Settings scope's token, "" when closed. */
-export function setOwnerSettings(token: string): void { setSettingsToken(token); }
-
 /** desk_settings.go settingsView: the link Settings opened token on, for a group's Settings page
- *  methods (they take the token). */
-export function settingsLink(token: string): OwnerLink {
- if (current === null || token === "" || token !== settingsToken) throw new Error("Settings changed: open it again");
- return current;
-}
-
-/** The signal that ends with token's Settings scope (Go's view.ctx): closed, replaced, or its link
- *  gone. A Settings request carrying it is not sent once the scope has ended. */
-export function settingsSignal(token: string): AbortSignal {
- settingsLink(token);
- return settingsLife.signal;
-}
+ *  methods (they take the token). A scope opened on another link (a leave, another machine) is
+ *  over. */
+export function settingsLink(token: string): OwnerLink { return settingsScope(token).link; }
 
 /** What a web owner reads when herdr refuses a method to the owner's browser (owner_forbidden):
  *  the method isn't in its gate, or not under this link's scope. */
@@ -116,7 +81,7 @@ export const LINK_CHANGED = "the machine changed; the request was not sent";
  *  OwnerRefusedError on owner_forbidden, ErrUnsupported for a capability the host lacks, else the
  *  transport's or herdr's error. It ends with the link, or with signal. */
 export async function ownerCall<T>(method: string, params: unknown, tag: string, options: { capability?: string; signal?: AbortSignal; link?: OwnerLink | null } = {}): Promise<T> {
- const link = current;
+ const link = currentOwnerLink();
  if (options.link !== undefined && options.link !== link) throw new Error(LINK_CHANGED);
  if (link === null) throw new Error("not connected");
  const signal = options.signal ? AbortSignal.any([link.signal, options.signal]) : link.signal;
@@ -125,15 +90,6 @@ export async function ownerCall<T>(method: string, params: unknown, tag: string,
  } catch (error) {
   throw error instanceof HerdrAPIError && error.code === "owner_forbidden" ? new OwnerRefusedError(method) : error;
  }
-}
-
-/** A Settings page's scope as an operation took it when it began: the link token's Settings were
- *  opened on, and the signal that ends with those Settings (settingsSignal). */
-export interface SettingsScope { readonly link: OwnerLink; readonly signal: AbortSignal }
-
-/** token's Settings scope, now (throws "Settings changed" when token's Settings are gone). */
-export function settingsScope(token: string): SettingsScope {
- return { link: settingsLink(token), signal: settingsSignal(token) };
 }
 
 /** Every herdr call a Settings page makes (desk_settings.go's view.client under view.ctx), its writes

@@ -20,11 +20,11 @@ import type { EnvelopeMachine } from "../webguest/approve";
 import { buildBoard, displayName, isArchived, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, ResultTagError, untagged } from "./engine";
 import { emit, type Payload } from "./events";
-import { setLink, transportLink, type WebLink } from "./link";
+import { closeSettings, openSettings, setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, machineLists, type GrantStore, type MachineLists, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
-import { currentOwnerLink, linkClosing, setOwnerLink, setOwnerSettings, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
+import { currentOwnerLink, linkClosing, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
 import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
@@ -407,7 +407,6 @@ export function createGuestDesk(env: DeskEnv) {
   board = null;
   setSharedAgents([]);
   setLink(null);
-  setOwnerLink(null);
  }
 
  /** An owner link's connection published again between lists: the open agent's availability as
@@ -564,10 +563,10 @@ export function createGuestDesk(env: DeskEnv) {
   async openSettings(machineID: string, session: string, token: string): Promise<void> {
    if (token === "" || token.length > 128) throw new Error("invalid Settings token");
    if (!active?.owner || active.id !== machineID || (session !== "" && session !== "default")) throw new Error("the session changed; try again");
-   setOwnerSettings(token);
+   openSettings(token);
   },
   async closeSettings(token: string): Promise<void> {
-   try { settingsLink(token); setOwnerSettings(""); } catch { /* another scope is open, or none */ }
+   closeSettings(token);
   },
   /** desk_settings.go SettingsMachineVersion: "herdr <version>" from the link's ping ("" when it
    *  says none). */
@@ -1106,9 +1105,10 @@ export function createGuestDesk(env: DeskEnv) {
    const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
    l.groups = new OwnerGroups(client, m.hostID, l.life.signal, () => publishBoard(l), now, env.openFolders);
    active = l;
-   setLink(link);
    l.ownerLink = { machine: m, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups };
-   setOwnerLink(l.ownerLink);
+   // One publication: the link with its owner context (link.ts; ownerLink.ts is its owner view),
+   // so Gram and every owner group start once, on the same link.
+   setLink(link, l.ownerLink);
    // The session ending ends the link too: its board and agent view go, the page goes idle.
    session.addEventListener("abort", () => { if (active === l) disconnectOwner(); }, { once: true, signal: l.life.signal });
    void runGuest(l, print).finally(() => shutdown(l));

@@ -14,8 +14,9 @@ import { sleep } from "../webguest/abort";
 import { HerdrAPIError } from "../webguest/errors";
 import { ErrUnsupported, untagged } from "./engine";
 import { emit, events } from "./events";
+import { onLinkChanged } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
-import { currentOwnerLink, LINK_CHANGED, onLinkClosing, onOwnerLinkChanged, ownerCall, OwnerRefusedError, settingsCall, settingsLink, settingsScope, type OwnerLink, type SettingsScope } from "./ownerLink";
+import { currentOwnerLink, LINK_CHANGED, onLinkClosing, ownerCall, OwnerRefusedError, settingsCall, settingsLink, settingsScope, type OwnerLink, type SettingsScope } from "./ownerLink";
 
 type DeskFns = typeof GoDesk;
 
@@ -115,7 +116,7 @@ export function startAccountLabels(): () => void {
   clearLabels();
   offLink = link === null ? null : followLink(link);
  };
- const offChanged = onOwnerLinkChanged(follow);
+ const offChanged = onLinkChanged((_link, owner) => follow(owner));
  follow(currentOwnerLink());
  return () => { offChanged(); offLink?.(); offLink = null; clearLabels(); };
 }
@@ -294,7 +295,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
  function signInLive(s: Scope) {
   if (s.ended || currentOwnerLink() !== s.link || settingsLink(s.token) !== s.link) throw new Error(LINK_CHANGED);
  }
- onOwnerLinkChanged(() => { if (scope !== null) { void endScope(scope); scope = null; } });
+ onLinkChanged(() => { if (scope !== null) { void endScope(scope); scope = null; } });
 
  /** The scope token names; a newer Settings scope ends the last one's sign-in, as OpenSettings does. */
  function scopeOf(token: string): Scope {
