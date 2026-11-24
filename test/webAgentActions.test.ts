@@ -1,7 +1,8 @@
 // The web owner's agent menus and actions (src/web/agentActionsDesk.ts), the folder edits queued
 // in groups.ts OwnerGroups, and the ••• menu's owner items (desk.ts webPaneMenu): the menus as Go
 // builds them, the edits as Go's groupsStore saves them, and the Desk methods against a local relay
-// whose host answers as herdr does. The menus themselves run in a small stand-in document.
+// whose host answers as herdr does. The menus, the warnings and the page's own agent sheets
+// (agentActions.ts) run in the shared fake document (fakeDom.ts).
 import { afterEach, expect, test } from "bun:test";
 import { generateIdentity, MemoryIdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
@@ -17,9 +18,11 @@ import { currentOwnerLink, OWNER_REFUSED, OwnerRefusedError } from "../src/web/o
 import { showMenu } from "../src/web/menu";
 import { ompHarness } from "../src/topicsModel";
 import { SHEET_STALE, sheetFailure, SheetStaleError, SheetSupersededError, topicsSwitch, transferSheetOpening } from "../src/agentActionsModel";
-import { openSheet, type SheetDesk, type SheetOpening } from "../src/sheetOpening";
+import { openSheet, type SheetDesk, type SheetOpening, type SheetSelection } from "../src/sheetOpening";
+import { initAgentActions } from "../src/agentActions";
+import { FakeDocument, FakeElement } from "./fakeDom";
 import {
- agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, openSheets, sessionTransfer, sheetChosen, topicsSwitchProblem,
+ agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, openSheets, selectSheet, sessionTransfer, topicsSwitchProblem,
  type ActionAgent, type MenuItem, type SheetKind,
 } from "../src/web/agentActionsDesk";
 import { orderedFolders, type Groups } from "../src/web/board";
@@ -284,42 +287,29 @@ test("pictures and the Topics switch fail in the desktop's words; a refused brow
  expect(topicsSwitchProblem(new Error("socket closed"))).toBe("couldn't reach the server.");
 });
 
-// ---- The menus in a page: a stand-in document ----
+// ---- The menus and sheets in a page: the shared fake document (fakeDom.ts) ----
 
-class FakeElement {
- children: FakeElement[] = [];
- parent: FakeElement | null = null;
- className = ""; textContent = ""; type = ""; disabled = false;
- onclick: (() => void) | null = null;
- style: Record<string, string> = {};
- constructor(readonly tag: string) {}
- setAttribute() {}
- append(...nodes: FakeElement[]) { for (const n of nodes) { n.parent = this; this.children.push(n); } }
- remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }
- contains(n: unknown): boolean { return n === this || this.children.some((c) => c.contains(n)); }
- getBoundingClientRect() { return { left: 0, top: 0, bottom: 0, width: 100, height: 100 }; }
- focus() {}
- showModal() {}
- addEventListener() {}
-}
 const saved: Record<string, unknown> = {};
 function page() {
- const body = new FakeElement("body");
- for (const [k, v] of Object.entries({ document: { createElement: (t: string) => new FakeElement(t), body, activeElement: null }, HTMLElement: FakeElement, innerWidth: 1000, innerHeight: 800 })) {
+ const doc = new FakeDocument(), body = doc.body;
+ for (const [k, v] of Object.entries({ document: doc, HTMLElement: FakeElement, innerWidth: 1000, innerHeight: 800 })) {
   if (!(k in saved)) saved[k] = (globalThis as Record<string, unknown>)[k];
   (globalThis as Record<string, unknown>)[k] = v;
  }
  const menu = () => body.children.find((c) => c.className === "web-menu");
- const items = () => (menu()?.children ?? []).filter((c) => c.tag === "button");
+ const items = () => (menu()?.children ?? []).filter((c) => c.tagName === "button");
  return {
+  body,
   menu,
   labels: () => items().map((b) => b.textContent),
   /** The warnings shown (warning.ts): title and detail. */
-  warnings: () => body.children.filter((c) => c.tag === "dialog").map((d) => d.children.filter((c) => c.tag !== "div").map((c) => c.textContent)),
+  warnings: () => body.children.filter((c) => c.tagName === "dialog" && !c.className.includes("agent-sheet")).map((d) => d.children.filter((c) => c.tagName !== "div").map((c) => c.textContent)),
   /** Clicks the nth (0-based) item labelled label. */
-  click(label: string, nth = 0) { const b = items().filter((x) => x.textContent === label)[nth]; if (!b) throw new Error("no item " + label); b.onclick!(); },
+  click(label: string, nth = 0) { const b = items().filter((x) => x.textContent === label)[nth]; if (!b) throw new Error("no item " + label); b.click(); },
   /** The next menu, once the one clicked has opened it. */
   async next(before: FakeElement | undefined) { for (let i = 0; i < 100 && (menu() === undefined || menu() === before); i++) await Promise.resolve(); return menu(); },
+  /** The agent sheets open (agentActions.ts sheet()). */
+  sheets: () => body.children.filter((c) => c.tagName === "dialog" && c.open && c.className.includes("agent-sheet")),
  };
 }
 afterEach(() => { for (const [k, v] of Object.entries(saved)) (globalThis as Record<string, unknown>)[k] = v; for (const k of Object.keys(saved)) delete saved[k]; });
@@ -408,12 +398,9 @@ const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(
 /** The browser's openings take no Desk (they make their own calls on the link they were chosen on). */
 const noDesk = {} as SheetDesk;
 /** A sheet of kind for paneID chosen from a menu on the open link, opened as the page opens it:
- *  with the menu's request. */
-const chosen = (kind: SheetKind, paneID: string): SheetOpening => {
- const request = { kind, paneID };
- sheetChosen(currentOwnerLink()!, kind, paneID, request);
- return openSheet(noDesk, kind, paneID, request);
-};
+ *  with the menu's request, which carries the selection. */
+const chosen = (kind: SheetKind, paneID: string): SheetOpening =>
+ openSheet(noDesk, kind, { paneID, sheet: selectSheet(currentOwnerLink()!, kind, paneID) });
 /** That sheet, its dialog shown and its action begun (confirmed). */
 const opened = (kind: SheetKind, paneID: string): SheetOpening => {
  const opening = chosen(kind, paneID);
@@ -610,8 +597,8 @@ test("a sheet opened on one machine sends nothing once another is open; on its o
  const sheets: unknown[] = [], openings: SheetOpening[] = [];
  // The page opens each sheet as its request arrives.
  const offs = [
-  events.agentActionRequested.on((x) => { sheets.push(x); openings.push(openSheet(noDesk, x.kind, x.paneID, x)); }),
-  events.paneActionChosen.on((x) => { sheets.push(x); if (x.action === "avatar") openings.push(openSheet(noDesk, "avatar", x.paneID, x)); }),
+  events.agentActionRequested.on((x) => { sheets.push(x); openings.push(openSheet(noDesk, x.kind, x)); }),
+  events.paneActionChosen.on((x) => { sheets.push(x); if (x.action === "avatar") openings.push(openSheet(noDesk, "avatar", x)); }),
   events.folderNamingRequested.on((x) => sheets.push(x)),
  ];
  const writes = (seen: Request[]) => seen.map((r) => r.method).filter((m) => ["agent.rename", "agent.restart", "agent.avatar.set", "agent.topics.set_enabled", "agent.transfer_session", "agent.groups.set"].includes(m));
@@ -790,7 +777,7 @@ test("#377: a Switch harness sheet waiting on its lookup, then another pane's sh
  const asked: Promise<unknown>[] = [], transfers: SheetOpening[] = [];
  const off = events.agentActionRequested.on((x) => {
   if (x.kind !== "transfer") return;
-  const own = openSheet(noDesk, x.kind, x.paneID, x);
+  const own = openSheet(noDesk, x.kind, x);
   transfers.push(own);
   asked.push(own.transferAccounts().catch((e: unknown) => e));
  });
@@ -886,7 +873,7 @@ test("a Switch harness sheet whose lookup was held while the same sheet was chos
  const calls: string[][] = [], sheets: SheetOpening[] = [], openings: Promise<{ accountsJSON: string; agentJSON: string } | null>[] = [];
  const off = events.agentActionRequested.on((x) => {
   if (x.kind !== "transfer") return;
-  const mine: string[] = [], own = counted(openSheet(noDesk, x.kind, x.paneID, x), mine);
+  const mine: string[] = [], own = counted(openSheet(noDesk, x.kind, x), mine);
   calls.push(mine);
   sheets.push(own);
   openings.push(transferSheetOpening(own, x.terminalID));
@@ -960,9 +947,28 @@ test("a sheet started again on the same machine supersedes the older: its answer
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
-test("#401: Codex's lookup held, then Claude Code chosen on the same agent: Codex's answer opens no second dialog, and Claude's Prepare sends", async () => {
+/** The page's own agent sheets (agentActions.ts initAgentActions) on the browser's events, drawn
+ *  in doc: Go's events reach them through the runtime the desktop build has (here the browser's
+ *  events, as the web build aliases them). Returns its unsubscribe. */
+function pageSheets(doc: FakeDocument): () => void {
+ const offs: (() => void)[] = [];
+ const G = globalThis as { mygo?: unknown };
+ if (!("mygo" in saved)) saved.mygo = G.mygo;
+ G.mygo = {
+  on: (name: keyof typeof events, l: (payload: never) => void) => { const off = events[name].on(l); offs.push(off); return off; },
+  call: () => Promise.reject(new Error("no Go in the browser")),
+ };
+ // A fake element stands in for the symbol's (a DOM node the fake document makes).
+ const symbol = async () => doc.createElement("span") as unknown as HTMLElement;
+ initAgentActions({ row: () => undefined, tile: () => { throw new Error("no tile"); }, badge: async () => null, placeInitials: async () => {}, symbol });
+ return () => { for (const off of offs) off(); };
+}
+
+test("#401: Codex's lookup held, then Claude Code chosen on the same agent: in the page, Codex's answer opens no second dialog, and Claude's Prepare sends", async () => {
  const served = (req: Request): object | undefined => {
-  if (req.method === "agent.transfer_session") return { result: { type: "agent_info", agent: listed[0] } };
+  if (req.method === "agent.transfer_session") {
+   return { result: { type: "agent_info", agent: { ...listed[0], agent_status: "idle", session_transfer: { id: "x1", source: "omp", target: req.params.to, phase: "ready", message_count: 2 } } } };
+  }
   if (req.method === "accounts.list") return { result: { type: "accounts_list", accounts: [] } };
   return undefined;
  };
@@ -970,22 +976,11 @@ test("#401: Codex's lookup held, then Claude Code chosen on the same agent: Code
  const lookup = { wait: Promise.withResolvers<void>() };
  const seen: Request[] = [];
  const relay = host("terminal", { seen, hold, other: served, caps: { ...servedCaps, agent_session_transfer_harnesses: ["claude", "codex", "omp"] },
+  agents: () => [{ ...listed[0], agent_status: "idle" }, listed[1]],
   onRequest: (r) => { if (r.method === "accounts.list" && hold.accounts) lookup.wait.resolve(); } });
  const desk = await newDesk();
  const p = page();
- // Each Switch harness sheet as the page runs it (agentActions.ts switchHarness): its lookups, then
- // its dialog only if show() still says yes, started as it shows. null: no dialog.
- const calls: string[][] = [], dialogs: Promise<SheetOpening | null>[] = [];
- const off = events.agentActionRequested.on((x) => {
-  if (x.kind !== "transfer") return;
-  const mine: string[] = [], own = counted(openSheet(noDesk, x.kind, x.paneID, x), mine);
-  calls.push(mine);
-  dialogs.push(transferSheetOpening(own, x.terminalID).then((opening) => {
-   if (opening === null || !own.show()) { own.release(); return null; }
-   own.start();
-   return own;
-  }));
- });
+ const off = pageSheets(p.body.ownerDocument);
  const choose = async (harness: string, onMenu = () => {}) => {
   expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
   onMenu();
@@ -995,24 +990,78 @@ test("#401: Codex's lookup held, then Claude Code chosen on the same agent: Code
   p.click(harness);
   await settle();
  };
- try {
-  await open(desk, relay, "terminal");
+ /** Chooses harness with its account lookup held (the menu's own, for Swap, answered first). */
+ const held = async (harness: string) => {
   const release = Promise.withResolvers<void>();
-  // Codex's account lookup held (the menu's own, for Swap, answered).
-  await choose("Codex", () => { hold.accounts = release.promise; });
+  lookup.wait = Promise.withResolvers<void>();
+  await choose(harness, () => { hold.accounts = release.promise; });
   await lookup.wait.promise;
   hold.accounts = null;
+  return release;
+ };
+ const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 5)); };
+ const button = (dialog: FakeElement, label: string) => dialog.all().find((n) => n.tagName === "button" && n.text().includes(label));
+ try {
+  await open(desk, relay, "terminal");
+  const codex = await held("Codex");
   await choose("Claude Code");
-  const claude = await dialogs[1];
-  expect(claude).not.toBeNull();
-  // Codex's account reply comes in after Claude's dialog showed: no dialog for it, nothing more asked.
-  release.resolve();
-  expect(await dialogs[0]).toBeNull();
-  expect(calls[0]).toEqual(["accounts"]);
-  // Claude's sheet still owns its result: Prepare and Confirm reach the host.
-  await claude!.prepareSessionTransfer("claude", "");
-  await claude!.confirmSessionTransfer("claude", "", "x1");
-  expect(methods(seen, "agent.transfer_session").length).toBe(2);
+  await until(() => p.sheets().length > 0);
+  expect(p.sheets().map((d) => d.text().includes("visible conversation in Claude Code."))).toEqual([true]);
+  // Codex's account reply comes in after Claude's dialog showed: no second dialog.
+  codex.resolve();
+  await settle();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(p.sheets().length).toBe(1);
+  const claude = p.sheets()[0]!;
+  // A newer selection (Codex again, its lookup held) doesn't take a dialog's result that already
+  // showed: Claude's Prepare button sends Claude's prepare.
+  const again = await held("Codex");
+  button(claude, "Prepare transfer")!.click();
+  await until(() => methods(seen, "agent.transfer_session").length > 0);
+  expect(methods(seen, "agent.transfer_session")).toEqual([{ target: "p1", to: "claude" }]);
+  await until(() => button(claude, "Confirm switch to Claude Code") !== undefined);
+  expect(claude.open).toBe(true);
+  again.resolve();
+ } finally {
+  await settle();
+  for (const d of p.sheets()) d.close();
+  off(); desk.disconnectOwner(); relay.stop();
+ }
+}, 30_000);
+
+test("a sheet opens with the selection its event carries: a copy of the payload works; one without it, for another sheet, or a look-alike opens nothing", async () => {
+ const seen: Request[] = [];
+ const relay = host("terminal", { seen, other: (req) => req.method === "agent.rename" ? { result: { type: "agent_info", agent: { ...listed[0], name: "ok" } } } : undefined });
+ const desk = await newDesk();
+ const p = page();
+ // The page gets a copy of the menu's request (as a listener forwarding the payload would).
+ const copies: SheetOpening[] = [];
+ const off = events.agentActionRequested.on((x) => { copies.push(openSheet(noDesk, x.kind, { ...x })); });
+ try {
+  await open(desk, relay, "terminal");
+  expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
+  p.click("Rename");
+  await settle();
+  const copy = copies[0]!;
+  expect(copy.show()).toBe(true);
+  copy.start();
+  expect(await copy.renameAgent("ok")).toBe("ok");
+  copy.release();
+  const link = currentOwnerLink()!;
+  const refused = async (opening: SheetOpening) => {
+   expect(opening.show()).toBe(false);
+   await expect(opening.renameAgent("x")).rejects.toThrow(SHEET_STALE);
+   opening.release();
+  };
+  // The same agent and kind without the selection: no dialog, nothing sent.
+  await refused(openSheet(noDesk, "rename", { paneID: "p1" }));
+  // A selection of another kind, or of another agent.
+  await refused(openSheet(noDesk, "rename", { paneID: "p1", sheet: selectSheet(link, "restart", "p1") }));
+  await refused(openSheet(noDesk, "rename", { paneID: "p1", sheet: selectSheet(link, "rename", "p2") }));
+  // An object of the selection's shape is not one (the cast stands in for an untyped forward).
+  const lookalike = { kind: "rename", paneID: "p1", link, seq: Number.MAX_SAFE_INTEGER } as unknown as SheetSelection;
+  await refused(openSheet(noDesk, "rename", { paneID: "p1", sheet: lookalike }));
+  expect(methods(seen, "agent.rename")).toEqual([{ target: "p1", name: "ok" }]);
  } finally { off(); desk.disconnectOwner(); relay.stop(); }
 }, 30_000);
 
@@ -1109,6 +1158,45 @@ test("#397: a second Topics confirmation cancelled leaves the first restart's ba
   expect(shown).toEqual(["working", "failed: " + SHEET_STALE]);
   expect(sheetFailure(new SheetSupersededError())).toBeNull();
   expect(sheetFailure(new Error("x"))).toBe("x");
+ } finally { desk.disconnectOwner(); relay.stop(); other.stop(); }
+}, 30_000);
+
+test("#405: a Topics request that lost its result to a newer one says nothing once its machine changes; one still owning it says the machine changed", async () => {
+ const hold: { ping: Promise<void> | null; topics: Promise<void> | null } = { ping: null, topics: null };
+ const asked = { wait: Promise.withResolvers<void>() };
+ const relay = host("terminal", { hold, onRequest: (r) => { if (r.method === "agent.topics.set_enabled" && hold.topics) asked.wait.resolve(); },
+  other: (r) => r.method === "agent.topics.set_enabled"
+   ? { result: { type: "agent_topics_switched", agent: listed[0], changed: true, topics_enabled: r.params.enabled } } : undefined });
+ const other = host("terminal", { hostID: "AwMDAwMDAwMDAwMDAwMDAw" });
+ const desk = await linked(relay);
+ /** The Topics sheet as the page runs it (agentActions.ts switchTopics), confirmed, its banner's statuses kept. */
+ const shown: string[] = [];
+ const sheet = (enable: boolean) => topicsSwitch(chosen("topics", "p1"), { paneID: "p1", title: "review-agent", enable }, async () => true,
+  (s) => shown.push(`${s.kind === "failed" ? "failed: " + s.why : s.kind} (${s.request.enable ? "on" : "off"})`));
+ /** Turns topics on with herdr's answer held until the machine changes. */
+ const heldOn = async () => {
+  hold.topics = new Promise<void>(() => {});
+  asked.wait = Promise.withResolvers<void>();
+  const on = sheet(true);
+  await asked.wait.promise;
+  hold.topics = null;
+  return { on };
+ };
+ try {
+  // The reviewer's sequence: Turn on held, Turn off confirmed and done, then another machine.
+  const { on } = await heldOn();
+  await sheet(false);
+  expect(shown).toEqual(["working (on)", "working (off)", "done (off)"]);
+  await open(desk, other, "terminal");
+  await on;
+  expect(shown).toEqual(["working (on)", "working (off)", "done (off)"]);
+  // A request still owning its result, its machine changed: the sheet's refusal.
+  shown.length = 0;
+  await open(desk, relay, "terminal");
+  const { on: owner } = await heldOn();
+  await open(desk, other, "terminal");
+  await owner;
+  expect(shown).toEqual(["working (on)", "failed: " + SHEET_STALE + " (on)"]);
  } finally { desk.disconnectOwner(); relay.stop(); other.stop(); }
 }, 30_000);
 

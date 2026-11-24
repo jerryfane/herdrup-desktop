@@ -1,0 +1,110 @@
+// A fake document for tests that draw real page code (Bun has no DOM): the approve sheet's rows,
+// code field and sheet (webAccessModel.test.ts), and the web owner's menus and agent sheets
+// (webAgentActions.test.ts). It behaves as a browser's does only where that code depends on it.
+
+/** An event target that keeps the listeners it holds, to see a press stop being followed. A
+ *  listener added with a signal goes when it aborts, and isn't added once it has. */
+export class Listened extends EventTarget {
+ readonly held = new Map<string, Set<unknown>>();
+ count(type: string) { return this.held.get(type)?.size ?? 0; }
+ /** Every listener held, of any type. */
+ total() { return [...this.held.values()].reduce((n, s) => n + s.size, 0); }
+ override addEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: AddEventListenerOptions | boolean) {
+  const signal = typeof o === "object" ? o.signal : undefined;
+  if (signal?.aborted) return;
+  if (!this.held.has(type)) this.held.set(type, new Set());
+  this.held.get(type)!.add(l);
+  signal?.addEventListener("abort", () => this.held.get(type)?.delete(l), { once: true });
+  super.addEventListener(type, l, o);
+ }
+ override removeEventListener(type: string, l: EventListenerOrEventListenerObject | null, o?: EventListenerOptions | boolean) {
+  this.held.get(type)?.delete(l);
+  super.removeEventListener(type, l, o);
+ }
+}
+
+/** The document: its body, the element with focus, visibility, and its window (defaultView). */
+export class FakeDocument extends EventTarget {
+ readonly body: FakeElement;
+ readonly defaultView = new Listened();
+ activeElement: FakeElement | null = null;
+ visibilityState = "visible";
+ constructor() { super(); this.body = new FakeElement("body", this); }
+ createElement(tag: string) { return new FakeElement(tag, this); }
+}
+
+/** The DOM the page code uses, behaving as a browser's does where that code depends on it: events
+ *  reach listeners and on* handlers; click() does nothing on a disabled or hidden control and ticks
+ *  a radio (unticking the rest of its group) or checkbox, and a click on a label activates its
+ *  control (for/id, or the one inside it);
+ *  focus() needs an enabled element in the document; showModal() needs a dialog in the document
+ *  that isn't open; close() fires "close". Text appended to an element adds to its textContent;
+ *  text() is the element's text with all it holds. */
+export class FakeElement extends Listened {
+ className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
+ inputMode = ""; autocomplete = ""; maxLength = -1; selectionStart = 0; selectionEnd = 0; open = false;
+ onclick: ((e: Event) => void) | null = null; onchange: ((e: Event) => void) | null = null; oninput: ((e: Event) => void) | null = null;
+ parent: FakeElement | null = null;
+ readonly children: FakeElement[] = [];
+ readonly attributes = new Map<string, string>();
+ readonly classList = { toggle() {}, add() {}, remove() {} };
+ readonly style: Record<string, string> = {};
+ /** The pointers captured on this element, in order, and the ones it holds now (a release, a
+ *  pointerup or a pointercancel lets go, as a browser's implicit release does). */
+ readonly captured: number[] = [];
+ readonly holding = new Set<number>();
+ constructor(readonly tagName: string, readonly ownerDocument: FakeDocument) { super(); }
+ setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
+ getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+ append(...nodes: (FakeElement | string)[]) {
+  for (const n of nodes) {
+   if (typeof n === "string") { this.textContent += n; continue; }
+   n.remove(); n.parent = this; this.children.push(n);
+  }
+ }
+ appendChild(n: FakeElement) { this.append(n); return n; }
+ replaceChildren(...nodes: (FakeElement | string)[]) {
+  for (const c of [...this.children]) c.remove();
+  this.textContent = "";
+  this.append(...nodes);
+ }
+ remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; }
+ all(): FakeElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
+ contains(n: unknown): boolean { return this.all().includes(n as FakeElement); }
+ text(): string { return this.all().map(n => n.textContent).join(""); }
+ querySelectorAll(tag: string) { return this.all().filter(n => n !== this && n.tagName === tag); }
+ /** Drawn: neither it nor anything it sits in is hidden. */
+ shown(): boolean { return !this.hidden && (this.parent?.shown() ?? true); }
+ connected(): boolean { return this === this.ownerDocument.body || (this.parent?.connected() ?? false); }
+ override dispatchEvent(e: Event): boolean {
+  const ok = super.dispatchEvent(e);
+  ({ click: this.onclick, change: this.onchange, input: this.oninput } as Record<string, ((e: Event) => void) | null>)[e.type]?.call(this, e);
+  if (e.type === "pointerup" || e.type === "pointercancel") this.holding.delete((e as PointerEvent).pointerId);
+  return ok;
+ }
+ click(): void {
+  if (this.disabled || !this.shown()) return;
+  const ticks = this.type === "checkbox" || (this.type === "radio" && !this.checked);
+  if (ticks && this.type === "radio") for (const r of this.ownerDocument.body.all()) if (r.type === "radio" && r.name === this.name) r.checked = false;
+  if (ticks) this.checked = this.type === "radio" || !this.checked;
+  this.dispatchEvent(new Event("click"));
+  if (ticks) this.dispatchEvent(new Event("change"));
+  if (this.tagName === "label") this.control()?.click();
+ }
+ /** A label's control: the element in the document whose id is its for, else the input inside it. */
+ control(): FakeElement | undefined {
+  if (this.htmlFor) return this.connected() ? this.ownerDocument.body.all().find(n => n.id === this.htmlFor) : undefined;
+  return this.all().find(n => n.tagName === "input");
+ }
+ focus(): void { if (!this.disabled && this.connected()) this.ownerDocument.activeElement = this; }
+ setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
+ getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 100, height: 100 }; }
+ setPointerCapture(id: number) { this.captured.push(id); this.holding.add(id); }
+ hasPointerCapture(id: number) { return this.holding.has(id); }
+ releasePointerCapture(id: number) { this.holding.delete(id); }
+ showModal(): void {
+  if (this.open || !this.connected()) throw new Error("InvalidStateError: showModal on a dialog that's open or not in the document");
+  this.open = true;
+ }
+ close(): void { if (!this.open) return; this.open = false; this.dispatchEvent(new Event("close")); }
+}

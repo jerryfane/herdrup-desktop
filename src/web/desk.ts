@@ -7,7 +7,7 @@ import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
  Access as PageAccess, AgentTarget, AgentView, AskFormValue, AvatarPhoto, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestConnection, GuestInvitation, GuestMenuKeyReply,
- GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
+ GuestShareDetails, PaneAction, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
@@ -25,7 +25,8 @@ import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
 import { currentOwnerLink, linkClosing, setOwnerLink, setOwnerSettings, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
-import { closeAgent, sheetChosen } from "./agentActionsDesk";
+import { closeAgent, selectSheet } from "./agentActionsDesk";
+import type { SheetRequest } from "../sheetOpening";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
@@ -907,9 +908,8 @@ export function createGuestDesk(env: DeskEnv) {
     if (action === "close" && !await closeAgent(link, o.paneID)) return;
     // The page acts on the pane id: once the page was mounted again meanwhile, this isn't its choice.
     if (!still()) return;
-    const chosen = { paneID: o.paneID, action };
-    // The avatar sheet it opens belongs to this link (the page opens it with this request).
-    if (action === "avatar" && link) sheetChosen(link, "avatar", o.paneID, chosen);
+    // The avatar sheet it opens belongs to this link: the selection it carries.
+    const chosen: PaneAction & Partial<SheetRequest> = { paneID: o.paneID, action, ...action === "avatar" && link ? { sheet: selectSheet(link, "avatar", o.paneID) } : {} };
     emit("paneActionChosen", chosen);
    });
    return true;
