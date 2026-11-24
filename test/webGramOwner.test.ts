@@ -941,15 +941,16 @@ test("a refused Saved lock is a failed write: the list still loads, the banner s
 test("an expiry queued on a link that has since ended writes nothing once it has the lock", async () => {
  const file = { name: "notes.txt", mime: "text/plain", size: 5, sha256: "" };
  store.set("herdrup.gram.saved", JSON.stringify([{ id: "x", text: "", from: "docs", fromAgent: true, createdUnixMs: 1, file, hostID: "h", machine: "dev" }]));
- const requested = Promise.withResolvers<void>(), held = Promise.withResolvers<void>();
- await withBrowserLocks({ request: async (_name, callback) => { requested.resolve(); await held.promise; return await callback(); } }, async () => {
+ const requested = Promise.withResolvers<void>(), held = Promise.withResolvers<void>(), written = Promise.withResolvers<void>();
+ // Another tab holds the lock until held resolves; written: the queued write ran under it.
+ await withBrowserLocks({ request: async (_name, callback) => { requested.resolve(); await held.promise; try { return await callback(); } finally { written.resolve(); } } }, async () => {
   let live = false;
   const handle = (method: string) => {
    if (method !== "gram.list") throw new Error("unexpected " + method);
    return list([row("x", live ? { file } : { expired_file: file })], { digest: live ? "d2" : "d1", store_id: "s1" });
   };
   ownerLink(handle);
-  void opened();
+  const opening = opened();
   await requested.promise;
   // Disconnected and the same host opened again: its list shows the file live.
   setLink(null);
@@ -957,7 +958,8 @@ test("an expiry queued on a link that has since ended writes nothing once it has
   ownerLink(handle);
   await opened();
   held.resolve();
-  for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  await written.promise;
+  await opening;
   const s = await gramDesk.gramState!();
   expect([s.messages[0]?.file?.name, s.saved[0]?.file?.name, s.saved[0]?.expiredFile]).toEqual(["notes.txt", "notes.txt", undefined]);
   expect(JSON.parse(store.get("herdrup.gram.saved")!)[0].expiredFile).toBeUndefined();
@@ -965,13 +967,13 @@ test("an expiry queued on a link that has since ended writes nothing once it has
 });
 
 test("an unread-only list asked before a head list the owner's Gram accepted doesn't put back its older count", async () => {
- const badgeAsked = Promise.withResolvers<void>(), badgeReply = Promise.withResolvers<unknown>();
+ const badgeAsked = Promise.withResolvers<void>(), badgeReply = Promise.withResolvers<unknown>(), nextHead = Promise.withResolvers<void>();
  let holdHeads = false;
  ownerLink((method, params) => {
   if (method !== "gram.list") throw new Error("unexpected " + method);
   if (params.unread_only) { badgeAsked.resolve(); return badgeReply.promise; }
   // Head lists after the refresh stay out: only the old unread-only reply could change the count.
-  if (holdHeads) return new Promise(() => {});
+  if (holdHeads) { nextHead.resolve(); return new Promise(() => {}); }
   return list([row("m1")], { unread_count: 1 });
  });
  await badgeAsked.promise;
@@ -980,18 +982,20 @@ test("an unread-only list asked before a head list the owner's Gram accepted doe
  expect((await gramDesk.gramState!()).unreadCount).toBe(1);
  holdHeads = true;
  badgeReply.resolve(list([], { unread_count: 0 }));
- for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+ // The poll's next step, a head list, goes out once that reply was taken or dropped.
+ await nextHead.promise;
  const s = await gramDesk.gramState!();
  expect([s.unreadCount, s.messages[0]?.unread]).toEqual([1, true]);
 });
 
 test("an unread-only list asked before an older page the owner's Gram accepted doesn't put back its older count", async () => {
- const badgeAsked = Promise.withResolvers<void>(), badgeReply = Promise.withResolvers<unknown>();
- let hidden = false;
+ const badgeAsked = Promise.withResolvers<void>(), badgeReply = Promise.withResolvers<unknown>(), nextHead = Promise.withResolvers<void>();
+ let hidden = false, holdHeads = false;
  ownerLink((method, params) => {
   if (method !== "gram.list") throw new Error("unexpected " + method);
   if (params.unread_only) { if (!hidden) return list([], { unread_count: 1 }); badgeAsked.resolve(); return badgeReply.promise; }
   if (params.before_id) return list([row("old")], { unread_count: 4 });
+  if (holdHeads) { nextHead.resolve(); return new Promise(() => {}); }
   return list([row("new")], { unread_count: 1, has_more: true });
  });
  await opened();
@@ -1000,9 +1004,85 @@ test("an unread-only list asked before an older page the owner's Gram accepted d
  await badgeAsked.promise;
  expect(await gramDesk.gramLoadOlder!()).toBe(true);
  expect((await gramDesk.gramState!()).unreadCount).toBe(4);
+ holdHeads = true;
  badgeReply.resolve(list([], { unread_count: 0 }));
- for (let i = 0; i < 5; i++) await new Promise<void>(resolve => setImmediate(resolve));
+ // Gram shown again: the poll's next step, a head list, goes out once that reply was taken or
+ // dropped (and stays out).
+ await gramDesk.gramSetVisible!(true);
+ await nextHead.promise;
  expect((await gramDesk.gramState!()).unreadCount).toBe(4);
+});
+
+test("a guest's narrow head list doesn't supersede the hidden tab's whole-store unread walk", async () => {
+ // The newest 40 are read; 5 older ones aren't: only the walk (100 at a time) sees them.
+ const ids = [...Array.from({ length: 40 }, (_, i) => `n${String(i).padStart(2, "0")}`), ...Array.from({ length: 5 }, (_, i) => `o${i}`)];
+ const read = new Set(ids.filter(id => id.startsWith("n")));
+ const walkAsked = Promise.withResolvers<void>(), walkRelease = Promise.withResolvers<void>();
+ let holdWalk = true;
+ guestLink(async (method, params) => {
+  if (method !== "gram.list") throw new Error("unexpected " + method);
+  const limit = Number(params.limit);
+  if (limit === 100 && holdWalk) { holdWalk = false; walkAsked.resolve(); await walkRelease.promise; }
+  return { messages: guestRows(ids.slice(0, limit), read), has_more: ids.length > limit };
+ });
+ // The reviewer's order: the hidden tab's walk is out; Gram opens, refreshes its newest 40 (all
+ // read), and goes back to Agents; then the walk comes back with the 5.
+ await walkAsked.promise;
+ await gramDesk.gramSetVisible!(true);
+ await gramDesk.gramRefresh!();
+ expect((await gramDesk.gramState!()).unreadCount).toBe(0);
+ await gramDesk.gramSetVisible!(false);
+ const five = until(s => s.unreadCount === 5);
+ walkRelease.resolve();
+ await five;
+});
+
+test("the same Saved failure moved to newest over a Delete refusal is published", async () => {
+ const file = { name: "notes.txt", mime: "text/plain", size: 5, sha256: "" };
+ store.set("herdrup.gram.saved", JSON.stringify([{ id: "x", text: "", from: "docs", fromAgent: true, createdUnixMs: 1, file, hostID: "h", machine: "dev" }]));
+ const refused = "Couldn't update the saved messages: this browser refused the lock that keeps its tabs' changes apart";
+ const requested = Promise.withResolvers<void>(), held = Promise.withResolvers<void>();
+ let hold = false;
+ await withBrowserLocks({ request: async () => {
+  if (hold) { requested.resolve(); await held.promise; }
+  throw new DOMException("The operation is insecure.", "SecurityError");
+ } }, async () => {
+  ownerLink((method, params) => {
+   if (method === "gram.delete") throw new HerdrAPIError("owner_forbidden", "no", null);
+   if (method !== "gram.list") throw new Error("unexpected " + method);
+   if (params.if_unchanged_digest === "d1") return { type: "gram_list_unchanged", digest: "d1", store_id: "s1" };
+   return list([row("x", { expired_file: file }), row("m1")], { digest: "d1", store_id: "s1" });
+  });
+  expect((await opened()).status).toBe(refused);
+  // A refreshed list queues an expiry that waits for the lock; meanwhile a Delete is refused and
+  // shows.
+  hold = true;
+  const refreshing = gramDesk.gramRefresh!();
+  await requested.promise;
+  await expect(gramDesk.gramDelete!("m1")).rejects.toBeInstanceOf(OwnerRefusedError);
+  expect((await gramDesk.gramState!()).status).toBe("Couldn't delete: " + OWNER_REFUSED);
+  // The lock refused again, the same words: Saved's failure is the newest now, and the page hears
+  // it from the expiry itself, while the refresh is still on (not from the refresh's own word).
+  const shown = until(s => s.status === refused && s.refreshing);
+  held.resolve();
+  await shown;
+  await refreshing;
+ });
+});
+
+test("a send's failure reaches the page by itself", async () => {
+ ownerLink(method => {
+  if (method === "gram.list") return list([row("m1")]);
+  if (method === "gram.post") throw new HerdrAPIError("bad_request", "no such agent", null);
+  throw new Error("unexpected " + method);
+ });
+ // Opened by the poll, not Refresh, whose word expires on a timer and publishes on its own.
+ const loaded = until(s => s.phase === "loaded");
+ await gramDesk.gramSetVisible!(true);
+ await loaded;
+ const shown = until(s => s.status !== undefined);
+ await expect(gramDesk.gramPost!("ship it", ["build"], [])).rejects.toThrow();
+ await shown;
 });
 
 test("a Save keeps what another document saved since this one read Saved", async () => {
