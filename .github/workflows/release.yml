@@ -186,21 +186,26 @@ jobs:
             # copy stays without it", cmd/mygo/dmg.go). Each staple is
             # required on its own: the disk image, the built app, and the app
             # of each update archive, which mygo makes from the built app when
-            # updates are signed and holds that bundle at its root.
+            # updates are signed. All three are the app of the disk image: the
+            # built app has its name, and each archive holds that bundle as its
+            # only root entry, as the updater requires.
             check -- xcrun stapler validate "$dmg"
+            bundle="$(basename "$app")"
             built_apps=(build/darwin-universal/*.app)
-            if [ "${#built_apps[@]}" -ne 1 ] || [ ! -d "${built_apps[0]}" ]; then
-              echo "::error::expected exactly one app in build/darwin-universal, found: ${built_apps[*]}"
+            if [ "${#built_apps[@]}" -ne 1 ] || [ "${built_apps[0]}" != "build/darwin-universal/$bundle" ] || [ ! -d "${built_apps[0]}" ]; then
+              echo "::error::expected build/darwin-universal/$bundle as the only app there, found: ${built_apps[*]}"
               exit 1
             fi
-            built_app="${built_apps[0]}"
-            check -- xcrun stapler validate "$built_app"
-            bundle="$(basename "$built_app")"
+            check -- xcrun stapler validate "build/darwin-universal/$bundle"
             for archive in build/darwin-universal/*.tar.gz; do
               [ -f "$archive" ] || continue
               unpacked="$(mktemp -d "$RUNNER_TEMP/update.XXXXXX")"
               check -- tar -xzf "$archive" -C "$unpacked"
-              [ -d "$unpacked/$bundle" ] || { echo "::error::$archive has no $bundle at its root"; exit 1; }
+              root_entries="$(ls -A "$unpacked")"
+              if [ "$root_entries" != "$bundle" ] || [ ! -d "$unpacked/$bundle" ]; then
+                echo "::error::$archive must hold only $bundle at its root, found: $(tr '\n' ' ' <<<"$root_entries")"
+                exit 1
+              fi
               check -- xcrun stapler validate "$unpacked/$bundle"
             done
           fi
