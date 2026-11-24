@@ -591,14 +591,19 @@ export interface TransportOptions {
  callLimitMs?: number;
 }
 
-/** A stream's options: signal ends it at any point. */
-export interface StreamOptions { signal?: AbortSignal }
+/** A stream's options: signal ends it at any point. It has no sendSignal (never: a unary call's
+ *  options, inline or in a variable, don't pass as a stream's). */
+export interface StreamOptions { signal?: AbortSignal; sendSignal?: never }
 
 /** A unary request's options: signal ends it at any point. sendSignal ends it only while it is
  *  unsent (waiting for a connection, the relay's admission and the handshake included): once its
  *  frame is handed to the socket herdr may act on it, so its reply is still awaited (within signal)
- *  whatever sendSignal does. Streams have none (StreamOptions). */
-export interface RequestOptions extends StreamOptions { sendSignal?: AbortSignal }
+ *  whatever sendSignal does. */
+export interface RequestOptions { signal?: AbortSignal; sendSignal?: AbortSignal }
+
+// tsc's check of the above (test/ isn't type-checked): a RequestOptions isn't a StreamOptions.
+type Holds<T extends true> = T;
+type UnaryOptionsAreNoStreamOptions = Holds<RequestOptions extends StreamOptions ? false : true>;
 
 /** The idle session a call left for the next one, since `since`, with its expiry timer. */
 interface IdleSession { session: Session; since: number; timer: ReturnType<typeof setTimeout>; unpark: () => void }

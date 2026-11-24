@@ -46,6 +46,13 @@ export function untagged<T>(result: unknown): T {
  return rest as T;
 }
 
+/** A call cancelled before it is sent ends with its signal's reason (#361's rebase maps it to
+ *  NotSentError through beforeSend). */
+function presendCheck(signal?: AbortSignal, sendSignal?: AbortSignal): void {
+ signal?.throwIfAborted();
+ sendSignal?.throwIfAborted();
+}
+
 export class GuestClient {
  #probed: Pong | null = null;
  constructor(private readonly link: WebLink) {}
@@ -63,14 +70,16 @@ export class GuestClient {
  }
 
  /** engine.go gate: refuses a call the host's pong says it lacks; an unanswered ping lets it through.
-  *  The ping is the call's pre-send work, so sendSignal (the call's, if it has one) ends it too, and
-  *  then the call, unsent. */
+  *  The ping is the call's pre-send work, so sendSignal (the call's, if it has one) ends it too. A
+  *  call cancelled before it is sent ends with its signal's reason, its pong cached or probed. */
  async gate(method: string, capability: string, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<void> {
   if (capability === "") return;
+  presendCheck(signal, sendSignal);
   let pong = this.#probed;
   if (pong === null) {
    const probe = sendSignal === undefined ? signal : signal === undefined ? sendSignal : AbortSignal.any([signal, sendSignal]);
-   try { pong = await this.ping(probe); } catch { if (sendSignal?.aborted) throw sendSignal.reason; return; }
+   try { pong = await this.ping(probe); } catch { presendCheck(signal, sendSignal); return; }
+   presendCheck(signal, sendSignal);
   }
   if (pong.capabilities?.[capability] !== true) throw new ErrUnsupported(method, capability, pong.version ?? "");
  }
