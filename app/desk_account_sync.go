@@ -722,7 +722,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	pull, err := d.account.PullSince(ctx, round, since)
 	if pull.Reset {
-		d.noteReset(acct) // whatever comes of the pull, before anything else
+		d.noteReset(acct, state.ResetsSeen) // whatever comes of the pull, before anything else
 	}
 	if errors.Is(err, account.ErrAccountChanged) {
 		return errSyncAbandoned
@@ -1072,7 +1072,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		// Read our own writes back, so the mirror holds what the account holds.
 		readBack, err = d.account.PullSince(ctx, round, mirror.Rev)
 		if readBack.Reset {
-			d.noteReset(acct) // whatever comes of the readback, before anything else
+			d.noteReset(acct, state.ResetsSeen) // whatever comes of the readback, before anything else
 		}
 		if errors.Is(err, account.ErrAccountChanged) {
 			return errSyncAbandoned
@@ -1651,43 +1651,17 @@ func (d *Desk) resetsOf(acct string) int64 {
 	return max(n, stored)
 }
 
-// committedResets is the ResetsSeen account-sync.json, or a commit record
-// not yet applied, holds for acct: a number a fold already used, which a
-// record whose write failed may lag behind. It reads without the store
-// lock (both files are replaced whole).
-func (d *Desk) committedResets(acct string) int64 {
-	var n int64
-	read := func(raw []byte) {
-		var s struct {
-			AccountID  string `json:"accountId"`
-			ResetsSeen int64  `json:"resetsSeen"`
-		}
-		if json.Unmarshal(raw, &s) == nil && s.AccountID == acct {
-			n = max(n, s.ResetsSeen)
-		}
-	}
-	if raw, err := os.ReadFile(d.syncStatePath()); err == nil {
-		read(raw)
-	}
-	if raw, err := os.ReadFile(d.commitPath()); err == nil {
-		var c syncCommit
-		if json.Unmarshal(raw, &c) == nil {
-			read(c.Sync)
-		}
-	}
-	return n
-}
-
 // noteReset records a 410 a pull for acct saw, whatever then came of the
 // pull: the account's history may have been replaced. It takes no lock:
 // the next observation number (past every one acct's record, this run or
-// a fold already used) is owed in memory and written to acct's record in
-// place (synced), so a busy store, a round that ends, or a store write
-// that fails can't lose it. The next store step of acct that confirms
-// anything folds it first (foldResets). It is lost only if the record
-// write fails and the app ends before a store step.
-func (d *Desk) noteReset(acct string) {
-	n := max(d.resetsOf(acct), d.committedResets(acct)) + 1
+// a fold already used: seen, the ResetsSeen of acct's state as the pass
+// loaded it) is owed in memory and written to acct's record in place
+// (synced), so a busy store, a round that ends, or a store write that
+// fails can't lose it. The next store step of acct that confirms anything
+// folds it first (foldResets). It is lost only if the record write fails
+// and the app ends before a store step.
+func (d *Desk) noteReset(acct string, seen int64) {
+	n := max(d.resetsOf(acct), seen) + 1
 	if d.accountSync.resets == nil {
 		d.accountSync.resets = map[string]int64{}
 	}
