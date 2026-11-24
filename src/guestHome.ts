@@ -77,8 +77,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    item.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } };
   }
   let face: HTMLElement;
-  if (row) face = deps.rowAvatar(running ? row : { ...row, badge: "" });
-  else {
+  if (row) {
+   face = deps.rowAvatar(running ? row : { ...row, badge: "" });
+   // The second line already says the status in words; the badge's label would say it twice.
+   face.querySelector(".badge")?.setAttribute("aria-hidden", "true");
+  } else {
    // No listed agent: the default tile with the share's initial (AgentAvatarView(agent: nil)).
    face = node("div", "avatar"); const tile = node("div", "tile tint-0");
    tile.append(node("span", "initial", (name.trim()[0] ?? "?").toUpperCase())); face.append(tile);

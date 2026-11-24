@@ -1,6 +1,6 @@
 import "core-js/actual/promise/with-resolvers";
 import { errorDetail, startWithFallback } from "./startup";
-import { symbol } from "./symbol";
+import { symbol, symbolNow } from "./symbol";
 import { Desk, events, type AgentTarget, type Board, type BoardUpdate, type ConnState, type Row, type Section } from "./mygo";
 import { paintShape } from "./continuous";
 import { loadGlyphFieldFonts } from "./glyphField";
@@ -300,7 +300,7 @@ async function agentRow(r: Row, separator: boolean): Promise<HTMLElement> {
   const line1 = el("div", "line1");
   const chev = el("span", "chev");
   chev.setAttribute("aria-hidden", "true");
-  chev.append(await symbol("chevron.right", 12, "semibold"));
+  chev.append(symbolNow("chevron.right", 12, "semibold"));
   const age = rowAge(r, Date.now());
   line1.append(el("span", "name t-row-name", r.title));
   if (r.starred) line1.append(await star(folderDeps));

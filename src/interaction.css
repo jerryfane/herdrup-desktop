@@ -92,6 +92,11 @@
 .terminal-key-row button { display: flex; align-items: center; justify-content: center; flex: none; min-width: 44px; height: 34px; padding: 0 10px; border: 0; background: var(--color-surface); color: var(--color-text-dim); font: 400 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .terminal-key-group button { position: relative; border-radius: 0; background: transparent; }
 .terminal-key-group button + button::before { content: ""; position: absolute; left: -1px; top: 8px; height: 18px; width: 1px; background: var(--color-hairline); }
+/* The group clips its keys to the capsule, so a key's focus ring is drawn inside it, following the
+   capsule's ends on the first and last key. */
+.terminal-key-group button:first-child { border-radius: var(--button-radius) 0 0 var(--button-radius); }
+.terminal-key-group button:last-child { border-radius: 0 var(--button-radius) var(--button-radius) 0; }
+.terminal-key-group button:focus-visible { outline-offset: -2px; }
 .terminal-key-row button:hover { background: var(--color-surface-raised); }
 .terminal-key-row button[aria-pressed="true"] { background: var(--status-working); color: var(--color-ground-machine); }
 .terminal-key-row .terminal-space-key { min-width: 84px; }

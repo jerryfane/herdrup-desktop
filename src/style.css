@@ -184,9 +184,10 @@ html, body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* The tab bar floats over the list's end (safeAreaInset). */
-  padding-bottom: var(--tabbar-inset);
-  scroll-padding-bottom: var(--tabbar-inset);
+  /* The tab bar floats over the list's end (safeAreaInset), and so does a foot notice while it
+     shows (agentActions.ts reserve sets --foot-notice). */
+  padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
+  scroll-padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scrollbar-width: none;
 }
 .roster::-webkit-scrollbar { display: none; }
@@ -314,17 +315,19 @@ html, body {
 .badge .shape svg { display: block; }
 .badge .shape .fill { fill: var(--badge-fill); }
 .badge .shape .edge { fill: none; stroke: var(--color-ground); }
-/* The glyph over the shape; symbolNow wraps it in a `display: contents` span (.gi). */
-.badge > :not(.shape, .gi), .badge > .gi > .sym { position: relative; }
+/* The glyph over the shape: the badge's own layer (faces.ts badge), and the working ring. */
+.badge > .badge-glyph, .badge > svg { position: relative; }
+.badge > .badge-glyph { display: grid; place-items: center; }
 .badge.waiting, .badge.unrecognised { --badge-fill: var(--status-waiting); }
 .badge.stopped { --badge-fill: var(--status-died); }
 .badge.offline { --badge-fill: var(--color-surface-raised); color: var(--color-text-dim); }
 .badge.working { color: var(--status-working); }
 /* TurningRing (herdrup 9845ecf DesignSystem.swift 223-262): the working badge's broken ring
    turns once every 0.9 s, linear, forever; still while status motion is off (screenshots,
-   html.holds-still). */
+   html.holds-still) and with reduced motion, the ring and its label staying. */
 .badge.working > svg { display: block; overflow: visible; transform-origin: 50% 50%; animation: status-turn 0.9s linear infinite; }
 .holds-still .badge.working > svg { animation: none; }
+@media (prefers-reduced-motion: reduce) { .badge.working > svg { animation: none; } }
 @keyframes status-turn { to { transform: rotate(360deg); } }
 
 /* Group disclosure row ("Idle 2 ›"): 48 pt, 20 lead, 16 trail. */
@@ -518,8 +521,8 @@ html, body {
 }
 .star-ask[hidden] { display: none; }
 .sidebar.star-asking .roster {
-  padding-bottom: calc(var(--tabbar-inset) + 12px + 56px);
-  scroll-padding-bottom: calc(var(--tabbar-inset) + 12px + 56px);
+  padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px) + 12px + 56px);
+  scroll-padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px) + 12px + 56px);
 }
 .star-ask-badge { flex: none; width: 40px; height: 40px; margin-left: 8px; border-radius: 50%; background: var(--color-ground); color: var(--color-text); display: grid; place-items: center; }
 .star-ask-lines { flex: 1; min-width: 0; margin-left: 11px; white-space: nowrap; }

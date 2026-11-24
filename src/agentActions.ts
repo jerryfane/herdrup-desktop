@@ -142,7 +142,8 @@ async function switchTopics(action: AgentAction) {
 
 let bannerShown: SwitchStatus | null = null;
 /** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced.
- * It sits in the sidebar's foot, over the glass tab bar (style.css .sidebar-foot). */
+ * It sits in the sidebar's foot, over the glass tab bar (style.css .sidebar-foot); while it shows,
+ * the sidebar's lists end above it too (--foot-notice), so it never covers their last row. */
 function switchBanner() {
   const foot = document.getElementById("sidebar-foot") ?? document.body;
   let banner = foot.querySelector<HTMLElement>(":scope > .topics-switch-banner");
@@ -159,8 +160,17 @@ function switchBanner() {
     mark.setAttribute("aria-hidden", "true");
     node.replaceChildren(...(status.kind === "done" ? [] : [mark]), el("span", "topics-switch-text", switchStatusText(status)));
     node.hidden = false;
-    if (status.kind !== "working") setTimeout(() => { if (bannerShown === status) { node.hidden = true; bannerShown = null; } }, 6000);
+    reserve(node);
+    if (status.kind !== "working") setTimeout(() => { if (bannerShown === status) { node.hidden = true; bannerShown = null; reserve(node); } }, 6000);
   };
+}
+
+/** The foot notice's room, margins included, as --foot-notice on the sidebar: the lists add it to
+ *  their end spacing and scroll padding (style.css .roster), the tab bar still floating. */
+function reserve(notice: HTMLElement) {
+  const holder = notice.parentElement?.parentElement ?? document.documentElement;
+  const margins = parseFloat(getComputedStyle(notice).marginTop) + parseFloat(getComputedStyle(notice).marginBottom);
+  holder.style.setProperty("--foot-notice", notice.hidden ? "0px" : `${notice.offsetHeight + margins}px`);
 }
 
 /** Swap subscription? (HerdrApp.swift 3453-3473): agent.restart on the
@@ -178,7 +188,7 @@ async function swapSubscription(action: AgentAction) {
 
 /** An avatar at a diameter as herdrup's AgentAvatar draws it: the face with
  * the row's status badge on top (the badge keeps its size). */
-async function avatarWithBadge(r: Row, face: HTMLElement, size: number) {
+function avatarWithBadge(r: Row, face: HTMLElement, size: number) {
   const a = el("div", "avatar");
   a.style.setProperty("--avatar-size", `${size}px`);
   a.append(face);
@@ -221,7 +231,7 @@ export function openAvatarSheet(request: SheetRequest, name: string) {
   const main = async () => {
     const at = ++screen;
     const body = el("div", "agent-avatar-body");
-    const hero = await avatarWithBadge(r, face(), 96);
+    const hero = avatarWithBadge(r, face(), 96);
     const grid = el("div", "agent-avatar-grid");
     // choiceCell (AgentAvatarViews.swift 376-393): the face ringed in text
     // when selected, the label under it.
@@ -341,10 +351,10 @@ export function openAvatarSheet(request: SheetRequest, name: string) {
       ctx.drawImage(work, rect.x, rect.y, rect.width, rect.height, 0, 0, canvas.width, canvas.height);
     };
     const draw = () => { paint(view, CROP_VIEWPORT); paint(small[0], 72); paint(small[1], 44); problem.hidden = !failed; };
-    void Promise.all([
+    previews.append(
       avatarWithBadge(r, Object.assign(small[0], { className: "face preview" }), 72),
       avatarWithBadge(r, Object.assign(small[1], { className: "face preview" }), 44),
-    ]).then(nodes => previews.append(...nodes));
+    );
     body.append(square, previews, problem, el("p", "agent-crop-hint", "Drag to move, pinch to zoom."));
     draw();
 

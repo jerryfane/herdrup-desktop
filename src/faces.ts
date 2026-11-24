@@ -6,7 +6,7 @@ import type { Row } from "./mygo";
 import { avatarFace } from "./avatars";
 import { continuousPath } from "./continuous";
 import { rowStatus } from "./rowStatus";
-import { symbolNow } from "./symbol";
+import { symbol } from "./symbol";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
   const e = document.createElement(tag);
@@ -52,7 +52,10 @@ export function badge(kind: string): HTMLElement | null {
   b.setAttribute("aria-label", rowStatus(kind));
   b.append(badgeShape(kind === "stopped" || kind === "offline"));
   if (name) {
-    b.append(symbolNow(name, 10, "heavy"));
+    // The glyph's own layer over the shape (style.css .badge-glyph), filled in when it arrives.
+    const glyph = el("span", "badge-glyph");
+    void symbol(name, 10, "heavy").then(s => glyph.append(s));
+    b.append(glyph);
     return b;
   }
   // TurningRing(diameter: 12, lineWidth: 2) at rest (herdrup
