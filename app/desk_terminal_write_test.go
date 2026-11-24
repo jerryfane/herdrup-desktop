@@ -3,11 +3,34 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
+
+// A bracketed write that wrote nothing keeps the draft with its own reason:
+// a failed probe is not a host without the capability.
+func TestBracketedWriteErrorNamesWhyNothingWasWritten(t *testing.T) {
+	other := &bridge.APIError{Code: "pane_not_found", Message: "no pane"}
+	for _, c := range []struct {
+		err, want error
+	}{
+		{&engine.ErrProbeFailed{Capability: herdrapi.CapabilityPaneSendTextBracketed, Err: errors.New("ping timed out")}, errTerminalUnchecked},
+		{engine.ErrBracketedUnsupported, errTerminalLineBreak},
+		{&bridge.APIError{Code: "bracketed_paste_unavailable"}, errTerminalPasteRefused},
+		{other, other},
+		{nil, nil},
+	} {
+		if got := bracketedWriteError(c.err); got != c.want {
+			t.Errorf("bracketedWriteError(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
 
 // terminalWriteDesk opens a plain terminal view, "shell", on a host whose
 // pane.send_text is writes (issue #392).

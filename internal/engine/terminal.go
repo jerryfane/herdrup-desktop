@@ -19,14 +19,27 @@ func (c *Client) PaneSendText(ctx context.Context, pane, text string) error {
 	return err
 }
 
+// ErrBracketedUnsupported: the host's ping does not advertise
+// pane_send_text_bracketed, so PaneSendBracketedText sent nothing.
+var ErrBracketedUnsupported = errors.New("this herdr cannot write a bracketed paste (no pane_send_text_bracketed capability)")
+
 // PaneSendBracketedText writes text as one bracketed paste (herdr #512), so
-// a line break in it does not run the text before it. herdr refuses with
-// bracketed_paste_unavailable, writing nothing, when the pane's program has
-// not turned bracketed paste on. Callers check CapabilityPaneSendTextBracketed
-// first: a herdr without it may ignore bracketed and write the text raw.
+// a line break in it does not run the text before it. It sends only on
+// positive evidence: a herdr without pane_send_text_bracketed may ignore
+// bracketed and write the text raw. Without the capability it answers
+// ErrBracketedUnsupported; when no ping has answered and the probe fails,
+// ErrProbeFailed. herdr itself refuses with bracketed_paste_unavailable,
+// writing nothing, when the pane's program has not turned bracketed paste on.
 func (c *Client) PaneSendBracketedText(ctx context.Context, pane, text string) error {
+	pong, err := c.probe(ctx)
+	if err != nil {
+		return &ErrProbeFailed{Capability: herdrapi.CapabilityPaneSendTextBracketed, Err: err}
+	}
+	if !herdrapi.CapabilityPaneSendTextBracketed.Supported(pong.Capabilities) {
+		return ErrBracketedUnsupported
+	}
 	bracketed := true
-	_, err := c.do(ctx, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, Bracketed: &bracketed, InputSource: c.inputSource()})
+	_, err = c.do(ctx, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, Bracketed: &bracketed, InputSource: c.inputSource()})
 	return err
 }
 

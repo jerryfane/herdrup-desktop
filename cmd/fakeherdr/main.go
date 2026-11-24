@@ -50,7 +50,7 @@ func main() {
 	transcriptOlderPages := flag.Int("transcript-older-pages", 1, "with -interactions, how many older agent.transcript pages sit before the newest one, one owner prompt each")
 	transcriptDelay := flag.Duration("transcript-delay", 0, "with -interactions, answer agent.transcript after this delay, as a slow link does")
 	transcriptOlderFail := flag.Int("transcript-older-fail", 0, "with -interactions, refuse the first N agent.transcript before pages (older history), as a flaky link does; the page after that answers")
-	bracketedWrite := flag.String("bracketed-write", "", "pane.send_text bracketed (herdr #512): on (ping advertises pane_send_text_bracketed) or paste-off (advertised, but every pane's program has bracketed paste off, so a bracketed write answers bracketed_paste_unavailable); default: not advertised")
+	bracketedWrite := flag.String("bracketed-write", "", "pane.send_text bracketed (herdr #512): on (ping advertises pane_send_text_bracketed) or paste-off (advertised, but every pane's program has bracketed paste off, so a bracketed write answers bracketed_paste_unavailable); it serves pane.send_text itself where no other fixture does (-interactions echoes the text); default: not advertised")
 	streamStall := flag.Int("stream-stall", 0, "with -interactions, end the first N pane.streams after 3 s with herdr's stream_stalled error (herdr #410), as a reader too slow for herdr is")
 	streamDelay := flag.Duration("stream-delay", 0, "with -interactions, start pane.stream after this delay, as a slow link does")
 	topics := flag.Bool("topics", false, "serve herdr #475 agent topics: agent.topics.*, agent.transcript with topic and agent_topics_changed events (ping advertises agent_topics and agent_transcript_topic); every agent has three sample topics")
@@ -295,13 +295,8 @@ func main() {
 			fixture.Events(ctx, emit)
 		}
 	}
-	switch *bracketedWrite {
-	case "":
-	case "on", "paste-off":
-		fixture := &fakeherdr.PaneWrites{Bracketed: true, PasteOff: *bracketedWrite == "paste-off"}
-		s.Handle = fixture.Serve(s.Handle)
-	default:
-		log.Fatalf("unknown -bracketed-write %q: want on or paste-off", *bracketedWrite)
+	if s.Handle, err = bracketedWrites(*bracketedWrite, s.Handle); err != nil {
+		log.Fatal(err)
 	}
 	if *responsesFile != "" {
 		if err := serveReferenceResponses(s, *responsesFile); err != nil {
@@ -370,4 +365,26 @@ func handler(mode string, agents func() []byte, w *writes) (func(string, json.Ra
 		}
 		return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
 	}, nil
+}
+
+// bracketedWrites is -bracketed-write: next with pane.send_text bracketed
+// advertised and served. A write no other fixture serves (without
+// -interactions, say) answers herdr's ok, so the flag never advertises a
+// write it cannot take.
+func bracketedWrites(mode string, next func(string, json.RawMessage) (any, *fakeherdr.APIError)) (func(string, json.RawMessage) (any, *fakeherdr.APIError), error) {
+	switch mode {
+	case "":
+		return next, nil
+	case "on", "paste-off":
+	default:
+		return nil, fmt.Errorf("unknown -bracketed-write %q: want on or paste-off", mode)
+	}
+	fixture := &fakeherdr.PaneWrites{Bracketed: true, PasteOff: mode == "paste-off"}
+	return fixture.Serve(func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+		value, err := next(method, params)
+		if method == "pane.send_text" && err != nil && err.Code == "unknown_method" {
+			return map[string]any{"type": "ok"}, nil
+		}
+		return value, err
+	}), nil
 }

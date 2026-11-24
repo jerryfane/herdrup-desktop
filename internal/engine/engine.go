@@ -146,6 +146,20 @@ func (e *ErrUnsupported) Error() string {
 	return fmt.Sprintf("%s does not know %s", server, e.Method)
 }
 
+// ErrProbeFailed is a call that needs positive evidence of Capability and
+// could not get it: no ping has answered and the probe failed. Nothing was
+// sent; Err is the ping's error.
+type ErrProbeFailed struct {
+	Capability herdrapi.Capability
+	Err        error
+}
+
+func (e *ErrProbeFailed) Error() string {
+	return fmt.Sprintf("couldn't check for the %s capability: %v", e.Capability, e.Err)
+}
+
+func (e *ErrProbeFailed) Unwrap() error { return e.Err }
+
 // ResultTagError is a reply whose result "type" the method table does not
 // list for the method.
 type ResultTagError struct {
@@ -223,16 +237,22 @@ func method(name string) herdrapi.Method {
 // ping when no ping has answered yet; known is false when that probe
 // failed.
 func (c *Client) supports(ctx context.Context, capability herdrapi.Capability) (ok, known bool) {
+	pong, err := c.probe(ctx)
+	if err != nil {
+		return false, false
+	}
+	return capability.Supported(pong.Capabilities), true
+}
+
+// probe is the cached ping, pinging when none has answered yet.
+func (c *Client) probe(ctx context.Context) (herdrapi.ResponseResultPong, error) {
 	c.mu.Lock()
 	probed, pong := c.probed, c.pong
 	c.mu.Unlock()
-	if !probed {
-		var err error
-		if pong, err = c.Ping(ctx); err != nil {
-			return false, false
-		}
+	if probed {
+		return pong, nil
 	}
-	return capability.Supported(pong.Capabilities), true
+	return c.Ping(ctx)
 }
 
 // Supports reports whether the server advertises capability (from the
