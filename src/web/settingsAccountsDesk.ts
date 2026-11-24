@@ -11,8 +11,7 @@
 import type { AccountLoginState, Desk as GoDesk } from "../mygo";
 import { errorText } from "../errors";
 import { sleep } from "../webguest/abort";
-import { HerdrAPIError } from "../webguest/errors";
-import { ErrUnsupported, untagged } from "./engine";
+import { ErrUnsupported } from "./engine";
 import { emit, events } from "./events";
 import { onLinkChanged } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
@@ -177,9 +176,11 @@ export function loginRejected(text: string): boolean {
  return ["invalid code", "invalid authorization code", "invalid token", "expired code", "code expired", "token expired", "session expired", "authentication failed", "login failed", "try again"].some((p) => lower.includes(p));
 }
 
+/** One sign-in's pane. signal: its dialog's, bound when it started (the dialog controller's), which
+ *  its later reads and sends carry. */
 interface Login {
  id: string; pane: string; account: string; baselineEmail: string; submitBaseline: string;
- started: number; submitted: number; state: AccountLoginState;
+ started: number; submitted: number; state: AccountLoginState; signal: AbortSignal;
 }
 
 /** desk_settings.go settingsSession: one Settings scope's sign-in pane on its link, and the lock its
@@ -212,19 +213,14 @@ export const SPLIT_WAIT_MS = 5000;
 /** BackgroundPane: a pane split off the focused one, not focused, in scope (on its link, while it is
  *  the open one). Until its frame is handed to the socket it is a Settings call like any other:
  *  cancelled with the scope and with unsent (a sign-in dialog's lifetime), so a split still waiting
- *  for the relay's admission when they end is never sent (RequestOptions.sendSignal). Once sent,
- *  its answer is awaited past them and past the link's end (SPLIT_WAIT_MS): herdr may have made the
- *  pane, and only its id lets the caller close it. Callers check that the operation is still live
- *  right before it. */
+ *  for the relay's admission when they end is never sent (ownerCall's unsent, as createDesk.ts
+ *  splitPane). Once sent, its answer is awaited past them and past the link's end (SPLIT_WAIT_MS,
+ *  the reply window): herdr may have made the pane, and only its id lets the caller close it.
+ *  Callers check that the operation is still live right before it. */
 async function backgroundPane(scope: SettingsScope, unsent?: AbortSignal): Promise<string> {
- const link = scope.link;
- if (currentOwnerLink() !== link) throw new Error(LINK_CHANGED);
- const sendSignal = unsent ? AbortSignal.any([scope.signal, unsent]) : scope.signal;
- try {
-  return untagged<{ pane: { pane_id: string } }>(await link.client.call("pane.split", { direction: "down" }, "pane_info", "", AbortSignal.timeout(SPLIT_WAIT_MS), sendSignal)).pane.pane_id;
- } catch (error) {
-  throw error instanceof HerdrAPIError && error.code === "owner_forbidden" ? new OwnerRefusedError("pane.split") : error;
- }
+ const before = unsent ? AbortSignal.any([scope.signal, unsent]) : scope.signal;
+ const reply = AbortSignal.timeout(SPLIT_WAIT_MS);
+ return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", { direction: "down" }, "pane_info", { link: scope.link, unsent: before, signal: reply })).pane.pane_id;
 }
 
 // The auth pane rule (sign-in and logout). A send to the pane (the command, the code, Enter) goes
@@ -283,8 +279,8 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   return s.ending ??= s.queue.then(() => closeLogin(s)).then(() => Promise.allSettled([...s.closes])).finally(() => s.offClosing());
  }
  /** A sign-in dialog's controller, made on first use: its one liveness record (aborted by
-  *  closeAccountLogin or the scope's end), whose signal its reads and sends carry besides the
-  *  Settings scope's. */
+  *  closeAccountLogin or the scope's end). Only its start (which binds the signal to its Login) and
+  *  a close (which may come first, making it already closed) look it up. */
  function dialog(s: Scope, loginID: string): AbortController {
   let controller = s.dialogs.get(loginID);
   if (controller === undefined) s.dialogs.set(loginID, controller = new AbortController());
@@ -381,21 +377,24 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   async startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
    const s = scopeOf(token);
    return serial(s, async () => {
-    if (loginID === "" || loginID.length > 128 || dialog(s, loginID).signal.aborted) throw new Error("sign-in was closed");
+    if (loginID === "" || loginID.length > 128) throw new Error("sign-in was closed");
+    // Bound once: made here, or by a close that came before this step (then already aborted).
+    const signal = dialog(s, loginID).signal;
+    if (signal.aborted) throw new Error("sign-in was closed");
     await closeLogin(s);
-    const account = await findAccount(s.settings, id, dialog(s, loginID).signal);
+    const account = await findAccount(s.settings, id, signal);
     const { line } = accountCommand(account, setupToken ? "setup-token" : "login");
     // Closed (or Settings or the link gone) during the lookup: no pane is made.
     signInLive(s);
-    const pane = await backgroundPane(s.settings, dialog(s, loginID).signal);
+    const pane = await backgroundPane(s.settings, signal);
     const login: Login = {
      id: loginID, pane, account: id, baselineEmail: account.email ?? "", submitBaseline: "", started: now(), submitted: 0,
-     state: { url: "", phase: "starting", message: "Getting a sign-in link…", email: "" },
+     state: { url: "", phase: "starting", message: "Getting a sign-in link…", email: "" }, signal,
     };
     s.login = login;
     // The dialog, scope or link may have ended while herdr answered the split: the pane then
     // closes untyped (the auth pane rule).
-    try { await sendLine(s.settings, pane, line, () => signInLive(s), dialog(s, loginID).signal); } catch (error) { await closeLogin(s); throw error; }
+    try { await sendLine(s.settings, pane, line, () => signInLive(s), signal); } catch (error) { await closeLogin(s); throw error; }
     return { ...login.state };
    });
   },
@@ -412,7 +411,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
      state.message = "Couldn't confirm the sign-in. Check Accounts — it may have worked.";
      return { ...state };
     }
-    const account = await findAccount(s.settings, login.account, dialog(s, loginID).signal);
+    const account = await findAccount(s.settings, login.account, login.signal);
     const email = (account.email ?? "").trim();
     if (email !== "" && email !== login.baselineEmail.trim()) {
      state.phase = "signedIn";
@@ -420,7 +419,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
      state.message = `Signed in as ${account.email}.`;
      return { ...state };
     }
-    const text = await readText(s.settings, login.pane, dialog(s, loginID).signal);
+    const text = await readText(s.settings, login.pane, login.signal);
     if (state.url === "") {
      const url = loginURL(text);
      if (url !== "") {
@@ -453,9 +452,9 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
     code = code.trim();
     if (code === "" || /[\r\n\0\x1b]/.test(code)) throw new Error("paste one authorization code");
     if (login.state.phase === "submitting" || login.state.phase === "signedIn") throw new Error("a sign-in is already in progress");
-    login.submitBaseline = await readText(s.settings, login.pane, dialog(s, loginID).signal);
+    login.submitBaseline = await readText(s.settings, login.pane, login.signal);
     // Closed while the screen was read: no code goes (the auth pane rule).
-    await sendLine(s.settings, login.pane, code, () => { signInLive(s); if (s.login !== login) throw new Error("sign-in is no longer open"); }, dialog(s, loginID).signal);
+    await sendLine(s.settings, login.pane, code, () => { signInLive(s); if (s.login !== login) throw new Error("sign-in is no longer open"); }, login.signal);
     login.submitted = now();
     login.state.phase = "submitting";
     login.state.message = "Signing you in…";

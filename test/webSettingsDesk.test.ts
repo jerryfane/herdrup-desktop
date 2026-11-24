@@ -3,7 +3,7 @@
 // desk_guest_invite.go, desk_updates.go) against a fake herdr behind the link's real engine client,
 // and once over a real owner link to a relay host refusing the method (an older herdr).
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { HerdrAPIError, NotSentError } from "../src/webguest/errors";
+import { HerdrAPIError, notSent, NotSentError } from "../src/webguest/errors";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +24,7 @@ import { createGuestDesk } from "../src/web/desk";
 import { accountLabel } from "../src/listExtras";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { AgentInfo } from "../src/web/board";
-import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
+import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, SPLIT_WAIT_MS, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
 import { guestsDesk } from "../src/web/guestsDesk";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
@@ -44,7 +44,8 @@ const refused = () => new HerdrAPIError("owner_forbidden", "no", {});
  *  recorded; once `host.dead` (its connection closed) none goes out, and a call whose signal ends
  *  first is dropped by the client as the transport drops it (herdr may still have acted on it).
  *  While `host.admission` is set, a call waits for it before it is sent, as the transport waits
- *  for the relay to admit a connection; one whose signal ends meanwhile is never sent. */
+ *  for the relay to admit a connection; one whose signal ends meanwhile is never sent. A call that
+ *  doesn't go out fails as the transport's does: NotSentError. */
 function ownerLink(handler: Handler = () => undefined, options: { scope?: string; agents?: AgentInfo[]; accounts?: AccountInfo[]; hostID?: string } = {}) {
  const calls: Call[] = [];
  const life = new AbortController();
@@ -54,9 +55,9 @@ function ownerLink(handler: Handler = () => undefined, options: { scope?: string
   async call(method: string, params?: unknown, signal?: AbortSignal, sendSignal?: AbortSignal) {
    // Unsent while admission is held: signal or sendSignal ends it (RequestOptions.sendSignal).
    const unsent = signal && sendSignal ? AbortSignal.any([signal, sendSignal]) : signal ?? sendSignal;
-   if (host.admission) await (unsent ? untilAborted(host.admission, unsent) : host.admission);
-   if (host.dead) throw new Error("The shared connection was closed.");
-   if (unsent?.aborted) throw unsent.reason; // the transport sends nothing on an ended signal
+   if (host.admission) await (unsent ? untilAborted(host.admission, unsent) : host.admission).catch((error: unknown) => { throw notSent(error); });
+   if (host.dead) throw notSent(new Error("The shared connection was closed."));
+   if (unsent?.aborted) throw notSent(unsent.reason); // the transport sends nothing on an ended signal
    const p = (params ?? {}) as Record<string, unknown>;
    calls.push({ method, params: p });
    const reply = Promise.resolve(handler(method, p));
@@ -409,6 +410,63 @@ test("an apply herdr refuses is shown as refused, not followed", async () => {
  await desk.applySettingsServerUpdate("tok", "b6", false);
  expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "refused", code: "update_busy", message: "another update runs" });
  await expect(desk.recheckSettingsServerUpdate("tok", true)).rejects.toThrow("there is no lost update to follow");
+});
+
+// ---- #360 P3 (after #361): an apply that never went out ----
+
+/** An update host whose apply runs into `onApply` when it is the next frame (its status read first). */
+function applyHost(onApply: (host: ReturnType<typeof ownerLink>) => void) {
+ const host: ReturnType<typeof ownerLink> = ownerLink((method) => {
+  if (method === "server.update_check") return { type: "update_check", ...offered().check };
+  if (method === "server.update_status") { if (applying) { applying = false; onApply(host); } return { type: "update_status" }; }
+  if (method === "server.update_apply") return { type: "update_apply", attempt_id: "at1" };
+ });
+ let applying = false;
+ return { host, arm: () => { applying = true; } };
+}
+
+test("an apply whose connection closes before it goes out leaves the update offered, not running", async () => {
+ const { host, arm } = applyHost((h) => { h.host.dead = true; });
+ const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
+ await desk.settingsServerUpdate("tok", true);
+ arm();
+ expect(await desk.applySettingsServerUpdate("tok", "b6", false).then(() => null, (e: unknown) => e)).toBeInstanceOf(NotSentError);
+ expect(host.of("server.update_apply")).toEqual([]);
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "idle", check: { latest: { build_id: "b6" } } });
+ // Offered again: the same confirmation goes out once the machine is reachable.
+ host.host.dead = false;
+ await desk.applySettingsServerUpdate("tok", "b6", false);
+ expect(host.of("server.update_apply")).toHaveLength(1);
+});
+
+test("an apply Settings closed before it went out leaves the card idle when Settings opens again", async () => {
+ const admission = Promise.withResolvers<void>();
+ const { host, arm } = applyHost((h) => { h.host.admission = admission.promise; });
+ const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
+ await desk.settingsServerUpdate("tok", true);
+ arm();
+ const applying = desk.applySettingsServerUpdate("tok", "b6", false).then(() => null, (e: unknown) => e);
+ await tick(); await tick();
+ closeSettings("tok");
+ host.host.admission = null;
+ admission.resolve();
+ expect(await applying).toBeInstanceOf(NotSentError);
+ openSettings("tok");
+ expect(host.of("server.update_apply")).toEqual([]);
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "idle" });
+});
+
+test("an apply that went out but got no answer is still followed, never sent again", async () => {
+ const host = ownerLink((method) => {
+  if (method === "server.update_check") return { type: "update_check", ...offered().check };
+  if (method === "server.update_status") return { type: "update_status" };
+  if (method === "server.update_apply") throw new Error("The shared connection was closed."); // after the frame went
+ });
+ const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
+ await desk.settingsServerUpdate("tok", true);
+ await desk.applySettingsServerUpdate("tok", "b6", false);
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "running" });
+ expect(host.of("server.update_apply")).toHaveLength(1);
 });
 
 // ---- One machine's operations stay on it (review round 2) ----
@@ -1093,6 +1151,59 @@ test("an account whose id is constructor keeps its label on the rows", async () 
  ownerLink(undefined, { accounts: [{ ...claude, id: "constructor", label: "Work" }, { ...claude, id: "constructor", label: "later" }] });
  await tick(); await tick();
  expect(accountLabel("constructor", await createSettingsAccountsDesk().accounts())).toBe("Work");
+});
+
+// ---- #409 P3: a sign-in's later steps carry the signal bound at its start ----
+
+const laterSteps: { name: string; method: string; run: (d: ReturnType<typeof createSettingsAccountsDesk>) => Promise<unknown> }[] = [
+ { name: "a poll's account lookup", method: "accounts.list", run: (d) => d.pollAccountLogin("tok", "L1") },
+ { name: "a poll's screen read", method: "pane.read", run: (d) => d.pollAccountLogin("tok", "L1") },
+ { name: "a code's screen read", method: "pane.read", run: (d) => d.submitAccountLogin("tok", "L1", "the-code") },
+];
+for (const step of laterSteps) {
+ test(`closing the sign-in ends ${step.name} at once, its answer not awaited`, async () => {
+  let hold = false;
+  const host = ownerLink(async (method) => {
+   if (hold && method === step.method) await new Promise(() => {}); // herdr never answers
+   if (method === "pane.split") return { type: "pane_info", pane: { pane_id: "auth-1" } };
+   if (method === "pane.read") return { type: "pane_read", read: { text: "" } };
+   if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+  });
+  await tick(); await tick();
+  const desk = createSettingsAccountsDesk();
+  await desk.startAccountLogin("tok", "L1", "a1", false);
+  hold = true;
+  const running = step.run(desk).then(() => "answered", (error: Error) => error.message);
+  await tick(); await tick();
+  expect(host.of(step.method).length).toBeGreaterThan(0);
+  const closing = desk.closeAccountLogin("tok", "L1");
+  expect(await withinSeconds(1, running)).toBe("sign-in was closed");
+  await closing;
+  expect(host.of("pane.close").map((c) => c.params.pane_id)).toEqual(["auth-1"]);
+ });
+}
+
+test("a sign-in's pane.split that went out but is never answered ends at its reply window, nothing typed", async () => {
+ jest.useFakeTimers();
+ const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+ try {
+  const host = ownerLink(async (method) => {
+   if (method === "pane.split") await new Promise(() => {}); // sent; herdr never answers
+   if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+  });
+  await settle();
+  let outcome = "pending";
+  void createSettingsAccountsDesk().startAccountLogin("tok", "L1", "a1", false).then(() => { outcome = "started"; }, () => { outcome = "ended"; });
+  await settle();
+  expect(host.of("pane.split")).toHaveLength(1);
+  jest.advanceTimersByTime(SPLIT_WAIT_MS - 1); await settle();
+  expect(outcome).toBe("pending");
+  jest.advanceTimersByTime(1); await settle();
+  expect(outcome).toBe("ended");
+  expect([host.of("pane.send_text"), host.of("pane.send_keys")]).toEqual([[], []]);
+ } finally {
+  jest.useRealTimers();
+ }
 });
 
 // ---- #360 post-merge review ----
