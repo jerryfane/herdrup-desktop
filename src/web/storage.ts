@@ -99,13 +99,23 @@ export interface MachineLists {
  set(hostID: string, id: string, on: boolean): Promise<void>;
 }
 
+/** Whether value is a record of id lists by machine: an object (not an array) whose every entry
+ *  is an array of strings. */
+function idLists(value: unknown): value is Record<string, string[]> {
+ return typeof value === "object" && value !== null && !Array.isArray(value)
+  && Object.values(value).every(ids => Array.isArray(ids) && ids.every(id => typeof id === "string"));
+}
+
 export function machineLists(key: string, storage: () => Pick<Storage, "getItem" | "setItem"> = () => localStorage,
  locks: Locks | null = browserLocks()): MachineLists {
  /** hostID → id → on: changes not yet stored. */
  const pending = new Map<string, Map<string, boolean>>();
- /** What storage holds, null when it can't be read. */
+ /** What storage holds, null when it can't be read: also when it isn't lists of ids by machine
+  *  (another version's or a damaged record is not written over; edits stay pending). */
  const stored = (): Record<string, string[]> | null => {
-  try { const raw = storage().getItem(key); return raw === null ? {} : JSON.parse(raw) as Record<string, string[]>; } catch { return null; }
+  let value: unknown;
+  try { const raw = storage().getItem(key); value = raw === null ? {} : JSON.parse(raw); } catch { return null; }
+  return idLists(value) ? value : null;
  };
  /** ids (just decoded, so this page's own) with hostID's pending changes: as they are when there
   *  are none, else through one set, made a list once. */

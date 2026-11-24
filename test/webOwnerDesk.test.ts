@@ -13,6 +13,7 @@ import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { currentOwnerLink } from "../src/web/ownerLink";
+import { onLinkChanged } from "../src/web/link";
 import { closingLink } from "../src/web/ownerSession";
 import type { Avatar, BoardUpdate, ConnState } from "../src/mygo";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
@@ -129,6 +130,19 @@ test("a pane stream the host ends for a changed scope asks the page to open it a
 });
 
 // ---- P2-1: owner links belong to the account session they were opened in ----
+
+test("a new owner link is usable from the moment its watchers hear of it, by its own phase", async () => {
+ const relay = host();
+ const desk = await deskWithKey();
+ const seen: (boolean | null)[] = [];
+ const off = onLinkChanged((_link, owner) => seen.push(owner === null ? null : desk.ownerLinkUsable(owner.machine.hostID)));
+ try {
+  const listed = boardOf(relay);
+  await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
+  await listed;
+  expect(seen).toEqual([true]);
+ } finally { off(); desk.disconnectOwner(); relay.stop(); }
+});
 
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;

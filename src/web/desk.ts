@@ -261,6 +261,9 @@ interface Active {
  /** link.guestPoll: one pending kick. */
  kick: () => void;
  agents: AgentInfo[];
+ /** The phase this link last published (runGuest), "connecting" from the moment it is made, before
+  *  anyone hears of it: ownerLinkUsable reads it from the link itself. */
+ phase: string;
  /** link.guestKeyTaken: the panes where the host took one of this link's menu keys
   *  (guestMenuKey). A guest's link has one pane; an owner's has the machine's, each its own. */
  keyTaken?: Set<string>;
@@ -475,9 +478,11 @@ export function createGuestDesk(env: DeskEnv) {
  async function runGuest(l: Active, print: string) {
   const signal = l.life.signal;
   // An owner link also says the scope its grant was admitted under (ownerScope).
-  const publish = (phase: string, msg: string, availability: string) =>
+  const publish = (phase: string, msg: string, availability: string) => {
+   l.phase = phase;
    setState(signal, { phase, message: msg, machine: l.access.machineLabel, herdr: "", live: false, guest: { access: pageAccess(l.access), features: pageFeatures(l.transport.features), fingerprint: print, ...(availability !== "" ? { availability } : {}),
     ...(l.owner && l.transport.scope !== "" ? { ownerScope: l.transport.scope } : {}) } });
+  };
   publish("connecting", "", "");
   let listed = false;
   let kicked = false;
@@ -566,7 +571,7 @@ export function createGuestDesk(env: DeskEnv) {
    disconnect();
    const transport = new GuestTransport(guestLink(grant), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
-   const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], listedAt: "" };
+   const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], phase: "connecting", listedAt: "" };
    active = l;
    setLink(link);
    void runGuest(l, print).finally(() => shutdown(l));
@@ -1185,7 +1190,7 @@ export function createGuestDesk(env: DeskEnv) {
    const { access, transport, link, client } = ownerConnection(m, identity, statements, device, { now, webSocket: env.webSocket });
    disconnect();
    const started = new StartedAgents();
-   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], listedAt: "", started };
+   const l: Active = { id: "owner:" + m.hostID, access, owner: m, transport, link, client, life: new AbortController(), kick: () => {}, agents: [], phase: "connecting", listedAt: "", started };
    l.groups = new OwnerGroups(client, m.hostID, l.life.signal, () => publishBoard(l), now, env.openFolders);
    active = l;
    l.ownerLink = { machine: m, board: l.id, client, signal: l.life.signal, scope: () => transport.scope, agents: () => l.agents, relist: () => l.kick(), groups: l.groups,
@@ -1211,11 +1216,12 @@ export function createGuestDesk(env: DeskEnv) {
  }
 
  /** Whether this desk's owner link to hostID is open and usable: the active link is that
-  *  machine's, and the connection state, which is that link's own (setState publishes only the
-  *  active link's; a new link publishes "connecting" as it becomes active), says it is connecting
-  *  or connected, not failed. The chooser's Open goes straight back to it then. */
+  *  machine's, and that same link's phase (set as it is made, before any watcher hears of it, then
+  *  as it publishes) is connecting or connected, not failed. The chooser's Open goes straight back
+  *  to it then. */
  function ownerLinkUsable(hostID: string): boolean {
-  return active?.owner?.hostID === hostID && (state.phase === "connecting" || state.phase === "connected");
+  const l = active;
+  return l?.owner?.hostID === hostID && (l.phase === "connecting" || l.phase === "connected");
  }
 
  return Object.assign(desk, { connectOwner, disconnectOwner, ownerLinkUsable });

@@ -415,3 +415,14 @@ test("deskOffers asks a Desk given first, and every method named must be on it",
  const desk = { accountSyncNow: async () => {}, accountDevices: async () => ({ devices: [] }) };
  expect([deskOffers(desk, "accountSyncNow", "accountDevices"), deskOffers(desk, "accountSyncNow", "accountDeleteInfo"), deskOffers({}, "accountSyncNow")]).toEqual([true, false, false]);
 });
+
+test("a stored record not of id lists by machine is unreadable: set settles, the edit stays pending, nothing is written over it", async () => {
+ const granted: Locks = { request: <T>(_name: string, run: () => Promise<T>) => run() };
+ for (const bad of ['{"alpha":{}}', '{"alpha":[1]}', "[]", "7"]) {
+  const shared = memory();
+  shared().setItem("open", bad);
+  const lists = machineLists("open", shared, granted);
+  await lists.set("alpha", "A1", true);
+  expect([bad, lists.get("alpha"), shared().getItem("open")]).toEqual([bad, ["A1"], bad]);
+ }
+});

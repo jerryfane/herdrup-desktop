@@ -782,8 +782,16 @@ test("an exit that leaves again from inside itself queues nothing: the page leav
  const page = new PageExit({ signOutSettled: async () => {}, signOutAttempt: null });
  page.leave(() => { exits.push("first"); page.leave(() => { exits.push("second"); }, true); });
  await new Promise(r => setTimeout(r, 0));
- await new Promise(r => setTimeout(r, 0));
  expect(exits).toEqual(["first"]);
+});
+
+test("an exit that fails lets a later one go, and its error isn't hidden", async () => {
+ const exits: string[] = [];
+ const page = new PageExit({ signOutSettled: async () => {}, signOutAttempt: null });
+ const failed = page.leave(() => { exits.push("failed"); throw new DOMException("navigation blocked", "SecurityError"); });
+ expect(await failed.then(() => "ran", (e: Error) => e.name)).toBe("SecurityError");
+ await page.leave(() => { exits.push("next"); }, true);
+ expect(exits).toEqual(["failed", "next"]);
 });
 
 test("a page leaving and a sign-out started in the same turn: the sign-out is sent, and the page leaves once it settled", async () => {

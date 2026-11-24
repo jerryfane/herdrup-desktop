@@ -98,24 +98,31 @@ export class OwnerWork<M> {
  *  never takes the place of a choice. */
 export class PageExit {
  #pending: { exit: () => void | "stayed"; chosen: boolean } | null = null;
+ /** The pending exit's run: settles once the exit that won ran (rejecting with its error). */
+ #run: Promise<void> = Promise.resolve();
  #left = false;
  constructor(private readonly account: Pick<WebAccount, "signOutSettled" | "signOutAttempt">) {}
  /** exit leaves, or returns "stayed" when it found it can't (the page goes on, and may leave
   *  later). The check that no sign-out is being sent and the exit run in the same continuation,
   *  never before a later turn has had its chance to start one (leave, then Sign out in the same
-  *  turn: the exit waits for that sign-out). */
- leave(exit: () => void | "stayed", chosen = false): void {
-  if (this.#left || (this.#pending?.chosen === true && !chosen)) return;
+  *  turn: the exit waits for that sign-out). Returns the run, which rejects with the error of an
+  *  exit that failed (a caller that doesn't wait leaves it unhandled, so it is still seen). */
+ leave(exit: () => void | "stayed", chosen = false): Promise<void> {
+  if (this.#left || (this.#pending?.chosen === true && !chosen)) return Promise.resolve();
   const waiting = this.#pending !== null;
   this.#pending = { exit, chosen };
-  if (waiting) return;
-  void (async () => {
+  if (waiting) return this.#run;
+  this.#run = (async () => {
    do await this.account.signOutSettled(); while (this.account.signOutAttempt?.phase === "sending");
    const pending = this.#pending!;
    this.#pending = null;
-   // Claimed before it runs: a leave from inside the exit finds the page left, and queues nothing.
+   // Claimed while it runs: a leave from inside the exit finds the page left, and queues nothing.
+   // Released when the exit stayed, or failed (its error goes on, out of the run).
    this.#left = true;
-   if (pending.exit() === "stayed") this.#left = false;
+   let result: void | "stayed" = "stayed";
+   try { result = pending.exit(); }
+   finally { if (result === "stayed") this.#left = false; }
   })();
+  return this.#run;
  }
 }
