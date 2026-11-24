@@ -55,11 +55,11 @@ interface State {
  pending: GramInfo[];
  phase: string;
  unavailable: string;
- sendError: string; markAllNote: string; refreshAck: string; refreshNote: string;
- /** The last delete's failure, its own: the next delete that lands clears it. */
- deleteError: string;
- /** The last Saved write's failure (Go's alertSaved), its own: a later write that lands clears it. */
- savedNote: string;
+ refreshAck: string; refreshNote: string;
+ /** Each action's failure, its own (setNote), kept in the order they happened: the newest shows in
+  *  the banner, and each clears only its own (a send's next try, a delete or Saved write that
+  *  lands, the next Read all), so an old one never hides a newer failure. */
+ notes: Map<NoteKind, string>;
  /** This Gram's Saved list in storage (gramSaved.ts): its key is the owner's list or the grant's. */
  saved: SavedStore;
  /** By message id, rows whose expired files Saved hasn't stored yet (a refused write): tried again
@@ -78,6 +78,9 @@ interface State {
   *  one discarded puts them back; the Gram's end (reset) tells whatever is left. */
  headWaiters: (() => void)[];
  badge: number;
+ /** Accepted head lists and pages whose count set the badge, so far: an unread-only reply asked
+  *  before one of them is older than the count it set and is dropped. */
+ counted: number;
  visible: boolean;
  wake: (() => void) | null;
  composer: Composer | null;
@@ -89,11 +92,11 @@ interface State {
 function fresh(link: WebLink | null, visible: boolean, owner: OwnerLink | null = null): State {
  return {
   link, owner, life: new AbortController(), inbox: new Inbox(), pending: [], phase: link ? "loading" : "idle", unavailable: "",
-  sendError: "", deleteError: "", markAllNote: "", refreshAck: "", refreshNote: "", savedNote: "",
+  notes: new Map(), refreshAck: "", refreshNote: "",
   saved: new SavedStore(owner ? OWNER_SAVED_KEY : "herdrup.gram.saved." + (link?.access.guestID ?? ""), () => typeof localStorage === "undefined" ? null : localStorage), expiryOwed: new Map(),
   ackToken: 0, failures: 0,
   loading: false, refreshQueued: false, refreshing: false, loadingOlder: false, olderError: "", pageBusy: false,
-  markingAll: false, markingRead: new Set(), writes: { inFlight: 0, started: 0 }, owed: { head: false, badge: false }, headWaiters: [], badge: 0, visible, wake: null, composer: null,
+  markingAll: false, markingRead: new Set(), writes: { inFlight: 0, started: 0 }, owed: { head: false, badge: false }, headWaiters: [], badge: 0, counted: 0, visible, wake: null, composer: null,
   lastUpload: new Map(), images: new Map(), imageSlots: 2,
  };
 }
@@ -173,7 +176,7 @@ function snapshot(): GramSnapshot {
  };
  if (g.unavailable) s.unavailable = g.unavailable;
  if (g.olderError) s.olderError = g.olderError;
- const status = [g.sendError, g.deleteError, g.savedNote, g.markAllNote, g.refreshAck, g.refreshNote].find(t => t !== "");
+ const status = [...g.notes.values()].at(-1) ?? [g.refreshAck, g.refreshNote].find(t => t !== "");
  if (status) s.status = status;
  const feed = visible();
  for (const m of feed) s.messages.push(gramRow(m, local, saved.ids.has(m.id), pendingIDs.has(m.id)));
@@ -245,7 +248,14 @@ export const guestGramDesk: Partial<DeskFns> = {
  async guestGramMarkAllRead() { await gramDesk.gramMarkAllRead!(); },
 };
 
-function note(text: string) { g.sendError = text; publish(); }
+/** The actions whose failure the banner says (State.notes). */
+type NoteKind = "send" | "delete" | "saved" | "markAll";
+/** Sets kind's note, the newest now ("" clears it). */
+function setNote(state: State, kind: NoteKind, text: string) {
+ state.notes.delete(kind);
+ if (text !== "") state.notes.set(kind, text);
+}
+function note(text: string) { setNote(g, "send", text); publish(); }
 
 function ack(text: string, expiring: boolean) {
  g.refreshAck = text;
@@ -318,7 +328,7 @@ async function headAnswer(state: State, link: WebLink, limit: number, sent: Writ
  // Accepted, it was sent with no write in flight and none started since: after every post's
  // acknowledgement. The posts it lists show as listed; one it doesn't was deleted elsewhere.
  state.pending = [];
- if (headWritesBadge(state)) state.badge = state.inbox.unreadCount();
+ if (headWritesBadge(state)) { state.badge = state.inbox.unreadCount(); state.counted++; }
  publish();
  // Its expired files reach Saved after the list is in (Saved changes take their lock).
  await expireOwnerSaved(state, answer.messages);
@@ -345,10 +355,12 @@ async function refresh(state: State, link: WebLink) {
 
 /** gramBadge: an unread-only list while Gram does not show; the owner's counts the whole store. */
 async function badge(state: State, link: WebLink) {
- const sent = { ...state.writes };
+ const sent = { ...state.writes }, counted = state.counted;
  let answer;
  try { ({ answer } = await gramAnswer(state, link, 0, true)); } catch { return; }
  if (g !== state || !accepted(state, sent, "badge")) return;
+ // A head list or page accepted since this was asked set a newer count.
+ if (state.counted !== counted) return;
  const n = badgeCount(answer);
  if (state.badge === n) return;
  state.badge = n;
@@ -732,7 +744,7 @@ function guestSavedList(): SavedGram[] {
  *  returned; one that lands clears that note. The caller publishes. */
 async function updateSaved(state: State, mutate: (current: unknown) => unknown): Promise<Error | null> {
  const failed = await state.saved.update(mutate);
- state.savedNote = failed?.message ?? "";
+ setNote(state, "saved", failed?.message ?? "");
  return failed;
 }
 /** Saved.ExpireFiles for an owner's list answer (a head load or an older page), with what an
@@ -747,9 +759,12 @@ async function expireOwnerSaved(state: State, messages: readonly GramInfo[]) {
   else if (m.file) state.expiryOwed.delete(m.id);
  }
  if (state.expiryOwed.size === 0) return;
- const note = state.savedNote;
+ const note = state.notes.get("saved");
  let moved = false, due: GramInfo[] = [];
  const failed = await updateSaved(state, current => {
+  // This Gram's link ended while it waited for the lock: what it owed is obsolete (the next link
+  // lists the store afresh, a file live again included), so nothing is written.
+  if (g !== state) return null;
   // Read under the lock, right before the write: a newer answer that came while this waited for
   // the lock (another tab holding it) has already dropped what it showed live.
   due = [...state.expiryOwed.values()];
@@ -760,7 +775,7 @@ async function expireOwnerSaved(state: State, messages: readonly GramInfo[]) {
  // Stored: no longer owed, unless a newer answer replaced the row meanwhile. Not stored (the lock
  // or storage refused): still owed, so the next list tries again (an unchanged one included).
  if (!failed) for (const m of due) if (state.expiryOwed.get(m.id) === m) state.expiryOwed.delete(m.id);
- if ((moved || state.savedNote !== note) && g === state) publish();
+ if ((moved || state.notes.get("saved") !== note) && g === state) publish();
 }
 /** The saved list as the page knows it, decoded once: ids as its messages' and download events'
  *  ("<grant>\x1f<id>", shownID), so a Saved row's transfer state is the one its downloads report
@@ -865,7 +880,7 @@ export const gramDesk: Partial<DeskFns> = {
      continue;
     }
     // An owner's page carries the store's count and its expired files, as a head load does.
-    if (state.owner) state.badge = state.inbox.unreadCount();
+    if (state.owner) { state.badge = state.inbox.unreadCount(); state.counted++; }
     await expireOwnerSaved(state, answer.messages);
     if (taken === "grew") return true;
     if (state.inbox.generation === generation) return false;
@@ -898,7 +913,7 @@ export const gramDesk: Partial<DeskFns> = {
  async gramMarkAllRead() {
   const link = gramLink(), state = g;
   if (state.markingAll) return;
-  state.markingAll = true; state.markAllNote = "";
+  state.markingAll = true; setNote(state, "markAll", "");
   publish();
   try {
    let pending: string[] = [], listError: unknown;
@@ -932,9 +947,9 @@ export const gramDesk: Partial<DeskFns> = {
    if (listError === undefined) { if (headWritesBadge(state)) state.badge = state.inbox.unreadCount(); }
    else {
     state.badge = Math.max(state.badge - marked, state.inbox.unreadCount());
-    state.markAllNote = "Couldn't list every unread message. Some may still be unread.";
+    setNote(state, "markAll", "Couldn't list every unread message. Some may still be unread.");
    }
-   if (failed > 0) state.markAllNote = (state.markAllNote + ` ${failed} of ${attempted} could not be marked read.`).trim();
+   if (failed > 0) setNote(state, "markAll", ((state.notes.get("markAll") ?? "") + ` ${failed} of ${attempted} could not be marked read.`).trim());
   } finally {
    if (g === state) { state.markingAll = false; publish(); }
   }
@@ -977,7 +992,7 @@ export const gramDesk: Partial<DeskFns> = {
   const { staged, note: skipped } = stage(c, attachments);
   if (skipped) { note(skipped); throw new Error(skipped); }
   if (!body && !staged.length) return;
-  state.sendError = "";
+  setNote(state, "send", "");
   publish();
   try {
    await c.send(body, staged, async (caption, a, signal) => {
@@ -1033,7 +1048,7 @@ export const gramDesk: Partial<DeskFns> = {
   catch (e) { error = e ?? new Error("gram.delete failed"); }
   if (g !== state) { if (error !== undefined) throw error; return; }
   if (error !== undefined) {
-   state.deleteError = deleteNote(error);
+   setNote(state, "delete", deleteNote(error));
    publish();
    throw error;
   }
@@ -1042,7 +1057,7 @@ export const gramDesk: Partial<DeskFns> = {
   state.images.delete(id);
   // The row goes with its unread mark, and an earlier failed delete's banner with it.
   state.badge = state.inbox.unreadCount();
-  state.deleteError = "";
+  setNote(state, "delete", "");
   publish();
  },
 
