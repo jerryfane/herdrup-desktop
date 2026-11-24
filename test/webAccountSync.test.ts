@@ -2494,3 +2494,86 @@ test("a conflict's tombstone from a history a restore replaced doesn't delete a 
  await mac.accountSyncNow();
  expect([(await byID(mac))[d.id]?.text, liveText(w, d.id)]).toEqual(["draft", "draft"]);
 });
+
+// ---- #448 review (local-review-review-router-18eaec999e4a12ca-1) ----
+
+test("a 410 on a later page of a readback from revision 0 starts a new history at once: the conflict evidence before it goes", async () => {
+ const w = worker();
+ const mac = await browser(w, memory(), { roundMs: 300 });
+ await syncEach(mac);
+ // An empty account. v1, the first prompt, is held; v2 is sent, and the held v1 lands just before
+ // it (the conflict's row: v1 agreed). v1 is saved here again. The readback from 0 comes a page at
+ // a time, and between its pages the account is restored to a backup holding p as "restored".
+ const p = await save(mac, "", "", "v1");
+ w.holdNextPush = true;
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ await save(mac, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.landHeld(); saving = save(mac, p.id, "", "v1"); };
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000fd", { text: "other", order: 1 });
+  w.pageSize = 1;
+  w.onNextPage = () => { w.reset(); w.seedPrompt(p.id, { text: "restored", order: 0 }); };
+ };
+ await mac.accountSyncNow().catch(() => {});
+ await saving;
+ await mac.accountSyncNow();
+ // v1 was never agreed in the restored history: it is this browser's edit, and goes.
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+test("an acceptance replayed after another tab retired its send in a restore does nothing: the same text saved again is an edit", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(a, "", "", "v0");
+ await save(a, "", "", "other");
+ await syncEach(a);
+ // A's v1 is taken; its settlement stays owed in A (another tab holds the storage lock).
+ await save(a, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // The account is restored to a backup holding v0: tab B's pull gets 410 and folds A's
+ // acceptance (v1 was agreed, so no edit): v0 is taken.
+ w.reset();
+ w.seedPrompt(p.id, { text: "v0", order: 0 });
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow();
+ expect((await byID(b))[p.id]!.text).toBe("v0");
+ // v1 is saved again, on purpose; A then writes what it owed, and syncs.
+ await save(b, p.id, "", "v1");
+ await a.accountSyncNow();
+ expect([(await byID(a))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+test("a conflict written late doesn't rewind the mirror past what another tab synced since", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const a = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(a, "", "", "v0");
+ await syncEach(a);
+ // A's v1 meets another device's v2; the conflict's settlement waits for another tab's lock,
+ // past A's round.
+ await save(a, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve();
+ w.onPush = () => w.seedPrompt(p.id, { text: "v2", order: 0 });
+ w.afterPush = () => { other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await other;
+ // Another device writes v3; tab B syncs (v1, edited here, goes over it). A then writes the
+ // conflict it owed, and syncs.
+ w.seedPrompt(p.id, { text: "v3", order: 0 });
+ const b = await browser(w, storage, { locks });
+ await b.accountSyncNow();
+ await a.accountSyncNow();
+ const held = (syncOf(storage).mirror.prompts as { id: string; body: { text: string } }[]).find(r => r.id === p.id);
+ expect([(await byID(a))[p.id]!.text, liveText(w, p.id), held?.body.text]).toEqual(["v1", "v1", "v1"]);
+});
