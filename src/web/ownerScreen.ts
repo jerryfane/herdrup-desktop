@@ -116,24 +116,32 @@ const retryWith = (action: Retry["action"], why = ""): Retry => ({ action, text:
  *  steps only while a request is live (retry: null); a request that ended always has its retry,
  *  whose words stand in the steps' place, as the step "Type the code this page shows" no longer
  *  holds. A failure says what failed on its own (the phase's problem), so its retry words claim
- *  nothing about it. */
+ *  nothing about it. The code the guide shows is the phase's own (guideCode), held once. */
 export type OwnerLayout =
  | { view: "list"; record: OwnerRecord }
  | { view: "notice" }
- | { view: "guide"; phase: LivePhase; code: string | null; retry: null }
- | { view: "guide"; phase: EndedPhase; code: null; retry: Retry };
+ | { view: "guide"; phase: LivePhase; retry: null }
+ | { view: "guide"; phase: EndedPhase; retry: Retry };
 export function ownerLayout(phase: OwnerPhase): OwnerLayout {
  switch (phase.kind) {
   case "approved": return { view: "list", record: phase.record };
   case "unsupported": return { view: "notice" };
   case "starting":
-  case "waiting": return { view: "guide", phase, code: null, retry: null };
-  case "code": return { view: "guide", phase, code: phase.code, retry: null };
-  case "denied": return { view: "guide", phase, code: null, retry: retryWith("Ask again", "This request wasn't approved. ") };
-  case "expired": return { view: "guide", phase, code: null, retry: retryWith("Ask again", "This request's code no longer works. ") };
-  case "failed": return { view: "guide", phase, code: null, retry: retryWith("Try again") };
-  case "elsewhere": return { view: "guide", phase, code: null, retry: retryWith("Try again", "Another tab of this page holds the request: approve it there, or close that tab. ") };
+  case "waiting":
+  case "code": return { view: "guide", phase, retry: null };
+  case "denied": return { view: "guide", phase, retry: retryWith("Ask again", "This request wasn't approved. ") };
+  case "expired": return { view: "guide", phase, retry: retryWith("Ask again", "This request's code no longer works. ") };
+  case "failed": return { view: "guide", phase, retry: retryWith("Try again") };
+  // The other tab may finish the approval (then Try again here opens the list, asking nothing), or
+  // be closed (then Try again starts a new request): neither is promised a new code.
+  case "elsewhere": return { view: "guide", phase, retry: { action: "Try again", text: "Another tab is approving this browser. Finish there, then choose Try again here, or close that tab and choose Try again to start over." } };
  }
+}
+
+/** The code a guide's phase shows (its drawing and steps, as its left side), null until a device
+ *  opened the request. */
+export function guideCode(phase: LivePhase | EndedPhase): string | null {
+ return phase.kind === "code" ? phase.code : null;
 }
 
 /** The rows rise in only on the way from the code to the list (proposal D's transition); a redraw
@@ -280,7 +288,7 @@ export function ownerCard(phase: OwnerPhase, browser: ThisBrowser, actions: Owne
    break;
   case "guide":
    body.append(layout.retry === null ? liveMain(layout.phase, browser, spinnerSVG, guest) : endedMain(layout.phase, layout.retry, actions, guest),
-    guide(browser.name, layout.code, layout.retry));
+    guide(browser.name, guideCode(layout.phase), layout.retry));
    break;
  }
  return showStatus ? { root: screen, showStatus } : { root: screen };
