@@ -16,18 +16,25 @@ export type EventName = keyof Events;
 export interface BrowserPayloads {
  /** Every row action the browser sends opens a sheet (Stop and Archive run in its Desk). */
  agentActionRequested: AgentAction & { readonly sheet: SheetSelection };
- /** A ••• item: its selection when it opens a sheet (Avatar…), else null. */
- paneActionChosen: PaneAction & { readonly sheet: SheetSelection | null };
+ /** A ••• item: Avatar… opens a sheet and carries its selection; only the others carry null. */
+ paneActionChosen: (PaneAction & { readonly action: PaneSheetAction; readonly sheet: SheetSelection })
+  | (PaneAction & { readonly action: PanePlainAction; readonly sheet: null });
 }
+/** The ••• menu's items (desk.ts webPaneMenu): the one that opens an agent sheet, and the rest. */
+export type PaneSheetAction = "avatar";
+export type PanePlainAction = "copy-screen" | "copy-recent" | "copy-selection" | "text-increase" | "text-decrease" | "text-reset"
+ | "share" | "mute" | "unmute" | "close";
 type GoPayload<K extends EventName> = Events[K] extends GoEvent<infer T> ? T : never;
 export type Payload<K extends EventName> = K extends keyof BrowserPayloads ? BrowserPayloads[K] : GoPayload<K>;
 
-/** Checked by tsc: Go's payloads are not the browser's (the selection can't be left out), and the
- *  browser's are what a sheet opens with. */
+/** Checked by tsc: Go's payloads are not the browser's (the selection can't be left out, nor an
+ *  Avatar… or Go's untyped action rebuilt with none), and the browser's are what a sheet opens with. */
 type Holds<T extends true> = T;
 export type SelectionRequired = [
  Holds<AgentAction extends Payload<"agentActionRequested"> ? false : true>,
  Holds<PaneAction extends Payload<"paneActionChosen"> ? false : true>,
+ Holds<{ paneID: string; action: "avatar"; sheet: null } extends Payload<"paneActionChosen"> ? false : true>,
+ Holds<PaneAction & { sheet: null } extends Payload<"paneActionChosen"> ? false : true>,
  Holds<Payload<"agentActionRequested"> extends SheetRequest ? true : false>,
  Holds<Payload<"paneActionChosen"> extends SheetRequest ? true : false>,
 ];

@@ -19,7 +19,7 @@
 
 import type { AgentAction, AvatarChoice, Desk as GoDesk, FolderNaming, TopicsSwitched } from "../mygo";
 import { harnessDisplayName, normalizeAgentName, SheetStaleError, SheetSupersededError, transferPhaseIsConclusive } from "../agentActionsModel";
-import { setSheetOpenings, SheetSelection, type SheetOpening, type SheetRequest } from "../sheetOpening";
+import { setSheetOpenings, SheetSelection, type SheetDesk, type SheetOpening, type SheetOpenings, type SheetRequest } from "../sheetOpening";
 import { ompHarness } from "../topicsModel";
 import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
@@ -167,16 +167,9 @@ export function agentRowMenu(input: RowMenuInput, writes: boolean): MenuItem[] {
 export type SheetKind = "rename" | "restart" | "swap" | "avatar" | "topics" | "transfer";
 
 /** A menu item's choice of a sheet (sheetOpening.ts SheetSelection): the link it was chosen on. It
- *  is its own identity: the newest selection of a sheet is the one in `selected`. It also counts
- *  the openings made with it, to say when all of them settled (sheetSettled). */
+ *  is its own identity: the newest selection of a sheet is the one in `selected`. */
 class WebSelection extends SheetSelection {
- #openings = 0;
- readonly #settled = Promise.withResolvers<void>();
  constructor(kind: SheetKind, paneID: string, readonly link: OwnerLink) { super(kind, paneID); }
- get settled(): Promise<void> { return this.#settled.promise; }
- opened(): void { this.#openings++; }
- /** One of its openings settled: released, nothing of it on its way. */
- closed(): void { if (--this.#openings === 0) this.#settled.resolve(); }
 }
 /** The newest selection of each agent's sheet of each kind, by kind and pane. */
 const selected = new Map<string, WebSelection>();
@@ -204,7 +197,7 @@ function watch(link: OwnerLink) {
  *  starts. A call whose opening lost its result ends as SheetSupersededError (whatever else is
  *  true), which the page keeps quiet about; one whose machine changed as SheetStaleError, the
  *  sheet's refusal; one replaced by a newer selection before it showed as SheetSupersededError. */
-class WebOpening implements SheetOpening {
+class WebOpening implements BrowserOpening {
  readonly selection: WebSelection | null;
  readonly link: OwnerLink | null;
  readonly paneID: string;
@@ -213,15 +206,15 @@ class WebOpening implements SheetOpening {
  shown = false;
  released = false;
  steps = 0;
- #idle = false;
+ readonly #settled = Promise.withResolvers<void>();
  constructor(readonly kind: string, request: SheetRequest) {
   const s = request.sheet;
   this.selection = s instanceof WebSelection && s.kind === kind && s.paneID === request.paneID ? s : null;
-  this.selection?.opened();
   this.link = this.selection?.link ?? null;
   this.paneID = request.paneID;
   this.key = kind + "\u0000" + request.paneID;
  }
+ get settled(): Promise<void> { return this.#settled.promise; }
  /** A newer selection of this sheet replaced it before its dialog showed. */
  #reselected(): boolean { return !this.shown && selected.get(this.key) !== this.selection; }
  show(): boolean {
@@ -243,10 +236,9 @@ class WebOpening implements SheetOpening {
  }
  /** Once it is released and nothing of it is on its way, its record goes and it has settled. */
  #settle(): void {
-  if (!this.released || this.steps > 0 || this.#idle) return;
-  this.#idle = true;
+  if (!this.released || this.steps > 0) return;
   if (speaking.get(this.key) === this) speaking.delete(this.key);
-  this.selection?.closed();
+  this.#settled.resolve();
  }
  /** One call of this sheet of kind (Switch harness's for "transfer", Restart's or Swap's for theirs). */
  async #step<T>(kind: SheetKind, call: (link: OwnerLink) => Promise<T>): Promise<T> {
@@ -360,7 +352,14 @@ class WebOpening implements SheetOpening {
  }
 }
 
-setSheetOpenings({ open: (_desk, kind, request) => new WebOpening(kind, request) });
+/** A browser opening: also says when it has settled (released, nothing of it on its way), so a
+ *  test can see that a reply it was waiting for has been dealt with. */
+export interface BrowserOpening extends SheetOpening {
+ readonly settled: Promise<void>;
+}
+/** The browser's openings, in place of the desktop's (exported for tests that watch them). */
+export const browserOpenings = { open: (_desk: SheetDesk, kind: string, request: SheetRequest): BrowserOpening => new WebOpening(kind, request) } satisfies SheetOpenings;
+setSheetOpenings(browserOpenings);
 
 /** A sheet of kind for paneID selected on link (a row menu item, or the ••• menu's Avatar…): the
  *  selection the event about to be sent carries (its `sheet`), which the page opens the sheet with.
@@ -374,12 +373,6 @@ export function selectSheet(link: OwnerLink, kind: SheetKind, paneID: string): S
 
 /** Sheet records still held (a test seam for their lifetime): results owned, selections pending. */
 export function openSheets(): number { return speaking.size + selected.size; }
-
-/** Resolves once every opening the page made with selection has settled: released, nothing of it on
- *  its way (a test seam: a reply it was waiting for has been dealt with). */
-export function sheetSettled(selection: SheetSelection): Promise<void> {
- return selection instanceof WebSelection ? selection.settled : Promise.resolve();
-}
 
 /** desk_agent_actions.go agentLink, without the roster: the link a menu brought, or the open one,
  *  for an action on paneID. */
