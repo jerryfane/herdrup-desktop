@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -243,7 +244,7 @@ func testPayload(t *testing.T) []string {
 
 // testSources reads the build in from, the repository's icon and lists.
 func testSources(t *testing.T, from string) sources {
-	return sources{from: from, payload: testPayload(t), icon: testIcon, others: []string{"../../package.json", testSpeech}}
+	return sources{from: from, payload: testPayload(t), icon: testIcon}
 }
 
 // buildDir writes a Windows build: the payload, and what else mygo writes
@@ -325,13 +326,8 @@ func TestStage(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("stage lists %v\nwant %v", got, want)
 	}
-	wantDisk := append(slices.Clone(want), stageMarker)
-	slices.Sort(wantDisk)
-	if onDisk := files(t, dir); !slices.Equal(onDisk, wantDisk) {
-		t.Fatalf("staged %v\nwant %v", onDisk, wantDisk)
-	}
-	if b, _ := os.ReadFile(filepath.Join(dir, stageMarker)); string(b) != stageMarkerText {
-		t.Errorf("marker reads %q", b)
+	if onDisk := files(t, dir); !slices.Equal(onDisk, want) {
+		t.Fatalf("staged %v\nwant %v", onDisk, want)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "herdrup-speech.exe")); string(b) != "app herdrup-speech.exe" {
 		t.Errorf("herdrup-speech.exe holds %q", b)
@@ -351,15 +347,7 @@ func TestStage(t *testing.T) {
 	if !bytes.Contains(m, []byte(`Name="HerdrupCI" Publisher="CN=HerdrupCI" Version="1.1.23.0" ProcessorArchitecture="x64"`)) {
 		t.Errorf("manifest identity:\n%s", m)
 	}
-	// Its own folder, staged again, is replaced.
-	writeFile(t, filepath.Join(dir, "stale.txt"), "from the last run")
-	if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
-		t.Fatal(err)
-	}
-	if fileExists(filepath.Join(dir, "stale.txt")) || !ownStage(dir) {
-		t.Errorf("restaged: %v", files(t, dir))
-	}
-	// So is an empty folder.
+	// An empty folder is taken too.
 	if _, err := stage(testSources(t, from), t.TempDir(), ciIdentity); err != nil {
 		t.Errorf("empty folder: %v", err)
 	}
@@ -383,185 +371,27 @@ func TestStageNeedsTheWholePayload(t *testing.T) {
 	}
 }
 
-// A staging folder that overlaps the build would be deleted with it: it is
-// refused before anything is written or deleted.
-func TestStageRefusesOverlap(t *testing.T) {
-	root := t.TempDir()
-	from := filepath.Join(root, "build", "windows-amd64")
-	buildDir(t, from)
-	writeFile(t, filepath.Join(root, "build", "notes.txt"), "unrelated")
-	before := files(t, root)
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(from, link); err != nil {
-		t.Fatal(err)
-	}
-	for name, dir := range map[string]string{
-		"parent":            filepath.Join(root, "build"),
-		"grandparent":       root,
-		"child":             filepath.Join(from, "stage"),
-		"equal":             from,
-		"equal, relative":   filepath.Join(from, "..", "windows-amd64"),
-		"symlink":           link,
-		"inside, a symlink": filepath.Join(link, "msix"),
-	} {
-		_, err := stage(testSources(t, from), dir, ciIdentity)
-		if err == nil || !strings.Contains(err.Error(), "overlap") {
-			t.Errorf("%s (%s): %v", name, dir, err)
-		}
-		if after := files(t, root); !slices.Equal(after, before) {
-			t.Fatalf("%s: the build's folder changed: %v\nwas %v", name, after, before)
-		}
-	}
-}
-
-// Every input and output lies outside the staging folder, even one the
-// packer staged before: replacing it would delete the icon or a list before
-// it is read, or the package as it is written.
-func TestStageRefusesInputsInside(t *testing.T) {
-	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
-	buildDir(t, from)
-	if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
-		t.Fatal(err)
-	}
-	inside := filepath.Join(dir, "Assets", "StoreLogo.png")
-	for name, mutate := range map[string]func(*sources){
-		"icon":           func(s *sources) { s.icon = inside },
-		"package.json":   func(s *sources) { s.others[0] = inside },
-		"resources.json": func(s *sources) { s.others[1] = inside },
-		"-out":           func(s *sources) { s.others = append(s.others, filepath.Join(dir, "herdrup.msix")) },
-	} {
-		src := testSources(t, from)
-		mutate(&src)
-		before := files(t, dir)
-		if _, err := stage(src, dir, ciIdentity); err == nil || !strings.Contains(err.Error(), "overlap") {
-			t.Errorf("%s inside the stage: %v", name, err)
-		}
-		if after := files(t, dir); !slices.Equal(after, before) || !fileExists(inside) {
-			t.Fatalf("%s inside the stage: it now holds %v\nwas %v", name, after, before)
-		}
-	}
-}
-
-// An input reached through a symbolic link is apart from the staging folder
-// both where it is read and where it resolves, and so is a staging folder
-// reached through one: a link in the folder to the icon elsewhere, or a
-// build whose payload file links into the folder, is refused before
-// anything is deleted.
-func TestStageRefusesLinksIntoTheStage(t *testing.T) {
-	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
-	buildDir(t, from)
-	if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
-		t.Fatal(err)
-	}
-	icon, err := filepath.Abs(testIcon)
-	if err != nil {
-		t.Fatal(err)
-	}
-	iconLink := filepath.Join(dir, "icon.png")
-	if err := os.Symlink(icon, iconLink); err != nil {
-		t.Fatal(err)
-	}
-	linkedBuild := t.TempDir()
-	buildDir(t, linkedBuild)
-	exe := filepath.Join(linkedBuild, appExe)
-	if err := os.Remove(exe); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(dir, appExe), exe); err != nil {
-		t.Fatal(err)
-	}
-	parentLink := filepath.Join(t.TempDir(), "parent")
-	if err := os.Symlink(filepath.Dir(dir), parentLink); err != nil {
-		t.Fatal(err)
-	}
-	withIcon := func(icon string) sources {
-		s := testSources(t, from)
-		s.icon = icon
-		return s
-	}
-	for name, c := range map[string]struct {
-		src   sources
-		stage string
-	}{
-		"-icon, a link in the stage to the icon":         {withIcon(iconLink), dir},
-		"the build's herdrup.exe, a link into the stage": {testSources(t, linkedBuild), dir},
-		"both through a link to the stage's parent": {
-			withIcon(filepath.Join(parentLink, "stage", "icon.png")), filepath.Join(parentLink, "stage"),
-		},
-	} {
-		before := files(t, dir)
-		if _, err := stage(c.src, c.stage, ciIdentity); err == nil || !strings.Contains(err.Error(), "overlap") {
-			t.Errorf("%s: %v", name, err)
-		}
-		if after := files(t, dir); !slices.Equal(after, before) || !ownStage(dir) {
-			t.Fatalf("%s: the stage now holds %v\nwas %v", name, after, before)
-		}
-	}
-	if !fileExists(icon) {
-		t.Fatal("the icon is gone")
-	}
-}
-
-// pack checks -out with the inputs, and only when it is given: without it
-// pack stages, even in a folder inside the working one.
-func TestPackChecksTheOutput(t *testing.T) {
+// The packer deletes and replaces nothing: a staging folder that is not new
+// or empty, its own last stage included, is refused and left as it was.
+func TestStageNeedsANewOrEmptyFolder(t *testing.T) {
 	from := t.TempDir()
 	buildDir(t, from)
-	abs := func(p string) string {
-		a, err := filepath.Abs(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return a
-	}
-	args := []string{"pack", "-from", from, "-stage", "stage",
-		"-icon", abs(testIcon), "-package", abs("../../package.json"),
-		"-name", "HerdrupCI", "-publisher", "CN=HerdrupCI", "-publisher-display-name", "HerdrupCI"}
-	list, err := os.ReadFile(testSpeech)
-	if err != nil {
-		t.Fatal(err)
-	}
-	work := t.TempDir()
-	t.Chdir(work)
-	writeFile(t, speechList, string(list))
-	if err := run(args); err != nil {
-		t.Fatalf("pack without -out: %v", err)
-	}
-	before := files(t, "stage")
-	err = run(append(slices.Clone(args), "-out", filepath.Join("stage", "herdrup.msix")))
-	if err == nil || !strings.Contains(err.Error(), "overlap") {
-		t.Fatalf("-out inside the stage: %v", err)
-	}
-	if after := files(t, "stage"); !slices.Equal(after, before) {
-		t.Fatalf("-out inside the stage: it now holds %v\nwas %v", after, before)
-	}
-}
-
-// A folder stage did not make keeps its files: it is refused, also with a
-// marker that is not stage's own (a folder, a link, other contents).
-func TestStageRefusesAForeignFolder(t *testing.T) {
-	from := t.TempDir()
-	buildDir(t, from)
-	elsewhere := filepath.Join(t.TempDir(), "marker")
-	writeFile(t, elsewhere, stageMarkerText)
 	for name, setup := range map[string]func(dir string){
-		"no marker": func(string) {},
-		"a folder":  func(dir string) { writeFile(t, filepath.Join(dir, stageMarker, "inside.txt"), "x") },
-		"other text": func(dir string) {
-			writeFile(t, filepath.Join(dir, stageMarker), "herdrup-msix-stage v2\n")
-		},
-		"empty": func(dir string) { writeFile(t, filepath.Join(dir, stageMarker), "") },
-		"a link": func(dir string) {
-			if err := os.Symlink(elsewhere, filepath.Join(dir, stageMarker)); err != nil {
+		"the last stage": func(dir string) {
+			if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
 				t.Fatal(err)
 			}
 		},
+		"a hidden file": func(dir string) { writeFile(t, filepath.Join(dir, ".notes"), "someone's") },
+		"a folder":      func(dir string) { writeFile(t, filepath.Join(dir, "sub", "notes.txt"), "someone's") },
 	} {
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, "notes.txt"), "someone's")
 		setup(dir)
 		before := files(t, dir)
-		if _, err := stage(testSources(t, from), dir, ciIdentity); err == nil || !strings.Contains(err.Error(), stageMarker) {
+		if _, err := stage(testSources(t, from), dir, ciIdentity); err == nil || !strings.Contains(err.Error(), "must be new or empty") {
 			t.Errorf("%s: %v", name, err)
 		}
 		if after := files(t, dir); !slices.Equal(after, before) {
@@ -575,6 +405,67 @@ func TestStageRefusesAForeignFolder(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(file); string(b) != "a file" {
 		t.Errorf("the file holds %q", b)
+	}
+}
+
+// A folder that can't be listed can't be shown empty: it is refused, even
+// where it could be written to, and its files are left as they were.
+func TestStageRefusesAnUnlistableFolder(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder this user may write to but not list")
+	}
+	from := t.TempDir()
+	buildDir(t, from)
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, appExe), "someone's")
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	if _, err := stage(testSources(t, from), dir, ciIdentity); err == nil {
+		t.Error("staged into a folder it can't list")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, appExe)); string(b) != "someone's" {
+		t.Errorf("%s holds %q", appExe, b)
+	}
+}
+
+// pack overwrites no package: an -out that exists is refused before
+// anything is staged. Without -out, pack only stages.
+func TestPackRefusesAnExistingOutput(t *testing.T) {
+	from := t.TempDir()
+	buildDir(t, from)
+	abs := func(p string) string {
+		a, err := filepath.Abs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	icon, pkg := abs(testIcon), abs("../../package.json")
+	args := func(stage string) []string {
+		return []string{"pack", "-from", from, "-stage", stage, "-icon", icon, "-package", pkg,
+			"-name", "HerdrupCI", "-publisher", "CN=HerdrupCI", "-publisher-display-name", "HerdrupCI"}
+	}
+	list, err := os.ReadFile(testSpeech)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	writeFile(t, speechList, string(list))
+	if err := run(args("stage")); err != nil {
+		t.Fatalf("pack without -out: %v", err)
+	}
+	writeFile(t, "herdrup.msix", "the last package")
+	err = run(append(args("stage2"), "-out", "herdrup.msix"))
+	if err == nil || !strings.Contains(err.Error(), "exists") {
+		t.Errorf("an existing -out: %v", err)
+	}
+	if b, _ := os.ReadFile("herdrup.msix"); string(b) != "the last package" || fileExists("stage2") {
+		t.Errorf("an existing -out: it holds %q; staged: %v", b, fileExists("stage2"))
 	}
 }
 
@@ -608,7 +499,7 @@ func TestStageRefusesIdentity(t *testing.T) {
 }
 
 // makeappx packs the files stage listed, under their names in the package,
-// and not the marker.
+// and nothing else.
 func TestMapping(t *testing.T) {
 	dir := t.TempDir()
 	got, err := mapping(dir, []string{"herdrup.exe", "Assets/StoreLogo.png"})

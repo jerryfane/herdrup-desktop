@@ -17,7 +17,11 @@ runs:
       id: whisper
       shell: bash
       run: |
-        read -r rev < speech/whisper.rev
+        rev=$(tr -d '[:space:]' < speech/whisper.rev)
+        if ! [[ $rev =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::speech/whisper.rev must hold a 40-character commit hash, not \"$rev\""
+          exit 1
+        fi
         echo "rev=$rev" >> "$GITHUB_OUTPUT"
     - name: Fetch pinned offline speech engine
       uses: actions/checkout@v5

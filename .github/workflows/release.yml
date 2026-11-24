@@ -385,7 +385,10 @@ jobs:
           fi
           version="$(jq -r .version package.json)"
           out="$RUNNER_TEMP/msix-out/herdrup-$version-$VARIANT.msix"
-          go run ./packaging/msix pack -from build/windows-amd64 -stage "$RUNNER_TEMP/msix-stage" \
+          # A new folder for each run: the packer only stages into a new or
+          # empty one, and overwrites no package.
+          stage="$RUNNER_TEMP/msix-stage-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          go run ./packaging/msix pack -from build/windows-amd64 -stage "$stage" \
             -name "$name" -publisher "$publisher" -publisher-display-name "$display" -out "$out"
           ls -l "$RUNNER_TEMP/msix-out"
           echo "MSIX=$out" >> "$GITHUB_ENV"
@@ -430,7 +433,6 @@ jobs:
           foreach ($f in 'herdrup.exe', 'herdrup-speech.exe', 'ggml-tiny.bin', 'whisper-LICENSE', 'speech-LICENSES', 'AppxManifest.xml') {
             if (-not (Test-Path (Join-Path $pkg.InstallLocation $f))) { throw "$f not installed" }
           }
-          if (Test-Path (Join-Path $pkg.InstallLocation '.herdrup-msix-stage')) { throw 'the staging marker was packed' }
           # A herdrup:// link opens it, through the package's protocol
           # (the Store build doesn't register one itself): the process that
           # runs from the package with the link on its command line, until it

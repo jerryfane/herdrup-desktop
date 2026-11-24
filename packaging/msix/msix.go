@@ -152,14 +152,6 @@ func parsePayload(list []byte) ([]string, error) {
 	return payload, nil
 }
 
-// stageMarker is in each folder stage made, the only kind it replaces: a
-// regular file reading stageMarkerText. The package leaves it out: pack
-// packs the files stage lists.
-const (
-	stageMarker     = ".herdrup-msix-stage"
-	stageMarkerText = "herdrup-msix-stage v1\n"
-)
-
 // logo is an image the manifest names, the app icon centred in it.
 type logo struct {
 	name       string
@@ -177,7 +169,7 @@ var logos = []logo{
 	{"Wide310x150Logo.png", 310, 150, 150},
 }
 
-// sources is what stage reads, and the other paths the command takes.
+// sources is what stage reads.
 type sources struct {
 	// from is the Windows build's folder, and payload the files of it the
 	// package holds (parsePayload).
@@ -185,29 +177,16 @@ type sources struct {
 	payload []string
 	// icon is the PNG the logos are made from.
 	icon string
-	// others are the command's other paths: package.json,
-	// speech/resources.json, and the package it writes (-out), if any.
-	others []string
 }
 
 // stage makes dir the package's contents: the payload of the build, the
 // logos made from the icon, and AppxManifest.xml for id. It returns them,
-// relative to dir. Before writing or deleting anything it checks the
-// identity, that dir is apart from every input (each path given, and each
-// payload file of the build), that the build has the whole payload, and
-// that dir is new, empty or stage's own.
+// relative to dir. It deletes and replaces nothing: dir must be new or
+// empty. Before writing anything it checks the identity, that the build has
+// the whole payload, and that dir is new or empty.
 func stage(src sources, dir string, id identity) ([]string, error) {
 	if err := id.check(); err != nil {
 		return nil, err
-	}
-	inputs := append([]string{src.from, src.icon}, src.others...)
-	for _, name := range src.payload {
-		inputs = append(inputs, filepath.Join(src.from, name))
-	}
-	for _, in := range inputs {
-		if err := apart(in, dir); err != nil {
-			return nil, err
-		}
 	}
 	for _, name := range src.payload {
 		fi, err := os.Stat(filepath.Join(src.from, name))
@@ -218,7 +197,7 @@ func stage(src sources, dir string, id identity) ([]string, error) {
 			return nil, fmt.Errorf("%s: not a regular file", filepath.Join(src.from, name))
 		}
 	}
-	if err := claim(dir); err != nil {
+	if err := fresh(dir); err != nil {
 		return nil, err
 	}
 	files := slices.Clone(src.payload)
@@ -243,105 +222,18 @@ func stage(src sources, dir string, id identity) ([]string, error) {
 	return append(files, "AppxManifest.xml"), nil
 }
 
-// apart refuses a staging folder that is an input, holds it or is inside
-// it: replacing the folder would delete the input. Each is compared as
-// written and with its symbolic links resolved, every form of one against
-// every form of the other, so neither a link inside the folder to an input
-// elsewhere nor a link elsewhere into the folder gets through.
-func apart(input, dir string) error {
-	ins, err := forms(input)
-	if err != nil {
-		return err
-	}
-	dirs, err := forms(dir)
-	if err != nil {
-		return err
-	}
-	for _, a := range ins {
-		for _, b := range dirs {
-			if within(a, b) || within(b, a) {
-				return fmt.Errorf("-stage %s and the input %s overlap: stage in a folder of its own", dir, input)
-			}
-		}
-	}
-	return nil
-}
-
-// forms returns p absolute as written (cleaned, no links followed) and
-// resolved.
-func forms(p string) ([2]string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return [2]string{}, err
-	}
-	r, err := resolved(abs)
-	if err != nil {
-		return [2]string{}, err
-	}
-	return [2]string{abs, r}, nil
-}
-
-// resolved returns p absolute, with the symbolic links of its longest
-// existing part resolved.
-func resolved(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	rest := ""
-	for cur := abs; ; {
-		if r, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(r, rest), nil
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return abs, nil
-		}
-		rest = filepath.Join(filepath.Base(cur), rest)
-		cur = parent
-	}
-}
-
-// within reports whether p is base or inside it (on Windows, ignoring case,
-// as filepath.Rel does).
-func within(p, base string) bool {
-	rel, err := filepath.Rel(base, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-// ownStage reports whether dir holds stage's marker: a regular file, not a
-// link or a folder, reading exactly stageMarkerText.
-func ownStage(dir string) bool {
-	p := filepath.Join(dir, stageMarker)
-	fi, err := os.Lstat(p)
-	if err != nil || !fi.Mode().IsRegular() {
-		return false
-	}
-	b, err := os.ReadFile(p)
-	return err == nil && string(b) == stageMarkerText
-}
-
-// claim makes dir an empty folder holding stageMarker: from a new folder,
-// an empty one, or one stage made before, whose files it deletes. Any other
-// it refuses, deleting nothing.
-func claim(dir string) error {
+// fresh makes dir, which must be new or an empty folder; anything else it
+// refuses, touching nothing.
+func fresh(dir string) error {
 	entries, err := os.ReadDir(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
 		return fmt.Errorf("-stage %s: %w", dir, err)
-	case len(entries) == 0:
-	case !ownStage(dir):
-		return fmt.Errorf("-stage %s holds files this tool did not stage (no %s file reading %q): give it a new or empty folder", dir, stageMarker, stageMarkerText)
-	default:
-		if err := os.RemoveAll(dir); err != nil {
-			return err
-		}
+	case len(entries) > 0:
+		return fmt.Errorf("-stage %s: the stage folder must be new or empty", dir)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, stageMarker), []byte(stageMarkerText), 0o644)
+	return os.MkdirAll(dir, 0o755)
 }
 
 func copyFile(src, dst string) error {
@@ -571,7 +463,8 @@ func mapping(dir string, files []string) (string, error) {
 	return b.String(), nil
 }
 
-// pack runs makeappx on files staged in dir, making the package out.
+// pack runs makeappx on files staged in dir, making the package out, which
+// it never overwrites (/no).
 func pack(dir string, files []string, out string) error {
 	tool, err := sdkTool("makeappx")
 	if err != nil {
@@ -596,7 +489,7 @@ func pack(dir string, files []string, out string) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
-	cmd := exec.Command(tool, "pack", "/o", "/f", f.Name(), "/p", out)
+	cmd := exec.Command(tool, "pack", "/no", "/f", f.Name(), "/p", out)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("makeappx pack: %w", err)

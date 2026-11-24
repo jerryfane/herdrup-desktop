@@ -248,9 +248,9 @@ order, each preview before its release:
 So `0.1.0-preview.23` is `1.1.23.0` and `0.1.0` is `1.1.999.0`; previews go up to 998, and Z up
 to 64. To pack one on Windows, with Visual Studio's C++ tools and the Windows SDK, build the
 offline speech resources first (the package needs them; see "Develop" in
-[docs/DESIGN.md](docs/DESIGN.md)), then the app in Store mode, then the package. The staging folder
-must be new, empty, or one the packer staged before, and apart from the build and every other
-input:
+[docs/DESIGN.md](docs/DESIGN.md)), then the app in Store mode, then the package. The packer deletes
+and overwrites nothing: the staging folder must be new or empty and the package a new file, so
+remove both before packing again:
 
 ```bash
 export WHISPER_SOURCE=/path/to/whisper.cpp   # at the commit in speech/whisper.rev

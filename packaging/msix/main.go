@@ -7,16 +7,18 @@
 //
 // run from the repository, stages the app's payload (herdrup.exe and
 // speech/resources.json's files), its logos and AppxManifest.xml in DIR, a
-// new or empty folder or one it staged before, apart from every input, and,
-// with -out, packs them into an x64 package with the Windows SDK's makeappx,
-// unsigned: the Store signs what it publishes.
+// new or empty folder, and, with -out, a file that doesn't exist yet, packs
+// them into an x64 package with the Windows SDK's makeappx, unsigned: the
+// Store signs what it publishes. It deletes and overwrites nothing.
 // `go run ./packaging/msix tool NAME` prints the path of a Windows SDK tool,
 // such as signtool.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 )
 
@@ -45,8 +47,8 @@ func run(args []string) error {
 	case "pack":
 		flags := flag.NewFlagSet("pack", flag.ContinueOnError)
 		from := flags.String("from", "build/windows-amd64", "the app as mygo build wrote it")
-		dir := flags.String("stage", "", "the folder to stage the package in: new, empty, or one this tool staged (replaced)")
-		out := flags.String("out", "", "the package to make with makeappx; none when empty")
+		dir := flags.String("stage", "", "the folder to stage the package in: new or empty")
+		out := flags.String("out", "", "the package to make with makeappx, a file that doesn't exist yet; none when empty")
 		icon := flags.String("icon", "resources/icon.png", "the app icon the logos are made from")
 		pkg := flags.String("package", "package.json", "the package.json whose version the package has")
 		var id identity
@@ -74,11 +76,15 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		others := []string{*pkg, speechList}
 		if *out != "" {
-			others = append(others, *out)
+			switch _, err := os.Lstat(*out); {
+			case err == nil:
+				return fmt.Errorf("-out %s exists: the package must be a new file", *out)
+			case !errors.Is(err, fs.ErrNotExist):
+				return fmt.Errorf("-out %s: %w", *out, err)
+			}
 		}
-		files, err := stage(sources{from: *from, payload: payload, icon: *icon, others: others}, *dir, id)
+		files, err := stage(sources{from: *from, payload: payload, icon: *icon}, *dir, id)
 		if err != nil {
 			return err
 		}
