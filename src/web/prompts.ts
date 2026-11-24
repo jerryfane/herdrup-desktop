@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { AccountSyncStatus, SavedPrompt } from "../mygo";
 import { untilAborted } from "../webguest/abort";
-import { AccountServiceError, SignedOutError, type SyncChange, type SyncItem, type SyncPushBody, type WebAccount } from "./account";
+import { AccountServiceError, SignedOutError, SyncResetRequired, type SyncChange, type SyncItem, type SyncPushBody, type WebAccount } from "./account";
 import { emit } from "./events";
 import { withStorageLock, type AbortableLocks } from "./locks";
 
@@ -552,22 +552,18 @@ function tombstonesFor(m: Mirror, ids: () => Iterable<string>): Mirror {
  return m;
 }
 
-class ResetRequired extends Error {
- constructor() { super("account: sync reset required"); this.name = "ResetRequired"; }
-}
 const MAX_PULL_PAGES = 64; // 64 × 500 items, past the 2,000-item account cap
 
 /** One pull, page by page; generation is the session the pages must be read in
- *  (WebAccount.syncPage), and reset is told of a 410 on any page as its status line comes in.
+ *  (WebAccount.syncPage), and reset is told of a 410 on any page as its status line comes in
+ *  (the page then ends with SyncResetRequired, the same outcome).
  *  Its items keep the order they came in: landItems matches them that way, once the pull
  *  completed (a reset's restart brings only the full pull's). */
 async function pull(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
  const out: Pull = { rev: 0, items: [], full: since === 0, restarted: false, nowMs: null, newestMs: null };
  let query = `since=${since}`, told = true;
  for (let page = 0; page < MAX_PULL_PAGES; page++) {
-  let answer;
-  try { answer = await account.syncPage(query, acct, signal, generation, reset); }
-  catch (error) { throw error instanceof AccountServiceError && error.status === 410 ? new ResetRequired() : error; }
+  const answer = await account.syncPage(query, acct, signal, generation, reset);
   out.items.push(...answer.changes);
   out.rev = answer.rev;
   if (typeof answer.now_ms !== "number") told = false;
@@ -594,7 +590,7 @@ export async function pullSince(account: WebAccount, acct: string, since: number
    const out = await pull(account, acct, restarted ? 0 : since, signal, generation, reset);
    return restarted ? { ...out, restarted } : out;
   } catch (error) {
-   if (!(error instanceof ResetRequired) || restarted) throw error;
+   if (!(error instanceof SyncResetRequired) || restarted) throw error;
    restarted = true;
   }
  }

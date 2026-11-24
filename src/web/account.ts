@@ -75,6 +75,13 @@ class RefreshUnwanted extends Error {
 export class AccountServiceError extends Error {
  constructor(readonly status: number, readonly code: string) { super(`account service: ${status} ${code}`); this.name = "AccountServiceError"; }
 }
+/** A sync page answered 410 (syncPage): the account's history started over, and a pull starts
+ *  again from 0. */
+export class SyncResetRequired extends Error {
+ constructor() { super("account: sync reset required"); this.name = "ResetRequired"; }
+}
+/** What a sync page's status line says (syncPage): a page, or a reset (410). */
+type SyncPageOutcome = "page" | "reset";
 
 /** How long an operation holding the refresh lock (a refresh, a sign-out) may take: one the
  *  service doesn't answer by then is cancelled and lets the lock go, so whatever waits for the
@@ -513,11 +520,23 @@ export class WebAccount {
  }
 
  /** GET /v1/sync?<query> (since=<rev> or cursor=<cursor>) as account, in the session generation
-  *  names (a sync round's: authed). reset is told of a 410 (the account's history started over)
-  *  on its status line, before its body is read: a body that stalls until the round ends can't
-  *  hide it. */
- syncPage(query: string, account: string, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<SyncPage> {
-  return this.authed<SyncPage>("GET", `/v1/sync?${query}`, undefined, account, signal, undefined, generation, status => { if (status === 410) reset?.(); });
+  *  names (a sync round's: authed). A 410 (the account's history started over) is one outcome,
+  *  taken from the status line, that both tells reset at once, before the body is read (a body
+  *  that stalls until the round ends can't hide it), and is what the call ends with:
+  *  SyncResetRequired, unless signal aborted first (its reason). */
+ async syncPage(query: string, account: string, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<SyncPage> {
+  // The newest response's outcome (the retry after a 401 is a response of its own).
+  const heard: { outcome: SyncPageOutcome } = { outcome: "page" };
+  try {
+   return await this.authed<SyncPage>("GET", `/v1/sync?${query}`, undefined, account, signal, undefined, generation, status => {
+    heard.outcome = status === 410 ? "reset" : "page";
+    if (heard.outcome === "reset") reset?.();
+   });
+  } catch (error) {
+   if (heard.outcome !== "reset") throw error;
+   signal?.throwIfAborted();
+   throw new SyncResetRequired();
+  }
  }
 
  /** POST /v1/sync as account, its body made by dispatch right before each request (PushDispatch),
