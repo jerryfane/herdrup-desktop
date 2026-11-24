@@ -78,8 +78,10 @@ interface State {
   *  one discarded puts them back; the Gram's end (reset) tells whatever is left. */
  headWaiters: (() => void)[];
  badge: number;
- /** Accepted head lists and pages whose count set the badge, so far: an unread-only reply asked
-  *  before one of them is older than the count it set and is dropped. */
+ /** Accepted answers carrying the whole store's count that set the badge, so far: an owner's head
+  *  lists and pages only. An unread-only reply asked before one of them is older than the count it
+  *  set and is dropped. A guest's list covers only its newest rows, so it never counts here: it
+  *  doesn't supersede the hidden tab's whole-store unread walk. */
  counted: number;
  visible: boolean;
  wake: (() => void) | null;
@@ -176,7 +178,7 @@ function snapshot(): GramSnapshot {
  };
  if (g.unavailable) s.unavailable = g.unavailable;
  if (g.olderError) s.olderError = g.olderError;
- const status = [...g.notes.values()].at(-1) ?? [g.refreshAck, g.refreshNote].find(t => t !== "");
+ const status = banner(g);
  if (status) s.status = status;
  const feed = visible();
  for (const m of feed) s.messages.push(gramRow(m, local, saved.ids.has(m.id), pendingIDs.has(m.id)));
@@ -250,12 +252,17 @@ export const guestGramDesk: Partial<DeskFns> = {
 
 /** The actions whose failure the banner says (State.notes). */
 type NoteKind = "send" | "delete" | "saved" | "markAll";
-/** Sets kind's note, the newest now ("" clears it). */
-function setNote(state: State, kind: NoteKind, text: string) {
+/** The banner's text: the newest action failure (State.notes), else the refresh's word. */
+const banner = (state: State) => [...state.notes.values()].at(-1) ?? [state.refreshAck, state.refreshNote].find(t => t !== "");
+/** Sets kind's note, the newest now ("" clears it); true when that changed the banner (the caller
+ *  publishes then): the same text moved to newest can change which note shows. */
+function setNote(state: State, kind: NoteKind, text: string): boolean {
+ const before = banner(state);
  state.notes.delete(kind);
  if (text !== "") state.notes.set(kind, text);
+ return banner(state) !== before;
 }
-function note(text: string) { setNote(g, "send", text); publish(); }
+function note(text: string) { if (setNote(g, "send", text)) publish(); }
 
 function ack(text: string, expiring: boolean) {
  g.refreshAck = text;
@@ -328,7 +335,7 @@ async function headAnswer(state: State, link: WebLink, limit: number, sent: Writ
  // Accepted, it was sent with no write in flight and none started since: after every post's
  // acknowledgement. The posts it lists show as listed; one it doesn't was deleted elsewhere.
  state.pending = [];
- if (headWritesBadge(state)) { state.badge = state.inbox.unreadCount(); state.counted++; }
+ if (headWritesBadge(state)) { state.badge = state.inbox.unreadCount(); if (state.owner) state.counted++; }
  publish();
  // Its expired files reach Saved after the list is in (Saved changes take their lock).
  await expireOwnerSaved(state, answer.messages);
@@ -741,11 +748,11 @@ function guestSavedList(): SavedGram[] {
 /** Changes the saved list as storage holds it now (another document may have changed it since
  *  this one read it), under the Saved lock (gramSaved.ts): mutate gets that list, null for no
  *  change. A refused write (quota, private mode) is said in the banner, as Go's alertSaved, and
- *  returned; one that lands clears that note. The caller publishes. */
-async function updateSaved(state: State, mutate: (current: unknown) => unknown): Promise<Error | null> {
+ *  returned; one that lands clears that note. bannerChanged: whether that changed the banner. The
+ *  caller publishes. */
+async function updateSaved(state: State, mutate: (current: unknown) => unknown): Promise<{ failed: Error | null; bannerChanged: boolean }> {
  const failed = await state.saved.update(mutate);
- setNote(state, "saved", failed?.message ?? "");
- return failed;
+ return { failed, bannerChanged: setNote(state, "saved", failed?.message ?? "") };
 }
 /** Saved.ExpireFiles for an owner's list answer (a head load or an older page), with what an
  *  earlier one couldn't store; nothing to do, and Saved not read, when none has an expired file. */
@@ -759,9 +766,8 @@ async function expireOwnerSaved(state: State, messages: readonly GramInfo[]) {
   else if (m.file) state.expiryOwed.delete(m.id);
  }
  if (state.expiryOwed.size === 0) return;
- const note = state.notes.get("saved");
  let moved = false, due: GramInfo[] = [];
- const failed = await updateSaved(state, current => {
+ const { failed, bannerChanged } = await updateSaved(state, current => {
   // This Gram's link ended while it waited for the lock: what it owed is obsolete (the next link
   // lists the store afresh, a file live again included), so nothing is written.
   if (g !== state) return null;
@@ -775,7 +781,7 @@ async function expireOwnerSaved(state: State, messages: readonly GramInfo[]) {
  // Stored: no longer owed, unless a newer answer replaced the row meanwhile. Not stored (the lock
  // or storage refused): still owed, so the next list tries again (an unchanged one included).
  if (!failed) for (const m of due) if (state.expiryOwed.get(m.id) === m) state.expiryOwed.delete(m.id);
- if ((moved || state.notes.get("saved") !== note) && g === state) publish();
+ if ((moved || bannerChanged) && g === state) publish();
 }
 /** The saved list as the page knows it, decoded once: ids as its messages' and download events'
  *  ("<grant>\x1f<id>", shownID), so a Saved row's transfer state is the one its downloads report
@@ -1140,17 +1146,17 @@ export const gramDesk: Partial<DeskFns> = {
    const source = { hostID: state.owner.machine.hostID, machine: state.owner.machine.label };
    // A Saved row's key names its copy's machine; a feed row's is the open machine's message.
    const host = keyHost(key) ?? source.hostID;
-   failed = await updateSaved(state, current => {
+   ({ failed } = await updateSaved(state, current => {
     const list = ownerSavedCopies(current);
     return m ? withSaved(list, m, source) : list.filter(s => !(s.id === id && s.hostID === host));
-   });
+   }));
   } else {
-   failed = await updateSaved(state, current => {
+   ({ failed } = await updateSaved(state, current => {
     const list = (Array.isArray(current) ? current as SavedGram[] : []).filter(s => s.id !== id);
     if (m) list.unshift({ id, text: m.text, from: m.from, fromAgent: m.direction === AGENT_TO_OWNER, createdUnixMs: m.createdUnixMs,
      ...(m.file ? { file: { name: m.file.name, mime: m.file.mime, size: m.file.size } } : {}) } as SavedGram);
     return list;
-   });
+   }));
   }
   if (g === state) publish();
   if (failed) throw failed;
