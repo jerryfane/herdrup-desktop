@@ -94,10 +94,12 @@ jobs:
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
-      # apt on the hosted runner normally finishes in 15-20 s, but now and then hangs until the job
-      # timeout cancels the whole smoke (#395, #398 on 2026-11-23). Only the network phase (index
-      # update and package download) is bounded and retried: a timeout there leaves no dpkg state
-      # behind. Unpacking and configuring run once, from the downloaded archives, never under a
+      # apt on the hosted runner normally finishes in 15-20 s, but sometimes hangs (#395, #398) and
+      # sometimes is just slow (~200 kB/s for 50 MB, #359 on 2026-11-24). Only the network phase is
+      # retried: a killed download leaves no dpkg state, and apt resumes its partial files. Each
+      # download attempt is bounded, and attempts continue while the archive cache keeps growing;
+      # two attempts in a row without growth means stuck, not slow. The step limit bounds the total.
+      # Unpacking and configuring run once, from the downloaded archives, never under a
       # per-command timeout, because killing dpkg mid-transaction breaks every later attempt.
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
@@ -105,13 +107,23 @@ jobs:
         run: |
           pkgs="libwebkit2gtk-4.1-0 xvfb"
           opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20"
-          fetched=
+          cached() { sudo du -sb /var/cache/apt/archives | cut -f1; }
+          updated=
           for attempt in 1 2 3; do
             [ "$attempt" -gt 1 ] && sleep 5
-            if sudo timeout 45 apt-get $opts update && sudo timeout 90 apt-get $opts install -y --download-only $pkgs; then
-              fetched=1; break
-            fi
-            echo "::warning::apt download attempt $attempt failed or timed out"
+            if sudo timeout 60 apt-get $opts update; then updated=1; break; fi
+            echo "::warning::apt update attempt $attempt failed or timed out"
+          done
+          [ -n "$updated" ] || exit 1
+          fetched=; stalled=0; attempt=0; before=$(cached)
+          while [ "$stalled" -lt 2 ]; do
+            attempt=$((attempt + 1))
+            [ "$attempt" -gt 1 ] && sleep 5
+            if sudo timeout 120 apt-get $opts install -y --download-only $pkgs; then fetched=1; break; fi
+            after=$(cached)
+            if [ "$after" -gt "$before" ]; then stalled=0; else stalled=$((stalled + 1)); fi
+            echo "::warning::apt download attempt $attempt incomplete ($before -> $after bytes cached)"
+            before=$after
           done
           [ -n "$fetched" ] || exit 1
           sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-download $pkgs
