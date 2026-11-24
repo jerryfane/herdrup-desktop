@@ -76,7 +76,7 @@ jobs:
       matrix:
         os: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos-smoke')) && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]') || fromJSON('["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -95,18 +95,35 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
       # apt on the hosted runner normally finishes in 15-20 s, but sometimes hangs (#395, #398) and
-      # sometimes is just slow (~200 kB/s for 50 MB, #359 on 2026-11-24). Only the network phase is
+      # sometimes is very slow (~60-200 kB/s for 50 MB, #359 and #413 on 2026-11-24). So the
+      # downloaded .debs are cached weekly (bump v1 when the package list changes): a hit leaves
+      # only the small index update and any changed packages to fetch. Only the network phase is
       # retried: a killed download leaves no dpkg state, and apt resumes its partial files. Each
       # download attempt is bounded, and attempts continue while the archive cache keeps growing;
       # two attempts in a row without growth means stuck, not slow. The step limit bounds the total.
       # Unpacking and configuring run once, from the downloaded archives, never under a
       # per-command timeout, because killing dpkg mid-transaction breaks every later attempt.
+      - name: Week for the apt package cache
+        if: runner.os == 'Linux'
+        id: aptweek
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached WebKitGTK packages
+        if: runner.os == 'Linux'
+        id: aptcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/herdrup-apt
+          key: apt-webkit-v1-${{ runner.os }}-${{ steps.aptweek.outputs.week }}
+          restore-keys: apt-webkit-v1-${{ runner.os }}-
       - name: Install WebKitGTK and a virtual display
         if: runner.os == 'Linux'
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           pkgs="libwebkit2gtk-4.1-0 xvfb"
           opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20"
+          debs=~/.cache/herdrup-apt
+          mkdir -p "$debs"
+          if ls "$debs"/*.deb >/dev/null 2>&1; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
           # Measure the archive cache; a failed measurement is an error, not a stalled download.
           cached() {
             local out
@@ -116,7 +133,7 @@ jobs:
           updated=
           for attempt in 1 2 3; do
             [ "$attempt" -gt 1 ] && sleep 5
-            if sudo timeout 60 apt-get $opts update --error-on=any; then updated=1; break; fi
+            if sudo timeout 120 apt-get $opts update --error-on=any; then updated=1; break; fi
             echo "::warning::apt update attempt $attempt failed or timed out"
           done
           [ -n "$updated" ] || exit 1
@@ -131,7 +148,15 @@ jobs:
             before=$after
           done
           [ -n "$fetched" ] || exit 1
+          if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then cp /var/cache/apt/archives/*.deb "$debs"/; fi
           sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-download $pkgs
+      # Saved right after the download, so a later failing step still leaves the cache filled.
+      - name: Save WebKitGTK packages for later runs
+        if: runner.os == 'Linux' && steps.aptcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/herdrup-apt
+          key: apt-webkit-v1-${{ runner.os }}-${{ steps.aptweek.outputs.week }}
       - name: Fetch pinned offline speech engine
         if: runner.os == 'Linux' || runner.os == 'Windows'
         uses: actions/checkout@v5
