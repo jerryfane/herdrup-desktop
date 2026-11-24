@@ -445,6 +445,7 @@ test("a request while the composer has focus opens no sheet: a notice says so, t
   expect(w.doc.activeElement).toBe(w.code());
   // Review cancelled the pause's look: it doesn't open the sheet again later.
   w.clock.to(60_000);
+  for (let i = 0; i < 50; i++) { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
   expect(w.doc.body.children.filter(c => c.tagName === "dialog")).toHaveLength(1);
  } finally {
   jest.clearAllTimers();
