@@ -164,9 +164,29 @@ func TestPullFollowsTheCursorAndARemovedFloorRestartsAFullPull(t *testing.T) {
 	}
 }
 
+// endOnStatus is a transport that ends the request (cancel) once the
+// answer's status line and headers have arrived with status, before its
+// body is read.
+type endOnStatus struct {
+	base   http.RoundTripper
+	status int
+	cancel context.CancelFunc
+}
+
+func (e endOnStatus) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := e.base.RoundTrip(r)
+	if err == nil && resp.StatusCode == e.status {
+		e.cancel()
+	}
+	return resp, err
+}
+
 // #448 review: a 410 whose body stalls until the request ends is still a
 // reset: the status line decides, before the body is read, so the caller
-// is told Reset with the error and can note it.
+// is told Reset with the error and can note it. The request is ended once
+// the client has the 410's headers, while the handler still holds its
+// body back (no wall-clock deadline; the 10 s bound only stops a hung
+// test).
 func TestA410WhoseBodyStallsIsStillAReset(t *testing.T) {
 	s := &syncService{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -180,15 +200,15 @@ func TestA410WhoseBodyStallsIsStillAReset(t *testing.T) {
 		s.serve(w, r)
 	}))
 	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	store := &memStore{}
 	store.raw, _ = json.Marshal(stored{RefreshToken: token("r1", 1), Session: Session{AccountID: "acct"}})
-	c := New(srv.URL, "linux", store, srv.Client())
+	c := New(srv.URL, "linux", store, &http.Client{Transport: endOnStatus{base: srv.Client().Transport, status: http.StatusGone, cancel: cancel}})
 	c.now = func() time.Time { return time.Unix(1_800_000_000, 0) }
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
 	p, err := c.PullSince(ctx, acctRound, 3)
-	if err == nil || !p.Reset {
-		t.Fatalf("%+v, %v; want the pull failed and the 410 reported (Reset)", p, err)
+	if !errors.Is(err, context.Canceled) || !p.Reset {
+		t.Fatalf("%+v, %v; want the pull ended while the 410's body was blocked, and the 410 reported (Reset)", p, err)
 	}
 }
 
