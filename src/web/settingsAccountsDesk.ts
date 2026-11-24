@@ -15,7 +15,7 @@ import { ErrUnsupported } from "./engine";
 import { emit, events } from "./events";
 import { onLinkChanged } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
-import { currentOwnerLink, LINK_CHANGED, onLinkClosing, ownerCall, OwnerRefusedError, settingsCall, settingsLink, settingsScope, type OwnerLink, type SettingsScope } from "./ownerLink";
+import { CLOSING_WAIT_MS, currentOwnerLink, LINK_CHANGED, onLinkClosing, ownerCall, OwnerRefusedError, settingsCall, settingsLink, settingsScope, type OwnerLink, type SettingsScope } from "./ownerLink";
 
 type DeskFns = typeof GoDesk;
 
@@ -206,21 +206,27 @@ function closePane(link: OwnerLink, pane: string): Promise<unknown> {
  return link.client.call("pane.close", { pane_id: pane }, "ok", "", AbortSignal.timeout(5000)).catch(() => undefined);
 }
 
-/** How long a pane.split already sent may take to answer, whatever happens to its link: the pane it
- *  made is then closed on that link (the link waits for that cleanup, ownerLink.ts linkClosing). */
-export const SPLIT_WAIT_MS = 5000;
-
 /** BackgroundPane: a pane split off the focused one, not focused, in scope (on its link, while it is
  *  the open one). Until its frame is handed to the socket it is a Settings call like any other:
  *  cancelled with the scope and with unsent (a sign-in dialog's lifetime), so a split still waiting
- *  for the relay's admission when they end is never sent (ownerCall's unsent, as createDesk.ts
- *  splitPane). Once sent, its answer is awaited past them and past the link's end (SPLIT_WAIT_MS,
- *  the reply window): herdr may have made the pane, and only its id lets the caller close it.
- *  Callers check that the operation is still live right before it. */
+ *  for the relay's admission when they end is never sent (ownerCall's unsent). Once sent, herdr may
+ *  make the pane and only its answer names it: that is awaited while the operation lasts, and
+ *  CLOSING_WAIT_MS more once it has ended (the scope, the dialog, or the link with them), as
+ *  createDesk.ts splitPane does for New terminal; a slow relay admission takes none of that
+ *  window. The caller then closes the pane. The window's listener and timer last only while the
+ *  split is out. Callers check that the operation is still live right before it. */
 async function backgroundPane(scope: SettingsScope, unsent?: AbortSignal): Promise<string> {
  const before = unsent ? AbortSignal.any([scope.signal, unsent]) : scope.signal;
- const reply = AbortSignal.timeout(SPLIT_WAIT_MS);
- return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", { direction: "down" }, "pane_info", { link: scope.link, unsent: before, signal: reply })).pane.pane_id;
+ const reply = new AbortController();
+ let timer: ReturnType<typeof setTimeout> | undefined;
+ const arm = () => { timer = setTimeout(() => reply.abort(before.reason), CLOSING_WAIT_MS); };
+ if (before.aborted) arm(); else before.addEventListener("abort", arm, { once: true });
+ try {
+  return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", { direction: "down" }, "pane_info", { link: scope.link, unsent: before, signal: reply.signal })).pane.pane_id;
+ } finally {
+  before.removeEventListener("abort", arm);
+  clearTimeout(timer);
+ }
 }
 
 // The auth pane rule (sign-in and logout). A send to the pane (the command, the code, Enter) goes

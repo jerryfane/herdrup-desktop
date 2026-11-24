@@ -24,7 +24,8 @@ import { createGuestDesk } from "../src/web/desk";
 import { accountLabel } from "../src/listExtras";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { AgentInfo } from "../src/web/board";
-import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, SPLIT_WAIT_MS, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
+import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
+import { CLOSING_WAIT_MS } from "../src/web/ownerLink";
 import { guestsDesk } from "../src/web/guestsDesk";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
@@ -1185,28 +1186,66 @@ for (const step of laterSteps) {
  });
 }
 
-test("a sign-in's pane.split that went out but is never answered ends at its reply window, nothing typed", async () => {
+// ---- #465 P3: the split's reply window starts when its operation ends, not before admission ----
+
+const settleAll = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+
+test("a slow relay admission takes none of the split's reply window: herdr's answer 1.7 s after the split reached it at 3.9 s is the sign-in's pane", async () => {
  jest.useFakeTimers();
- const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
  try {
-  const host = ownerLink(async (method) => {
-   if (method === "pane.split") await new Promise(() => {}); // sent; herdr never answers
+  let armed = false;
+  const host: ReturnType<typeof ownerLink> = ownerLink(async (method) => {
+   // The sign-in's account lookup answered, the next frame (the split) waits 3.9 s for the relay.
+   if (method === "accounts.list" && armed) { armed = false; host.host.admission = new Promise((r) => setTimeout(r, 3900)); }
+   if (method === "pane.split") { host.host.admission = null; await new Promise((r) => setTimeout(r, 1700)); return { type: "pane_info", pane: { pane_id: "auth-1" } }; }
    if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
   });
-  await settle();
+  await settleAll();
+  armed = true;
   let outcome = "pending";
-  void createSettingsAccountsDesk().startAccountLogin("tok", "L1", "a1", false).then(() => { outcome = "started"; }, () => { outcome = "ended"; });
-  await settle();
+  void createSettingsAccountsDesk().startAccountLogin("tok", "L1", "a1", false).then(() => { outcome = "started"; }, (error: Error) => { outcome = error.message; });
+  await settleAll();
+  jest.advanceTimersByTime(3900); await settleAll();
   expect(host.of("pane.split")).toHaveLength(1);
-  jest.advanceTimersByTime(SPLIT_WAIT_MS - 1); await settle();
-  expect(outcome).toBe("pending");
-  jest.advanceTimersByTime(1); await settle();
-  expect(outcome).toBe("ended");
-  expect([host.of("pane.send_text"), host.of("pane.send_keys")]).toEqual([[], []]);
+  jest.advanceTimersByTime(1700); await settleAll();
+  expect(outcome).toBe("started");
+  expect([host.of("pane.send_text").map((c) => c.params.pane_id), host.of("pane.close")]).toEqual([["auth-1"], []]);
  } finally {
   jest.useRealTimers();
  }
 });
+
+for (const answered of [true, false]) {
+ test(`a sign-in closed while its sent split waits awaits the answer ${CLOSING_WAIT_MS} ms more: ${answered ? "answered within, its pane is closed untyped" : "never answered, it ends then, nothing typed"}`, async () => {
+  jest.useFakeTimers();
+  try {
+   const answer = Promise.withResolvers<void>();
+   const host = ownerLink(async (method) => {
+    if (method === "pane.split") { await answer.promise; return { type: "pane_info", pane: { pane_id: "auth-1" } }; }
+    if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+   });
+   await settleAll();
+   const desk = createSettingsAccountsDesk();
+   let outcome = "pending";
+   void desk.startAccountLogin("tok", "L1", "a1", false).then(() => { outcome = "started"; }, () => { outcome = "ended"; });
+   await settleAll();
+   expect(host.of("pane.split")).toHaveLength(1);
+   jest.advanceTimersByTime(60_000); await settleAll(); // the sign-in is open: its split's answer is still awaited
+   expect(outcome).toBe("pending");
+   void desk.closeAccountLogin("tok", "L1");
+   await settleAll();
+   jest.advanceTimersByTime(CLOSING_WAIT_MS - 1); await settleAll();
+   expect(outcome).toBe("pending");
+   if (answered) answer.resolve(); else jest.advanceTimersByTime(1);
+   await settleAll();
+   expect(outcome).toBe("ended");
+   expect(host.of("pane.send_text")).toEqual([]);
+   expect(host.of("pane.close").map((c) => c.params.pane_id)).toEqual(answered ? ["auth-1"] : []);
+  } finally {
+   jest.useRealTimers();
+  }
+ });
+}
 
 // ---- #360 post-merge review ----
 
