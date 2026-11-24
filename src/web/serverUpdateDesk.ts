@@ -180,34 +180,43 @@ export function createServerUpdateDesk(options: ServerUpdateDeskOptions = {}) {
     try { previous = await settingsCall(scope, "server.update_status", {}, "update_status", { capability: "server_update" }); } catch (error) { refusedToBrowser(s, error); throw error; } // no apply was sent
     letIn(s);
     stillOn(token, link);
-    s.flow = "running"; delete s.attempt; s.restartLater = restartLater;
-    s.code = ""; s.message = "";
-    s.missing = updateMissing(s.capabilities);
-    u.targetID = ""; u.targetBuild = buildID; u.previousID = previous.attempt?.attempt_id ?? "";
+    const previousID = previous.attempt?.attempt_id ?? "";
+    // The attempt's state stays here until the result is one the card shows (herdr refused the
+    // apply, or there is an update to follow): an apply that never went out leaves the card's
+    // snapshot as it was (one refused to this browser only says so, refusedToBrowser).
+    const attempt = (flow: string) => {
+     s.flow = flow; delete s.attempt; s.restartLater = restartLater;
+     s.code = ""; s.message = "";
+     s.missing = updateMissing(s.capabilities);
+    };
+    const followAttempt = (targetID: string) => {
+     attempt("running");
+     u.targetID = targetID; u.targetBuild = buildID; u.previousID = previousID;
+     u.following = true;
+     void follow(u);
+    };
+    let targetID: string;
     try {
      // Settings' cancellation reaches the transport: an apply still waiting for the relay to
      // admit it when Settings closes is never sent.
-     u.targetID = (await settingsCall<{ attempt_id: string }>(scope, "server.update_apply", { build_id: buildID, restart_later: restartLater }, "update_apply", { capability: "server_update" })).attempt_id;
+     targetID = (await settingsCall<{ attempt_id: string }>(scope, "server.update_apply", { build_id: buildID, restart_later: restartLater }, "update_apply", { capability: "server_update" })).attempt_id;
     } catch (error) {
-     if (refusedToBrowser(s, error)) { s.flow = "idle"; throw error; }
-     // Never sent (Settings closed or the link ended before it went, the connection failed): herdr
-     // has nothing to follow, so the card is back where it was, the update still offered.
-     if (error instanceof NotSentError) { s.flow = "idle"; u.targetBuild = ""; u.previousID = ""; throw error; }
+     // Refused to this browser, or never sent (Settings closed or the link ended before it went,
+     // the connection failed): herdr has nothing to follow, the update is still offered.
+     if (refusedToBrowser(s, error) || error instanceof NotSentError) throw error;
      if (error instanceof HerdrAPIError || error instanceof ErrUnsupported) {
-      s.flow = "refused"; s.message = errorText(error);
+      attempt("refused"); s.message = errorText(error);
       if (error instanceof HerdrAPIError) { s.code = error.code; s.message = error.apiMessage; }
       else s.code = "update_unsupported_install";
       return;
      }
      // No answer (the transport, or Settings closed while it waited): herdr may have it, so it is
      // followed, never sent again; Settings closing is still the caller's answer.
-     u.following = true;
-     void follow(u);
+     followAttempt("");
      if (scope.signal.aborted) throw error;
      return;
     }
-    u.following = true;
-    void follow(u);
+    followAttempt(targetID);
    });
   },
 

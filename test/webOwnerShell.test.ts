@@ -426,3 +426,14 @@ test("a stored record not of id lists by machine is unreadable: set settles, the
   expect([bad, lists.get("alpha"), shared().getItem("open")]).toEqual([bad, ["A1"], bad]);
  }
 });
+
+test("one machine's damaged entry doesn't hide another machine's saved list; writes still leave the record as it is", async () => {
+ const granted: Locks = { request: <T>(_name: string, run: () => Promise<T>) => run() };
+ const bad = JSON.stringify({ alpha: [1], beta: ["muted-pane"] });
+ const shared = memory();
+ shared().setItem("muted", bad);
+ const lists = machineLists("muted", shared, granted);
+ expect([lists.get("beta"), lists.get("alpha"), lists.get("gamma")]).toEqual([["muted-pane"], [], []]);
+ await lists.set("beta", "p2", true);
+ expect([lists.get("beta"), shared().getItem("muted")]).toEqual([["muted-pane", "p2"], bad]);
+});
