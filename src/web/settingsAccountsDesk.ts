@@ -11,8 +11,7 @@
 import type { AccountLoginState, Desk as GoDesk } from "../mygo";
 import { errorText } from "../errors";
 import { sleep } from "../webguest/abort";
-import { HerdrAPIError } from "../webguest/errors";
-import { ErrUnsupported, untagged } from "./engine";
+import { ErrUnsupported } from "./engine";
 import { emit, events } from "./events";
 import { onLinkChanged } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
@@ -214,19 +213,14 @@ export const SPLIT_WAIT_MS = 5000;
 /** BackgroundPane: a pane split off the focused one, not focused, in scope (on its link, while it is
  *  the open one). Until its frame is handed to the socket it is a Settings call like any other:
  *  cancelled with the scope and with unsent (a sign-in dialog's lifetime), so a split still waiting
- *  for the relay's admission when they end is never sent (RequestOptions.sendSignal). Once sent,
- *  its answer is awaited past them and past the link's end (SPLIT_WAIT_MS): herdr may have made the
- *  pane, and only its id lets the caller close it. Callers check that the operation is still live
- *  right before it. */
+ *  for the relay's admission when they end is never sent (ownerCall's unsent, as createDesk.ts
+ *  splitPane). Once sent, its answer is awaited past them and past the link's end (SPLIT_WAIT_MS,
+ *  the reply window): herdr may have made the pane, and only its id lets the caller close it.
+ *  Callers check that the operation is still live right before it. */
 async function backgroundPane(scope: SettingsScope, unsent?: AbortSignal): Promise<string> {
- const link = scope.link;
- if (currentOwnerLink() !== link) throw new Error(LINK_CHANGED);
- const sendSignal = unsent ? AbortSignal.any([scope.signal, unsent]) : scope.signal;
- try {
-  return untagged<{ pane: { pane_id: string } }>(await link.client.call("pane.split", { direction: "down" }, "pane_info", "", AbortSignal.timeout(SPLIT_WAIT_MS), sendSignal)).pane.pane_id;
- } catch (error) {
-  throw error instanceof HerdrAPIError && error.code === "owner_forbidden" ? new OwnerRefusedError("pane.split") : error;
- }
+ const before = unsent ? AbortSignal.any([scope.signal, unsent]) : scope.signal;
+ const reply = AbortSignal.timeout(SPLIT_WAIT_MS);
+ return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", { direction: "down" }, "pane_info", { link: scope.link, unsent: before, signal: reply })).pane.pane_id;
 }
 
 // The auth pane rule (sign-in and logout). A send to the pane (the command, the code, Enter) goes

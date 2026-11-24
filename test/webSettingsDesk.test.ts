@@ -24,7 +24,7 @@ import { createGuestDesk } from "../src/web/desk";
 import { accountLabel } from "../src/listExtras";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { AgentInfo } from "../src/web/board";
-import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
+import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, SPLIT_WAIT_MS, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
 import { guestsDesk } from "../src/web/guestsDesk";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
@@ -1182,6 +1182,29 @@ for (const step of laterSteps) {
   expect(host.of("pane.close").map((c) => c.params.pane_id)).toEqual(["auth-1"]);
  });
 }
+
+test("a sign-in's pane.split that went out but is never answered ends at its reply window, nothing typed", async () => {
+ jest.useFakeTimers();
+ const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+ try {
+  const host = ownerLink(async (method) => {
+   if (method === "pane.split") await new Promise(() => {}); // sent; herdr never answers
+   if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+  });
+  await settle();
+  let outcome = "pending";
+  void createSettingsAccountsDesk().startAccountLogin("tok", "L1", "a1", false).then(() => { outcome = "started"; }, () => { outcome = "ended"; });
+  await settle();
+  expect(host.of("pane.split")).toHaveLength(1);
+  jest.advanceTimersByTime(SPLIT_WAIT_MS - 1); await settle();
+  expect(outcome).toBe("pending");
+  jest.advanceTimersByTime(1); await settle();
+  expect(outcome).toBe("ended");
+  expect([host.of("pane.send_text"), host.of("pane.send_keys")]).toEqual([[], []]);
+ } finally {
+  jest.useRealTimers();
+ }
+});
 
 // ---- #360 post-merge review ----
 
