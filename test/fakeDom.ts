@@ -31,6 +31,7 @@ export class FakeDocument extends EventTarget {
  visibilityState = "visible";
  constructor() { super(); this.body = new FakeElement("body", this); }
  createElement(tag: string) { return new FakeElement(tag, this); }
+ getElementById(id: string) { return this.body.all().find(n => n.id === id) ?? null; }
 }
 
 /** The DOM the page code uses, behaving as a browser's does where that code depends on it: events
@@ -38,7 +39,8 @@ export class FakeDocument extends EventTarget {
  *  a radio (unticking the rest of its group) or checkbox, and a click on a label activates its
  *  control (for/id, or the one inside it);
  *  focus() needs an enabled element in the document; showModal() needs a dialog in the document
- *  that isn't open; close() fires "close". Text appended to an element adds to its textContent;
+ *  that isn't open, and moves the focus into it (the dialog itself here: its focusing steps' last
+ *  resort); close() fires "close". Text appended to an element adds to its textContent;
  *  text() is the element's text with all it holds. */
 export class FakeElement extends Listened {
  className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
@@ -63,6 +65,9 @@ export class FakeElement extends Listened {
   }
  }
  appendChild(n: FakeElement) { this.append(n); return n; }
+ prepend(...nodes: FakeElement[]) {
+  for (const n of nodes.toReversed()) { n.remove(); n.parent = this; this.children.unshift(n); }
+ }
  replaceChildren(...nodes: (FakeElement | string)[]) {
   for (const c of [...this.children]) c.remove();
   this.textContent = "";
@@ -105,6 +110,7 @@ export class FakeElement extends Listened {
  showModal(): void {
   if (this.open || !this.connected()) throw new Error("InvalidStateError: showModal on a dialog that's open or not in the document");
   this.open = true;
+  this.ownerDocument.activeElement = this;
  }
  close(): void { if (!this.open) return; this.open = false; this.dispatchEvent(new Event("close")); }
 }

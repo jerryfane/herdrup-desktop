@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { choiceRows, followPresses, initWebAccess, type SheetClock } from "../src/webAccess";
+import { choiceRows, followPresses, initWebAccess, takesTyping, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
 import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 import { FakeDocument, FakeElement, Listened } from "./fakeDom";
@@ -377,6 +377,131 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
   jest.clearAllTimers();
   jest.useRealTimers();
  }
+});
+
+/** A signed-in window with a sidebar foot and the composer, where one browser asks for approval and
+ *  shows its code when ready() is called. type() presses keys as a person does: each goes to the
+ *  element with focus, and the document hears its keydown and input. */
+function askingWindow() {
+ jest.useFakeTimers();
+ const doc = new FakeDocument();
+ const on = new Map<string, (payload: unknown) => void>();
+ G.document = doc;
+ G.devicePixelRatio = 1;
+ G.mygo = {
+  on: (name: string, l: (payload: unknown) => void) => { on.set(name, l); return () => on.delete(name); },
+  call: async (method: string) => {
+   switch (method) {
+    case "Desk.AccountState": return { signedIn: true };
+    case "Desk.WebAccessOffered": return true;
+    case "Desk.WebAccessRequests": return [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
+    case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
+    case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
+    case "Desk.WebAccessStart": return undefined;
+    default: return Promise.withResolvers<never>().promise;
+   }
+  },
+ };
+ const foot = doc.createElement("div"); foot.id = "sidebar-foot";
+ const composer = doc.createElement("textarea");
+ doc.body.append(foot, composer);
+ const clock = handClock(0);
+ const dialog = () => doc.body.children.find(c => c.tagName === "dialog");
+ return {
+  doc, composer, clock, dialog,
+  code: () => dialog()?.all().find(n => n.className === "web-access-code"),
+  notice: () => foot.children.find(n => n.className === "web-access-notice"),
+  start: () => { initWebAccess(clock); doc.dispatchEvent(new Event("visibilitychange")); },
+  ready: () => on.get("web-access:update")?.({ id: "r1", state: "ready" }),
+  type: (text: string) => {
+   for (const ch of text) {
+    const target = doc.activeElement;
+    doc.dispatchEvent(new Event("keydown"));
+    if (target) { target.value += ch; doc.dispatchEvent(new Event("input")); }
+   }
+  },
+ };
+}
+
+test("a request while the composer has focus opens no sheet: a notice says so, the keys stay in the composer, and Review opens the sheet with its code field focused (#464)", async () => {
+ const w = askingWindow();
+ try {
+  w.composer.focus();
+  w.type("hel");
+  w.start();
+  await until("the notice", () => w.notice() !== undefined);
+  expect(w.notice()!.text()).toBe("A browser wants to reach your machines.Review");
+  expect(w.dialog()).toBeUndefined();
+  expect(w.doc.activeElement).toBe(w.composer);
+  // Typing on, a key a second: no pause long enough to open the sheet.
+  for (const [i, ch] of [..."lo, world"].entries()) { w.clock.to((i + 1) * 1000); w.type(ch); }
+  expect(w.composer.value).toBe("hello, world");
+  expect(w.doc.activeElement).toBe(w.composer);
+  expect(w.dialog()).toBeUndefined();
+  w.notice()!.children.find(n => n.tagName === "button" && n.textContent === "Review")!.click();
+  await until("an open sheet", () => w.dialog()?.open === true);
+  expect(w.notice()).toBeUndefined();
+  w.ready();
+  expect(w.doc.activeElement).toBe(w.code());
+  // Review cancelled the pause's look: it doesn't open the sheet again later.
+  w.clock.to(60_000);
+  for (let i = 0; i < 50; i++) { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
+  expect(w.doc.body.children.filter(c => c.tagName === "dialog")).toHaveLength(1);
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("the notice's sheet opens by itself once typing has paused for 5 s, counted from the last key (#464)", async () => {
+ const w = askingWindow();
+ try {
+  w.composer.focus();
+  w.start();
+  await until("the notice", () => w.notice() !== undefined);
+  w.clock.to(3000);
+  w.type("x");
+  w.clock.to(TYPING_PAUSE_MS);
+  expect(w.dialog()).toBeUndefined();
+  w.clock.to(3000 + TYPING_PAUSE_MS - 1);
+  expect(w.dialog()).toBeUndefined();
+  w.clock.to(3000 + TYPING_PAUSE_MS);
+  await until("an open sheet", () => w.dialog()?.open === true);
+  expect(w.notice()).toBeUndefined();
+  // showModal took the focus into the sheet, so the code field takes it when the code is shown.
+  w.ready();
+  expect(w.doc.activeElement).toBe(w.code());
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("with no field taking typing focused the sheet opens at once, as before, and the code field takes the focus only from within the sheet (#464)", async () => {
+ const w = askingWindow();
+ try {
+  const box = w.doc.createElement("input"); box.type = "checkbox";
+  w.doc.body.append(box);
+  box.focus();
+  w.start();
+  await until("an open sheet", () => w.dialog()?.open === true);
+  expect(w.notice()).toBeUndefined();
+  // A field outside the sheet has the focus when the code is shown: the code field leaves it there.
+  w.composer.focus();
+  w.ready();
+  expect(w.code()!.disabled).toBe(false);
+  expect(w.doc.activeElement).toBe(w.composer);
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("text fields, textareas and editable content take typing; checkboxes, buttons and the rest don't", () => {
+ const doc = new FakeDocument();
+ const node = (tag: string, type = "", editable = false) => Object.assign(doc.createElement(tag), { type, isContentEditable: editable }) as unknown as Element;
+ for (const n of [node("textarea"), node("input"), node("input", "text"), node("input", "search"), node("input", "email"), node("div", "", true)]) expect(takesTyping(n)).toBe(true);
+ for (const n of [null, node("input", "checkbox"), node("input", "radio"), node("input", "button"), node("input", "range"), node("button"), node("div"), node("dialog")]) expect(takesTyping(n)).toBe(false);
 });
 
 test("the line under the rows says what Approve turns on and why a machine can't be ticked, with Machines closed", () => {

@@ -43,6 +43,14 @@ button.web-access-row-head:focus-visible { outline: 2px solid var(--color-text-f
 .web-access-row-body { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 14px; }
 .web-access-warning { margin: 0 14px 14px; padding: 9px 12px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--color-hairline); color: var(--color-text-dim); font: 400 12.5px/1.45 var(--font-app); }
 
+/* A request that came while the user was typing (webAccess.ts notify): one plain line in the
+   sidebar's foot, stacked over the tab bar as the Topics switch's notice is (agentActions.css),
+   muted words and Review, a compact capsule (buttons.css). The words wrap rather than clip in the
+   narrowest sidebar. */
+.web-access-notice { display: flex; align-items: center; gap: 10px; box-sizing: border-box; padding: 8px 16px 8px 20px; border-top: 1px solid var(--color-hairline-quiet); color: var(--color-text-dim); font: 400 13px/1.4 var(--font-app); }
+.web-access-notice-text { flex: 1; min-width: 0; }
+.web-access-notice button { flex: none; }
+
 .web-access-machines { display: flex; flex-direction: column; border: 1px solid var(--color-hairline); border-radius: 10px; }
 .web-access-machine { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font: 400 14px var(--font-app); }
 .web-access-machine + .web-access-machine { border-top: 1px solid var(--color-hairline-quiet); }

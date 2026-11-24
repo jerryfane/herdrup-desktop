@@ -1,9 +1,10 @@
 // Web owner access, the approving computer's side (WIRE-PLAN §2, D1; mockups
 // herdrup-accounts-mockups/web-owner sections 2 and 5): while the app is in front and signed in,
 // it looks for browsers asking to reach the owner's machines (no push in v1), and opens
-// "Approve a browser?". The user types the code the browser shows, picks machines, access and
-// time, and this computer adds a grant on each machine over SSH. Desktop only: the web guest is
-// the browser being approved, never the approver.
+// "Approve a browser?", or, while the user is typing, says so in the sidebar's foot until Review or
+// a pause in typing opens it (#464). The user types the code the browser shows, picks machines,
+// access and time, and this computer adds a grant on each machine over SSH. Desktop only: the web
+// guest is the browser being approved, never the approver.
 
 import "./webAccess.css";
 import { Desk, events } from "./mygo";
@@ -161,13 +162,35 @@ export function followPresses(input: HTMLInputElement) {
  };
 }
 
-export function initWebAccess(): void {
+/** How long typing must pause before a request that came while the user was typing opens its
+ *  sheet (#464). */
+export const TYPING_PAUSE_MS = 5000;
+
+/** Input types that take no typing: a focused one is not text being written. */
+const UNTYPED_INPUTS: Record<string, true> = { button: true, checkbox: true, color: true, file: true, hidden: true, image: true, radio: true, range: true, reset: true, submit: true };
+
+/** Whether node takes typing: a text field, a textarea or editable content. */
+export function takesTyping(node: Element | null): boolean {
+ if (!node) return false;
+ if ((node as HTMLElement).isContentEditable === true) return true;
+ const tag = node.tagName.toLowerCase();
+ return tag === "textarea" || (tag === "input" && !UNTYPED_INPUTS[(node as HTMLInputElement).type]);
+}
+
+/** clock is the For row's, and times the pause in typing (tests pass their own). */
+export function initWebAccess(clock: SheetClock = systemClock): void {
  if (webGuest) return;
  const closed = new Set<string>();
+ // The request whose sheet, or notice, is up.
  let open: string | null = null;
  // The service's last answer to "do you offer browser approval?"; an error isn't kept.
  let offered: { offered: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
+ // When the user last typed anywhere in the window.
+ let typedAt = -Infinity;
+ const typed = () => { typedAt = clock.now(); };
+ document.addEventListener("keydown", typed, true);
+ document.addEventListener("input", typed, true);
 
  const schedule = () => { clearTimeout(timer); timer = setTimeout(() => { void look(); }, POLL_MS); };
  async function look(): Promise<void> {
@@ -178,13 +201,42 @@ export function initWebAccess(): void {
    if (askOffered(offered, Date.now())) offered = { offered: await Desk.webAccessOffered(), at: Date.now() };
    if (!offered?.offered) return;
    const req = nextRequest(await Desk.webAccessRequests() as WebAccessRequestView[], closed);
-   if (req) await showSheet(req, await Desk.webAccessLengths(), () => { closed.add(req.id); open = null; });
+   if (!req) return;
+   const lengths = await Desk.webAccessLengths();
+   const done = () => { closed.add(req.id); open = null; };
+   if (takesTyping(document.activeElement)) notify(req, lengths, done);
+   else await showSheet(req, lengths, done);
   } catch { /* the next look tries again */ }
   finally { schedule(); }
  }
  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { clearTimeout(timer); void look(); } });
  events.accountChanged.on(() => { offered = null; });
  schedule();
+
+ /** A request that came while the user was typing: a modal sheet would take the keys mid-word
+  *  (its code field kept four of them, #464), so a line in the sidebar's foot says so instead,
+  *  taking no focus. Review opens the sheet, and so does a pause in typing. */
+ function notify(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): void {
+  open = req.id;
+  const notice = el("div", "web-access-notice"); notice.setAttribute("role", "status");
+  const review = el("button", "button-secondary button-compact", "Review"); review.type = "button";
+  notice.append(el("span", "web-access-notice-text", "A browser wants to reach your machines."), review);
+  (document.getElementById("sidebar-foot") ?? document.body).prepend(notice);
+  let cancel = () => {};
+  const sheet = () => {
+   cancel(); notice.remove();
+   showSheet(req, lengths, done).catch(() => { /* as a look's: the next look tries again */ });
+  };
+  review.onclick = sheet;
+  // The first look comes a full pause after the notice; a later one a full pause after the last key.
+  const wait = (ms: number) => {
+   cancel = clock.after(ms, () => {
+    const paused = clock.now() - typedAt;
+    if (paused >= TYPING_PAUSE_MS) sheet(); else wait(TYPING_PAUSE_MS - paused);
+   });
+  };
+  wait(TYPING_PAUSE_MS);
+ }
 
  async function showSheet(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): Promise<void> {
   open = req.id;
@@ -274,9 +326,12 @@ export function initWebAccess(): void {
   const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
   code.oninput = () => { code.value = codeInput(code.value); say(""); update(); };
 
+  // The code field takes the focus only from the sheet itself (showModal moves it in): never from
+  // a field the user is typing in outside it (#464).
+  const focusCode = () => { if (dialog.contains(document.activeElement)) code.focus(); };
   const off = events.webAccessUpdate.on(u => {
    if (u.id !== req.id) return;
-   if (u.state === "ready") { status.textContent = "The browser shows a code now."; if (!locked) { code.disabled = false; code.focus(); } update(); return; }
+   if (u.state === "ready") { status.textContent = "The browser shows a code now."; if (!locked) { code.disabled = false; focusCode(); } update(); return; }
    end(); status.textContent = u.problem || "This request ended.";
    update();
   });
@@ -306,7 +361,7 @@ export function initWebAccess(): void {
        say(wrongCode(check));
        code.value = "";
        if (check.left === 0) { lock(); if (check.denied) end(); else close.hidden = false; }
-       else code.focus();
+       else focusCode();
        return;
       }
      }
