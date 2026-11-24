@@ -12,7 +12,7 @@ import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/owner";
 import { generateIdentity, MemoryIdentityStore, staticKey } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
-import { GuestClient } from "../src/web/engine";
+import { ErrUnsupported, GuestClient } from "../src/web/engine";
 import type { WebLink } from "../src/web/link";
 import { emit, events } from "../src/web/events";
 import { currentOwnerLink, LINK_CHANGED, linkClosing, onLinkClosing, OWNER_REFUSED, ownerCall, OwnerRefusedError, setOwnerLink, setOwnerSettings, type OwnerLink } from "../src/web/ownerLink";
@@ -1148,6 +1148,38 @@ test("a call's sendSignal ends the capability ping before it, and the call is ne
  await plain;
 });
 
+test("a call cancelled before it is sent ends with its reason, its capability's pong cached, probed, or answered after the cancel", async () => {
+ let answer: Promise<void> | null = null;
+ const sent: string[] = [];
+ const web = {
+  access: {}, features: () => ({}),
+  async call(method: string) {
+   sent.push(method);
+   if (method !== "ping") return { type: "pane_info", pane: { pane_id: "made" } };
+   await answer;
+   return { type: "pong", version: "0.9.6", capabilities: {} }; // without the call's capability
+  },
+  stream() { throw new Error("no streams"); },
+ } as unknown as WebLink;
+ const reason = new Error("Settings changed");
+ const outcome = (call: Promise<unknown>) => call.then(() => "sent", (error: unknown) => error);
+ const split = (client: GuestClient, sendSignal?: AbortSignal) => outcome(client.call("pane.split", {}, "pane_info", "pane_split", undefined, sendSignal));
+ expect(await split(new GuestClient(web), AbortSignal.abort(reason))).toBe(reason); // no pong yet
+ const warm = new GuestClient(web);
+ await warm.ping();
+ expect(await split(warm, AbortSignal.abort(reason))).toBe(reason); // a pong cached
+ const held = Promise.withResolvers<void>();
+ answer = held.promise;
+ const unsent = new AbortController();
+ const probing = split(new GuestClient(web), unsent.signal);
+ await tick();
+ unsent.abort(reason);
+ held.resolve(); // the probe's pong comes after the cancel
+ expect(await probing).toBe(reason);
+ expect(sent.filter((method) => method !== "ping")).toEqual([]);
+ expect(await split(warm)).toBeInstanceOf(ErrUnsupported); // not cancelled: the cached pong still refuses it
+});
+
 test("an accounts.list refusal clears the row labels, and the poll asks again at its pace while the link is terminal", async () => {
  jest.useFakeTimers();
  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -1172,6 +1204,28 @@ test("an accounts.list refusal clears the row labels, and the poll asks again at
  } finally {
   jest.useRealTimers();
  }
+});
+
+test("replacing the owner link ends the open sign-in's scope: its waiting read ends, its pane closes on the old link, nothing goes to the new one", async () => {
+ let holdRead = false;
+ const a = ownerLink(async (method) => {
+  if (method === "pane.split") return { type: "pane_info", pane: { pane_id: "auth-a" } };
+  if (method === "pane.read") { if (holdRead) await new Promise(() => {}); return { type: "pane_read", read: { text: "" } }; }
+  if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+ });
+ await tick(); await tick();
+ const desk = createSettingsAccountsDesk();
+ await desk.startAccountLogin("tok", "L1", "a1", false);
+ holdRead = true;
+ const polling = desk.pollAccountLogin("tok", "L1").then(() => "answered", (error: Error) => error.message);
+ await tick(); await tick();
+ expect(a.of("pane.read")).toHaveLength(1);
+ // The next machine's link replaces this one (its connection not closed yet).
+ const b = ownerLink();
+ expect(await withinSeconds(2, polling)).not.toBe("answered");
+ await tick(); await tick();
+ expect(a.of("pane.close").map((c) => c.params.pane_id)).toEqual(["auth-a"]);
+ expect(["pane.split", "pane.send_text", "pane.send_keys", "pane.read", "pane.close"].flatMap((method) => b.of(method))).toEqual([]);
 });
 
 // The transport itself (round 8): sendSignal ends a request while it waits for a connection, never
