@@ -138,6 +138,66 @@ jobs:
           sleep 15
           kill -0 "$pid" || { cat "$RUNNER_TEMP/app.log"; exit 1; }
           kill "$pid"; wait "$pid" || true
+          # With Developer ID signing on, what Gatekeeper and the notary see:
+          # the hardened runtime, a secure timestamp and the microphone
+          # entitlement on the app and the speech helper, the notarized verdict
+          # of the app and the disk image, and the stapled tickets. Skipped
+          # with ad hoc signing.
+          if [ -n "$HERDRUP_SIGNING_IDENTITY" ]; then
+            # run <command…>: prints the command and its output into $out, and
+            # fails the job when it fails; need <regex> fails without a match.
+            run() {
+              echo "+ $*"
+              local status=0
+              out="$("$@" 2>&1)" || status=$?
+              printf '%s\n' "$out"
+              [ "$status" -eq 0 ] || { echo "::error::$1 failed with status $status"; exit 1; }
+            }
+            need() {
+              grep -Eq -- "$1" <<<"$out" || { echo "::error::expected a line matching $1"; exit 1; }
+            }
+            helper="$app/Contents/Resources/herdrup-speech"
+            for code in "$app" "$helper"; do
+              run codesign -d --verbose=2 "$code"
+              need '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'
+              need '^Timestamp='
+              # The app is the helper's responsible process: both need the
+              # entitlement, set to true.
+              entitlements="$RUNNER_TEMP/entitlements.plist"
+              echo "+ codesign -d --entitlements :- $code"
+              codesign -d --entitlements :- "$code" > "$entitlements"
+              cat "$entitlements"
+              run /usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$entitlements"
+              [ "$out" = true ] || { echo "::error::audio-input of $code is not true"; exit 1; }
+            done
+            # Online Gatekeeper accepts the notarized app without a staple.
+            run spctl -a -vv -t exec "$app"
+            need '^source=Notarized Developer ID'
+            run spctl -a -vv -t open --context context:primary-signature "$dmg"
+            need '^source=Notarized Developer ID'
+            # mygo v0.7.1 staples the disk image and the app it built, which
+            # updates install, but not the copy in the image ("The image's
+            # copy stays without it", cmd/mygo/dmg.go): validate the staples
+            # of the disk image, the built app and the app of each update
+            # archive (made from the built app, when updates are signed).
+            run xcrun stapler validate "$dmg"
+            stapled=0
+            for built in build/darwin-universal/*.app; do
+              [ -d "$built" ] || continue
+              run xcrun stapler validate "$built"
+              stapled=$((stapled + 1))
+            done
+            for archive in build/darwin-universal/*.tar.gz; do
+              [ -f "$archive" ] || continue
+              dir="$(mktemp -d "$RUNNER_TEMP/update.XXXXXX")"
+              run tar -xzf "$archive" -C "$dir"
+              updated="$(find "$dir" -maxdepth 2 -type d -name '*.app' | head -n 1)"
+              [ -n "$updated" ] || { echo "::error::no app in $archive"; exit 1; }
+              run xcrun stapler validate "$updated"
+              stapled=$((stapled + 1))
+            done
+            [ "$stapled" -gt 0 ] || { echo "::error::no stapled app in build/darwin-universal"; exit 1; }
+          fi
       # Into one folder, so that the artifact holds the files themselves and
       # not the build/<os>-<arch>/ folders around them. With signed updates,
       # every platform also has its archive (*.tar.gz), deltas (*.delta) and

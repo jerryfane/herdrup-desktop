@@ -57,12 +57,23 @@ export default defineConfig({
     categories: ["Development"],
   },
   // Developer ID signing and notarization, off until the owner sets them up
-  // (see "Signing macOS builds" in README.md): the release workflow sets
+  // (see "Signing macOS builds" in docs/DESIGN.md): the release workflow sets
   // these variables only when the repository variable
   // MACOS_SIGNING_IDENTITY exists. Without them the app is signed ad hoc.
   macos: {
-    infoPlist: { NSCameraUsageDescription: "Scan the one-time pairing code shown by herdr on your computer." },
-    entitlements: "resources/camera.entitlements.plist",
+    infoPlist: {
+      NSCameraUsageDescription: "Scan the one-time pairing code shown by herdr on your computer.",
+      NSMicrophoneUsageDescription: "Dictate prompts with on-device speech recognition.",
+    },
+    // The app holds audio-input too: herdrup-speech is its child, and under
+    // the hardened runtime macOS checks the microphone entitlement of the
+    // responsible process, the app, as well as asking with its usage text.
+    entitlements: "resources/app.entitlements.plist",
+    // mygo refuses entitlements for code that isn't among the resources, so
+    // only builds with the speech resources name the helper.
+    helperEntitlements: speechFiles.length
+      ? { "herdrup-speech": "resources/speech.entitlements.plist" }
+      : undefined,
     signingIdentity: process.env.HERDRUP_SIGNING_IDENTITY,
     notarize: process.env.HERDRUP_NOTARY_KEYCHAIN
       ? { keychainProfile: "notary", keychain: process.env.HERDRUP_NOTARY_KEYCHAIN }

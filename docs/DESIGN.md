@@ -1086,6 +1086,23 @@ the profile `notary`, and sets `HERDRUP_SIGNING_IDENTITY` and `HERDRUP_NOTARY_KE
 with the hardened runtime, notarizes the disk image and staples it. Locally, `HERDRUP_SIGNING_IDENTITY`
 alone signs; `HERDRUP_NOTARY_KEYCHAIN` set to the keychain holding a `notary` profile also notarizes.
 
+The release step "Check the disk image" mounts the image once and checks its app
+(`codesign --verify --deep --strict --verbose=2`, both architectures, and that it starts). With signing
+on, it also fails the build unless, for that app and its `Contents/Resources/herdrup-speech`:
+
+- `codesign -d --verbose=2` shows the hardened runtime (`flags=…(runtime)`) and a secure timestamp
+  (`Timestamp=`) on both;
+- `com.apple.security.device.audio-input` is `true` in the entitlements of both
+  (`codesign -d --entitlements :-`, read with `PlistBuddy`): the helper records the microphone, and
+  macOS checks the entitlement of the app, its responsible process, too
+  (`NSMicrophoneUsageDescription` is the text it asks with);
+- `spctl -a -vv -t exec` on the app and `spctl -a -vv -t open --context context:primary-signature`
+  on the disk image say `source=Notarized Developer ID`;
+- `xcrun stapler validate` accepts the disk image, the app mygo built and stapled
+  (`build/darwin-universal/herdrup.app`) and, with signed updates, the app in the update archive
+  (`build/darwin-universal/*.tar.gz`). The app inside the image stays unstapled (mygo staples the
+  image, not its copy of the app), so its staple is not checked.
+
 ## License
 
 Apache-2.0
