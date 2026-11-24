@@ -156,12 +156,20 @@ export function terminalWriteReceipt(error: unknown): string {
  return UNCONFIRMED_RECEIPT;
 }
 
+// The composer's reasons a plain terminal's text was written nothing (app desk_interaction_compose.go
+// unwritten): each is a definite not-sent, so the draft is kept.
+const TERMINAL_TEXT_REFUSED = "Write plain text on one line: line breaks and control characters would act on the terminal before Enter.";
+const TERMINAL_PASTE_REFUSED = "This program can't take a pasted block. Write one line at a time.";
+const TERMINAL_UNCHECKED = "Couldn't check whether this machine takes a pasted block — nothing was written. Try again.";
+/** herdr #512: pane.send_text writes a bracketed paste (bracketed: true). */
+const BRACKETED_WRITE = "pane_send_text_bracketed";
+
 /** Why this page won't write text to a plain terminal as it stands, or null. herdr writes a
- *  terminal's text to its PTY byte for byte (pane.send_text), and this page asks no bracketed
- *  paste: a line break or any control character (C0, DEL, C1: Ctrl-O, ESC sequences) acts on the
- *  shell at once, before the Enter the page promises. */
+ *  terminal's text to its PTY byte for byte (pane.send_text): a control character (C0, DEL, C1:
+ *  Ctrl-O, ESC sequences) acts on the shell at once, before the Enter the page promises, and one
+ *  inside a bracketed paste could end it early. Line breaks are writeToTerminal's to decide. */
 function terminalTextProblem(text: string): string | null {
- return /[\u0000-\u001f\u007f-\u009f]/.test(text) ? "Write plain text on one line: line breaks and control characters would act on the terminal before Enter." : null;
+ return /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(text) ? TERMINAL_TEXT_REFUSED : null;
 }
 
 /** herdrapi.DecodePaneStreamLine and the frame Go re-encodes for TerminalChanged: the frame, or
@@ -846,13 +854,25 @@ export function createGuestDesk(env: DeskEnv) {
      let result: { delivery?: string | null } | null = null, failure: unknown = null;
      // A plain terminal is no agent: its text is written to the pane without Enter.
      if (v.view.plainTerminal) {
-      // herdr writes it to the PTY byte for byte (terminalTextProblem), and this page writes no
-      // bracketed paste: such text is refused here, never sent, so the composer puts it back.
+      // Refused here, never sent, the composer puts it back (a definite not-sent).
       const problem = terminalTextProblem(prompt);
       if (problem !== null) throw notSent(new Error(problem));
       // As opening it (openTerminalView): a link renewed to another scope writes no shell.
       if (v.active.transport.scope !== "terminal") throw new OwnerRefusedError("pane.send_text");
-      try { await v.active.client.call("pane.send_text", { pane_id: v.paneID, text: prompt }, "ok", "", within(v)); } catch (error) { failure = error; }
+      // app writeToTerminal: one line goes as it is; a draft with a line break goes as one
+      // bracketed paste, so the break doesn't run the text before it, and only where the
+      // machine's pong says it can write one (an older herdr may ignore bracketed).
+      const lines = /[\r\n]/.test(prompt);
+      if (lines) {
+       const pong = await v.active.client.probe(within(v)).catch(() => { throw notSent(new Error(TERMINAL_UNCHECKED)); });
+       if (pong.capabilities?.[BRACKETED_WRITE] !== true) throw notSent(new Error(TERMINAL_TEXT_REFUSED));
+      }
+      try {
+       await v.active.client.call("pane.send_text", { pane_id: v.paneID, text: prompt, ...(lines ? { bracketed: true } : {}) }, "ok", "", within(v));
+      } catch (error) {
+       // herdr wrote nothing: the pane's program hasn't turned bracketed paste on.
+       failure = error instanceof HerdrAPIError && error.code === "bracketed_paste_unavailable" ? notSent(new Error(TERMINAL_PASTE_REFUSED)) : error;
+      }
       return terminalWriteReceipt(failure);
      }
      try { result = await v.active.client.call("agent.prompt", { target: v.paneID, text: prompt, wait: PROMPT_WAIT }, "agent_prompted", "", within(v)); } catch (error) { failure = error; }

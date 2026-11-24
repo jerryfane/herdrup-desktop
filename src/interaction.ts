@@ -2382,7 +2382,7 @@ class Detail {
   *      to mark sending sends nothing and is released. A failure after the dispatch resolved
   *      puts nothing back (the text went out).
   *  The composer itself refuses no text: each Desk decides what a pane takes (a plain terminal's
-  *  line break: bracketed paste on the desktop, refused before sending in the browser). */
+  *  line break: one bracketed paste where the machine can write one, desktop and browser alike). */
  async sendPrompt() {
   const text = this.input.value;
   if (this.guestPaused || this.sending || this.dictation.busy || (!text.trim() && !this.attachments.length)) return;

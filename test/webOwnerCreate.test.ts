@@ -41,7 +41,7 @@ const fail = (code: string): Answer => ({ error: { code, message: code.replaceAl
  *  A connect whose hello hold() takes is never answered. */
 function host(script: {
  scope?: string | (() => string); agents?: () => unknown[]; answers?: (req: Request) => Answer | Promise<Answer> | undefined;
- admit?: () => Response | undefined; endAfter?: string; hold?: () => boolean;
+ admit?: () => Response | undefined; endAfter?: string; hold?: () => boolean; ping?: () => Answer;
 }) {
  const calls: Request[] = [];
  const conns = new Set<HostConn>();
@@ -61,7 +61,7 @@ function host(script: {
     calls.push(req);
     if (req.method === "agent.list") { listing?.(); listing = null; }
     const reply = req.method === "agent.list" ? ok({ type: "agent_list", agents: script.agents?.() ?? [{ pane_id: "p1", name: "herdr-app", agent: "claude" }] })
-     : req.method === "ping" ? ok({ type: "pong", version: "0.9.0", capabilities: {} })
+     : req.method === "ping" ? script.ping?.() ?? ok({ type: "pong", version: "0.9.0", capabilities: {} })
      : script.answers?.(req) ?? fail("owner_forbidden");
     void Promise.resolve(reply).then(async r => {
      let tail = "";
@@ -828,7 +828,7 @@ test("a write or prompt that never left the page, or herdr refused, fails; one t
  expect(JSON.parse(promptReceipt(null, null))).toEqual({ delivery: "submitted" });
 });
 
-test("a plain terminal takes plain text on one line: every C0 control, DEL and C1 is refused as not sent, before any write; printable text is written", async () => {
+test("a plain terminal on a machine without bracketed writes takes plain text on one line: every C0 control, DEL and C1 is refused as not sent, before any write; printable text is written", async () => {
  const h = host({ answers: req => req.method === "pane.split" ? split("p7") : req.method === "pane.send_text" ? ok({ type: "ok" }) : undefined });
  const desk = await connected(h.relay);
  const machineID = `owner:${h.relay.hostID}`;
@@ -849,6 +849,65 @@ test("a plain terminal takes plain text on one line: every C0 control, DEL and C
    expect(JSON.parse(await desk.chatPrompt("term-1", `make test ${printable}`)).delivery).toBe("written");
   }
   expect(h.called("pane.send_text").map((c) => (c.params as { text: string }).text)).toEqual([" ", "~", "\u00a0", "é", "日本", "😀", "· café"].map((p) => `make test ${p}`));
+ } finally { desk.disconnectOwner(); h.relay.stop(); }
+});
+
+/** A machine whose pong is pong(), writing terminal text; a bracketed write to text with
+ *  "paste-off" in it is refused as its program has bracketed paste off. */
+async function terminalOn(pong: () => Answer) {
+ const h = host({ ping: pong, answers: req => {
+  if (req.method === "pane.split") return split("p7");
+  if (req.method !== "pane.send_text") return undefined;
+  const { text, bracketed } = req.params as { text: string; bracketed?: boolean };
+  return bracketed && text.includes("paste-off") ? fail("bracketed_paste_unavailable") : ok({ type: "ok" });
+ } });
+ const desk = await connected(h.relay);
+ const machineID = `owner:${h.relay.hostID}`;
+ await createDesk.openCreation(machineID, "", "t1");
+ await createDesk.createTerminal("t1");
+ await desk.openTerminalView({ machineID, session: "", paneID: "p7" }, "term-1");
+ return { h, desk, writes: () => h.called("pane.send_text").map((c) => c.params) };
+}
+const bracketedPong = () => ok({ type: "pong", version: "0.9.9", capabilities: { pane_send_text_bracketed: true } });
+
+test("a draft with line breaks goes to a plain terminal as one bracketed paste where the machine advertises it; one line goes as it is", async () => {
+ const { h, desk, writes } = await terminalOn(bracketedPong);
+ try {
+  expect(JSON.parse(await desk.chatPrompt("term-1", "echo one\necho two")).delivery).toBe("written");
+  // The machine's pong, once had, is kept: the next draft asks no ping.
+  const pings = h.called("ping").length;
+  for (const draft of ["make\r\ntest", "ls"]) expect(JSON.parse(await desk.chatPrompt("term-1", draft)).delivery).toBe("written");
+  expect(h.called("ping")).toHaveLength(pings);
+  expect(writes()).toEqual([
+   { pane_id: "p7", text: "echo one\necho two", bracketed: true },
+   { pane_id: "p7", text: "make\r\ntest", bracketed: true },
+   { pane_id: "p7", text: "ls" },
+  ]);
+  // Other control characters still act on the terminal (an ESC could end the paste early).
+  const refused = await desk.chatPrompt("term-1", "echo one\n\u001b[201~echo two").catch(e => e);
+  expect([refused instanceof NotSentError, String(refused).includes("line breaks and control characters")]).toEqual([true, true]);
+  expect(writes()).toHaveLength(3);
+ } finally { desk.disconnectOwner(); h.relay.stop(); }
+});
+
+test("a bracketed write the pane's program can't take is a definite not-sent: the draft comes back with the reason", async () => {
+ const { h, desk } = await terminalOn(bracketedPong);
+ try {
+  const refused = await desk.chatPrompt("term-1", "paste-off\nline two").catch(e => e);
+  expect(refused).toBeInstanceOf(NotSentError);
+  expect(String(refused)).toContain("This program can't take a pasted block. Write one line at a time.");
+ } finally { desk.disconnectOwner(); h.relay.stop(); }
+});
+
+test("a draft with line breaks writes nothing when the machine's pong can't be had: it says so, and the draft comes back", async () => {
+ const { h, desk, writes } = await terminalOn(() => fail("server_unavailable"));
+ try {
+  const refused = await desk.chatPrompt("term-1", "echo one\necho two").catch(e => e);
+  expect(refused).toBeInstanceOf(NotSentError);
+  expect(String(refused)).toContain("Couldn't check whether this machine takes a pasted block — nothing was written. Try again.");
+  expect(writes()).toEqual([]);
+  // One line needs no capability.
+  expect(JSON.parse(await desk.chatPrompt("term-1", "ls")).delivery).toBe("written");
  } finally { desk.disconnectOwner(); h.relay.stop(); }
 });
 
