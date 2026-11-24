@@ -15,9 +15,9 @@ import { toB64url } from "../src/webguest/b64url";
 import { ErrUnsupported, GuestClient } from "../src/web/engine";
 import type { WebLink } from "../src/web/link";
 import { emit, events } from "../src/web/events";
-import { currentOwnerLink, LINK_CHANGED, linkClosing, onLinkClosing, OWNER_REFUSED, ownerCall, OwnerRefusedError, setOwnerLink, setOwnerSettings, type OwnerLink } from "../src/web/ownerLink";
+import { currentOwnerLink, LINK_CHANGED, linkClosing, onLinkClosing, OWNER_REFUSED, ownerCall, OwnerRefusedError, type OwnerLink } from "../src/web/ownerLink";
 import { guestLink, GuestTransport } from "../src/webguest/transport";
-import { transportLink } from "../src/web/link";
+import { closeSettings, openSettings, setLink, transportLink } from "../src/web/link";
 import type { GuestAccess } from "../src/mygo";
 import { setView } from "../src/web/view";
 import { createGuestDesk } from "../src/web/desk";
@@ -70,8 +70,8 @@ function ownerLink(handler: Handler = () => undefined, options: { scope?: string
  } as unknown as WebLink;
  const machine: EnvelopeMachine = { hostItemID: "H1", label: "dev2306", relay: "", hostID: options.hostID ?? "host-1", nodePub: "", grantID: "g1", scope: "terminal", expiresUnix: 1_800_000_000 };
  const link: OwnerLink = { machine, client: new GuestClient(web), signal: life.signal, scope: () => host.scope, agents: () => options.agents ?? [], relist() {} };
- setOwnerLink(link);
- setOwnerSettings("tok");
+ setLink(web, link);
+ openSettings("tok");
  return { link, calls, life, host, of: (method: string) => calls.filter((c) => c.method === method) };
 }
 
@@ -88,7 +88,7 @@ async function switchFrom(from: ReturnType<typeof ownerLink>, next: () => Return
 // The account labels run as web/mygo.ts starts them, for this file's tests only.
 let stopLabels = () => {};
 beforeEach(() => { stopLabels = startAccountLabels(); });
-afterEach(() => { setOwnerLink(null); setView(null); stopLabels(); });
+afterEach(() => { setLink(null); setView(null); stopLabels(); });
 
 const ok = { type: "ok" };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -298,7 +298,7 @@ test("closing Settings (its token already gone) still closes the sign-in pane", 
  const host = signInHost({ text: "" }, { now: "old@x.io" });
  const desk = createSettingsAccountsDesk();
  await desk.startAccountLogin("tok", "L1", "a1", false);
- setOwnerSettings("");
+ closeSettings("tok");
  await desk.closeAccountLogin("tok", "L1");
  await tick();
  expect(host.of("pane.close")).toHaveLength(1);
@@ -456,7 +456,7 @@ test("an update confirmed in a Settings scope that has since closed is not appli
  const refreshing = desk.settingsServerUpdate("tok", true);
  const applying = desk.applySettingsServerUpdate("tok", "b6", false).catch((error: Error) => error.message);
  await tick();
- setOwnerSettings("tok-2");
+ openSettings("tok-2");
  release.resolve();
  await refreshing.catch(() => undefined);
  expect(await applying).toMatch(/Settings changed/);
@@ -479,7 +479,7 @@ test("Settings closing while an apply reads the status first stops it before it 
  status.held = release.promise;
  const applying = desk.applySettingsServerUpdate("tok", "b6", false).catch((error: Error) => error.message);
  await tick();
- setOwnerSettings("tok-2");
+ openSettings("tok-2");
  release.resolve();
  expect(await applying).toMatch(/Settings changed/);
  expect(host.of("server.update_apply")).toEqual([]);
@@ -545,7 +545,7 @@ test("a sign-in step queued in a Settings scope that has since ended opens no pa
  const polling = desk.pollAccountLogin("tok", "L1").catch(() => undefined);
  const restarting = desk.startAccountLogin("tok", "L2", "a1", false).catch((error: Error) => error.message);
  await tick();
- setOwnerSettings("tok-2");
+ openSettings("tok-2");
  await desk.pollAccountLogin("tok-2", "L9").catch(() => undefined); // the new scope ends the old one
  release.resolve();
  await polling;
@@ -623,7 +623,7 @@ test("a swap stops restarting agents once its Settings scope closes", async () =
  const swapping = createSettingsAccountsDesk().swapSettingsAccount("tok", "a1").catch((error: Error) => error.message);
  await tick(); await tick();
  expect(host.of("agent.restart")).toHaveLength(1);
- setOwnerSettings("");
+ closeSettings("tok");
  first.resolve();
  expect(await swapping).toMatch(/Settings changed/);
  expect(host.of("agent.restart").map((c) => c.params.target)).toEqual(["p1"]);
@@ -697,7 +697,7 @@ test("a sign-in of a replaced Settings scope still has its pane closed when the 
  const desk = createSettingsAccountsDesk();
  const starting = desk.startAccountLogin("tok", "L1", "a1", false).catch((error: Error) => error.message);
  await tick();
- setOwnerSettings("tok-2"); // Settings closed and opened again
+ openSettings("tok-2"); // Settings closed and opened again
  await desk.startAccountLogin("tok-2", "L2", "a1", false);
  const switching = switchFrom(alpha, () => ownerLink(undefined, { hostID: "beta" }));
  await tick();
@@ -924,7 +924,7 @@ test("a swap whose restart waits for the relay when Settings closes sends no res
  const swapping = desk.swapSettingsAccount("tok", "a1").catch((error: Error) => error.message);
  await tick(); await tick();
  expect(host.of("agent.restart")).toEqual([]);
- setOwnerSettings("");
+ closeSettings("tok");
  host.host.admission = null;
  admission.resolve();
  expect(await swapping).toMatch(/Settings changed/);
@@ -967,7 +967,7 @@ for (const write of writes) {
   if (write.after === undefined) host.host.admission = admission.promise;
   await tick(); await tick();
   expect(host.of(write.method)).toEqual([]);
-  setOwnerSettings(""); // Settings closes; its write is still waiting for admission
+  closeSettings("tok"); // Settings closes; its write is still waiting for admission
   host.host.admission = null;
   admission.resolve();
   expect(await running).toMatch(/Settings changed/);
@@ -1049,7 +1049,7 @@ test("closing Settings while a logout's pane.split waits for the relay makes no 
  const logout = createSettingsAccountsDesk({ logoutPollMs: 0 }).logoutSettingsAccount("tok", "a1").catch((error: Error) => error.message);
  await tick(); await tick();
  expect(host.of("pane.split")).toEqual([]);
- setOwnerSettings("");
+ closeSettings("tok");
  host.host.admission = null;
  admission.resolve();
  expect(await logout).toMatch(/Settings changed/);
@@ -1067,7 +1067,7 @@ test("the machine's version ping waiting for the relay when Settings closes is n
  host.host.admission = admission.promise;
  const version = desk.settingsMachineVersion("tok").catch((error: Error) => error.message);
  await tick();
- setOwnerSettings("");
+ closeSettings("tok");
  host.host.admission = null;
  admission.resolve();
  expect(await version).toMatch(/Settings changed/);
@@ -1082,7 +1082,7 @@ test("the update card's ping waiting for the relay when Settings closes is never
  host.host.admission = admission.promise;
  const reading = createServerUpdateDesk({ pause: () => new Promise(() => {}) }).settingsServerUpdate("tok", true).catch((error: Error) => error.message);
  await tick();
- setOwnerSettings("");
+ closeSettings("tok");
  host.host.admission = null;
  admission.resolve();
  expect(await reading).toMatch(/Settings changed/);

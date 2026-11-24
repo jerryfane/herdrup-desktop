@@ -108,21 +108,21 @@ test("the unread walk stops on a cursor that does not advance and keeps pages re
  expect(projected.messages.map(m => m.id)).toEqual(["y"]);
 });
 
-test("a read this device made outlives an older answer; a stale older page is dropped", () => {
+test("a confirmed read shows until the next list; a stale older page is dropped", () => {
  const inbox = new Inbox();
- expect(inbox.apply({ messages: [msg("b"), msg("a")], hasMore: true }, 0)).toBe(true);
- const asked = inbox.readStamp;
+ expect(inbox.apply({ messages: [msg("b"), msg("a")], hasMore: true })).toBe(true);
  inbox.markRead("b");
- inbox.apply({ messages: [msg("b"), msg("a")], hasMore: true }, asked);
  expect(inbox.messages.map(m => m.readByOwner)).toEqual([true, false]);
  expect(inbox.unreadCount()).toBe(1);
  expect(inbox.nextCursor()).toBe("a");
  const generation = inbox.generation;
- expect(inbox.appendPage({ messages: [msg("a"), msg("z")], hasMore: false }, generation, inbox.readStamp)).toBe(true);
+ expect(inbox.appendPage({ messages: [msg("a"), msg("z")], hasMore: false }, generation)).toBe("grew");
  expect(inbox.messages.map(m => m.id)).toEqual(["b", "a", "z"]);
  expect(inbox.nextCursor()).toBe("");
- inbox.apply({ messages: [msg("c"), msg("b", true)], hasMore: true }, inbox.readStamp);
- expect(inbox.appendPage({ messages: [msg("q")], hasMore: false }, generation, inbox.readStamp)).toBe(false);
+ expect(inbox.appendPage({ messages: [msg("a")], hasMore: false }, generation)).toBe("same");
+ inbox.apply({ messages: [msg("c"), msg("b", true)], hasMore: true });
+ expect(inbox.appendPage({ messages: [msg("q")], hasMore: false }, generation)).toBe("rejected");
+ expect(inbox.messages.map(m => m.id)).toEqual(["c", "b"]);
 });
 
 const file = (path: string, n = 10): Attachment => ({ path, name: path, mime: "application/octet-stream", isImage: false, size: n, blob: new Blob([data(n)]) });

@@ -94,7 +94,9 @@ export function initialTile(r: Row): HTMLElement {
 export async function placeInitials(root: ParentNode) {
   const tiles = [...root.querySelectorAll<HTMLElement>(".tile")].flatMap((tile) => {
     const glyph = tile.querySelector<HTMLElement>(".initial");
-    if (!glyph) return [];
+    // A tile not in the document (a menu still being built) has no computed font and no box to
+    // place its letter in: it is skipped (document.fonts.load would reject its empty font).
+    if (!glyph?.isConnected) return [];
     const s = getComputedStyle(glyph);
     return [{ tile, glyph, font: `${s.fontWeight} ${s.fontSize} ${s.fontFamily}` }];
   });
