@@ -12,6 +12,8 @@ import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
+import { currentOwnerLink } from "../src/web/ownerLink";
+import { closingLink } from "../src/web/ownerSession";
 import type { Avatar, BoardUpdate, ConnState } from "../src/mygo";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
@@ -125,6 +127,31 @@ test("a pane stream the host ends for a changed scope asks the page to open it a
 });
 
 // ---- P2-1: owner links belong to the account session they were opened in ----
+
+test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
+ let fail = false;
+ const relay = host({ list: (session, req) => fail
+  ? answer(session, req, { error: { code: "unavailable", message: "restarting" } })
+  : answer(session, req, { result: { type: "agent_list", agents } }) });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  const machine = currentOwnerLink()!.machine;
+  fail = true;
+  const failed = stateWhere(s => s.phase === "error");
+  await listAgain(desk).catch(() => {});
+  await failed;
+  expect(closingLink(null, currentOwnerLink())).toBe(machine);
+  fail = false;
+  const back = stateWhere(s => s.phase === "connected");
+  await listAgain(desk).catch(() => {});
+  await back;
+  expect(closingLink(null, currentOwnerLink())).toBe(machine);
+  // A link still being opened is the one the end closes, whatever was open before.
+  const other = { ...machine, hostID: "other" };
+  expect(closingLink(other, currentOwnerLink())).toBe(other);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
 
 test("an owner link ends with its account session: no link, board or agent view is left", async () => {
  const relay = host();

@@ -397,9 +397,12 @@ html, body {
    margin collapsed with the search's 6 pt and drew the text 9 pt low. */
 .empty-line {
   margin: 0;
-  padding-top: 44px;
+  padding: 44px 16px 0;
   text-align: center;
   color: var(--color-text-dim);
+  /* A connection's failure can be long (main.ts renderRows): it wraps inside the sidebar. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 /* While loading, herdrup's sidebar VStack holds only the bar and a centred
    spinner, above the tab bar's safe-area inset. Both loading references put

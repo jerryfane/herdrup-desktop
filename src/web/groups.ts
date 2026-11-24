@@ -9,13 +9,16 @@ import { HerdrAPIError } from "../webguest/errors";
 import { orderedFolders, trimSpace, type AgentGroupFolder, type BoardView, type Groups } from "./board";
 import { ErrUnsupported, untagged, type GuestClient } from "./engine";
 import { OwnerRefusedError } from "./ownerLink";
-import { localRecord, type LocalRecord } from "./storage";
+import { machineLists, type MachineLists } from "./storage";
 import { showWarning } from "./warning";
 
 /** desk_groups.go groupsRefreshInterval. */
 export const GROUPS_REFRESH_MS = 60_000;
 /** The open folders of every machine, by host id. */
 export const OPEN_FOLDERS_KEY = "herdrup.web.openFolders";
+/** This page's one store of them, so a change storage refused still holds when another link
+ *  (another machine, a reconnect) reads it. */
+const openFolders = machineLists(OPEN_FOLDERS_KEY);
 /** desk_groups.go: save failures, as herdrup words them (AgentGroupsStore.send). */
 export const GROUPS_CONFLICT_MESSAGE = "Your folders changed on another device at the same time. Try again.";
 export const GROUPS_ALERT_TITLE = "Couldn't save folders";
@@ -151,7 +154,7 @@ export class OwnerGroups {
   *  save that failed. */
  constructor(private readonly client: Pick<GuestClient, "call">, private readonly hostID: string, private readonly signal: AbortSignal,
   private readonly changed: () => void, private readonly now: () => number = Date.now,
-  private readonly open: LocalRecord<Record<string, string[]>> = localRecord(OPEN_FOLDERS_KEY),
+  private readonly open: MachineLists = openFolders,
   private readonly alert: (message: string) => void = (message) => showWarning(GROUPS_ALERT_TITLE, message)) {}
 
  /** groupsStore.document: what the list draws, the server's last document with this browser's
@@ -165,7 +168,7 @@ export class OwnerGroups {
   *  folders, with the new ones still on their way shown as the owner has them. */
  view(): BoardView {
   const open: Record<string, boolean> = {};
-  for (const id of this.open.get()?.[this.hostID] ?? []) open[id] = true;
+  for (const id of this.open.get(this.hostID)) open[id] = true;
   for (const e of this.#pending) if (e.kind === "addFolder" && e.open) open[e.folder] = true;
   return { groups: this.document(), open };
  }
@@ -207,12 +210,9 @@ export class OwnerGroups {
   this.changed();
  }
 
- #keepOpen(id: string, open: boolean) {
-  const all = this.open.get() ?? {};
-  const ids = (all[this.hostID] ?? []).filter((x) => x !== id);
-  if (open) ids.push(id);
-  this.open.set({ ...all, [this.hostID]: ids });
- }
+ /** This machine's folder id opens or closes on this browser (MachineLists: one item's change; it
+  *  shows at once, and is stored in the key's turn). */
+ #keepOpen(id: string, open: boolean) { void this.open.set(this.hostID, id, open); }
 
  /** groupsStore.apply: shows e at once and queues it for the server. */
  apply(e: Edit): void {

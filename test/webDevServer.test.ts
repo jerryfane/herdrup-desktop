@@ -29,7 +29,8 @@ test("the dev page's entry module and runtime files load as themselves", async (
  expect(entry?.startsWith("/web/")).toBe(true);
  const module = await fetched(entry!);
  expect([module.status, module.type]).toEqual([200, "text/javascript"]);
- expect(module.body).toContain("choosePage");
+ // boot.ts itself: the one entry that runs a load (bootChoice.ts loadPage).
+ expect(module.body).toContain("loadPage");
  for (const [path, type] of [["/web/herdrup/composer/send.svg", "image/svg+xml"], ["/web/herdrup/mascots/herdy.svg", "image/svg+xml"], ["/web/mermaid/mermaid.min.js", "text/javascript"]]) {
   const file = await fetched(path!);
   expect([path, file.status, file.type]).toEqual([path, 200, type]);

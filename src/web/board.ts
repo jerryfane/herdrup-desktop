@@ -210,18 +210,23 @@ function layout(sections: Section[], members: readonly Member[], g: Groups | nul
  for (const rows of bySection) {
   for (const m of [...rows.filter((m) => starred(m.row)), ...rows.filter((m) => !starred(m.row))]) {
    const id = folderID(m.row);
-   if (id !== "") membersOf.set(id, [...membersOf.get(id) ?? [], m]);
+   if (id === "") continue;
+   const ms = membersOf.get(id);
+   if (ms) ms.push(m); else membersOf.set(id, [m]);
   }
  }
 
- const summaries = new Map<Group, Array<{ folder: Folder; members: Member[] }>>();
+ // Each folder with its recency: its most recently active agent's, read once.
+ type Placed = { folder: Folder; members: Member[]; recency: number };
+ const summaries = new Map<Group, Placed[]>();
  const empty: Folder[] = [];
  for (const f of ordered) {
   const ms = membersOf.get(f.id) ?? [];
   const s = summarise(f, ms, open(f.id));
   if (ms.length === 0) { empty.push(s); continue; }
-  const group = ms[0]!.group;
-  summaries.set(group, [...summaries.get(group) ?? [], { folder: s, members: ms }]);
+  const placed = { folder: s, members: ms, recency: ms.reduce((best, m) => Math.max(best, m.completed), -Infinity) };
+  const group = summaries.get(ms[0]!.group);
+  if (group) group.push(placed); else summaries.set(ms[0]!.group, [placed]);
  }
 
  // Go's omitempty: an agent outside any folder has no folderID.
@@ -230,32 +235,29 @@ function layout(sections: Section[], members: readonly Member[], g: Groups | nul
   if (folder !== "") row.folderID = folder;
   return { kind: "agent", row };
  };
- const recency = (ms: readonly Member[]) => ms.reduce((best, m) => Math.max(best, m.completed), -Infinity);
  const out: Section[] = [];
  sections.forEach((s, i) => {
   const rows = bySection[i]!;
   const loose = rows.filter((m) => folderID(m.row) === "");
   const items: Item[] = loose.filter((m) => starred(m.row)).map((m) => agent(m.row, true, ""));
-  let others = loose.filter((m) => !starred(m.row));
+  const others = loose.filter((m) => !starred(m.row));
+  let next = 0;
   let count = loose.length;
-  if (rows.length > 0) {
+  // The section's folders: layout owns the array, so it sorts in place; a group without folders
+  // has none to merge.
+  const folders = rows.length > 0 ? summaries.get(rows[0]!.group) : undefined;
+  if (folders) {
    // Both lists are newest first (the board sorts agents by recency; folders stably here), so one
    // merge interleaves them.
-   const folders = [...summaries.get(rows[0]!.group) ?? []].sort((a, b) => {
-    const ra = recency(a.members), rb = recency(b.members);
-    return ra === rb ? 0 : ra > rb ? -1 : 1;
-   });
+   folders.sort((a, b) => a.recency === b.recency ? 0 : a.recency > b.recency ? -1 : 1);
    for (const fs of folders) {
-    while (others.length > 0 && others[0]!.completed > recency(fs.members)) {
-     items.push(agent(others[0]!.row, false, ""));
-     others = others.slice(1);
-    }
+    for (; next < others.length && others[next]!.completed > fs.recency; next++) items.push(agent(others[next]!.row, false, ""));
     items.push({ kind: "folder", folder: fs.folder });
     count += fs.members.length;
     if (fs.folder.open) for (const m of fs.members) items.push(agent(m.row, starred(m.row), fs.folder.id));
    }
   }
-  for (const m of others) items.push(agent(m.row, false, ""));
+  for (; next < others.length; next++) items.push(agent(others[next]!.row, false, ""));
   if (items.length === 0) return;
   out.push({ ...s, items, agentCount: count });
  });

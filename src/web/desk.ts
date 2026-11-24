@@ -22,7 +22,7 @@ import { checkTag, ErrUnsupported, GuestClient, ResultTagError, untagged } from 
 import { emit, type Payload } from "./events";
 import { setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
-import { IndexedDBGrantStore, localOwnerHint, localRecord, type GrantStore, type LocalRecord, type OwnerHint } from "./storage";
+import { IndexedDBGrantStore, localOwnerHint, machineLists, type GrantStore, type MachineLists, type OwnerHint } from "./storage";
 import { OwnerGroups } from "./groups";
 import { currentOwnerLink, linkClosing, setOwnerLink, setOwnerSettings, settingsLink, settingsPing, settingsScope, type OwnerLink } from "./ownerLink";
 import { closeAgent, selectSheet } from "./agentActionsDesk";
@@ -214,8 +214,8 @@ export interface DeskEnv {
  /** TOPICS_RETRY_MS unless a test passes its own. */
  topicsRetryMs?: readonly number[];
  /** An owner's per-machine state on this browser; localStorage unless a test passes its own. */
- openFolders?: LocalRecord<Record<string, string[]>>;
- mutedPanes?: LocalRecord<Record<string, string[]>>;
+ openFolders?: MachineLists;
+ mutedPanes?: MachineLists;
 }
 
 interface Active {
@@ -270,7 +270,7 @@ export function createGuestDesk(env: DeskEnv) {
  let accepting = Promise.resolve();
  /** connectOwner while it reads the key: cancelled by a newer one, a disconnect or its session's end. */
  let ownerPending: AbortController | null = null;
- const mutedPanes = env.mutedPanes ?? localRecord<Record<string, string[]>>(MUTED_PANES_KEY);
+ const mutedPanes = env.mutedPanes ?? machineLists(MUTED_PANES_KEY);
 
  /** The board of l's last list, laid out with an owner link's folders (BuildBoard's view). */
  function publishBoard(l: Active) {
@@ -541,15 +541,12 @@ export function createGuestDesk(env: DeskEnv) {
   // desk_notifications.go PaneMuted / SetPaneMuted: an owner's, per machine on this browser.
   async paneMuted(paneID: string): Promise<boolean> {
    const hostID = active?.owner?.hostID;
-   return hostID !== undefined && (mutedPanes.get()?.[hostID] ?? []).includes(paneID);
+   return hostID !== undefined && mutedPanes.get(hostID).includes(paneID);
   },
   async setPaneMuted(paneID: string, muted: boolean): Promise<void> {
    const hostID = active?.owner?.hostID;
    if (hostID === undefined || paneID === "") return;
-   const all = mutedPanes.get() ?? {};
-   const panes = (all[hostID] ?? []).filter((p) => p !== paneID);
-   if (muted) panes.push(paneID);
-   mutedPanes.set({ ...all, [hostID]: panes });
+   await mutedPanes.set(hostID, paneID, muted);
   },
 
   // ---- Folders (desk_groups.go), an owner link's ----

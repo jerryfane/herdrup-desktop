@@ -21,8 +21,9 @@ import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
-import { signInReturned } from "./mygo";
-import { boot } from "./bootChoice";
+import { pageExit, signInReturned } from "./mygo";
+import { boot, bootMarks } from "./bootChoice";
+import { boardAfter, connectionChanged } from "../shellModel";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -67,16 +68,29 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 // ---- The plain screen without a grant ----
 
 /** A signed-in browser on its first visit is an owner's: boot.ts gives it the owner's shell, so a
- *  session that shows up here (another tab signed in) loads the page again, unless this load was
- *  asked to be the guest's or has an invite's failure to say. A share left or wiped still asks for
- *  a new invite. */
+ *  session that shows up here (the account lookup answered after boot's wait, or another tab signed
+ *  in) loads the page again, as the owner's (bootMarks keepSignedInFound: loads go there with no
+ *  lookup that could time out the same way again), unless this load was asked to be the guest's or
+ *  has an invite's failure to say. It leaves once (ownerExit "leaving"); without storage for that
+ *  mark, this page stays ("stays"). A share left or wiped still asks for a new invite. */
 const ownerWanted = (shown: WelcomeState) => account.signedIn && shown.owner === null && !shown.error && !boot.guestInstead;
+let ownerExit: "leaving" | "stays" | null = null;
 
 /** Shows the screen for shown (null hides it): the words asking for an invite. */
 function showWelcome(shown: WelcomeState | null) {
  shownWelcome = shown;
  if (shown === null) { welcomeView.hidden = true; render(); return; }
- if (ownerWanted(shown)) { location.reload(); return; }
+ if (ownerExit === "leaving") return;
+ if (ownerExit === null && ownerWanted(shown)) {
+  ownerExit = "leaving";
+  pageExit.leave(() => {
+   if (bootMarks().keepSignedInFound()) { location.reload(); return; }
+   ownerExit = "stays";
+   showWelcome(shownWelcome);
+   return "stayed";
+  });
+  return;
+ }
  const w = welcome(shown);
  const card = el("div", "web-welcome-card");
  card.append(el("h1", "", w.title), el("p", "", w.body));
@@ -159,9 +173,9 @@ window.addEventListener("guest-gram", event => {
 // Photos that failed are asked for again once the connection is back up (avatars.ts).
 trackPhotoConnections(events);
 events.stateChanged.on((s) => {
- if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
-  guestTab = "agents";
- }
+ // Another share (shellModel.ts, the shell's rule too): its own tab, and not the last one's board.
+ if (connectionChanged(state, s)) guestTab = "agents";
+ board = boardAfter(state, s, board);
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
  if (s.phase === "idle") board = null;

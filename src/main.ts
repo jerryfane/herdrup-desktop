@@ -30,7 +30,7 @@ import { appUpdateNewer, appUpdatesShown, watchAppUpdate } from "./appUpdates";
 import { badge, initialTile, placeInitials, rowAvatar, spinnerSVG } from "./faces";
 import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "./bars";
 import { enableLongPress } from "./longPress";
-import { deskOffers, ownerWrites, parts, shareShown } from "./shellModel";
+import { boardAfter, connectionChanged, deskOffers, ownerWrites, parts, shareShown } from "./shellModel";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -361,7 +361,8 @@ async function renderRows() {
       spin.innerHTML = spinnerSVG;
       nodes.push(spin);
     } else {
-      nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? "not connected" : "no machine"));
+      // A connection that failed before its first list (a web owner's machine just opened) says why.
+      nodes.push(el("p", "empty-line t-empty", state.phase === "error" ? (state.message ? `not connected: ${state.message}` : "not connected") : "no machine"));
     }
   } else {
     updateFieldLines(board.board);
@@ -591,9 +592,10 @@ trackPhotoConnections(events);
 events.stateChanged.on((s) => {
   // A web owner's link admitted under another scope: the bar's create buttons follow it.
   const writesChanged = ownerWrites(s) !== ownerWrites(state);
-  if (s.guest?.access.guestID !== state.guest?.access.guestID || s.guest?.access.endpoint.hostID !== state.guest?.access.endpoint.hostID) {
-    guestTab = "agents";
-  }
+  // Another connection (a share, or a web owner's machine switched): its own tab, and the last
+  // connection's agents must not show as this one's until its first list (boardAfter).
+  if (connectionChanged(state, s)) guestTab = "agents";
+  board = boardAfter(state, s, board);
   state = s;
   if (writesChanged) void buildTopBar();
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
