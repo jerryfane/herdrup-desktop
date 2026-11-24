@@ -647,13 +647,21 @@ test("nothing leaves the page while a sign-out is being sent; the page's one exi
  const again = desk.accountSignOut();
  // The guest page chosen, then a provider's sign-in: the sign-in, the later choice, is the way out.
  exit.leave(() => { exits.push("guest mark", "reload"); }, true);
- await desk.accountSignIn("apple");
+ const signingIn = desk.accountSignIn("apple"); // settles once the page has left (after the sign-out)
  await new Promise(r => setTimeout(r, 0)); // every step the sign-out's answer doesn't hold
  expect(exits).toEqual([]);
  held.resolve();
- await Promise.all([out, again]);
+ await Promise.all([out, again, signingIn]);
  await new Promise(r => setTimeout(r, 0));
  expect([exits, posts]).toEqual([["navigate /v1/auth/web/start"], 1]);
+});
+
+test("a sign-in whose navigation the browser blocks rejects with that error, for the page's error handler", async () => {
+ const s = service();
+ const blocked = new DOMException("navigation blocked", "SecurityError");
+ const { desk } = createAccountDesk({ origin: "https://guest.herdrup.app", href: "https://guest.herdrup.app/web/", fetch: s.fetcher, navigate: () => { throw blocked; }, replaceURL() {} }, quiet);
+ await desk.accountCheck();
+ expect(await desk.accountSignIn("google").then(() => "left", (error: unknown) => error)).toBe(blocked);
 });
 
 test("a retry with no session known signs out the account the refused attempt was for: another account read back after it starts over", async () => {

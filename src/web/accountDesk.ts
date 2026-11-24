@@ -147,11 +147,13 @@ export function createAccountDesk(page: AccountPage, here: AccountHere) {
    catch (error) { return state(takeProblem() || (account.signOutAttempt?.phase === "refused" ? "" : problemOf(error))); }
   },
   /** A sign-in leaves the page: the person's choice, through the page's one exit (it waits for
-   *  any sign-out being sent, and takes the place of any other way out chosen before it). */
+   *  any sign-out being sent, and takes the place of any other way out chosen before it). Settles
+   *  with the exit's run: a navigation the browser blocks rejects here, for the caller's error
+   *  handler. */
   async accountSignIn(provider: string): Promise<void> {
    if (provider !== "apple" && provider !== "google") throw new Error(`unknown provider ${provider}`);
    const url = webSignInURL(provider as Provider);
-   exit.leave(() => page.navigate(url), true);
+   return exit.leave(() => page.navigate(url), true);
   },
   /** The session ends at once, and every view hears how the sign-out goes (onSessionChange). One
    *  the service didn't take leaves the cookie signed in: the state says so, with why, and Sign
