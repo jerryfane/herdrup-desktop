@@ -14,10 +14,10 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -87,27 +87,25 @@ func msixVersion(v string) (string, error) {
 	if m == nil {
 		return "", fmt.Errorf("version %q: want X.Y.Z or X.Y.Z-preview.N", v)
 	}
+	// Each part is bounded before any arithmetic, which a large one would
+	// overflow.
+	limits := [4]uint64{65534, 65535, 64, 998}
 	var n [4]int
 	for i, s := range m[1:] {
 		if s == "" {
 			continue
 		}
-		var err error
-		if n[i], err = strconv.Atoi(s); err != nil {
-			return "", fmt.Errorf("version %q: %w", v, err)
+		p, err := strconv.ParseUint(s, 10, 64)
+		if err != nil || p > limits[i] {
+			return "", fmt.Errorf("version %q: %q is past %d, the most a package version fits (X, Y, Z, N)", v, s, limits[i])
 		}
+		n[i] = int(p)
 	}
 	pre := 999
 	if m[4] != "" {
-		if pre = n[3]; pre > 998 {
-			return "", fmt.Errorf("version %q: preview numbers go up to 998", v)
-		}
+		pre = n[3]
 	}
-	major, minor, build := n[0]+1, n[1], n[2]*1000+pre
-	if major > 65535 || minor > 65535 || build > 65535 {
-		return "", fmt.Errorf("version %q: %d.%d.%d.0 is past 65535", v, major, minor, build)
-	}
-	return fmt.Sprintf("%d.%d.%d.0", major, minor, build), nil
+	return fmt.Sprintf("%d.%d.%d.0", n[0]+1, n[1], n[2]*1000+pre), nil
 }
 
 // packageVersion reads the version of package.json at path.
@@ -123,21 +121,15 @@ func packageVersion(path string) (string, error) {
 	return p.Version, nil
 }
 
-// mygoOutput reports whether name, in the folder `mygo build` writes for
-// windows/amd64, is one of its outputs rather than a file of the installed
-// app: the NSIS installer, install.ps1, and the update archive, deltas and
-// manifest. The rest (herdrup.exe and the resources, the speech engine's
-// files) is what the installer installs, and the package holds.
-func mygoOutput(name string) bool {
-	switch {
-	case strings.Contains(name, "-setup-") && strings.HasSuffix(name, ".exe"),
-		name == "install.ps1", name == "install.sh",
-		strings.HasSuffix(name, ".tar.gz"), strings.HasSuffix(name, ".delta"),
-		strings.HasPrefix(name, "update-") && strings.HasSuffix(name, ".json"):
-		return true
-	}
-	return false
-}
+// payload is what the package holds of the Windows build, as the installer
+// installs it: the app, and the offline speech engine with its model and
+// licences (mygo.config.ts, speechFiles; built first by speech/build.ts).
+// Nothing else in the build's folder goes in.
+var payload = []string{"herdrup.exe", "herdrup-speech.exe", "ggml-tiny.bin", "whisper-LICENSE", "speech-LICENSES"}
+
+// stageMarker is in each folder stage made, the only kind it replaces. The
+// package leaves it out: pack packs the files stage lists.
+const stageMarker = ".herdrup-msix-stage"
 
 // logo is an image the manifest names, the app icon centred in it.
 type logo struct {
@@ -156,63 +148,135 @@ var logos = []logo{
 	{"Wide310x150Logo.png", 310, 150, 150},
 }
 
-// stage makes dir the package's contents: the app as built in from, the
-// logos made from icon, and AppxManifest.xml for id.
-func stage(from, dir, icon string, id identity) error {
+// stage makes dir the package's contents: the payload of the build in from,
+// the logos made from icon, and AppxManifest.xml for id. It returns them,
+// relative to dir. Before writing anything it checks the identity, that
+// dir and from are apart, that from has the whole payload, and that dir is
+// new, empty or stage's own.
+func stage(from, dir, icon string, id identity) ([]string, error) {
 	if err := id.check(); err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(from, "herdrup.exe")); err != nil {
-		return fmt.Errorf("no app to package: %w", err)
+	if err := apart(from, dir); err != nil {
+		return nil, err
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
+	for _, name := range payload {
+		fi, err := os.Stat(filepath.Join(from, name))
+		if err != nil {
+			return nil, fmt.Errorf("the build in %s lacks %s (build the speech resources, then the app: README.md, \"Microsoft Store package\"): %w", from, name, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil, fmt.Errorf("%s: not a regular file", filepath.Join(from, name))
+		}
 	}
-	if err := copyApp(from, dir); err != nil {
-		return err
+	if err := claim(dir); err != nil {
+		return nil, err
+	}
+	files := slices.Clone(payload)
+	for _, name := range payload {
+		if err := copyFile(filepath.Join(from, name), filepath.Join(dir, name)); err != nil {
+			return nil, err
+		}
 	}
 	if err := writeLogos(icon, filepath.Join(dir, "Assets")); err != nil {
-		return err
+		return nil, err
+	}
+	for _, l := range logos {
+		files = append(files, "Assets/"+l.name)
 	}
 	m, err := manifest(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(filepath.Join(dir, "AppxManifest.xml"), m, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "AppxManifest.xml"), m, 0o644); err != nil {
+		return nil, err
+	}
+	return append(files, "AppxManifest.xml"), nil
 }
 
-// copyApp copies the app's files in from, without mygo's outputs, to dir.
-func copyApp(from, dir string) error {
-	fsys := os.DirFS(from)
-	return fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
+// apart refuses a staging folder that is the build's folder, holds it or
+// is inside it, symbolic links followed: replacing it would delete the build.
+func apart(from, dir string) error {
+	a, err := resolved(from)
+	if err != nil {
+		return err
+	}
+	b, err := resolved(dir)
+	if err != nil {
+		return err
+	}
+	if within(a, b) || within(b, a) {
+		return fmt.Errorf("-stage %s and -from %s overlap: stage in a folder of its own", dir, from)
+	}
+	return nil
+}
+
+// resolved returns p absolute, with the symbolic links of its longest
+// existing part resolved.
+func resolved(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for cur := abs; ; {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}
+
+// within reports whether p is base or inside it (on Windows, ignoring case,
+// as filepath.Rel does).
+func within(p, base string) bool {
+	rel, err := filepath.Rel(base, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// claim makes dir an empty folder holding stageMarker: from a new folder,
+// an empty one, or one stage made before, whose files it deletes. Any other
+// it refuses, deleting nothing.
+func claim(dir string) error {
+	entries, err := os.ReadDir(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return fmt.Errorf("-stage %s: %w", dir, err)
+	case len(entries) == 0:
+	case !fileExists(filepath.Join(dir, stageMarker)):
+		return fmt.Errorf("-stage %s holds files this tool did not stage (no %s): give it a new or empty folder", dir, stageMarker)
+	default:
+		if err := os.RemoveAll(dir); err != nil {
 			return err
 		}
-		if p != "." && path.Dir(p) == "." && mygoOutput(d.Name()) {
-			return nil
-		}
-		dst := filepath.Join(dir, filepath.FromSlash(p))
-		if d.IsDir() {
-			return os.MkdirAll(dst, 0o755)
-		}
-		if !d.Type().IsRegular() {
-			return fmt.Errorf("%s: not a regular file", p)
-		}
-		src, err := fsys.Open(p)
-		if err != nil {
-			return err
-		}
-		defer src.Close()
-		out, err := os.Create(dst)
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(out, src); err != nil {
-			out.Close()
-			return err
-		}
-		return out.Close()
-	})
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, stageMarker), []byte("Staged by go run ./packaging/msix, which replaces this folder.\n"), 0o644)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // writeLogos writes the logos, made from the PNG icon, into dir.
@@ -410,16 +474,47 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// pack runs makeappx on dir, making the package out.
-func pack(dir, out string) error {
+// mapping returns the makeappx mapping file that packs files, relative to
+// dir, and only them.
+func mapping(dir string, files []string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString("[Files]\r\n")
+	for _, f := range files {
+		fmt.Fprintf(&b, "\"%s\" \"%s\"\r\n", filepath.Join(abs, filepath.FromSlash(f)), strings.ReplaceAll(f, "/", `\`))
+	}
+	return b.String(), nil
+}
+
+// pack runs makeappx on files staged in dir, making the package out.
+func pack(dir string, files []string, out string) error {
 	tool, err := sdkTool("makeappx")
 	if err != nil {
+		return err
+	}
+	m, err := mapping(dir, files)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp("", "herdrup-msix-*.txt")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(m); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
-	cmd := exec.Command(tool, "pack", "/o", "/d", dir, "/p", out)
+	cmd := exec.Command(tool, "pack", "/o", "/f", f.Name(), "/p", out)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("makeappx pack: %w", err)

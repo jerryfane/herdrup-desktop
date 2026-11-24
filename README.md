@@ -200,11 +200,17 @@ are in **[docs/DESIGN.md](docs/DESIGN.md)**.
 The Windows app also ships through the Microsoft Store as an MSIX package. It is the same app
 built with `-X main.distribution=store`: it never updates itself or reads GitHub's releases, and
 Settings, App updates says "Updates come from the Microsoft Store." [`packaging/msix`](packaging/msix)
-stages it (`herdrup.exe`, the offline speech engine and its model and licences, logos made from
-`resources/icon.png`, and [`AppxManifest.xml`](packaging/msix/AppxManifest.xml)) and packs it with
-the Windows SDK's `makeappx`. Every release run checks it (the `check-msix` job): packed with a
-placeholder identity and signed with a throwaway certificate, it installs, starts from its Start
-menu entry and keeps running, and uninstalls.
+stages exactly `herdrup.exe` and the offline speech engine (`herdrup-speech.exe`, `ggml-tiny.bin`,
+`whisper-LICENSE`, `speech-LICENSES`), logos made from `resources/icon.png`, and
+[`AppxManifest.xml`](packaging/msix/AppxManifest.xml), and packs them with the Windows SDK's
+`makeappx`. Every release run checks it (the `msix` job's `ci` variant): packed with a placeholder
+identity and signed with a throwaway certificate, it installs, starts from its Start menu entry and
+keeps running, and uninstalls.
+
+The package installs on Windows 11 and later (`MinVersion` 10.0.22000.0): the app needs the
+WebView2 Runtime, which the package doesn't carry and
+[Windows 11 includes](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
+On Windows 10, people use the installer from the GitHub release.
 
 What the owner sets up, once:
 
@@ -219,10 +225,10 @@ What the owner sets up, once:
    microphone for dictation, uses the camera to scan pairing codes, and sends usage pings and
    crash reports.
 
-From then on each release also has `herdrup-<version>-store.msix` (the `msix` job; without
-`MSIX_IDENTITY_NAME` it is skipped and the release is as before). Submitting it stays manual: upload
-it in Partner Center (the app's submission, Packages). It is not signed: the Store signs the
-packages it publishes
+From then on each release also has `herdrup-<version>-store.msix` (the `msix` job's `store`
+variant; without `MSIX_IDENTITY_NAME` there is none, and the release is as before). Submitting it
+stays manual: upload it in Partner Center (the app's submission, Packages). It is not signed: the
+Store signs the packages it publishes
 ([app package requirements](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msix/app-package-requirements)).
 The package declares the restricted capability `runFullTrust`, as every packaged desktop app does,
 so the submission asks why it needs it.
@@ -237,9 +243,15 @@ order, each preview before its release:
 | `X.Y.Z` | `(X+1).Y.(Z×1000+999).0` |
 
 So `0.1.0-preview.23` is `1.1.23.0` and `0.1.0` is `1.1.999.0`; previews go up to 998, and Z up
-to 64. To pack one on Windows with the Windows SDK:
+to 64. To pack one on Windows, with Visual Studio's C++ tools and the Windows SDK, build the
+offline speech resources first (the package needs them; see "Develop" in
+[docs/DESIGN.md](docs/DESIGN.md)), then the app in Store mode, then the package. The staging folder
+must be new, empty, or one the packer staged before, and apart from the build:
 
 ```bash
+export WHISPER_SOURCE=/path/to/whisper.cpp   # at 927cfce34f31707e17f2bff35c349632fb9e2c3a
+export HERDRUP_SPEECH_RESOURCES=/path/to/owned/local-build-scratch/speech-windows
+bun speech/build.ts windows/amd64
 MYGO_LDFLAGS="-X main.distribution=store" bun run build -- -platform windows/amd64
 go run ./packaging/msix pack -from build/windows-amd64 -stage build/msix \
   -name HerdrupCI -publisher CN=HerdrupCI -out build/herdrup-store.msix

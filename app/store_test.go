@@ -19,8 +19,8 @@ func setDistribution(t *testing.T, d string) {
 func TestStoreBuildNeverChecksGitHub(t *testing.T) {
 	setDistribution(t, "store")
 	u := newAppUpdates()
-	if _, ok := u.updater.(storeUpdater); !ok {
-		t.Fatalf("store build updater: %T, want storeUpdater", u.updater)
+	if _, ok := u.updater.(offUpdater); !ok {
+		t.Fatalf("store build updater: %T, want offUpdater", u.updater)
 	}
 	u.publish = func(AppUpdateState) {}
 	u.release = func() bool { return true }

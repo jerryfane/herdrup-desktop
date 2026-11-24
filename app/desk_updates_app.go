@@ -103,6 +103,15 @@ func (mygoUpdater) Check(ctx context.Context) (*appRelease, error) {
 	return &appRelease{Version: up.Version, Notes: up.Notes, Install: up.Install}, nil
 }
 
+// offUpdater is the app updater of an app that something else updates: the
+// device's system in kiosk mode (kiosk.go), the Microsoft Store for its
+// package (store.go). It never updates or checks.
+type offUpdater struct{}
+
+func (offUpdater) Enabled() bool { return false }
+
+func (offUpdater) Check(context.Context) (*appRelease, error) { return nil, nil }
+
 // appUpdates checks for and installs new versions of the app. Checks and
 // installs never overlap; mu guards state and release.
 type appUpdates struct {
@@ -139,11 +148,11 @@ func newAppUpdates() *appUpdates {
 	case kioskEnabled():
 		// The device's system updates herdrup with itself (kiosk.go): no
 		// self-update, and no GitHub release to download either.
-		updater = kioskUpdater{}
+		updater = offUpdater{}
 		reason = func() (string, bool) { return kioskUpdateReason, false }
 	case storeEnabled():
 		// The Microsoft Store updates its package (store.go): the same.
-		updater = storeUpdater{}
+		updater = offUpdater{}
 		reason = func() (string, bool) { return storeUpdateReason, false }
 	}
 	return &appUpdates{

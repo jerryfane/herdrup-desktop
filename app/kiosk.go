@@ -1,9 +1,6 @@
 package main
 
-import (
-	"context"
-	"os"
-)
+import "os"
 
 // Kiosk mode: herdrup as a device's only app, e.g. RoverOS, a phone that
 // boots into herdrup full screen under the cage compositor (rover, gitmoot
@@ -14,10 +11,3 @@ func kioskEnabled() bool { return os.Getenv("HERDRUP_KIOSK") == "1" }
 
 // kioskUpdateReason is what Settings, App updates says in kiosk mode.
 const kioskUpdateReason = "Updated with the system it runs on."
-
-// kioskUpdater is the app updater of kiosk mode: off.
-type kioskUpdater struct{}
-
-func (kioskUpdater) Enabled() bool { return false }
-
-func (kioskUpdater) Check(context.Context) (*appRelease, error) { return nil, nil }

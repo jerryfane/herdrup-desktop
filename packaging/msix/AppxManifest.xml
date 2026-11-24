@@ -20,8 +20,10 @@
     <PublisherDisplayName>{{xml .PublisherDisplayName}}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
+  <!-- Windows 11 and later: they include the WebView2 Runtime the app
+       needs, which the package does not carry. Windows 10 has the installer. -->
   <Dependencies>
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Resources>
     <Resource Language="en-us" />

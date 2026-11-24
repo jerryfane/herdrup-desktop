@@ -320,14 +320,25 @@ jobs:
   # The Microsoft Store package (README.md, "Microsoft Store package"): the
   # Windows app built with -X main.distribution=store, whose updates come
   # from the Store (app/store.go), packed by packaging/msix with the Windows
-  # SDK's makeappx. This check packs it with a placeholder identity on every
-  # run, signs it with a throwaway certificate, installs it, starts it as
-  # Windows starts a packaged app, and removes it, as check-windows does with
-  # the installer.
-  check-msix:
-    name: Check the Microsoft Store package
+  # SDK's makeappx. Two variants of one recipe:
+  # - ci, on every run: packed with a placeholder identity, signed with a
+  #   throwaway certificate, installed, started as Windows starts a packaged
+  #   app, and removed, as check-windows does with the installer;
+  # - store, once the owner reserved the app's name in Partner Center and set
+  #   its identity as the repository variables MSIX_IDENTITY_NAME,
+  #   MSIX_PUBLISHER and, optionally, MSIX_PUBLISHER_DISPLAY_NAME: unsigned,
+  #   as the Store signs what it publishes, and carried by the release as
+  #   herdrup-<version>-store.msix for the owner to submit in Partner Center.
+  # Without MSIX_IDENTITY_NAME the matrix has no store variant, so the job
+  # is never skipped and the release is as before.
+  msix:
+    name: Microsoft Store package (${{ matrix.variant }})
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(vars.MSIX_IDENTITY_NAME != '' && '["ci", "store"]' || '["ci"]') }}
     defaults:
       run:
         shell: bash
@@ -351,24 +362,44 @@ jobs:
           WHISPER_SOURCE: ${{ github.workspace }}/speech-source
           HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
         run: bun speech/build.ts windows/amd64
-      # Not main.release: the shell starts the packaged app outside this
-      # job's environment, whose CI variable keeps a release build from
-      # sending usage pings and crash reports (app/usage_ping.go).
+      # The store variant sends usage pings and crash reports as every
+      # release build does (main.release). Not ci: the shell starts the
+      # packaged app outside this job's environment, whose CI variable keeps
+      # a release build from sending them (app/usage_ping.go).
       - name: Build in Store mode
         env:
-          MYGO_LDFLAGS: -X main.distribution=store
+          MYGO_LDFLAGS: ${{ matrix.variant == 'store' && '-X main.release=1 -X main.distribution=store' || '-X main.distribution=store' }}
         run: bun run build -- -platform windows/amd64
-      - name: Pack with a placeholder identity
+      - name: Pack
+        env:
+          VARIANT: ${{ matrix.variant }}
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
         run: |
-          go run ./packaging/msix pack -from build/windows-amd64 -stage "$RUNNER_TEMP/msix" \
-            -name HerdrupCI -publisher CN=HerdrupCI -out "$RUNNER_TEMP/HerdrupCI.msix"
-          echo "SIGNTOOL=$(go run ./packaging/msix tool signtool)" >> "$GITHUB_ENV"
+          if [ "$VARIANT" = store ]; then
+            name="$MSIX_IDENTITY_NAME" publisher="$MSIX_PUBLISHER" display="$MSIX_PUBLISHER_DISPLAY_NAME"
+          else
+            name=HerdrupCI publisher=CN=HerdrupCI display=
+          fi
+          version="$(jq -r .version package.json)"
+          out="$RUNNER_TEMP/msix-out/herdrup-$version-$VARIANT.msix"
+          go run ./packaging/msix pack -from build/windows-amd64 -stage "$RUNNER_TEMP/msix-stage" \
+            -name "$name" -publisher "$publisher" -publisher-display-name "$display" -out "$out"
+          ls -l "$RUNNER_TEMP/msix-out"
+          echo "MSIX=$out" >> "$GITHUB_ENV"
+      - name: Find signtool
+        if: matrix.variant == 'ci'
+        run: |
+          signtool="$(go run ./packaging/msix tool signtool)"
+          echo "SIGNTOOL=$signtool" >> "$GITHUB_ENV"
       # Windows PowerShell: its Appx module is the one Windows ships.
       - name: Sign, install, start from its AUMID, remove
+        if: matrix.variant == 'ci'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $msix = Join-Path $env:RUNNER_TEMP 'HerdrupCI.msix'
+          $msix = [IO.Path]::GetFullPath($env:MSIX)
           # A throwaway code signing certificate whose subject is the
           # placeholder publisher, trusted for packages on this runner only.
           $cert = New-SelfSignedCertificate -Type Custom -Subject 'CN=HerdrupCI' -KeyUsage DigitalSignature `
@@ -398,6 +429,7 @@ jobs:
           foreach ($f in 'herdrup.exe', 'herdrup-speech.exe', 'ggml-tiny.bin', 'whisper-LICENSE', 'speech-LICENSES', 'AppxManifest.xml') {
             if (-not (Test-Path (Join-Path $pkg.InstallLocation $f))) { throw "$f not installed" }
           }
+          if (Test-Path (Join-Path $pkg.InstallLocation '.herdrup-msix-stage')) { throw 'the staging marker was packed' }
           # It starts as its Start menu entry does, from the package, and
           # keeps running.
           Start-Process "shell:AppsFolder\$($pkg.PackageFamilyName)!App"
@@ -417,71 +449,17 @@ jobs:
           Start-Sleep -Seconds 2
           Remove-AppxPackage -Package $pkg.PackageFullName
           if (Get-AppxPackage -Name HerdrupCI) { throw 'HerdrupCI left after Remove-AppxPackage' }
-
-  # The package for the Store, once the owner reserved the app's name in
-  # Partner Center and set its identity as the repository variables
-  # MSIX_IDENTITY_NAME, MSIX_PUBLISHER and, optionally,
-  # MSIX_PUBLISHER_DISPLAY_NAME; skipped without MSIX_IDENTITY_NAME. Unsigned:
-  # the Store signs what it publishes. The release carries it, as
-  # herdrup-<version>-store.msix, for the owner to submit in Partner Center.
-  msix:
-    name: Build the Microsoft Store package
-    if: vars.MSIX_IDENTITY_NAME != ''
-    runs-on: windows-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - run: bun install --frozen-lockfile
-      - name: Fetch pinned offline speech engine
-        uses: actions/checkout@v5
-        with:
-          repository: ggml-org/whisper.cpp
-          ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
-          path: speech-source
-      - name: Build offline speech resources
-        env:
-          WHISPER_SOURCE: ${{ github.workspace }}/speech-source
-          HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
-        run: bun speech/build.ts windows/amd64
-      - name: Build in Store mode
-        env:
-          # Usage pings and crash reports as every release build sends them.
-          MYGO_LDFLAGS: -X main.release=1 -X main.distribution=store
-        run: bun run build -- -platform windows/amd64
-      - name: Pack for the Store
-        env:
-          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
-          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
-          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
-        run: |
-          version="$(jq -r .version package.json)"
-          go run ./packaging/msix pack -from build/windows-amd64 -stage "$RUNNER_TEMP/msix" \
-            -name "$MSIX_IDENTITY_NAME" -publisher "$MSIX_PUBLISHER" \
-            -publisher-display-name "$MSIX_PUBLISHER_DISPLAY_NAME" \
-            -out "$RUNNER_TEMP/store/herdrup-$version-store.msix"
-          ls -l "$RUNNER_TEMP/store"
       - uses: actions/upload-artifact@v4
+        if: matrix.variant == 'store'
         with:
           name: herdrup-Store
           if-no-files-found: error
           retention-days: 14
-          path: ${{ runner.temp }}/store/
+          path: ${{ runner.temp }}/msix-out/
 
-  # msix is skipped until the owner sets the Store's identity: the release
-  # goes on without it, and stops for any job that failed.
   checksums:
     name: Checksums
-    needs: [build, check-windows, check-linux, check-msix, msix]
-    if: ${{ !cancelled() && !failure() }}
+    needs: [build, check-windows, check-linux, msix]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -503,12 +481,11 @@ jobs:
           path: dist/SHA256SUMS
 
   # Only a pushed v* tag publishes. A run on demand never does, even when
-  # dispatched on a tag ref, and never gets a token that can write. A job
-  # skipped before (msix) would skip this one too, without !failure().
+  # dispatched on a tag ref, and never gets a token that can write.
   publish:
     name: Release of a tag
     needs: checksums
-    if: ${{ !cancelled() && !failure() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

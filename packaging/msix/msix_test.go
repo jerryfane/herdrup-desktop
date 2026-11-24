@@ -32,7 +32,9 @@ func TestMSIXVersion(t *testing.T) {
 			t.Errorf("msixVersion(%q) = %q, %v; want %q", c.in, got, err, c.want)
 		}
 	}
-	for _, bad := range []string{"0.1", "0.1.0-beta.1", "0.1.0-preview", "v0.1.0", "0.1.0-preview.999", "0.1.65", "0.65536.0", "65535.0.0"} {
+	for _, bad := range []string{"0.1", "0.1.0-beta.1", "0.1.0-preview", "v0.1.0", "0.1.0-preview.999", "0.1.65", "0.65536.0", "65535.0.0",
+		// Past 65535 only after the arithmetic wrapped: rejected before it.
+		"0.1.18446744073709552", "0.1.9223372036854776", "18446744073709551615.0.0", "0.1.0-preview.18446744073709551615", "0.1.99999999999999999999"} {
 		if got, err := msixVersion(bad); err == nil {
 			t.Errorf("msixVersion(%q) = %q, want an error", bad, got)
 		}
@@ -141,7 +143,7 @@ func TestManifest(t *testing.T) {
 	if got := m.Properties; got.DisplayName != "herdrup" || got.PublisherDisplayName != id.PublisherDisplayName || got.Logo != `Assets\StoreLogo.png` {
 		t.Errorf("Properties: %+v", got)
 	}
-	if got := m.Dependencies.TargetDeviceFamily; got.Name != "Windows.Desktop" || got.MinVersion != "10.0.17763.0" || got.MaxVersionTested == "" {
+	if got := m.Dependencies.TargetDeviceFamily; got.Name != "Windows.Desktop" || got.MinVersion != "10.0.22000.0" || got.MaxVersionTested == "" {
 		t.Errorf("TargetDeviceFamily: %+v", got)
 	}
 	if len(m.Resources.Resource) != 1 || m.Resources.Resource[0].Language != "en-us" {
@@ -220,38 +222,60 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// The package holds what the installer installs: the app and the speech
-// engine's files, not mygo's installer, update files or install script.
-func TestStage(t *testing.T) {
-	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
-	app := []string{"herdrup.exe", "herdrup-speech.exe", "ggml-tiny.bin", "whisper-LICENSE", "speech-LICENSES", "extra/data.txt"}
-	for _, f := range app {
-		writeFile(t, filepath.Join(from, f), "app "+f)
+// buildDir writes a Windows build: the payload, and what else mygo writes
+// next to it.
+func buildDir(t *testing.T, dir string) {
+	t.Helper()
+	for _, f := range payload {
+		writeFile(t, filepath.Join(dir, f), "app "+f)
 	}
-	for _, f := range []string{"herdrup-setup-0.1.0-preview.23-amd64.exe", "install.ps1", "herdrup-0.1.0-preview.23-windows-amd64.tar.gz", "herdrup-0.1.0-preview.22-windows-amd64.delta", "update-windows-amd64.json"} {
-		writeFile(t, filepath.Join(from, f), "mygo "+f)
+	for _, f := range []string{"herdrup-setup-0.1.0-preview.23-amd64.exe", "install.ps1", "herdrup-0.1.0-preview.23-windows-amd64.tar.gz", "update-windows-amd64.json", "icon.png", "extra/data.txt"} {
+		writeFile(t, filepath.Join(dir, f), "other "+f)
 	}
-	writeFile(t, filepath.Join(dir, "stale.txt"), "from the last run")
-	id := identity{Name: "HerdrupCI", Publisher: "CN=HerdrupCI", PublisherDisplayName: "Herdrup", Version: "1.1.23.0", Arch: "x64"}
-	if err := stage(from, dir, "../../resources/icon.png", id); err != nil {
-		t.Fatal(err)
-	}
+}
+
+// files lists the files in dir, relative to it, sorted.
+func files(t *testing.T, dir string) []string {
+	t.Helper()
 	var got []string
-	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
 			rel, _ := filepath.Rel(dir, p)
 			got = append(got, filepath.ToSlash(rel))
 		}
 		return err
 	})
-	want := append(slices.Clone(app), "AppxManifest.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	return got
+}
+
+var ciIdentity = identity{Name: "HerdrupCI", Publisher: "CN=HerdrupCI", PublisherDisplayName: "Herdrup", Version: "1.1.23.0", Arch: "x64"}
+
+// The package holds the payload, the logos and the manifest, and nothing
+// else of the build: not mygo's installer, update files or install script.
+func TestStage(t *testing.T) {
+	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
+	buildDir(t, from)
+	got, err := stage(from, dir, "../../resources/icon.png", ciIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(slices.Clone(payload), "AppxManifest.xml")
 	for _, l := range logos {
 		want = append(want, "Assets/"+l.name)
 	}
-	slices.Sort(got)
 	slices.Sort(want)
+	slices.Sort(got)
 	if !slices.Equal(got, want) {
-		t.Fatalf("staged %v\nwant %v", got, want)
+		t.Fatalf("stage lists %v\nwant %v", got, want)
+	}
+	wantDisk := append(slices.Clone(want), stageMarker)
+	slices.Sort(wantDisk)
+	if onDisk := files(t, dir); !slices.Equal(onDisk, wantDisk) {
+		t.Fatalf("staged %v\nwant %v", onDisk, wantDisk)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "herdrup-speech.exe")); string(b) != "app herdrup-speech.exe" {
 		t.Errorf("herdrup-speech.exe holds %q", b)
@@ -271,15 +295,95 @@ func TestStage(t *testing.T) {
 	if !bytes.Contains(m, []byte(`Name="HerdrupCI" Publisher="CN=HerdrupCI" Version="1.1.23.0"`)) {
 		t.Errorf("manifest identity:\n%s", m)
 	}
+	// Its own folder, staged again, is replaced.
+	writeFile(t, filepath.Join(dir, "stale.txt"), "from the last run")
+	if _, err := stage(from, dir, "../../resources/icon.png", ciIdentity); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(filepath.Join(dir, "stale.txt")) || !fileExists(filepath.Join(dir, stageMarker)) {
+		t.Errorf("restaged: %v", files(t, dir))
+	}
+	// So is an empty folder.
+	empty := t.TempDir()
+	if _, err := stage(from, empty, "../../resources/icon.png", ciIdentity); err != nil {
+		t.Errorf("empty folder: %v", err)
+	}
 }
 
-func TestStageRefuses(t *testing.T) {
-	from := t.TempDir()
-	good := identity{Name: "Jerry.Herdrup", Publisher: "CN=0A1B2C3D-0000-0000-0000-000000000000", PublisherDisplayName: "Herdrup", Version: "1.1.23.0", Arch: "x64"}
-	if err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", good); err == nil {
-		t.Error("staged a folder without herdrup.exe")
+// A build without the whole payload (the speech resources not built
+// first) is not packaged, and nothing is written.
+func TestStageNeedsTheWholePayload(t *testing.T) {
+	for _, missing := range payload {
+		from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
+		buildDir(t, from)
+		if err := os.Remove(filepath.Join(from, missing)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stage(from, dir, "../../resources/icon.png", ciIdentity); err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("without %s: %v", missing, err)
+		}
+		if fileExists(dir) {
+			t.Errorf("without %s: wrote %s", missing, dir)
+		}
 	}
-	writeFile(t, filepath.Join(from, "herdrup.exe"), "app")
+}
+
+// A staging folder that overlaps the build would be deleted with it: it is
+// refused before anything is written or deleted.
+func TestStageRefusesOverlap(t *testing.T) {
+	root := t.TempDir()
+	from := filepath.Join(root, "build", "windows-amd64")
+	buildDir(t, from)
+	writeFile(t, filepath.Join(root, "build", "notes.txt"), "unrelated")
+	before := files(t, root)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(from, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, dir := range map[string]string{
+		"parent":            filepath.Join(root, "build"),
+		"grandparent":       root,
+		"child":             filepath.Join(from, "stage"),
+		"equal":             from,
+		"equal, relative":   filepath.Join(from, "..", "windows-amd64"),
+		"symlink":           link,
+		"inside, a symlink": filepath.Join(link, "msix"),
+	} {
+		_, err := stage(from, dir, "../../resources/icon.png", ciIdentity)
+		if err == nil || !strings.Contains(err.Error(), "overlap") {
+			t.Errorf("%s (%s): %v", name, dir, err)
+		}
+		if after := files(t, root); !slices.Equal(after, before) {
+			t.Fatalf("%s: the build's folder changed: %v\nwas %v", name, after, before)
+		}
+	}
+}
+
+// A folder stage did not make keeps its files: it is refused.
+func TestStageRefusesAForeignFolder(t *testing.T) {
+	from, dir := t.TempDir(), t.TempDir()
+	buildDir(t, from)
+	writeFile(t, filepath.Join(dir, "keep.txt"), "someone's")
+	if _, err := stage(from, dir, "../../resources/icon.png", ciIdentity); err == nil || !strings.Contains(err.Error(), stageMarker) {
+		t.Errorf("foreign folder: %v", err)
+	}
+	if got := files(t, dir); !slices.Equal(got, []string{"keep.txt"}) {
+		t.Errorf("foreign folder now holds %v", got)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	writeFile(t, file, "a file")
+	if _, err := stage(from, file, "../../resources/icon.png", ciIdentity); err == nil {
+		t.Error("staged into a file")
+	}
+	if b, _ := os.ReadFile(file); string(b) != "a file" {
+		t.Errorf("the file holds %q", b)
+	}
+}
+
+func TestStageRefusesIdentity(t *testing.T) {
+	from := t.TempDir()
+	buildDir(t, from)
+	good := identity{Name: "Jerry.Herdrup", Publisher: "CN=0A1B2C3D-0000-0000-0000-000000000000", PublisherDisplayName: "Herdrup", Version: "1.1.23.0", Arch: "x64"}
 	for _, id := range []identity{
 		{Name: "", Publisher: good.Publisher},
 		{Name: "Jerry Herdrup", Publisher: good.Publisher},
@@ -288,12 +392,28 @@ func TestStageRefuses(t *testing.T) {
 		{Name: good.Name, Publisher: "Jerry Fane"},
 	} {
 		id.Version, id.Arch = good.Version, good.Arch
-		if err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", id); err == nil {
+		if _, err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", id); err == nil {
 			t.Errorf("staged identity %+v", id)
 		}
 	}
-	if err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", good); err != nil {
+	if _, err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", good); err != nil {
 		t.Errorf("Partner Center's identity: %v", err)
+	}
+}
+
+// makeappx packs the files stage listed, under their names in the package,
+// and not the marker.
+func TestMapping(t *testing.T) {
+	dir := t.TempDir()
+	got, err := mapping(dir, []string{"herdrup.exe", "Assets/StoreLogo.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[Files]\r\n" +
+		`"` + filepath.Join(dir, "herdrup.exe") + `" "herdrup.exe"` + "\r\n" +
+		`"` + filepath.Join(dir, "Assets", "StoreLogo.png") + `" "Assets\StoreLogo.png"` + "\r\n"
+	if got != want {
+		t.Errorf("mapping:\n%s\nwant\n%s", got, want)
 	}
 }
 

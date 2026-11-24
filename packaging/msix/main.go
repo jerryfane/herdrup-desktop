@@ -5,10 +5,12 @@
 //	go run ./packaging/msix pack -from build/windows-amd64 -stage DIR \
 //	  -name NAME -publisher CN=... [-publisher-display-name NAME] [-out FILE.msix]
 //
-// stages the app, its logos and AppxManifest.xml in DIR and, with -out,
-// packs them with the Windows SDK's makeappx, unsigned: the Store signs
-// what it publishes. `go run ./packaging/msix tool NAME` prints the path of
-// a Windows SDK tool, such as signtool.
+// stages the app's payload (msix.go, payload), its logos and
+// AppxManifest.xml in DIR, a new or empty folder or one it staged before,
+// apart from the build, and, with -out, packs them with the Windows SDK's
+// makeappx, unsigned: the Store signs what it publishes.
+// `go run ./packaging/msix tool NAME` prints the path of a Windows SDK tool,
+// such as signtool.
 package main
 
 import (
@@ -67,14 +69,15 @@ func run(args []string) error {
 		if id.Version, err = msixVersion(v); err != nil {
 			return err
 		}
-		if err := stage(*from, *dir, *icon, id); err != nil {
+		files, err := stage(*from, *dir, *icon, id)
+		if err != nil {
 			return err
 		}
 		fmt.Printf("Staged %s %s (%s, from %s) in %s\n", id.Name, id.Version, id.Publisher, v, *dir)
 		if *out == "" {
 			return nil
 		}
-		if err := pack(*dir, *out); err != nil {
+		if err := pack(*dir, files, *out); err != nil {
 			return err
 		}
 		fmt.Println("Packed", *out)
