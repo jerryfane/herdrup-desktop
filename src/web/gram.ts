@@ -78,10 +78,11 @@ interface State {
   *  one discarded puts them back; the Gram's end (reset) tells whatever is left. */
  headWaiters: (() => void)[];
  badge: number;
- /** Accepted answers carrying the whole store's count that set the badge, so far: an owner's head
-  *  lists and pages only. An unread-only reply asked before one of them is older than the count it
-  *  set and is dropped. A guest's list covers only its newest rows, so it never counts here: it
-  *  doesn't supersede the hidden tab's whole-store unread walk. */
+ /** Accepted answers that set the badge from a count of the WHOLE store, so far; an unread-only
+  *  walk asked before one of them is older than that count and is dropped. The rule: an answer
+  *  counts here iff its count covers the whole store: an owner's head list or page (herdr's own
+  *  count), or a guest head list that reached the store's end (has_more false). A guest head list
+  *  cut short (has_more true) covers only its newest rows, so it never supersedes the walk. */
  counted: number;
  visible: boolean;
  wake: (() => void) | null;
@@ -335,7 +336,10 @@ async function headAnswer(state: State, link: WebLink, limit: number, sent: Writ
  // Accepted, it was sent with no write in flight and none started since: after every post's
  // acknowledgement. The posts it lists show as listed; one it doesn't was deleted elsewhere.
  state.pending = [];
- if (headWritesBadge(state)) { state.badge = state.inbox.unreadCount(); if (state.owner) state.counted++; }
+ if (headWritesBadge(state)) {
+  state.badge = state.inbox.unreadCount();
+  if (state.owner || !answer.hasMore) state.counted++;
+ }
  publish();
  // Its expired files reach Saved after the list is in (Saved changes take their lock).
  await expireOwnerSaved(state, answer.messages);
@@ -360,11 +364,14 @@ async function refresh(state: State, link: WebLink) {
  publish();
 }
 
-/** gramBadge: an unread-only list while Gram does not show; the owner's counts the whole store. */
+/** gramBadge: an unread-only list while Gram does not show; the owner's counts the whole store. A
+ *  guest's walk counts only once it has walked every page: one that failed partway publishes
+ *  nothing and the badge stays as it is. */
 async function badge(state: State, link: WebLink) {
  const sent = { ...state.writes }, counted = state.counted;
- let answer;
- try { ({ answer } = await gramAnswer(state, link, 0, true)); } catch { return; }
+ let answer, error: unknown;
+ try { ({ answer, error } = await gramAnswer(state, link, 0, true)); } catch { return; }
+ if (error !== undefined) return;
  if (g !== state || !accepted(state, sent, "badge")) return;
  // A head list or page accepted since this was asked set a newer count.
  if (state.counted !== counted) return;
