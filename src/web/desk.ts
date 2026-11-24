@@ -499,9 +499,18 @@ export function createGuestDesk(env: DeskEnv) {
  /** desk_guest.go runGuest. */
  async function runGuest(l: Active, print: string) {
   const signal = l.life.signal;
-  // An owner link also says the scope its grant was admitted under (ownerScope).
-  const publish = (phase: string, msg: string, availability: string) => setState(l, connection(l, print, phase, msg, availability));
-  publish("connecting", "", "");
+  // An owner link also says the scope its grant was admitted under (ownerScope). A snapshot is
+  // made, and told, only when the connection changed: its phase, message, availability, admitted
+  // scope or features.
+  const publish = (phase: string, msg: string, availability: string) => {
+   const now = l.conn, guest = now.guest, features = l.transport.features;
+   const same = now.phase === phase && now.message === msg && (guest?.availability ?? "") === availability
+    && (guest?.ownerScope ?? "") === (l.owner ? l.transport.scope : "")
+    && guest?.features.gram === features.gram && guest.features.push === features.push && guest.features.multi_request === features.multiRequest;
+   if (!same) setState(l, connection(l, print, phase, msg, availability));
+  };
+  // The snapshot made with the link ("connecting") is the first one told.
+  setState(l, l.conn);
   let listed = false;
   let kicked = false;
   let wake: (() => void) | null = null;
