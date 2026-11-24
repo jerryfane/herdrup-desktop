@@ -106,3 +106,37 @@ func TestSampleGramsSeed(t *testing.T) {
 		t.Fatalf("get_file_chunk: %v", apiErr)
 	}
 }
+
+// -bracketed-write alone, with no fixture writing to panes, takes the writes
+// it advertises.
+func TestBracketedWriteFlagServesTheWrite(t *testing.T) {
+	base, err := handler("populated", newAgentSet(defaultAgents).get, newWrites())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, bracketed := json.RawMessage(`{"pane_id":"w1:p1","text":"ls"}`), json.RawMessage(`{"pane_id":"w1:p1","text":"a\nb","bracketed":true}`)
+	for mode, wantBracketed := range map[string]string{"on": "", "paste-off": "bracketed_paste_unavailable"} {
+		handle, err := bracketedWrites(mode, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pong, _ := handle("ping", nil)
+		if !pong.(map[string]any)["capabilities"].(map[string]bool)["pane_send_text_bracketed"] {
+			t.Fatalf("%s: ping does not advertise pane_send_text_bracketed: %v", mode, pong)
+		}
+		if _, apiErr := handle("pane.send_text", plain); apiErr != nil {
+			t.Fatalf("%s: plain write: %v", mode, apiErr)
+		}
+		_, apiErr := handle("pane.send_text", bracketed)
+		code := ""
+		if apiErr != nil {
+			code = apiErr.Code
+		}
+		if code != wantBracketed {
+			t.Fatalf("%s: bracketed write answered %v, want %q", mode, apiErr, wantBracketed)
+		}
+	}
+	if _, err := bracketedWrites("yes", base); err == nil {
+		t.Fatal("unknown -bracketed-write accepted")
+	}
+}

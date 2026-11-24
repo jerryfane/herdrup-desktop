@@ -125,11 +125,17 @@ var promptWait = func() herdrapi.AgentPromptWaitOptions {
 		herdrapi.AgentStatusDone, herdrapi.AgentStatusUnknown}}
 }()
 
-// A draft with a line break, written raw to a plain terminal, runs the text
-// before the break. These keep the draft: nothing was written.
-var (
-	errTerminalLineBreak    = errors.New("Write one line at a time: a line break would run the text before it.")
-	errTerminalPasteRefused = errors.New("This program can't take a pasted block. Write one line at a time.")
+// unwritten refuses a draft before anything reached the terminal, so the
+// composer keeps it. A draft with a line break, written raw to a plain
+// terminal, would run the text before the break.
+type unwritten string
+
+func (e unwritten) Error() string { return string(e) }
+
+const (
+	errTerminalLineBreak    unwritten = "Write one line at a time: a line break would run the text before it."
+	errTerminalPasteRefused unwritten = "This program can't take a pasted block. Write one line at a time."
+	errTerminalUnchecked    unwritten = "Couldn't check whether this machine takes a pasted block — nothing was written. Try again."
 )
 
 // writeToTerminal writes a draft to a plain terminal without running it. One
@@ -140,12 +146,20 @@ func writeToTerminal(ctx context.Context, v *interaction, text string) error {
 	if !strings.ContainsAny(text, "\r\n") {
 		return v.client.PaneSendText(ctx, v.PaneID, text)
 	}
-	if ok, _ := v.client.Supports(ctx, herdrapi.CapabilityPaneSendTextBracketed); !ok {
-		return errTerminalLineBreak
-	}
-	err := v.client.PaneSendBracketedText(ctx, v.PaneID, text)
+	return bracketedWriteError(v.client.PaneSendBracketedText(ctx, v.PaneID, text))
+}
+
+// bracketedWriteError is the composer's reason for a bracketed write that
+// wrote nothing; other errors pass through.
+func bracketedWriteError(err error) error {
+	var probe *engine.ErrProbeFailed
 	var api *bridge.APIError
-	if errors.As(err, &api) && api.Code == "bracketed_paste_unavailable" {
+	switch {
+	case errors.Is(err, engine.ErrBracketedUnsupported):
+		return errTerminalLineBreak
+	case errors.As(err, &probe):
+		return errTerminalUnchecked
+	case errors.As(err, &api) && api.Code == "bracketed_paste_unavailable":
 		return errTerminalPasteRefused
 	}
 	return err
@@ -160,7 +174,8 @@ func submitPanePrompt(ctx context.Context, v *interaction, text string) (string,
 		err = writeToTerminal(ctx, v, text)
 		delivery, note = "written", "Written to terminal; press Enter to run it."
 		var unsupported *engine.ErrUnsupported
-		if errors.As(err, &unsupported) || errors.Is(err, errTerminalLineBreak) || errors.Is(err, errTerminalPasteRefused) {
+		var kept unwritten
+		if errors.As(err, &unsupported) || errors.As(err, &kept) {
 			return "", err
 		}
 	} else {

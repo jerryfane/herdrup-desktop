@@ -3,12 +3,44 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
+
+// A bracketed write goes out only on a ping that advertises
+// pane_send_text_bracketed (issue #392): a failed probe and a host without
+// the flag are told apart, and neither sends anything.
+func TestBracketedWriteNeedsTheAdvertisedCapability(t *testing.T) {
+	writes := &fakeherdr.PaneWrites{}
+	ok := func(string, json.RawMessage) (any, *fakeherdr.APIError) { return map[string]string{"type": "ok"}, nil }
+	h, c := start(t, map[string]bool{"events_v2": true}, writes.Serve(ok), nil)
+	h.pingErr.Store(true)
+	err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb")
+	var probe *engine.ErrProbeFailed
+	if !errors.As(err, &probe) || probe.Capability != herdrapi.CapabilityPaneSendTextBracketed || errors.Is(err, engine.ErrBracketedUnsupported) {
+		t.Fatalf("with the probe failing: %v, want ErrProbeFailed", err)
+	}
+	h.pingErr.Store(false)
+	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb"); !errors.Is(err, engine.ErrBracketedUnsupported) {
+		t.Fatalf("without the capability: %v, want ErrBracketedUnsupported", err)
+	}
+	if got := writes.Writes(); len(got) != 0 {
+		t.Fatalf("a bracketed write went out without the capability: %+v", got)
+	}
+	_, c = start(t, map[string]bool{"pane_send_text_bracketed": true}, writes.Serve(ok), nil)
+	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb"); err != nil {
+		t.Fatal(err)
+	}
+	if got := writes.Writes(); len(got) != 1 || got[0] != (fakeherdr.PaneWrite{Pane: "w1:p1", Text: "a\nb", Bracketed: true}) {
+		t.Fatalf("writes %+v, want one bracketed write", got)
+	}
+}
 
 func TestTerminalInputPreservesUnicodeAndNeverReplaysLostAck(t *testing.T) {
 	var mu sync.Mutex
