@@ -24,7 +24,7 @@ import { createGuestDesk } from "../src/web/desk";
 import { accountLabel } from "../src/listExtras";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { AgentInfo } from "../src/web/board";
-import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
+import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, LOGOUT_TIMEOUT_MS, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
 import { CLOSING_WAIT_MS } from "../src/web/ownerLink";
 import { guestsDesk } from "../src/web/guestsDesk";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
@@ -1069,6 +1069,63 @@ test("a logout whose Enter is never acknowledged is unconfirmed at its deadline,
  await expect(withinSeconds(2, createSettingsAccountsDesk({ logoutTimeoutMs: 40 }).logoutSettingsAccount("tok", "a1"))).rejects.toThrow("Couldn't confirm the logout");
  await tick();
  expect(host.of("pane.close").map((c) => c.params.pane_id)).toEqual(["out"]);
+});
+
+// #473: the logout's deadline covers its split: a host withholding only the split's answer keeps
+// the Accounts actions (which wait for the logout) busy no longer than LOGOUT_TIMEOUT_MS.
+for (const answered of [true, false]) {
+ test(`a logout whose pane.split herdr doesn't answer is unconfirmed at its deadline; ${answered ? "a pane answered within the cleanup window after it is closed" : "never answered, nothing is typed"}`, async () => {
+  jest.useFakeTimers();
+  try {
+   const answer = Promise.withResolvers<void>();
+   const host = ownerLink(async (method) => {
+    if (method === "pane.split") { await answer.promise; return { type: "pane_info", pane: { pane_id: "out" } }; }
+    if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+   });
+   await settleAll();
+   let outcome = "pending";
+   void createSettingsAccountsDesk().logoutSettingsAccount("tok", "a1").then(() => { outcome = "done"; }, (error: Error) => { outcome = error.message; });
+   await settleAll();
+   expect(host.of("pane.split")).toHaveLength(1);
+   jest.advanceTimersByTime(LOGOUT_TIMEOUT_MS - 1); await settleAll();
+   expect(outcome).toBe("pending");
+   jest.advanceTimersByTime(1); await settleAll();
+   expect(outcome).toBe("Couldn't confirm the logout. Check Accounts — it may not have finished.");
+   // The split's answer is still awaited CLOSING_WAIT_MS past the deadline, for its pane's close.
+   jest.advanceTimersByTime(CLOSING_WAIT_MS - 1); await settleAll();
+   if (answered) answer.resolve(); else jest.advanceTimersByTime(1);
+   await settleAll();
+   expect([host.of("pane.send_text"), host.of("pane.close").map((c) => c.params.pane_id)]).toEqual([[], answered ? ["out"] : []]);
+  } finally {
+   jest.useRealTimers();
+  }
+ });
+}
+
+test("a logout whose pane.split still waits for the relay at its deadline is unconfirmed then, and the split is never sent", async () => {
+ jest.useFakeTimers();
+ try {
+  let armed = false;
+  const admission = Promise.withResolvers<void>();
+  const host: ReturnType<typeof ownerLink> = ownerLink((method) => {
+   if (method === "accounts.list" && armed) { armed = false; host.host.admission = admission.promise; } // the split's frame waits
+   if (method === "pane.split") return { type: "pane_info", pane: { pane_id: "out" } };
+   if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+  });
+  await settleAll();
+  armed = true;
+  let outcome = "pending";
+  void createSettingsAccountsDesk().logoutSettingsAccount("tok", "a1").then(() => { outcome = "done"; }, (error: Error) => { outcome = error.message; });
+  await settleAll();
+  jest.advanceTimersByTime(LOGOUT_TIMEOUT_MS); await settleAll();
+  expect(outcome).toBe("Couldn't confirm the logout. Check Accounts — it may not have finished.");
+  host.host.admission = null;
+  admission.resolve(); // the relay admits it after the deadline: nothing goes
+  await settleAll();
+  expect([host.of("pane.split"), host.of("pane.close")]).toEqual([[], []]);
+ } finally {
+  jest.useRealTimers();
+ }
 });
 
 // ---- Review round 8 ----

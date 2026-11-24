@@ -38,8 +38,8 @@ export const ACCOUNTS_POLL_MS = 15_000;
 export const LOGIN_TIMEOUT_MS = 10 * 60_000;
 export const SUBMIT_TIMEOUT_MS = 45_000;
 /** The logout's confirmation: the screen is read every LOGOUT_POLL_MS for the command's end, all
- *  of it within LOGOUT_TIMEOUT_MS (one deadline, a stalled read included). (desk_settings.go waits
- *  a fixed 2.5 s instead.) */
+ *  of it, from the pane's split to the result, within LOGOUT_TIMEOUT_MS (one deadline, a stalled
+ *  split or read included). (desk_settings.go waits a fixed 2.5 s instead.) */
 export const LOGOUT_POLL_MS = 500;
 export const LOGOUT_TIMEOUT_MS = 15_000;
 const LOGOUT_UNCONFIRMED = "Couldn't confirm the logout. Check Accounts — it may not have finished.";
@@ -469,8 +469,9 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   /** LogoutSettingsAccount: `claude auth logout` in a background pane, closed afterwards on its
    *  link whatever happens (before that link's connection closes, if it ends first); the accounts as
    *  listed once the command has finished. It prints a marker with its exit status after it, read
-   *  back from the pane; one deadline (LOGOUT_TIMEOUT_MS) covers sending the command and reading
-   *  its result, and without the marker by then the logout is reported unconfirmed. */
+   *  back from the pane; one deadline (LOGOUT_TIMEOUT_MS) covers making the pane, sending the
+   *  command and reading its result, and without the marker by then the logout is reported
+   *  unconfirmed. */
   async logoutSettingsAccount(token: string, id: string): Promise<string> {
    const on = settingsScope(token), link = on.link;
    const account = await findAccount(on, id);
@@ -480,13 +481,15 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
    let pane: Promise<string> | null = null, closed: Promise<unknown> | null = null;
    const close = () => closed ??= (pane ?? Promise.reject(new Error("no pane"))).then((made) => closePane(link, made), () => undefined);
    const offClosing = onLinkClosing(link, close);
+   // One deadline from the split to the result, a stalled split, acknowledgement or read included;
+   // Settings closing (settingsCall) ends it too. The page's Accounts actions wait for no more.
+   const deadline = AbortSignal.timeout(logoutTimeoutMs);
    try {
-    pane = backgroundPane(on);
-    const made = await pane;
-    // One deadline from the command's submission to its result, a stalled acknowledgement or read
-    // included; Settings closing (settingsCall) ends it too.
-    const deadline = AbortSignal.timeout(logoutTimeoutMs);
     try {
+     // The split is the deadline's operation (ownerSplit): unsent at the deadline, it never goes;
+     // sent, its answer is still awaited CLOSING_WAIT_MS past it, for close (finally) only.
+     pane = backgroundPane(on, deadline);
+     const made = await untilAborted(pane, deadline);
      // The link or Settings ended while herdr answered the split: the pane closes (finally), untyped.
      await sendLine(on, made, line, () => { if (link.signal.aborted || currentOwnerLink() !== link || settingsLink(token) !== link) throw new Error(LINK_CHANGED); }, deadline);
      for (;;) {
