@@ -31,10 +31,11 @@ export abstract class SheetSelection {
 }
 
 /** A sheet's request as the page receives it: the event's payload, and in the browser the
- *  selection its menu made (a copy of the payload carries it too). */
+ *  selection its menu made (web/events.ts BrowserPayloads; a copy of the payload carries it too).
+ *  The desktop's carry none. */
 export interface SheetRequest {
   readonly paneID: string;
-  readonly sheet?: SheetSelection;
+  readonly sheet?: SheetSelection | null;
 }
 
 type DeskFns = typeof Desk;

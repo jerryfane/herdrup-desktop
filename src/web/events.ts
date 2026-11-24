@@ -1,12 +1,36 @@
 // The browser's `events`: every event src/mygo.ts declares, by the same name and payload, as the Go
-// side's mygo.NewEvent broadcasts them. The browser Desk (and gram.ts) send them with emit.
+// side's mygo.NewEvent broadcasts them, but for the agent sheets' events (BrowserPayloads). The
+// browser Desk (and gram.ts) send them with emit.
 
 import type { GoEvent } from "mygo-runtime";
-import type { events as GoEvents } from "../mygo";
+import type { AgentAction, events as GoEvents, PaneAction } from "../mygo";
+import type { SheetRequest, SheetSelection } from "../sheetOpening";
 
 type Events = typeof GoEvents;
 export type EventName = keyof Events;
-export type Payload<K extends EventName> = Events[K] extends GoEvent<infer T> ? T : never;
+
+/** The browser's payloads where they say more than Go's: the agent sheets its menus open carry the
+ *  selection the menu made (sheetOpening.ts), which the page opens the sheet with. It is required,
+ *  so a forwarder that rebuilds a payload from Go's fields alone doesn't type-check. Go's wire
+ *  types stay as they are. */
+export interface BrowserPayloads {
+ /** Every row action the browser sends opens a sheet (Stop and Archive run in its Desk). */
+ agentActionRequested: AgentAction & { readonly sheet: SheetSelection };
+ /** A ••• item: its selection when it opens a sheet (Avatar…), else null. */
+ paneActionChosen: PaneAction & { readonly sheet: SheetSelection | null };
+}
+type GoPayload<K extends EventName> = Events[K] extends GoEvent<infer T> ? T : never;
+export type Payload<K extends EventName> = K extends keyof BrowserPayloads ? BrowserPayloads[K] : GoPayload<K>;
+
+/** Checked by tsc: Go's payloads are not the browser's (the selection can't be left out), and the
+ *  browser's are what a sheet opens with. */
+type Holds<T extends true> = T;
+export type SelectionRequired = [
+ Holds<AgentAction extends Payload<"agentActionRequested"> ? false : true>,
+ Holds<PaneAction extends Payload<"paneActionChosen"> ? false : true>,
+ Holds<Payload<"agentActionRequested"> extends SheetRequest ? true : false>,
+ Holds<Payload<"paneActionChosen"> extends SheetRequest ? true : false>,
+];
 
 const listeners = new Map<string, Set<(payload: never) => void>>();
 

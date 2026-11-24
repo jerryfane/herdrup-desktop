@@ -22,7 +22,7 @@ import { openSheet, type SheetDesk, type SheetOpening, type SheetSelection } fro
 import { initAgentActions } from "../src/agentActions";
 import { FakeDocument, FakeElement } from "./fakeDom";
 import {
- agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, openSheets, selectSheet, sessionTransfer, topicsSwitchProblem,
+ agentActionsDesk, agentRowMenu, avatarParams, avatarProblem, closeAgent, folderItems, folderRowMenu, openSheets, selectSheet, sessionTransfer, sheetSettled, topicsSwitchProblem,
  type ActionAgent, type MenuItem, type SheetKind,
 } from "../src/web/agentActionsDesk";
 import { orderedFolders, type Groups } from "../src/web/board";
@@ -743,7 +743,7 @@ test("a Close acknowledged after its agent page was mounted again is not that pa
   expect(await desk.paneMenu(pane)).toBe(true);
   p.click("Close agent");
   await heard.wait.promise;
-  expect(chosen).toEqual([{ paneID: "p1", action: "close" }]);
+  expect(chosen).toEqual([{ paneID: "p1", action: "close", sheet: null }]);
  } finally { off(); desk.disconnectOwner(); relay.stop(); }
 }, 30_000);
 
@@ -981,6 +981,9 @@ test("#401: Codex's lookup held, then Claude Code chosen on the same agent: in t
  const desk = await newDesk();
  const p = page();
  const off = pageSheets(p.body.ownerDocument);
+ // The selection each Switch harness choice carries, to know when its sheet has settled.
+ const selections: SheetSelection[] = [];
+ const offSelections = events.agentActionRequested.on((x) => { selections.push(x.sheet); });
  const choose = async (harness: string, onMenu = () => {}) => {
   expect(await agentActionsDesk.agentMenu("p1")).toBe(true);
   onMenu();
@@ -1007,10 +1010,10 @@ test("#401: Codex's lookup held, then Claude Code chosen on the same agent: in t
   await choose("Claude Code");
   await until(() => p.sheets().length > 0);
   expect(p.sheets().map((d) => d.text().includes("visible conversation in Claude Code."))).toEqual([true]);
-  // Codex's account reply comes in after Claude's dialog showed: no second dialog.
+  // Codex's account reply comes in after Claude's dialog showed: once Codex's sheet has dealt with
+  // it (settled: released, nothing on its way), there is still only Claude's.
   codex.resolve();
-  await settle();
-  await new Promise((r) => setTimeout(r, 50));
+  await sheetSettled(selections[0]!);
   expect(p.sheets().length).toBe(1);
   const claude = p.sheets()[0]!;
   // A newer selection (Codex again, its lookup held) doesn't take a dialog's result that already
@@ -1025,7 +1028,7 @@ test("#401: Codex's lookup held, then Claude Code chosen on the same agent: in t
  } finally {
   await settle();
   for (const d of p.sheets()) d.close();
-  off(); desk.disconnectOwner(); relay.stop();
+  offSelections(); off(); desk.disconnectOwner(); relay.stop();
  }
 }, 30_000);
 
@@ -1059,7 +1062,7 @@ test("a sheet opens with the selection its event carries: a copy of the payload 
   await refused(openSheet(noDesk, "rename", { paneID: "p1", sheet: selectSheet(link, "restart", "p1") }));
   await refused(openSheet(noDesk, "rename", { paneID: "p1", sheet: selectSheet(link, "rename", "p2") }));
   // An object of the selection's shape is not one (the cast stands in for an untyped forward).
-  const lookalike = { kind: "rename", paneID: "p1", link, seq: Number.MAX_SAFE_INTEGER } as unknown as SheetSelection;
+  const lookalike = { kind: "rename", paneID: "p1", link } as unknown as SheetSelection;
   await refused(openSheet(noDesk, "rename", { paneID: "p1", sheet: lookalike }));
   expect(methods(seen, "agent.rename")).toEqual([{ target: "p1", name: "ok" }]);
  } finally { off(); desk.disconnectOwner(); relay.stop(); }
@@ -1198,6 +1201,34 @@ test("#405: a Topics request that lost its result to a newer one says nothing on
   await owner;
   expect(shown).toEqual(["working (on)", "failed: " + SHEET_STALE + " (on)"]);
  } finally { desk.disconnectOwner(); relay.stop(); other.stop(); }
+}, 30_000);
+
+test("a selection's sheet settles once it is released and nothing of it is on its way", async () => {
+ const hold: { ping: Promise<void> | null; topics: Promise<void> | null } = { ping: null, topics: null };
+ const asked = Promise.withResolvers<void>();
+ const relay = host("terminal", { hold, onRequest: (r) => { if (r.method === "agent.topics.set_enabled") asked.resolve(); },
+  other: (r) => r.method === "agent.topics.set_enabled" ? { result: { type: "agent_topics_switched", agent: listed[0], changed: true, topics_enabled: true } } : undefined });
+ const desk = await linked(relay);
+ try {
+  const sheet = selectSheet(currentOwnerLink()!, "topics", "p1");
+  let settled = false;
+  void sheetSettled(sheet).then(() => { settled = true; });
+  const opening = openSheet(noDesk, "topics", { paneID: "p1", sheet });
+  expect(opening.show()).toBe(true);
+  opening.start();
+  // Its restart held: released meanwhile, it hasn't settled.
+  const reply = Promise.withResolvers<void>();
+  hold.topics = reply.promise;
+  const step = opening.topicsSetEnabled(true);
+  await asked.promise;
+  opening.release();
+  await settle();
+  expect(settled).toBe(false);
+  reply.resolve();
+  await step;
+  await sheetSettled(sheet);
+  expect(settled).toBe(true);
+ } finally { desk.disconnectOwner(); relay.stop(); }
 }, 30_000);
 
 test("a sheet's records are held only while it is chosen or speaks: released when it closes or is cancelled, retired when its link ends", async () => {
