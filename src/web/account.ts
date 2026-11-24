@@ -80,8 +80,6 @@ export class AccountServiceError extends Error {
 export class SyncResetRequired extends Error {
  constructor() { super("account: sync reset required"); this.name = "ResetRequired"; }
 }
-/** What a sync page's status line says (syncPage): a page, or a reset (410). */
-type SyncPageOutcome = "page" | "reset";
 
 /** How long an operation holding the refresh lock (a refresh, a sign-out) may take: one the
  *  service doesn't answer by then is cancelled and lets the lock go, so whatever waits for the
@@ -374,10 +372,11 @@ export class WebAccount {
   *  signal, when it aborts, stops the call: nothing is sent once it has, not even the retry, and a
   *  request in flight is cancelled. A push (dispatch, in place of body) makes its body right before
   *  each request (the retry included), once the token is in hand; null sends nothing and the call
- *  returns null. heard is told each response's status as soon as it is known, before its body is
- *  read (which may stall until the call is aborted). Errors are AccountServiceError with the
- *  service's code, SignedOutError, or the abort's reason. */
- private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (status: number) => void): Promise<T> {
+ *  returns null. heard is shown each response as soon as its status is known, before its body
+ *  is read (which may stall until the call is aborted); what it throws ends the call, as itself.
+ *  Errors are AccountServiceError with the service's code, SignedOutError, or the abort's
+ *  reason. */
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void): Promise<T> {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
@@ -406,7 +405,7 @@ export class WebAccount {
     headers: { Authorization: `Bearer ${token}`, ...(sent === undefined ? {} : { "Content-Type": "application/json" }) },
     ...(sent === undefined ? {} : { body: sent }),
    });
-   heard?.(response.status);
+   heard?.(response);
    // A 4xx wrote nothing of the request: a push hears it on the status line, before the body is
    // read (which may stall) or the request is tried again.
    if (dispatch && response.status >= 400 && response.status < 500) await dispatch.refused();
@@ -520,23 +519,18 @@ export class WebAccount {
  }
 
  /** GET /v1/sync?<query> (since=<rev> or cursor=<cursor>) as account, in the session generation
-  *  names (a sync round's: authed). A 410 (the account's history started over) is one outcome,
-  *  taken from the status line, that both tells reset at once, before the body is read (a body
-  *  that stalls until the round ends can't hide it), and is what the call ends with:
-  *  SyncResetRequired, unless signal aborted first (its reason). */
- async syncPage(query: string, account: string, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<SyncPage> {
-  // The newest response's outcome (the retry after a 401 is a response of its own).
-  const heard: { outcome: SyncPageOutcome } = { outcome: "page" };
-  try {
-   return await this.authed<SyncPage>("GET", `/v1/sync?${query}`, undefined, account, signal, undefined, generation, status => {
-    heard.outcome = status === 410 ? "reset" : "page";
-    if (heard.outcome === "reset") reset?.();
-   });
-  } catch (error) {
-   if (heard.outcome !== "reset") throw error;
-   signal?.throwIfAborted();
+  *  names (a sync round's: authed). A 410 (the account's history started over) is taken from
+  *  the status line: reset is told at once, before the body is read (a body that stalls until
+  *  the round ends can't hide it), then the body, unused, is cancelled and the call ends with
+  *  SyncResetRequired. Only once reset returned: what it throws (storage refusing the reset's
+  *  record) ends the call as itself, and nothing starts over. */
+ syncPage(query: string, account: string, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<SyncPage> {
+  return this.authed<SyncPage>("GET", `/v1/sync?${query}`, undefined, account, signal, undefined, generation, response => {
+   if (response.status !== 410) return;
+   reset?.();
+   response.body?.cancel().catch(() => {});
    throw new SyncResetRequired();
-  }
+  });
  }
 
  /** POST /v1/sync as account, its body made by dispatch right before each request (PushDispatch),
