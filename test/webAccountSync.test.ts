@@ -70,6 +70,9 @@ function worker() {
   losePush: false,
   /** GET /v1/sync answers nothing until its request is aborted. */
   stallPull: false,
+  /** The next 410 to a GET /v1/sync comes with its status line, and a body that never ends
+   *  until its request is aborted. */
+  stallResetBody: false,
   /** The next push is answered 401 (its token no longer good: nothing written); onUnauthorized
    *  runs then, before the browser refreshes and tries again. */
   pushUnauthorized: false, onUnauthorized: null as (() => void) | null,
@@ -166,7 +169,14 @@ function worker() {
      // the floor (a pruned tombstone may be missed), start over.
      const base = cursor !== null ? Number(cursor.split(".")[1]) : position === 0 ? w.rev : position;
      const complete = Math.max(position, base);
-     if (complete > w.rev || complete < w.floor) return Response.json({ error: "reset_required" }, { status: 410 });
+     if (complete > w.rev || complete < w.floor) {
+      if (w.stallResetBody) {
+       w.stallResetBody = false;
+       const body = new ReadableStream<Uint8Array>({ start(c) { init.signal!.addEventListener("abort", () => c.error(init.signal!.reason)); } });
+       return new Response(body, { status: 410, headers: { "Content-Type": "application/json" } });
+      }
+      return Response.json({ error: "reset_required" }, { status: 410 });
+     }
      // now_ms is read before the rows (themartianapp/herdrup#826): nothing the page holds was
      // written after it.
      const told = now();
@@ -2729,4 +2739,90 @@ test("a prompt whose first upload was accepted goes when a restore to a backup f
  const posts = w.posts;
  await reloaded.accountSyncNow();
  expect([p.id in await byID(reloaded), p.id in w.livePrompts(), w.posts - posts]).toEqual([false, false, 0]);
+});
+
+// ---- #448 review (local-review-review-router-18eaeeb2086a5688-1) ----
+
+test("a 410 is counted on its status line though its body stalls until the round ends", async () => {
+ const w = worker();
+ const storage = memory();
+ const a = await browser(w, storage, { roundMs: 300 });
+ await syncEach(a);
+ // As in the held-lock case, but the readback's 410 comes with a body that never ends.
+ const p = await save(a, "", "", "v1");
+ w.holdNextPush = true;
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ await save(a, p.id, "", "v2");
+ let saving: Promise<unknown> = Promise.resolve();
+ w.onPush = () => { w.landHeld(); saving = save(a, p.id, "", "v1"); };
+ w.afterPush = () => {
+  w.seedPrompt("00000000-0000-4000-8000-0000000000fb", { text: "other", order: 1 });
+  w.pageSize = 1;
+  w.onNextPage = () => { w.reset(); w.seedPrompt(p.id, { text: "restored", order: 0 }); w.stallResetBody = true; };
+ };
+ await expect(a.accountSyncNow()).rejects.toThrow();
+ await saving;
+ expect(Number(storage.getItem("herdrup.sync.reset.acct"))).toBe(1);
+ // Another page pulls from 0 and meets no 410 of its own: the evidence is gone, and v1 goes.
+ w.pageSize = 500;
+ const b = await browser(w, storage);
+ await b.accountSyncNow();
+ expect([(await byID(b))[p.id]!.text, liveText(w, p.id)]).toEqual(["v1", "v1"]);
+});
+
+// ---- #390 r18 on the web ----
+
+test("a 410 met for another account isn't taken into this account's history: a revert saved here still goes", async () => {
+ const w = worker();
+ const { locks } = lockQueue();
+ const storage = memory();
+ const mac = await browser(w, storage, { locks, roundMs: 300 });
+ const p = await save(mac, "", "", "v0");
+ await save(mac, "", "", "other");
+ await syncEach(mac);
+ // v1 is taken while a revert to v0 is saved here; only the settlement can't be written within
+ // the round (another tab holds the storage lock).
+ await save(mac, p.id, "", "v1");
+ const release = Promise.withResolvers<void>();
+ let other: Promise<unknown> = Promise.resolve(), saving: Promise<unknown> = Promise.resolve();
+ w.afterPush = () => { saving = save(mac, p.id, "", "v0"); other = locks.request(SAVED_PROMPTS_KEY, () => release.promise); };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ release.resolve();
+ await Promise.all([other, saving]);
+ // Account B signs in here; its first pull meets a 410 on its second page (and again as it starts
+ // over): the round ends before anything of B is written.
+ w.accountId = "acct-b";
+ await mac.account.signOut().catch(() => {});
+ await mac.account.check();
+ w.pageSize = 1;
+ w.onNextPage = () => { w.floor = Number.MAX_SAFE_INTEGER; };
+ await expect(mac.accountSyncNow()).rejects.toThrow();
+ w.floor = 0; w.pageSize = 500;
+ // Back on A; another device writes x.
+ w.accountId = "acct";
+ await mac.account.signOut().catch(() => {});
+ await mac.account.check();
+ w.seedPrompt(p.id, { text: "x", order: 0 });
+ await mac.accountSyncNow();
+ expect([(await byID(mac))[p.id]!.text, liveText(w, p.id)]).toEqual(["v0", "v0"]);
+});
+
+test("a 410 is counted past what the record took in, though the key's last write was lost", async () => {
+ const w = worker();
+ const storage = memory();
+ const mac = await browser(w, storage);
+ const p = await save(mac, "", "", "v0");
+ await save(mac, "", "", "other");
+ await syncEach(mac);
+ // The record took in one 410 whose count never reached the key.
+ const record = JSON.parse(storage.getItem(SAVED_PROMPTS_KEY)!) as { sync: { history?: number; resetsFolded?: number } };
+ record.sync.resetsFolded = 1;
+ storage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(record));
+ storage.setItem("herdrup.sync.reset.acct", "0".repeat(16));
+ const history = record.sync.history ?? 0;
+ // A real 410: the account is restored to a backup holding p alone.
+ w.reset();
+ w.seedPrompt(p.id, { text: "v0", order: 0 });
+ await mac.accountSyncNow();
+ expect([syncOf(storage).history, syncOf(storage).resetsFolded]).toEqual([history + 1, 2]);
 });

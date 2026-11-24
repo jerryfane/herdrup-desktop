@@ -201,7 +201,7 @@ export interface SyncState {
   *  by the first step that folds it (foldResets). An answer read in another history settles only
   *  its own sends: what its rows showed belongs to the history replaced. */
  history?: number;
- /** The count of 410s (RESET_KEY) the history has taken in (foldResets). */
+ /** The count of 410s (resetKey) the history has taken in (foldResets). */
  resetsFolded?: number;
 }
 
@@ -368,29 +368,37 @@ function settleAccepted(state: SyncState, a: Acceptance): boolean {
  }
  return true;
 }
-/** The 410s the sync has met, in every tab: `herdrup.sync.reset`, a count tabs only raise. It is
- *  written with no lock the moment a pull is answered 410 (noteReset), before anything waits: a
- *  step that would write it under the storage lock can be cancelled first (the round's deadline,
- *  another tab holding the lock), and the reset would be lost, with the evidence of the history
- *  it ended still pending. Its value is MARK_DIGITS digits, zero-padded, reserved at that width
- *  when a sync starts (reserveResets): every later write replaces it in place, and can't take
- *  storage over its quota. A tab writes past both the count it reads and the one it wrote last;
- *  a read and a write of one key can interleave with another tab's, so a tab that read before
- *  this one wrote may write a lower count after it: the writer reads again and writes again
- *  until the key holds at least its own. Two tabs meeting resets at once may write the same
- *  count: any increase is what counts. Never cleared. */
-const RESET_KEY = "herdrup.sync.reset";
-const readResets = (storage: KeyValue) => Number(storage.getItem(RESET_KEY) ?? 0) || 0;
-/** RESET_KEY at its full width, written once (a write that storage refuses fails the round). */
-function reserveResets(storage: KeyValue) {
- if (storage.getItem(RESET_KEY) === null) storage.setItem(RESET_KEY, markNumber(0));
+/** The 410s the sync has met for one account, in every tab: `herdrup.sync.reset.<account>`, a
+ *  count tabs only raise. It is written with no lock the moment a pull is answered 410
+ *  (noteReset), before anything waits: a step that would write it under the storage lock can be
+ *  cancelled first (the round's deadline, another tab holding the lock), and the reset would be
+ *  lost, with the evidence of the history it ended still pending. One key per account: a 410 met
+ *  for another account (its first pull, cancelled before the switch to it was written) is never
+ *  taken into this one's history. Its value is MARK_DIGITS digits, zero-padded, reserved at that
+ *  width when a sync of the account starts (reserveResets): every later write replaces it in
+ *  place, and can't take storage over its quota. A tab writes past the count it reads, the one
+ *  it wrote last and the one the record took in (resetsFolded: a write that failed while its count
+ *  was still taken in must not make a later 410 reuse it); a read and a write of one key can
+ *  interleave with another tab's, so a tab that read before this one wrote may write a lower
+ *  count after it: the writer reads again and writes again until the key holds at least its own.
+ *  Two tabs meeting resets at once may write the same count: any increase is what counts. Never
+ *  cleared. The key before these, `herdrup.sync.reset`, names no account: it is never read, and
+ *  goes when a sync starts. */
+const RESET_PREFIX = "herdrup.sync.reset.", UNSCOPED_RESET_KEY = "herdrup.sync.reset";
+const resetKey = (acct: string) => `${RESET_PREFIX}${acct}`;
+const readResets = (storage: KeyValue, acct: string) => Number(storage.getItem(resetKey(acct)) ?? 0) || 0;
+/** acct's resetKey at its full width, written once (a write that storage refuses fails the
+ *  round); the unscoped key from before goes. */
+function reserveResets(storage: KeyValue, acct: string) {
+ if (storage.getItem(UNSCOPED_RESET_KEY) !== null) storage.removeItem(UNSCOPED_RESET_KEY);
+ if (storage.getItem(resetKey(acct)) === null) storage.setItem(resetKey(acct), markNumber(0));
 }
-/** The 410s met since state last took them in (RESET_KEY): a new history. Every step that reads
- *  evidence of the one before (markers: foldMarkers; pending conflicts: takeConflicts, after it)
- *  folds them first: the history is raised, the pending conflicts go, and the count is recorded.
- *  Returns whether state changed. */
+/** The 410s met for state's account since it last took them in (resetKey): a new history. Every
+ *  step that reads evidence of the one before (markers: foldMarkers; pending conflicts:
+ *  takeConflicts, after it) folds them first: the history is raised, the pending conflicts go,
+ *  and the count is recorded. Returns whether state changed. */
 function foldResets(storage: KeyValue, state: SyncState): boolean {
- const seen = readResets(storage);
+ const seen = readResets(storage, state.accountId);
  if (seen <= (state.resetsFolded ?? 0)) return false;
  state.history = (state.history ?? 0) + 1;
  delete state.promptConflicts;
@@ -443,8 +451,14 @@ function takeConflicts(state: SyncState): Map<string, PendingConflict> {
  *  the id at the revision the conflicting send was based on. Any other is landing evidence only:
  *  m, its cursor past it, already holds what came after it (another tab synced since). */
 function adoptable(m: Mirror, conflicts: ReadonlyMap<string, PendingConflict>): Map<string, SyncItem | null> {
- const held = (id: string) => m.prompts.find(r => r.id === id)?.rev ?? (m.gone !== undefined && Object.hasOwn(m.gone, id) ? m.gone[id]! : 0);
- return new Map([...conflicts].filter(([id, c]) => c.row === null ? held(id) === (c.base ?? 0) : c.row.rev > held(id)).map(([id, c]) => [id, c.row]));
+ const out = new Map<string, SyncItem | null>();
+ if (conflicts.size === 0) return out;
+ const revs = new Map(m.prompts.map(r => [r.id, r.rev]));
+ for (const [id, c] of conflicts) {
+  const held = revs.get(id) ?? (m.gone !== undefined && Object.hasOwn(m.gone, id) ? m.gone[id]! : 0);
+  if (c.row === null ? held === (c.base ?? 0) : c.row.rev > held) out.set(id, c.row);
+ }
+ return out;
 }
 
 /** A body's field as Go's decoder takes it into a struct: absent or null is undefined; the wrong
@@ -544,14 +558,15 @@ class ResetRequired extends Error {
 const MAX_PULL_PAGES = 64; // 64 × 500 items, past the 2,000-item account cap
 
 /** One pull, page by page; generation is the session the pages must be read in
- *  (WebAccount.syncPage). Its items keep the order they came in: landItems matches them that way,
- *  once the pull completed (a reset's restart brings only the full pull's). */
-async function pull(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number): Promise<Pull> {
+ *  (WebAccount.syncPage), and reset is told of a 410 on any page as its status line comes in.
+ *  Its items keep the order they came in: landItems matches them that way, once the pull
+ *  completed (a reset's restart brings only the full pull's). */
+async function pull(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
  const out: Pull = { rev: 0, items: [], full: since === 0, restarted: false, nowMs: null, newestMs: null };
  let query = `since=${since}`, told = true;
  for (let page = 0; page < MAX_PULL_PAGES; page++) {
   let answer;
-  try { answer = await account.syncPage(query, acct, signal, generation); }
+  try { answer = await account.syncPage(query, acct, signal, generation, reset); }
   catch (error) { throw error instanceof AccountServiceError && error.status === 410 ? new ResetRequired() : error; }
   out.items.push(...answer.changes);
   out.rev = answer.rev;
@@ -569,19 +584,17 @@ async function pull(account: WebAccount, acct: string, since: number, signal?: A
 }
 
 /** Every change after since, following the cursor (PullSince). A 410, on any page, even of a pull
- *  from 0, is a reset: reset is told at once, before anything waits (RESET_KEY), then the pull
- *  starts over from 0, once. The result is full and restarted, and what the pages before it held
- *  is dropped with them. */
+ *  from 0, is a reset: reset is told at once, on the status line, before anything waits or its
+ *  body is read (resetKey), then the pull starts over from 0, once. The result is full and
+ *  restarted, and what the pages before it held is dropped with them. */
 export async function pullSince(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
  let restarted = false;
  for (;;) {
   try {
-   const out = await pull(account, acct, restarted ? 0 : since, signal, generation);
+   const out = await pull(account, acct, restarted ? 0 : since, signal, generation, reset);
    return restarted ? { ...out, restarted } : out;
   } catch (error) {
-   if (!(error instanceof ResetRequired)) throw error;
-   reset?.();
-   if (restarted) throw error;
+   if (!(error instanceof ResetRequired) || restarted) throw error;
    restarted = true;
   }
  }
@@ -977,13 +990,18 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
  };
  const owe = (acct: string, edit: (state: SyncState) => boolean, signal: AbortSignal) => { owed.push({ acct, edit }); return payOwed(acct, signal); };
 
- /** The count of 410s this tab wrote last (RESET_KEY). */
- let resetsWritten = 0;
- /** A 410 one of the pulls met: the account's history started over. Counted in RESET_KEY at once,
-  *  with no lock and nothing awaited; the next step that folds evidence takes it in (foldResets). */
- const noteReset = () => {
-  const storage = place.storage(), mine = resetsWritten = Math.max(resetsWritten, readResets(storage)) + 1;
-  while (readResets(storage) < mine) storage.setItem(RESET_KEY, markNumber(mine));
+ /** The count of 410s this tab wrote last, by account (resetKey). */
+ const resetsWritten = new Map<string, number>();
+ /** A 410 one of acct's pulls met: the account's history started over. Counted in its resetKey
+  *  at once, with no lock and nothing awaited, past every count already used (the key's, this
+  *  tab's last, the record's resetsFolded); the next step that folds evidence takes it in
+  *  (foldResets). */
+ const noteReset = (acct: string) => {
+  const storage = place.storage(), state = readPrompts(storage).sync ?? null;
+  const folded = state !== null && state.accountId === acct ? state.resetsFolded ?? 0 : 0;
+  const mine = Math.max(resetsWritten.get(acct) ?? 0, readResets(storage, acct), folded) + 1;
+  resetsWritten.set(acct, mine);
+  while (readResets(storage, acct) < mine) storage.setItem(resetKey(acct), markNumber(mine));
  };
 
  /** Journals a send of each of part's writes, under ids (by prompt), in state (PromptAttempt): an
@@ -1045,7 +1063,7 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   const state: SyncState = switched || before === null ? { accountId: acct, mirror: { rev: 0, hosts: [], prompts: [] } } : before;
   // A 410 is counted as it is met (noteReset), and the merge's fold takes it in first, so the
   // history is the new one before anything answered in the one replaced is folded (settleAccepted).
-  const pulled = await abandonedOnChange(pullSince(account, acct, state.promptsPulled ? state.mirror.rev : 0, signal, generation, noteReset));
+  const pulled = await abandonedOnChange(pullSince(account, acct, state.promptsPulled ? state.mirror.rev : 0, signal, generation, () => noteReset(acct)));
   // A pull with a page lacking now_ms forgets the newest one (sawNow).
   sawNow(pulled.nowMs === null ? null : pulled.newestMs);
   const synced = state.mirror;
@@ -1267,7 +1285,7 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   // Read our own writes back, and what came after the conflicts' rows, so the mirror holds what
   // the account holds.
   const conflicted = conflictIds.size > 0;
-  const readBack = acked.length > 0 || conflicted ? await abandonedOnChange(pullSince(account, acct, mirror.rev, signal, generation, noteReset)) : null;
+  const readBack = acked.length > 0 || conflicted ? await abandonedOnChange(pullSince(account, acct, mirror.rev, signal, generation, () => noteReset(acct))) : null;
   if (readBack !== null) sawNow(readBack.nowMs === null ? null : readBack.newestMs);
   // A delete the service took whose prompt a restore brought back (set by the step below).
   let restored = false;
@@ -1348,9 +1366,9 @@ export function createAccountSync(account: WebAccount, place: SyncPlace, finishe
   // The session the round is for, from its start to its end (once).
   const generation = account.generation;
   try {
-   // RESET_KEY's place, before anything can meet a 410; then what an earlier round, cancelled,
-   // still owes the state (owe).
-   reserveResets(place.storage());
+   // The account's resetKey place, before anything can meet a 410; then what an earlier round,
+   // cancelled, still owes the state (owe).
+   reserveResets(place.storage(), cur.accountID);
    await payOwed(cur.accountID, signal);
    // A conflict: the account holds a newer copy; merge with it and push again, PUSH_PASSES in
    // all. Still conflicted then, a merge alone tells whether anything is left to send. Every pass
