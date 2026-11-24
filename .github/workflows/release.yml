@@ -185,17 +185,23 @@ jobs:
             # updates install, but not the copy in the image ("The image's
             # copy stays without it", cmd/mygo/dmg.go). Each staple is
             # required on its own: the disk image, the built app, and the app
-            # of each update archive (made from the built app, when updates
-            # are signed).
+            # of each update archive, which mygo makes from the built app when
+            # updates are signed and holds that bundle at its root.
             check -- xcrun stapler validate "$dmg"
-            check -- xcrun stapler validate build/darwin-universal/herdrup.app
+            built_apps=(build/darwin-universal/*.app)
+            if [ "${#built_apps[@]}" -ne 1 ] || [ ! -d "${built_apps[0]}" ]; then
+              echo "::error::expected exactly one app in build/darwin-universal, found: ${built_apps[*]}"
+              exit 1
+            fi
+            built_app="${built_apps[0]}"
+            check -- xcrun stapler validate "$built_app"
+            bundle="$(basename "$built_app")"
             for archive in build/darwin-universal/*.tar.gz; do
               [ -f "$archive" ] || continue
               unpacked="$(mktemp -d "$RUNNER_TEMP/update.XXXXXX")"
               check -- tar -xzf "$archive" -C "$unpacked"
-              updated="$(find "$unpacked" -maxdepth 2 -type d -name '*.app' -print -quit)"
-              [ -n "$updated" ] || { echo "::error::no app in $archive"; exit 1; }
-              check -- xcrun stapler validate "$updated"
+              [ -d "$unpacked/$bundle" ] || { echo "::error::$archive has no $bundle at its root"; exit 1; }
+              check -- xcrun stapler validate "$unpacked/$bundle"
             done
           fi
       # Into one folder, so that the artifact holds the files themselves and
