@@ -19,7 +19,7 @@ import { ownerLink, type StatementSource } from "../webguest/owner";
 import type { EnvelopeMachine } from "../webguest/approve";
 import { buildBoard, displayName, isArchived, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, ResultTagError, untagged } from "./engine";
-import { emit, type Payload } from "./events";
+import { emit, type PanePlainAction, type PaneSheetAction } from "./events";
 import { closeSettings, openSettings, setLink, transportLink, type WebLink } from "./link";
 import { showMenu, type MenuEntry } from "./menu";
 import { IndexedDBGrantStore, localOwnerHint, machineLists, type GrantStore, type MachineLists, type OwnerHint } from "./storage";
@@ -208,8 +208,8 @@ export function pageAccess(a: Access): PageAccess {
  *  close; an owner's agent (muted not null) has Share with someone when the page offers it, then
  *  Avatar… and Close agent when the link may write them (owner.avatar, owner.close), with Mute or
  *  Unmute notifications (this browser's) between them. */
-export function webPaneMenu(o: PaneMenuOptions, muted: boolean | null, owner = { avatar: false, close: false }): (MenuEntry & { action?: string })[] {
- const entries: (MenuEntry & { action?: string })[] = [
+export function webPaneMenu(o: PaneMenuOptions, muted: boolean | null, owner = { avatar: false, close: false }): (MenuEntry & { action?: PaneSheetAction | PanePlainAction })[] {
+ const entries: (MenuEntry & { action?: PaneSheetAction | PanePlainAction })[] = [
   { label: "Copy screen", action: "copy-screen" },
   { label: "Copy recent output", action: "copy-recent" },
   { label: "Copy selection", action: "copy-selection", disabled: !o.hasSelection },
@@ -221,10 +221,10 @@ export function webPaneMenu(o: PaneMenuOptions, muted: boolean | null, owner = {
  ];
  if (muted === null || o.plain) return entries;
  return [...entries, { label: "", separator: true },
-  ...o.canShare ? [{ label: "Share with someone", action: "share" }] : [],
-  ...owner.avatar ? [{ label: "Avatar…", action: "avatar" }] : [],
+  ...o.canShare ? [{ label: "Share with someone", action: "share" } as const] : [],
+  ...owner.avatar ? [{ label: "Avatar…", action: "avatar" } as const] : [],
   muted ? { label: "Unmute notifications", action: "unmute" } : { label: "Mute notifications", action: "mute" },
-  ...owner.close ? [{ label: "Close agent", action: "close" }] : []];
+  ...owner.close ? [{ label: "Close agent", action: "close" } as const] : []];
 }
 
 /** The muted panes of every machine, by host id (Go's notifications.json muted). */
@@ -976,9 +976,9 @@ export function createGuestDesk(env: DeskEnv) {
     if (action === "close" && !await closeAgent(link, o.paneID)) return;
     // The page acts on the pane id: once the page was mounted again meanwhile, this isn't its choice.
     if (!still()) return;
-    // The avatar sheet it opens belongs to this link: the selection it carries.
-    const chosen: Payload<"paneActionChosen"> = { paneID: o.paneID, action, sheet: action === "avatar" && link ? selectSheet(link, "avatar", o.paneID) : null };
-    emit("paneActionChosen", chosen);
+    // The avatar sheet it opens belongs to this link: the selection it carries (no link, no sheet).
+    if (action === "avatar") { if (link) emit("paneActionChosen", { paneID: o.paneID, action, sheet: selectSheet(link, "avatar", o.paneID) }); }
+    else emit("paneActionChosen", { paneID: o.paneID, action, sheet: null });
    });
    return true;
   },
