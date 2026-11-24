@@ -177,9 +177,11 @@ export function loginRejected(text: string): boolean {
  return ["invalid code", "invalid authorization code", "invalid token", "expired code", "code expired", "token expired", "session expired", "authentication failed", "login failed", "try again"].some((p) => lower.includes(p));
 }
 
+/** One sign-in's pane. signal: its dialog's, bound when it started (the dialog controller's), which
+ *  its later reads and sends carry. */
 interface Login {
  id: string; pane: string; account: string; baselineEmail: string; submitBaseline: string;
- started: number; submitted: number; state: AccountLoginState;
+ started: number; submitted: number; state: AccountLoginState; signal: AbortSignal;
 }
 
 /** desk_settings.go settingsSession: one Settings scope's sign-in pane on its link, and the lock its
@@ -283,8 +285,8 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   return s.ending ??= s.queue.then(() => closeLogin(s)).then(() => Promise.allSettled([...s.closes])).finally(() => s.offClosing());
  }
  /** A sign-in dialog's controller, made on first use: its one liveness record (aborted by
-  *  closeAccountLogin or the scope's end), whose signal its reads and sends carry besides the
-  *  Settings scope's. */
+  *  closeAccountLogin or the scope's end). Only its start (which binds the signal to its Login) and
+  *  a close (which may come first, making it already closed) look it up. */
  function dialog(s: Scope, loginID: string): AbortController {
   let controller = s.dialogs.get(loginID);
   if (controller === undefined) s.dialogs.set(loginID, controller = new AbortController());
@@ -381,21 +383,24 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
   async startAccountLogin(token: string, loginID: string, id: string, setupToken: boolean): Promise<AccountLoginState> {
    const s = scopeOf(token);
    return serial(s, async () => {
-    if (loginID === "" || loginID.length > 128 || dialog(s, loginID).signal.aborted) throw new Error("sign-in was closed");
+    if (loginID === "" || loginID.length > 128) throw new Error("sign-in was closed");
+    // Bound once: made here, or by a close that came before this step (then already aborted).
+    const signal = dialog(s, loginID).signal;
+    if (signal.aborted) throw new Error("sign-in was closed");
     await closeLogin(s);
-    const account = await findAccount(s.settings, id, dialog(s, loginID).signal);
+    const account = await findAccount(s.settings, id, signal);
     const { line } = accountCommand(account, setupToken ? "setup-token" : "login");
     // Closed (or Settings or the link gone) during the lookup: no pane is made.
     signInLive(s);
-    const pane = await backgroundPane(s.settings, dialog(s, loginID).signal);
+    const pane = await backgroundPane(s.settings, signal);
     const login: Login = {
      id: loginID, pane, account: id, baselineEmail: account.email ?? "", submitBaseline: "", started: now(), submitted: 0,
-     state: { url: "", phase: "starting", message: "Getting a sign-in link…", email: "" },
+     state: { url: "", phase: "starting", message: "Getting a sign-in link…", email: "" }, signal,
     };
     s.login = login;
     // The dialog, scope or link may have ended while herdr answered the split: the pane then
     // closes untyped (the auth pane rule).
-    try { await sendLine(s.settings, pane, line, () => signInLive(s), dialog(s, loginID).signal); } catch (error) { await closeLogin(s); throw error; }
+    try { await sendLine(s.settings, pane, line, () => signInLive(s), signal); } catch (error) { await closeLogin(s); throw error; }
     return { ...login.state };
    });
   },
@@ -412,7 +417,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
      state.message = "Couldn't confirm the sign-in. Check Accounts — it may have worked.";
      return { ...state };
     }
-    const account = await findAccount(s.settings, login.account, dialog(s, loginID).signal);
+    const account = await findAccount(s.settings, login.account, login.signal);
     const email = (account.email ?? "").trim();
     if (email !== "" && email !== login.baselineEmail.trim()) {
      state.phase = "signedIn";
@@ -420,7 +425,7 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
      state.message = `Signed in as ${account.email}.`;
      return { ...state };
     }
-    const text = await readText(s.settings, login.pane, dialog(s, loginID).signal);
+    const text = await readText(s.settings, login.pane, login.signal);
     if (state.url === "") {
      const url = loginURL(text);
      if (url !== "") {
@@ -453,9 +458,9 @@ export function createSettingsAccountsDesk(options: AccountsDeskOptions = {}) {
     code = code.trim();
     if (code === "" || /[\r\n\0\x1b]/.test(code)) throw new Error("paste one authorization code");
     if (login.state.phase === "submitting" || login.state.phase === "signedIn") throw new Error("a sign-in is already in progress");
-    login.submitBaseline = await readText(s.settings, login.pane, dialog(s, loginID).signal);
+    login.submitBaseline = await readText(s.settings, login.pane, login.signal);
     // Closed while the screen was read: no code goes (the auth pane rule).
-    await sendLine(s.settings, login.pane, code, () => { signInLive(s); if (s.login !== login) throw new Error("sign-in is no longer open"); }, dialog(s, loginID).signal);
+    await sendLine(s.settings, login.pane, code, () => { signInLive(s); if (s.login !== login) throw new Error("sign-in is no longer open"); }, login.signal);
     login.submitted = now();
     login.state.phase = "submitting";
     login.state.message = "Signing you in…";

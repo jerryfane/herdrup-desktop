@@ -1153,6 +1153,36 @@ test("an account whose id is constructor keeps its label on the rows", async () 
  expect(accountLabel("constructor", await createSettingsAccountsDesk().accounts())).toBe("Work");
 });
 
+// ---- #409 P3: a sign-in's later steps carry the signal bound at its start ----
+
+const laterSteps: { name: string; method: string; run: (d: ReturnType<typeof createSettingsAccountsDesk>) => Promise<unknown> }[] = [
+ { name: "a poll's account lookup", method: "accounts.list", run: (d) => d.pollAccountLogin("tok", "L1") },
+ { name: "a poll's screen read", method: "pane.read", run: (d) => d.pollAccountLogin("tok", "L1") },
+ { name: "a code's screen read", method: "pane.read", run: (d) => d.submitAccountLogin("tok", "L1", "the-code") },
+];
+for (const step of laterSteps) {
+ test(`closing the sign-in ends ${step.name} at once, its answer not awaited`, async () => {
+  let hold = false;
+  const host = ownerLink(async (method) => {
+   if (hold && method === step.method) await new Promise(() => {}); // herdr never answers
+   if (method === "pane.split") return { type: "pane_info", pane: { pane_id: "auth-1" } };
+   if (method === "pane.read") return { type: "pane_read", read: { text: "" } };
+   if (method === "pane.send_text" || method === "pane.send_keys" || method === "pane.close") return ok;
+  });
+  await tick(); await tick();
+  const desk = createSettingsAccountsDesk();
+  await desk.startAccountLogin("tok", "L1", "a1", false);
+  hold = true;
+  const running = step.run(desk).then(() => "answered", (error: Error) => error.message);
+  await tick(); await tick();
+  expect(host.of(step.method).length).toBeGreaterThan(0);
+  const closing = desk.closeAccountLogin("tok", "L1");
+  expect(await withinSeconds(1, running)).toBe("sign-in was closed");
+  await closing;
+  expect(host.of("pane.close").map((c) => c.params.pane_id)).toEqual(["auth-1"]);
+ });
+}
+
 // ---- #360 post-merge review ----
 
 test("a sign-in closed before its first step runs makes no pane (its dialog's controller is made closed)", async () => {
