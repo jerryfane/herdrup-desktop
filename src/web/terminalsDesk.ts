@@ -6,7 +6,7 @@
 // closed again. Opening one is desk.ts openTerminalView; creating one is createDesk.ts.
 
 import type { AgentTarget, Desk as GoDesk, SavedTerminal } from "../mygo";
-import { withStorageLock } from "./locks";
+import { browserLocks, withStorageLock } from "./locks";
 import { boardLink, ownerCall } from "./ownerLink";
 
 type DeskFns = typeof GoDesk;
@@ -120,17 +120,39 @@ async function modifyTerminal(host: string, pane: string, label: string | null):
  });
 }
 
+/** This page's renames still running, by lock name, where there are no Web Locks. */
+const renamesHere = new Map<string, Promise<unknown>>();
+
+/** run as host's pane's one rename at a time, across this origin's tabs (Web Locks: the rename's
+ *  request and its saved label together); without Web Locks, within this page. Other panes'
+ *  renames run alongside. A lock the browser refuses throws, run never started. */
+function oneRenameAtATime<T>(host: string, pane: string, run: () => Promise<T>): Promise<T> {
+ const name = `herdrup.web.terminal-rename.${host}.${pane}`;
+ const locks = browserLocks();
+ if (locks !== null) return locks.request(name, run);
+ const turn = (renamesHere.get(name) ?? Promise.resolve()).catch(() => {}).then(run);
+ const settled = turn.catch(() => {});
+ renamesHere.set(name, settled);
+ void settled.then(() => { if (renamesHere.get(name) === settled) renamesHere.delete(name); });
+ return turn;
+}
+
 export const terminalsDesk = {
  async savedTerminals(machineID: string, session: string): Promise<SavedTerminal[]> {
   return listTerminals(boardLink(machineID, session).machine.hostID);
  },
+ /** desk_terminals.go RenameTerminal: the pane renamed on the machine, then its saved label set
+  *  to the label herdr acknowledged, as one operation per pane (oneRenameAtATime), so renames
+  *  answered out of order never leave the saved label behind the machine's. */
  async renameTerminal(target: AgentTarget, label: string): Promise<void> {
   label = label.trim();
   if (label === "") throw new Error("terminal label is empty");
   const link = boardLink(target.machineID, target.session), host = link.machine.hostID;
   findTerminal(host, target.paneID);
-  await ownerCall("pane.rename", { pane_id: target.paneID, label }, "pane_info", { link });
-  await modifyTerminal(host, target.paneID, label);
+  await oneRenameAtATime(host, target.paneID, async () => {
+   const renamed = await ownerCall<{ pane?: { label?: string | null } }>("pane.rename", { pane_id: target.paneID, label }, "pane_info", { link });
+   await modifyTerminal(host, target.paneID, renamed.pane?.label || label);
+  });
  },
  async closeTerminal(target: AgentTarget): Promise<void> {
   const link = boardLink(target.machineID, target.session), host = link.machine.hostID;

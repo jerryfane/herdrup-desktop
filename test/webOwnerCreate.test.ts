@@ -11,7 +11,7 @@ import { createGuestDesk, promptReceipt, terminalWriteReceipt } from "../src/web
 import { events } from "../src/web/events";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { currentOwnerLink, linkClosing, onBoard, OWNER_REFUSED, OwnerRefusedError, type OwnerLink } from "../src/web/ownerLink";
-import { createDesk, shellInitializing, ShellStartingError, startAgentWhenShellReady, type Clock, type PaneProcessInfo, type ShellReadyOps } from "../src/web/createDesk";
+import { createDesk, ShellStartingError, startAgentWhenShellReady, type Clock, type PaneProcessInfo, type ShellReadyOps } from "../src/web/createDesk";
 import { renameField } from "../src/agentActionsModel";
 import { StartedAgents } from "../src/web/startedAgents";
 import { nextTerminalLabel, persistAndKeep, SAVED_TERMINALS_KEY, terminalsDesk } from "../src/web/terminalsDesk";
@@ -121,15 +121,6 @@ test("an agent's name from its folder is the name Rename would save: İstanbul s
  } finally { desk.disconnectOwner(); h.relay.stop(); }
 });
 
-test("a pane's shell is initializing only while that shell leads the foreground", () => {
- const leading = (name: string) => shellInitializing({ shell_pid: 7, foreground_process_group_id: 7, foreground_processes: [{ pid: 7, name }] });
- expect([leading("/usr/bin/-zsh.exe.exe"), leading("C:\\Windows\\PWSH"), leading("bäsh"), leading("python")]).toEqual([true, true, false, false]);
- expect(shellInitializing({ shell_pid: 7, foreground_process_group_id: 7, foreground_processes: [{ pid: 7, name: "node", argv: ["/bin/bash"] }] })).toBe(true);
- expect(shellInitializing({ shell_pid: 7, foreground_process_group_id: 9, foreground_processes: [{ pid: 7, name: "bash" }] })).toBe(false);
- expect(shellInitializing({ shell_pid: 7, foreground_process_group_id: 7, foreground_processes: [{ pid: 8, name: "bash" }] })).toBe(false);
- expect(shellInitializing(undefined)).toBe(false);
-});
-
 test("a new terminal takes the lowest Terminal number no saved label uses", () => {
  const t = (label: string): SavedTerminal => ({ id: label, paneID: label, label, createdUnixMs: 0 });
  expect(nextTerminalLabel([])).toBe("Terminal 1");
@@ -175,6 +166,26 @@ test("a start refused as busy is retried while the pane's shell still runs its r
  expect((await startAgentWhenShellReady(opsOver(call), new AbortController().signal, clock)).pane_id).toBe("p9");
  expect(starts).toBe(3);
  expect(clock.slept).toEqual([100, 100]);
+});
+
+test("a busy start is retried only while the pane's shell (by its name, or its argv[0]) leads the foreground", async () => {
+ /** Whether a start refused once as busy, the probe answering info, was tried again. */
+ const retriedOver = async (info: PaneProcessInfo | undefined) => {
+  let starts = 0;
+  const call: CreationCall = async <T,>(method: string) => {
+   if (method === "pane.process_info") return { type: "pane_process_info", ...(info ? { process_info: info } : {}) } as T;
+   if (++starts < 2) throw busy;
+   return { agent: { pane_id: "p9" } } as T;
+  };
+  await startAgentWhenShellReady(opsOver(call), new AbortController().signal, fakeClock()).catch(() => {});
+  return starts === 2;
+ };
+ const leading = (name: string, argv?: string[]): PaneProcessInfo => ({ shell_pid: 7, foreground_process_group_id: 7, foreground_processes: [{ pid: 7, name, ...(argv ? { argv } : {}) }] });
+ // "\u212Ash" lowercases to "ksh": a name that isn't ASCII is no shell, whatever it folds to.
+ expect(await Promise.all([leading("/usr/bin/-zsh.exe.exe"), leading("C:\\Windows\\PWSH"), leading("bäsh"), leading("\u212Ash"), leading("python"), leading("node", ["/bin/bash"])].map(retriedOver))).toEqual([true, true, false, false, false, true]);
+ expect(await retriedOver({ shell_pid: 7, foreground_process_group_id: 9, foreground_processes: [{ pid: 7, name: "bash" }] })).toBe(false);
+ expect(await retriedOver({ shell_pid: 7, foreground_process_group_id: 7, foreground_processes: [{ pid: 8, name: "bash" }] })).toBe(false);
+ expect(await retriedOver(undefined)).toBe(false);
 });
 
 test("a busy start is not retried once another program leads the pane, nor past 2 s", async () => {
@@ -338,6 +349,49 @@ test("a new terminal splits a pane, is saved for its machine, opens as a plain t
   expect(String(await terminalsDesk.savedTerminals("owner:other", "").catch(e => e))).toContain("session changed");
  } finally { desk.disconnectOwner(); h.relay.stop(); }
 });
+
+/** A FIFO Web Locks fake: one holder per name, the others waiting their turn. */
+function fifoLocks() {
+ const queues = new Map<string, Promise<void>>();
+ return { request: async <T,>(name: string, run: () => Promise<T>): Promise<T> => {
+  const before = queues.get(name) ?? Promise.resolve();
+  const mine = Promise.withResolvers<void>();
+  queues.set(name, before.then(() => mine.promise));
+  await before;
+  try { return await run(); } finally { mine.resolve(); }
+ } };
+}
+
+for (const locks of ["Web Locks", "no Web Locks"] as const) {
+ test(`renames of one terminal run one at a time (${locks}): answered out of order, the saved label is still the machine's; another pane's rename doesn't wait`, async () => {
+  // The host applies each rename as it comes; the first one's answer waits until released.
+  let hostLabel = "", held: (() => void) | null = null;
+  const firstAsked = Promise.withResolvers<void>();
+  const h = host({ answers: req => {
+   if (req.method !== "pane.rename") return undefined;
+   const { pane_id, label } = req.params as { pane_id: string; label: string };
+   if (pane_id === "p7") hostLabel = label;
+   const answer = ok({ type: "pane_info", pane: { pane_id, label } });
+   if (label !== "first") return answer;
+   firstAsked.resolve();
+   return new Promise<Answer>((done) => { held = () => done(answer); });
+  } });
+  const desk = await connected(h.relay);
+  const machineID = `owner:${h.relay.hostID}`, t7 = { machineID, session: "", paneID: "p7" }, t8 = { machineID, session: "", paneID: "p8" };
+  kept.set(SAVED_TERMINALS_KEY, JSON.stringify({ [h.relay.hostID]: [{ id: "a", paneID: "p7", label: "Terminal 1", createdUnixMs: 1 }, { id: "b", paneID: "p8", label: "Terminal 2", createdUnixMs: 2 }] }));
+  if (locks === "Web Locks") Object.defineProperty(globalThis.navigator, "locks", { configurable: true, value: fifoLocks() });
+  try {
+   const first = terminalsDesk.renameTerminal(t7, "first");
+   await firstAsked.promise;
+   const second = terminalsDesk.renameTerminal(t7, "second");
+   await terminalsDesk.renameTerminal(t8, "other");
+   expect(h.called("pane.rename").map(c => (c.params as { label: string }).label)).toEqual(["first", "other"]);
+   held!();
+   await Promise.all([first, second]);
+   expect([hostLabel, savedOn(h.relay.hostID).map(e => e.label)]).toEqual(["second", ["second", "other"]]);
+  } finally { Reflect.deleteProperty(globalThis.navigator, "locks"); desk.disconnectOwner(); h.relay.stop(); }
+ });
+}
 
 test("a close the machine refuses keeps the terminal saved; forgetting drops it without closing", async () => {
  const h = host({ answers: req => req.method === "pane.split" ? split("p7") : req.method === "pane.close" ? fail("pane_not_found") : undefined });
@@ -877,6 +931,23 @@ test("a pane kept for a busy start is closed while the owner link ends, before i
   desk.disconnectOwner();
   await createDesk.closeCreation("c1");
   await closed;
+  expect(h.called("pane.close").map(c => c.params)).toEqual([{ pane_id: "p8" }]);
+ } finally { desk.disconnectOwner(); h.relay.stop(); }
+});
+
+test("a kept pane has one cleanup, whoever ends it: the sheet closing and then its link ending send one close", async () => {
+ const h = busyHost("refused", 1);
+ const desk = await connected(h.relay);
+ const machineID = `owner:${h.relay.hostID}`;
+ try {
+  await createDesk.openCreation(machineID, "", "c1");
+  await createDesk.createAgent("c1", "/srv", "omp");
+  const closed = h.closed(), ended = h.sessionEnded();
+  await createDesk.closeCreation("c1");
+  await closed;
+  desk.disconnectOwner();
+  // The link's end waits for its cleanups before its connection goes: the same one, done.
+  await ended;
   expect(h.called("pane.close").map(c => c.params)).toEqual([{ pane_id: "p8" }]);
  } finally { desk.disconnectOwner(); h.relay.stop(); }
 });
