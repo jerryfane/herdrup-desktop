@@ -97,37 +97,42 @@ jobs:
       # apt on the hosted runner normally finishes in 15-20 s, but sometimes hangs (#395, #398) and
       # sometimes is very slow (~60-200 kB/s for 50 MB, #359 and #413 on 2026-11-24). So the
       # downloaded .debs are cached weekly (bump v1 when the package list changes): a hit leaves
-      # only the small index update and any changed packages to fetch. Only the network phase is
-      # retried: a killed download leaves no dpkg state, and apt resumes its partial files. Each
-      # download attempt is bounded, and attempts continue while the archive cache keeps growing;
-      # two attempts in a row without growth means stuck, not slow. The step limit bounds the total.
-      # Unpacking and configuring run once, from the downloaded archives, never under a
-      # per-command timeout, because killing dpkg mid-transaction breaks every later attempt.
-      - name: Week for the apt package cache
+      # only the small index update and any changed packages to fetch. Download, save and install are
+      # separate steps, so an install failure still keeps a successful download. Only the network
+      # phase is retried: a killed download leaves no dpkg state, and apt resumes its partial files.
+      # Each download attempt is bounded, and attempts continue while the archive cache keeps
+      # growing; two attempts in a row without growth means stuck, not slow. Unpacking and
+      # configuring run once, from the downloaded archives, never under a per-command timeout,
+      # because killing dpkg mid-transaction breaks every later attempt.
+      - name: Name the apt package cache
         if: runner.os == 'Linux'
         id: aptweek
-        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "dir=$HOME/.cache/herdrup-apt" >> "$GITHUB_OUTPUT"
       - name: Restore cached WebKitGTK packages
         if: runner.os == 'Linux'
         id: aptcache
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/herdrup-apt
+          path: ${{ steps.aptweek.outputs.dir }}
           key: apt-webkit-v1-${{ runner.os }}-${{ steps.aptweek.outputs.week }}
           restore-keys: apt-webkit-v1-${{ runner.os }}-
-      - name: Install WebKitGTK and a virtual display
+      - name: Download WebKitGTK and a virtual display
         if: runner.os == 'Linux'
         timeout-minutes: 15
+        env:
+          DEBS: ${{ steps.aptweek.outputs.dir }}
         run: |
           pkgs="libwebkit2gtk-4.1-0 xvfb"
           opts="-o Acquire::Retries=2 -o Acquire::http::Timeout=20"
-          debs=~/.cache/herdrup-apt
-          mkdir -p "$debs"
-          if ls "$debs"/*.deb >/dev/null 2>&1; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
+          archives=/var/cache/apt/archives
+          mkdir -p "$DEBS"
+          if ls "$DEBS"/*.deb >/dev/null 2>&1; then sudo cp "$DEBS"/*.deb "$archives"/; fi
           # Measure the archive cache; a failed measurement is an error, not a stalled download.
           cached() {
             local out
-            out=$(sudo du -sb /var/cache/apt/archives) || { echo "::error::cannot measure the apt cache" >&2; return 1; }
+            out=$(sudo du -sb "$archives") || { echo "::error::cannot measure the apt cache" >&2; return 1; }
             printf '%s\n' "${out%%[[:space:]]*}"
           }
           updated=
@@ -148,15 +153,27 @@ jobs:
             before=$after
           done
           [ -n "$fetched" ] || exit 1
-          if ls /var/cache/apt/archives/*.deb >/dev/null 2>&1; then cp /var/cache/apt/archives/*.deb "$debs"/; fi
-          sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-download $pkgs
-      # Saved right after the download, so a later failing step still leaves the cache filled.
+          # Stage exactly the archives this install uses, so a weekly rollover drops old versions.
+          # "Inst name [old] (version origin [arch])" -> name_version_arch.deb, with ':' as %3a.
+          list=$(apt-get install -s $pkgs | sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) [^[]*\[([^]]+)\]\).*/\1_\3_\4.deb/p' | sed 's/:/%3a/g')
+          if [ -z "$list" ]; then
+            echo "::warning::could not list the install's archives; the cache is not pruned"
+          else
+            find "$DEBS" -maxdepth 1 -name '*.deb' -delete
+            for f in $list; do
+              if [ -f "$archives/$f" ]; then cp "$archives/$f" "$DEBS"/; else echo "::warning::not staged: $f"; fi
+            done
+          fi
+          echo "staged $(ls "$DEBS"/*.deb 2>/dev/null | wc -l) archives"
       - name: Save WebKitGTK packages for later runs
         if: runner.os == 'Linux' && steps.aptcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ~/.cache/herdrup-apt
-          key: apt-webkit-v1-${{ runner.os }}-${{ steps.aptweek.outputs.week }}
+          path: ${{ steps.aptweek.outputs.dir }}
+          key: ${{ steps.aptcache.outputs.cache-primary-key }}
+      - name: Install WebKitGTK and a virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get -o DPkg::Lock::Timeout=60 install -y --no-download libwebkit2gtk-4.1-0 xvfb
       - name: Fetch pinned offline speech engine
         if: runner.os == 'Linux' || runner.os == 'Windows'
         uses: actions/checkout@v5
