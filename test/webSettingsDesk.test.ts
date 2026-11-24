@@ -3,7 +3,7 @@
 // desk_guest_invite.go, desk_updates.go) against a fake herdr behind the link's real engine client,
 // and once over a real owner link to a relay host refusing the method (an older herdr).
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { HerdrAPIError, NotSentError } from "../src/webguest/errors";
+import { HerdrAPIError, notSent, NotSentError } from "../src/webguest/errors";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +44,8 @@ const refused = () => new HerdrAPIError("owner_forbidden", "no", {});
  *  recorded; once `host.dead` (its connection closed) none goes out, and a call whose signal ends
  *  first is dropped by the client as the transport drops it (herdr may still have acted on it).
  *  While `host.admission` is set, a call waits for it before it is sent, as the transport waits
- *  for the relay to admit a connection; one whose signal ends meanwhile is never sent. */
+ *  for the relay to admit a connection; one whose signal ends meanwhile is never sent. A call that
+ *  doesn't go out fails as the transport's does: NotSentError. */
 function ownerLink(handler: Handler = () => undefined, options: { scope?: string; agents?: AgentInfo[]; accounts?: AccountInfo[]; hostID?: string } = {}) {
  const calls: Call[] = [];
  const life = new AbortController();
@@ -54,9 +55,9 @@ function ownerLink(handler: Handler = () => undefined, options: { scope?: string
   async call(method: string, params?: unknown, signal?: AbortSignal, sendSignal?: AbortSignal) {
    // Unsent while admission is held: signal or sendSignal ends it (RequestOptions.sendSignal).
    const unsent = signal && sendSignal ? AbortSignal.any([signal, sendSignal]) : signal ?? sendSignal;
-   if (host.admission) await (unsent ? untilAborted(host.admission, unsent) : host.admission);
-   if (host.dead) throw new Error("The shared connection was closed.");
-   if (unsent?.aborted) throw unsent.reason; // the transport sends nothing on an ended signal
+   if (host.admission) await (unsent ? untilAborted(host.admission, unsent) : host.admission).catch((error: unknown) => { throw notSent(error); });
+   if (host.dead) throw notSent(new Error("The shared connection was closed."));
+   if (unsent?.aborted) throw notSent(unsent.reason); // the transport sends nothing on an ended signal
    const p = (params ?? {}) as Record<string, unknown>;
    calls.push({ method, params: p });
    const reply = Promise.resolve(handler(method, p));
@@ -409,6 +410,63 @@ test("an apply herdr refuses is shown as refused, not followed", async () => {
  await desk.applySettingsServerUpdate("tok", "b6", false);
  expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "refused", code: "update_busy", message: "another update runs" });
  await expect(desk.recheckSettingsServerUpdate("tok", true)).rejects.toThrow("there is no lost update to follow");
+});
+
+// ---- #360 P3 (after #361): an apply that never went out ----
+
+/** An update host whose apply runs into `onApply` when it is the next frame (its status read first). */
+function applyHost(onApply: (host: ReturnType<typeof ownerLink>) => void) {
+ const host: ReturnType<typeof ownerLink> = ownerLink((method) => {
+  if (method === "server.update_check") return { type: "update_check", ...offered().check };
+  if (method === "server.update_status") { if (applying) { applying = false; onApply(host); } return { type: "update_status" }; }
+  if (method === "server.update_apply") return { type: "update_apply", attempt_id: "at1" };
+ });
+ let applying = false;
+ return { host, arm: () => { applying = true; } };
+}
+
+test("an apply whose connection closes before it goes out leaves the update offered, not running", async () => {
+ const { host, arm } = applyHost((h) => { h.host.dead = true; });
+ const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
+ await desk.settingsServerUpdate("tok", true);
+ arm();
+ expect(await desk.applySettingsServerUpdate("tok", "b6", false).then(() => null, (e: unknown) => e)).toBeInstanceOf(NotSentError);
+ expect(host.of("server.update_apply")).toEqual([]);
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "idle", check: { latest: { build_id: "b6" } } });
+ // Offered again: the same confirmation goes out once the machine is reachable.
+ host.host.dead = false;
+ await desk.applySettingsServerUpdate("tok", "b6", false);
+ expect(host.of("server.update_apply")).toHaveLength(1);
+});
+
+test("an apply Settings closed before it went out leaves the card idle when Settings opens again", async () => {
+ const admission = Promise.withResolvers<void>();
+ const { host, arm } = applyHost((h) => { h.host.admission = admission.promise; });
+ const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
+ await desk.settingsServerUpdate("tok", true);
+ arm();
+ const applying = desk.applySettingsServerUpdate("tok", "b6", false).then(() => null, (e: unknown) => e);
+ await tick(); await tick();
+ closeSettings("tok");
+ host.host.admission = null;
+ admission.resolve();
+ expect(await applying).toBeInstanceOf(NotSentError);
+ openSettings("tok");
+ expect(host.of("server.update_apply")).toEqual([]);
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "idle" });
+});
+
+test("an apply that went out but got no answer is still followed, never sent again", async () => {
+ const host = ownerLink((method) => {
+  if (method === "server.update_check") return { type: "update_check", ...offered().check };
+  if (method === "server.update_status") return { type: "update_status" };
+  if (method === "server.update_apply") throw new Error("The shared connection was closed."); // after the frame went
+ });
+ const desk = createServerUpdateDesk({ pause: () => new Promise(() => {}) });
+ await desk.settingsServerUpdate("tok", true);
+ await desk.applySettingsServerUpdate("tok", "b6", false);
+ expect(JSON.parse(await desk.settingsServerUpdate("tok", false))).toMatchObject({ flow: "running" });
+ expect(host.of("server.update_apply")).toHaveLength(1);
 });
 
 // ---- One machine's operations stay on it (review round 2) ----

@@ -11,7 +11,7 @@ import type { Desk as GoDesk } from "../mygo";
 import { errorText } from "../errors";
 import { updateMissing, updateOffer, type UpdateAttempt, type UpdateCheck, type UpdateState } from "../serverUpdatePolicy";
 import { sleep } from "../webguest/abort";
-import { HerdrAPIError } from "../webguest/errors";
+import { HerdrAPIError, NotSentError } from "../webguest/errors";
 import { ErrUnsupported } from "./engine";
 import { currentOwnerLink, LINK_CHANGED, OWNER_REFUSED, ownerCall, OwnerRefusedError, settingsCall, settingsLink, settingsPing, settingsScope, type OwnerLink, type SettingsScope } from "./ownerLink";
 
@@ -165,7 +165,8 @@ export function createServerUpdateDesk(options: ServerUpdateDeskOptions = {}) {
   },
 
   /** ApplySettingsServerUpdate: the exact build and mode the page confirmed, never "the latest",
-   *  on the machine it was confirmed for. An apply whose answer is unknown is followed, never sent
+   *  on the machine it was confirmed for. An apply that never left this page (NotSentError) leaves
+   *  the card as it was, offering it again; one whose answer is unknown is followed, never sent
    *  again. */
   async applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
    const { scope, link, u } = settingsUpdate(token);
@@ -189,6 +190,9 @@ export function createServerUpdateDesk(options: ServerUpdateDeskOptions = {}) {
      u.targetID = (await settingsCall<{ attempt_id: string }>(scope, "server.update_apply", { build_id: buildID, restart_later: restartLater }, "update_apply", { capability: "server_update" })).attempt_id;
     } catch (error) {
      if (refusedToBrowser(s, error)) { s.flow = "idle"; throw error; }
+     // Never sent (Settings closed or the link ended before it went, the connection failed): herdr
+     // has nothing to follow, so the card is back where it was, the update still offered.
+     if (error instanceof NotSentError) { s.flow = "idle"; u.targetBuild = ""; u.previousID = ""; throw error; }
      if (error instanceof HerdrAPIError || error instanceof ErrUnsupported) {
       s.flow = "refused"; s.message = errorText(error);
       if (error instanceof HerdrAPIError) { s.code = error.code; s.message = error.apiMessage; }
