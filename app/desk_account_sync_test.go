@@ -5102,39 +5102,50 @@ func (f *failGet) RoundTrip(r *http.Request) (*http.Response, error) {
 // heldConflictOf is a turned-down answer of history 0 holding a live row
 // of prompt id at rev.
 func heldConflictOf(id string, rev int64) heldConflict {
-	return heldConflict{Conflict: account.Conflict{Collection: "prompts", ID: id, Server: &account.Item{Collection: "prompts", ID: id, Rev: rev, Body: json.RawMessage(`{"text":"old","order":0}`)}}}
+	return heldConflict{Conflict: turnedDown{Conflict: account.Conflict{Collection: "prompts", ID: id, Server: &account.Item{Collection: "prompts", ID: id, Rev: rev, Body: json.RawMessage(`{"text":"old","order":0}`)}}}}
 }
 
-// #448 review: a pull told to start over (410) whose restart then fails
-// still says the history may have been replaced, before the round returns:
-// the history moves on, and the conflicts held from the old one go.
+// #448 review, #390 r17: a draft's upload was turned down with a tombstone
+// (held); the account is then restored, and the pull told to start over
+// (410), but its restart fails, so the round ends before any store step
+// could record the restart; the app is then opened again. The 410 was
+// kept: the next round's pull, an ordinary one, folds it first, so the
+// discarded history's tombstone deletes nothing, and the draft goes up.
 func TestA410WhoseRestartFailsStillEndsTheHistory(t *testing.T) {
 	quietSync(t)
 	w, srv := newWorker(t, "")
 	transport := &failGet{base: srv.Client().Transport}
 	mac := deviceVia(t, srv, transport)
-	p := savePrompt(t, mac, "", "", "v0")
+	savePrompt(t, mac, "", "", "v0")
 	syncEach(t, mac)
+	const draft = "00000000-0000-4000-8000-0000000000bb"
+	savePrompt(t, mac, draft, "", "draft")
 	state, err := mac.loadSyncState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.HeldConflicts = []heldConflict{heldConflictOf(p.ID, state.Mirror.Rev+1)}
+	state.HeldConflicts = []heldConflict{{Conflict: turnedDown{Conflict: account.Conflict{Collection: "prompts", ID: draft,
+		Server: &account.Item{Collection: "prompts", ID: draft, Rev: state.Mirror.Rev + 1, Deleted: true}}}}}
 	if err := mac.storeSyncState(state); err != nil {
 		t.Fatal(err)
 	}
 	w.mu.Lock()
-	w.otherDeviceWritesLocked(p.ID, "v1")
 	w.floor = w.rev + 1 // the pull is told to start over
 	w.mu.Unlock()
 	transport.mu.Lock()
 	transport.nth, transport.seen = 2, 0 // the restart
 	transport.mu.Unlock()
-	if err := mac.SyncMachines(context.Background()); err == nil {
+	err = mac.SyncMachines(context.Background())
+	if err == nil {
 		t.Fatal("a round whose restarted pull failed reported success")
 	}
-	if state, err := mac.loadSyncState(); err != nil || state.History != 1 || len(state.HeldConflicts) != 0 {
-		t.Fatalf("history %d, held %+v (%v); want the history moved on and nothing held", state.History, state.HeldConflicts, err)
+	w.mu.Lock()
+	w.floor = 0
+	w.mu.Unlock()
+	reopened := reopen(t, srv, mac)
+	syncEach(t, reopened)
+	if got, body := promptsOf(t, reopened)[draft], w.livePrompts()[draft]; got.Text != "draft" || !strings.Contains(body, `"draft"`) {
+		t.Fatalf("the draft here %+v, in the account %s; want it in both", got, body)
 	}
 }
 
@@ -5175,6 +5186,31 @@ func TestAnOldConflictRowNeverRewindsTheMirror(t *testing.T) {
 	}
 }
 
+// #448 review, #390 r17: a held conflict saying the account holds no such
+// item (its tombstone pruned) is landing evidence only once the state
+// holds the item at another revision than the change was based on (it
+// was written again since); at that base, it still removes it.
+func TestAnAbsentConflictRowRemovesOnlyAtItsBase(t *testing.T) {
+	const p = "00000000-0000-4000-8000-000000000001"
+	absent := heldConflict{Conflict: turnedDown{Conflict: account.Conflict{Collection: "prompts", ID: p}, Base: 3}}
+	for _, c := range []struct {
+		name    string
+		rev     int64
+		removes bool
+	}{
+		{"written again since", 9, false},
+		{"still at its base", 3, true},
+	} {
+		state := &syncState{
+			Mirror:        account.Mirror{Rev: 9, Prompts: []account.RemotePrompt{{ID: p, Rev: c.rev, Body: account.PromptBody{Text: "v"}}}},
+			HeldConflicts: []heldConflict{absent},
+		}
+		if removes := len(confirmConflicts(state)) == 1; removes != c.removes {
+			t.Errorf("%s: removes %v; want %v", c.name, removes, c.removes)
+		}
+	}
+}
+
 // #448 review: a marker whose send an earlier fold already retired is
 // replayed as nothing: only the fold that retires a still-open send
 // records what it wrote.
@@ -5197,5 +5233,92 @@ func TestAMarkerOfARetiredSendRecordsNothing(t *testing.T) {
 	d.foldMarkers(state)
 	if got := state.PromptBaselineHash[p]; got != "H1" {
 		t.Fatalf("agreed hash %q; want H1, from the fold that retired the open sends", got)
+	}
+}
+
+// acceptedButUnwritten runs a round in which the service takes the upload
+// and only the writes recording its answer fail: the acknowledgement is
+// owed in memory and kept in the send's marker.
+func acceptedButUnwritten(t *testing.T, mac *Desk, transport *cancelOn) {
+	t.Helper()
+	blocked := mac.syncStatePath() + ".tmp"
+	transport.mu.Lock()
+	transport.nth, transport.seen = 1, 0
+	transport.cancel = func() {} // the round goes on
+	transport.then = func() { _ = os.Mkdir(blocked, 0o700) }
+	transport.mu.Unlock()
+	if err := mac.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a round whose answer couldn't be written reported success")
+	}
+	_ = os.Remove(blocked)
+	transport.mu.Lock()
+	transport.cancel = nil
+	transport.mu.Unlock()
+}
+
+// #390 r17 (variant a): the service takes the upload of v1 and the writes
+// recording its answer fail; the app stays open, and the next pull is told
+// to start over (410): the account was restored to a backup holding v0.
+// The owed acknowledgement makes v1 an agreed body, so the unchanged saved
+// v1 is no edit: the restored v0 is taken, and nothing is uploaded.
+func TestAnOwedAcknowledgementDoesNotUndoARestore(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost}
+	mac := deviceVia(t, srv, transport)
+	p := savePrompt(t, mac, "", "", "v0")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backup := w.items[p.ID]
+	w.mu.Unlock()
+	savePrompt(t, mac, p.ID, "", "v1")
+	acceptedButUnwritten(t, mac, transport)
+	w.mu.Lock()
+	w.restoreTo(backup.Rev)
+	w.items[p.ID] = backup
+	w.floor = backup.Rev + 1 // the next pull is told to start over
+	posts := w.posts
+	w.mu.Unlock()
+	syncEach(t, mac)
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if got, body := promptsOf(t, mac)[p.ID], w.livePrompts()[p.ID]; got.Text != "v0" || !strings.Contains(body, `"v0"`) || sent != 0 {
+		t.Fatalf("mac's prompt %+v, the account's %s, %d uploads; want the restored v0 in both and none", got, body, sent)
+	}
+}
+
+// #390 r17 (variant b): the service takes a new prompt's first upload and
+// the writes recording its answer fail; the app is opened again, and its
+// first pull is told to start over (410): the account was restored to a
+// backup from before the prompt. The account held it (the marker's
+// acknowledgement) and now lacks it, so the restore deleted it: it goes
+// here too, and is not uploaded as a new draft.
+func TestAnAcknowledgedPromptARestoreDropsIsNotUploadedAgain(t *testing.T) {
+	quietSync(t)
+	w, srv := newWorker(t, "")
+	transport := &cancelOn{base: srv.Client().Transport, method: http.MethodPost}
+	mac := deviceVia(t, srv, transport)
+	savePrompt(t, mac, "", "", "q")
+	syncEach(t, mac)
+	w.mu.Lock()
+	backupRev := w.rev
+	w.mu.Unlock()
+	p := savePrompt(t, mac, "", "", "v1")
+	acceptedButUnwritten(t, mac, transport)
+	w.mu.Lock()
+	w.restoreTo(backupRev)
+	w.floor = backupRev + 1 // the next pull is told to start over
+	posts := w.posts
+	w.mu.Unlock()
+	reopened := reopen(t, srv, mac)
+	syncEach(t, reopened)
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	_, here := promptsOf(t, reopened)[p.ID]
+	_, there := w.livePrompts()[p.ID]
+	if here || there || sent != 0 {
+		t.Fatalf("here %v, in the account %v, %d uploads; want the prompt gone from both and nothing uploaded", here, there, sent)
 	}
 }
