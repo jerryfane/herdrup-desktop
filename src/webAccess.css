@@ -60,6 +60,4 @@ button.web-access-row-head:focus-visible { outline: 2px solid var(--color-text-f
 
 /* Deny and Approve share the footer, under a hairline. */
 dialog.folder-naming.web-access .buttons { margin: 20px calc(-1 * var(--space-stack-large)) 0; padding: 16px var(--space-stack-large) 0; border-top: 1px solid var(--color-hairline); }
-dialog.folder-naming.web-access .buttons button { flex: 1; height: 42px; }
-dialog.folder-naming.web-access .buttons button:disabled { opacity: 0.45; cursor: default; }
-dialog.folder-naming.web-access .buttons button.ghost { color: var(--color-text); }
+dialog.folder-naming.web-access .buttons button { flex: 1; }

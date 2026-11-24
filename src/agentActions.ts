@@ -24,7 +24,7 @@ export interface AgentActionDeps {
   /** The row's initial tile (AgentInitialTile). */
   tile(r: Row): HTMLElement;
   /** The row's status badge, null for none. */
-  badge(r: Row): Promise<HTMLElement | null>;
+  badge(r: Row): HTMLElement | null;
   /** Places the initials of the tiles under root once they are laid out. */
   placeInitials(root: ParentNode): Promise<void>;
   symbol(name: string, size: number, weight: string): Promise<HTMLElement>;
@@ -72,7 +72,7 @@ function confirmAction(title: string, message: string, action: string, destructi
   const dialog = el("dialog", "folder-naming agent-confirm");
   const buttons = el("div", "buttons");
   let chosen = false;
-  buttons.append(button("Cancel", "ghost", () => dialog.close()), button(action, destructive ? "destructive" : "", () => { chosen = true; dialog.close(); }));
+  buttons.append(button("Cancel", "button-secondary", () => dialog.close()), button(action, destructive ? "button-destructive" : "", () => { chosen = true; dialog.close(); }));
   dialog.append(el("h2", "", title), el("p", "", message), buttons);
   document.body.append(dialog);
   const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -91,14 +91,14 @@ function renameAgent(action: AgentAction) {
   const { dialog, leading, title } = sheet("agent-rename-sheet");
   dialog.addEventListener("close", () => opening.release());
   title.textContent = "Rename agent";
-  leading.append(button("Cancel", "dim", () => dialog.close()));
+  leading.append(button("Cancel", "button-plain button-compact", () => dialog.close()));
   const form = el("form", "agent-sheet-body agent-rename");
   const input = el("input");
   input.placeholder = "e.g. planner"; input.value = action.name;
   input.autocapitalize = "off"; input.autocomplete = "off"; input.spellcheck = false;
   input.setAttribute("aria-label", "Agent name");
   const preview = el("p", "agent-rename-preview");
-  const save = el("button", "agent-rename-save", "Save"); save.type = "submit";
+  const save = el("button", "agent-rename-save button-large", "Save"); save.type = "submit";
   form.append(el("label", "agent-micro-label", "AGENT NAME"), input, preview,
     el("p", "agent-rename-footnote", "Lowercase letters, digits, - and _. Another agent can then read this one by name."), save);
   const update = () => {
@@ -142,7 +142,7 @@ async function switchTopics(action: AgentAction) {
 
 let bannerShown: SwitchStatus | null = null;
 /** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced.
- * It sits in the sidebar's foot, stacked over the tab bar, which the lists end above (bars.ts). */
+ * It sits in the sidebar's foot, over the glass tab bar (style.css .sidebar-foot). */
 function switchBanner() {
   const foot = document.getElementById("sidebar-foot") ?? document.body;
   let banner = foot.querySelector<HTMLElement>(":scope > .topics-switch-banner");
@@ -182,7 +182,7 @@ async function avatarWithBadge(r: Row, face: HTMLElement, size: number) {
   const a = el("div", "avatar");
   a.style.setProperty("--avatar-size", `${size}px`);
   a.append(face);
-  const b = await deps.badge(r);
+  const b = deps.badge(r);
   if (b) a.append(b);
   return a;
 }
@@ -239,18 +239,18 @@ export function openAvatarSheet(request: SheetRequest, name: string) {
         () => apply({ kind: "mascot", mascot })));
     }
     const actions = el("div", "agent-avatar-actions");
-    const choose = button("", "choose", () => picker.click());
+    const choose = button("", "choose button-secondary button-large", () => picker.click());
     choose.disabled = loadingPhoto;
     choose.append(loadingPhoto ? el("span", "ring") : await deps.symbol("photo.on.rectangle", 15, "semibold"), "Choose photo");
     actions.append(choose);
-    if (current.kind === "image") actions.append(button("Remove photo", "remove", () => apply(null)));
+    if (current.kind === "image") actions.append(button("Remove photo", "remove button-plain button-large", () => apply(null)));
     body.append(hero, grid, actions);
     if (error) body.append(Object.assign(el("p", "agent-avatar-error", error), { role: "alert" }));
     body.append(el("p", "agent-avatar-note", "Guests you share this agent with will see this picture."));
     if (at !== screen) return;
     title.textContent = name;
     leading.replaceChildren();
-    trailing.replaceChildren(button("Done", "", () => dialog.close()));
+    trailing.replaceChildren(button("Done", "button-compact", () => dialog.close()));
     dialog.querySelector(":scope > .agent-avatar-body")?.remove();
     dialog.append(body);
     void deps.placeInitials(body);
@@ -302,11 +302,11 @@ export function openAvatarSheet(request: SheetRequest, name: string) {
   const crop = (work: HTMLCanvasElement) => {
     cropping = true; screen++;
     let zoom = 1, offset = { x: 0, y: 0 }, failed = false;
-    const back = button("", "back", () => { cropping = false; void main(); });
+    const back = button("", "back button-plain button-compact", () => { cropping = false; void main(); });
     back.setAttribute("aria-label", "Back");
     void deps.symbol("chevron.left", 17, "semibold").then(glyph => back.prepend(glyph));
     back.append(name);
-    const use = button("Use photo", "", async () => {
+    const use = button("Use photo", "button-compact", async () => {
       const rect = integralCropRect(work.width, work.height, zoom, offset.x, offset.y);
       const out = Object.assign(el("canvas"), { width: AVATAR_PIXEL_SIZE, height: AVATAR_PIXEL_SIZE });
       out.getContext("2d", { alpha: false })!.drawImage(work, rect.x, rect.y, rect.width, rect.height, 0, 0, AVATAR_PIXEL_SIZE, AVATAR_PIXEL_SIZE);
@@ -416,7 +416,7 @@ async function switchHarness(action: AgentAction) {
 
   const { dialog, leading, title } = sheet("agent-transfer-sheet");
   title.textContent = "Switch harness";
-  leading.append(button("Close", "dim", () => dialog.close()));
+  leading.append(button("Close", "button-plain button-compact", () => dialog.close()));
   dialog.addEventListener("close", () => { closed = true; own.release(); });
   /** A step refused as stale (SheetStaleError, the browser's): the sheet closes and asks nothing
    * more; any other failure is the sheet's to show or retry, as before. */
@@ -550,7 +550,7 @@ async function switchHarness(action: AgentAction) {
   // actionBar (279-315) and primaryButton (317-337).
   const actionButton = () => {
     const primary = (label: string, icon: string | null, disabled: boolean, run: () => void) => {
-      const node = button("", "", run);
+      const node = button("", "button-large", run);
       node.disabled = disabled;
       if (disabled && busy) node.append(el("span", "ring"));
       if (icon) node.append(glyphBox("", icon, 15));

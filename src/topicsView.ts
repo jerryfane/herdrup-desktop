@@ -529,7 +529,7 @@ class TopicChat {
  private readonly note = el("p", "topic-send-note");
  private readonly input = el("textarea", "topic-input");
  private readonly send: HTMLButtonElement;
- private readonly earlier = button("Earlier messages", "chat-earlier", () => { void this.load(true); });
+ private readonly earlier = button("Earlier messages", "chat-earlier button-plain button-compact", () => { void this.load(true); });
  private page: TranscriptPage | null = null;
  private entries: Entry[] = [];
  private before: string | undefined;

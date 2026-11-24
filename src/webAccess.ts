@@ -253,9 +253,9 @@ export function initWebAccess(): void {
   };
 
   const problem = el("p", "web-access-problem"); problem.hidden = true;
-  const deny = el("button", "ghost", "Deny"); deny.type = "button";
+  const deny = el("button", "button-secondary", "Deny"); deny.type = "button";
   // Shown once a denial failed: this computer won't approve any more, and the request ends on its own.
-  const close = el("button", "ghost", "Close"); close.type = "button"; close.hidden = true;
+  const close = el("button", "button-secondary", "Close"); close.type = "button"; close.hidden = true;
   const approve = el("button", "", "Approve"); approve.type = "button";
   const buttons = el("div", "buttons"); buttons.append(close, deny, approve);
   dialog.append(title, lead, codeLabel, status, choices.rows, el("p", "web-access-dim web-access-note", machinesNote(machines)), problem, buttons);

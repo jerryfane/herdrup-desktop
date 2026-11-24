@@ -31,9 +31,9 @@ const GOOGLE_MARK = '<svg viewBox="0 0 18 18" width="17" height="17" aria-hidden
 
 /** "Continue with Apple" and "Continue with Google", for the providers the service offers. */
 function providerButtons(providers: readonly string[], pick: (provider: "apple" | "google") => void): HTMLButtonElement[] {
- const apple = el("button", "account-provider account-provider-apple"); apple.type = "button";
+ const apple = el("button", "account-provider button-filled button-large"); apple.type = "button";
  apple.innerHTML = APPLE_MARK; apple.append(el("span", "", "Continue with Apple")); apple.onclick = () => pick("apple");
- const google = el("button", "account-provider account-provider-google"); google.type = "button";
+ const google = el("button", "account-provider button-secondary button-large"); google.type = "button";
  google.innerHTML = GOOGLE_MARK; google.append(el("span", "", "Continue with Google")); google.onclick = () => pick("google");
  return [...(providers.includes("apple") ? [apple] : []), ...(providers.includes("google") ? [google] : [])];
 }
@@ -219,7 +219,7 @@ export class HerdrUpAccountPanel {
   if (s?.signedIn) {
    const who = el("div", "account-who");
    who.append(el("strong", "", "Signed in"), el("span", "account-hint", s.displayHint ? `as ${s.displayHint}` : "with Apple or Google"));
-   const signOut = el("button", "account-sign-out", "Sign out"); signOut.type = "button"; signOut.disabled = this.busy !== "";
+   const signOut = el("button", "account-sign-out button-secondary", "Sign out"); signOut.type = "button"; signOut.disabled = this.busy !== "";
    signOut.onclick = () => { void this.signOut(); };
    nodes.push(who, signOut);
   } else {
@@ -333,7 +333,7 @@ export class HerdrUpAccountPanel {
   const form = el("form");
   const input = el("input"); input.value = device.name; input.maxLength = 64; input.setAttribute("aria-label", "Device name");
   const buttons = el("div", "buttons");
-  const cancel = el("button", "ghost", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
+  const cancel = el("button", "button-secondary", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
   const save = el("button", "", "Rename"); save.type = "submit";
   buttons.append(cancel, save);
   form.append(el("h2", "", "Rename device"), input, buttons);
@@ -443,8 +443,8 @@ function confirm(title: string, message: string, action: string): Promise<boolea
  const dialog = el("dialog", "folder-naming agent-confirm");
  const buttons = el("div", "buttons");
  let chosen = false;
- const cancel = el("button", "ghost", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
- const act = el("button", "destructive", action); act.type = "button"; act.onclick = () => { chosen = true; dialog.close(); };
+ const cancel = el("button", "button-secondary", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
+ const act = el("button", "button-destructive", action); act.type = "button"; act.onclick = () => { chosen = true; dialog.close(); };
  buttons.append(cancel, act);
  dialog.append(el("h2", "", title), el("p", "", message), buttons);
  document.body.append(dialog);
@@ -459,10 +459,10 @@ function choose(title: string, message: string, choices: [string, string][]): Pr
  const dialog = el("dialog", "folder-naming agent-confirm");
  const buttons = el("div", "buttons");
  let chosen = "";
- const cancel = el("button", "ghost", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
+ const cancel = el("button", "button-secondary", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
  buttons.append(cancel);
  for (const [value, label] of choices) {
-  const b = el("button", "destructive", label); b.type = "button"; b.onclick = () => { chosen = value; dialog.close(); };
+  const b = el("button", "button-destructive", label); b.type = "button"; b.onclick = () => { chosen = value; dialog.close(); };
   buttons.append(b);
  }
  dialog.append(el("h2", "", title), el("p", "", message), buttons);
@@ -555,7 +555,7 @@ export class AccountWelcome {
    this.waiting = true; this.draw("");
    void Desk.accountSignIn(provider).catch(error => { this.waiting = false; this.draw(errorText(error)); });
   }));
-  const skip = el("button", "account-welcome-skip", "Set up without an account"); skip.type = "button"; skip.dataset.smoke = "welcome-skip";
+  const skip = el("button", "account-welcome-skip button-plain button-large", "Set up without an account"); skip.type = "button"; skip.dataset.smoke = "welcome-skip";
   skip.onclick = () => this.finish();
   actions.append(skip);
   if (this.waiting) actions.append(el("p", "account-note", "Finish signing in in your browser."));

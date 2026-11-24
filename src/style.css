@@ -4,6 +4,7 @@
    fails on a colour literal here. Lengths are points (1 pt = 1 CSS px). */
 @import "./tokens.css";
 @import "./gram.css";
+@import "./buttons.css";
 
 :root {
   color-scheme: dark;
@@ -20,9 +21,9 @@
   --sidebar-width: var(--size-sidebar-min);
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
-  /* The sidebar lists end above its foot (the tab bar and any notice over it): bars.ts sets this
-     to the foot's laid-out height; until then, the bar's token height over the home inset. */
-  --tabbar-inset: calc(var(--size-tab-bar) + var(--home-inset));
+  /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
+     6 pt above and 12 below (HerdrApp.swift 2401, 2843), over the home inset. */
+  --tabbar-inset: calc(var(--size-tab-bar) + var(--tabbar-bottom) + 6px);
   /* Liquid Glass over the bare ground, as every 9845ecf reference draws it: a flat #31354e
      (sidebar tab bar, Gram header capsules); CSS has no refraction, so it is drawn flat. */
   --glass-fill: color-mix(in srgb, var(--color-on-accent) 5%, var(--color-surface-raised));
@@ -247,7 +248,7 @@ html, body {
 .row .line1 { display: flex; align-items: center; gap: var(--space-stack-small); }
 .row .name { color: var(--color-text); overflow: hidden; text-overflow: ellipsis; }
 .row .spacer { flex: 1; min-width: var(--space-stack-small); }
-.row .age { color: var(--color-text-faint); }
+.row .age { color: var(--color-text-dim); }
 .row .chev { color: var(--color-text-faint); }
 .row .preview {
   color: var(--color-text-dim);
@@ -257,14 +258,7 @@ html, body {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-/* An agent's second line (Topics A-v2, sessions.ts rowPreview): its status as muted words, one
-   small dot only for Needs you and Working, then the preview, on one line. */
-.row .row-status { color: var(--color-text-dim); }
-.row .row-status-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; vertical-align: 0.1em; }
-.row .row-status-dot[data-dot="waiting"] { background: var(--status-waiting); }
-.row .row-status-dot[data-dot="working"] { background: var(--status-working); }
-.row .row-status-sep { padding: 0 5px; color: var(--color-text-faint); }
-.row:not(.folder) .preview { -webkit-line-clamp: 1; }
+.row.waiting .preview { color: var(--color-text); }
 /* The separator spans the text column, one device pixel, hairline. */
 .row .text::after {
   content: "";
@@ -320,7 +314,8 @@ html, body {
 .badge .shape svg { display: block; }
 .badge .shape .fill { fill: var(--badge-fill); }
 .badge .shape .edge { fill: none; stroke: var(--color-ground); }
-.badge > :not(.shape) { position: relative; }
+/* The glyph over the shape; symbolNow wraps it in a `display: contents` span (.gi). */
+.badge > :not(.shape, .gi), .badge > .gi > .sym { position: relative; }
 .badge.waiting, .badge.unrecognised { --badge-fill: var(--status-waiting); }
 .badge.stopped { --badge-fill: var(--status-died); }
 .badge.offline { --badge-fill: var(--color-surface-raised); color: var(--color-text-dim); }
@@ -421,8 +416,9 @@ html, body {
   color: var(--color-text-dim);
 }
 
-/* The sidebar's foot: a notice (agentActions.ts) stacked over the tab bar, on the ground. Its
-   laid-out height is the lists' bottom inset (bars.ts watchFoot sets --tabbar-inset). */
+/* The sidebar's foot: the glass tab bar and any notice over it (agentActions.ts), floating over
+   the bare ground at the sidebar's bottom. It takes no room: the lists end above the bar by
+   --tabbar-inset, as herdrup's safe-area inset does. */
 .sidebar-foot {
   position: absolute;
   left: 0;
@@ -431,34 +427,45 @@ html, body {
   z-index: 4;
   display: flex;
   flex-direction: column;
-  background: var(--color-ground);
+  padding-bottom: var(--tabbar-inset);
+  pointer-events: none;
 }
-/* Sidebar tab bar, text only (Topics A-v2, owner 2026-11-23): the sidebar's full width under a
-   quiet rule, three words, the selected one on a rounded surface. */
+.sidebar-foot > * { pointer-events: auto; }
+/* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
+   iOS 26 Liquid Glass material has no CSS equivalent; this is its colour over the bare
+   sidebar in every 9845ecf reference (#31354e: board, Gram and detail captures alike), and
+   the selected pill, white 12% on top, gives their #4a4d63. */
 .tabbar {
-  position: relative;
-  padding: 10px 16px calc(14px + var(--home-inset));
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: var(--tabbar-bottom);
+  max-width: var(--size-tab-bar-max-width);
+  margin: 0 auto;
+  height: var(--size-tab-bar);
+  padding: 4px;
   display: flex;
-  gap: 4px;
-  border-top: 1px solid var(--color-hairline-quiet);
+  border-radius: 999px;
+  background: var(--glass-fill);
 }
 .tab {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 7px 0;
-  border-radius: 8px;
+  gap: 1px;
+  border-radius: 999px;
   color: var(--color-text-dim);
 }
-.tab .t-tab-label { position: relative; font: 500 13px var(--font-app); font-variation-settings: normal; }
 .tab:focus-visible { outline: 2px solid var(--color-text-dim); outline-offset: -2px; }
-/* tabBadge (HerdrApp.swift 2871-2881): top-trailing of the label; at least 18 pt, 5 pt sides,
-   badgeCount text, white on system red (main.ts). */
+.tab .icon { position: relative; height: 28px; display: flex; align-items: center; }
+/* tabBadge (HerdrApp.swift 2871-2881): top-trailing of the icon, moved 12 pt right and
+   3 pt up; at least 18 pt, 5 pt sides, badgeCount text, white on system red (main.ts). */
 .tab-badge {
   position: absolute;
-  top: -9px;
-  right: -20px;
+  top: -3px;
+  right: -12px;
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -475,16 +482,15 @@ html, body {
 .tab { position: relative; z-index: 1; transition: color var(--motion-tab-duration) var(--motion-tab-ease); }
 .tab.selected { color: var(--color-text); }
 .tabbar::before {
-  --tab-width: calc((100% - 32px - (var(--tab-count, 3) - 1) * 4px) / var(--tab-count, 3));
   content: "";
   position: absolute;
-  top: 10px;
-  bottom: calc(14px + var(--home-inset));
+  top: 4px;
+  bottom: 4px;
   /* --tab-count: 3 for the owner, 2 for a guest's Agents and Settings (main.ts buildTabBar). */
-  left: calc(16px + var(--tab-index, 0) * (var(--tab-width) + 4px));
-  width: var(--tab-width);
-  border-radius: 8px;
-  background: var(--color-surface);
+  left: calc(4px + var(--tab-index, 0) * (100% - 8px) / var(--tab-count, 3));
+  width: calc((100% - 8px) / var(--tab-count, 3));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-on-accent) 12%, transparent);
   transition: left var(--motion-tab-duration) var(--motion-tab-ease);
 }
 
@@ -524,7 +530,7 @@ html, body {
 .star-ask-title, .star-ask-body { overflow: hidden; text-overflow: ellipsis; }
 .star-ask-title { font: 600 15px/19px var(--font-app); color: var(--color-text); }
 .star-ask-body { font: 400 13px/17px var(--font-app); color: var(--color-text-dim); }
-.star-ask-star { flex: none; height: 32px; padding: 0 14px; border-radius: 16px; background: var(--color-text); color: var(--color-ground); font: 600 15px var(--font-app); }
+.star-ask-star { flex: none; height: 32px; padding: 0 14px; font-size: 15px; }
 .star-ask-close { flex: none; width: 36px; height: 36px; margin-right: 6px; padding: 0; display: grid; place-items: center; border-radius: 50%; background: transparent; color: var(--color-text-dim); }
 /* The newer-app capsule (appUpdateAsk.ts) uses the star ask's: its action greys while the update downloads. */
 .star-ask-star:disabled { opacity: 0.45; }
@@ -587,16 +593,6 @@ code { font-family: var(--font-machine); font-size: 12px; }
 }
 .form input:focus { outline: none; border-color: var(--color-text-faint); }
 .form-actions { grid-column: span 2; display: flex; gap: 8px; }
-button {
-  font: 600 14px var(--font-app);
-  color: var(--color-ground);
-  background: var(--color-text);
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 16px;
-  cursor: pointer;
-}
-button.ghost { color: var(--color-text-dim); background: transparent; box-shadow: inset 0 0 0 1px var(--color-hairline); }
 .error { color: var(--color-text); margin: 0; grid-column: span 2; font-size: 13px; }
 .error::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-died); margin-right: 8px; }
 

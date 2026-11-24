@@ -133,7 +133,7 @@ export function askFolderName(n: FolderNaming, d: Pick<FolderDeps, "el">): Promi
   input.placeholder = "Folder name";
   input.value = n.name;
   const buttons = d.el("div", "buttons");
-  const cancel = d.el("button", "ghost", "Cancel");
+  const cancel = d.el("button", "button-secondary", "Cancel");
   cancel.type = "button";
   const ok = d.el("button", "", rename ? "Rename" : "Create");
   ok.type = "submit";

@@ -3,7 +3,7 @@
 // #bar-actions and #tabbar.
 
 import { paintShape } from "./continuous";
-import { symbol } from "./symbol";
+import { symbol, symbolNow } from "./symbol";
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 
@@ -53,10 +53,15 @@ export function placeTitle() {
   title.style.left = `${centre - w / 2}px`;
 }
 
-/** One tab, text only (Topics A-v2). Keyboard users reach and switch tabs (issue #94): Tab
- *  focuses it, Enter or Space activates it, and the selected tab reads as the current page. A div
- *  with a button's role, not a <button>, which WebKit letters differently (parity 41516232593). */
-export function tabNode(key: string, label: string, selected: boolean, badge: boolean, activate: () => void): HTMLElement {
+export type TabKey = "agents" | "gram" | "settings";
+/** Each tab's SF Symbol (HerdrApp.swift TabView, 21 pt medium), drawn over its label. */
+const TAB_ICONS: Record<TabKey, string> = { agents: "square.grid.2x2.fill", gram: "bubble.left.and.bubble.right.fill", settings: "gearshape.fill" };
+
+/** One tab: its icon over its label in the glass capsule. Keyboard users reach and switch tabs
+ *  (issue #94): Tab focuses it, Enter or Space activates it, and the selected tab reads as the
+ *  current page. A div with a button's role, not a <button>, which WebKit letters differently
+ *  (parity 41516232593). The icon is decoration: the label names the tab. */
+export function tabNode(key: TabKey, label: string, selected: boolean, badge: boolean, activate: () => void): HTMLElement {
   const t = el("div", "tab" + (selected ? " selected" : ""));
   t.dataset.tab = key;
   t.tabIndex = 0;
@@ -67,13 +72,15 @@ export function tabNode(key: string, label: string, selected: boolean, badge: bo
     event.preventDefault();
     t.click();
   });
-  const name = el("span", "t-tab-label", label);
+  const icon = el("div", "icon");
+  icon.setAttribute("aria-hidden", "true");
+  icon.append(symbolNow(TAB_ICONS[key], 21, "medium"));
   if (badge) {
     const b = el("span", "tab-badge");
     b.setAttribute("aria-hidden", "true"); b.dataset.tab = key; b.hidden = true;
-    name.append(b);
+    icon.append(b);
   }
-  t.append(name);
+  t.append(icon, el("span", "t-tab-label", label));
   t.addEventListener("click", activate);
   return t;
 }
@@ -86,15 +93,4 @@ export function commitTabBar(nodes: HTMLElement[], selectedIndex: number) {
   if (focused) nodes.find((n) => n.dataset.tab === focused)?.focus();
   $("tabbar").style.setProperty("--tab-count", String(nodes.length));
   $("tabbar").style.setProperty("--tab-index", String(selectedIndex));
-  watchFoot();
-}
-
-let footWatched = false;
-/** The sidebar's lists end above its foot, the tab bar with any notice stacked over it
- *  (#sidebar-foot): its laid-out height, whatever the text size, is their bottom inset. */
-function watchFoot() {
-  if (footWatched) return;
-  footWatched = true;
-  const foot = $("sidebar-foot");
-  new ResizeObserver(() => document.documentElement.style.setProperty("--tabbar-inset", `${foot.getBoundingClientRect().height}px`)).observe(foot);
 }

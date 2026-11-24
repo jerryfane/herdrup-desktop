@@ -9,8 +9,6 @@
 .new-agent-folder input { flex:1; }
 .new-agent-folder button { flex:none; }
 .new-agent-sheet .new-agent-hint, .new-agent-sheet .new-agent-status { margin:0; color:var(--color-text-dim); font:400 calc(13px * var(--ui-font-scale, 1))/1.4 var(--font-app); overflow-wrap:anywhere; }
-.new-agent-sheet .new-agent-start { min-height:48px; border-radius:12px; font:600 calc(16px * var(--ui-font-scale, 1)) var(--font-app); }
-.new-agent-start:disabled, .new-agent-folder button:disabled { opacity:.5; cursor:default; }
 .new-agent-browser { display:flex; flex-direction:column; gap:12px; }
 .new-agent-folder-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .new-agent-sheet .new-agent-path { margin:0; color:var(--color-text-dim); font:400 calc(13px * var(--ui-font-scale, 1)) var(--font-machine); overflow-wrap:anywhere; }

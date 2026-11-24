@@ -4,7 +4,7 @@ import { node } from "./guestAccept";
 import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
 import { ACCOUNT_TITLE } from "./herdrupAccount";
-import { guestRowLine, rowPreview } from "./rowStatus";
+import { guestRowLine, rowStatus } from "./rowStatus";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
@@ -12,7 +12,7 @@ import "./settings.css";
 type GuestState = NonNullable<ConnState["guest"]>;
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the roster row's
- * face (faces.ts rowAvatar), the initial placement and the loading spinner. */
+ * avatar with its status badge (faces.ts rowAvatar), the initial placement and the loading spinner. */
 export interface GuestHomeDeps {
  symbol(name: string, size: number, weight: string): Promise<HTMLElement>;
  rowAvatar(row: Row): HTMLElement;
@@ -38,12 +38,12 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
  function confirmLeave(title: string, message: string, label: string, id: string) {
   const dialog = node("dialog", "folder-naming agent-confirm"); const controls = node("div", "buttons");
   const error = node("p", "guest-error"); error.setAttribute("role", "alert");
-  const confirm = node("button", "destructive", label); confirm.type = "button";
+  const confirm = node("button", "button-destructive", label); confirm.type = "button";
   confirm.onclick = () => {
    confirm.disabled = true;
    void Desk.forgetGuestConnection(id).then(() => { dialog.close(); callbacks.hosts(); }).catch(failure => { error.textContent = String(failure); confirm.disabled = false; });
   };
-  const cancel = node("button", "ghost", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
+  const cancel = node("button", "button-secondary", "Cancel"); cancel.type = "button"; cancel.onclick = () => dialog.close();
   controls.append(cancel, confirm);
   dialog.append(node("h2", "", title), node("p", "", message), controls, error);
   dialog.addEventListener("close", () => dialog.remove(), { once: true }); document.body.append(dialog); dialog.showModal();
@@ -60,12 +60,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   return card;
  }
 
- /** agentRow (GuestHomeView.swift 232-276) as the owner's roster draws it (main.ts agentRow,
-  * Topics A-v2): the avatar's face with no badge and no chevron, the name over the status in
-  * words and the agent's kind ("• Needs you · omp", rowStatus.ts rowPreview). An archived agent
-  * reads "<kind> · <archived note>"; with no listed agent, or one the host says isn't running
-  * (availability "paused"), it reads "Agent unavailable" with the avatar dimmed (235-245, 255).
-  * `archivedNote` is undefined for a live agent (rowStatus.ts guestRowLine). */
+ /** agentRow (GuestHomeView.swift 232-276): the owner's roster row (main.ts agentRow), the
+  * avatar with its status badge, the name over "<kind> · <state>" (meta, 278-282). An archived
+  * agent reads "<kind> · <archived note>"; with no listed agent, or one the host says isn't running
+  * (availability "paused"), it reads "Agent unavailable" with the avatar dimmed and no badge
+  * (235-245, 255). `archivedNote` is undefined for a live agent (rowStatus.ts guestRowLine). */
  function agentRow(name: string, row: Row | undefined, archivedNote: string | undefined, running: boolean, selected: boolean, open: (() => void) | null) {
   const item = node("div", "row guest-agent-row" + (running && row?.badge === "waiting" ? " waiting" : "") + (row && running ? "" : " unavailable") + (selected ? " selected" : ""));
   item.dataset.testid = "guest-agent-row";
@@ -78,18 +77,20 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    item.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } };
   }
   let face: HTMLElement;
-  if (row) face = deps.rowAvatar(row);
+  if (row) face = deps.rowAvatar(running ? row : { ...row, badge: "" });
   else {
    // No listed agent: the default tile with the share's initial (AgentAvatarView(agent: nil)).
    face = node("div", "avatar"); const tile = node("div", "tile tint-0");
    tile.append(node("span", "initial", (name.trim()[0] ?? "?").toUpperCase())); face.append(tile);
   }
-  const text = node("div", "text"), line1 = node("div", "line1");
-  line1.append(node("span", "name t-row-name", name), node("span", "spacer"));
+  const text = node("div", "text"), line1 = node("div", "line1"), chev = node("span", "chev");
+  chev.setAttribute("aria-hidden", "true");
+  void deps.symbol("chevron.right", 12, "semibold").then(s => chev.append(s));
+  line1.append(node("span", "name t-row-name", name), node("span", "spacer"), chev);
   const line = guestRowLine(row, running, archivedNote);
-  const meta = line.kind === "live" ? rowPreview(line.row, line.row.agent)
-   : node("div", "preview t-row-preview", line.kind === "archived" ? line.text : "Agent unavailable");
-  text.append(line1, meta);
+  const meta = line.kind === "live" ? [line.row.agent, rowStatus(line.row.badge)].filter(Boolean).join(" · ")
+   : line.kind === "archived" ? line.text : "Agent unavailable";
+  text.append(line1, node("div", "preview t-row-preview", meta));
   item.append(face, text);
   return item;
  }
@@ -122,7 +123,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
     content = await message("wifi.slash", `${access.machineLabel} is offline`, `${access.agentName} will show here again when the machine is back.`);
    } else if (state.phase === "error" && guest.availability === "lost") {
     // person.crop.circle.badge.xmark has no stand-in on Windows and Linux (symbols.go).
-    const remove = node("button", "guest-destructive", "Remove share"); remove.type = "button";
+    const remove = node("button", "guest-destructive button-destructive", "Remove share"); remove.type = "button";
     remove.onclick = () => confirmLeave(`Remove ${access.machineLabel}?`, `${access.ownerName} no longer shares ${access.agentName} with you.`, "Remove share", id);
     content = await message("xmark", `${access.agentName}: access removed`, `${access.ownerName} no longer shares ${access.agentName} with you.`, remove);
    } else if (state.phase === "error") {
@@ -188,7 +189,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const device = node("div", "guest-card guest-settings-card guest-device-key");
   const fingerprint = node("span", "", guest.fingerprint || "Unavailable"); fingerprint.dataset.testid = "guest-settings-fingerprint";
   device.append(node("span", "", "Device key"), fingerprint);
-  const leave = node("button", "guest-leave guest-destructive", "Leave share"); leave.type = "button"; leave.dataset.testid = "guest-leave";
+  const leave = node("button", "guest-leave button-destructive button-large", "Leave share"); leave.type = "button"; leave.dataset.testid = "guest-leave";
   leave.onclick = () => confirmLeave(`Leave ${access.machineLabel}?`, `${access.agentName} disappears from this device.`, "Leave share", id);
   return [node("h3", "guest-settings-section", "Shared with you"), shared, node("h3", "guest-settings-section", "This device"), device,
    node("p", "guest-settings-note", `${access.ownerName} sees the same key next to your name, so you can compare them.`), leave,

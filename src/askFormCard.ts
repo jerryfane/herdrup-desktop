@@ -63,7 +63,7 @@ export interface AskFormCardInput {
  *  secondary link (never a destructive colour), greyed while a send or dismiss is out. */
 function dismissLink(input: AskFormCardInput): HTMLButtonElement[] {
  if (!input.dismiss) return [];
- const link = button("ask-form-link ask-form-dismiss", input.dismiss, "Dismiss");
+ const link = button("ask-form-link ask-form-dismiss button-plain", input.dismiss, "Dismiss");
  link.disabled = input.sending;
  return [link];
 }
@@ -132,7 +132,7 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
    nodes.push(submit);
   }
   const foot = el("div", "ask-form-foot");
-  const back = button("ask-form-link", () => go(count - 1, false));
+  const back = button("ask-form-link button-plain", () => go(count - 1, false));
   back.append(symbolNow("chevron.left", 10, "bold"), el("span", "", "Back"));
   back.disabled = input.sending;
   foot.append(back, ...dismissLink(input), el("span", "ask-form-hint", "Click an answer to change it"));
@@ -219,10 +219,10 @@ export function askFormCard(input: AskFormCardInput): HTMLElement[] {
  if (readOnly) {
   if (count > 1) {
    const foot = el("div", "ask-form-foot");
-   const back = button("ask-form-link", () => go(step - 1, false));
+   const back = button("ask-form-link button-plain", () => go(step - 1, false));
    back.append(symbolNow("chevron.left", 10, "bold"), el("span", "", "Back"));
    back.disabled = step === 0;
-   const forward = button("ask-form-link", () => go(step + 1, false));
+   const forward = button("ask-form-link button-plain", () => go(step + 1, false));
    forward.append(el("span", "", "Next"), symbolNow("chevron.right", 10, "bold"));
    forward.disabled = step === count - 1;
    foot.append(back, ...dismissLink(input), forward);

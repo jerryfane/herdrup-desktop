@@ -19,7 +19,8 @@
 .gring .share { stroke: var(--color-text); }
 .gring.spin svg { animation: gspin 1.3s linear infinite; }
 @keyframes gspin { to { transform: rotate(360deg); } }
-.gram button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; cursor: default; }
+/* Gram draws its own controls bare; they keep the capsule shape (buttons.css), so an icon is a circle. */
+.gram button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: default; }
 
 /* ---- Sidebar ---- */
 .bar-title { gap: var(--space-stack-small); }
@@ -229,7 +230,7 @@
 .gcode-head { display: flex; align-items: center; gap: 8px; }
 .gcode-lang { font-size: 11.5px; color: var(--color-text-dim); }
 .gcode-spacer { flex: 1; }
-.gram .gcode-copy { display: flex; align-items: center; gap: 4px; padding: 2px 0; font: 600 12px var(--font-app); color: var(--color-text); }
+.gram .gcode-copy { display: flex; align-items: center; gap: 4px; }
 .gram .gcode-copy-glyph { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--color-text-dim); flex: none; }
 .gram .gcode-copy.copied, .gram .gcode-copy-glyph.copied { color: var(--status-done); }
 
@@ -275,7 +276,7 @@
 .gsetup-body { font-size: 13px; color: var(--color-text-dim); }
 .gram .gsetup-close { width: 26px; height: 26px; border-radius: 50%; background: var(--color-surface-raised); color: var(--color-text-faint); display: flex; align-items: center; justify-content: center; }
 .gsetup-command { font: 400 11px/var(--leading-machine) var(--font-machine); color: var(--color-text-dim); background: var(--color-ground-machine); border-radius: 8px; padding: 10px; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
-.gram .gsetup-copy { padding: 9px 0; border-radius: 9px; background: var(--color-text); color: var(--color-ground); font: 600 13px var(--font-app); }
+.gram .gsetup-copy { min-height: var(--button-height); }
 
 /* ---- Composer ---- */
 .gram-composer { position: relative; padding: 0 0 0; background: var(--color-ground); }
@@ -352,7 +353,7 @@ dialog.gsheet { border: none; border-radius: var(--radius-card); background: var
 dialog.gsheet::backdrop { background: color-mix(in srgb, var(--color-ground) 60%, transparent); }
 .gsheet-head { display: flex; align-items: center; justify-content: center; position: relative; height: 36px; }
 .gsheet-title { font-size: 17px; font-weight: 600; }
-dialog.gsheet .gsheet-done { position: absolute; right: 0; background: none; color: var(--color-brand); font: 600 16px var(--font-app); padding: 4px; }
+dialog.gsheet .gsheet-done { position: absolute; right: 0; }
 .gsheet-section { margin: 16px 0 6px 16px; font-size: 13px; color: var(--color-text-dim); }
 .gsheet-group { margin-top: 12px; border-radius: 10px; background: var(--color-surface); overflow: hidden; }
 .gsheet-section + .gsheet-group { margin-top: 0; }
