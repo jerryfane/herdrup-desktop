@@ -29,29 +29,15 @@ const (
 // service has serialised it (MAX_ITEM_BYTES; 413 too_large).
 const MaxItemBytes = 16 * 1024
 
-// RemotePrompt is a live (not deleted) prompts item.
+// RemotePrompt is a live (not deleted) prompts item. UpdatedMs is when the
+// service wrote it, on its clock (sync.ts UPSERT binds the push's nowMs,
+// the clock its now_ms answers carry); 0 in a mirror from before it was
+// kept.
 type RemotePrompt struct {
-	ID   string
-	Rev  int64
-	Body PromptBody
-}
-
-// RemotePrompts splits pulled prompts items into live ones and deleted ids.
-// An item without text is none the service would hold, and is skipped.
-func RemotePrompts(items []Item) (live []RemotePrompt, deleted []string) {
-	for _, it := range items {
-		if it.Collection != "prompts" {
-			continue
-		}
-		if it.Deleted {
-			deleted = append(deleted, it.ID)
-			continue
-		}
-		if p, ok := promptRow(it); ok {
-			live = append(live, p)
-		}
-	}
-	return live, deleted
+	ID        string
+	Rev       int64
+	UpdatedMs int64 `json:",omitempty"`
+	Body      PromptBody
 }
 
 // promptRow reads a live prompts item; one without text is none the service
@@ -61,7 +47,7 @@ func promptRow(it Item) (RemotePrompt, bool) {
 	if json.Unmarshal(it.Body, &b) != nil || b.Text == "" {
 		return RemotePrompt{}, false
 	}
-	return RemotePrompt{ID: it.ID, Rev: it.Rev, Body: b}, true
+	return RemotePrompt{ID: it.ID, Rev: it.Rev, UpdatedMs: it.UpdatedMs, Body: b}, true
 }
 
 // ValidPrompt reports whether the service would take b: a push holding one

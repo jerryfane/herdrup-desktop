@@ -42,10 +42,14 @@ var publishSavedPrompts = func(p []SavedPrompt) { SavedPromptsChanged.Broadcast(
 
 func (d *Desk) promptsPath() string { return filepath.Join(d.dir, "prompts.json") }
 
-// loadPrompts reads prompts.json; none yet is an empty list. d.storeMu must
+// loadPrompts reads prompts.json; none yet is an empty list. A merge's
+// commit a failure left is finished first (replayCommit). d.storeMu must
 // be held.
 func (d *Desk) loadPrompts() (promptStore, error) {
 	var st promptStore
+	if err := d.replayCommit(); err != nil {
+		return st, err
+	}
 	raw, err := os.ReadFile(d.promptsPath())
 	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
@@ -56,23 +60,25 @@ func (d *Desk) loadPrompts() (promptStore, error) {
 	return st, json.Unmarshal(raw, &st)
 }
 
-// storePrompts writes prompts.json. d.storeMu must be held.
+// storePrompts writes prompts.json (atomically, after any commit a failure
+// left). d.storeMu must be held.
 func (d *Desk) storePrompts(st promptStore) error {
-	if st.Prompts == nil {
-		st.Prompts = []SavedPrompt{}
+	if err := d.replayCommit(); err != nil {
+		return err
 	}
-	raw, err := json.MarshalIndent(st, "", "  ")
+	raw, err := encodePrompts(st)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(d.dir, 0o700); err != nil {
-		return err
+	return writeFileAtomic(d.promptsPath(), raw)
+}
+
+// encodePrompts is prompts.json's content for st.
+func encodePrompts(st promptStore) ([]byte, error) {
+	if st.Prompts == nil {
+		st.Prompts = []SavedPrompt{}
 	}
-	tmp := d.promptsPath() + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, d.promptsPath())
+	return json.MarshalIndent(st, "", "  ")
 }
 
 var promptUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -162,7 +168,7 @@ func (d *Desk) DeletePrompt(id string) ([]SavedPrompt, error) {
 	// the tombstone only if the account then holds the prompt.
 	state, err := d.loadSyncState()
 	_, agreed := state.PromptBaseline[id]
-	_, sending := state.PromptsSent[id]
+	_, sending := state.PromptAttempts[id]
 	held := agreed || sending ||
 		slices.ContainsFunc(state.Mirror.Prompts, func(r account.RemotePrompt) bool { return r.ID == id })
 	if err == nil && held && !slices.Contains(state.PromptDeletes, id) {
