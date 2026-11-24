@@ -46,6 +46,9 @@ export class ServerUpdateSettings {
   private generation = 0;
   private rendered = "";
   private pending = false;
+  /** This page's apply is out (from the confirmation to its result): view-only, the card's offer
+   *  reads "Updating…" meanwhile. The Desk's snapshot stays idle until herdr's answer. */
+  private applying = false;
   private modal?: HTMLDialogElement;
   private state?: UpdateState;
 
@@ -56,7 +59,7 @@ export class ServerUpdateSettings {
   }
   setScope(token: string, host = "Machine") {
     this.generation++; this.token = token; this.host = host;
-    clearTimeout(this.timer); this.modal?.close(); this.pending = false;
+    clearTimeout(this.timer); this.modal?.close(); this.pending = false; this.applying = false;
     this.state = undefined; this.rendered = ""; this.root.hidden = true; this.root.replaceChildren(); this.suggest(null);
     this.root.setAttribute("aria-busy", "true");
     if (token) void this.read(true);
@@ -100,14 +103,14 @@ export class ServerUpdateSettings {
     if (reason === "windows") return "herdr on Windows can't switch while running.";
     return `${this.host} can't switch herdr while it's running.`;
   }
-  private async action(run: (token: string) => Promise<void>) {
+  private async action(run: (token: string) => Promise<void>, applying = false) {
     if (this.pending || !this.token) return;
     const at = this.generation, token = this.token;
-    this.pending = true; this.render();
+    this.pending = true; this.applying = applying; this.render();
     try { await run(token); }
     catch (error) { if (at === this.generation) this.report(error); }
     finally {
-      if (at === this.generation) { this.pending = false; this.rendered = ""; await this.read(false); }
+      if (at === this.generation) { this.pending = false; this.applying = false; this.rendered = ""; await this.read(false); }
     }
   }
   private confirm(buildID: string, restartLater: boolean, old: string, next: string) {
@@ -121,7 +124,7 @@ export class ServerUpdateSettings {
       : `From ${old} to ${next}. Terminals and agents keep running; the app reconnects in a few seconds.`));
     modal.append(this.button("Cancel", () => modal.close()), this.button(restartLater ? "Download" : "Update", () => {
       modal.close();
-      if (at === this.generation) void this.action(token => Desk.applySettingsServerUpdate(token, buildID, restartLater));
+      if (at === this.generation) void this.action(token => Desk.applySettingsServerUpdate(token, buildID, restartLater), true);
     }, "server-update-confirm-apply"));
     modal.addEventListener("close", () => { modal.remove(); if (this.modal === modal) this.modal = undefined; }, { once: true });
     document.body.append(modal); modal.showModal();
@@ -220,7 +223,8 @@ export class ServerUpdateSettings {
     if (c.latest.notes) this.text(`New in ${next}: ${c.latest.notes}`, true);
     if (restart) this.text(`${this.cantSwitch(c.reason)} It finishes the next time herdr restarts.`, true);
     const buildID = c.latest.build_id;
-    this.root.append(this.button(restart ? "Download now, finish on restart" : "Update herdr", () => this.confirm(buildID, restart, old, next), "server-update-apply"));
+    const label = this.applying && s.flow === "idle" ? "Updating…" : restart ? "Download now, finish on restart" : "Update herdr";
+    this.root.append(this.button(label, () => this.confirm(buildID, restart, old, next), "server-update-apply"));
     this.text(restart ? "Restarting herdr closes terminals. Your layout comes back." : "Takes about a minute. Terminals and agents keep running; the app reconnects by itself.", true);
   }
 }
