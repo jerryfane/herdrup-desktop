@@ -71,6 +71,10 @@ const (
 	// suggestions on agent.topics.list and topic_suggestion transcript
 	// entries (herdr #490).
 	CapabilityAgentTopicSuggestions Capability = "agent_topic_suggestions"
+	// pane.send_text bracketed: one bracketed paste where the pane's program
+	// turned bracketed paste on, else bracketed_paste_unavailable and nothing
+	// written (herdr #512).
+	CapabilityPaneSendTextBracketed Capability = "pane_send_text_bracketed"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -118,6 +122,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentTopicsSwitch
 	case CapabilityAgentTopicSuggestions:
 		return caps.AgentTopicSuggestions
+	case CapabilityPaneSendTextBracketed:
+		return caps.PaneSendTextBracketed
 	}
 	return false
 }

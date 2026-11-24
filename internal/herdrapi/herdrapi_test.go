@@ -460,6 +460,7 @@ func TestCapabilitySupported(t *testing.T) {
 		CapabilityAgentAvatar, CapabilityAgentGroups, CapabilityGramUploadStream, CapabilityAPIBridgeMulti,
 		CapabilityServerUpdate, CapabilityAgentSessionTransfer, CapabilityAskForm, CapabilityTranscriptMaxBytes,
 		CapabilityAgentTopics, CapabilityAgentTranscriptTopic, CapabilityAgentTopicsSwitch, CapabilityAgentTopicSuggestions,
+		CapabilityPaneSendTextBracketed,
 	}
 	for _, c := range all {
 		i := capabilityField(c)

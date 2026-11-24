@@ -19,6 +19,17 @@ func (c *Client) PaneSendText(ctx context.Context, pane, text string) error {
 	return err
 }
 
+// PaneSendBracketedText writes text as one bracketed paste (herdr #512), so
+// a line break in it does not run the text before it. herdr refuses with
+// bracketed_paste_unavailable, writing nothing, when the pane's program has
+// not turned bracketed paste on. Callers check CapabilityPaneSendTextBracketed
+// first: a herdr without it may ignore bracketed and write the text raw.
+func (c *Client) PaneSendBracketedText(ctx context.Context, pane, text string) error {
+	bracketed := true
+	_, err := c.do(ctx, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, Bracketed: &bracketed, InputSource: c.inputSource()})
+	return err
+}
+
 func (c *Client) PaneSize(ctx context.Context, p herdrapi.PaneSetPtySizeParams) error {
 	_, err := c.do(ctx, "pane.set_pty_size", p)
 	return err
