@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
-import { ownerKey } from "../src/web/ownerApproval";
+import { ownerKey } from "../src/web/browserKey";
 import { existingIdentity, generateIdentity, IndexedDBIdentityStore, loadIdentity, MemoryIdentityStore, staticKey, type IdentityRecord } from "../src/webguest/identity";
 
 test("a new identity is a non-extractable WebCrypto key whose DH agrees with X25519", async () => {

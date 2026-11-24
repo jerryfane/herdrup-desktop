@@ -1,17 +1,18 @@
 // The HerdrUp account in the apps (design #698 §2.3, §3, §6): the Settings page "HerdrUp account"
 // and, on desktop, the first-launch sign-in (owner pick 1B). Shown only once the account service
 // lists web sign-in. The session itself is Go's (desk_account.go) on desktop and the account
-// service's cookie in the web guest (src/web/accountDesk.ts).
+// service's cookie in the browser (src/web/accountDesk.ts).
 //
-// Signed in, the desktop page is the Swift app's HerdrUpAccountContent (App/AccountViews.swift at
+// Signed in, the Settings page is the Swift app's HerdrUpAccountContent (App/AccountViews.swift at
 // herdrup 434d0241): who is signed in; SYNCED (machines and prompts, Sync now); DEVICES (rename,
-// remove); Sign out, confirmed; Delete account. The web guest keeps the short form: it has no
-// devices or sync of its own.
+// remove); Sign out, confirmed; Delete account. Without a Settings glyph (the guest page, the owner
+// screen) it keeps the short form.
 import "./herdrupAccount.css";
 import { Desk, events } from "./mygo";
 import type { AccountDeleteInfo, AccountDevice, AccountDevices, AccountState, AccountSyncStatus } from "./mygo";
 import { errorText } from "./errors";
-import { webGuest } from "./platform";
+import { sameAccountState, syncedLine, syncedView } from "./accountView";
+import { deskOffers } from "./shellModel";
 
 export const ACCOUNT_TITLE = "HerdrUp account";
 /** The panel's problem when the service's health check fails (no answer, not 200, not JSON). */
@@ -43,6 +44,10 @@ export type Glyph = (symbol: string, size?: number, weight?: string) => HTMLElem
 /** Machines and prompts stay here whatever happens to the account (Swift's wording, "computer"). */
 const KEPT = "Your machines and prompts stay on this computer.";
 
+/** What the account page calls: the app's Desk and events (tests pass their own). */
+export interface AccountBridge { desk: typeof Desk; events: typeof events }
+const appBridge: AccountBridge = { desk: Desk, events };
+
 /** The Settings page "HerdrUp account": sign in; signed in, the account as Swift shows it. */
 export class HerdrUpAccountPanel {
  readonly root = el("div", "account-panel");
@@ -68,9 +73,20 @@ export class HerdrUpAccountPanel {
   *  than the one shown replaces it. */
  private syncSeq = 0;
  private syncShown = 0;
+ /** SYNCED's value nodes on the signed-in page, null when it isn't shown (showSynced). */
+ private synced: { machines: HTMLElement; prompts: HTMLElement; line: HTMLElement } | null = null;
+ /** A refresh is reading the session: it loads the details once it has, so the session event the
+  *  same check publishes doesn't load them too. */
+ private refreshing = 0;
 
- constructor(private readonly changed: () => void, private readonly glyph: Glyph | null = null) {
-  events.accountChanged.on(s => { this.waiting = false; this.applyState(s); this.draw(); this.changed(); });
+ constructor(private readonly changed: () => void, private readonly glyph: Glyph | null = null, private readonly bridge: AccountBridge = appBridge) {
+  const { events } = bridge;
+  // A state that shows nothing new here (a background sync, failed or not: SYNCED reloads on its
+  // own below) leaves the panel as it is, so the control the person is on keeps keyboard focus.
+  events.accountChanged.on(s => {
+   if (!this.waiting && sameAccountState(this.state, s)) return;
+   this.waiting = false; this.applyState(s, this.refreshing === 0); this.draw(); this.changed();
+  });
   events.accountDeleted.on(r => {
    this.deleting = false;
    this.deleteNote = r.deleted
@@ -80,14 +96,20 @@ export class HerdrUpAccountPanel {
     : r.problem ?? "";
    this.draw();
   });
-  // A sync that finished (in the background, after sign-in, or elsewhere) refreshes SYNCED.
-  const synced = () => { if (this.state?.signedIn) void this.loadSyncStatus(); };
+  // A sync that finished (in the background, after sign-in, or elsewhere) refreshes SYNCED: the
+  // desktop tells it with syncedMachinesChanged, the browser with accountChanged after each round
+  // (loadSyncStatus reads state and status, and publishes nothing, so this doesn't loop). While a
+  // refresh runs it owns the read: it loads SYNCED once it has the session.
+  const synced = () => { if (this.state?.signedIn && this.refreshing === 0) void this.loadSyncStatus(); };
+  events.accountChanged.on(synced);
   events.syncedMachinesChanged.on(synced);
   events.savedPromptsChanged.on(synced);
  }
 
- /** The full signed-in screen: the desktop app's, not the web guest's. */
- private get full(): boolean { return !webGuest && this.glyph !== null; }
+ /** The full signed-in screen: Settings' page in a build whose Desk has the devices and sync. */
+ private get full(): boolean {
+  return this.glyph !== null && deskOffers(this.bridge.desk, "accountSyncStatus", "accountSyncNow", "accountDevices", "accountEnrolAgain", "accountRenameDevice", "accountRemoveDevice");
+ }
 
  /** The index row's value. */
  summary(): string { return this.state?.signedIn ? "Signed in" : "Not signed in"; }
@@ -97,18 +119,22 @@ export class HerdrUpAccountPanel {
   *  service too (a removed device shows signed out). A service that can't be reached keeps the
   *  panel, with the problem: only a service that answers and lists no web sign-in hides it. */
  async refresh(check = false): Promise<void> {
+  const desk = this.bridge.desk;
   let unreachable = false;
-  try { this.providers = await Desk.accountProviders(); }
-  catch { this.providers = []; unreachable = true; }
-  this.available = unreachable || this.providers.length > 0;
-  if (this.available) {
-   let s: AccountState;
-   try {
-    s = check ? await Desk.accountCheck() : await Desk.accountState();
-    if (unreachable && !s.problem) s = { ...s, problem: UNREACHABLE };
-   } catch (error) { s = { signedIn: false, persistent: true, problem: errorText(error) }; }
-   this.applyState(s, false);
-  }
+  this.refreshing++;
+  try {
+   try { this.providers = await desk.accountProviders(); }
+   catch { this.providers = []; unreachable = true; }
+   this.available = unreachable || this.providers.length > 0;
+   if (this.available) {
+    let s: AccountState;
+    try {
+     s = check ? await desk.accountCheck() : await desk.accountState();
+     if (unreachable && !s.problem) s = { ...s, problem: UNREACHABLE };
+    } catch (error) { s = { signedIn: false, persistent: true, problem: errorText(error) }; }
+    this.applyState(s, false);
+   }
+  } finally { this.refreshing--; }
   this.draw(); this.changed();
   if (this.state?.signedIn) void this.loadDetails();
  }
@@ -129,30 +155,57 @@ export class HerdrUpAccountPanel {
   if (at > this.syncShown) { this.syncShown = at; this.sync = value; }
  }
 
- /** The SYNCED counts and the DEVICES list (desktop only). */
+ /** The SYNCED counts and the DEVICES list, and how the account is deleted where the Desk can
+  *  tell (not the browser's: Delete account there points to the app). */
  private async loadDetails() {
   if (!this.full || !this.state?.signedIn) return;
   const session = this.session, at = ++this.detailsGeneration, syncAt = ++this.syncSeq;
-  const [sync, devices, del] = await Promise.allSettled([Desk.accountSyncStatus(), Desk.accountDevices(), Desk.accountDeleteInfo()]);
+  const desk = this.bridge.desk;
+  const deleteInfo = deskOffers(desk, "accountDeleteInfo") ? desk.accountDeleteInfo() : Promise.resolve(null);
+  const [sync, devices, del] = await Promise.allSettled([desk.accountSyncStatus(), desk.accountDevices(), deleteInfo]);
   if (session !== this.session) return;
   if (sync.status === "fulfilled") this.takeSync(syncAt, sync.value);
-  if (at === this.detailsGeneration) {
-   if (devices.status === "fulfilled") { this.devices = devices.value; this.devicesProblem = ""; }
-   else this.devicesProblem = errorText(devices.reason);
-   if (del.status === "fulfilled") this.deleteInfo = del.value;
-  }
+  this.takeDetails(session, at, devices, del);
   this.draw();
  }
 
- /** SYNCED alone, after a sync finished. */
+ /** The one way into the details cache: an answer asked for under session, as details load at,
+  *  is taken only while both are still the panel's (another session, or a newer load, drops it):
+  *  the devices (or why they couldn't be read), and the delete info when there is one. */
+ private takeDetails(session: number, at: number, devices: PromiseSettledResult<AccountDevices>, deleteInfo?: PromiseSettledResult<AccountDeleteInfo | null>) {
+  if (session !== this.session || at !== this.detailsGeneration) return;
+  if (devices.status === "fulfilled") { this.devices = devices.value; this.devicesProblem = ""; }
+  else this.devicesProblem = errorText(devices.reason);
+  if (deleteInfo?.status === "fulfilled") this.deleteInfo = deleteInfo.value;
+ }
+
+ /** SYNCED alone, after a sync finished: its values change in place (the rest of the page, and
+  *  the control the person is on, stay); the page is redrawn only when the account shown changed.
+  *  Only an answer newer than the one shown is taken, its counts and its account state (the
+  *  failure line) together: an older read that comes later changes nothing. */
  private async loadSyncStatus() {
   if (!this.full) return;
   const session = this.session, syncAt = ++this.syncSeq;
-  const [sync, state] = await Promise.allSettled([Desk.accountSyncStatus(), Desk.accountState()]);
-  if (session !== this.session) return;
-  if (sync.status === "fulfilled") this.takeSync(syncAt, sync.value);
+  const [sync, state] = await Promise.allSettled([this.bridge.desk.accountSyncStatus(), this.bridge.desk.accountState()]);
+  if (session !== this.session || syncAt <= this.syncShown) return;
+  this.syncShown = syncAt;
+  const shown = this.state, shownSync = shown ? syncedView(shown, this.sync) : "";
+  if (sync.status === "fulfilled") this.sync = sync.value;
   if (state.status === "fulfilled" && state.value.signedIn) this.state = state.value;
-  this.draw();
+  const s = this.state;
+  if (s === null || !sameAccountState(shown, s) || this.synced === null) this.draw();
+  else if (syncedView(s, this.sync) !== shownSync) this.showSynced(s);
+ }
+
+ /** SYNCED's values: the counts, and the line under Sync now (its node kept, as the counts'). */
+ private showSynced(s: AccountState) {
+  if (this.synced === null) return;
+  const sync = this.sync, { machines, prompts, line } = this.synced;
+  machines.textContent = sync ? String(sync.machines) : "–";
+  prompts.textContent = sync ? String(sync.prompts) : "–";
+  const text = syncedLine(s, sync);
+  line.textContent = text;
+  line.hidden = !text;
  }
 
  private draw() {
@@ -160,6 +213,7 @@ export class HerdrUpAccountPanel {
   const full = !!s?.signedIn && this.full;
   this.root.classList.toggle("account-panel-full", full);
   this.root.classList.toggle("settings-glyph-rows", full);
+  this.synced = null;
   if (s?.signedIn && this.full) { this.root.replaceChildren(...this.signedInScreen(s)); return; }
   const nodes: HTMLElement[] = [];
   if (s?.signedIn) {
@@ -175,7 +229,7 @@ export class HerdrUpAccountPanel {
    const buttons = el("div", "account-providers");
    buttons.append(...providerButtons(this.providers, provider => {
     this.waiting = true; this.draw();
-    void Desk.accountSignIn(provider).catch(error => { this.waiting = false; this.state = { ...(this.state ?? { signedIn: false, persistent: true }), problem: errorText(error) }; this.draw(); });
+    void this.bridge.desk.accountSignIn(provider).catch(error => { this.waiting = false; this.state = { ...(this.state ?? { signedIn: false, persistent: true }), problem: errorText(error) }; this.draw(); });
    }));
    nodes.push(buttons);
    if (this.waiting) nodes.push(el("p", "account-note", "Finish signing in in your browser."));
@@ -194,15 +248,17 @@ export class HerdrUpAccountPanel {
   const nodes: HTMLElement[] = [];
   const identity = row(glyph("person.crop.circle.fill"), s.displayHint || "Signed in", s.displayHint ? "Google" : "Apple or Google");
   nodes.push(group(null, [identity]));
-  const sync = this.sync;
-  const syncNow = row(glyph("arrow.triangle.2.circlepath"), this.busy === "syncing" ? "Syncing…" : "Sync now",
-   s.syncFailed ? "The last sync didn't finish. Try again." : sync && sync.lastSyncedMs > 0 ? `Last synced ${new Date(sync.lastSyncedMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "", null, () => { void this.syncNow(); });
+  const line = el("span", "settings-row-subtitle", "");
+  const syncNow = row(glyph("arrow.triangle.2.circlepath"), this.busy === "syncing" ? "Syncing…" : "Sync now", line, null, () => { void this.syncNow(); });
   syncNow.disabled = this.busy !== "";
+  const machines = value(""), prompts = value("");
   nodes.push(group("SYNCED", [
-   row(glyph("desktopcomputer"), "Machines", "", value(sync ? String(sync.machines) : "–")),
-   row(glyph("text.bubble"), "Prompts", "", value(sync ? String(sync.prompts) : "–")),
+   row(glyph("desktopcomputer"), "Machines", "", machines),
+   row(glyph("text.bubble"), "Prompts", "", prompts),
    syncNow,
   ]));
+  this.synced = { machines, prompts, line };
+  this.showSynced(s);
   nodes.push(footnote("Keys, passwords and host-key pins stay on each device. A machine from your account asks for its key or a pairing the first time you open it here."));
   const deviceRows: HTMLElement[] = [];
   const enrolment = this.devices?.enrolment ?? "";
@@ -285,7 +341,7 @@ export class HerdrUpAccountPanel {
    event.preventDefault(); dialog.close();
    const name = input.value.trim();
    if (!name || name === device.name) return;
-   void this.deviceAction(Desk.accountRenameDevice(device.id, name), `Couldn't rename ${device.name}`);
+   void this.deviceAction(this.bridge.desk.accountRenameDevice(device.id, name), `Couldn't rename ${device.name}`);
   };
   dialog.append(form); document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
@@ -296,27 +352,31 @@ export class HerdrUpAccountPanel {
   const ok = await confirm(`Remove ${device.name}?`,
    device.current ? `This signs this computer out of the account. ${KEPT.replace("Your machines", "Its machines")}`
     : `${device.name} is signed out of the account and can no longer open shares bound to it.`, "Remove device");
-  if (ok) await this.deviceAction(Desk.accountRemoveDevice(device.id), `Couldn't remove ${device.name}`);
+  if (ok) await this.deviceAction(this.bridge.desk.accountRemoveDevice(device.id), `Couldn't remove ${device.name}`);
  }
 
  private async deviceAction(work: Promise<void>, failure: string) {
+  const session = this.session;
   this.busy = "device"; this.deviceNote = ""; this.draw();
-  try { await work; } catch (error) { this.deviceNote = `${failure}: ${errorText(error)}`; }
+  try { await work; } catch (error) { if (session === this.session) this.deviceNote = `${failure}: ${errorText(error)}`; }
   this.busy = "";
   if (this.state?.signedIn) await this.loadDetails(); else this.draw();
  }
 
+ /** Adds this browser again; its answer goes in as a details load does (takeDetails). */
  private async enrolAgain() {
+  const session = this.session, at = ++this.detailsGeneration;
   this.busy = "device"; this.draw();
-  try { this.devices = await Desk.accountEnrolAgain(); } catch (error) { this.devicesProblem = errorText(error); }
+  const [devices] = await Promise.allSettled([this.bridge.desk.accountEnrolAgain()]);
+  this.takeDetails(session, at, devices);
   this.busy = ""; this.draw();
  }
 
  private async syncNow() {
   this.busy = "syncing"; this.draw();
-  try { await Desk.accountSyncNow(); } catch { /* the row says the last sync didn't finish */ }
+  try { await this.bridge.desk.accountSyncNow(); } catch { /* the row says the last sync didn't finish */ }
   this.busy = "";
-  const next = await Desk.accountState().catch(() => null);
+  const next = await this.bridge.desk.accountState().catch(() => null);
   if (next) this.applyState(next, false);
   if (this.state?.signedIn) await this.loadDetails(); else this.draw();
  }
@@ -340,14 +400,14 @@ export class HerdrUpAccountPanel {
    if (!provider) return;
   }
   this.deleting = true; this.deleteNote = ""; this.draw();
-  try { await Desk.accountDelete(provider); }
+  try { await this.bridge.desk.accountDelete(provider); }
   catch (error) { this.deleting = false; this.deleteNote = `Couldn't start the deletion: ${errorText(error)}`; this.draw(); }
  }
 
  private async signOut() {
   this.busy = "signing-out"; this.draw();
   let next: AccountState;
-  try { next = await Desk.accountSignOut(); } catch (error) { next = { signedIn: false, persistent: true, problem: errorText(error) }; }
+  try { next = await this.bridge.desk.accountSignOut(); } catch (error) { next = { signedIn: false, persistent: true, problem: errorText(error) }; }
   this.busy = ""; this.applyState(next);
   this.draw(); this.changed();
  }
@@ -363,11 +423,13 @@ function group(label: string | null, rows: HTMLElement[]): HTMLElement {
  return section;
 }
 
-function row(icon: HTMLElement, label: string, subtitle = "", trailing: HTMLElement | null = null, action?: () => void): HTMLButtonElement {
+/** A row: its label and subtitle (text, or a node the caller keeps to change it). */
+function row(icon: HTMLElement, label: string, subtitle: string | HTMLElement = "", trailing: HTMLElement | null = null, action?: () => void): HTMLButtonElement {
  const node = el("button", "settings-row account-row"); node.type = "button";
  if (action) node.onclick = action; else node.classList.add("account-row-static");
  const lines = el("span", "settings-row-lines"); lines.append(el("span", "settings-row-label", label));
- if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
+ if (typeof subtitle !== "string") lines.append(subtitle);
+ else if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
  node.append(icon, lines);
  if (trailing) node.append(trailing);
  return node;

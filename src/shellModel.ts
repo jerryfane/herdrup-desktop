@@ -8,9 +8,13 @@ import { webGuest } from "./platform";
 
 /** Whether this build's Desk has every one of methods. The desktop's has them all; the browser's
  *  only the method groups web/mygo.ts registers, so a screen gated on its group's methods shows
- *  once that group is registered (web/mygo.ts). */
-export function deskOffers(...methods: (keyof typeof Desk)[]): boolean {
-  return methods.every(method => method in Desk);
+ *  once that group is registered (web/mygo.ts). A Desk given first is asked instead (a screen
+ *  handed its Desk: herdrupAccount.ts). */
+export function deskOffers(...methods: (keyof typeof Desk)[]): boolean;
+export function deskOffers(desk: object, ...methods: (keyof typeof Desk)[]): boolean;
+export function deskOffers(...args: (object | keyof typeof Desk)[]): boolean {
+  const desk = typeof args[0] === "object" ? args.shift() as object : Desk;
+  return args.every(method => (method as string) in desk);
 }
 
 /** The desktop-only parts of the shell; the browser has none of them. */

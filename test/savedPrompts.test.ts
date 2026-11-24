@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { migrateSavedPrompts } from "../src/composer";
-import { createPromptsDesk } from "../src/web/prompts";
+import { WebAccount } from "../src/web/account";
+import { createAccountSync } from "../src/web/prompts";
 
 function memory() {
  const items = new Map<string, string>();
@@ -12,11 +13,16 @@ function memory() {
  };
 }
 
+/** The prompt Desk of a signed-out page whose sync never runs on its own, over storage. */
+const promptsDesk = (storage: () => Pick<Storage, "getItem" | "setItem">) =>
+ createAccountSync(new WebAccount((() => Promise.reject(new Error("offline"))) as unknown as typeof fetch, undefined, undefined, null),
+  { storage, locks: null, background: false }, () => {}).prompts;
+
 const legacy = "dev.herdr.savedPrompts.v1";
 
 test("the WebView's old prompt list moves into Desk once, ids kept, and the old key is cleared", async () => {
  const storage = memory();
- const desk = createPromptsDesk(() => storage);
+ const desk = promptsDesk(() => storage);
  storage.setItem(legacy, JSON.stringify([
   { id: "0F8FAD5B-D9CB-469F-A165-70867728950E", nickname: " standup ", text: "What did you do?" },
   { id: "7c9e6679-7425-40de-944b-e07fc1f90ae7", nickname: "", text: "run the tests" },
@@ -37,7 +43,7 @@ test("the WebView's old prompt list moves into Desk once, ids kept, and the old 
 
 test("the browser guest's prompts save, edit in place and delete", async () => {
  const storage = memory();
- const desk = createPromptsDesk(() => storage);
+ const desk = promptsDesk(() => storage);
  const [first] = await desk.savePrompt({ id: "", nickname: " a ", text: "one" });
  await desk.savePrompt({ id: "", nickname: "", text: "two" });
  expect(first!.nickname).toBe("a");
@@ -49,7 +55,7 @@ test("the browser guest's prompts save, edit in place and delete", async () => {
 
 test("a browser that refuses storage still makes the guest Desk; the prompt calls fail instead", async () => {
  const refused = new Error("SecurityError: The operation is insecure.");
- const desk = createPromptsDesk(() => { throw refused; });
+ const desk = promptsDesk(() => { throw refused; });
  await expect(desk.savedPrompts()).rejects.toBe(refused);
  await expect(desk.savePrompt({ id: "", nickname: "", text: "one" })).rejects.toBe(refused);
 });

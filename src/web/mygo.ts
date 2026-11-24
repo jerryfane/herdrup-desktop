@@ -9,8 +9,7 @@
 import type { Desk as GoDesk, Dictation as GoDictation } from "../mygo";
 import { browserEnv, createGuestDesk } from "./desk";
 import { gramDesk, guestGramDesk } from "./gram";
-import { browserAccountPage, createAccountDesk } from "./accountDesk";
-import { createPromptsDesk } from "./prompts";
+import { browserAccountHere, browserAccountPage, createAccountDesk } from "./accountDesk";
 import { agentActionsDesk } from "./agentActionsDesk";
 import { createSettingsAccountsDesk, startAccountLabels } from "./settingsAccountsDesk";
 import { guestsDesk } from "./guestsDesk";
@@ -23,10 +22,10 @@ export { Symbols } from "./symbols";
 type DeskFns = typeof GoDesk;
 
 const notAvailable = () => Promise.reject(new Error("Not available in the browser"));
-const account = createAccountDesk(browserAccountPage());
 const env = browserEnv();
+const account = createAccountDesk(browserAccountPage(), browserAccountHere(env.identities));
 const guest = createGuestDesk(env);
-const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...createPromptsDesk(), ...agentActionsDesk, ...createSettingsAccountsDesk(), ...guestsDesk, ...createServerUpdateDesk() };
+const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...account.sync.prompts, ...agentActionsDesk, ...createSettingsAccountsDesk(), ...guestsDesk, ...createServerUpdateDesk() };
 // The agent rows' account labels (the `accounts` method, accountsChanged) follow the open owner link.
 startAccountLabels();
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */

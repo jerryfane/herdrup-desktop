@@ -9,7 +9,9 @@ import { seal } from "./approveSeal";
 import { fromB64url, toB64url } from "../src/webguest/b64url";
 import { MemoryIdentityStore } from "../src/webguest/identity";
 import { AccountServiceError, type ApprovalStatus, type BrowserSelf } from "../src/web/account";
-import { ownerKey, refreshLists, runApproval, type OwnerPhase } from "../src/web/ownerApproval";
+import { browserDeviceName } from "../src/web/browserIdentity";
+import { ownerKey } from "../src/web/browserKey";
+import { refreshLists, runApproval, type OwnerPhase } from "../src/web/ownerApproval";
 import { MemoryOwnerStore, type OwnerRecord } from "../src/web/ownerStore";
 
 
@@ -149,8 +151,7 @@ test("later loads take a newer list only from a verified approver; older, foreig
  expect(fromB64url((await kept())!.approvers[0]!.pub)).toEqual(w.T);
 });
 
-test("the browser's device name says which browser on which system, and falls back plainly", async () => {
- const { browserDeviceName } = await import("../src/web/ownerScreen");
+test("the browser's device name says which browser on which system, and falls back plainly", () => {
  expect(browserDeviceName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")).toBe("Chrome on macOS");
  expect(browserDeviceName("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0")).toBe("Edge on Windows");
  expect(browserDeviceName("Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1")).toBe("Safari on iOS");
