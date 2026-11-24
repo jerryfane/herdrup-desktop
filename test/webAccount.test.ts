@@ -773,6 +773,15 @@ test("an exit that finds it can't leave lets a later one go", async () => {
  expect(exits).toEqual(["stayed", "sign-in"]);
 });
 
+test("an exit that leaves again from inside itself queues nothing: the page leaves once", async () => {
+ const exits: string[] = [];
+ const page = new PageExit({ signOutSettled: async () => {}, signOutAttempt: null });
+ page.leave(() => { exits.push("first"); page.leave(() => { exits.push("second"); }, true); });
+ await new Promise(r => setTimeout(r, 0));
+ await new Promise(r => setTimeout(r, 0));
+ expect(exits).toEqual(["first"]);
+});
+
 test("a page leaving and a sign-out started in the same turn: the sign-out is sent, and the page leaves once it settled", async () => {
  const held = Promise.withResolvers<void>();
  const order: string[] = [];

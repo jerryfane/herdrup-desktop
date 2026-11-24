@@ -37,7 +37,7 @@ export const ownerAccess = { account: account.account, identities: env.identitie
  *  account's sign-in all leave through it. */
 export const pageExit = account.exit;
 /** The owner's link to one approved machine at a time (desk.ts connectOwner). */
-export const ownerDesk = { connectOwner: guest.connectOwner, disconnectOwner: guest.disconnectOwner };
+export const ownerDesk = { connectOwner: guest.connectOwner, disconnectOwner: guest.disconnectOwner, ownerLinkUsable: guest.ownerLinkUsable };
 
 /** Every Desk method: the guest's, else one that rejects. Its shape is the generated client's. */
 export const Desk = new Proxy(implemented, {

@@ -1126,7 +1126,15 @@ export function createGuestDesk(env: DeskEnv) {
   setState(null, { phase: "idle", message: "", machine: "", herdr: "", live: false });
  }
 
- return Object.assign(desk, { connectOwner, disconnectOwner });
+ /** Whether this desk's owner link to hostID is open and usable: the active link is that
+  *  machine's, and the connection state, which is that link's own (setState publishes only the
+  *  active link's; a new link publishes "connecting" as it becomes active), says it is connecting
+  *  or connected, not failed. The chooser's Open goes straight back to it then. */
+ function ownerLinkUsable(hostID: string): boolean {
+  return active?.owner?.hostID === hostID && (state.phase === "connecting" || state.phase === "connected");
+ }
+
+ return Object.assign(desk, { connectOwner, disconnectOwner, ownerLinkUsable });
 }
 
 /** desk_avatars.go definitiveAvatarFailure: whether a failed agent.avatar.get is herdr's answer

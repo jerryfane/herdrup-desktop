@@ -137,19 +137,24 @@ test("a link whose list failed once and came back is still the link a session's 
  try {
   await openP1(desk, relay);
   const machine = currentOwnerLink()!.machine;
+  expect([desk.ownerLinkUsable(machine.hostID), desk.ownerLinkUsable("other")]).toEqual([true, false]);
   fail = true;
   const failed = stateWhere(s => s.phase === "error");
   await listAgain(desk).catch(() => {});
   await failed;
   expect(closingLink(null, currentOwnerLink())).toBe(machine);
+  // The link failed its last list: Open opens it again rather than going straight back.
+  expect(desk.ownerLinkUsable(machine.hostID)).toBe(false);
   fail = false;
   const back = stateWhere(s => s.phase === "connected");
   await listAgain(desk).catch(() => {});
   await back;
-  expect(closingLink(null, currentOwnerLink())).toBe(machine);
+  expect([closingLink(null, currentOwnerLink()), desk.ownerLinkUsable(machine.hostID)]).toEqual([machine, true]);
   // A link still being opened is the one the end closes, whatever was open before.
   const other = { ...machine, hostID: "other" };
   expect(closingLink(other, currentOwnerLink())).toBe(other);
+  desk.disconnectOwner();
+  expect(desk.ownerLinkUsable(machine.hostID)).toBe(false);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
