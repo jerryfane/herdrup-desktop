@@ -27,15 +27,11 @@ import (
 var manifestTemplate string
 
 // identity is what the manifest says about the package: Partner Center's
-// Product identity (or the CI check's placeholder), the version and the
-// processor architecture.
+// Product identity (or the CI check's placeholder) and the version. The
+// package is x64 only, as the Windows build it packs.
 type identity struct {
-	Name, Publisher, PublisherDisplayName, Version, Arch string
+	Name, Publisher, PublisherDisplayName, Version string
 }
-
-// defaultPublisherDisplayName is the publisher users see when the
-// repository variable MSIX_PUBLISHER_DISPLAY_NAME is not set.
-const defaultPublisherDisplayName = "Herdrup"
 
 // packageName is the form of Identity Name (ST_PackageName): 3 to 50
 // letters, digits, dots and dashes.
@@ -47,6 +43,9 @@ func (id identity) check() error {
 	}
 	if !strings.HasPrefix(id.Publisher, "CN=") {
 		return fmt.Errorf("publisher %q: a distinguished name starting with CN= (Partner Center, Product identity, Package/Identity/Publisher)", id.Publisher)
+	}
+	if strings.TrimSpace(id.PublisherDisplayName) == "" {
+		return errors.New("no publisher display name (Partner Center, Product identity, Package/Properties/PublisherDisplayName)")
 	}
 	return nil
 }
@@ -121,15 +120,44 @@ func packageVersion(path string) (string, error) {
 	return p.Version, nil
 }
 
-// payload is what the package holds of the Windows build, as the installer
-// installs it: the app, and the offline speech engine with its model and
-// licences (mygo.config.ts, speechFiles; built first by speech/build.ts).
-// Nothing else in the build's folder goes in.
-var payload = []string{"herdrup.exe", "herdrup-speech.exe", "ggml-tiny.bin", "whisper-LICENSE", "speech-LICENSES"}
+// appExe is the Windows build's executable, the manifest's Executable.
+const appExe = "herdrup.exe"
 
-// stageMarker is in each folder stage made, the only kind it replaces. The
-// package leaves it out: pack packs the files stage lists.
-const stageMarker = ".herdrup-msix-stage"
+// loadPayload returns what the package holds of the Windows build, as the
+// installer installs it: herdrup.exe, and the offline speech resources that
+// speech/resources.json lists at path, the list mygo.config.ts ships (built
+// first by speech/build.ts). Nothing else in the build's folder goes in.
+func loadPayload(path string) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Helper string   `json:"helper"`
+		Files  []string `json:"files"`
+	}
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if r.Helper == "" || len(r.Files) == 0 {
+		return nil, fmt.Errorf("%s: want a helper and files", path)
+	}
+	payload := append([]string{appExe, r.Helper + ".exe"}, r.Files...)
+	for _, f := range payload {
+		if f == "" || f == "." || f == ".." || strings.ContainsAny(f, `/\:`) {
+			return nil, fmt.Errorf("%s: %q is not a file name", path, f)
+		}
+	}
+	return payload, nil
+}
+
+// stageMarker is in each folder stage made, the only kind it replaces: a
+// regular file reading stageMarkerText. The package leaves it out: pack
+// packs the files stage lists.
+const (
+	stageMarker     = ".herdrup-msix-stage"
+	stageMarkerText = "herdrup-msix-stage v1\n"
+)
 
 // logo is an image the manifest names, the app icon centred in it.
 type logo struct {
@@ -148,37 +176,52 @@ var logos = []logo{
 	{"Wide310x150Logo.png", 310, 150, 150},
 }
 
-// stage makes dir the package's contents: the payload of the build in from,
-// the logos made from icon, and AppxManifest.xml for id. It returns them,
-// relative to dir. Before writing anything it checks the identity, that
-// dir and from are apart, that from has the whole payload, and that dir is
-// new, empty or stage's own.
-func stage(from, dir, icon string, id identity) ([]string, error) {
+// sources is what stage reads, and the other paths the command takes.
+type sources struct {
+	// from is the Windows build's folder, and payload the files of it the
+	// package holds (loadPayload).
+	from    string
+	payload []string
+	// icon is the PNG the logos are made from.
+	icon string
+	// others are the command's other paths: package.json,
+	// speech/resources.json, and the package it writes (-out), if any.
+	others []string
+}
+
+// stage makes dir the package's contents: the payload of the build, the
+// logos made from the icon, and AppxManifest.xml for id. It returns them,
+// relative to dir. Before writing or deleting anything it checks the
+// identity, that dir is apart from every input, that the build has the
+// whole payload, and that dir is new, empty or stage's own.
+func stage(src sources, dir string, id identity) ([]string, error) {
 	if err := id.check(); err != nil {
 		return nil, err
 	}
-	if err := apart(from, dir); err != nil {
-		return nil, err
+	for _, in := range append([]string{src.from, src.icon}, src.others...) {
+		if err := apart(in, dir); err != nil {
+			return nil, err
+		}
 	}
-	for _, name := range payload {
-		fi, err := os.Stat(filepath.Join(from, name))
+	for _, name := range src.payload {
+		fi, err := os.Stat(filepath.Join(src.from, name))
 		if err != nil {
-			return nil, fmt.Errorf("the build in %s lacks %s (build the speech resources, then the app: README.md, \"Microsoft Store package\"): %w", from, name, err)
+			return nil, fmt.Errorf("the build in %s lacks %s (build the speech resources, then the app: README.md, \"Microsoft Store package\"): %w", src.from, name, err)
 		}
 		if !fi.Mode().IsRegular() {
-			return nil, fmt.Errorf("%s: not a regular file", filepath.Join(from, name))
+			return nil, fmt.Errorf("%s: not a regular file", filepath.Join(src.from, name))
 		}
 	}
 	if err := claim(dir); err != nil {
 		return nil, err
 	}
-	files := slices.Clone(payload)
-	for _, name := range payload {
-		if err := copyFile(filepath.Join(from, name), filepath.Join(dir, name)); err != nil {
+	files := slices.Clone(src.payload)
+	for _, name := range src.payload {
+		if err := copyFile(filepath.Join(src.from, name), filepath.Join(dir, name)); err != nil {
 			return nil, err
 		}
 	}
-	if err := writeLogos(icon, filepath.Join(dir, "Assets")); err != nil {
+	if err := writeLogos(src.icon, filepath.Join(dir, "Assets")); err != nil {
 		return nil, err
 	}
 	for _, l := range logos {
@@ -194,10 +237,10 @@ func stage(from, dir, icon string, id identity) ([]string, error) {
 	return append(files, "AppxManifest.xml"), nil
 }
 
-// apart refuses a staging folder that is the build's folder, holds it or
-// is inside it, symbolic links followed: replacing it would delete the build.
-func apart(from, dir string) error {
-	a, err := resolved(from)
+// apart refuses a staging folder that is an input, holds it or is inside
+// it, symbolic links followed: replacing the folder would delete the input.
+func apart(input, dir string) error {
+	a, err := resolved(input)
 	if err != nil {
 		return err
 	}
@@ -206,7 +249,7 @@ func apart(from, dir string) error {
 		return err
 	}
 	if within(a, b) || within(b, a) {
-		return fmt.Errorf("-stage %s and -from %s overlap: stage in a folder of its own", dir, from)
+		return fmt.Errorf("-stage %s and the input %s overlap: stage in a folder of its own", dir, input)
 	}
 	return nil
 }
@@ -239,6 +282,18 @@ func within(p, base string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// ownStage reports whether dir holds stage's marker: a regular file, not a
+// link or a folder, reading exactly stageMarkerText.
+func ownStage(dir string) bool {
+	p := filepath.Join(dir, stageMarker)
+	fi, err := os.Lstat(p)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	b, err := os.ReadFile(p)
+	return err == nil && string(b) == stageMarkerText
+}
+
 // claim makes dir an empty folder holding stageMarker: from a new folder,
 // an empty one, or one stage made before, whose files it deletes. Any other
 // it refuses, deleting nothing.
@@ -249,8 +304,8 @@ func claim(dir string) error {
 	case err != nil:
 		return fmt.Errorf("-stage %s: %w", dir, err)
 	case len(entries) == 0:
-	case !fileExists(filepath.Join(dir, stageMarker)):
-		return fmt.Errorf("-stage %s holds files this tool did not stage (no %s): give it a new or empty folder", dir, stageMarker)
+	case !ownStage(dir):
+		return fmt.Errorf("-stage %s holds files this tool did not stage (no %s file reading %q): give it a new or empty folder", dir, stageMarker, stageMarkerText)
 	default:
 		if err := os.RemoveAll(dir); err != nil {
 			return err
@@ -259,7 +314,7 @@ func claim(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, stageMarker), []byte("Staged by go run ./packaging/msix, which replaces this folder.\n"), 0o644)
+	return os.WriteFile(filepath.Join(dir, stageMarker), []byte(stageMarkerText), 0o644)
 }
 
 func copyFile(src, dst string) error {

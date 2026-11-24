@@ -125,7 +125,7 @@ func TestManifest(t *testing.T) {
 	if err := wellFormed([]byte(manifestTemplate)); err != nil {
 		t.Fatalf("the template is not XML: %v", err)
 	}
-	id := identity{Name: "HerdrupCI", Publisher: `CN=Jerry & "Co", O=<x>`, PublisherDisplayName: "Herdrup & co", Version: "1.1.23.0", Arch: "x64"}
+	id := identity{Name: "HerdrupCI", Publisher: `CN=Jerry & "Co", O=<x>`, PublisherDisplayName: "Herdrup & co", Version: "1.1.23.0"}
 	b, err := manifest(id)
 	if err != nil {
 		t.Fatal(err)
@@ -222,11 +222,31 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+const (
+	testIcon   = "../../resources/icon.png"
+	testSpeech = "../../speech/resources.json"
+)
+
+// testPayload is the repository's payload.
+func testPayload(t *testing.T) []string {
+	t.Helper()
+	p, err := loadPayload(testSpeech)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// testSources reads the build in from, the repository's icon and lists.
+func testSources(t *testing.T, from string) sources {
+	return sources{from: from, payload: testPayload(t), icon: testIcon, others: []string{"../../package.json", testSpeech}}
+}
+
 // buildDir writes a Windows build: the payload, and what else mygo writes
 // next to it.
 func buildDir(t *testing.T, dir string) {
 	t.Helper()
-	for _, f := range payload {
+	for _, f := range testPayload(t) {
 		writeFile(t, filepath.Join(dir, f), "app "+f)
 	}
 	for _, f := range []string{"herdrup-setup-0.1.0-preview.23-amd64.exe", "install.ps1", "herdrup-0.1.0-preview.23-windows-amd64.tar.gz", "update-windows-amd64.json", "icon.png", "extra/data.txt"} {
@@ -252,18 +272,45 @@ func files(t *testing.T, dir string) []string {
 	return got
 }
 
-var ciIdentity = identity{Name: "HerdrupCI", Publisher: "CN=HerdrupCI", PublisherDisplayName: "Herdrup", Version: "1.1.23.0", Arch: "x64"}
+var ciIdentity = identity{Name: "HerdrupCI", Publisher: "CN=HerdrupCI", PublisherDisplayName: "HerdrupCI", Version: "1.1.23.0"}
+
+// The payload is herdrup.exe and the speech resources mygo.config.ts ships,
+// from the one list, speech/resources.json; a list naming anything but a
+// file of the build's folder is refused.
+func TestLoadPayload(t *testing.T) {
+	want := []string{"herdrup.exe", "herdrup-speech.exe", "ggml-tiny.bin", "whisper-LICENSE", "speech-LICENSES"}
+	if got := testPayload(t); !slices.Equal(got, want) {
+		t.Errorf("payload %v, want %v", got, want)
+	}
+	for _, bad := range []string{
+		`{"files": ["a"]}`,
+		`{"helper": "h"}`,
+		`{"helper": "h", "files": ["../a"]}`,
+		`{"helper": "h", "files": ["d/a"]}`,
+		`{"helper": "h", "files": ["d\\a"]}`,
+		`{"helper": "h", "files": ["C:a"]}`,
+		`{"helper": "h", "files": [".."]}`,
+		`{"helper": "../h", "files": ["a"]}`,
+		`not json`,
+	} {
+		p := filepath.Join(t.TempDir(), "resources.json")
+		writeFile(t, p, bad)
+		if got, err := loadPayload(p); err == nil {
+			t.Errorf("loadPayload(%s) = %v, want an error", bad, got)
+		}
+	}
+}
 
 // The package holds the payload, the logos and the manifest, and nothing
 // else of the build: not mygo's installer, update files or install script.
 func TestStage(t *testing.T) {
 	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
 	buildDir(t, from)
-	got, err := stage(from, dir, "../../resources/icon.png", ciIdentity)
+	got, err := stage(testSources(t, from), dir, ciIdentity)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append(slices.Clone(payload), "AppxManifest.xml")
+	want := append(testPayload(t), "AppxManifest.xml")
 	for _, l := range logos {
 		want = append(want, "Assets/"+l.name)
 	}
@@ -276,6 +323,9 @@ func TestStage(t *testing.T) {
 	slices.Sort(wantDisk)
 	if onDisk := files(t, dir); !slices.Equal(onDisk, wantDisk) {
 		t.Fatalf("staged %v\nwant %v", onDisk, wantDisk)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, stageMarker)); string(b) != stageMarkerText {
+		t.Errorf("marker reads %q", b)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "herdrup-speech.exe")); string(b) != "app herdrup-speech.exe" {
 		t.Errorf("herdrup-speech.exe holds %q", b)
@@ -292,20 +342,19 @@ func TestStage(t *testing.T) {
 		}
 	}
 	m, _ := os.ReadFile(filepath.Join(dir, "AppxManifest.xml"))
-	if !bytes.Contains(m, []byte(`Name="HerdrupCI" Publisher="CN=HerdrupCI" Version="1.1.23.0"`)) {
+	if !bytes.Contains(m, []byte(`Name="HerdrupCI" Publisher="CN=HerdrupCI" Version="1.1.23.0" ProcessorArchitecture="x64"`)) {
 		t.Errorf("manifest identity:\n%s", m)
 	}
 	// Its own folder, staged again, is replaced.
 	writeFile(t, filepath.Join(dir, "stale.txt"), "from the last run")
-	if _, err := stage(from, dir, "../../resources/icon.png", ciIdentity); err != nil {
+	if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
 		t.Fatal(err)
 	}
-	if fileExists(filepath.Join(dir, "stale.txt")) || !fileExists(filepath.Join(dir, stageMarker)) {
+	if fileExists(filepath.Join(dir, "stale.txt")) || !ownStage(dir) {
 		t.Errorf("restaged: %v", files(t, dir))
 	}
 	// So is an empty folder.
-	empty := t.TempDir()
-	if _, err := stage(from, empty, "../../resources/icon.png", ciIdentity); err != nil {
+	if _, err := stage(testSources(t, from), t.TempDir(), ciIdentity); err != nil {
 		t.Errorf("empty folder: %v", err)
 	}
 }
@@ -313,13 +362,13 @@ func TestStage(t *testing.T) {
 // A build without the whole payload (the speech resources not built
 // first) is not packaged, and nothing is written.
 func TestStageNeedsTheWholePayload(t *testing.T) {
-	for _, missing := range payload {
+	for _, missing := range testPayload(t) {
 		from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
 		buildDir(t, from)
 		if err := os.Remove(filepath.Join(from, missing)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := stage(from, dir, "../../resources/icon.png", ciIdentity); err == nil || !strings.Contains(err.Error(), missing) {
+		if _, err := stage(testSources(t, from), dir, ciIdentity); err == nil || !strings.Contains(err.Error(), missing) {
 			t.Errorf("without %s: %v", missing, err)
 		}
 		if fileExists(dir) {
@@ -349,7 +398,7 @@ func TestStageRefusesOverlap(t *testing.T) {
 		"symlink":           link,
 		"inside, a symlink": filepath.Join(link, "msix"),
 	} {
-		_, err := stage(from, dir, "../../resources/icon.png", ciIdentity)
+		_, err := stage(testSources(t, from), dir, ciIdentity)
 		if err == nil || !strings.Contains(err.Error(), "overlap") {
 			t.Errorf("%s (%s): %v", name, dir, err)
 		}
@@ -359,20 +408,98 @@ func TestStageRefusesOverlap(t *testing.T) {
 	}
 }
 
-// A folder stage did not make keeps its files: it is refused.
-func TestStageRefusesAForeignFolder(t *testing.T) {
-	from, dir := t.TempDir(), t.TempDir()
+// Every input and output lies outside the staging folder, even one the
+// packer staged before: replacing it would delete the icon or a list before
+// it is read, or the package as it is written.
+func TestStageRefusesInputsInside(t *testing.T) {
+	from, dir := t.TempDir(), filepath.Join(t.TempDir(), "stage")
 	buildDir(t, from)
-	writeFile(t, filepath.Join(dir, "keep.txt"), "someone's")
-	if _, err := stage(from, dir, "../../resources/icon.png", ciIdentity); err == nil || !strings.Contains(err.Error(), stageMarker) {
-		t.Errorf("foreign folder: %v", err)
+	if _, err := stage(testSources(t, from), dir, ciIdentity); err != nil {
+		t.Fatal(err)
 	}
-	if got := files(t, dir); !slices.Equal(got, []string{"keep.txt"}) {
-		t.Errorf("foreign folder now holds %v", got)
+	inside := filepath.Join(dir, "Assets", "StoreLogo.png")
+	for name, mutate := range map[string]func(*sources){
+		"icon":           func(s *sources) { s.icon = inside },
+		"package.json":   func(s *sources) { s.others[0] = inside },
+		"resources.json": func(s *sources) { s.others[1] = inside },
+		"-out":           func(s *sources) { s.others = append(s.others, filepath.Join(dir, "herdrup.msix")) },
+	} {
+		src := testSources(t, from)
+		mutate(&src)
+		before := files(t, dir)
+		if _, err := stage(src, dir, ciIdentity); err == nil || !strings.Contains(err.Error(), "overlap") {
+			t.Errorf("%s inside the stage: %v", name, err)
+		}
+		if after := files(t, dir); !slices.Equal(after, before) || !fileExists(inside) {
+			t.Fatalf("%s inside the stage: it now holds %v\nwas %v", name, after, before)
+		}
+	}
+}
+
+// pack checks -out with the inputs, and only when it is given: without it
+// pack stages, even in a folder inside the working one.
+func TestPackChecksTheOutput(t *testing.T) {
+	from := t.TempDir()
+	buildDir(t, from)
+	abs := func(p string) string {
+		a, err := filepath.Abs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	args := []string{"pack", "-from", from, "-stage", "stage",
+		"-icon", abs(testIcon), "-package", abs("../../package.json"), "-speech", abs(testSpeech),
+		"-name", "HerdrupCI", "-publisher", "CN=HerdrupCI", "-publisher-display-name", "HerdrupCI"}
+	work := t.TempDir()
+	t.Chdir(work)
+	if err := run(args); err != nil {
+		t.Fatalf("pack without -out: %v", err)
+	}
+	before := files(t, "stage")
+	err := run(append(slices.Clone(args), "-out", filepath.Join("stage", "herdrup.msix")))
+	if err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Fatalf("-out inside the stage: %v", err)
+	}
+	if after := files(t, "stage"); !slices.Equal(after, before) {
+		t.Fatalf("-out inside the stage: it now holds %v\nwas %v", after, before)
+	}
+}
+
+// A folder stage did not make keeps its files: it is refused, also with a
+// marker that is not stage's own (a folder, a link, other contents).
+func TestStageRefusesAForeignFolder(t *testing.T) {
+	from := t.TempDir()
+	buildDir(t, from)
+	elsewhere := filepath.Join(t.TempDir(), "marker")
+	writeFile(t, elsewhere, stageMarkerText)
+	for name, setup := range map[string]func(dir string){
+		"no marker": func(string) {},
+		"a folder":  func(dir string) { writeFile(t, filepath.Join(dir, stageMarker, "inside.txt"), "x") },
+		"other text": func(dir string) {
+			writeFile(t, filepath.Join(dir, stageMarker), "herdrup-msix-stage v2\n")
+		},
+		"empty": func(dir string) { writeFile(t, filepath.Join(dir, stageMarker), "") },
+		"a link": func(dir string) {
+			if err := os.Symlink(elsewhere, filepath.Join(dir, stageMarker)); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "notes.txt"), "someone's")
+		setup(dir)
+		before := files(t, dir)
+		if _, err := stage(testSources(t, from), dir, ciIdentity); err == nil || !strings.Contains(err.Error(), stageMarker) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if after := files(t, dir); !slices.Equal(after, before) {
+			t.Errorf("%s: the folder now holds %v\nwas %v", name, after, before)
+		}
 	}
 	file := filepath.Join(t.TempDir(), "file")
 	writeFile(t, file, "a file")
-	if _, err := stage(from, file, "../../resources/icon.png", ciIdentity); err == nil {
+	if _, err := stage(testSources(t, from), file, ciIdentity); err == nil {
 		t.Error("staged into a file")
 	}
 	if b, _ := os.ReadFile(file); string(b) != "a file" {
@@ -380,23 +507,31 @@ func TestStageRefusesAForeignFolder(t *testing.T) {
 	}
 }
 
+// Every part of the identity is required, the publisher display name too:
+// the Store's must be the one Partner Center reserved.
 func TestStageRefusesIdentity(t *testing.T) {
 	from := t.TempDir()
 	buildDir(t, from)
-	good := identity{Name: "Jerry.Herdrup", Publisher: "CN=0A1B2C3D-0000-0000-0000-000000000000", PublisherDisplayName: "Herdrup", Version: "1.1.23.0", Arch: "x64"}
+	good := identity{Name: "Jerry.Herdrup", Publisher: "CN=0A1B2C3D-0000-0000-0000-000000000000", PublisherDisplayName: "Jerry Fane", Version: "1.1.23.0"}
 	for _, id := range []identity{
-		{Name: "", Publisher: good.Publisher},
-		{Name: "Jerry Herdrup", Publisher: good.Publisher},
-		{Name: "Jerry_Herdrup", Publisher: good.Publisher},
-		{Name: good.Name, Publisher: ""},
-		{Name: good.Name, Publisher: "Jerry Fane"},
+		{Name: "", Publisher: good.Publisher, PublisherDisplayName: good.PublisherDisplayName},
+		{Name: "Jerry Herdrup", Publisher: good.Publisher, PublisherDisplayName: good.PublisherDisplayName},
+		{Name: "Jerry_Herdrup", Publisher: good.Publisher, PublisherDisplayName: good.PublisherDisplayName},
+		{Name: good.Name, Publisher: "", PublisherDisplayName: good.PublisherDisplayName},
+		{Name: good.Name, Publisher: "Jerry Fane", PublisherDisplayName: good.PublisherDisplayName},
+		{Name: good.Name, Publisher: good.Publisher, PublisherDisplayName: ""},
+		{Name: good.Name, Publisher: good.Publisher, PublisherDisplayName: "  "},
 	} {
-		id.Version, id.Arch = good.Version, good.Arch
-		if _, err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", id); err == nil {
+		id.Version = good.Version
+		dir := filepath.Join(t.TempDir(), "s")
+		if _, err := stage(testSources(t, from), dir, id); err == nil {
 			t.Errorf("staged identity %+v", id)
 		}
+		if fileExists(dir) {
+			t.Errorf("identity %+v: wrote %s", id, dir)
+		}
 	}
-	if _, err := stage(from, filepath.Join(t.TempDir(), "s"), "../../resources/icon.png", good); err != nil {
+	if _, err := stage(testSources(t, from), filepath.Join(t.TempDir(), "s"), good); err != nil {
 		t.Errorf("Partner Center's identity: %v", err)
 	}
 }

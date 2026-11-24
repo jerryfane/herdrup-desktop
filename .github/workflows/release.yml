@@ -96,17 +96,10 @@ jobs:
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
           echo "HERDRUP_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
           echo "HERDRUP_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-      - name: Fetch pinned offline speech engine
-        uses: actions/checkout@v5
+      - name: Offline speech resources
+        uses: ./.github/actions/speech
         with:
-          repository: ggml-org/whisper.cpp
-          ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
-          path: speech-source
-      - name: Build offline speech resources
-        env:
-          WHISPER_SOURCE: ${{ github.workspace }}/speech-source
-          HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
-        run: bun speech/build.ts "${{ matrix.platform }}"
+          platform: ${{ matrix.platform }}
       # The secret signs app updates; it is empty, and mygo build makes no
       # update files but the Linux archive, until the owner sets it.
       - name: Build
@@ -322,13 +315,15 @@ jobs:
   # from the Store (app/store.go), packed by packaging/msix with the Windows
   # SDK's makeappx. Two variants of one recipe:
   # - ci, on every run: packed with a placeholder identity, signed with a
-  #   throwaway certificate, installed, started as Windows starts a packaged
-  #   app, and removed, as check-windows does with the installer;
+  #   throwaway certificate, installed, opened by a herdrup:// link as
+  #   Windows opens a packaged app's protocol, and removed, as check-windows
+  #   does with the installer;
   # - store, once the owner reserved the app's name in Partner Center and set
   #   its identity as the repository variables MSIX_IDENTITY_NAME,
-  #   MSIX_PUBLISHER and, optionally, MSIX_PUBLISHER_DISPLAY_NAME: unsigned,
-  #   as the Store signs what it publishes, and carried by the release as
-  #   herdrup-<version>-store.msix for the owner to submit in Partner Center.
+  #   MSIX_PUBLISHER and MSIX_PUBLISHER_DISPLAY_NAME, all three required:
+  #   unsigned, as the Store signs what it publishes, and carried by the
+  #   release as herdrup-<version>-store.msix for the owner to submit in
+  #   Partner Center.
   # Without MSIX_IDENTITY_NAME the matrix has no store variant, so the job
   # is never skipped and the release is as before.
   msix:
@@ -343,6 +338,19 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Check the Store identity
+        if: matrix.variant == 'store'
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          for v in MSIX_IDENTITY_NAME MSIX_PUBLISHER MSIX_PUBLISHER_DISPLAY_NAME; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Set the repository variable $v (Partner Center, Product identity; README.md, \"Microsoft Store package\")"
+              exit 1
+            fi
+          done
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
@@ -351,17 +359,10 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
-      - name: Fetch pinned offline speech engine
-        uses: actions/checkout@v5
+      - name: Offline speech resources
+        uses: ./.github/actions/speech
         with:
-          repository: ggml-org/whisper.cpp
-          ref: 927cfce34f31707e17f2bff35c349632fb9e2c3a
-          path: speech-source
-      - name: Build offline speech resources
-        env:
-          WHISPER_SOURCE: ${{ github.workspace }}/speech-source
-          HERDRUP_SPEECH_RESOURCES: ${{ runner.temp }}/speech-resources
-        run: bun speech/build.ts windows/amd64
+          platform: windows/amd64
       # The store variant sends usage pings and crash reports as every
       # release build does (main.release). Not ci: the shell starts the
       # packaged app outside this job's environment, whose CI variable keeps
@@ -380,7 +381,7 @@ jobs:
           if [ "$VARIANT" = store ]; then
             name="$MSIX_IDENTITY_NAME" publisher="$MSIX_PUBLISHER" display="$MSIX_PUBLISHER_DISPLAY_NAME"
           else
-            name=HerdrupCI publisher=CN=HerdrupCI display=
+            name=HerdrupCI publisher=CN=HerdrupCI display=HerdrupCI
           fi
           version="$(jq -r .version package.json)"
           out="$RUNNER_TEMP/msix-out/herdrup-$version-$VARIANT.msix"
@@ -394,7 +395,7 @@ jobs:
           signtool="$(go run ./packaging/msix tool signtool)"
           echo "SIGNTOOL=$signtool" >> "$GITHUB_ENV"
       # Windows PowerShell: its Appx module is the one Windows ships.
-      - name: Sign, install, start from its AUMID, remove
+      - name: Sign, install, open a herdrup:// link, remove
         if: matrix.variant == 'ci'
         shell: powershell
         run: |
@@ -430,23 +431,27 @@ jobs:
             if (-not (Test-Path (Join-Path $pkg.InstallLocation $f))) { throw "$f not installed" }
           }
           if (Test-Path (Join-Path $pkg.InstallLocation '.herdrup-msix-stage')) { throw 'the staging marker was packed' }
-          # It starts as its Start menu entry does, from the package, and
-          # keeps running.
-          Start-Process "shell:AppsFolder\$($pkg.PackageFamilyName)!App"
+          # A herdrup:// link opens it, through the package's protocol
+          # (the Store build doesn't register one itself): the process that
+          # runs from the package, until it has its window, and keeps running.
+          Start-Process 'herdrup://ci-check'
+          $root = $pkg.InstallLocation.TrimEnd('\') + '\'
           $app = $null
           for ($i = 0; $i -lt 30 -and -not $app; $i++) {
             Start-Sleep -Seconds 1
-            $app = Get-Process -Name herdrup -ErrorAction SilentlyContinue | Select-Object -First 1
+            $app = Get-Process -Name herdrup -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and $_.MainWindowHandle -ne 0 } |
+              Select-Object -First 1
           }
-          if (-not $app) { throw 'herdrup.exe did not start' }
-          Write-Host "herdrup.exe started: $($app.Path)"
-          if (-not $app.Path -or -not $app.Path.StartsWith($pkg.InstallLocation, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "herdrup.exe runs from $($app.Path), not the package"
+          if (-not $app) {
+            Get-Process -Name herdrup -ErrorAction SilentlyContinue | Format-List Id, Path, MainWindowHandle
+            throw 'no herdrup.exe from the package with a window within 30 s'
           }
+          Write-Host "herdrup.exe $($app.Id) runs from $($app.Path) with window $($app.MainWindowHandle)"
           Start-Sleep -Seconds 15
           if (-not (Get-Process -Id $app.Id -ErrorAction SilentlyContinue)) { throw 'herdrup.exe exited' }
-          Get-Process -Name herdrup -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Seconds 2
+          Stop-Process -Id $app.Id -Force
+          Wait-Process -Id $app.Id -Timeout 30
           Remove-AppxPackage -Package $pkg.PackageFullName
           if (Get-AppxPackage -Name HerdrupCI) { throw 'HerdrupCI left after Remove-AppxPackage' }
       - uses: actions/upload-artifact@v4

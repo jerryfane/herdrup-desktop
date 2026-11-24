@@ -3,12 +3,13 @@
 // windows/amd64` built with -X main.distribution=store:
 //
 //	go run ./packaging/msix pack -from build/windows-amd64 -stage DIR \
-//	  -name NAME -publisher CN=... [-publisher-display-name NAME] [-out FILE.msix]
+//	  -name NAME -publisher CN=... -publisher-display-name NAME [-out FILE.msix]
 //
-// stages the app's payload (msix.go, payload), its logos and
-// AppxManifest.xml in DIR, a new or empty folder or one it staged before,
-// apart from the build, and, with -out, packs them with the Windows SDK's
-// makeappx, unsigned: the Store signs what it publishes.
+// stages the app's payload (herdrup.exe and speech/resources.json's files),
+// its logos and AppxManifest.xml in DIR, a new or empty folder or one it
+// staged before, apart from every input, and, with -out, packs them into an
+// x64 package with the Windows SDK's makeappx, unsigned: the Store signs
+// what it publishes.
 // `go run ./packaging/msix tool NAME` prints the path of a Windows SDK tool,
 // such as signtool.
 package main
@@ -44,23 +45,20 @@ func run(args []string) error {
 	case "pack":
 		flags := flag.NewFlagSet("pack", flag.ContinueOnError)
 		from := flags.String("from", "build/windows-amd64", "the app as mygo build wrote it")
-		dir := flags.String("stage", "", "the folder to stage the package in (replaced)")
+		dir := flags.String("stage", "", "the folder to stage the package in: new, empty, or one this tool staged (replaced)")
 		out := flags.String("out", "", "the package to make with makeappx; none when empty")
 		icon := flags.String("icon", "resources/icon.png", "the app icon the logos are made from")
 		pkg := flags.String("package", "package.json", "the package.json whose version the package has")
+		speech := flags.String("speech", "speech/resources.json", "the offline speech resources the package holds")
 		var id identity
 		flags.StringVar(&id.Name, "name", "", "Package/Identity/Name (Partner Center, Product identity)")
 		flags.StringVar(&id.Publisher, "publisher", "", "Package/Identity/Publisher, CN=…")
-		flags.StringVar(&id.PublisherDisplayName, "publisher-display-name", "", "Package/Properties/PublisherDisplayName (default "+defaultPublisherDisplayName+")")
-		flags.StringVar(&id.Arch, "arch", "x64", "ProcessorArchitecture")
+		flags.StringVar(&id.PublisherDisplayName, "publisher-display-name", "", "Package/Properties/PublisherDisplayName")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *dir == "" {
 			return fmt.Errorf("pack: -stage is required")
-		}
-		if id.PublisherDisplayName == "" {
-			id.PublisherDisplayName = defaultPublisherDisplayName
 		}
 		v, err := packageVersion(*pkg)
 		if err != nil {
@@ -69,7 +67,15 @@ func run(args []string) error {
 		if id.Version, err = msixVersion(v); err != nil {
 			return err
 		}
-		files, err := stage(*from, *dir, *icon, id)
+		payload, err := loadPayload(*speech)
+		if err != nil {
+			return err
+		}
+		others := []string{*pkg, *speech}
+		if *out != "" {
+			others = append(others, *out)
+		}
+		files, err := stage(sources{from: *from, payload: payload, icon: *icon, others: others}, *dir, id)
 		if err != nil {
 			return err
 		}

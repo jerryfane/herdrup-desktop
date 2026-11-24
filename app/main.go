@@ -72,8 +72,10 @@ func main() {
 		if !mygo.App.RequestSingleInstanceLock() {
 			return
 		}
-		if err := mygo.App.RegisterURLScheme("herdrup"); err != nil {
-			log.Printf("Could not register invitation links: %v", err)
+		if registersURLScheme() {
+			if err := mygo.App.RegisterURLScheme("herdrup"); err != nil {
+				log.Printf("Could not register invitation links: %v", err)
+			}
 		}
 		mygo.App.OnSecondInstance(func([]string, string) {
 			if win != nil {
