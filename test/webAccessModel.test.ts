@@ -379,7 +379,7 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
  }
 });
 
-/** A signed-in window with a sidebar foot and the composer, where one browser asks for approval and
+/** A signed-in window with the composer, where one browser asks for approval and
  *  shows its code when ready() is called. type() presses keys as a person does: each goes to the
  *  element with focus, and the document hears its keydown and input. With holdMachines, each machine
  *  lookup waits in heldMachines until the test answers it. calls counts the bridge's calls by name. */
@@ -413,19 +413,20 @@ function askingWindow({ holdMachines = false, requests = [{ id: "r1", browserNam
    }
   },
  };
- const foot = doc.createElement("div"); foot.id = "sidebar-foot";
  const composer = doc.createElement("textarea");
- doc.body.append(foot, composer);
+ doc.body.append(composer);
+ // The window's notices (notices.ts), made by the first notice.
+ const noticeList = () => doc.getElementById("notices")?.children.filter(n => n.className === "web-access-notice") ?? [];
  const clock = handClock(0);
  const dialog = () => doc.body.children.find(c => c.tagName === "dialog");
  return {
   doc, composer, clock, dialog, heldMachines, asking,
   calls: (method: string) => calls.get(method) ?? 0,
   dialogs: () => doc.body.children.filter(c => c.tagName === "dialog").length,
-  notices: () => foot.children.filter(n => n.className === "web-access-notice").length,
+  notices: () => noticeList().length,
   code: () => dialog()?.all().find(n => n.className === "web-access-code"),
-  notice: () => foot.children.find(n => n.className === "web-access-notice"),
-  review: () => foot.children.find(n => n.className === "web-access-notice")!.children.find(n => n.tagName === "button" && n.textContent === "Review")!.click(),
+  notice: () => noticeList()[0],
+  review: () => noticeList()[0]!.children.find(n => n.tagName === "button" && n.textContent === "Review")!.click(),
   start: () => { initWebAccess(clock); doc.dispatchEvent(new Event("visibilitychange")); },
   ready: () => on.get("web-access:update")?.({ id: "r1", state: "ready" }),
   type: (text: string) => {
@@ -516,16 +517,14 @@ test("typing that resumes while the paused notice looks up the machines keeps th
  try {
   w.composer.focus();
   w.start();
-  await until("the look's machine lookup", () => w.heldMachines.length === 1);
-  w.heldMachines[0]();
   await until("the notice", () => w.notice() !== undefined);
   // The pause is up: the sheet's machines are asked for, and the notice stays while they come.
   w.clock.to(TYPING_PAUSE_MS);
-  await until("the pause's machine lookup", () => w.heldMachines.length === 2);
+  await until("the pause's machine lookup", () => w.heldMachines.length === 1);
   expect(w.notice()).toBeDefined();
   w.clock.to(TYPING_PAUSE_MS + 500);
   w.type("so");
-  w.heldMachines[1]();
+  w.heldMachines[0]();
   // Typing resumed: no sheet takes the keys, the notice stays and waits a full pause from the last key.
   await until("the next pause armed", () => w.clock.queued.length === 1);
   expect(w.dialog()).toBeUndefined();
@@ -534,10 +533,10 @@ test("typing that resumes while the paused notice looks up the machines keeps th
   expect(w.composer.value).toBe("soon");
   expect(w.doc.activeElement).toBe(w.composer);
   w.clock.to(2 * TYPING_PAUSE_MS + 500 - 1);
-  expect(w.heldMachines).toHaveLength(2);
+  expect(w.heldMachines).toHaveLength(1);
   w.clock.to(2 * TYPING_PAUSE_MS + 500);
-  await until("the next pause's machine lookup", () => w.heldMachines.length === 3);
-  w.heldMachines[2]();
+  await until("the next pause's machine lookup", () => w.heldMachines.length === 2);
+  w.heldMachines[1]();
   await until("an open sheet", () => w.dialog()?.open === true);
   expect(w.notice()).toBeUndefined();
   expect(w.dialogs()).toBe(1);
@@ -552,16 +551,28 @@ test("Review opens the sheet once its machines come, even if typing resumed mean
  try {
   w.composer.focus();
   w.start();
-  await until("the look's machine lookup", () => w.heldMachines.length === 1);
-  w.heldMachines[0]();
   await until("the notice", () => w.notice() !== undefined);
   w.review();
-  await until("Review's machine lookup", () => w.heldMachines.length === 2);
+  await until("Review's machine lookup", () => w.heldMachines.length === 1);
   expect(w.notice()).toBeDefined();
   w.type("x");
-  w.heldMachines[1]();
+  w.heldMachines[0]();
   await until("an open sheet", () => w.dialog()?.open === true);
   expect(w.notice()).toBeUndefined();
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("with typing owning the focus the notice comes at once: no machine lookup before it (#486)", async () => {
+ const w = askingWindow({ holdMachines: true });
+ try {
+  w.composer.focus();
+  w.start();
+  await until("the notice", () => w.notice() !== undefined);
+  expect(w.calls("Desk.WebAccessMachines")).toBe(0);
+  expect(w.dialog()).toBeUndefined();
  } finally {
   jest.clearAllTimers();
   jest.useRealTimers();
