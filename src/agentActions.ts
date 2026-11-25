@@ -144,7 +144,7 @@ async function switchTopics(action: AgentAction) {
 let bannerShown: SwitchStatus | null = null;
 /** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced.
  * It sits among the window's notices (notices.ts), over the glass tab bar while the sidebar shows;
- * the sidebar's lists end above it (notices.ts reserveNotices). */
+ * the sidebar's lists end above it (notices.ts measures the region). */
 function switchBanner() {
   const region = noticeRegion();
   let banner = region.querySelector<HTMLElement>(":scope > .topics-switch-banner");

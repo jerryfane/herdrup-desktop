@@ -185,7 +185,7 @@ html, body {
   min-height: 0;
   overflow-y: auto;
   /* The tab bar floats over the list's end (safeAreaInset), and so do the window's notices while
-     they show (notices.ts reserveNotices sets --foot-notice). */
+     they show (notices.ts noticeRegion's observer sets --foot-notice). */
   padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scroll-padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scrollbar-width: none;
@@ -923,12 +923,15 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
   .desk .detail { left: 0; bottom: 0; z-index: 2; }
   .desk .detail > .gram::after { display: none; }
   .desk body:not([data-detail="page"]):not([data-detail="bars"]) > .detail { display: none; }
-  /* Gram ends above the notices over the tab bar. An agent's or a Settings page covers the list and
-     its tab bar: the notices cross the screen's bottom and the page ends above them, so Review is
-     seen and takes clicks there, and nothing of the list behind shows (#486). */
+  /* The notices span the screen, as the sidebar does: never the stored desktop width, which still
+     sets --sidebar-width inline (sidebar.ts) and would push Review off a narrow screen (#490).
+     Gram ends above them, over the tab bar. An agent's or a Settings page covers the list and its
+     tab bar: the notices cross the screen's bottom and the page ends above them, so Review is seen
+     and takes clicks there, and nothing of the list behind shows (#486). */
+  .desk .notices { left: 0; right: 0; width: auto; }
   .desk body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px)); overflow: hidden; }
   .desk body[data-detail="page"] > .detail { bottom: var(--foot-notice, 0px); }
-  .desk body[data-detail="page"] > .notices { left: 0; right: 0; width: auto; bottom: 0; }
+  .desk body[data-detail="page"] > .notices { bottom: 0; }
   /* The sidebar can't be minimised: it is the screen. Gram's conversation rows give way to
      its page, whose header has the Saved bookmark (GramView.swift headerTrailing). */
   .desk .topbar [aria-label="Minimise sidebar"], .desk .topbar .slot[title="Minimise sidebar"] { display: none; }
