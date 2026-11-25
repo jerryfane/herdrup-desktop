@@ -85,6 +85,10 @@ var errChannelClosed = errors.New("herdr api-bridge channel closed")
 // error).
 var ErrNotSent = errors.New("herdr api-bridge --multi channel unavailable")
 
+// ErrRequestTooLarge means a request is too large to go as one exec
+// argument, which the per-request path needs: it is never sent (Unsent).
+var ErrRequestTooLarge = errors.New("too large for an exec argument")
+
 // Unsent is the error of a request that was never written, the one way
 // every unsent exit fails, the bridge's and the guest transport's: ErrNotSent,
 // with reason (why it was not written, such as the transport's failure)
@@ -374,23 +378,28 @@ func (c *Client) OpenStream(ctx context.Context, method string, params any) (*St
 	return c.openStream(ctx, line)
 }
 
+// openStream sends line on a new exec channel (the per-request path). Every
+// failure before the exec request is made fails unsent (Unsent), with why:
+// a line too large for one exec argument (ErrRequestTooLarge), an invalid
+// session, or a channel that would not open (newSession, start).
 func (c *Client) openStream(ctx context.Context, line []byte) (*Stream, error) {
 	if len(line) > maxArgRequestBytes {
-		return nil, fmt.Errorf("request of %d bytes is too large for an exec argument", len(line))
+		return nil, Unsent(ctx, fmt.Errorf("request of %d bytes: %w", len(line), ErrRequestTooLarge))
 	}
 	cmd, err := remoteCommand(c.cfg.Session, "api-bridge", base64.StdEncoding.EncodeToString(line))
 	if err != nil {
-		return nil, err
+		return nil, Unsent(ctx, err)
 	}
 	s, _, err := c.start(ctx, cmd, false)
 	return s, err
 }
 
-// newSession opens an exec channel, failing unsent (Unsent) as soon as ctx
-// ends: ssh.Client.NewSession waits for the server's channel-open reply,
-// which a stalled server may never send, and no request has gone on the
-// channel yet (it goes with the command, after). A channel that opens after
-// ctx ended is closed.
+// newSession opens an exec channel, failing unsent (Unsent) when it cannot
+// (the connection closed, say), and as soon as ctx ends:
+// ssh.Client.NewSession waits for the server's channel-open reply, which a
+// stalled server may never send. No request has gone on the channel yet (it
+// goes with the command, after). A channel that opens after ctx ended is
+// closed.
 func (c *Client) newSession(ctx context.Context) (*ssh.Session, error) {
 	if ctx.Err() != nil {
 		return nil, Unsent(ctx, nil)
@@ -406,7 +415,10 @@ func (c *Client) newSession(ctx context.Context) (*ssh.Session, error) {
 	}()
 	select {
 	case o := <-done:
-		return o.sess, o.err
+		if o.err != nil {
+			return nil, Unsent(ctx, o.err)
+		}
+		return o.sess, nil
 	case <-ctx.Done():
 		go func() {
 			if o := <-done; o.sess != nil {
@@ -418,7 +430,9 @@ func (c *Client) newSession(ctx context.Context) (*ssh.Session, error) {
 }
 
 // start runs cmd on a new exec channel, with a stdin pipe when stdin is
-// set. The channel closes when ctx ends.
+// set. The channel closes when ctx ends. A failure before the exec request
+// is made fails unsent (Unsent); one making it (sess.Start) may have
+// reached herdr, and stays as it is.
 func (c *Client) start(ctx context.Context, cmd string, stdin bool) (*Stream, io.WriteCloser, error) {
 	sess, err := c.newSession(ctx)
 	if err != nil {
@@ -428,13 +442,13 @@ func (c *Client) start(ctx context.Context, cmd string, stdin bool) (*Stream, io
 	if stdin {
 		if in, err = sess.StdinPipe(); err != nil {
 			sess.Close()
-			return nil, nil, err
+			return nil, nil, Unsent(ctx, err)
 		}
 	}
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		sess.Close()
-		return nil, nil, err
+		return nil, nil, Unsent(ctx, err)
 	}
 	s := &Stream{sess: sess, r: bufio.NewReaderSize(stdout, 64<<10), stderr: &tailBuffer{}}
 	sess.Stderr = s.stderr
@@ -463,7 +477,7 @@ type Duplex struct {
 func (c *Client) OpenDuplex(ctx context.Context) (*Duplex, error) {
 	cmd, err := remoteCommand(c.cfg.Session, "remote-api-bridge")
 	if err != nil {
-		return nil, err
+		return nil, Unsent(ctx, err)
 	}
 	s, in, err := c.start(ctx, cmd, true)
 	if err != nil {
