@@ -366,10 +366,13 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 		if err == nil {
 			return connected, nil
 		}
-		if attempt == 0 && bound != nil && freshStatementMayAdmit(err) {
+		if bound != nil && freshStatementMayAdmit(err) {
+			// The host refused this exact statement: it never goes again.
 			t.statements.Drop(bound.host, bound.jws)
-			earlier = bound.admitted
-			continue
+			if attempt == 0 {
+				earlier = bound.admitted
+				continue
+			}
 		}
 		return nil, err
 	}
@@ -407,7 +410,7 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 		if earlier != nil {
 			admitted = func() bool { return earlier() && st.Live() }
 		}
-		bound = &boundStatement{statements: t.statements, host: host, cutoff: st.Exp, jws: st.JWS, admitted: admitted}
+		bound = &boundStatement{statements: t.statements, host: host, exp: st.Exp, cutoff: st.Exp, jws: st.JWS, admitted: admitted}
 	}
 	refusals, ok := t.attempt()
 	if !ok {

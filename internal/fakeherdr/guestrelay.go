@@ -78,13 +78,16 @@ type GuestRelay struct {
 	// Accounts is a herdr whose invitation says "acct":1 and which binds a
 	// redemption whose hello carries a statement, as herdr#440 does
 	// (src/guest/store.rs admit_in, admit_returning). CheckStatement
-	// checks one: the account it names (sub) and its exp, or herdr's
-	// refusal code. A bound share's hellos all need a statement for its
-	// account; its sessions take {"t":"account.refresh","account":<jws>}
-	// in band (src/guest/link/session.rs), a refused one ending the session
-	// with its code.
+	// checks one, given the session's authenticated (Noise) device key,
+	// against which herdr checks the statement's dev claim
+	// (src/guest/account.rs verify): the account it names (sub) and its
+	// exp, or herdr's refusal code. A bound share's hellos all need a
+	// statement for its account; its sessions take
+	// {"t":"account.refresh","account":<jws>} in band
+	// (src/guest/link/session.rs), a refused one ending the session with
+	// its code.
 	Accounts       bool
-	CheckStatement func(jws string) (sub string, exp time.Time, code string)
+	CheckStatement func(jws string, device []byte) (sub string, exp time.Time, code string)
 	// AccountDeadline, when set, is a bound session's deadline for a
 	// statement expiring at exp (the hello reply's deadline_unix); herdr's
 	// is exp + 60 s (src/guest/mod.rs).
@@ -414,7 +417,7 @@ func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, 
 			}
 			if bound {
 				if jws, ok := refreshStatement(chunk); ok {
-					if code := r.refresh(jws); code != "" {
+					if code := r.refresh(jws, handshake.PeerStatic()); code != "" {
 						_ = socket.Close(websocket.StatusNormalClosure, code)
 						return
 					}
@@ -534,7 +537,7 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 	var sub, refused string
 	var exp time.Time
 	if r.Accounts && hello.Account != "" {
-		sub, exp, refused = r.CheckStatement(hello.Account)
+		sub, exp, refused = r.CheckStatement(hello.Account, key)
 		if refused != "" {
 			sub = ""
 		}
@@ -613,11 +616,11 @@ func refreshStatement(chunk []byte) (string, bool) {
 
 // refresh records a bound session's in-band statement and checks it: the
 // code that ends the session, or "" when it holds.
-func (r *GuestRelay) refresh(jws string) string {
+func (r *GuestRelay) refresh(jws string, device []byte) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.refreshes = append(r.refreshes, jws)
-	sub, _, code := r.CheckStatement(jws)
+	sub, _, code := r.CheckStatement(jws, device)
 	if code == "" && sub != r.account {
 		code = "account_mismatch"
 	}

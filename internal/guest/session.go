@@ -462,21 +462,23 @@ func (s *session) sendRefresh(ctx context.Context, jws string, live func() bool)
 	return nil
 }
 
-// boundStatement is what a bound session was admitted with: the statement,
-// the session's cutoff (the host's deadline), where the next statement
-// comes from, and whether the sign-in its hello went in is still the
-// current one (admitted).
+// boundStatement is what a bound session was admitted with: the statement
+// and its exp, the session's cutoff (the host's deadline), where the next
+// statement comes from, and whether the sign-in its hello went in is still
+// the current one (admitted).
 type boundStatement struct {
 	statements StatementSource
 	host       string
 	jws        string
+	exp        time.Time
 	cutoff     time.Time
 	admitted   func() bool
 }
 
 // startRefresh keeps a bound session alive past its deadline (herdr closes
 // it then with statement_expired, session.rs:405-434): statementLead before
-// its cutoff, it asks for a statement expiring past it and sends it in band
+// its cutoff, it asks for a statement newer than the session's own (another
+// jws, expiring later) and past the cutoff, and sends it in band
 // (sendRefresh); the refresh is never acknowledged, so the new statement's
 // exp is the next cutoff (herdr's deadline is a little later). An ask that
 // fails, or gives nothing newer, is tried again after refreshRetry, until
@@ -496,7 +498,7 @@ func (s *session) startRefresh(clock Clock) {
 }
 
 func (s *session) refresh(ctx context.Context, clock Clock, b *boundStatement) {
-	cutoff := b.cutoff
+	cutoff, jws, exp := b.cutoff, b.jws, b.exp
 	wait := func(d time.Duration) bool {
 		if d <= 0 {
 			return ctx.Err() == nil
@@ -515,17 +517,17 @@ func (s *session) refresh(ctx context.Context, clock Clock, b *boundStatement) {
 		if !b.admitted() {
 			return
 		}
-		// One that outlives the cutoff: a statement expiring by it would
-		// not keep the session.
-		st, err := b.statements.Statement(ctx, b.host, cutoff.Sub(clock.Now())+time.Second)
+		// One that outlives both the cutoff and the session's own
+		// statement: asked for less, the cache gives the same one back.
+		st, err := b.statements.Statement(ctx, b.host, later(cutoff, exp).Sub(clock.Now())+time.Second)
 		switch {
 		case ctx.Err() != nil:
 			return
-		case err == nil && st.Exp.After(cutoff):
+		case err == nil && st.JWS != jws && st.Exp.After(exp) && st.Exp.After(cutoff):
 			if s.sendRefresh(ctx, st.JWS, func() bool { return b.admitted() && st.Live() }) != nil {
 				return
 			}
-			cutoff = st.Exp
+			cutoff, jws, exp = st.Exp, st.JWS, st.Exp
 		case !b.admitted():
 			// The session's sign-in ended: herdr ends it at its deadline.
 			return
@@ -538,6 +540,14 @@ func (s *session) refresh(ctx context.Context, clock Clock, b *boundStatement) {
 			}
 		}
 	}
+}
+
+// later is the later of a and b.
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // ended is why a pumped session is known to have ended, or nil: herdr's
@@ -694,10 +704,13 @@ func Accept(ctx context.Context, invite Invite, identity Identity, device string
 		if err == nil {
 			break
 		}
-		if attempt == 0 && statement.JWS != "" && freshStatementMayAdmit(err) {
+		if statement.JWS != "" && freshStatementMayAdmit(err) {
+			// The host refused this exact statement: it never goes again.
 			bind.Drop(host, statement.JWS)
-			earlier = live
-			continue
+			if attempt == 0 {
+				earlier = live
+				continue
+			}
 		}
 		return Access{}, err
 	}
