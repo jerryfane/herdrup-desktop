@@ -98,9 +98,12 @@ type GuestRelay struct {
 	inviteID string
 	secret   string
 	// issues is the guest id redeeming the invitation issues; empty is
-	// fake-guest-1.
-	issues string
-	srv    *http.Server
+	// fake-guest-1, or with Accounts accountGuest: 16 random bytes in
+	// unpadded base64url, as herdr's (src/guest/store.rs), which a bound
+	// share's shares item id needs.
+	issues       string
+	accountGuest string
+	srv          *http.Server
 
 	mu      sync.Mutex
 	guestID string
@@ -167,7 +170,7 @@ func NewGuestRelay() (*GuestRelay, error) {
 		_, _ = rand.Read(b)
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
-	return &GuestRelay{host: host, hostID: random(16), inviteID: random(16), secret: random(32)}, nil
+	return &GuestRelay{host: host, hostID: random(16), inviteID: random(16), secret: random(32), accountGuest: random(16)}, nil
 }
 
 // Listen serves the relay on addr and returns its http:// base URL, which
@@ -551,7 +554,11 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 		case refused != "":
 			return refuse(refused)
 		}
-		r.guestID, r.guestKeys, r.account = cmp.Or(r.issues, "fake-guest-1"), [][]byte{slices.Clone(key)}, sub
+		issued := cmp.Or(r.issues, "fake-guest-1")
+		if r.issues == "" && r.Accounts {
+			issued = r.accountGuest
+		}
+		r.guestID, r.guestKeys, r.account = issued, [][]byte{slices.Clone(key)}, sub
 	} else {
 		held := slices.ContainsFunc(r.guestKeys, func(k []byte) bool { return bytes.Equal(k, key) })
 		if hello.GuestID == "" || hello.GuestID != r.guestID || !held && (r.account == "" || sub != r.account) {

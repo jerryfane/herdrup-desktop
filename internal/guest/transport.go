@@ -396,7 +396,7 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 			}
 			stale = ErrSignInChanged
 		}
-		host := t.access.Endpoint.accountHost()
+		host := t.access.Endpoint.AccountHost()
 		st, err := t.statements.Statement(ctx, host, statementLead)
 		if err != nil {
 			// A lookup the change of sign-in spoiled is that change; any

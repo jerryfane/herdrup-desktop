@@ -828,3 +828,26 @@ func TestOnlyTheHostsOwnRefusalIsRetried(t *testing.T) {
 		t.Errorf("a refused hello reads %v, want ErrStatementInvalid", refused)
 	}
 }
+
+// Another device of the account opens the bound share with no invitation;
+// one whose sign-in changes while its statement is asked for sends
+// nothing, as a connect's first attempt.
+func TestOpeningASyncedShareStaysInItsSignIn(t *testing.T) {
+	h := newAccountHost(t, true)
+	access := h.accept(t, h.statements)
+	second, err := LoadIdentity(filepath.Join(t.TempDir(), "second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	share := Access{GuestID: access.GuestID, Endpoint: access.Endpoint, MachineLabel: access.MachineLabel, OwnerName: access.OwnerName, AgentName: access.AgentName}
+	// The second device presents its own statements (their dev claim is its key).
+	statements := h.statementsFor("acct", second, "second")
+	statements.onAsk = func() { statements.switchTo("acct") }
+	if _, err := Open(context.Background(), share, second, h.now, statements); !errors.Is(err, errHelloStale) || len(h.relay.Hellos()) != 1 || h.relay.Devices() != 1 {
+		t.Fatalf("an open across a switch: %v, hellos %q, devices %d; want nothing sent", err, h.relay.Hellos(), h.relay.Devices())
+	}
+	opened, err := Open(context.Background(), share, second, h.now, statements)
+	if err != nil || !opened.AccountBound || opened.ID() != access.ID() || h.relay.Devices() != 2 {
+		t.Fatalf("open: %+v, %v, devices %d", opened, err, h.relay.Devices())
+	}
+}
