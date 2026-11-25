@@ -133,13 +133,14 @@ func PlanHosts(local []LocalHost, mirror []RemoteHost, known map[string]bool) (H
 	return plan, nil
 }
 
-// Mirror is the account's hosts and prompts as last pulled, and the
-// revision to pull from next. A full pull replaces it; an incremental one
-// patches it.
+// Mirror is the account's hosts, prompts and shares as last pulled, and
+// the revision to pull from next. A full pull replaces it; an incremental
+// one patches it.
 type Mirror struct {
 	Rev     int64          `json:"rev"`
 	Hosts   []RemoteHost   `json:"hosts"`
 	Prompts []RemotePrompt `json:"prompts,omitempty"`
+	Shares  []RemoteShare  `json:"shares,omitempty"`
 }
 
 // Tombstones are the items a pull deleted, by collection: id to the
@@ -148,6 +149,7 @@ type Mirror struct {
 type Tombstones struct {
 	Hosts   map[string]int64
 	Prompts map[string]int64
+	Shares  map[string]int64
 }
 
 // Apply folds a pull into the mirror, in revision order (the pull is
@@ -158,6 +160,7 @@ func (m Mirror) Apply(p Pull) (Mirror, Tombstones) {
 	next, gone := Mirror{Rev: p.Rev}, Tombstones{}
 	next.Hosts, gone.Hosts = fold(m.Hosts, p.Full, items, "hosts", hostRow, func(h RemoteHost) (string, int64) { return h.ID, h.Rev })
 	next.Prompts, gone.Prompts = fold(m.Prompts, p.Full, items, "prompts", promptRow, func(h RemotePrompt) (string, int64) { return h.ID, h.Rev })
+	next.Shares, gone.Shares = fold(m.Shares, p.Full, items, "shares", shareRow, func(s RemoteShare) (string, int64) { return s.ID, s.Rev })
 	return next, gone
 }
 
@@ -168,6 +171,7 @@ func (m Mirror) Apply(p Pull) (Mirror, Tombstones) {
 func (m Mirror) Adopt(conflicts []Conflict) Mirror {
 	m.Hosts = adoptRows(m.Hosts, conflicts, "hosts", hostRow, func(h RemoteHost) string { return h.ID })
 	m.Prompts = adoptRows(m.Prompts, conflicts, "prompts", promptRow, func(p RemotePrompt) string { return p.ID })
+	m.Shares = adoptRows(m.Shares, conflicts, "shares", shareRow, func(s RemoteShare) string { return s.ID })
 	return m
 }
 
