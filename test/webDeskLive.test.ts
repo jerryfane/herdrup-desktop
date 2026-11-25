@@ -114,6 +114,12 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const deck = Uint8Array.from({ length: 70_000 }, (_, i) => i % 251);
  const [deckPath] = registerFiles([new File([deck], "deck.bin", { type: "application/octet-stream" })]);
  await gramDesk.paneAttachFiles!("view-1", [deckPath!]);
+ // #534: a caption already over the topic's cap is refused before the file is posted (no Gram for
+ // a message that can't go), and the file stays for the next send.
+ const grams = async () => (await currentLink()!.call<{ messages?: unknown[] }>("gram.list", { limit: 500 })).messages?.length ?? 0;
+ const gramsBefore = await grams();
+ expect(await desk.topicsSend("view-1", "t2", "x".repeat(32 * 1024 + 1))).toEqual({ mode: "", delivery: "refused", problem: "Messages are limited to 32 KB. Send it in parts." });
+ expect(await grams()).toBe(gramsBefore);
  expect(await desk.topicsSend("view-1", "t2", "With the deck")).toEqual({ mode: "turn", delivery: "sent" });
  const withFile: TranscriptPage = JSON.parse(await desk.topicTranscript("view-1", "t2", "", "", ""));
  const sent = withFile.entries.map((e) => e.text ?? "").find((t) => t.includes("With the deck"));

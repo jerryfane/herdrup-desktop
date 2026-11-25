@@ -841,6 +841,9 @@ export function createGuestDesk(env: DeskEnv) {
     } finally { readTopics(v); }
    };
    if (v.sending) throw new Error(ERR_SENDING);
+   // A caption already over the cap can't go with any file: refused before one is posted (#534);
+   // send checks the composed message too.
+   if (messageTooLong(text)) return { mode: "", delivery: "refused", problem: TOPIC_TOO_LONG };
    v.sending = true;
    try {
     let reply: TopicSendReply | null = null;
