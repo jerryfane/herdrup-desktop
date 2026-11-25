@@ -528,3 +528,31 @@ func TestAGuestRequestWithAnEndedContextIsNeverSent(t *testing.T) {
 		t.Fatalf("%d connects after the cancelled requests, want %d", got, connects)
 	}
 }
+
+// cancelOnEncode is request params whose encoding ends the call's context:
+// the request is cancelled while it is being encoded.
+type cancelOnEncode struct{ cancel context.CancelFunc }
+
+func (p cancelOnEncode) MarshalJSON() ([]byte, error) {
+	p.cancel()
+	return []byte(`{"target":"worker","text":"never"}`), nil
+}
+
+// #506 review: a request cancelled while it is encoded, on a warm session,
+// is never written: the write boundary checks the context before the first
+// frame, so herdr gets none of them, and each fails unsent (ErrNotSent with
+// context.Canceled).
+func TestAGuestRequestCancelledWhileEncodedIsNeverSent(t *testing.T) {
+	h := newReuseHost(t, true)
+	for range 20 {
+		h.list(t) // a warm session is idle for the next call
+		ctx, cancel := context.WithCancel(context.Background())
+		err := h.transport.Call(ctx, "agent.prompt", cancelOnEncode{cancel}, nil)
+		if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+		}
+	}
+	if got := prompts(h.relay); len(got) != 0 {
+		t.Fatalf("herdr got %d prompts cancelled while encoded: %q", len(got), got)
+	}
+}
