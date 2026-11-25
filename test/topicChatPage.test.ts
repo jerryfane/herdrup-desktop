@@ -318,3 +318,53 @@ test("a send with a file settles against the topic it was sent to, not the one o
  await openRow(TOPIC.title);
  expect(input!.value).toBe("");
 });
+
+/** A topics:changed for the open page: herdr's list of one topic, Board pack, in state. */
+function listed(token: string, state: string, stale: boolean) {
+ const ms = Date.now() - 60_000;
+ emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state, turns: 0, queued: 0, created_unix_ms: ms, last_activity_unix_ms: ms }],
+  offered: true, loaded: true, stale, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+}
+
+/** Starts dictation from the composer's mic; returns its token (Dictation.Start's). */
+async function dictate(slot: FakeElement): Promise<string> {
+ // Answered: the page's dictation queue waits on each call (one capture at a time).
+ answers["Dictation.Start"] = () => undefined; answers["Dictation.Stop"] = () => undefined;
+ slot.all().find(n => n.tagName === "button" && n.className.includes("composer-microphone"))!.click();
+ await settle();
+ const start = calls.filter(c => c.method === "Dictation.Start").at(-1);
+ if (!start) throw new Error("dictation didn't start");
+ return String(start.args[0]);
+}
+
+// #533: dictation started in Board pack kept writing after the composer moved to Beta: its next
+// result replaced Beta's draft. Changing drafts stops the capture.
+test("dictation stops when the composer moves to another topic; a late result writes nowhere", async () => {
+ const { slot, input, token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ const dictation = await dictate(slot);
+ emit("dictation:changed", { token: dictation, state: "recording", text: "Alpha words" });
+ await settle();
+ expect(input!.value).toBe("Alpha words");
+ await openRow("Beta");
+ expect(calls.filter(c => c.method === "Dictation.Stop").map(c => c.args[0])).toEqual([dictation]);
+ expect(input!.disabled).toBe(false);
+ type(input!, "Beta draft");
+ emit("dictation:changed", { token: dictation, state: "recording", text: "Alpha words and more" });
+ await settle();
+ expect(input!.value).toBe("Beta draft");
+});
+
+// #533: the field's disabled state is the topic's and dictation's together: stopping dictation in
+// a topic that closed meanwhile leaves its field disabled.
+test("stopping dictation keeps a closed topic's field disabled", async () => {
+ const { slot, input, token } = await openTopic();
+ await dictate(slot);
+ expect(input!.disabled).toBe(true);
+ listed(token, "closed", false);
+ await settle();
+ slot.all().find(n => n.tagName === "button" && n.className.includes("composer-microphone"))!.click();
+ await settle();
+ expect(input!.disabled).toBe(true);
+});

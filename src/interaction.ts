@@ -461,10 +461,14 @@ class Detail {
  dictation = new ComposerDictation(this.input, () => {
   const busy = this.dictation?.busy ?? false, paused = !!this.guestPaused;
   this.send.disabled = paused || this.sending || busy; this.prompts.button.disabled = paused || this.sending || busy;
-  // Dictation's render sets the field's disabled state from its own busy flag alone.
-  if (paused) this.input.disabled = true;
+  // Dictation's render sets the field's disabled state from its own busy flag alone: the field
+  // is the page's, the topic's (closed) and dictation's together (#533).
+  this.input.disabled = this.fieldDisabled();
   this.relayout();
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
+ /** The field takes no typing while the page is paused, dictation writes it, or it writes to a
+  *  closed topic. */
+ private fieldDisabled(): boolean { return !!this.guestPaused || (this.dictation?.busy ?? false) || !!this.sendsToTopic()?.closed(); }
  /** The pane's draft and unsent text (composerDraft.ts); the composer stays editable while a write
   *  is out (as Swift's replyBar), and the write's outcome settles there. */
  draft: PaneDraft;
@@ -548,13 +552,15 @@ class Detail {
   if (card.parentElement !== parent) parent.append(card, this.composerLines);
   const key = JSON.stringify(topic ? { ...this.target, topic: topic.topicID } : this.target);
   if (key !== this.draftKey) {
+   // Dictation writes the draft it started in: it stops before the field shows another (#533).
+   this.dictation.stop();
    this.stored(this.draft.flush()); this.draft.detach(this.draftView);
    this.draftKey = key; this.draft = composerDrafts.pane(key);
    this.draft.attach(this.draftView);
    this.input.value = this.draft.draft();
    this.drawUnsent(); this.drawOlder();
   }
-  this.input.disabled = !!this.guestPaused || !!topic?.closed();
+  this.input.disabled = this.fieldDisabled();
   this.input.placeholder = this.guestPaused?.placeholder ?? this.composerPlaceholder();
   this.relayout();
  }
@@ -828,7 +834,7 @@ class Detail {
   // render must not re-enable the input after the lines below.
   if (paused) this.dictation.stop();
   this.updateStatus(...this.shownStatus);
-  this.input.disabled = paused || !!this.sendsToTopic()?.closed();
+  this.input.disabled = this.fieldDisabled();
   this.input.placeholder = this.guestPaused?.placeholder ?? this.composerPlaceholder();
   this.send.disabled = paused || this.sending || this.dictation.busy;
   this.attach.disabled = paused || this.sending || this.picking;
@@ -1446,7 +1452,7 @@ class Detail {
  openChat(generation: number) {
   this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
   this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
-  this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
+  this.input.disabled = this.fieldDisabled(); this.send.disabled = this.sending || !!this.guestPaused;
   const composer = this.composerCard = el("div", "chat-composer");
   const actions = el("div", "composer-actions");
   this.attach.className = "composer-action";
