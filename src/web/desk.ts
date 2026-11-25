@@ -634,7 +634,8 @@ export function createGuestDesk(env: DeskEnv) {
   async inspectGuestInvitation(text: string): Promise<GuestInvitation> {
    const invite = await resolveInvite(text, { now: now(), fetchSealed: env.fetchSealed });
    await guestIdentity();
-   return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint() };
+   // The browser's redemption is plain: it never offers to keep a share on the account.
+   return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint(), account: false };
   },
 
   async sharedConnections(): Promise<PageAccess[]> {

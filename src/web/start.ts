@@ -58,7 +58,7 @@ export async function start(desk: StartDesk, payload: string, origin: string, ow
  const kept = (await desk.sharedConnections())[0];
  if (payload !== "") {
   try {
-   const access = await desk.acceptGuestInvitation(inviteText(payload, origin));
+   const access = await desk.acceptGuestInvitation(inviteText(payload, origin), "device");
    await desk.connectGuest(shareID(access));
    return { kind: "connected", id: shareID(access) };
   } catch (error) {

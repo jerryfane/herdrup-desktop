@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,9 +28,11 @@ import (
 
 // syncWorker is the account service's sync as AccountService src/sync.ts
 // keeps it: one revision per write, last write wins, tombstones for deletes,
-// the hosts and prompts allowlists and field rules (a bad change refuses the
-// whole push, 400), base_rev (a stale change is not written and comes back
-// in conflicts) and the account's caps (403 quota, the push rolled back).
+// the hosts, prompts and shares allowlists and field rules (a bad change
+// refuses the whole push, 400), base_rev (a stale change is not written and
+// comes back in conflicts) and the account's caps (403 quota, the push
+// rolled back). It also gives a guest share's statements (/v1/statements),
+// "stmt.<account>.<host>", for 10 minutes.
 type syncWorker struct {
 	mu      sync.Mutex
 	rev     int64
@@ -381,6 +384,20 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 		}
 		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", marker, w.n), "access_expires_in": 3600,
 			"refresh_token": fmt.Sprintf("r1.%022d.%043d", marker, w.n), "refresh_expires_in": 1})
+	case r.URL.Path == "/v1/statements":
+		var body struct {
+			Hosts []string `json:"hosts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		acct := cmp.Or(w.account, "acct")
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer a1."+fmt.Sprintf("%022d", 2)+".") {
+			acct = "acct-2"
+		}
+		statements := []any{}
+		for _, h := range body.Hosts {
+			statements = append(statements, map[string]any{"host": h, "jws": "stmt." + acct + "." + h})
+		}
+		reply(200, map[string]any{"statements": statements, "exp": 600})
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet:
 		// sync.ts reads now_ms before the snapshot it pages.
 		now := w.nowMs()
@@ -559,6 +576,28 @@ func validSyncBody(collection string, raw json.RawMessage) bool {
 		}
 		_, hasText := fields["text"]
 		return hasText
+	case "shares":
+		// sync.ts SCHEMAS.shares: the allowlist, and the four ids present.
+		for k, v := range fields {
+			switch k {
+			case "relay", "host_id", "node_pub", "guest_id", "agent_name", "owner_name", "machine_label":
+				if _, ok := v.(string); !ok {
+					return false
+				}
+			case "share_gram":
+				if _, ok := v.(bool); !ok {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		for _, k := range []string{"relay", "host_id", "node_pub", "guest_id"} {
+			if s, _ := fields[k].(string); s == "" {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

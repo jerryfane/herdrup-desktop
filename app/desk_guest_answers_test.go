@@ -107,7 +107,7 @@ func openGuestAgent(t *testing.T, relay *fakeherdr.GuestRelay, clock guest.Clock
 	d := newDesk(t.TempDir())
 	d.guestClock = clock
 	t.Cleanup(d.Disconnect)
-	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)))
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "device")
 	if err != nil {
 		t.Fatal(err)
 	}

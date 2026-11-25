@@ -71,7 +71,7 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
    async function redeem() {
     if (busy || disposed) return; busy = true; cancel.disabled = true; accept.disabled = true; accept.textContent = "Accepting…"; error.textContent = "";
     try {
-     const access = await Desk.acceptGuestInvitation(reviewed);
+     const access = await Desk.acceptGuestInvitation(reviewed, "device");
      input.value = ""; await saved();
      if (disposed) return;
      content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", `${access.agentName} is saved on this device.`), action("Open shared agent", () => {
