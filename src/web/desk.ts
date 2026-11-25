@@ -157,18 +157,20 @@ export function terminalWriteReceipt(error: unknown): string {
 }
 
 // The composer's reasons a plain terminal's text was written nothing (app desk_interaction_compose.go
-// unwritten): each is a definite not-sent, so the draft is kept.
+// unwritten): each is a definite failure, so the draft is kept. TERMINAL_TEXT_REFUSED is the page's
+// own, before any send (a NotSentError); the other two are herdr's refusals in the user's words.
 const TERMINAL_TEXT_REFUSED = "Write plain text on one line: line breaks and control characters would act on the terminal before Enter.";
 const TERMINAL_LINE_BREAK = "Write one line at a time: a line break would run the text before it.";
 const TERMINAL_PASTE_REFUSED = "This program can't take a pasted block. Write one line at a time.";
 
 /** A draft with a line break goes as one bracketed paste (herdr #517 pane.send_bracketed_text).
  *  The reason it was written nothing, when herdr's answer says so, else null (a write that may
- *  have arrived, or a not-sent with its own reason). A herdr without the method refuses it before
- *  any pane: as an unlisted method (invalid_request), or as an unknown one, which GuestClient
- *  maps to ErrUnsupported (unknown_method, or invalid_request naming the method as an unknown
- *  variant). A chat-scope grant may not write to a terminal (owner_forbidden), and a program with
- *  bracketed paste off takes none (bracketed_paste_unavailable). */
+ *  have arrived, or one that never left the page, with its own reason). A herdr without the
+ *  method refuses it before any pane: as an unlisted method (invalid_request), or as an unknown
+ *  one, which GuestClient maps to ErrUnsupported (unknown_method, or invalid_request naming the
+ *  method as an unknown variant). A chat-scope grant may not write to a terminal
+ *  (owner_forbidden), and a program with bracketed paste off takes none
+ *  (bracketed_paste_unavailable). */
 function bracketedRefusal(error: unknown): string | null {
  if (error instanceof ErrUnsupported) return TERMINAL_LINE_BREAK;
  if (!(error instanceof HerdrAPIError)) return null;
@@ -904,8 +906,12 @@ export function createGuestDesk(env: DeskEnv) {
       try {
        await v.active.client.call(multiline ? "pane.send_bracketed_text" : "pane.send_text", params, "ok", "", within(v));
       } catch (error) {
+       // herdr refused it, writing nothing: the user's reason, herdr's answer as its cause. The
+       // composer keeps the draft on any rejection; NotSentError stays for a write that never
+       // reached the socket.
        const refusal = multiline ? bracketedRefusal(error) : null;
-       failure = refusal !== null ? notSent(new Error(refusal)) : error;
+       if (refusal !== null) throw new Error(refusal, { cause: error });
+       failure = error;
       }
       return terminalWriteReceipt(failure);
      }
