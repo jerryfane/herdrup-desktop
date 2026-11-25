@@ -262,3 +262,17 @@ test("a long handover folds after about six lines with Show all; a short one has
  expect(body(long!).dataset.folded).toBe("true");
  expect(toggle(long!).textContent).toBe("Show all");
 });
+
+// #531: a saved desktop terminal's view (Desk.OpenTerminalView) carried topicSessions null, and the
+// page threw on its length before the terminal mounted.
+test("a saved terminal opens though its view carries no topic sessions", async () => {
+ answers = {
+  "Desk.OpenTerminalView": (_target: unknown, token: unknown) => ({ token, paneID: "p9", name: "Build logs", heading: "Build logs", group: "terminal", status: "Terminal", guest: false, guestGram: false, plainTerminal: true, askForm: false, topicSessions: null }),
+  "Desk.PaneMuted": () => false,
+ };
+ await page.selectInteraction(target, undefined, true);
+ await settle();
+ expect(doc.body.text()).not.toContain("topicSessions");
+ // The terminal's surface went up: its key bar is drawn (the fake DOM can't run xterm itself).
+ expect(withClass(doc.body, "terminal-key-scroll").length).toBe(1);
+});

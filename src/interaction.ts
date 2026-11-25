@@ -1139,7 +1139,8 @@ class Detail {
  dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.stored(this.draft.flush()); this.queuedSend?.cancel(); this.draft.detach(this.draftView); void Desk.closeAgentView(this.token); }
  /** Topics' text follows the chat's size. */
  textSurface(): TextSurface { return this.mode === "terminal" ? "terminal" : "chat"; }
- topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions.length); }
+ // A saved terminal's view from an older desk carries no list (#531): null is none.
+ topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions?.length); }
  resolvedMode(): ChatMode { return resolvedMode(this.asked, this.chatAvailable, this.topicsAvailable()); }
  mountTopics(view: AgentView) {
   const pane = new TopicsPane({
