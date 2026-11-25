@@ -111,6 +111,14 @@ func suggestionsDesk(t *testing.T, configure func(*fakeherdr.Topics), pong func(
 	if _, err := d.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
 		t.Fatal(err)
 	}
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { // the watch ends before the recorder is taken away
+		v.cancel()
+		v.topics.wait()
+	})
 	return d, fixture, func() []TopicsUpdate {
 		mu.Lock()
 		defer mu.Unlock()

@@ -402,7 +402,13 @@ func TestLedgerOverflowDoesNotLetALateListUndoAPatch(t *testing.T) {
 	for i := range 256 {
 		f.events <- `{"seq":` + strconv.Itoa(3+i) + `,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p9","agent_status":"idle","workspace_id":"w1"}}`
 	}
-	time.Sleep(quiet)
+	// The stream is handled in order: once this last change's patch is
+	// out, every change before it was recorded, so the ledger overflowed
+	// before the list in flight answers.
+	f.events <- `{"seq":259,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"blocked","workspace_id":"w1"}}`
+	if u := next(t, updates); firstGroup(u) != "needsYou" {
+		t.Fatalf("last patch: %q", firstGroup(u))
+	}
 	f.hold.Store(false)
 	f.release <- struct{}{}
 	if u := next(t, updates); firstGroup(u) != "needsYou" {

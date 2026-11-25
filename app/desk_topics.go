@@ -117,6 +117,10 @@ type topicsState struct {
 	// no timer.
 	retryOnClose func() bool
 	retries      int
+	// running counts the watch's goroutines (the follower, its
+	// subscription, a list read). Each starts under mu while the view is
+	// open, so once the view's context ended none starts.
+	running sync.WaitGroup
 }
 
 // TopicsAvailable reports whether the view's server serves an omp agent's
@@ -257,8 +261,12 @@ func (d *Desk) topicsWatch(v *interaction) {
 	}
 	ctx, cancel := context.WithCancel(v.ctx)
 	t.cancel = cancel
+	t.running.Add(1)
 	t.mu.Unlock()
-	go d.followTopics(ctx, v)
+	go func() {
+		defer t.running.Done()
+		d.followTopics(ctx, v)
+	}()
 }
 
 // followTopics: a guest polls every topicsGuestPoll; the owner follows
@@ -268,7 +276,9 @@ func (d *Desk) followTopics(ctx context.Context, v *interaction) {
 	poll := topicsGuestPoll
 	if !v.Guest {
 		events := make(chan struct{}, 1)
+		v.topics.running.Add(1) // the follower's own count is held meanwhile
 		go func() {
+			defer v.topics.running.Done()
 			err := v.client.Subscribe(ctx, engine.SubscribeOptions{
 				Subscriptions: []herdrapi.Subscription{{Value: herdrapi.SubscriptionAgentTopicsChanged{}}},
 				NoList:        true,
@@ -340,14 +350,20 @@ func (d *Desk) topicsChangedTopic(v *interaction, topicID string) {
 func (d *Desk) topicsRead(v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
+	if v.ctx.Err() != nil {
+		t.mu.Unlock()
+		return
+	}
 	if t.reading {
 		t.again = true
 		t.mu.Unlock()
 		return
 	}
 	t.reading = true
+	t.running.Add(1)
 	t.mu.Unlock()
 	go func() {
+		defer t.running.Done()
 		for {
 			d.topicsReadOnce(v)
 			t.mu.Lock()
