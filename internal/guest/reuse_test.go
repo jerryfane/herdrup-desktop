@@ -115,12 +115,12 @@ func newReuseHost(t *testing.T, multiRequest bool) *reuseHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	access, err := Accept(context.Background(), invite, identity, "Desktop", now)
+	access, err := Accept(context.Background(), invite, identity, "Desktop", now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.accepted = len(relay.Connects())
-	h.transport = NewTransport(access, identity, h.clock)
+	h.transport = NewTransport(access, identity, h.clock, nil)
 	t.Cleanup(func() { _ = h.transport.Close() })
 	return h
 }

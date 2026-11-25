@@ -13,6 +13,12 @@ export interface Access {
   agentTarget: string;
   endpoint: Endpoint;
   acceptedAt: string;
+  /**
+   * AccountBound is a share bound to the guest's HerdrUp account at its
+   * redemption: every hello for it carries a statement for that account
+   * (herdr src/guest/store.rs:1121-1128), and its sessions refresh it.
+   */
+  accountBound: boolean;
 }
 
 /** AccountDeleteInfo is what the account page needs to offer Delete account. */

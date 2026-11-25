@@ -52,6 +52,17 @@ type Endpoint struct {
 	HostPublicKey []byte `json:"hostPublicKey"`
 }
 
+// accountHost is the host id as account statements name it (their aud, and
+// the service's 22-character base64url host id): HostID, which an invite
+// may carry in either base64 alphabet, in unpadded base64url.
+func (e Endpoint) accountHost() string {
+	raw, err := decode64(e.HostID)
+	if err != nil {
+		return e.HostID
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
 func (e Endpoint) socketURL() (string, error) {
 	u, err := url.Parse(e.Relay)
 	if err != nil || !validRelay(u) {

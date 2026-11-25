@@ -227,7 +227,7 @@ export function pageAccess(a: Access): PageAccess {
  return {
   guestID: a.guestID, guestName: a.guestName, machineLabel: a.machineLabel, ownerName: a.ownerName, agentName: a.agentName, agentTarget: a.agentTarget,
   endpoint: { relay: a.endpoint.relay, hostID: a.endpoint.hostID, hostPublicKey: btoa(String.fromCharCode(...a.endpoint.hostPublicKey)) },
-  acceptedAt: goTime(a.acceptedAt),
+  acceptedAt: goTime(a.acceptedAt), accountBound: a.accountBound === true,
  };
 }
 

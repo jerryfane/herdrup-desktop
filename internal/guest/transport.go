@@ -87,6 +87,9 @@ type Transport struct {
 	// call takes it, so a session never carries two requests at once.
 	idleMu sync.Mutex
 	idle   *idleSession
+
+	// statements gives a bound share's statements (connect).
+	statements StatementSource
 }
 
 // idleSession is a session waiting for a call since since; taken closes
@@ -97,9 +100,11 @@ type idleSession struct {
 	taken   chan struct{}
 }
 
-func NewTransport(access Access, identity Identity, clock Clock) *Transport {
+// NewTransport makes a Transport for access. statements gives a bound
+// share's statements (Access.AccountBound); a plain share never asks.
+func NewTransport(access Access, identity Identity, clock Clock, statements StatementSource) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Transport{access: access, identity: identity, clock: clock, ctx: ctx, cancel: cancel}
+	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel}
 }
 func (t *Transport) Done() <-chan struct{} { return t.ctx.Done() }
 func (t *Transport) Close() error {
@@ -210,6 +215,7 @@ func (t *Transport) Call(ctx context.Context, method string, params, result any)
 	if connected.reply.Features.MultiRequest {
 		connected.startPump()
 	}
+	connected.startRefresh(t.clock)
 	line, sent, open, err := roundTrip(ctx, connected, request)
 	if err != nil {
 		if !sent && ctx.Err() != nil {
@@ -337,20 +343,39 @@ func (t *Transport) park(s *session) {
 }
 
 // connect opens a session for the access, unless the relay's backoff holds
-// connects back.
+// connects back. A bound share's hello carries a statement for its account
+// (herdr src/guest/store.rs:1121-1128 refuses one without), and the session
+// it opens keeps it fresh once started (startRefresh).
 func (t *Transport) connect(ctx context.Context) (*session, error) {
+	var bound *boundStatement
+	if t.access.AccountBound {
+		if t.statements == nil {
+			return nil, ErrAccountRequired
+		}
+		host := t.access.Endpoint.accountHost()
+		jws, exp, err := t.statements.Statement(ctx, host, statementLead)
+		if err != nil {
+			return nil, err
+		}
+		bound = &boundStatement{statements: t.statements, host: host, exp: exp, jws: jws}
+	}
 	refusals, ok := t.attempt()
 	if !ok {
 		return nil, ErrRateLimited
 	}
-	hello, err := json.Marshal(struct {
+	hello := struct {
 		Version int    `json:"v"`
 		GuestID string `json:"guest_id"`
-	}{1, t.access.GuestID})
+		Account string `json:"account,omitempty"`
+	}{Version: 1, GuestID: t.access.GuestID}
+	if bound != nil {
+		hello.Account = bound.jws
+	}
+	payload, err := json.Marshal(hello)
 	if err != nil {
 		return nil, err
 	}
-	connected, err := openSession(ctx, t.access.Endpoint, t.identity, hello)
+	connected, err := openSession(ctx, t.access.Endpoint, t.identity, payload)
 	if errors.Is(err, ErrRateLimited) {
 		t.limited()
 	}
@@ -360,6 +385,9 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 	if connected.reply.GuestID != t.access.GuestID {
 		connected.close()
 		return nil, ErrRevoked
+	}
+	if bound != nil && connected.reply.Account != nil {
+		connected.bound = bound
 	}
 	t.admitted(refusals, connected.reply.Features)
 	connected.handshook = t.clock.Now()
@@ -388,6 +416,7 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 		}
 		return nil, err
 	}
+	connected.startRefresh(t.clock)
 	defer func() {
 		if !succeeded {
 			connected.close()

@@ -95,6 +95,15 @@ func (d *Desk) InspectGuestInvitation(ctx context.Context, text string) (GuestIn
 	}
 	return GuestInvitation{MachineLabel: invite.MachineLabel, OwnerName: invite.OwnerName, AgentName: invite.AgentName, GuestName: invite.GuestName, Expires: invite.Expires, Fingerprint: identity.Fingerprint()}, nil
 }
+
+// guestStatements gives a bound share's statements, from the signed-in
+// account's cache; nil on a desk without an account client.
+func (d *Desk) guestStatements() guest.StatementSource {
+	if d.statements == nil {
+		return nil
+	}
+	return d.statements
+}
 func (d *Desk) SharedConnections() ([]guest.Access, error) { return d.guestStore.List() }
 func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Access, error) {
 	d.guestAcceptMu.Lock()
@@ -111,7 +120,9 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Ac
 	if err != nil || device == "" {
 		device = "Desktop"
 	}
-	access, err := guest.Accept(ctx, invite, identity, device, time.Now())
+	// Binding to the HerdrUp account waits for its choice (Add to my
+	// account / Only this device, herdrup#700): plain for now.
+	access, err := guest.Accept(ctx, invite, identity, device, time.Now(), nil)
 	if err != nil {
 		return guest.Access{}, err
 	}
@@ -143,7 +154,7 @@ func (d *Desk) ConnectGuest(id string) error {
 	if err != nil {
 		return err
 	}
-	transport := guest.NewTransport(*access, identity, d.guestClock)
+	transport := guest.NewTransport(*access, identity, d.guestClock, d.guestStatements())
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &link{id: "guest:" + id, shareLabel: access.MachineLabel, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
 	d.mu.Lock()
