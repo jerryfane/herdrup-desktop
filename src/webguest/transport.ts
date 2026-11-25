@@ -1,7 +1,8 @@
 // The guest relay protocol over a browser WebSocket, ported from internal/guest/session.go and
 // transport.go. A guest connection is a WebSocket and a Noise IK handshake:
 //   wss://<relay>/v1/guest/<host id>, binary frames, no subprotocol
-//   -> message 1: e, es, s, ss + hello {"v":1,"guest_id"} or redeem {"v":1,"invite_id","secret","device"}
+//   -> message 1: e, es, s, ss + hello {"v":1,"guest_id"} or redeem {"v":1,"invite_id","secret","device"},
+//      each with "account":"<statement>" for a share bound to a HerdrUp account
 //   <- message 2: e, ee, se + the host's admission reply
 //   -> one JSON-RPC request line, "\n"-terminated, split across frames at the plaintext limit
 //   <- reply lines, "\n"-delimited, frame boundaries unrelated to line boundaries.
@@ -20,9 +21,10 @@
 // before it opened is read as the relay's 429 (relayRefused) and starts Go's backoff: at worst a
 // shared machine that is offline, or a dropped network, is retried 15 s later instead of at once.
 
-import { closed, expired, GuestError, HerdrAPIError, hostOffline, notSent, other, ownerRefusal, rateLimited, relayRefused, revoked, timedOut } from "./errors";
+import { accountRefusal, closed, expired, freshStatementMayAdmit, GuestError, HerdrAPIError, hostOffline, notSent, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
+import { HELLO_MIN_LEFT_MS, REFRESH_MIN_LEFT_MS, type StatementSource } from "./owner";
 
 /** A call's whole round trip, handshake included (session.go:18). */
 export const ROUND_TRIP_LIMIT_MS = 60_000;
@@ -59,6 +61,10 @@ export interface Access {
  agentTarget: string;
  endpoint: Endpoint;
  acceptedAt: Date;
+ /** The share is bound to the HerdrUp account it was accepted with ("Add to my account"): every
+  *  hello carries that account's statement for the host, and the session keeps it fresh. Absent
+  *  (older grants) or false: a plain share, this browser's key alone. */
+ accountBound?: boolean;
 }
 
 /** The part of the WebSocket API the transport uses, so tests can inject one. */
@@ -104,6 +110,10 @@ export function closeError(code: number, reason: string): GuestError | null {
  if (code === CLOSE_RATE_LIMITED) return rateLimited();
  if (code === CLOSE_HOST_OFFLINE) return hostOffline();
  if (code === CLOSE_HOST_BUSY || reason === "host_busy") return other("The shared machine is busy. Try again shortly.");
+ // herdr ends an account-bound session with its code as the reason (link/session.rs: a missed
+ // statement deadline, a refused in-band refresh), which the relay passes on in a 1000 close.
+ const account = accountRefusal(reason);
+ if (account !== null) return account;
  if (code === 1000 && reason === "") return null;
  if (code === 1001) return hostOffline();
  if (code === 1009) return other("The shared machine rejected an oversized message.");
@@ -316,9 +326,11 @@ function parseHelloReply(plaintext: Uint8Array): HelloReply {
  return reply;
 }
 
-/** session.go:68-81; an owner hello's codes are ownerRefusal's. */
+/** session.go:68-81: a guest hello's refusal; an account-bound share's codes are accountRefusal's.
+ *  An owner link reads its own codes first (TransportLink.refusal). */
 function refusal(code: string): GuestError {
- if (code.startsWith("owner_") || code.startsWith("account_") || code.startsWith("statement_")) return ownerRefusal(code);
+ const account = accountRefusal(code);
+ if (account !== null) return account;
  switch (code) {
   case "unknown": case "revoked": return revoked();
   case "invite_used": return other("This invitation was already used. Ask the owner for a new one.");
@@ -396,7 +408,7 @@ class Session {
 /** The hello's session ended before it went out. */
 const helloStale = () => closed();
 
-async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory, live?: () => boolean): Promise<Session> {
+async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory, live?: () => boolean, refuse: (code: string) => GuestError = refusal): Promise<Session> {
  const address = socketURL(endpoint);
  if (endpoint.hostPublicKey.length !== 32) throw other("The shared machine's saved identity is damaged.");
  const handshake = new Initiator({ hostID: endpoint.hostID, hostPublicKey: endpoint.hostPublicKey, staticKey: identity });
@@ -421,7 +433,7 @@ async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8
    throw other("Could not verify the shared machine's identity. The secure connection was refused.");
   }
   const admission = parseHelloReply(established.payload);
-  if (!admission.ok) throw refusal(admission.error);
+  if (!admission.ok) throw refuse(admission.error);
   return new Session(socket, established.session, admission);
  } catch (error) {
   socket.close();
@@ -434,20 +446,35 @@ export interface AcceptOptions {
  now?: number;
  signal?: AbortSignal;
  webSocket?: WebSocketFactory;
+ /** "Add to my account": the statements of the HerdrUp account to bind the share to. Used only
+  *  for an invite whose host offers it (Invite.accounts); without it, or for any other invite,
+  *  the share is this browser's alone ("Only this device"), as before. */
+ account?: StatementSource;
 }
 
-/** Redeems an invitation for this browser's identity (session.go:214-246). */
+/** Redeems an invitation for this browser's identity (session.go:214-246). Bound to an account
+ *  (options.account), the hello carries its statement for the host (herdr guest/store.rs
+ *  admit_in); a statement the host refused as stale or invalid is dropped and a fresh one sent
+ *  once: the invite stays unused until a redemption is admitted. */
 export async function acceptInvite(invite: Invite, identity: StaticKey, device: string, options: AcceptOptions = {}): Promise<Access> {
  const now = options.now ?? Date.now();
  if (now >= invite.expires.getTime()) throw expired();
+ const statements = invite.accounts ? options.account : undefined;
  const { signal, dispose } = linkSignals([options.signal], ROUND_TRIP_LIMIT_MS);
  try {
-  const hello = invite.helloPayload(device);
   let connected: Session;
-  try {
-   connected = await openSession(invite.endpoint, identity, hello, signal, options.webSocket ?? browserWebSocket);
-  } finally {
-   hello.fill(0);
+  for (let attempt = 0; ; attempt++) {
+   const statement = statements === undefined ? undefined : await statements.get(invite.endpoint.hostID, HELLO_MIN_LEFT_MS, signal);
+   const hello = invite.helloPayload(device, statement?.jws);
+   try {
+    connected = await openSession(invite.endpoint, identity, hello, signal, options.webSocket ?? browserWebSocket, statement?.live);
+    break;
+   } catch (error) {
+    if (attempt === 0 && statement !== undefined && freshStatementMayAdmit(error)) { statements?.drop(invite.endpoint.hostID, statement.jws); continue; }
+    throw error;
+   } finally {
+    hello.fill(0);
+   }
   }
   connected.close();
   const reply = connected.reply;
@@ -458,6 +485,8 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
    guestID: reply.guestID, guestName: reply.name || invite.guestName, machineLabel: reply.machineLabel || invite.machineLabel,
    ownerName: reply.ownerName || invite.ownerName, agentName: reply.agent.name || invite.agentName, agentTarget: reply.agent.target,
    endpoint: invite.endpoint, acceptedAt: new Date(now),
+   // Bound when herdr says so: an account-bound session has a statement deadline.
+   ...(statements !== undefined && reply.deadlineUnix > 0 ? { accountBound: true } : {}),
   };
  } finally {
   dispose();
@@ -556,7 +585,7 @@ export function decodeReply(line: string): unknown {
 /** What a transport connects to and how it is admitted: the hello each connect sends, and the
  *  check of the host's reply (a guest grant's id; an owner's mode). An account-bound link also
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
-/** An account statement for an owner hello or refresh (POST /v1/statements): its JWS, when it
+/** An account statement for an account-bound hello or refresh (POST /v1/statements): its JWS, when it
  *  expires (ms), and whether the session it was issued in is still the page's. live() is required:
  *  nothing is sent with a statement whose session has ended. */
 export interface AccountStatement { jws: string; expMs: number; live(): boolean }
@@ -571,15 +600,40 @@ export interface TransportLink {
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<AccountStatement>;
+ /** The link's own reading of a hello's refusal code (an owner's), or null for the guest one. */
+ refusal?(code: string): GuestError | null;
 }
 
-/** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation. */
-export function guestLink(access: Access): TransportLink {
- const payload = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));
+/** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation.
+ *  An account-bound share's hello adds its account's statement for the host, and its session is
+ *  kept past each statement deadline with fresh ones (herdr guest/store.rs admit_returning); a
+ *  bound share with no statements to give is account_required before anything is dialed. */
+export function guestLink(access: Access, statements?: StatementSource): TransportLink {
+ const hostID = access.endpoint.hostID;
+ if (!access.accountBound) {
+  const payload = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));
+  return {
+   endpoint: access.endpoint,
+   hello: async () => ({ payload }),
+   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
+  };
+ }
+ const source = () => {
+  if (statements === undefined) throw accountRefusal("account_required")!;
+  return statements;
+ };
  return {
   endpoint: access.endpoint,
-  hello: async () => ({ payload }),
+  async hello(signal) {
+   const { jws, live } = await source().get(hostID, HELLO_MIN_LEFT_MS, signal);
+   return {
+    payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
+    refused: () => source().drop(hostID, jws),
+    live,
+   };
+  },
   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
+  statement: signal => source().get(hostID, REFRESH_MIN_LEFT_MS, signal),
  };
 }
 
@@ -765,12 +819,12 @@ export class GuestTransport {
    let hello: { payload: Uint8Array; refused?: () => void; live?: () => boolean } | null = null;
    try {
     hello = await this.#link.hello(signal);
-    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live);
+    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live, code => this.#link.refusal?.(code) ?? refusal(code));
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
     // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && error instanceof GuestError && error.kind === "statement" && hello?.refused) { hello.refused(); continue; }
+    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); continue; }
     throw error;
    }
   }

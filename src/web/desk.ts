@@ -271,6 +271,9 @@ export interface DeskEnv {
  /** An owner's per-machine state on this browser; localStorage unless a test passes its own. */
  openFolders?: MachineLists;
  mutedPanes?: MachineLists;
+ /** This page's account statements (statements.ts statementCache, the owner links' cache): a
+  *  share bound to the account connects with them. None: a bound share is account_required. */
+ statements?: StatementSource;
 }
 
 interface Active {
@@ -615,7 +618,7 @@ export function createGuestDesk(env: DeskEnv) {
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
-   const transport = new GuestTransport(guestLink(grant), identity, { now, webSocket: env.webSocket });
+   const transport = new GuestTransport(guestLink(grant, env.statements), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], conn: connection({ access: grant, transport }, print, "connecting", "", ""), listedAt: "" };
    active = l;
