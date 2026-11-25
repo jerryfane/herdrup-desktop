@@ -1,7 +1,8 @@
 // A fake document for tests that draw real page code (Bun has no DOM): the approve sheet's rows,
 // code field and sheet (webAccessModel.test.ts), the web owner's menus and agent sheets
-// (webAgentActions.test.ts), and the host home's parts and notice in the browser, and its sign-in
-// (webOwnerScreen.test.ts). It behaves as a browser's does only where that code depends on it.
+// (webAgentActions.test.ts), the host home's parts and notice in the browser, and its sign-in
+// (webOwnerScreen.test.ts), and the agent's page with an open topic (topicChatPage.test.ts). It
+// behaves as a browser's does only where that code depends on it.
 
 /** An event target that keeps the listeners it holds, to see a press stop being followed. A
  *  listener added with a signal goes when it aborts, and isn't added once it has. */
@@ -37,6 +38,9 @@ export class FakeDocument extends EventTarget {
  /** A text node: an element of tag "#text" holding the text. */
  createTextNode(text: string) { const node = new FakeElement("#text", this); node.textContent = text; return node; }
  getElementById(id: string) { return this.body.all().find(n => n.id === id) ?? null; }
+ /** The element under a point: the one a test points at (a file dropped there, say). */
+ pointed: FakeElement | null = null;
+ elementFromPoint(_x: number, _y: number) { return this.pointed; }
 }
 
 /** The DOM the page code uses, behaving as a browser's does where that code depends on it: events
@@ -59,7 +63,7 @@ export class FakeElement extends Listened {
  parent: FakeElement | null = null;
  readonly children: FakeElement[] = [];
  readonly attributes = new Map<string, string>();
- readonly classList = { toggle() {}, add() {}, remove() {} };
+ readonly classList = { toggle() {}, add() {}, remove() {}, contains: (name: string) => this.className.split(" ").includes(name) };
  /** Inline style: properties set directly or with setProperty (custom properties too). */
  readonly style: Record<string, string> = Object.defineProperty({}, "setProperty", { value(this: Record<string, string>, name: string, value: string) { this[name] = value; } });
  readonly dataset: Record<string, string> = {};
@@ -91,6 +95,7 @@ export class FakeElement extends Listened {
  }
  get firstChild(): FakeElement | null { return this.children[0] ?? null; }
  get nextSibling(): FakeElement | null { const siblings = this.parent?.children; return siblings?.[siblings.indexOf(this) + 1] ?? null; }
+ get parentElement(): FakeElement | null { return this.parent; }
  select() {}
  replaceChildren(...nodes: (FakeElement | string)[]) {
   for (const c of [...this.children]) c.remove();
@@ -101,6 +106,15 @@ export class FakeElement extends Listened {
  all(): FakeElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
  contains(n: unknown): boolean { return this.all().includes(n as FakeElement); }
  text(): string { return this.all().map(n => n.textContent).join(""); }
+ /** The first element inside matching a tag and classes ("div", ".a.b", "div.a"); null for any
+  *  other selector. */
+ querySelector(selector: string): FakeElement | null {
+  const m = /^([a-z0-9]*)((?:\.[\w-]+)*)$/i.exec(selector);
+  if (!m) return null;
+  const [, tag, classes] = m;
+  const wanted = classes!.split(".").filter(Boolean);
+  return this.all().find(n => n !== this && (!tag || n.tagName === tag) && wanted.every(c => n.className.split(" ").includes(c))) ?? null;
+ }
  querySelectorAll(tag: string) { return this.all().filter(n => n !== this && n.tagName === tag); }
  /** Drawn: neither it nor anything it sits in is hidden. */
  shown(): boolean { return !this.hidden && (this.parent?.shown() ?? true); }
@@ -128,6 +142,10 @@ export class FakeElement extends Listened {
  focus(): void { if (!this.disabled && this.connected()) this.ownerDocument.activeElement = this; }
  setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; }
  getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 100, height: 100 }; }
+ /** One box while drawn in the document, none otherwise (a browser's for an element not rendered). */
+ getClientRects() { return this.connected() && this.shown() ? [this.getBoundingClientRect()] : []; }
+ /** An animation that ends at once: what it animated stays as drawn. */
+ animate() { return { cancel() {}, finish() {}, finished: Promise.resolve(), onfinish: null }; }
  setPointerCapture(id: number) { this.captured.push(id); this.holding.add(id); }
  hasPointerCapture(id: number) { return this.holding.has(id); }
  releasePointerCapture(id: number) { this.holding.delete(id); }
