@@ -67,6 +67,10 @@ type Server struct {
 	// Gzip: with Frames, a hello asking compress:"gzip" gets it, and replies
 	// of 1024 bytes or more are framed gzipped (herdr #414).
 	Gzip bool
+	// EndMultiOn, when set, is asked of each request a --multi channel
+	// reads: true ends that channel there, unanswered, as a herdr that
+	// restarted under it does.
+	EndMultiOn func(method string) bool
 	// Handle answers a request. Whether a herdr advertises api_bridge_multi
 	// is up to the pong it returns for "ping"; see Pong.
 	Handle func(method string, params json.RawMessage) (any, *APIError)
@@ -569,6 +573,14 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 	for {
 		line, err := r.ReadBytes('\n')
 		line = bytes.TrimSuffix(line, []byte("\n"))
+		if len(line) > 0 && s.EndMultiOn != nil {
+			var head request
+			if json.Unmarshal(line, &head) == nil && s.EndMultiOn(head.Method) {
+				wg.Wait()
+				ch.Close()
+				return
+			}
+		}
 		if len(line) > 0 {
 			var req request
 			switch {

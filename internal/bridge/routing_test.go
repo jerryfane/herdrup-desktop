@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -368,5 +369,56 @@ func TestARequestHeldToOneChannelGoesOnNoOther(t *testing.T) {
 	// The channel's own opening ping, then work's ping and agent.list.
 	if len(held) != 3 || held[0] != held[1] || held[1] != held[2] {
 		t.Fatalf("requests %+v; want the held ping and agent.list on the one --multi channel", m.srv.Requests())
+	}
+}
+
+// heldPing sends a ping held to one --multi channel and returns the
+// channel it went on.
+func heldPing(t *testing.T, m *machine, c *bridge.Client) int {
+	t.Helper()
+	before := len(m.srv.Requests())
+	if err := c.OnOneChannel(context.Background(), func(call func(context.Context, string, any, any) error) error {
+		return call(context.Background(), "ping", nil, nil)
+	}); err != nil {
+		t.Fatalf("held ping: %v", err)
+	}
+	// The last ping on --multi: work's (a fresh channel's opening ping
+	// comes before it, on the same channel).
+	reqs := m.srv.Requests()[before:]
+	for i := len(reqs) - 1; i >= 0; i-- {
+		if reqs[i].Method == "ping" && reqs[i].Multi {
+			return reqs[i].Channel
+		}
+	}
+	t.Fatalf("requests %+v; want the held ping on --multi", reqs)
+	return 0
+}
+
+// #476 (#481): after the session's channel ended (a herdr restart), the
+// next held requests open a fresh channel and go there, rather than fail.
+func TestHeldRequestsOpenAFreshChannelAfterTheLastEnded(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	first := heldPing(t, m, c)
+	m.srv.EndMultiChannels()
+	eventually(t, "the client to hear its channel end", func() bool { return !bridge.MultiAlive(c) })
+	if second := heldPing(t, m, c); second == first {
+		t.Fatalf("the held ping went on channel %d again, want a fresh one", second)
+	}
+}
+
+// #476 (#481): the channel taken may already have ended without the client
+// having heard: the held ping dies with it, unanswered, and goes on a fresh
+// channel in its place (nothing was learnt from the ended one).
+func TestAHeldChannelThatEndsBeforeAnsweringIsReplaced(t *testing.T) {
+	var armed atomic.Bool
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.EndMultiOn = func(method string) bool { return method == "ping" && armed.CompareAndSwap(true, false) }
+	})
+	c := m.dial(t)
+	first := heldPing(t, m, c)
+	armed.Store(true)
+	if second := heldPing(t, m, c); second == first {
+		t.Fatalf("the held ping was answered on channel %d, the one that ended", second)
 	}
 }

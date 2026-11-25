@@ -267,21 +267,33 @@ func (c *Client) readyChannel(ctx context.Context) *multiChannel {
 	}
 }
 
+// maxHeldChannelTries is how many channels OnOneChannel takes, at most, for
+// a first request whose channel turns out to have ended before it answered.
+const maxHeldChannelTries = 3
+
 // OnOneChannel runs work with call, which sends each request on one --multi
 // channel of the session, the same one throughout: one `herdr api-bridge
 // --multi` process, so one herdr answers every one of them, and what one
 // answer says (a ping's capabilities) holds for the next. A herdr that
-// restarted or was rolled back comes with another channel. The channel is
-// taken first, opening it as Call would (a session whose capability is not
-// yet known is pinged per-request to learn it). A request goes on that
-// channel or nowhere: with no channel to be had, or once it ended before
-// the request was written, call fails with an error wrapping ErrNotSent,
-// and herdr does not have the request. Each call is otherwise as Call's.
+// restarted or was rolled back comes with another channel.
+//
+// The channel is taken first, opening a fresh one when none is live (after
+// a herdr restart, the last one ended), as Call would; a session whose
+// capability is not yet known is pinged per-request to learn it. The
+// channel taken may have ended already without the client hearing yet:
+// until it has answered a request, a request it failed to carry (not
+// written, or a ping it died under) goes on a fresh channel in its place,
+// since nothing yet was learnt from the ended one. Once the channel has
+// answered, a request goes on it or nowhere: once it ended before the
+// request was written, call fails with an error wrapping ErrNotSent, and
+// herdr does not have the request; nor does it with no channel to be had.
+// Each call is otherwise as Call's.
 func (c *Client) OnOneChannel(ctx context.Context, work func(call func(ctx context.Context, method string, params, result any) error) error) error {
 	m, err := c.heldChannel(ctx)
 	if err != nil {
 		return err
 	}
+	answered := false // m has answered a request of work's
 	return work(func(ctx context.Context, method string, params, result any) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%s: %w", method, err)
@@ -300,9 +312,25 @@ func (c *Client) OnOneChannel(ctx context.Context, work func(call func(ctx conte
 			return fmt.Errorf("%s: %w", method, ErrNotSent)
 		}
 		reply, err := m.do(ctx, id, line)
+		for tries := 1; err != nil && !answered && tries < maxHeldChannelTries && ctx.Err() == nil && !m.alive() &&
+			(errors.Is(err, ErrNotSent) || method == "ping"); tries++ {
+			// The channel ended before it answered anything: take a fresh
+			// one. A ping it died under is sent again; it changes nothing.
+			fresh, takeErr := c.heldChannel(ctx)
+			if takeErr != nil {
+				return fmt.Errorf("%s: %w", method, takeErr)
+			}
+			m = fresh
+			id = c.nextID(method)
+			if line, err = EncodeRequest(id, method, params); err != nil {
+				return err
+			}
+			reply, err = m.do(ctx, id, line)
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", method, err)
 		}
+		answered = true
 		if method == "ping" {
 			c.learnCapability(reply)
 		}
@@ -638,6 +666,12 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	if err != nil {
 		if n == 0 {
 			m.withdraw(id)
+			// Its stdin takes no more writes (the remote process is gone,
+			// though the read loop may not have heard yet): no new request
+			// goes on it, so the pool opens a fresh one.
+			m.mu.Lock()
+			m.retireLocked()
+			m.mu.Unlock()
 			return nil, ErrNotSent
 		}
 		// The remote process is gone. The read loop is about to fail every
