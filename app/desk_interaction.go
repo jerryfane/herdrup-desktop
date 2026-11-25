@@ -424,19 +424,12 @@ func (d *Desk) ChatPrompt(ctx context.Context, token, text string) (string, erro
 	defer v.at.link.pollGuestStatus()
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	// The page closed v (CloseAgentView, CloseTerminal, or another view
-	// mounted): a send its closing cancelled has no page to show it.
-	viewClosed := func() bool {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return d.interaction != v
-	}
 	chips := v.composer.Snapshot().Chips
 	if len(chips) == 0 {
 		if strings.TrimSpace(text) == "" {
 			return "", errors.New("prompt is empty")
 		}
-		return submitPanePrompt(ctx, v, text, viewClosed)
+		return submitPanePrompt(ctx, v, text)
 	}
 	if _, err := d.paneRecipient(v); err != nil {
 		return "", err
@@ -468,7 +461,7 @@ func (d *Desk) ChatPrompt(ctx context.Context, token, text string) (string, erro
 	var receipt string
 	err = v.composer.SendPrompt(ctx, paths, post, func(files []gramstore.Attachment) (bool, error) {
 		var submitErr error
-		receipt, submitErr = submitPanePrompt(ctx, v, paneAttachmentPrompt(text, files), viewClosed)
+		receipt, submitErr = submitPanePrompt(ctx, v, paneAttachmentPrompt(text, files))
 		return submitErr == nil, submitErr
 	})
 	return receipt, err

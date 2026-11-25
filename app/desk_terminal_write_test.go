@@ -59,47 +59,34 @@ func (a answering) Call(_ context.Context, _ string, _, result any) error {
 
 // A plain terminal's write, by how it failed: herdr's refusals keep the
 // draft with "one line at a time" (or the pasted-block variant); a write
-// the transport never sent keeps it with errTerminalNotSent, one line or a
-// block alike, as does one the connection's end cancelled (the view's
-// context ends with its link's); one the page's closing of the view
-// cancelled keeps it with that cancellation alone (its page is gone); a
-// timeout after the write is unconfirmed; ok is written.
+// never sent keeps it with errTerminalNotSent, one line or a block alike,
+// whatever the cause (the transport, a cancellation), or with
+// errTerminalTooLong when it was too large to send; a timeout after the
+// write is unconfirmed; ok is written.
 func TestTerminalWriteOutcomeByError(t *testing.T) {
 	lost := fmt.Errorf("pane.send_text: %w: %w", bridge.ErrNotSent, errors.New("ssh: connection closed"))
 	cancelled := fmt.Errorf("pane.send_bracketed_text: %w: %w", bridge.ErrNotSent, context.Canceled)
-	ended, end := context.WithCancel(context.Background())
-	end()
-	// What bridge.Client.Call answers a call whose context ended before it
-	// started.
-	cancelledFirst := fmt.Errorf("pane.send_text: %w", bridge.Unsent(ended, nil))
+	tooLarge := fmt.Errorf("pane.send_bracketed_text: %w: request of 98304 bytes: %w", bridge.ErrNotSent, bridge.ErrRequestTooLarge)
 	for _, c := range []struct {
 		name     string
 		text     string
 		err      error
-		ended    bool   // the request's context ended
-		closed   bool   // the page closed the view
 		kept     string // the error a kept draft shows; "" when not kept
 		delivery string
 	}{
-		{"invalid_request", twoLines, &bridge.APIError{Code: "invalid_request", Message: "bad request"}, false, false, string(errTerminalLineBreak), ""},
-		{"unknown_method", twoLines, &bridge.APIError{Code: "unknown_method", Message: "pane.send_bracketed_text"}, false, false, string(errTerminalLineBreak), ""},
-		{"bracketed paste off", twoLines, &bridge.APIError{Code: "bracketed_paste_unavailable", Message: "off"}, false, false, string(errTerminalPasteRefused), ""},
-		{"a block never sent", twoLines, lost, false, false, string(errTerminalNotSent), ""},
-		{"a line never sent", "printf hello", lost, false, false, string(errTerminalNotSent), ""},
-		{"a block the view's closing cancelled", twoLines, cancelled, true, true, context.Canceled.Error(), ""},
-		{"a line cancelled before the call", "printf hello", cancelledFirst, true, true, context.Canceled.Error(), ""},
-		{"a block the connection's end cancelled", twoLines, cancelled, true, false, string(errTerminalNotSent), ""},
-		{"a timeout after the write", twoLines, &bridge.APIError{Code: "timeout", Message: "no answer"}, false, false, "", "unconfirmed"},
-		{"ok", twoLines, nil, false, false, "", "written"},
+		{"invalid_request", twoLines, &bridge.APIError{Code: "invalid_request", Message: "bad request"}, string(errTerminalLineBreak), ""},
+		{"unknown_method", twoLines, &bridge.APIError{Code: "unknown_method", Message: "pane.send_bracketed_text"}, string(errTerminalLineBreak), ""},
+		{"bracketed paste off", twoLines, &bridge.APIError{Code: "bracketed_paste_unavailable", Message: "off"}, string(errTerminalPasteRefused), ""},
+		{"a block never sent", twoLines, lost, string(errTerminalNotSent), ""},
+		{"a line never sent", "printf hello", lost, string(errTerminalNotSent), ""},
+		{"a block never sent, cancelled", twoLines, cancelled, string(errTerminalNotSent), ""},
+		{"a block too large to send", twoLines, tooLarge, string(errTerminalTooLong), ""},
+		{"a timeout after the write", twoLines, &bridge.APIError{Code: "timeout", Message: "no answer"}, "", "unconfirmed"},
+		{"ok", twoLines, nil, "", "written"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := &interaction{AgentView: AgentView{PaneID: "w1:p1", PlainTerminal: true}, client: engine.New(answering{err: c.err})}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if c.ended {
-				cancel()
-			}
-			receipt, err := submitPanePrompt(ctx, v, c.text, func() bool { return c.closed })
+			receipt, err := submitPanePrompt(context.Background(), v, c.text)
 			if c.kept != "" {
 				if receipt != "" || err == nil || err.Error() != c.kept {
 					t.Fatalf("%q %v; want the draft kept with %q", receipt, err, c.kept)
@@ -131,9 +118,9 @@ func TestTerminalKeepsADraftTooLongToSend(t *testing.T) {
 
 // #506 review: a draft sent on a terminal view whose SSH connection has
 // closed (the view still open: the desk has not yet replaced its link) is
-// never sent: the composer keeps it, saying the connection was lost, and
-// nothing reaches the pane. The view's client is a real bridge client,
-// closed first, so the order is fixed.
+// never sent: the composer keeps it, saying nothing was sent, and nothing
+// reaches the pane. The view's client is a real bridge client, closed
+// first, so the order is fixed.
 func TestTerminalKeepsADraftSentAfterTheConnectionClosed(t *testing.T) {
 	writes := &fakeherdr.PaneWrites{Bracketed: true}
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -173,7 +160,7 @@ func TestTerminalKeepsADraftSentAfterTheConnectionClosed(t *testing.T) {
 		t.Fatal("the closed connection never ended")
 	}
 	v := &interaction{AgentView: AgentView{PaneID: "w1:p1", PlainTerminal: true}, client: engine.New(engine.Bridge(c))}
-	receipt, err := submitPanePrompt(context.Background(), v, twoLines, func() bool { return false })
+	receipt, err := submitPanePrompt(context.Background(), v, twoLines)
 	if receipt != "" || err == nil || err.Error() != string(errTerminalNotSent) {
 		t.Fatalf("%q %v; want the draft kept with %q", receipt, err, errTerminalNotSent)
 	}

@@ -136,7 +136,7 @@ func (e unwritten) Error() string { return string(e) }
 const (
 	errTerminalLineBreak    unwritten = "Write one line at a time: a line break would run the text before it."
 	errTerminalPasteRefused unwritten = "This program can't take a pasted block. Write one line at a time."
-	errTerminalNotSent      unwritten = "Nothing was sent: the connection to this machine was lost. Your draft is kept."
+	errTerminalNotSent      unwritten = "Nothing was sent. Your draft is kept."
 	errTerminalTooLong      unwritten = "Nothing was sent: this draft is too long to send. Your draft is kept."
 )
 
@@ -173,14 +173,12 @@ func bracketedWriteError(err error) error {
 // written fails the send with, so the composer keeps the draft and shows
 // it; nil when the write may have reached the terminal. A refusal before
 // anything reached it (unwritten, *ErrUnsupported) is itself. A write
-// never sent (bridge.ErrNotSent), one line or a block alike, is the
-// request's own cancellation when ctx ended on it because the page closed
-// the view (viewClosed; the page that would show it is gone). Otherwise
-// its error is logged, and it is errTerminalTooLong for a request too
-// large to send (bridge.ErrRequestTooLarge), else errTerminalNotSent: the
-// transport or the channel failed, or the connection ended under the
-// view (its context ends with the link's).
-func writeKept(ctx context.Context, err error, viewClosed func() bool) error {
+// never sent (bridge.ErrNotSent), one line or a block alike, is
+// errTerminalTooLong for a request too large to send
+// (bridge.ErrRequestTooLarge), else errTerminalNotSent, whatever the cause
+// (the transport, the channel, a cancellation: a page that closed the view
+// shows nothing); its error is logged.
+func writeKept(err error) error {
 	var unsupported *engine.ErrUnsupported
 	var kept unwritten
 	switch {
@@ -188,8 +186,6 @@ func writeKept(ctx context.Context, err error, viewClosed func() bool) error {
 		return err
 	case !errors.Is(err, bridge.ErrNotSent):
 		return nil
-	case ctx.Err() != nil && errors.Is(err, context.Canceled) && viewClosed():
-		return context.Canceled
 	}
 	log.Printf("terminal write: %v", err)
 	if errors.Is(err, bridge.ErrRequestTooLarge) {
@@ -200,14 +196,13 @@ func writeKept(ctx context.Context, err error, viewClosed func() bool) error {
 
 // Delivery uncertainty consumes the draft, just as native PromptRejection does:
 // resending a timeout or a lost response can duplicate a PTY write.
-// viewClosed reports whether the page has closed v (writeKept).
-func submitPanePrompt(ctx context.Context, v *interaction, text string, viewClosed func() bool) (string, error) {
+func submitPanePrompt(ctx context.Context, v *interaction, text string) (string, error) {
 	delivery, note := "submitted", ""
 	var err error
 	if v.PlainTerminal {
 		err = writeToTerminal(ctx, v, text)
 		delivery, note = "written", "Written to terminal; press Enter to run it."
-		if kept := writeKept(ctx, err, viewClosed); kept != nil {
+		if kept := writeKept(err); kept != nil {
 			return "", kept
 		}
 	} else {
