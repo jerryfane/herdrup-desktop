@@ -286,6 +286,12 @@ type link struct {
 	// session is the herdr session the board shows. Switching it keeps the
 	// SSH connection.
 	session string
+	// shareLabel names the machine to the guests of its agents' shares
+	// (guest.invite.create's machine_label, shown on the invite page and
+	// under SHARED WITH YOU): the saved machine's nickname, else its host,
+	// never user@host:port (machineLabel, as iOS SavedHost.label). A guest's
+	// link has its access's label.
+	shareLabel string
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
 	sessionGen  uint64
@@ -818,7 +824,7 @@ func (d *Desk) remember(m Machine) error {
 
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), session: m.Session}
+	l := &link{id: machineID(m), session: m.Session, shareLabel: machineLabel(m)}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()

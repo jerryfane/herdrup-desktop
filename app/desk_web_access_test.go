@@ -264,6 +264,40 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 	}
 }
 
+// The label sealed for the browser (the web owner's guest invites send it as
+// machine_label) is the machine's nickname, else its bare host: never
+// user@host, nor the user@host nickname pairing gives a machine.
+func TestWebAccessSealsTheMachineByItsNicknameElseItsHost(t *testing.T) {
+	for _, c := range []struct{ nickname, want string }{
+		{"", "127.0.0.1"},
+		{" Studio Mac ", "Studio Mac"},
+		{"dev@127.0.0.1", "127.0.0.1"},
+	} {
+		d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
+		d.storeMu.Lock()
+		st, err := d.load()
+		if err == nil {
+			st.Machines[st.find(machine)].Nickname = c.nickname
+			err = d.store(st)
+		}
+		d.storeMu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		typeCode(t, d, w)
+		if res, err := d.WebAccessApprove(context.Background(), "req-1", []string{machine}, "chat", d.WebAccessLengths()[1].ID); err != nil || len(res.Granted) != 1 || res.Granted[0] != c.want {
+			t.Fatalf("nickname %q: approve %+v, %v", c.nickname, res, err)
+		}
+		w.mu.Lock()
+		plain, err := account.OpenEnvelope(x25519Browser{w.browser}, w.approver, uint64(w.finish["seq"].(float64)), w.finish["sealed"].(string))
+		w.mu.Unlock()
+		var env webEnvelope
+		if err != nil || json.Unmarshal(plain, &env) != nil || len(env.Machines) != 1 || env.Machines[0].Label != c.want {
+			t.Fatalf("nickname %q: envelope %s, %v; want label %q", c.nickname, plain, err, c.want)
+		}
+	}
+}
+
 // A machine on a relay the web app can't reach gets no grant and is listed
 // as skipped; with nothing granted the request stays open.
 func TestWebAccessSkipsAMachineOnAnotherRelay(t *testing.T) {

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
@@ -90,6 +92,63 @@ func TestGuestInviteStaysWithSelectedPeerAndRejectsClosedView(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("invitation missing from selected machine %q", machine)
+		}
+	}
+}
+
+// The machine_label an invite carries (the invite page, SHARED WITH YOU) is
+// the saved machine's nickname, else its bare host: never the connection's
+// user@host:port, nor the user@host nickname pairing gives a machine. A
+// federated peer's agent keeps herdr's machine_label for it.
+func TestGuestInviteNamesTheMachineByItsNicknameElseItsHost(t *testing.T) {
+	const peerID = "11111111111111111111111111111111"
+	for _, c := range []struct{ nickname, want string }{
+		{"  Studio Mac  ", "Studio Mac"},
+		{"", "127.0.0.1"},
+		{"dev@127.0.0.1", "127.0.0.1"},
+	} {
+		var labels []string
+		var mu sync.Mutex
+		guests := fakeherdr.NewGuests()
+		d, _ := federatedDeskAs(t, c.nickname, func(s *fakeherdr.Server) {
+			original := s.Handle
+			s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+				if method == "agent.list" {
+					return map[string]any{"type": "agent_list", "agents": []any{
+						map[string]any{"pane_id": "w1:p1", "name": "Local", "agent_status": "working"},
+						map[string]any{"pane_id": peerID + "/w1:p1", "name": "Remote", "agent_status": "working", "machine_id": peerID, "machine_label": "render-box"},
+					}}, nil
+				}
+				if method == "guest.invite.create" {
+					var p herdrapi.GuestInviteCreateParams
+					_ = json.Unmarshal(raw, &p)
+					mu.Lock()
+					labels = append(labels, p.MachineLabel)
+					mu.Unlock()
+				}
+				if value, err, handled := guests.Handle(method, raw); handled {
+					return value, err
+				}
+				return original(method, raw)
+			}
+		})
+		b := d.Board()
+		for _, pane := range []string{"w1:p1", peerID + "/w1:p1"} {
+			if _, err := d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: pane}, "v"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.CreateGuestInvite(context.Background(), "v", "Taylor", "Owner", false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mu.Lock()
+		got := labels
+		mu.Unlock()
+		if want := []string{c.want, "render-box"}; !slices.Equal(got, want) {
+			t.Fatalf("nickname %q: invites named the machine %q, want %q", c.nickname, got, want)
+		}
+		if details, err := d.GuestShareDetails("v"); err != nil || details.MachineLabel != "render-box" {
+			t.Fatalf("peer share details %+v, %v", details, err)
 		}
 	}
 }

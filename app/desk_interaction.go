@@ -146,7 +146,9 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			TopicSessions: slices.ContainsFunc(agent.TopicSessions, func(t herdrapi.AgentTopicSession) bool { return t.TopicID != "" }),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
-		guestShare: shareRoute(agent, name, d.state.Machine),
+		// The machine as its guests see it (link.shareLabel), not the
+		// connection's user@host that ConnState.Machine shows.
+		guestShare: shareRoute(agent, name, l.shareLabel),
 		pageBudget: l.guest == nil && herdrapi.CapabilityTranscriptMaxBytes.Supported(l.caps),
 	}
 	if agent.Name != nil {
