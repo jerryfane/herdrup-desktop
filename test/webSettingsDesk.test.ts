@@ -25,7 +25,7 @@ import { accountLabel } from "../src/listExtras";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { AgentInfo } from "../src/web/board";
 import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, LOGOUT_TIMEOUT_MS, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
-import { CLOSING_WAIT_MS } from "../src/web/ownerLink";
+import { CLOSING_WAIT_MS, ownerSplit } from "../src/web/ownerLink";
 import { guestsDesk } from "../src/web/guestsDesk";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
@@ -1303,6 +1303,29 @@ for (const answered of [true, false]) {
   }
  });
 }
+
+// #479: ownerSplit owns both ends of a split, its operation's and its link's.
+test("a sent split whose link ends while its operation goes on is awaited CLOSING_WAIT_MS more, then given up", async () => {
+ jest.useFakeTimers();
+ try {
+  const answer = Promise.withResolvers<void>();
+  const host = ownerLink(async (method) => { if (method === "pane.split") { await answer.promise; return { type: "pane_info", pane: { pane_id: "late" } }; } });
+  await settleAll();
+  let outcome = "pending";
+  void ownerSplit(host.link, new AbortController().signal, { direction: "down" }).then((pane) => { outcome = pane; }, () => { outcome = "given up"; });
+  await settleAll();
+  expect(host.of("pane.split")).toHaveLength(1);
+  jest.advanceTimersByTime(60_000); await settleAll(); // link and operation open: still awaited
+  expect(outcome).toBe("pending");
+  host.life.abort(); // the link ends; the operation doesn't
+  jest.advanceTimersByTime(CLOSING_WAIT_MS - 1); await settleAll();
+  expect(outcome).toBe("pending");
+  jest.advanceTimersByTime(1); await settleAll();
+  expect(outcome).toBe("given up");
+ } finally {
+  jest.useRealTimers();
+ }
+});
 
 // ---- #360 post-merge review ----
 

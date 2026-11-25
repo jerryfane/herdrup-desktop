@@ -121,21 +121,22 @@ export async function ownerCall<T>(method: string, params: unknown, tag: string,
 }
 
 /** engine SplitPane on link, for an operation that lasts until `operation` ends (New terminal's
- *  creation, a Settings sign-in or logout): the new pane's id. Until the split is handed to the
- *  transport it ends with the operation or the link, unsent (NotSentError). Once sent, herdr may
- *  make the pane and only its answer names it: that is awaited while the operation lasts and
- *  CLOSING_WAIT_MS more once it has ended (ownerCall's unsent and reply window), so a slow relay
- *  admission takes none of that window. The window's listener and timer last only while the
- *  split is out. The pane it names is the caller's to keep or close. */
+ *  creation, a Settings sign-in or logout): the new pane's id. Both ends are the helper's: the
+ *  split lasts while the operation and the link both do. Until it is handed to the transport it
+ *  ends with either, unsent (NotSentError). Once sent, herdr may make the pane and only its answer
+ *  names it: that is awaited until either ends and CLOSING_WAIT_MS more (ownerCall's unsent and
+ *  reply window), so a slow relay admission takes none of that window. The window's listener and
+ *  timer last only while the split is out. The pane it names is the caller's to keep or close. */
 export async function ownerSplit(link: OwnerLink, operation: AbortSignal, params: Record<string, unknown>): Promise<string> {
+ const ends = AbortSignal.any([link.signal, operation]);
  const reply = new AbortController();
  let timer: ReturnType<typeof setTimeout> | undefined;
- const arm = () => { timer = setTimeout(() => reply.abort(operation.reason), CLOSING_WAIT_MS); };
- if (operation.aborted) arm(); else operation.addEventListener("abort", arm, { once: true });
+ const arm = () => { timer = setTimeout(() => reply.abort(ends.reason), CLOSING_WAIT_MS); };
+ if (ends.aborted) arm(); else ends.addEventListener("abort", arm, { once: true });
  try {
-  return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", params, "pane_info", { link, unsent: operation, signal: reply.signal })).pane.pane_id;
+  return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", params, "pane_info", { link, unsent: ends, signal: reply.signal })).pane.pane_id;
  } finally {
-  operation.removeEventListener("abort", arm);
+  ends.removeEventListener("abort", arm);
   clearTimeout(timer);
  }
 }

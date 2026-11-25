@@ -207,13 +207,13 @@ function closePane(link: OwnerLink, pane: string): Promise<unknown> {
 }
 
 /** BackgroundPane: a pane split off the focused one, not focused, in scope (on its link, while it is
- *  the open one), for an operation that lasts as long as the scope and `operation` (a sign-in's
- *  dialog, a logout's deadline): ownerLink.ts ownerSplit, as New terminal's split. Until it is
- *  sent it ends with them, unsent; once sent its answer is awaited up to CLOSING_WAIT_MS past
- *  their end, and the caller closes the pane. Callers check that the operation is still live right
- *  before it. */
-function backgroundPane(scope: SettingsScope, operation?: AbortSignal): Promise<string> {
- return ownerSplit(scope.link, operation ? AbortSignal.any([scope.signal, operation]) : scope.signal, { direction: "down" });
+ *  the open one), for an operation (a sign-in's dialog, a logout's deadline) that lasts no longer
+ *  than the Settings scope: ownerLink.ts ownerSplit, as New terminal's split, with the two ends
+ *  combined. Until it is sent it ends with either, or the link, unsent; once sent its answer is
+ *  awaited up to CLOSING_WAIT_MS past their end, and the caller closes the pane. Callers check
+ *  that the operation is still live right before it. */
+function backgroundPane(scope: SettingsScope, operation: AbortSignal): Promise<string> {
+ return ownerSplit(scope.link, AbortSignal.any([scope.signal, operation]), { direction: "down" });
 }
 
 // The auth pane rule (sign-in and logout). A send to the pane (the command, the code, Enter) goes
