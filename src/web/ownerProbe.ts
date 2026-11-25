@@ -66,13 +66,14 @@ export function probeList(machines: () => Promise<{ machines: readonly EnvelopeM
  return stop;
 }
 
-/** The line under a machine's name. */
+/** A machine's status at the end of its host home row: short, in words alone (no dot, no agent
+ *  count). */
 export function statusText(s: MachineStatus | undefined): string {
  switch (s?.kind) {
   case undefined: case "checking": return "Checking…";
-  case "online": return `Online · ${s.agents} ${s.agents === 1 ? "agent" : "agents"}`;
+  case "online": return "Online";
   case "offline": return "Offline";
-  case "ended": return "Not approved on this machine any more";
-  case "problem": return "Can't reach it now";
+  case "ended": return "Access ended";
+  case "problem": return "Can't reach it";
  }
 }

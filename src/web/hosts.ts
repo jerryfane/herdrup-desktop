@@ -1,12 +1,14 @@
 // The web owner's host home: src/hosts.ts for the browser build (vite.web.config.ts swaps it in, as
-// it swaps mygo). Where the desktop lists saved SSH hosts and pairs machines, the browser shows its
-// owner access (ownerApproval.ts, ownerScreen.ts): asking to be approved, then the machines it was
+// it swaps mygo). The desktop's host home (hostHome.ts: its header, account avatar, sections and
+// rows) without saved SSH hosts, pairing, invites or setup: in their place the browser's owner
+// access (ownerApproval.ts, ownerScreen.ts), asking to be approved, then the machines it was
 // approved for. Picking one opens the owner link (desk.ts connectOwner) and shows its agents; the
 // shell's back ("Choose host") comes here again, and Settings' Reconnect opens the same machine.
+// The account avatar opens Settings, HerdrUp account, where Sign out is.
 
 import type { initHosts as desktopHosts } from "../hosts";
-// The host home's place in the window (the sidebar gives way to it), as the desktop's.
-import "../hosts.css";
+import desktopIcon from "../../third_party/phosphor/web/desktop.svg?url";
+import { element as el, hostGlyph, hostHomeHeader, type BrowserAccess } from "../hostHome";
 import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
 import { errorText } from "../errors";
 import type { EnvelopeMachine } from "../webguest/approve";
@@ -14,21 +16,14 @@ import { AccountServiceError, SignedOutError } from "./account";
 import { bootMarks } from "./bootChoice";
 import { approvalRunning, closingLink, followSession, OwnerWork } from "./ownerSession";
 import { currentOwnerLink } from "./ownerLink";
-import { ownerAccess, ownerDesk, pageExit } from "./mygo";
+import { Desk, events, ownerAccess, ownerDesk, pageExit } from "./mygo";
 import { refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
 import { ownerKey } from "./browserKey";
 import { probeList, type MachineStatus } from "./ownerProbe";
 import { OwnerRuns } from "./ownerRuns";
-import { approvedMachines, arrives, ownerCard, thisBrowser, type OwnerCard } from "./ownerScreen";
+import { approvalParts, approvedMachines, machineAccess, machineSection, noticeCard, ownerLayout, thisBrowser, type MachineSection, type RowGlyphs } from "./ownerScreen";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
 import { statementCache } from "./statements";
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
- const e = document.createElement(tag);
- if (cls) e.className = cls;
- if (text !== undefined) e.textContent = text;
- return e;
-}
 
 /** The page starts over for whoever is signed in now (boot.ts chooses again): a sign-out, another
  *  account, or the person asking for the guest page (a choice, which takes the place of the page
@@ -37,9 +32,13 @@ function startOver(guestInstead = false) {
  pageExit.leave(() => { if (guestInstead) bootMarks().chooseGuest(); location.reload(); }, guestInstead);
 }
 
-export const initHosts: typeof desktopHosts = (container, _form, showAgents, _symbol, spinner) => {
- const screen = el("section", "web-welcome");
- container.replaceChildren(screen);
+export const initHosts: typeof desktopHosts = (container, _form, showAgents, symbol, spinner, _holdChanged, openAccount) => {
+ const home = el("div", "host-home");
+ const header = hostHomeHeader(symbol, openAccount);
+ header.title("Welcome back", "Signed in");
+ // A browser that can't be approved keeps its own notice over the page (ownerScreen.ts noticeCard).
+ const noticeScreen = el("section", "web-welcome"); noticeScreen.hidden = true;
+ container.replaceChildren(home, noticeScreen);
  const store = new IndexedDBOwnerStore();
  const browser = thisBrowser(navigator.userAgent, navigator.maxTouchPoints);
  const deviceName = browser.name;
@@ -51,9 +50,6 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
  // (restored, a new session) or the page starts over.
  const work = new OwnerWork<EnvelopeMachine>();
  let phase: OwnerPhase = { kind: "starting" };
- /** When the machine list arrived from the code (performance.now()), for its entrance; null when
-  *  the list showed without that step (ownerCard's arrivedAt). */
- let arrivedAt: number | null = null;
  let probing: (() => Promise<void>) | null = null;
  /** The machine picked last (connectOwner), for Settings' Reconnect; null before the first pick. */
  let opened: EnvelopeMachine | null = null;
@@ -62,10 +58,30 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
  let attempt = 0;
  /** The run whose list refresh is out (refreshShown), null when none is. */
  let refreshing: AbortSignal | null = null;
+ /** The rows' glyphs, once drawn (null before: the rows draw without them, then again). */
+ let glyphs: RowGlyphs | null = null;
+ void Promise.all([hostGlyph(symbol, "desktopcomputer", desktopIcon), symbol("chevron.right", 13, "semibold")]).then(([icon, chevron]) => {
+  glyphs = { icon: () => icon.cloneNode(true) as HTMLElement, chevron: () => chevron.cloneNode(true) as HTMLElement };
+  draw();
+ });
 
- // The owner screen's account row (as the guest page's welcome has it): signing out there, or in
- // Settings, ends the session.
- const account = new HerdrUpAccountPanel(() => draw());
+ // The header's avatar and title: the account as the service says (an older read never draws
+ // over a newer one), as the desktop's host home reads it.
+ let accountVersion = 0;
+ const refreshAccount = async () => {
+  const at = ++accountVersion;
+  const state = await Desk.accountState().catch(() => null);
+  const providers = state?.signedIn ? [] : await Desk.accountProviders().catch(() => null);
+  if (at !== accountVersion) return;
+  header.showAccount(state, providers === null || providers.length > 0);
+  header.title("Welcome back", state?.signedIn && state.displayHint ? `Signed in · ${state.displayHint}` : "Signed in");
+ };
+ events.accountChanged.on(() => { void refreshAccount(); });
+ void refreshAccount();
+
+ // The notice's account row (the notice as it was: signing out there, or in Settings, ends the
+ // session).
+ const account = new HerdrUpAccountPanel(() => { if (phase.kind === "unsupported") draw(); });
  followSession(ownerAccess.account, {
   // The session's work goes at once, its record (OwnerWork) saying what ran: the approval in
   // flight, the list's refresh, the probes, the link the end closes (closingLink: the one being
@@ -74,8 +90,10 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
   end: () => {
    work.end(() => ({ approval: approvalRunning(phase.kind), listRefresh: refreshing !== null, probes: probing !== null,
     link: closingLink(opening, currentOwnerLink()) }));
+   const wasOpening = opening !== null;
    runs.stop(); opening = null; refreshing = null; attempt++;
    if (probing !== null) { void probing(); probing = null; }
+   if (wasOpening) draw();
   },
   startOver: () => startOver(),
   // The same account read back after a refused sign-out: what the end stopped starts again under
@@ -105,25 +123,36 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
    const record = phase.record;
    const key = await ownerKey(ownerAccess.identities).catch(() => null);
    return key === null ? null : { machines: approvedMachines(record).machines, key };
-  }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); shown.showStatus?.(hostID, status); }, { signal: signal! });
+  }, statements, deviceName, (hostID, status) => { statuses.set(hostID, status); shown?.showStatus(hostID, status); }, { signal: signal! });
  }
 
- /** The card on screen: a probe's status goes into its row in place; with no row for the machine
-  *  (another screen, or a machine this list doesn't have) the status waits in statuses for the
-  *  next drawing. */
- let shown: Pick<OwnerCard, "showStatus"> = {};
+ /** The machines on screen: a probe's status goes into its row in place; with no row for the
+  *  machine (the approval shows, or a machine this list doesn't have) the status waits in
+  *  statuses for the next drawing. */
+ let shown: MachineSection | null = null;
  function draw() {
-  const card = ownerCard(phase, browser, { again: begin, guestInstead: () => startOver(true), open: m => open(m) }, spinner, statuses, arrivedAt);
-  if (account.available) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), account.root); card.root.append(part); }
-  screen.replaceChildren(card.root);
-  shown = card;
+  const layout = ownerLayout(phase);
+  shown = null;
+  noticeScreen.hidden = layout.view !== "notice";
+  home.hidden = layout.view === "notice";
+  if (layout.view === "notice") {
+   const card = noticeCard(browser, () => startOver(true));
+   if (account.available) { const part = el("div", "web-welcome-account"); part.append(el("h2", "", ACCOUNT_TITLE), account.root); card.append(part); }
+   noticeScreen.replaceChildren(card);
+   home.replaceChildren(header.root);
+  } else if (layout.view === "list") {
+   shown = machineSection(layout.record, statuses, glyphs, opening?.hostID ?? null, spinner, m => open(m));
+   home.replaceChildren(header.root, shown.root);
+  } else {
+   home.replaceChildren(header.root, ...approvalParts(layout, browser, { again: begin, guestInstead: () => startOver(true) }, spinner));
+  }
   probe();
  }
 
  /** Opens an approved machine: its owner link, then the shell's agents (show; a link opened again
   *  in place doesn't change what shows). Picking the machine whose link is open and usable (the
   *  owner Desk says, from that link's own state) goes straight back to it; again (Reconnect, a
-  *  restored session) opens it anew. */
+  *  restored session) opens it anew. Its row says "Connecting…" meanwhile, as the desktop's. */
  function open(m: EnvelopeMachine, again = false, show = true) {
   const signal = work.signal;
   if (signal === null) return;
@@ -132,9 +161,11 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
   opening = m;
   statuses.delete(m.hostID);
   const at = ++attempt;
+  draw();
   ownerDesk.connectOwner(m, statements, deviceName, signal).then(() => {
    if (at !== attempt) return;
    opening = null;
+   draw();
    if (show) showAgents();
   }, (error: unknown) => {
    if (at !== attempt) return;
@@ -167,11 +198,10 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
   *  goes the same way. */
  function begin() {
   if (work.signal === null) return;
-  phase = { kind: "starting" }; arrivedAt = null;
+  phase = { kind: "starting" };
   runs.begin(ownerAccess.account.current?.accountID,
    run => runApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store, deviceName }, (p: OwnerPhase) => {
     if (!runs.isCurrent(run)) return;
-    if (arrives(phase.kind, p.kind)) arrivedAt = performance.now();
     phase = p;
     if (p.kind === "approved") void refreshShown(run, p.record);
     draw();
@@ -192,5 +222,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, _sy
    if (opened === null) throw new Error("Choose a machine before reconnecting.");
    open(opened, true);
   },
+  /** The opened machine's access, as the newest list has it (Settings → Machines). */
+  access: (): BrowserAccess | null => opened === null || phase.kind !== "approved" ? null : machineAccess(phase.record, opened.hostID),
  };
 };

@@ -114,6 +114,11 @@ export class HerdrUpAccountPanel {
  /** The index row's value. */
  summary(): string { return this.state?.signedIn ? "Signed in" : "Not signed in"; }
  get signedIn(): boolean { return !!this.state?.signedIn; }
+ /** The providers the service lists for sign-in, as last read (refresh). */
+ get signInProviders(): readonly string[] { return this.providers; }
+ /** What went wrong last, as the panel shows it ("" for nothing): a sign-in that came back with
+  *  an error, a service that couldn't be reached. */
+ get problem(): string { return this.state?.problem ?? ""; }
 
  /** Whether the service offers sign-in, and the session as the app holds it; `check` asks the
   *  service too (a removed device shows signed out). A service that can't be reached keeps the
@@ -503,17 +508,23 @@ function platformName(platform: string): string {
  }
 }
 
-/** Desktop's first-launch sign-in (1B): before the host home on a first launch, answered once. */
 /** AccountWelcome.decide's answer: hidden, or shown with the providers it offers (never without). */
 export type WelcomeDecision = { show: false } | { show: true; providers: readonly string[] };
 
+/** The way past the sign-in that isn't an account, in place of "Set up without an account": the
+ *  browser's guest page (web/main.ts), with its own words under the buttons. */
+export interface WelcomeWay { label: string; foot: string; take(): void }
+
+/** Desktop's first-launch sign-in (1B): before the host home on a first launch, answered once.
+ *  The browser's signed-out page is the same screen, with the guest's way (other) as its third
+ *  button; it shows whenever the browser is signed out, so it answers nothing for next time. */
 export class AccountWelcome {
  readonly root = el("section", "account-welcome");
  private waiting = false;
  private providers: string[] = [];
  private shownFor = false;
 
- constructor(private readonly done: () => void) {
+ constructor(private readonly done: () => void, private readonly other: WelcomeWay | null = null) {
   this.root.hidden = true;
   this.root.setAttribute("aria-label", "Sign in");
   this.root.dataset.smoke = "welcome"; // the first-run smoke's hook (app/smoke.go)
@@ -534,10 +545,12 @@ export class AccountWelcome {
   return { show: true, providers };
  }
 
- /** Puts a decision on screen: the sign-in drawn the first time it shows, or hidden. */
- commit(decision: WelcomeDecision) {
+ /** Puts a decision on screen: the sign-in drawn the first time it shows (with problem, what went
+  *  wrong before it showed: a sign-in that came back with an error), or hidden. */
+ commit(decision: WelcomeDecision, problem = "") {
   if (!decision.show) { this.root.hidden = true; return; }
-  if (!this.shownFor) { this.providers = [...decision.providers]; this.shownFor = true; this.draw(""); }
+  if (!this.shownFor) { this.providers = [...decision.providers]; this.shownFor = true; this.draw(problem); }
+  else if (problem) this.draw(problem);
   this.root.hidden = false;
  }
 
@@ -547,7 +560,8 @@ export class AccountWelcome {
  }
 
  private draw(problem: string) {
-  const mark = el("img", "account-welcome-mark"); mark.src = "/herdrup/app-logo.png"; mark.alt = "";
+  // BASE_URL: the browser build serves public/ under /web/ (vite.web.config.ts runtimeAssets).
+  const mark = el("img", "account-welcome-mark"); mark.src = `${import.meta.env.BASE_URL}herdrup/app-logo.png`; mark.alt = "";
   const top = el("div", "account-welcome-top");
   top.append(mark, el("h1", "", "HerdrUp"), el("p", "account-welcome-lead", "Sign in to your HerdrUp account."));
   const actions = el("div", "account-welcome-actions");
@@ -555,12 +569,12 @@ export class AccountWelcome {
    this.waiting = true; this.draw("");
    void Desk.accountSignIn(provider).catch(error => { this.waiting = false; this.draw(errorText(error)); });
   }));
-  const skip = el("button", "account-welcome-skip button-plain button-large", "Set up without an account"); skip.type = "button"; skip.dataset.smoke = "welcome-skip";
-  skip.onclick = () => this.finish();
+  const skip = el("button", "account-welcome-skip button-plain button-large", this.other?.label ?? "Set up without an account"); skip.type = "button"; skip.dataset.smoke = "welcome-skip";
+  skip.onclick = () => { if (this.other) this.other.take(); else this.finish(); };
   actions.append(skip);
   if (this.waiting) actions.append(el("p", "account-note", "Finish signing in in your browser."));
   if (problem) { const line = el("p", "account-note account-problem", problem); line.setAttribute("role", "status"); actions.append(line); }
-  const foot = el("p", "account-welcome-foot", "Keys and pairing secrets stay on this computer. You can sign in later in Settings.");
+  const foot = el("p", "account-welcome-foot", this.other?.foot ?? "Keys and pairing secrets stay on this computer. You can sign in later in Settings.");
   this.root.replaceChildren(top, actions, foot);
  }
 }

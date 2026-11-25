@@ -20,9 +20,9 @@ import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { start, takeFragment, welcome, type WelcomeState } from "./start";
-import { ACCOUNT_TITLE, HerdrUpAccountPanel } from "../herdrupAccount";
+import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAccount";
 import { pageExit, signInReturned } from "./mygo";
-import { boot, bootMarks } from "./bootChoice";
+import { ACCOUNT_LOOKUP_MS, boot, bootMarks } from "./bootChoice";
 import { boardAfter, connectionChanged } from "../shellModel";
 
 type GuestTab = "agents" | "gram" | "settings";
@@ -76,6 +76,17 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 const ownerWanted = (shown: WelcomeState) => account.signedIn && shown.owner === null && !shown.error && !boot.guestInstead;
 let ownerExit: "leaving" | "stays" | null = null;
 
+/** Signed out on a first visit (no invite's failure, no share left): the desktop's sign-in
+ *  (AccountWelcome) while the service offers it, with the guest's way as its third button, which
+ *  shows the invite's words (the plain screen) in its place for this load. */
+let guestChosen = false;
+const signInScreen = new AccountWelcome(() => {}, {
+ label: "Use a guest invitation instead",
+ foot: "Sign in with the account your HerdrUp app uses. Got an invite link from someone? Open it instead: it needs no account.",
+ take: () => { guestChosen = true; showWelcome(shownWelcome); },
+});
+const signInFirst = (shown: WelcomeState) => !guestChosen && shown.owner === null && !shown.error && !account.signedIn && account.signInProviders.length > 0;
+
 /** Shows the screen for shown (null hides it): the words asking for an invite. */
 function showWelcome(shown: WelcomeState | null) {
  shownWelcome = shown;
@@ -89,6 +100,12 @@ function showWelcome(shown: WelcomeState | null) {
    showWelcome(shownWelcome);
    return "stayed";
   });
+  return;
+ }
+ if (signInFirst(shown)) {
+  signInScreen.commit({ show: true, providers: account.signInProviders }, account.problem);
+  welcomeView.replaceChildren(signInScreen.root);
+  render();
   return;
  }
  const w = welcome(shown);
@@ -217,11 +234,16 @@ async function init() {
  board = await Desk.board();
  await document.fonts.ready;
  ready = true;
+ // The plain first screen is the sign-in while the service offers it (signInFirst): the panel is
+ // asked before it shows, so the invite's words don't show first; a service slower than boot's
+ // own wait gets the invite's words, and the sign-in in their place once it answers.
+ const plain = started.kind === "welcome" && started.welcome.owner === null && !started.welcome.error;
+ if (plain) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);
  showWelcome(started.kind === "welcome" ? started.welcome : null);
  // Back from the account service (?account=1 or ?account_error=) with a share: its Settings,
  // where the result shows. Either way the panel is asked once, so the result shows once.
  if (started.kind === "connected" && signInReturned) guestActions.settings();
- else void account.refresh(true);
+ else if (!plain) void account.refresh(true);
 }
 
 void init();

@@ -139,7 +139,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
    // a service this browser can't follow, never an approval to take.
    const taken = approver !== null && await takeApproval(deps, acct, devicePub, key, approver, onPhase, signal, sleep);
    if (taken || signal.aborted) return;
-   // What failed only: the guide offers the way on (ownerScreen.ts ownerLayout's retry).
+   // What failed only: the approval offers the way on (ownerScreen.ts ownerLayout's retry).
    onPhase({ kind: "failed", problem: "HerdrUp approved this browser, but its list of machines didn't arrive or didn't open." });
    return;
   }
