@@ -7,9 +7,12 @@ import { afterEach, expect, jest, test } from "bun:test";
 import { GuestError } from "../src/webguest/errors";
 import { generateIdentity, MemoryIdentityStore, staticKey } from "../src/webguest/identity";
 import { decodeInviteJSON, Invite } from "../src/webguest/invite";
-import type { StatementSource } from "../src/webguest/owner";
-import { acceptInvite, closeError, guestLink, GuestTransport, REFRESH_AHEAD_MS, type Access } from "../src/webguest/transport";
+import { REFRESH_AHEAD_MS, type StatementSource } from "../src/webguest/accountStatement";
+import { acceptInvite, closeError, guestLink, GuestTransport, type Access } from "../src/webguest/transport";
+import { AccountServiceError, SignedOutError } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
+import { events } from "../src/web/events";
+import { boundShareStatements, statementCache } from "../src/web/statements";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { CONNECTS_LIMIT_MS, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
@@ -23,11 +26,20 @@ const relayWith = (serve: Parameters<typeof startRelay>[0]["serve"]) => { const 
 const endpointOf = (relay: TestRelay) => ({ relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic });
 const identity = async () => staticKey(await generateIdentity());
 
-/** Statements jws-1, jws-2, …, each fresh for 600 s, the hosts asked for, and what was dropped. */
-function statements(): StatementSource & { issued: number; hosts: string[]; dropped: string[][] } {
+/** Statements jws-1, jws-2, …, each fresh for 600 s and live while the sign-in it was issued in
+ *  lasts (switchAccount starts another), the hosts asked for, and what was dropped. afterGet runs
+ *  once a statement is issued, before it is handed over. */
+function statements(): StatementSource & { issued: number; hosts: string[]; dropped: string[][]; session: number; switchAccount(): void; afterGet: ((n: number) => void) | null } {
  const s = {
-  issued: 0, hosts: [] as string[], dropped: [] as string[][],
-  async get(host: string) { s.issued++; s.hosts.push(host); return { jws: `jws-${s.issued}`, expMs: Date.now() + 600_000, live: () => true }; },
+  issued: 0, hosts: [] as string[], dropped: [] as string[][], session: 1, afterGet: null as ((n: number) => void) | null,
+  switchAccount() { s.session++; },
+  async get(host: string) {
+   s.issued++; s.hosts.push(host);
+   const mine = s.session;
+   const got = { jws: `jws-${s.issued}`, expMs: Date.now() + 600_000, live: () => s.session === mine };
+   s.afterGet?.(s.issued);
+   return got;
+  },
   drop(host: string, jws: string) { s.dropped.push([host, jws]); },
  };
  return s;
@@ -257,3 +269,112 @@ test("a bound session the host closes with statement_expired fails its call with
  expect((error as GuestError).kind).toBe("statement_expired");
  transport.close();
 }, CONNECTS_LIMIT_MS);
+
+test("a statement_expired close says neither a statement nor a grant (an owner's grant ends with it too)", () => {
+ expect(closeError(1000, "statement_expired")!.message).toBe("The shared machine ended the connection when its authorization expired. Try again.");
+});
+
+// ---- One sign-in per redemption and per link (#518 review) ----
+
+const CHANGED = "Your HerdrUp account changed; open the invite again";
+const kindAndMessage = (error: unknown) => error instanceof GuestError ? [error.kind, error.message] : [String(error)];
+
+test("a redemption whose sign-in changed before its retry sends nothing more: herdr would bind the invite to the other account", async () => {
+ const s = statements();
+ const hellos: unknown[] = [];
+ const relay = relayWith(async (_conn, handshake) => {
+  const h = await handshake();
+  hellos.push(h.hello.account);
+  // The page signs in to another account while the first reply is on its way.
+  s.switchAccount();
+  h.reply({ ok: false, error: "statement_expired" });
+ });
+ const error = await acceptInvite(inviteFor(relay, true), await identity(), "Browser", { account: s }).catch(e => e);
+ expect(kindAndMessage(error)).toEqual(["account_changed", CHANGED]);
+ expect([hellos, s.issued, relay.connects]).toEqual([["jws-1"], 1, 1]);
+}, CONNECTS_LIMIT_MS);
+
+test("a redemption whose sign-in changed while its retry's statement was fetched sends nothing more", async () => {
+ const s = statements();
+ s.afterGet = n => { if (n === 2) s.switchAccount(); };
+ const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "statement_expired" }); });
+ const error = await acceptInvite(inviteFor(relay, true), await identity(), "Browser", { account: s }).catch(e => e);
+ expect(kindAndMessage(error)).toEqual(["account_changed", CHANGED]);
+ expect(relay.connects).toBe(1);
+}, CONNECTS_LIMIT_MS);
+
+test("a bound share's returning hello whose sign-in changed before its retry sends nothing more", async () => {
+ const s = statements();
+ const hellos: unknown[] = [];
+ const relay = relayWith(async (_conn, handshake) => {
+  const h = await handshake();
+  hellos.push(h.hello.account);
+  s.switchAccount();
+  h.reply({ ok: false, error: "statement_invalid" });
+ });
+ const transport = new GuestTransport(guestLink(accessOn(relay, true), s), await identity());
+ const error = await transport.call("ping").catch(e => e);
+ expect(kindAndMessage(error)).toEqual(["account_changed", CHANGED]);
+ expect([hellos, relay.connects]).toEqual([["jws-1"], 1]);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
+
+test("a bound session whose sign-in changed sends no refresh: its next message is the request", async () => {
+ let clock = 1_800_000_000_000;
+ jest.useFakeTimers();
+ const host = Promise.withResolvers<HostSession>();
+ const relay = relayWith(async (_conn, handshake) => {
+  const session = (await handshake()).reply(admitted(clock / 1000 + 150));
+  await ping(session);
+  host.resolve(session);
+ });
+ const s = statements();
+ const transport = new GuestTransport(guestLink(accessOn(relay, true), s), await identity(), { now: () => clock });
+ expect(await transport.call("ping")).toEqual({ type: "pong" });
+ const session = await host.promise;
+ s.switchAccount();
+ clock += 150_000 - REFRESH_AHEAD_MS;
+ jest.advanceTimersByTime(150_000 - REFRESH_AHEAD_MS);
+ expect(s.issued).toBe(1);
+ const next = transport.call("ping");
+ expect(await session.readLine()).toContain("ping");
+ transport.close();
+ await next.catch(() => {});
+}, CONNECTS_LIMIT_MS);
+
+// ---- Signed out at a bound share (#518 review) ----
+
+/** The page's statement cache over an account whose session lookup fails with error. */
+const cacheFailing = (error: Error) => statementCache({
+ currentAccount: async () => { throw error; }, current: null, generation: 0, onSessionChange: () => () => {},
+ statements: async () => { throw new Error("never asked"); },
+});
+
+test("signed out, a bound share's hello is account_required, and nothing is dialed; another failure of the service stays its own", async () => {
+ const relay = relayWith(async () => {});
+ const signedOut = new GuestTransport(guestLink(accessOn(relay, true), boundShareStatements(cacheFailing(new SignedOutError()))), await identity());
+ expect(kindAndMessage(await signedOut.call("ping").catch(e => e))).toEqual(["account_required", "Sign in to the HerdrUp account that holds this share."]);
+ signedOut.close();
+ const down = new AccountServiceError(503, "unavailable");
+ const unavailable = new GuestTransport(guestLink(accessOn(relay, true), boundShareStatements(cacheFailing(down))), await identity());
+ expect(((await unavailable.call("ping").catch(e => e)) as { error: unknown }).error).toBe(down);
+ unavailable.close();
+ expect(relay.connects).toBe(0);
+});
+
+test("the guest Desk tells a signed-out browser to sign in to the account that holds the share", async () => {
+ const relay = relayWith(async () => {});
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put(accessOn(relay, true));
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: cacheFailing(new SignedOutError()) });
+ const told = Promise.withResolvers<string>();
+ const off = events.stateChanged.on(s => { if (s.message) told.resolve(s.message); });
+ const id = `${relay.hostID}/grant-1`;
+ await desk.connectGuest(id);
+ expect(await told.promise).toContain("Sign in to the HerdrUp account that holds this share.");
+ off();
+ await desk.forgetGuestConnection(id);
+ expect(relay.connects).toBe(0);
+});

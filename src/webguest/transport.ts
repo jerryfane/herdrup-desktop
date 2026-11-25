@@ -24,7 +24,7 @@
 import { accountRefusal, closed, expired, freshStatementMayAdmit, GuestError, HerdrAPIError, hostOffline, notSent, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
-import { HELLO_MIN_LEFT_MS, REFRESH_MIN_LEFT_MS, type StatementSource } from "./owner";
+import { HELLO_MIN_LEFT_MS, pinned, REFRESH_AHEAD_MS, REFRESH_MIN_LEFT_MS, type AccountStatement, type StatementSource } from "./accountStatement";
 
 /** A call's whole round trip, handshake included (session.go:18). */
 export const ROUND_TRIP_LIMIT_MS = 60_000;
@@ -111,7 +111,10 @@ export function closeError(code: number, reason: string): GuestError | null {
  if (code === CLOSE_HOST_OFFLINE) return hostOffline();
  if (code === CLOSE_HOST_BUSY || reason === "host_busy") return other("The shared machine is busy. Try again shortly.");
  // herdr ends an account-bound session with its code as the reason (link/session.rs: a missed
- // statement deadline, a refused in-band refresh), which the relay passes on in a 1000 close.
+ // statement deadline, a refused in-band refresh), which the relay passes on in a 1000 close. A
+ // missed deadline also ends an owner session whose grant expired (statement_expired either way):
+ // its words say neither; the next hello's refusal tells them apart.
+ if (reason === "statement_expired") return new GuestError(reason, "The shared machine ended the connection when its authorization expired. Try again.");
  const account = accountRefusal(reason);
  if (account !== null) return account;
  if (code === 1000 && reason === "") return null;
@@ -340,9 +343,6 @@ function refusal(code: string): GuestError {
  }
 }
 
-/** Before an account-bound session's deadline, the in-band refresh goes this long ahead. */
-export const REFRESH_AHEAD_MS = 120_000;
-
 /** An authenticated relay connection (session.go:61-66). */
 class Session {
  /** When the handshake that read reply's features finished (ms since the epoch), set by #connect. */
@@ -371,7 +371,8 @@ class Session {
   *  each deadline a newer statement goes as one whole message, {"t":"account.refresh",…}, which
   *  never reaches the API and gets no reply. A statement that can't be had lets the host end the
   *  session at its deadline; the next call connects with a fresh one. A statement whose session
-  *  is no longer the page's (live false: signed out meanwhile) is never sent, and refreshing stops. */
+  *  is no longer the page's (live false, or throwing: signed out, or another sign-in for a pinned
+  *  link) is never sent, and refreshing stops. */
  keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<AccountStatement>, now: () => number) {
   const life = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -382,7 +383,9 @@ class Session {
     timer = null;
     let statement: AccountStatement;
     try { statement = await next(life.signal); } catch { return; }
-    if (life.signal.aborted || !statement.live()) return;
+    let live = false;
+    try { live = statement.live(); } catch { /* the sign-in changed: live stays false */ }
+    if (life.signal.aborted || !live) return;
     try { this.socket.send(this.noise.encrypt(new TextEncoder().encode(JSON.stringify({ t: "account.refresh", account: statement.jws })))); }
     catch { return; }
     arm(statement.expMs);
@@ -455,11 +458,13 @@ export interface AcceptOptions {
 /** Redeems an invitation for this browser's identity (session.go:214-246). Bound to an account
  *  (options.account), the hello carries its statement for the host (herdr guest/store.rs
  *  admit_in); a statement the host refused as stale or invalid is dropped and a fresh one sent
- *  once: the invite stays unused until a redemption is admitted. */
+ *  once: the invite stays unused until a redemption is admitted. The redemption is pinned to the
+ *  sign-in of its first statement: a retry under another (account_changed) sends nothing, since
+ *  herdr would bind the invite to that account for good. */
 export async function acceptInvite(invite: Invite, identity: StaticKey, device: string, options: AcceptOptions = {}): Promise<Access> {
  const now = options.now ?? Date.now();
  if (now >= invite.expires.getTime()) throw expired();
- const statements = invite.accounts ? options.account : undefined;
+ const statements = invite.accounts && options.account ? pinned(options.account) : undefined;
  const { signal, dispose } = linkSignals([options.signal], ROUND_TRIP_LIMIT_MS);
  try {
   let connected: Session;
@@ -585,11 +590,6 @@ export function decodeReply(line: string): unknown {
 /** What a transport connects to and how it is admitted: the hello each connect sends, and the
  *  check of the host's reply (a guest grant's id; an owner's mode). An account-bound link also
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
-/** An account statement for an account-bound hello or refresh (POST /v1/statements): its JWS, when it
- *  expires (ms), and whether the session it was issued in is still the page's. live() is required:
- *  nothing is sent with a statement whose session has ended. */
-export interface AccountStatement { jws: string; expMs: number; live(): boolean }
-
 export interface TransportLink {
  endpoint: Endpoint;
  /** The hello for one connect. refused, when given, opts into one more connect after the host
@@ -607,7 +607,9 @@ export interface TransportLink {
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation.
  *  An account-bound share's hello adds its account's statement for the host, and its session is
  *  kept past each statement deadline with fresh ones (herdr guest/store.rs admit_returning); a
- *  bound share with no statements to give is account_required before anything is dialed. */
+ *  bound share with no statements to give is account_required before anything is dialed. Its
+ *  statements are pinned to the sign-in of the first: past a switch, its hellos and refreshes
+ *  stop (account_changed) and nothing goes out under another account. */
 export function guestLink(access: Access, statements?: StatementSource): TransportLink {
  const hostID = access.endpoint.hostID;
  if (!access.accountBound) {
@@ -618,9 +620,10 @@ export function guestLink(access: Access, statements?: StatementSource): Transpo
    admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
   };
  }
+ const pin = statements === undefined ? undefined : pinned(statements);
  const source = () => {
-  if (statements === undefined) throw accountRefusal("account_required")!;
-  return statements;
+  if (pin === undefined) throw accountRefusal("account_required")!;
+  return pin;
  };
  return {
   endpoint: access.endpoint,

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { untilAborted } from "../src/webguest/abort";
 import type { EnvelopeMachine } from "../src/webguest/approve";
-import type { StatementSource } from "../src/webguest/owner";
+import type { StatementSource } from "../src/webguest/accountStatement";
 import { generateIdentity, MemoryIdentityStore, staticKey } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
 import { ErrUnsupported, GuestClient } from "../src/web/engine";

@@ -22,6 +22,7 @@ export type GuestErrorKind =
  | "account_keys_stale" // ErrAccountKeysStale
  | "device_removed" // ErrDeviceRemoved
  | "accounts_disabled" // ErrAccountsDisabled
+ | "account_changed" // ErrAccountChanged: the sign-in a redemption or a share's link started in ended (accountStatement.ts pinned)
  | "other";
 
 export class GuestError extends Error {
@@ -80,7 +81,7 @@ export function ownerRefusal(code: string): GuestError {
  *  it, or a session closed with it as the reason. null for any other code. */
 export function accountRefusal(code: string): GuestError | null {
  switch (code) {
-  case "account_required": return new GuestError(code, "This shared access is linked to a HerdrUp account. Sign in to that account in this browser to use it.");
+  case "account_required": return new GuestError(code, "Sign in to the HerdrUp account that holds this share.");
   case "account_mismatch": return new GuestError(code, "This shared access is linked to another HerdrUp account. Sign in to the account you added it to.");
   case "statement_invalid": return new GuestError(code, "The shared machine didn't accept this browser's HerdrUp sign-in. Try again, and sign in again if this persists.");
   case "statement_expired": return new GuestError(code, "This browser's HerdrUp sign-in for the shared machine expired. Try again.");

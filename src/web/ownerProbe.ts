@@ -6,7 +6,7 @@
 import type { EnvelopeMachine } from "../webguest/approve";
 import { GuestError } from "../webguest/errors";
 import type { StaticKey } from "../webguest/noise";
-import type { StatementSource } from "../webguest/owner";
+import type { StatementSource } from "../webguest/accountStatement";
 import type { WebSocketFactory } from "../webguest/transport";
 import { listAgents, ownerConnection, type OwnerConnection } from "./desk";
 

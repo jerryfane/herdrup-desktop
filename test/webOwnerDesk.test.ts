@@ -5,7 +5,7 @@ import { isGuestPaused } from "../src/guestPaused";
 import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
-import type { StatementSource } from "../src/webguest/owner";
+import type { StatementSource } from "../src/webguest/accountStatement";
 import { createGuestDesk, avatarDataURL, AvatarBytesError } from "../src/web/desk";
 import { knownPhoto, loadPhoto, trackPhotoConnections } from "../src/avatars";
 import { Desk } from "../src/mygo";

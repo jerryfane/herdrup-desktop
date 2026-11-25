@@ -15,7 +15,8 @@ import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
 import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
 import { fromB64url } from "../webguest/b64url";
-import { ownerLink, type StatementSource } from "../webguest/owner";
+import { ownerLink } from "../webguest/owner";
+import type { StatementSource } from "../webguest/accountStatement";
 import type { EnvelopeMachine } from "../webguest/approve";
 import { buildBoard, displayName, isArchived, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, ResultTagError, untagged } from "./engine";
@@ -28,6 +29,7 @@ import { currentOwnerLink, linkClosing, onBoard, OwnerRefusedError, SESSION_CHAN
 import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { findTerminal } from "./terminalsDesk";
 import { StartedAgents } from "./startedAgents";
+import { boundShareStatements } from "./statements";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, setSharedAgents, setView, type GuestView } from "./view";
@@ -618,7 +620,7 @@ export function createGuestDesk(env: DeskEnv) {
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
-   const transport = new GuestTransport(guestLink(grant, env.statements), identity, { now, webSocket: env.webSocket });
+   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements)), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], conn: connection({ access: grant, transport }, print, "connecting", "", ""), listedAt: "" };
    active = l;
