@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,10 +39,19 @@ func ChannelOf(c *Client) SessionChannel {
 }
 
 // LockWrites takes the channel's write lock until the returned func runs.
-func (s SessionChannel) LockWrites() (unlock func()) {
+// The unlock is idempotent and also runs at the end of t, so a test that
+// stops early leaves no goroutine waiting on the lock.
+func (s SessionChannel) LockWrites(t *testing.T) (unlock func()) {
 	s.m.wmu.Lock()
-	return s.m.wmu.Unlock
+	var once sync.Once
+	unlock = func() { once.Do(s.m.wmu.Unlock) }
+	t.Cleanup(unlock)
+	return unlock
 }
+
+// Fail ends the channel with err, as the read loop does when the process
+// exits or a read fails.
+func (s SessionChannel) Fail(err error) { s.m.fail(err) }
 
 // Pending is how many requests wait on the channel.
 func (s SessionChannel) Pending() int {

@@ -445,7 +445,8 @@ func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 //     failed with err.
 //
 // Every exit of a request that was not written, in any state, fails with
-// Unsent's error, which keeps ctx's end when ctx has ended.
+// Unsent's error, which keeps ctx's end when ctx has ended. A request the
+// channel refuses to take (refusedLocked) carries err too when it is dead.
 type multiChannel struct {
 	sess   *ssh.Session
 	stdin  io.WriteCloser
@@ -703,26 +704,26 @@ func (m *multiChannel) deliver(id string, line []byte) {
 // written (the channel retired or dead, or ctx ended before the write) it
 // fails with Unsent's error, from every branch alike.
 func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, error) {
+	slot := false
 	select {
 	case m.inFlight <- struct{}{}:
+		slot = true
 	case <-m.dead:
-		return nil, Unsent(ctx, nil)
 	case <-m.retiredC:
-		return nil, Unsent(ctx, nil)
 	case <-ctx.Done():
-		// Ended before a slot was had: nothing was written.
-		return nil, Unsent(ctx, nil)
 	}
 	ch := make(chan reply, 1)
 	m.mu.Lock()
-	if m.err != nil {
+	if err := m.refusedLocked(ctx); err != nil || !slot {
 		m.mu.Unlock()
-		return nil, Unsent(ctx, nil)
-	}
-	if m.retired {
-		m.mu.Unlock()
-		<-m.inFlight
-		return nil, Unsent(ctx, nil)
+		if slot {
+			<-m.inFlight
+		}
+		if err == nil {
+			// Ended before a slot was had: nothing was written.
+			err = Unsent(ctx, nil)
+		}
+		return nil, err
 	}
 	if _, dup := m.pending[id]; dup {
 		m.mu.Unlock()
@@ -866,6 +867,20 @@ func (m *multiChannel) closeIfDrainedLocked() bool {
 	}
 	go m.close()
 	return true
+}
+
+// refusedLocked is why the channel takes no new request, nil while it is
+// open: the one admission check, whichever of do's branches led to it.
+// Dead, it is Unsent's error with what fail recorded; retired, Unsent's
+// error alone. Either keeps ctx's end. m.mu must be held.
+func (m *multiChannel) refusedLocked(ctx context.Context) error {
+	switch {
+	case m.err != nil:
+		return Unsent(ctx, m.err)
+	case m.retired:
+		return Unsent(ctx, nil)
+	}
+	return nil
 }
 
 // fail closes the channel for new requests and fails every waiting one.
