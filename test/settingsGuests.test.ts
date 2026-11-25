@@ -53,8 +53,9 @@ const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(
 
 type Calls = { method: string; args: unknown[] }[];
 /** run with the fake document and window, and the Desk's guest methods answering listing for
- *  machine "" (anything else: no guests); every write is recorded, then answered as answers says
- *  (default: done). Put back afterwards. */
+ *  machine "" (anything else: no guests), each listing after answers.settingsGuestMachine (default:
+ *  at once); every write is recorded, then answered as answers says (default: done). Put back
+ *  afterwards. */
 type Answer = (...args: unknown[]) => Promise<void>;
 async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
   const names = ["settingsGuestMachine", "revokeGuestPerson", "removeGuestDevice", "revokeGuestAccess", "setGuestGramSharing"] as const;
@@ -68,7 +69,10 @@ async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: 
     Reflect.set(globalThis, "addEventListener", () => {}); Reflect.set(globalThis, "removeEventListener", () => {});
     const record = (method: string) => async (...args: unknown[]) => { calls.push({ method, args }); await answers[method]?.(...args); };
     Object.assign(Desk, {
-      settingsGuestMachine: async (_token: string, machine: string) => JSON.stringify(machine === "" ? { listing: { guests: listing.guests, invites: [] }, entries: listing.entries ?? [] } : { listing: { guests: [], invites: [] }, entries: [] }),
+      settingsGuestMachine: async (token: string, machine: string) => {
+        await answers.settingsGuestMachine?.(token, machine);
+        return JSON.stringify(machine === "" ? { listing: { guests: listing.guests, invites: [] }, entries: listing.entries ?? [] } : { listing: { guests: [], invites: [] }, entries: [] });
+      },
       revokeGuestPerson: record("revokeGuestPerson"), removeGuestDevice: record("removeGuestDevice"), revokeGuestAccess: record("revokeGuestAccess"), setGuestGramSharing: record("setGuestGramSharing"),
     });
     const titles: (string | null)[] = [], summary: string[] = [], reported: unknown[] = [];
@@ -177,20 +181,37 @@ test("a device removal begun in one Settings scope sends nothing once that scope
   }, { removeGuestDevice: () => held.promise });
 });
 
-// #524 post-merge P3: a menu opened while a Gram switch's refresh is pending goes with the rows it
-// was opened on when that refresh lands; the page then offers the device on the shares it shows now.
-test("a device menu open when the page is drawn again closes, and a new one removes the device from the shares shown now", async () => {
-  const listing = { guests: [...current.guests] }, gram = Promise.withResolvers<void>();
+/** A listing hold: from arm() on, the next listing of machine "" waits for release (started says it
+ *  has begun). */
+function listingHold() {
+  let armed = false, gate = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  return {
+    arm: () => { armed = true; gate = Promise.withResolvers<void>(); },
+    release: () => gate.resolve(),
+    started: started.promise,
+    answer: async (_token: unknown, machine: unknown) => { if (!armed || machine !== "") return; armed = false; started.resolve(); await gate.promise; },
+  };
+}
+/** Turns Nike's first Share Gram switch, which writes and then lists the shares again. */
+function switchGram(root: FakeElement) {
+  const share = root.all().find(e => e.tagName === "input" && e.getAttribute("aria-label") === "Share Gram with Nike")!;
+  share.checked = !share.checked; share.onchange!();
+}
+
+// #524/#529 post-merge P3: a menu opened while a refresh's listing is out goes with the rows it was
+// opened on when that listing lands; the page then offers the device on the shares it shows now.
+test("a device menu opened while the listing is out closes when it lands, and a new one removes the device from the shares shown now", async () => {
+  const listing = { guests: [...current.guests] }, hold = listingHold();
   await withPage(listing, async ({ root, body, calls }) => {
     click(root.having("settings-guest-open")[0]!);
-    const share = root.all().find(e => e.tagName === "input" && e.getAttribute("aria-label") === "Share Gram with Nike")!;
-    share.checked = !share.checked; share.onchange!();
-    await settle();
+    hold.arm(); switchGram(root);
+    await hold.started; await settle();
     click(root.button("Manage MacBook"));
     expect(body.having("account-device-menu")).toHaveLength(1);
-    // The refresh after the switch finds a third share of Nike's with the MacBook.
+    // The listing finds a third share of Nike's with the MacBook.
     listing.guests.push(nike("nike-3", "landing", 600_000));
-    gram.resolve();
+    hold.release();
     await settle();
     expect(body.having("account-device-menu")).toEqual([]);
     click(root.button("Manage MacBook"));
@@ -198,7 +219,50 @@ test("a device menu open when the page is drawn again closes, and a new one remo
     click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
     await settle();
     expect(calls.filter(c => c.method === "removeGuestDevice").map(c => c.args[2])).toEqual(["nike-1", "nike-2", "nike-3"]);
-  }, { setGuestGramSharing: () => gram.promise });
+  }, { settingsGuestMachine: (token, machine) => hold.answer(token, machine) });
+});
+
+// #529 post-merge P3: a removal asked for before a listing lands is confirmed after it: it goes to
+// the shares listed when confirmed.
+test("a device removal confirmed after a listing showed another share of the person removes it there too", async () => {
+  const listing = { guests: [...current.guests] }, hold = listingHold();
+  await withPage(listing, async ({ root, body, calls }) => {
+    click(root.having("settings-guest-open")[0]!);
+    click(root.button("Manage MacBook"));
+    click(body.having("account-device-menu")[0]!.button("Remove"));
+    hold.arm(); switchGram(root);
+    await hold.started;
+    listing.guests.push(nike("nike-3", "landing", 600_000));
+    hold.release();
+    await settle();
+    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
+    await settle();
+    expect(calls.filter(c => c.method === "removeGuestDevice").map(c => c.args[2])).toEqual(["nike-1", "nike-2", "nike-3"]);
+  }, { settingsGuestMachine: (token, machine) => hold.answer(token, machine) });
+});
+
+test("a device menu already open when a refresh starts closes then, before the listing lands", async () => {
+  const hold = listingHold();
+  await withPage({ guests: [...current.guests] }, async ({ root, body }) => {
+    click(root.having("settings-guest-open")[0]!);
+    click(root.button("Manage MacBook"));
+    hold.arm(); switchGram(root);
+    await hold.started;
+    expect(body.having("account-device-menu")).toEqual([]);
+    hold.release(); await settle();
+  }, { settingsGuestMachine: (token, machine) => hold.answer(token, machine) });
+});
+
+test("a device on one of the person's shares only is removed from that share only", async () => {
+  const guests = current.guests.map(g => g.guest_id === "nike-2" ? { ...g, devices: g.devices!.filter(d => d.fingerprint !== "SHA256:mac") } : g);
+  await withPage({ guests }, async ({ root, body, calls }) => {
+    click(root.having("settings-guest-open")[0]!);
+    click(root.button("Manage MacBook"));
+    click(body.having("account-device-menu")[0]!.button("Remove"));
+    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
+    await settle();
+    expect(calls.map(c => [c.method, c.args[2]])).toEqual([["removeGuestDevice", "nike-1"]]);
+  });
 });
 
 test("this page's device menu closes alone: another view's menu stays", async () => {
