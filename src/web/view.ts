@@ -11,11 +11,16 @@ export interface GuestView {
  paneID: string;
  /** Aborted when the view closes or the connection changes (interaction.ctx). */
  signal: AbortSignal;
- /** The agent as its guests would see it (desk_guest_invite.go shareRoute): a federated peer's
-  *  agent on herdr's machine_label for it (else the peer's id), the link's own on the link's
-  *  machine label. The share sheet shows it, and the view's invite sends it. */
- share: { details: GuestShareDetails };
+ /** The agent as its guests would see it (desk_guest_invite.go shareRoute's details), on the
+  *  link's machine label: the share sheet shows it, and the view's invite sends it. null for a
+  *  federated peer's agent, which this browser can't share (PEER_NOT_SHARED). */
+ shareDetails: GuestShareDetails | null;
 }
+
+/** Why a browser offers no share of a federated peer's agent: herdr's owner gate refuses an
+ *  owner browser's guest.invite.create routed to another machine (its `machine`), and runs one
+ *  without it on the coordinator, where no such pane is. The desktop routes it over SSH. */
+export const PEER_NOT_SHARED = "This agent runs on another machine: share it from the desktop app.";
 
 let view: GuestView | null = null;
 let agents: readonly ListedAgent[] = [];

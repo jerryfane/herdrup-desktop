@@ -11,7 +11,7 @@ import type {
 } from "../mygo";
 import { GuestError, HerdrAPIError, NotSentError, notSent, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
-import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
+import { resolveInvite, shareLabel, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
 import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
 import { fromB64url } from "../webguest/b64url";
@@ -32,7 +32,7 @@ import { StartedAgents } from "./startedAgents";
 import { boundShareStatements } from "./statements";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
-import { agentView, setSharedAgents, setView, type GuestView } from "./view";
+import { agentView, PEER_NOT_SHARED, setSharedAgents, setView, type GuestView } from "./view";
 
 type DeskFns = typeof GoDesk;
 
@@ -488,11 +488,11 @@ export function createGuestDesk(env: DeskEnv) {
  /** Mounts view as the one open view on l (desk_interaction.go mountInteractionLocked). An owner
   *  link's availability is its open view's, at once: an agent's from the last list, a plain
   *  terminal's "". */
- function mountView(l: Active, view: AgentView, details: GuestShareDetails, availability: string) {
+ function mountView(l: Active, view: AgentView, shareDetails: GuestShareDetails | null, availability: string) {
   unmount();
   const life = new AbortController();
   const token = view.token;
-  const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, share: { details }, life, sending: false, terminal: null,
+  const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, shareDetails, life, sending: false, terminal: null,
    topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0, asOf: 0 } };
   l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
   mounted = v;
@@ -720,7 +720,7 @@ export function createGuestDesk(env: DeskEnv) {
     topicSessions: (agent.topic_sessions ?? []).filter(t => !!t.topic_id).map(t => ({ topicID: t.topic_id!, title: t.title ?? "", createdMs: t.created_unix_ms ?? 0 })),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
-   mountView(l, view, shareDetails(agent, name, state().machine), ownerAvailability([agent], view.paneID));
+   mountView(l, view, shareDetails(agent, name, linkShareLabel(l)), ownerAvailability([agent], view.paneID));
    return view;
   },
 
@@ -737,7 +737,7 @@ export function createGuestDesk(env: DeskEnv) {
    const saved = findTerminal(l.owner.hostID, target.paneID);
    const view: AgentView = { token, paneID: saved.paneID, name: saved.label, harness: "", heading: saved.label, group: "terminal", status: "Terminal",
     guest: true, guestGram: false, askForm: false, topicSessions: [], plainTerminal: true };
-   mountView(l, view, { agentName: saved.label, machineLabel: state().machine }, "");
+   mountView(l, view, { agentName: saved.label, machineLabel: linkShareLabel(l) }, "");
    return view;
   },
 
@@ -745,7 +745,11 @@ export function createGuestDesk(env: DeskEnv) {
    if (mounted?.token === token) unmount();
   },
 
-  async guestShareDetails(token: string): Promise<GuestShareDetails> { return viewOf(token).share.details; },
+  async guestShareDetails(token: string): Promise<GuestShareDetails> {
+   const details = viewOf(token).shareDetails;
+   if (details === null) throw new Error(PEER_NOT_SHARED);
+   return details;
+  },
 
   async guestChatAvailable(token: string): Promise<boolean> {
    const v = viewOf(token);
@@ -1064,7 +1068,10 @@ export function createGuestDesk(env: DeskEnv) {
    const pong = writes() && !o.plain ? await l.client.ping(l.life.signal).catch(() => null) : null;
    const muted = l.owner ? await desk.paneMuted(o.paneID) : null;
    if (!still()) return false;
-   const entries = webPaneMenu({ ...o, canShare: o.canShare && writes() }, muted, { avatar: writes() && pong?.capabilities?.agent_avatar === true, close: writes() });
+   // A federated peer's agent is not this link's to share (PEER_NOT_SHARED): no Share, as on a
+   // guest's page.
+   const shares = o.canShare && writes() && view?.paneID === o.paneID && view.shareDetails !== null;
+   const entries = webPaneMenu({ ...o, canShare: shares }, muted, { avatar: writes() && pong?.capabilities?.agent_avatar === true, close: writes() });
    void showMenu(entries).then(async (item) => {
     const action = item?.action;
     if (!action || !still()) return;
@@ -1358,15 +1365,19 @@ export async function avatarDataURL(base64: string, sha256: string): Promise<str
  return `data:${png ? "image/png" : "image/jpeg"};base64,${base64}`;
 }
 
-/** desk_guest_invite.go shareRoute's details. */
-function shareDetails(agent: AgentInfo, name: string, hostLabel: string): GuestShareDetails {
- const details = { agentName: name, machineLabel: hostLabel };
+/** desk_guest_invite.go shareRoute's details for the link's own agents, on its machine label; null
+ *  for a federated peer's agent, which an owner browser can't invite to (PEER_NOT_SHARED). */
+function shareDetails(agent: AgentInfo, name: string, hostLabel: string): GuestShareDetails | null {
  const machine = agent.machine_id ?? "";
- if (machine !== "" && (agent.pane_id ?? "").startsWith(machine + "/")) {
-  details.agentName = name.startsWith(machine + "/") ? name.slice(machine.length + 1) : name;
-  details.machineLabel = agent.machine_label || machine;
- }
- return details;
+ if (machine !== "" && (agent.pane_id ?? "").startsWith(machine + "/")) return null;
+ return { agentName: name, machineLabel: hostLabel };
+}
+
+/** The link's machine as its guests see it (desk_web_access.go machineLabel): the label sealed in
+ *  the browser's approval as herdr takes it (shareLabel; an approval sealed before the desktop
+ *  bounded it may carry more than herdr's 64 characters), else the machine's herdr host id. */
+function linkShareLabel(l: Active): string {
+ return shareLabel(l.access.machineLabel) || (l.owner?.hostID ?? "");
 }
 
 

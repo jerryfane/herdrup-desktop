@@ -833,7 +833,11 @@ export interface NotificationSettings {
 
 export interface PairedMachine {
   id: string;
-  nickname: string;
+  /**
+   * Label names the machine as the machine list titles it: its nickname,
+   * else its host (a new pairing leaves the nickname unset).
+   */
+  label: string;
 }
 
 /**

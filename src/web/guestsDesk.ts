@@ -8,7 +8,7 @@ import { errorText } from "../errors";
 import { HerdrAPIError } from "../webguest/errors";
 import { ErrUnsupported } from "./engine";
 import { currentOwnerLink, ownerCall, settingsCall, settingsLink, settingsScope } from "./ownerLink";
-import { agentView } from "./view";
+import { agentView, PEER_NOT_SHARED } from "./view";
 
 type DeskFns = typeof GoDesk;
 
@@ -74,17 +74,17 @@ export const guestsDesk = {
   catch (error) { if (!(error instanceof HerdrAPIError && error.code === "guest_not_found")) throw error; }
  },
 
- /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine. Its guests see
-  *  the machine as the view's share details name it (desk_guest_invite.go): a federated peer's
-  *  agent by herdr's machine_label for it (else the peer's id), the link's own agents by the label
-  *  sealed in the browser's approval (link.machine.label). A lost answer is not retried: herdr may
-  *  already have made the invite. */
+ /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine, whose guests
+  *  see the machine by the label sealed in the browser's approval (the view's share details). A
+  *  federated peer's agent is not this machine's to invite to (PEER_NOT_SHARED): nothing is sent.
+  *  A lost answer is not retried: herdr may already have made the invite. */
  async createGuestInvite(token: string, name: string, ownerName: string, shareGram: boolean): Promise<string> {
   const view = agentView(token);
+  if (view.shareDetails === null) throw new Error(PEER_NOT_SHARED);
   const link = currentOwnerLink();
   if (link === null) throw new Error("not connected");
   const created = await ownerCall("guest.invite.create", {
-   target: view.paneID, machine_label: view.share.details.machineLabel, name: name.trim(), owner_name: ownerName.trim(), ...(shareGram ? { share_gram: true } : {}),
+   target: view.paneID, machine_label: view.shareDetails.machineLabel, name: name.trim(), owner_name: ownerName.trim(), ...(shareGram ? { share_gram: true } : {}),
   }, "guest_invite_created", { signal: view.signal, link });
   return JSON.stringify(created);
  },

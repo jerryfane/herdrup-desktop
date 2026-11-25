@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
@@ -15,8 +16,10 @@ import (
 )
 
 type PairedMachine struct {
-	ID       string `json:"id"`
-	Nickname string `json:"nickname"`
+	ID string `json:"id"`
+	// Label names the machine as the machine list titles it: its nickname,
+	// else its host (a new pairing leaves the nickname unset).
+	Label string `json:"label"`
 }
 
 // PairingPreview is what a pairing code names, for the user to confirm before
@@ -126,7 +129,9 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 	if err := ctx.Err(); err != nil {
 		return PairedMachine{}, err
 	}
-	machine := Machine{Nickname: payload.User + "@" + payload.Host, Host: payload.Host, Port: 22, User: payload.User}
+	// No nickname: the machine list titles it by its host, over its user, and
+	// its shares name it by its host (machineLabel) until the person names it.
+	machine := Machine{Host: payload.Host, Port: 22, User: payload.User}
 	id := machineID(machine)
 	d.storeMu.Lock()
 	saved, err := d.load()
@@ -169,7 +174,11 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 		// not turn recoverable local storage trouble into a lost remote credential.
 		return PairedMachine{}, fmt.Errorf("The computer accepted the key, but its saved host could not be written. The private key remains at %s; add that file manually, or remove the herdr-pair line on the computer before pairing again: %w", keyPath, err)
 	}
-	return PairedMachine{ID: id, Nickname: machine.Nickname}, nil
+	label := strings.TrimSpace(machine.Nickname)
+	if label == "" {
+		label = machine.Host
+	}
+	return PairedMachine{ID: id, Label: label}, nil
 }
 
 func (d *Desk) savePairedIdentity(private []byte) (string, error) {

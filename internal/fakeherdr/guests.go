@@ -3,8 +3,11 @@ package fakeherdr
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Guests exercises independently routed guest stores without creating a real
@@ -111,6 +114,12 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 	case "guest.invite.create":
 		if p.Target == "" || p.Name == "" || p.OwnerName == "" {
 			return nil, &APIError{Code: "invalid_params", Message: "target, guest name and owner name are required"}, true
+		}
+		// herdr's own check (src/guest/mod.rs create_invite).
+		for _, field := range [][2]string{{"owner_name", p.OwnerName}, {"machine_label", p.MachineLabel}} {
+			if strings.TrimSpace(field[1]) == "" || utf8.RuneCountInString(field[1]) > 64 || strings.ContainsFunc(field[1], unicode.IsControl) {
+				return nil, &APIError{Code: "invalid_params", Message: field[0] + " must be 1 to 64 printable characters"}, true
+			}
 		}
 		now := time.Now().UnixMilli()
 		id := fmt.Sprintf("created-%d", len(store.invites)+1)

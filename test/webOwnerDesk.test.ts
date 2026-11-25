@@ -20,6 +20,7 @@ import { startRelay, type HostSession, type TestRelay } from "./webguestResponde
 import { ComposerDrafts, type DraftStore } from "../src/composerDraft";
 import { ErrUnsupported } from "../src/web/engine";
 import { guestsDesk } from "../src/web/guestsDesk";
+import { PEER_NOT_SHARED } from "../src/web/view";
 
 const statements: StatementSource = { get: async () => ({ jws: "jws", expMs: Date.now() + 600_000 }), drop() {} };
 const agents = [{ pane_id: "p1", terminal_id: "t1", name: "herdr-app", agent: "claude" }, { pane_id: "p2", terminal_id: "t2", name: "web-owner", agent: "codex" }, { pane_id: "p3", terminal_id: "t3", name: "relay", agent: "claude" }];
@@ -106,36 +107,80 @@ test("an owner link sends the owner hello and lists every agent on the machine, 
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
-// desk_guest_invite.go shareRoute in the browser: an invite to a federated peer's agent names the
-// machine as herdr labels that peer (else by its id); one to the link's own agent by the label
-// sealed in the browser's approval.
-test("an invite names a federated peer's agent's machine by herdr's label for it, else its id; the link's own agent by the approval's label", async () => {
+// desk_guest_invite.go shareRoute in the browser: an invite to the link's own agent names the
+// machine by the label sealed in the browser's approval. A federated peer's agent can't be shared
+// from the browser (#522), and the browser sends it nothing. The host here answers as herdr's owner
+// gate (owner_gate.rs serve_request) does: an id or target naming a peer (`alias/…`) or a guest.*
+// call naming a saved machine is refused with owner_forbidden before anything resolves. Owner
+// agent lists are local-only there; the peer rows here are a list herdr wouldn't give, so the
+// browser's own refusal is what keeps them unshared. Every invite attempt is recorded, refused
+// or not.
+test("an invite names the link's own agent's machine by the approval's label; a federated peer's agent is not shared, and nothing is sent", async () => {
  const peer = "11111111111111111111111111111111", other = "22222222222222222222222222222222";
- const labels: unknown[] = [];
+ const listed = [
+  { pane_id: "p1", terminal_id: "t1", name: "local", agent: "claude" },
+  { pane_id: `${peer}/p2`, terminal_id: "t2", name: "remote", agent: "claude", machine_id: peer, machine_label: "render-box" },
+  { pane_id: `${other}/p3`, terminal_id: "t3", name: "unlabelled", agent: "claude", machine_id: other },
+ ];
+ const invites: Record<string, unknown>[] = [];
  const relay = host({
   scope: () => "terminal",
-  agents: () => [
-   { pane_id: "p1", terminal_id: "t1", name: "local", agent: "claude" },
-   { pane_id: `${peer}/p2`, terminal_id: "t2", name: "remote", agent: "claude", machine_id: peer, machine_label: "render-box" },
-   { pane_id: `${other}/p3`, terminal_id: "t3", name: "unlabelled", agent: "claude", machine_id: other },
-  ],
+  agents: () => listed,
   other: (session, req) => {
-   if (req.method !== "guest.invite.create") { answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); return; }
-   labels.push((req as Request & { params: { machine_label?: string } }).params.machine_label);
-   answer(session, req, { result: { type: "guest_invite_created", invite: { invite_id: `i${labels.length}` }, url: "https://herdrup.app/web/#x" } });
+   const params = (req as Request & { params: Record<string, unknown> }).params;
+   if (req.method === "guest.invite.create") invites.push(params);
+   if (req.method !== "guest.invite.create" || String(params.target ?? "").includes("/") || params.machine !== undefined) { answer(session, req, { error: { code: "owner_forbidden", message: "not allowed for this owner" } }); return; }
+   if (!listed.some(a => a.pane_id === params.target)) { answer(session, req, { error: { code: "agent_not_found", message: `agent ${String(params.target)} not found` } }); return; }
+   answer(session, req, { result: { type: "guest_invite_created", invite: { invite_id: `i${invites.length}` }, url: "https://herdrup.app/web/#x" } });
   },
  });
  const desk = await deskWithKey();
  try {
-  const listed = boardOf(relay);
+  const listedBoard = boardOf(relay);
   await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
-  await listed;
-  for (const pane of ["p1", `${peer}/p2`, `${other}/p3`]) {
+  await listedBoard;
+  await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "share");
+  expect(await desk.guestShareDetails("share")).toEqual({ agentName: "local", machineLabel: "dev2306" });
+  await guestsDesk.createGuestInvite("share", "ana", "Jerry", false);
+  for (const pane of [`${peer}/p2`, `${other}/p3`]) {
    await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: pane }, "share");
-   await guestsDesk.createGuestInvite("share", "ana", "Jerry", false);
+   await expect(desk.guestShareDetails("share")).rejects.toThrow(PEER_NOT_SHARED);
+   await expect(guestsDesk.createGuestInvite("share", "ana", "Jerry", false)).rejects.toThrow(PEER_NOT_SHARED);
   }
-  expect(labels).toEqual(["dev2306", "render-box", other]);
+  expect(invites.map(p => [p.target, p.machine_label])).toEqual([["p1", "dev2306"]]);
  } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+// An approval sealed before the desktop bounded its label may carry one herdr refuses (#521): the
+// share sheet and the invite name the machine by it as herdr takes it (shareLabel), else by the
+// machine's herdr host id. The host refuses a label as herdr's create_invite does.
+test("an approval's label herdr wouldn't take is cut to 64 code points, its control characters dropped, else the host id names the machine", async () => {
+ const invites: Record<string, unknown>[] = [];
+ const relay = host({
+  scope: () => "terminal",
+  other: (session, req) => {
+   const params = (req as Request & { params: Record<string, unknown> }).params;
+   if (req.method !== "guest.invite.create") { answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); return; }
+   invites.push(params);
+   const label = String(params.machine_label ?? "");
+   if (label.trim() === "" || [...label].length > 64 || /\p{Cc}/u.test(label)) { answer(session, req, { error: { code: "invalid_params", message: "machine_label must be 1 to 64 printable characters" } }); return; }
+   answer(session, req, { result: { type: "guest_invite_created", invite: { invite_id: `i${invites.length}` }, url: "https://herdrup.app/web/#x" } });
+  },
+ });
+ try {
+  for (const [sealed, want] of [["\u0007" + "😀".repeat(70), "😀".repeat(64)], ["\u0007\u200b", relay.hostID]] as const) {
+   const desk = await deskWithKey();
+   try {
+    const listed = boardOf(relay);
+    await desk.connectOwner({ ...machineOn(relay), label: sealed }, statements, "x", new AbortController().signal);
+    await listed;
+    await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "share");
+    expect((await desk.guestShareDetails("share")).machineLabel).toBe(want);
+    await guestsDesk.createGuestInvite("share", "ana", "Jerry", false);
+   } finally { desk.disconnectOwner(); }
+  }
+  expect(invites.map(p => p.machine_label)).toEqual(["😀".repeat(64), relay.hostID]);
+ } finally { relay.stop(); }
 });
 
 test("the machine probe counts the agents of a machine that admits this browser, and says when one no longer does", async () => {

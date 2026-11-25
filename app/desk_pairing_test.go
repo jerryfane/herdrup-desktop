@@ -112,6 +112,10 @@ func TestPairingPinsBeforeRedeemAndKeepsPrivateKeyOnDevice(t *testing.T) {
 	if err != nil || len(hosts) != 1 || hosts[0].ID != result.ID {
 		t.Fatalf("paired host was not durable: %+v %v", hosts, err)
 	}
+	// No nickname of its own: the list titles it by its host, as the result does.
+	if hosts[0].Nickname != "" || result.Label != hosts[0].Host {
+		t.Fatalf("paired host nickname %q, result label %q; want none and %q", hosts[0].Nickname, result.Label, hosts[0].Host)
+	}
 	private, err := os.ReadFile(hosts[0].KeyPath)
 	if err != nil {
 		t.Fatal(err)
