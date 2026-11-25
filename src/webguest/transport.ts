@@ -473,8 +473,7 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
   let first: AccountStatement | undefined;
   for (let attempt = 0; ; attempt++) {
    // A retry stays in the sign-in of the first hello: herdr would bind the invite to another
-   // account for good.
-   if (first !== undefined && !first.live()) throw accountChanged();
+   // account for good (helloStatement).
    const got = statements === undefined ? undefined : await helloStatement(statements, invite.endpoint.hostID, signal, first?.live, accountChanged);
    const pin = first;
    const statement = got === undefined || pin === undefined ? got : { ...got, live: () => pin.live() && got.live() };
@@ -650,7 +649,6 @@ export function guestLink(access: Access, statements?: StatementSource, relabele
  return {
   endpoint: access.endpoint,
   async hello(signal, earlier) {
-   if (earlier && !earlier()) throw shareSignInChanged();
    const { jws, live } = await helloStatement(source(), hostID, signal, earlier, shareSignInChanged);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
@@ -664,11 +662,12 @@ export function guestLink(access: Access, statements?: StatementSource, relabele
  };
 }
 
-/** A hello's statement from source. For a retry (earlier: the attempt before it), a lookup that
- *  fails after that attempt's sign-in ended (the cache's 409 account_changed, say) is that change,
- *  changed(); a cancelled lookup stays cancelled, and one that fails under the same sign-in stays
- *  as it is. */
+/** A hello's statement from source. For a retry (earlier: the attempt before it), none is asked
+ *  for once that attempt's sign-in has ended, and a lookup that fails after it ended (the cache's
+ *  409 account_changed, say) is that change: changed() either way. A cancelled lookup stays
+ *  cancelled, and one that fails under the same sign-in stays as it is. */
 async function helloStatement(source: StatementSource, hostID: string, signal: AbortSignal, earlier: (() => boolean) | undefined, changed: () => GuestError): Promise<AccountStatement> {
+ if (earlier && !earlier()) throw changed();
  try { return await source.get(hostID, HELLO_MIN_LEFT_MS, signal); }
  catch (error) {
   if (earlier && !signal.aborted && !earlier()) throw changed();
