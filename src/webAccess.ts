@@ -193,7 +193,13 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  document.addEventListener("input", typed, true);
 
  const schedule = () => { clearTimeout(timer); timer = setTimeout(() => { void look(); }, POLL_MS); };
+ const machinesNow = (): Promise<WebAccessMachine[]> => Desk.webAccessMachines().catch(() => []);
+ // A look in flight: it alone picks a request and puts up its notice or sheet, so the timer's
+ // look and one from coming back to the window never put up two for one request.
+ let looking = false;
  async function look(): Promise<void> {
+  if (looking) return;
+  looking = true;
   try {
    if (document.visibilityState !== "visible" || open !== null) return;
    const state = await Desk.accountState();
@@ -203,11 +209,13 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
    const req = nextRequest(await Desk.webAccessRequests() as WebAccessRequestView[], closed);
    if (!req) return;
    const lengths = await Desk.webAccessLengths();
+   const machines = await machinesNow();
    const done = () => { closed.add(req.id); open = null; };
+   // Checked after the last wait, right before the sheet would open: typing may have begun meanwhile.
    if (takesTyping(document.activeElement)) notify(req, lengths, done);
-   else await showSheet(req, lengths, done);
+   else await showSheet(req, lengths, machines, done);
   } catch { /* the next look tries again */ }
-  finally { schedule(); }
+  finally { looking = false; schedule(); }
  }
  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { clearTimeout(timer); void look(); } });
  events.accountChanged.on(() => { offered = null; });
@@ -215,7 +223,8 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
 
  /** A request that came while the user was typing: a modal sheet would take the keys mid-word
   *  (its code field kept four of them, #464), so a line in the sidebar's foot says so instead,
-  *  taking no focus. Review opens the sheet, and so does a pause in typing. */
+  *  taking no focus. Review opens the sheet, and so does a pause in typing that still holds once
+  *  the sheet is ready to open (#474). */
  function notify(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): void {
   open = req.id;
   const notice = el("div", "web-access-notice"); notice.setAttribute("role", "status");
@@ -223,24 +232,33 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
   notice.append(el("span", "web-access-notice-text", "A browser wants to reach your machines."), review);
   (document.getElementById("sidebar-foot") ?? document.body).prepend(notice);
   let cancel = () => {};
-  const sheet = () => {
-   cancel(); notice.remove();
-   showSheet(req, lengths, done).catch(() => { /* as a look's: the next look tries again */ });
+  const pause = () => clock.now() - typedAt;
+  // The notice stays until the sheet opens. Typing may resume while the machines come: then,
+  // unless Review asked for the sheet, the notice waits for the next pause.
+  let reviewed = false, fetching = false;
+  const present = async () => {
+   if (fetching) return;
+   fetching = true;
+   const machines = await machinesNow();
+   fetching = false;
+   if (!reviewed && pause() < TYPING_PAUSE_MS) { wait(TYPING_PAUSE_MS - pause()); return; }
+   notice.remove();
+   await showSheet(req, lengths, machines, done);
   };
-  review.onclick = sheet;
+  const sheet = () => { present().catch(() => { /* as a look's: the next look tries again */ }); };
+  review.onclick = () => { reviewed = true; cancel(); sheet(); };
   // The first look comes a full pause after the notice; a later one a full pause after the last key.
   const wait = (ms: number) => {
    cancel = clock.after(ms, () => {
-    const paused = clock.now() - typedAt;
-    if (paused >= TYPING_PAUSE_MS) sheet(); else wait(TYPING_PAUSE_MS - paused);
+    if (pause() >= TYPING_PAUSE_MS) sheet(); else wait(TYPING_PAUSE_MS - pause());
    });
   };
   wait(TYPING_PAUSE_MS);
  }
 
- async function showSheet(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): Promise<void> {
+ /** Synchronous up to showModal: nothing can take the keys between the caller's check and it. */
+ async function showSheet(req: WebAccessRequestView, lengths: readonly WebAccessLength[], machines: readonly WebAccessMachine[], done: () => void): Promise<void> {
   open = req.id;
-  const machines: WebAccessMachine[] = await Desk.webAccessMachines().catch(() => []);
   const dialog = el("dialog", "folder-naming web-access");
   dialog.setAttribute("aria-label", "Approve a browser");
   const title = el("h2", "", "Approve a browser?");
