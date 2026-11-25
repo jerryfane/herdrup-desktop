@@ -137,17 +137,17 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 			return snapshot(map[string]any{"type": "guest_updated", "guest": guest})
 		}
 	case "guest.revoke":
-		// herdr store.rs revoke_in: revoking a known guest or person again is
-		// a success that changes nothing; only an unknown one is not found.
+		// herdr store.rs revoke_in and mod.rs revoke_at: a known guest is
+		// revoked (again) and audited each time; a person's shares already
+		// revoked are a success that audits nothing; only an unknown one is
+		// not found.
 		if p.GuestID != "" {
 			for _, guest := range store.guests {
 				if guest["guest_id"] != p.GuestID {
 					continue
 				}
-				if guest["revoked"] != true {
-					guest["revoked"] = true
-					store.entries = append(store.entries, map[string]any{"event": "revoked", "guest_id": p.GuestID, "name": guest["name"], "ts_ms": time.Now().UnixMilli(), "fingerprint": guest["fingerprint"]})
-				}
+				guest["revoked"] = true
+				store.entries = append(store.entries, map[string]any{"event": "revoked", "guest_id": p.GuestID, "name": guest["name"], "ts_ms": time.Now().UnixMilli(), "fingerprint": guest["fingerprint"]})
 				return snapshot(map[string]any{"type": "guest_revoked", "guest_id": p.GuestID, "closed_streams": 0})
 			}
 		} else if p.Person != "" {

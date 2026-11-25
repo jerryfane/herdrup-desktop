@@ -103,6 +103,11 @@ function deviceGlyph(name: string) {
   return /iphone/i.test(name) ? "iphone" : /ipad/i.test(name) ? "ipad" : /browser|chrome|safari|firefox|edge/i.test(name) ? "globe"
     : /mac|laptop/i.test(name) ? "laptopcomputer" : "desktopcomputer";
 }
+/** The name of the share's device with this fingerprint, removed or not: one the person added
+ *  (listed devices), else the one that accepted the share. */
+function deviceName(guest: Guest, fingerprint: string): string | undefined {
+  return guest.devices?.find(d => d.fingerprint === fingerprint)?.device || (guest.fingerprint === fingerprint ? guest.device : undefined);
+}
 
 export class GuestSettings {
   readonly root = el("section", "settings-guests");
@@ -158,7 +163,6 @@ export class GuestSettings {
   /** Tells settings.ts the page shown when it changes. */
   private title(name: string | null) { if (name !== this.shown) { this.shown = name; this.paged(name); } }
   private async refresh() {
-    this.closeMenu?.();
     const token = this.token, at = ++this.generation;
     const results = await Promise.all(this.machines.map(async machine => {
       try { return { ...JSON.parse(await Desk.settingsGuestMachine(token, machine.alias)), machine } as Result; }
@@ -169,6 +173,9 @@ export class GuestSettings {
   }
   private key(machine: Machine, id: string) { return JSON.stringify([this.token, machine.alias, id]); }
   private render() {
+    // Rendering replaces every row, the device menu's anchor among them: the menu it opened goes
+    // with it (it would act on the shares it was opened for, not the ones now shown).
+    this.closeMenu?.();
     const byMachine = this.results.map(result => ({ machine: result.machine, ...sharePeople(result.listing?.guests ?? []) }));
     const people = byMachine.flatMap(m => m.people.map(person => ({ machine: m.machine, person })))
       .sort((a, b) => (b.person.lastSeenMs ?? 0) - (a.person.lastSeenMs ?? 0));
@@ -384,7 +391,7 @@ export class GuestSettings {
     const device = entry.event === "device_added" || entry.event === "device_removed";
     // The device the entry is from, by its fingerprint, removed ones included: an account-bound
     // share has several, and herdr writes device_removed without its name.
-    const named = guest && entry.fingerprint ? admitted({ ...guest, devices: (guest.devices ?? []).map(d => ({ ...d, removed: false })) }).get(entry.fingerprint)?.name : guest?.device;
+    const named = guest && entry.fingerprint ? deviceName(guest, entry.fingerprint) : guest?.device;
     const text = entry.event === "prompt" ? entry.text || "" : entry.event === "upload" ? `${entry.file?.name || "a file"}${entry.file?.size !== undefined ? " · " + entry.file.size.toLocaleString() + " bytes" : ""}` : device ? entry.text || named || "A device" : details[entry.event];
     if (text) row.append(el("p", "settings-guest-log-body", text));
     if (entry.fingerprint) row.append(el("div", "settings-account-email", "key " + [entry.fingerprint, device ? (guest?.account_bound ? `from ${who}'s account` : "") : named].filter(Boolean).join(" · ")));
