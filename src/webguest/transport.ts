@@ -475,7 +475,7 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
    // A retry stays in the sign-in of the first hello: herdr would bind the invite to another
    // account for good.
    if (first !== undefined && !first.live()) throw accountChanged();
-   const got = statements === undefined ? undefined : await statements.get(invite.endpoint.hostID, HELLO_MIN_LEFT_MS, signal);
+   const got = statements === undefined ? undefined : await helloStatement(statements, invite.endpoint.hostID, signal, first?.live, accountChanged);
    const pin = first;
    const statement = got === undefined || pin === undefined ? got : { ...got, live: () => pin.live() && got.live() };
    first ??= got;
@@ -641,7 +641,7 @@ export function guestLink(access: Access, statements?: StatementSource): Transpo
   endpoint: access.endpoint,
   async hello(signal, earlier) {
    if (earlier && !earlier()) throw shareSignInChanged();
-   const { jws, live } = await source().get(hostID, HELLO_MIN_LEFT_MS, signal);
+   const { jws, live } = await helloStatement(source(), hostID, signal, earlier, shareSignInChanged);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
     refused: () => source().drop(hostID, jws),
@@ -652,6 +652,18 @@ export function guestLink(access: Access, statements?: StatementSource): Transpo
   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
   statement: signal => source().get(hostID, REFRESH_MIN_LEFT_MS, signal),
  };
+}
+
+/** A hello's statement from source. For a retry (earlier: the attempt before it), a lookup that
+ *  fails after that attempt's sign-in ended (the cache's 409 account_changed, say) is that change,
+ *  changed(); a cancelled lookup stays cancelled, and one that fails under the same sign-in stays
+ *  as it is. */
+async function helloStatement(source: StatementSource, hostID: string, signal: AbortSignal, earlier: (() => boolean) | undefined, changed: () => GuestError): Promise<AccountStatement> {
+ try { return await source.get(hostID, HELLO_MIN_LEFT_MS, signal); }
+ catch (error) {
+  if (earlier && !signal.aborted && !earlier()) throw changed();
+  throw error;
+ }
 }
 
 export interface TransportOptions {

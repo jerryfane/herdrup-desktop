@@ -335,6 +335,48 @@ test("a bound share's retry whose sign-in changed while its statement was fetche
  transport.close();
 }, CONNECTS_LIMIT_MS);
 
+/** s whose retry lookup (its second) rejects as the page's statement cache does once the sign-in
+ *  changed under it (409 account_changed); switch says whether the sign-in did change. */
+const rejectingRetry = (s: ReturnType<typeof statements>, switchFirst: boolean): StatementSource => ({
+ get: async (host, minLeft, signal) => {
+  if (s.issued === 1) { s.issued++; if (switchFirst) s.switchAccount(); throw new AccountServiceError(409, "account_changed"); }
+  return s.get(host, minLeft, signal);
+ },
+ drop: (host, jws) => s.drop(host, jws),
+});
+
+test("a bound share's retry whose lookup fails as the sign-in changes under it reads as the changed sign-in; the same failure under the same sign-in stays its own", async () => {
+ const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "statement_expired" }); });
+ for (const [switched, want] of [[true, SIGN_IN_CHANGED], [false, ["other", "account service: 409 account_changed"]]] as const) {
+  const transport = new GuestTransport(guestLink(accessOn(relay, true), rejectingRetry(statements(), switched)), await identity());
+  expect(kindAndMessage(await transport.call("ping").catch(e => e))).toEqual([...want]);
+  transport.close();
+ }
+ expect(relay.connects).toBe(2);
+}, CONNECTS_LIMIT_MS);
+
+test("a redemption's retry whose lookup fails as the sign-in changes under it sends nothing more", async () => {
+ const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "statement_expired" }); });
+ const error = await acceptInvite(inviteFor(relay, true), await identity(), "Browser", { account: rejectingRetry(statements(), true) }).catch(e => e);
+ expect(kindAndMessage(error)).toEqual(["account_changed", CHANGED]);
+ expect(relay.connects).toBe(1);
+}, CONNECTS_LIMIT_MS);
+
+test("a bound share's retry lookup cancelled by its call stays a cancellation, though the sign-in changed too", async () => {
+ const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "statement_expired" }); });
+ const s = statements(), call = new AbortController();
+ const cancelled: StatementSource = {
+  get: async (host, minLeft, signal) => {
+   if (s.issued === 1) { s.issued++; s.switchAccount(); call.abort(new Error("sheet dismissed")); throw signal.reason; }
+   return s.get(host, minLeft, signal);
+  },
+  drop: (host, jws) => s.drop(host, jws),
+ };
+ const transport = new GuestTransport(guestLink(accessOn(relay, true), cancelled), await identity());
+ expect(kindAndMessage(await transport.call("ping", {}, { signal: call.signal }).catch(e => e))).toEqual(["other", "sheet dismissed"]);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
+
 test("herdr's account_mismatch says whose share it is", async () => {
  const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "account_mismatch" }); });
  const transport = new GuestTransport(guestLink(accessOn(relay, true), statements()), await identity());
