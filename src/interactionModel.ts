@@ -1,5 +1,4 @@
 import type { AskForm, AskFormAnswer, AskFormStatus } from "./askFormModel";
-import type { SuggestionRow } from "./topicSuggestionsModel";
 export interface Question { question: string; options: string[]; multi: boolean; recommended?: number }
 export interface PlanItem { text: string; status?: string; done?: boolean; phase?: string; blocker?: string }
 export interface Entry {
@@ -209,7 +208,7 @@ export function chatDayLabel(ms: number, now: Date, locale?: string): { day: str
 /** A transcript row as its kept node is matched against (interaction.ts drawChat, topicsView.ts
  *  TopicChat.draw): a day separator with the label it reads now (chatDayLabel), which turns from
  *  Today to Yesterday at midnight while the row stays the same; any other row as it is. */
-export function rowShown(row: ChatRow | SuggestionRow, now: Date): unknown {
+export function rowShown(row: ChatRow, now: Date): unknown {
  return row.kind === "day" ? [row, chatDayLabel(row.ms, now)] : row;
 }
 
