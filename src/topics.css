@@ -65,8 +65,11 @@
 .topic-status-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-faint); }
 .topics-placeholder { margin: auto; padding: 24px; max-width: 320px; color: var(--color-text-dim); font: 400 14px var(--font-app); text-align: center; }
 
+/* Its own conversation column (conversationColumn.ts): the Inbox's edge handles and readout, laid
+   over the transcript and composer under the 48 px header. */
+.topic-chat { position: relative; --gram-header: 48px; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.topic-chat > .gcol-handle { top: var(--gram-header); }
 /* The topic's header, 48 px: [sidebar Topics ⌥⌘T |] ‹ Inbox | title, status … •••. */
-.topic-chat { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .topic-chat-header { display: flex; align-items: center; gap: 12px; flex: none; min-height: 48px; box-sizing: border-box; padding: 4px 12px 4px 16px; border-bottom: 1px solid var(--color-hairline-quiet); }
 .topic-list-button { display: flex; align-items: center; gap: 12px; flex: none; }
 .topic-list-button[hidden] { display: none; }
@@ -87,12 +90,13 @@
 .topic-transcript { width: min(var(--gram-column, 720px), 100%); margin: 0 auto; }
 .topic-send-note { margin: 0; padding: 4px 16px; color: var(--color-text-dim); font: 400 12px var(--font-app); }
 .topic-send-note[hidden] { display: none; }
-.topic-composer { display: flex; align-items: flex-end; gap: 8px; flex: none; width: min(calc(var(--gram-column, 720px) - 24px), calc(100% - 24px)); margin: 4px auto 8px; padding: 6px 6px 6px 14px; border: 1px solid var(--color-hairline); border-radius: 22px; background: var(--color-surface); }
-.topic-chat[data-closed="true"] .topic-composer { opacity: 0.45; }
-.agent-detail textarea.topic-input { flex: 1; min-height: 24px; max-height: 40vh; padding: 6px 0; border: 0; background: none; resize: none; field-sizing: content; font: 400 16px var(--font-app); }
-.agent-detail textarea.topic-input:focus { outline: none; }
-.agent-detail .topic-send { display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: var(--color-text); color: var(--color-ground-machine); }
-.agent-detail .topic-send:disabled { opacity: 0.35; }
+/* The page's one composer (the Inbox's, interaction.ts) and its draft lines, lent to the open
+   topic: in flow under the conversation, in the conversation's column as in Chat. */
+.topic-composer-slot { flex: none; }
+.topic-composer-slot > .chat-composer { width: min(calc(var(--gram-column, 720px) - 24px), calc(100% - 24px)); margin: 4px auto 8px; }
+.topic-composer-slot > .composer-lines { width: min(calc(var(--gram-column, 720px) - 24px), calc(100% - 24px)); margin: -4px auto 0; padding: 0 16px 8px; box-sizing: border-box; font: 400 12px/var(--leading-app) var(--font-app); color: var(--color-text-dim); }
+.topic-composer-slot > .composer-lines[hidden] { display: none; }
+.topic-chat[data-closed="true"] .topic-composer-slot > .chat-composer { opacity: 0.45; }
 
 dialog.subagent-sheet.topics-sheet { height: auto; max-height: calc(100vh - 32px); }
 .topics-sheet > header { justify-content: space-between; }

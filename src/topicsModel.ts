@@ -1,8 +1,9 @@
 // An omp agent's Topics, kept free of the DOM so bun tests it (herdrup #745 TopicsView.swift,
 // HerdrKit AgentTopics.swift, ChatPreference.swift; herdr #475).
 
-import type { AgentTopicInfo, TopicsUpdate } from "./mygo";
+import type { AgentTopicInfo, TopicSession, TopicsUpdate } from "./mygo";
 import type { ChatMode } from "./chatPreference";
+import type { TranscriptPage } from "./interactionModel";
 
 export type TopicInfo = AgentTopicInfo;
 export type { TopicsUpdate };
@@ -151,9 +152,32 @@ export function topicsProblem(code: string, message = ""): string {
  return "Couldn't reach the agent.";
 }
 
-/** A refusal that means the agent has no topics (any more): the page goes back to Chat. */
+/** A refusal that means the agent has no topics (any more): the page goes back to Chat.
+ *  agent_not_found is not that answer (an agent herdr briefly can't resolve, as while it starts a
+ *  topic): it keeps the list, as every other failure does (desk_topics.go topicsNotOffered). */
 export function topicsNotOffered(code: string): boolean {
- return code === "topics_unsupported" || code === "agent_not_found" || code === "unsupported";
+ return code === "topics_unsupported" || code === "unsupported";
+}
+
+/** The topics the agent's session file holds (AgentView.topicSessions) as the list shows them
+ *  until the agent answers: their ids and titles, in the list's order, state unknown. */
+export function seededTopics(sessions: readonly TopicSession[]): TopicInfo[] {
+ return orderedTopics(sessions.map(s => ({ topic_id: s.topicID, title: s.title, state: "unknown", queued: 0, turns: 0, created_unix_ms: s.createdMs, last_activity_unix_ms: s.createdMs })));
+}
+
+/** The topics the list shows: the agent's answer once it gave one, else the ones its session file
+ *  holds (a first read still on its way, or one that failed). A cached answer that is stale and
+ *  empty is not the agent's word either. */
+export function listedTopics(u: Pick<TopicsUpdate, "offered" | "topics" | "stale"> | null, seeded: readonly TopicInfo[]): TopicInfo[] {
+ if (u?.offered && !(u.stale && u.topics.length === 0)) return u.topics;
+ return [...seeded];
+}
+
+/** A topic works (its chat shows the working dots, as the Inbox's ChatView.sessionFooter): it
+ *  runs or starts, or its page has a working turn (iOS TopicChat: a state that isn't working is no
+ *  status, so the page's turn decides). */
+export function topicWorking(t: Pick<TopicInfo, "state">, page: Pick<TranscriptPage, "working"> | null): boolean {
+ return t.state === "running" || t.state === "starting" || !!page?.working;
 }
 
 /** How a failed agent.topics.send went, by herdr's code (desk_topics.go topicSendDelivery, iOS

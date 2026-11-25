@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
+	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
@@ -54,10 +55,12 @@ var topicsRetry = func() []time.Duration {
 
 // TopicsUpdate is the page's Topics state for one view: the list, ordered
 // as the Topics view lists it, or why the newest read failed (the last list
-// stays on screen: topics_unreachable keeps it). Offered says the agent
-// answered agent.topics.list this session, so the page offers Topics;
-// Changed names a topic whose conversation changed (an owner's event), so
-// an open topic chat reads its tail.
+// stays on screen: every failure but topics_unsupported keeps it). Offered
+// says the agent answered agent.topics.list this session, so the page
+// offers Topics; Changed names a topic whose conversation changed (an
+// owner's event), so an open topic chat reads its tail. Stale says the
+// list is a herdr's cached answer whose last refresh from the agent failed:
+// an empty one is not the agent's word that it has no topics.
 //
 // Suggestions are the agent's open topic suggestions, oldest first (herdr
 // #490): Organise's proposals and the ones it made in the Inbox.
@@ -71,6 +74,7 @@ type TopicsUpdate struct {
 	Topics            []herdrapi.AgentTopicInfo           `json:"topics"`
 	Offered           bool                                `json:"offered"`
 	Loaded            bool                                `json:"loaded"`
+	Stale             bool                                `json:"stale,omitempty"`
 	Problem           string                              `json:"problem,omitempty"`
 	Changed           string                              `json:"changed,omitempty"`
 	Suggestions       []herdrapi.AgentTopicSuggestionInfo `json:"suggestions"`
@@ -118,6 +122,9 @@ type topicsState struct {
 	// no timer.
 	retryOnClose func() bool
 	retries      int
+	// asOf is when the agent last answered the list shown, as a herdr that
+	// serves the list from its cache says (as_of_unix_ms; 0 when unsaid).
+	asOf uint64
 }
 
 // TopicsAvailable reports whether the view's server serves an omp agent's
@@ -367,7 +374,7 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	ctx, cancel := context.WithTimeout(v.ctx, 20*time.Second)
 	defer cancel()
 	requested := time.Now()
-	list, err := v.client.AgentTopicsList(ctx, v.PaneID)
+	list, fresh, err := v.client.AgentTopicsList(ctx, v.PaneID)
 	served, known := false, true
 	if err == nil && list.Suggestions != nil {
 		served, known = v.client.Supports(ctx, herdrapi.CapabilityAgentTopicSuggestions)
@@ -380,9 +387,15 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	u := t.last
 	u.Token, u.Loaded, u.Changed = v.Token, true, ""
 	switch {
+	case err == nil && fresh.AsOfMs != 0 && fresh.AsOfMs < t.asOf:
+		// An answer older than the list shown (a cache behind the
+		// refresh that brought it): the newer list stays.
 	case err == nil:
-		u.Topics, u.Offered, u.Problem = orderedTopics(list.Topics), true, ""
+		u.Topics, u.Offered, u.Problem, u.Stale = orderedTopics(list.Topics), true, "", fresh.Stale
 		u.Suggestions, u.RequestedMs = openSuggestions(list.Suggestions), requested.UnixMilli()
+		if fresh.AsOfMs != 0 {
+			t.asOf = fresh.AsOfMs
+		}
 		// A capability that couldn't be read keeps the last answer and
 		// leaves the read unsettled.
 		if known {
@@ -391,9 +404,9 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 		t.settled = known
 	case topicsNotOffered(err):
 		// Not an agent with topics (any more): the page goes back to Chat and Terminal.
-		u.Topics, u.Offered, u.Problem = nil, false, ""
+		u.Topics, u.Offered, u.Problem, u.Stale = nil, false, "", false
 		u.Suggestions, u.SuggestionsServed, u.RequestedMs = nil, false, requested.UnixMilli()
-		t.settled = true
+		t.settled, t.asOf = true, 0
 	default:
 		u.Problem = topicsProblem(err)
 		t.settled = false
@@ -441,13 +454,16 @@ func orderedTopics(topics []herdrapi.AgentTopicInfo) []herdrapi.AgentTopicInfo {
 	return out
 }
 
+// topicsNotOffered: the agent answered it has no topics. agent_not_found is
+// not that answer (an agent herdr briefly can't resolve, as while it
+// starts a topic): it keeps the list, as every other failure does.
 func topicsNotOffered(err error) bool {
 	var unsupported *engine.ErrUnsupported
 	if errors.As(err, &unsupported) {
 		return true
 	}
 	var api *bridge.APIError
-	return errors.As(err, &api) && (api.Code == "topics_unsupported" || api.Code == "agent_not_found")
+	return errors.As(err, &api) && api.Code == "topics_unsupported"
 }
 
 // topicsProblem says why a topics call failed, in the words the iPhone app
@@ -559,31 +575,62 @@ func topicSendDelivery(err error) string {
 	return "unconfirmed"
 }
 
-// TopicsSend sends a message to one topic (agent.topics.send).
+// TopicsSend sends a message to one topic (agent.topics.send), from the
+// page's composer: with its files, they go as the Inbox's do (sendAttached:
+// posted as Grams, named in the message), the topic running in the same omp.
+// A refusal keeps the files for a retry.
 func (d *Desk) TopicsSend(ctx context.Context, token, topicID, text string) (TopicSendReply, error) {
 	v, err := d.agentView(token)
 	if err != nil {
 		return TopicSendReply{}, err
 	}
 	text = strings.TrimSpace(text)
-	if text == "" {
+	attached := len(v.composer.Snapshot().Chips) > 0
+	if text == "" && !attached {
 		return TopicSendReply{}, errors.New("prompt is empty")
-	}
-	if len(text) > topicMessageBytes {
-		return TopicSendReply{Delivery: "refused", Problem: errTopicTooLong.Error()}, nil
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	sent, err := v.client.AgentTopicsSend(ctx, herdrapi.AgentTopicsSendParams{Target: v.PaneID, TopicID: topicID, Message: text})
+	if !attached {
+		return d.topicSend(ctx, v, topicID, text), nil
+	}
+	if !v.sendMu.TryLock() {
+		return TopicSendReply{}, gramstore.ErrSending
+	}
+	defer v.sendMu.Unlock()
+	var reply TopicSendReply
+	_, err = d.sendAttached(ctx, v, text, func(prompt string) (string, error) {
+		reply = d.topicSend(ctx, v, topicID, prompt)
+		if reply.Delivery == "refused" {
+			return "", errors.New(reply.Problem)
+		}
+		return "", nil
+	})
+	if reply.Delivery == "refused" {
+		return reply, nil
+	}
+	if err != nil {
+		return TopicSendReply{}, err
+	}
+	return reply, nil
+}
+
+// topicSend sends message to one topic and says how it went, in the words
+// the page shows (topicSendDelivery, topicsProblem); the list is read again.
+func (d *Desk) topicSend(ctx context.Context, v *interaction, topicID, message string) TopicSendReply {
+	if len(message) > topicMessageBytes {
+		return TopicSendReply{Delivery: "refused", Problem: errTopicTooLong.Error()}
+	}
+	sent, err := v.client.AgentTopicsSend(ctx, herdrapi.AgentTopicsSendParams{Target: v.PaneID, TopicID: topicID, Message: message})
 	d.topicsRead(v)
 	if err != nil {
 		problem := topicsProblem(err)
 		if api := (*bridge.APIError)(nil); !errors.As(err, &api) && topicSendDelivery(err) == "unconfirmed" {
 			problem = topicSendUnconfirmed
 		}
-		return TopicSendReply{Delivery: topicSendDelivery(err), Problem: problem}, nil
+		return TopicSendReply{Delivery: topicSendDelivery(err), Problem: problem}
 	}
-	return TopicSendReply{Mode: string(sent.Mode), Delivery: "sent"}, nil
+	return TopicSendReply{Mode: string(sent.Mode), Delivery: "sent"}
 }
 
 // TopicsClose, TopicsReopen and TopicsRename change one topic, then read

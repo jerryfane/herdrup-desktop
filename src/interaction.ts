@@ -11,13 +11,14 @@ import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
 import type { AgentTarget, AgentTopicSuggestionInfo, AgentView, BoardUpdate, GramAttachment, PaneAction, TopicsUpdate } from "./mygo";
-import { closeWriter, ComposerEditor, composerEnterSends, composerGlyph, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
+import { closeWriter, ComposerEditor, composerEnterSends, composerGlyph, composerLines, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
-import { inlineMarkdown, markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, modelLine, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { markdown, readableMarkdown } from "./chatMarkdown";
+import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { ChatTail, placeRows } from "./chatTail";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
 import { canAnswer, chooser, guestQuestion, promptByline, refusesResize, typesInTerminal, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
@@ -34,8 +35,8 @@ import { HISTORY_ROWS, prependTerminalHistory } from "./terminalHistory";
 import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } from "./motion";
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
-import { TopicsPane } from "./topicsView";
-import { foldKey, nextTopicsOffer, ompHarness, resolvedMode, topicsShown, type TopicsOffer } from "./topicsModel";
+import { TopicsPane, type TopicComposer } from "./topicsView";
+import { foldKey, nextTopicsOffer, ompHarness, resolvedMode, sendNote, topicsShown, type TopicsOffer } from "./topicsModel";
 import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
 import chatTextIcon from "../third_party/phosphor/web/chat-text.svg?url";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -328,9 +329,8 @@ class Detail {
  // The terminal area holds the paused message rather than a stream (replaceTerminal).
  terminalPaused = false;
  shownStatus: [group: string, label: string, since?: number] = ["", ""];
- private workingRow?: HTMLElement;
- private modelRow?: HTMLElement;
- private recapRow?: HTMLElement;
+ /** The working dots, the recap and the model line under the chat (chatTail.ts, a topic's too). */
+ private readonly tail = new ChatTail();
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
  private chatFailed = false;
  ctrlArmed = false;
@@ -442,11 +442,16 @@ class Detail {
  composerResize: ResizeObserver | null = null;
  stopFileDrop: (() => void) | null = null;
  stopClipboardPaste: (() => void) | null = null;
+ /** The composer card (openChat): in the page's body, or in the open topic's chat (placeComposer). */
+ private composerCard: HTMLElement | null = null;
+ /** The open topic the composer writes to while Topics shows it (TopicsHost.composer): the same
+  *  composer, its send going to the topic. Null: the Inbox, or the terminal. */
+ private topicComposer: TopicComposer | null = null;
  send = button("Send", () => { void this.sendPrompt(); });
  prompts = new SavedPromptsMenu(text => {
   if (this.disposed || this.sending || this.dictation.busy) return;
   this.input.value = text; this.input.dispatchEvent(new Event("input")); void this.sendPrompt();
- }, error => { this.status.textContent = errorText(error); });
+ }, error => { this.composerNote(errorText(error)); });
  sending = false;
  attachments: GramAttachment[] = [];
  attachmentStrip = el("div", "gstrip pane-attachments");
@@ -462,6 +467,8 @@ class Detail {
  /** The pane's draft and unsent text (composerDraft.ts); the composer stays editable while a write
   *  is out (as Swift's replyBar), and the write's outcome settles there. */
  draft: PaneDraft;
+ /** The draft's key: the pane (its AgentTarget), with the topic the composer writes to. */
+ private draftKey: string;
  /** The send whose click is queued behind earlier terminal input, not yet dispatched: closing
   *  the composer cancels it, its text coming back (sendPrompt, rule 2). */
  queuedSend: DraftSend | null = null;
@@ -483,7 +490,8 @@ class Detail {
  olderCopy = el("button", "composer-line-action", "Copy");
  olderDismiss = el("button", "composer-line-action", "Dismiss");
  constructor(readonly target: AgentTarget, initialDraft?: string, readonly plainTerminal = false) {
-  this.draft = composerDrafts.pane(JSON.stringify(target));
+  this.draftKey = JSON.stringify(target);
+  this.draft = composerDrafts.pane(this.draftKey);
   this.input.rows = 1; this.input.placeholder = plainTerminal ? "Write text without running it" : "Type a reply…"; this.input.autocapitalize = "off"; this.input.spellcheck = false;
   this.unsentRestore.type = "button";
   this.unsentRestore.onclick = () => this.stored(this.draft.restore());
@@ -513,7 +521,40 @@ class Detail {
  }
  /** stored: false when storage refused the pane's texts, which this page still holds. */
  stored(stored: boolean) {
-  if (!stored && !this.disposed) this.status.textContent = "Draft is kept in this window only: local storage is unavailable.";
+  if (!stored && !this.disposed) this.composerNote("Draft is kept in this window only: local storage is unavailable.");
+ }
+ /** The topic the composer writes to now: the open topic while Topics shows it. */
+ private sendsToTopic(): TopicComposer | null { return this.mode === "topics" ? this.topicComposer : null; }
+ /** What the composer has to say (a send's, a file's, the draft's): under the open topic it
+  *  writes to, else on the page's note line. */
+ private composerNote(text: string) {
+  const topic = this.sendsToTopic();
+  if (topic) topic.note(text); else this.status.textContent = text;
+ }
+ /** The field's prompt: the topic's (Message <title>, or Closed) where it writes to one. */
+ private composerPlaceholder(): string {
+  return this.sendsToTopic()?.placeholder() ?? (this.plainTerminal ? "Write text without running it" : "Type a reply…");
+ }
+ /** Puts the one composer where it writes now: under the open topic's conversation while Topics
+  *  shows one, else in the page's body (the Inbox's, the terminal's). Each place keeps its own
+  *  draft (the pane's, or the pane's and topic's); attached files stay with the composer. */
+ private placeComposer() {
+  const card = this.composerCard;
+  if (!card) return;
+  const topic = this.sendsToTopic();
+  const parent = topic?.slot ?? this.body;
+  if (card.parentElement !== parent) parent.append(card, this.composerLines);
+  const key = JSON.stringify(topic ? { ...this.target, topic: topic.topicID } : this.target);
+  if (key !== this.draftKey) {
+   this.stored(this.draft.flush()); this.draft.detach(this.draftView);
+   this.draftKey = key; this.draft = composerDrafts.pane(key);
+   this.draft.attach(this.draftView);
+   this.input.value = this.draft.draft();
+   this.drawUnsent(); this.drawOlder();
+  }
+  this.input.disabled = !!this.guestPaused || !!topic?.closed();
+  this.input.placeholder = this.guestPaused?.placeholder ?? this.composerPlaceholder();
+  this.relayout();
  }
  /** The unsent line as the pane's draft has it; the composer's layout makes room for it. */
  drawUnsent() {
@@ -785,8 +826,8 @@ class Detail {
   // render must not re-enable the input after the lines below.
   if (paused) this.dictation.stop();
   this.updateStatus(...this.shownStatus);
-  this.input.disabled = paused;
-  this.input.placeholder = this.guestPaused?.placeholder ?? (this.plainTerminal ? "Write text without running it" : "Type a reply…");
+  this.input.disabled = paused || !!this.sendsToTopic()?.closed();
+  this.input.placeholder = this.guestPaused?.placeholder ?? this.composerPlaceholder();
   this.send.disabled = paused || this.sending || this.dictation.busy;
   this.attach.disabled = paused || this.sending || this.picking;
   this.prompts.button.disabled = paused || this.sending || this.dictation.busy;
@@ -886,7 +927,7 @@ class Detail {
   if (since !== undefined) this.statusTimer = window.setInterval(updateAge, 1000);
   // The working row and the recap follow the board status (ChatView's agentStatus) between
   // polls, failed ones included: each redraws when whether it shows no longer matches the page.
-  if (this.chat && this.mode === "chat" && (!!this.renderWorking() !== !!this.workingRow?.isConnected || !!this.renderRecap() !== !!this.recapRow?.isConnected)) this.drawChat(false);
+  if (this.chat && this.mode === "chat" && (!!this.renderWorking() !== this.tail.shows().working || !!this.renderRecap() !== this.tail.shows().recap)) this.drawChat(false);
  }
  toggleFind(open = !this.findOpen) {
   // A pending up-arrow jump stops when Find opens or closes (herdrup #637, review F2).
@@ -1097,13 +1138,20 @@ class Detail {
  dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.stored(this.draft.flush()); this.queuedSend?.cancel(); this.draft.detach(this.draftView); void Desk.closeAgentView(this.token); }
  /** Topics' text follows the chat's size. */
  textSurface(): TextSurface { return this.mode === "terminal" ? "terminal" : "chat"; }
- topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions); }
+ topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions.length); }
  resolvedMode(): ChatMode { return resolvedMode(this.asked, this.chatAvailable, this.topicsAvailable()); }
  mountTopics(view: AgentView) {
   const pane = new TopicsPane({
    token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
+   topicSessions: view.topicSessions,
    renderRow: row => this.renderRow(row),
+   // The Inbox's own cards, drawn into the topic's transcript; a topic's subagents don't open.
+   renderPlan: (items, container, session) => this.renderPlan(items, container, session),
+   renderSubagents: (agents, container) => this.renderSubagents(agents, container, false),
+   renderOutgoing: message => this.renderOutgoing(message),
    openInbox: () => { void this.chooseMode("chat"); },
+   // The page's one composer, lent to the open topic (null: it closed): placed and sent there.
+   composer: target => { this.topicComposer = target; this.placeComposer(); },
    symbol: (name, size, weight) => symbol(name, size, weight),
   });
   pane.root.hidden = true;
@@ -1133,6 +1181,7 @@ class Detail {
   const generation = this.generation;
   this.prediction?.reset();
   this.mode = mode; this.status.textContent = "";
+  this.placeComposer();
   if (mode !== "chat") this.dismissChatSheets();
   // The Topics list has its own search (#745: no Find over Topics).
   if (mode === "topics" && this.findOpen) this.toggleFind(false);
@@ -1378,7 +1427,7 @@ class Detail {
  }
  renderAttachments() {
   this.attachmentStrip.hidden = this.attachments.length === 0;
-  const failed = (error: unknown) => { if (!this.disposed) this.status.textContent = errorText(error); };
+  const failed = (error: unknown) => { if (!this.disposed) this.composerNote(errorText(error)); };
   this.attachmentStrip.replaceChildren(...this.attachments.map(file => composerAttachment(file, this.sending,
    () => { void Desk.paneRemoveAttachment(this.token, file.path).catch(failed); },
    () => { void Desk.paneRetryAttachment(this.token, file.path).catch(failed); })));
@@ -1388,14 +1437,14 @@ class Detail {
   if (this.disposed || this.sending || this.picking || !this.token) return;
   this.picking = true; this.attach.disabled = true;
   try { if (paths) await Desk.paneAttachFiles(this.token, paths); else await Desk.panePickFiles(this.token); }
-  catch(error) { if (!this.disposed) this.status.textContent = errorText(error); }
+  catch(error) { if (!this.disposed) this.composerNote(errorText(error)); }
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
   this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
   this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
   this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
-  const composer = el("div", "chat-composer");
+  const composer = this.composerCard = el("div", "chat-composer");
   const actions = el("div", "composer-actions");
   this.attach.className = "composer-action";
   this.send.className = "composer-action primary";
@@ -1408,7 +1457,7 @@ class Detail {
   if (!this.plainTerminal) {
    this.stopFileDrop = composerFileDrop(composer, paths => { void this.pickFiles(paths); });
    this.stopClipboardPaste = composerClipboardPaste(this.input, () => Desk.panePasteClipboard(this.token), error => {
-    if (!this.disposed) this.status.textContent = errorText(error);
+    if (!this.disposed) this.composerNote(errorText(error));
    });
   }
   this.mountKeys();
@@ -1422,20 +1471,20 @@ class Detail {
    this.column.update();
    const width = composer.clientWidth - 26;
    // Lines are counted at the drawn pitch; the field is ComposerStyle.lineHeight per line.
-   const lineHeight = COMPOSER_LINE, pitch = COMPOSER_TEXT_PITCH;
-   const measure = (w: number) => {
-    probe.style.width = `${Math.max(1, w)}px`;
-    probe.textContent = this.input.value + (this.input.value.endsWith("\n") || !this.input.value ? " " : "");
-    return Math.max(1, Math.round(probe.getBoundingClientRect().height / pitch));
-   };
+   const lineHeight = COMPOSER_LINE;
+   const measure = (w: number) => composerLines(probe, this.input.value, w, COMPOSER_TEXT_PITCH);
    const inline = width - actions.offsetWidth - 4;
    wrapped = composerExpanded(false, measure, inline, wrapped);
    const stacked = this.editor!.open || this.attachments.length > 0 || (!this.dictation.strip.hidden && !!this.input.value) || wrapped;
    composer.classList.toggle("expanded", stacked);
    const lines = measure(stacked ? width : inline);
-   // Swift gives the writer the warm terminal's room, including its key-row allowance.
-   const room = this.terminalSurface.clientHeight;
+   // Swift gives the writer the warm terminal's room, including its key-row allowance; under a
+   // topic, the room its conversation leaves.
+   const topic = this.sendsToTopic();
+   const room = topic ? topic.room() : this.terminalSurface.clientHeight;
    this.input.style.height = `${this.editor!.update(lines, room, lineHeight)}px`;
+   // Under a topic the composer and its lines sit in the topic's column, in flow.
+   if (topic) { composer.style.bottom = ""; this.fitPromptBubbles(); return; }
    // The lines under the composer: the composer and what stands on it move up by them.
    const unsentHeight = this.composerLines.hidden ? 0 : this.composerLines.offsetHeight;
    composer.style.bottom = `${unsentHeight}px`;
@@ -1471,7 +1520,8 @@ class Detail {
   };
   this.chatResize = new ResizeObserver(() => this.followChat());
   this.chatResize.observe(this.transcript); this.chatResize.observe(this.chatScroll);
-  this.body.append(composer, this.composerLines);
+  // In the body, or under the open topic when the page opens on Topics.
+  this.placeComposer();
   // The chat as last read draws at once; the first read asks only for what came after it.
   const remembered = recallChat(JSON.stringify(this.target));
   if (remembered) {
@@ -1761,7 +1811,8 @@ class Detail {
    }
   }
   for (const message of this.outgoing) nodes.push(this.renderOutgoing(message));
-  for (const id of this.outgoingNodes.keys()) if (!this.outgoing.some(message => message.id === id)) this.outgoingNodes.delete(id);
+  // A bubble the open topic still shows (its sends draw with renderOutgoing too) stays.
+  for (const [id, node] of this.outgoingNodes) if (!this.outgoing.some(message => message.id === id) && !node.isConnected) this.outgoingNodes.delete(id);
   const plan = currentPlan(this.chat, this.entries);
   if (plan.length) nodes.push(this.renderPlan(plan));
   const agents = this.chat?.subagents ?? [];
@@ -1773,17 +1824,7 @@ class Detail {
   const model = this.renderModel();
   if (model) nodes.push(model);
   // Keep unchanged rows attached: detaching them on each poll loses keyboard focus.
-  const retained = new Set<Node>(nodes);
-  for (let child = this.transcript.firstChild; child;) {
-   const next = child.nextSibling;
-   if (!retained.has(child)) child.remove();
-   child = next;
-  }
-  let next = this.transcript.firstChild;
-  for (const node of nodes) {
-   if (node === next) next = next.nextSibling;
-   else this.transcript.insertBefore(node, next);
-  }
+  placeRows(this.transcript, nodes);
   this.fitPromptBubbles();
   if (follow) this.followChat();
   if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index, false); }
@@ -1796,21 +1837,10 @@ class Detail {
   return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
  }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
-  * its board status, or with none yet the transcript's working turn — and the chat loads. One
-  * element, kept attached across polls, so the dots' animation never restarts. */
+  * its board status, or with none yet the transcript's working turn — and the chat loads. */
  private renderWorking(): HTMLElement | null {
   const group = this.shownStatus[0];
-  if (this.guestPaused || this.chatFailed || !(group === "working" || (!group && this.chat?.working))) return null;
-  const intent = this.chat?.working?.intent || "";
-  const row = this.workingRow ??= el("div", "chat-working");
-  if (row.dataset.intent !== intent || !row.firstChild) {
-   row.dataset.intent = intent;
-   const dots = el("span", "chat-working-dots"); dots.setAttribute("aria-hidden", "true");
-   for (let i = 0; i < 3; i++) dots.append(el("span", "chat-working-dot"));
-   row.replaceChildren(dots, el("span", "chat-working-text", intent || "Working"));
-   row.setAttribute("role", "status"); row.setAttribute("aria-label", intent ? `Working: ${intent}` : "Working");
-  }
-  return row;
+  return this.tail.working(!this.guestPaused && !this.chatFailed && (group === "working" || (!group && !!this.chat?.working)), this.chat?.working?.intent || "");
  }
  /** ChatView.outgoingBubble: a prompt sent from here, at the tail until the transcript shows it,
   *  with its receipt under it. It enters once (motion spec §1.3: from opacity 0, 14 px down and
@@ -1850,33 +1880,14 @@ class Detail {
   this.outgoingNodes.set(message.id, node);
   return node;
  }
- /** ChatView.recapDivider: omp's recap of its last finished turn, under a hairline above the
-  *  model line, once the agent is done (no working turn, not working on the board) and no send
-  *  of ours is still waiting to show. One element, rebuilt only when the recap changes. */
+ /** ChatView.recapDivider: omp's recap of its last finished turn, above the model line, once the
+  *  agent is done (no working turn, not working on the board) and no send of ours is still
+  *  waiting to show. */
  private renderRecap(): HTMLElement | null {
-  const recap = this.chat?.recap;
-  if (!recap?.text || this.chat?.working || this.shownStatus[0] === "working" || this.outgoing.length) return null;
-  const row = this.recapRow ??= el("div", "chat-recap");
-  const key = recap.turn_id + "\n" + recap.text;
-  if (row.dataset.recap !== key) {
-   row.dataset.recap = key;
-   const text = inlineMarkdown(recap.text); text.className = "chat-recap-text";
-   const rule = el("div", "chat-recap-rule"); rule.setAttribute("aria-hidden", "true");
-   row.replaceChildren(rule, text);
-  }
-  return row;
+  return this.tail.recap(this.chat?.recap, !this.chat?.working && this.shownStatus[0] !== "working" && !this.outgoing.length);
  }
- /** ChatView.sessionFooter's model line: the model omp runs and its effort, under the conversation
-  *  (ChatView.swift chat-model). One element, kept attached while its text holds. */
- private renderModel(): HTMLElement | null {
-  const model = this.chat?.model;
-  if (!model?.id) return null;
-  const { label, accessibilityLabel } = modelLine(model);
-  const line = this.modelRow ??= el("div", "chat-model");
-  if (line.textContent !== label) line.textContent = label;
-  line.setAttribute("aria-label", accessibilityLabel);
-  return line;
- }
+ /** ChatView.sessionFooter's model line, under the conversation. */
+ private renderModel(): HTMLElement | null { return this.tail.model(this.chat?.model); }
  private fitPromptBubbles() {
   const first = this.transcript.querySelector<HTMLElement>(".chat-message.user");
   const width = first?.getBoundingClientRect().width ?? 0;
@@ -1904,7 +1915,7 @@ class Detail {
    content.style.width = `${proposal}px`; bubble.style.width = `${fitted}px`;
   }
  }
- renderPlan(items: PlanItem[], container = this.transcript, session = this.chat?.session_id): HTMLElement {
+ renderPlan(items: PlanItem[], container: HTMLElement = this.transcript, session = this.chat?.session_id): HTMLElement {
   const card = el("section", "chat-plan chat-message");
   // ChatView.swift's ChatStyle.ok is distinct from the shared agent-state green.
   card.style.setProperty("--chat-ok", "#7fc89a");
@@ -1956,13 +1967,13 @@ class Detail {
  }
  /** ChatView.subagentsCard: omp's `task` subagents, each running one with what it does now and
   *  for how long, the finished ones folded into one line. An owner's row with a transcript opens
-  *  that conversation read-only; a guest's rows do not open (herdr refuses them). The card stays
-  *  attached while its subagents are unchanged, so a poll keeps a focused row focused. */
- renderSubagents(agents: TranscriptSubagent[]): HTMLElement {
+  *  that conversation read-only; a guest's rows do not open (herdr refuses them), nor a topic's
+  *  (opens false: herdr reads a subagent beside the Inbox's session only). The card stays attached
+  *  in its container while its subagents are unchanged, so a poll keeps a focused row focused. */
+ renderSubagents(agents: TranscriptSubagent[], container: HTMLElement = this.transcript, opens = !this.view?.guest): HTMLElement {
   if (agents.some(agent => agent.status === "running")) this.subagentTick ??= window.setInterval(() => this.tickSubagents(), 1000);
-  const opens = !this.view?.guest;
   const signature = JSON.stringify([agents, opens]);
-  const previous = this.transcript.querySelector<HTMLElement>(".chat-subagents");
+  const previous = container.querySelector<HTMLElement>(".chat-subagents");
   if (previous?.dataset.signature === signature) return previous;
   const card = el("section", "chat-subagents chat-message");
   card.dataset.signature = signature;
@@ -2017,9 +2028,10 @@ class Detail {
   };
   draw(); return card;
  }
+ /** The running subagents' times, in the chat and in an open topic's (both in the page's body). */
  private tickSubagents() {
   const now = Date.now();
-  for (const detail of this.transcript.querySelectorAll<HTMLElement>(".chat-subagent-detail[data-started]")) {
+  for (const detail of this.body.querySelectorAll<HTMLElement>(".chat-subagent-detail[data-started]")) {
    detail.textContent = subagentRow({ id: "", status: "running", started_ms: Number(detail.dataset.started), last_intent: detail.dataset.intent || null, has_transcript: false }, now).detail;
   }
  }
@@ -2394,9 +2406,11 @@ class Detail {
   *  line break: one bracketed paste where the machine can write one, desktop and browser alike). */
  async sendPrompt() {
   const text = this.input.value;
-  if (this.guestPaused || this.sending || this.dictation.busy || (!text.trim() && !this.attachments.length)) return;
+  // Under an open topic the same send goes to the topic (topicCall); a closed topic takes none.
+  const topic = this.sendsToTopic();
+  if (this.guestPaused || this.sending || this.dictation.busy || topic?.closed() || (!text.trim() && !this.attachments.length)) return;
   // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather than doing nothing.
-  if (this.inputFailed) { this.status.textContent = "An earlier key send failed. Reconnect before sending again."; return; }
+  if (this.inputFailed) { this.composerNote("An earlier key send failed. Reconnect before sending again."); return; }
   const hasAttachments = this.attachments.length > 0;
   // Motion spec §1, all in the tap's frame: the composer clearing (its height shrinking on the
   // bubble's curve), the press, the bubble entering and the chat gliding to it.
@@ -2409,7 +2423,7 @@ class Detail {
   // draft shows without the text). Refused by storage, the text stays in the field, unsent.
   const send = hasAttachments ? null : this.draft.reserve(text);
   if (send && send.outcome !== "reserved") {
-   if (send.outcome === "refused") this.status.textContent = "Couldn't save the draft; not sent.";
+   if (send.outcome === "refused") this.composerNote("Couldn't save the draft; not sent.");
    return;
   }
   this.queuedSend = send;
@@ -2426,15 +2440,18 @@ class Detail {
    ], { duration: SPEC.press.duration });
   }
   // Only against a loaded transcript (TranscriptStore.stageOutgoing's hasSnapshot): the first
-  // page would otherwise count every old prompt as new and could take the bubble (#139).
-  const outgoing: Outgoing | null = this.mode === "chat" && !this.plainTerminal && this.chat
+  // page would otherwise count every old prompt as new and could take the bubble (#139). A
+  // topic's bubble is the topic's to draw (TopicComposer.stage).
+  const outgoing: Outgoing | null = topic || (this.mode === "chat" && !this.plainTerminal && this.chat)
    ? { id: `outgoing:${++this.outgoingCount}`, text: text.trim(), files: this.attachments.map(a => ({ name: a.name, isImage: a.isImage })), guest: this.view?.guest ? this.view.guestSelf ?? "" : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS } : null;
+  const staged = outgoing && topic ? topic.stage(outgoing) : null;
   const setOutgoing = (state: Outgoing["state"] | null) => {
    if (!outgoing || this.disposed) return;
+   if (staged) { staged(state); return; }
    this.outgoing = state ? this.outgoing.map(o => o.id === outgoing.id ? { ...o, state } : o) : this.outgoing.filter(o => o.id !== outgoing.id);
    if (this.mode === "chat") this.drawChat(false);
   };
-  if (outgoing) {
+  if (outgoing && !staged) {
    this.outgoing = [...this.outgoing, outgoing];
    this.drawChat(false);
    if (mode === "full") this.glideChatToLatest({ seconds: SPEC.bubble.duration / 1000, curve: cubicBezier(...SPEC.bubble.bezier) });
@@ -2455,14 +2472,14 @@ class Detail {
    // The dispatch (rule 3): from here closing the composer doesn't cancel the send.
    this.queuedSend = null;
    // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
-   this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
-   const call = (prompt: string) => Desk.chatPrompt(this.token, prompt);
+   if (!topic) this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
+   const call = topic ? (prompt: string) => this.topicCall(topic, prompt) : (prompt: string) => Desk.chatPrompt(this.token, prompt);
    // Rule 3: the send's dispatch puts the text back only when the Desk call rejects (it throws then).
    const outcome = send ? await send.dispatch(call) : { sent: true as const, value: await call(text) };
    if (!outcome.sent) {
     this.sendFollow = null;
     setOutgoing(null);
-    if (outcome.outcome === "refused" && !this.disposed) this.status.textContent = "Couldn't save the draft; not sent.";
+    if (outcome.outcome === "refused" && !this.disposed) this.composerNote("Couldn't save the draft; not sent.");
     return;
    }
    dispatched = true;
@@ -2472,7 +2489,7 @@ class Detail {
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
    if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.input.dispatchEvent(new Event("input")); }
-   if (!this.disposed) this.status.textContent = result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again.");
+   if (!this.disposed) this.composerNote(result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again."));
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
    // A guest has no events: look for the prompt now rather than at the next poll (GuestPaneView.swift:882-886).
    if (!this.disposed && this.view?.guest && this.mode === "chat") void this.refreshChat(this.generation);
@@ -2480,7 +2497,7 @@ class Detail {
    if (dispatched) {
     // The text went out: the failure is this page's (the receipt, the drawing), not the send's.
     console.error("after a send", e);
-    if (!this.disposed) this.status.textContent = errorText(e);
+    if (!this.disposed) this.composerNote(errorText(e));
     return;
    }
    this.sendFollow = null;
@@ -2488,7 +2505,7 @@ class Detail {
    setOutgoing(null);
    if (!this.disposed) {
     const message = errorText(e);
-    this.status.textContent = (this.view?.guest && guestSendFailure(message, this.view.name)) || message;
+    this.composerNote((this.view?.guest && guestSendFailure(message, this.view.name)) || message);
     // A refused send moves the page to paused at once (failureNote's apply, GuestPaneView.swift:915-917).
     if (this.view?.guest && isGuestPaused(message)) this.applyGuestAvailability("paused");
    }
@@ -2500,6 +2517,16 @@ class Detail {
    this.sending = false; this.dictation.button.disabled = paused; this.send.disabled = paused || this.dictation.busy; this.attach.disabled = paused || this.picking; this.prompts.button.disabled = paused || this.dictation.busy;
    if (!this.disposed) this.renderAttachments();
   }
+ }
+ /** The Inbox's send, to the open topic (Desk.topicsSend: agent.topics.send, the composer's files
+  *  posted as the Inbox posts them and named in the message): refused, it rejects with herdr's
+  *  reason, so the draft and the files stay; else the receipt the send reads, with the topic's
+  *  note (a queued message says so; an unconfirmed one asks to check). */
+ private async topicCall(topic: TopicComposer, prompt: string): Promise<string> {
+  const reply = await Desk.topicsSend(this.token, topic.topicID, prompt);
+  if (reply.delivery === "refused") throw new Error(reply.problem || "The agent refused.");
+  return JSON.stringify(reply.delivery === "sent" ? { delivery: "submitted", note: sendNote(reply.mode) ?? "" }
+   : { delivery: "unconfirmed", note: reply.problem || "Couldn't confirm delivery. Check the topic before sending again." });
  }
  async answer(askID: string, option: string) {
   if (this.answering || this.localAnswers.has(askID)) return;

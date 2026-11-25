@@ -30,8 +30,12 @@ export class FakeDocument extends EventTarget {
  readonly defaultView = new Listened();
  activeElement: FakeElement | null = null;
  visibilityState = "visible";
- constructor() { super(); this.body = new FakeElement("body", this); }
+ /** The root element (getComputedStyle reads its custom properties: none here). */
+ readonly documentElement: FakeElement;
+ constructor() { super(); this.body = new FakeElement("body", this); this.documentElement = new FakeElement("html", this); }
  createElement(tag: string) { return new FakeElement(tag, this); }
+ /** A text node: an element of tag "#text" holding the text. */
+ createTextNode(text: string) { const node = new FakeElement("#text", this); node.textContent = text; return node; }
  getElementById(id: string) { return this.body.all().find(n => n.id === id) ?? null; }
 }
 
@@ -42,11 +46,15 @@ export class FakeDocument extends EventTarget {
  *  focus() needs an enabled element in the document; showModal() needs a dialog in the document
  *  that isn't open, and moves the focus into it (the dialog itself here: its focusing steps' last
  *  resort); close() fires "close". Text appended to an element adds to its textContent;
- *  text() is the element's text with all it holds. */
+ *  text() is the element's text with all it holds. Layout sizes are plain fields a test sets;
+ *  inserted counts the times the element was put into a parent (a detach and re-attach counts
+ *  again: a browser restarts its animations then). */
 export class FakeElement extends Listened {
  className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
  inputMode = ""; autocomplete = ""; maxLength = -1; selectionStart = 0; selectionEnd = 0; open = false;
- innerHTML = ""; title = ""; src = ""; alt = ""; href = ""; target = ""; rel = ""; readOnly = false;
+ innerHTML = ""; title = ""; src = ""; alt = ""; href = ""; target = ""; rel = ""; readOnly = false; placeholder = ""; rows = 0;
+ clientWidth = 0; clientHeight = 0; offsetWidth = 0; offsetHeight = 0; scrollHeight = 0; scrollTop = 0;
+ inserted = 0;
  onclick: ((e: Event) => void) | null = null; onchange: ((e: Event) => void) | null = null; oninput: ((e: Event) => void) | null = null;
  parent: FakeElement | null = null;
  readonly children: FakeElement[] = [];
@@ -66,13 +74,24 @@ export class FakeElement extends Listened {
  append(...nodes: (FakeElement | string)[]) {
   for (const n of nodes) {
    if (typeof n === "string") { this.textContent += n; continue; }
-   n.remove(); n.parent = this; this.children.push(n);
+   n.remove(); n.parent = this; this.children.push(n); n.inserted++;
   }
  }
  appendChild(n: FakeElement) { this.append(n); return n; }
  prepend(...nodes: FakeElement[]) {
-  for (const n of nodes.toReversed()) { n.remove(); n.parent = this; this.children.unshift(n); }
+  for (const n of nodes.toReversed()) { n.remove(); n.parent = this; this.children.unshift(n); n.inserted++; }
  }
+ /** node before ref (at the end for null), moved from where it was. */
+ insertBefore(node: FakeElement, ref: FakeElement | null) {
+  node.remove();
+  const at = ref === null ? -1 : this.children.indexOf(ref);
+  if (at < 0) this.children.push(node); else this.children.splice(at, 0, node);
+  node.parent = this; node.inserted++;
+  return node;
+ }
+ get firstChild(): FakeElement | null { return this.children[0] ?? null; }
+ get nextSibling(): FakeElement | null { const siblings = this.parent?.children; return siblings?.[siblings.indexOf(this) + 1] ?? null; }
+ select() {}
  replaceChildren(...nodes: (FakeElement | string)[]) {
   for (const c of [...this.children]) c.remove();
   this.textContent = "";

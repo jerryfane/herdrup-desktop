@@ -1,7 +1,7 @@
 // The Topics view's decisions (src/topicsModel.ts), against herdrup #745: TopicsView.swift
 // (sections, pill, search), HerdrKit AgentTopics.swift (ordering) and ChatPreference.swift.
 import { expect, test } from "bun:test";
-import { canFold, foldKey, foldShortcutLabel, isFoldShortcut, nextTopicsOffer, orderedTopics, topicSendDelivery, topicsLayout, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, type TopicInfo } from "../src/topicsModel";
+import { canFold, foldKey, foldShortcutLabel, isFoldShortcut, listedTopics, nextTopicsOffer, orderedTopics, seededTopics, topicSendDelivery, topicsLayout, topicsShown, resolvedMode, searchTopics, sendNote, statusDot, statusText, topicSections, topicsNotOffered, topicsProblem, topicTitle, topicWorking, type TopicInfo } from "../src/topicsModel";
 
 const topic = (id: string, over: Partial<TopicInfo> = {}): TopicInfo => ({
  topic_id: id, title: id, state: "idle", turns: 1, queued: 0, created_unix_ms: 0, last_activity_unix_ms: 0, ...over,
@@ -99,7 +99,8 @@ test("refusals in the app's words; only a queued send leaves a note", () => {
  expect(topicsProblem("topic_rejected", "busy")).toBe("The agent refused: busy");
  expect(topicsProblem("topic_rejected")).toBe("The agent refused.");
  expect(topicsProblem("something_new")).toBe("Couldn't reach the agent.");
- expect([topicsNotOffered("topics_unsupported"), topicsNotOffered("agent_not_found"), topicsNotOffered("topics_unreachable")]).toEqual([true, true, false]);
+ // agent_not_found keeps the list (herdr answers it while it briefly can't resolve a busy agent).
+ expect([topicsNotOffered("topics_unsupported"), topicsNotOffered("unsupported"), topicsNotOffered("agent_not_found"), topicsNotOffered("topics_unreachable")]).toEqual([true, true, false, false]);
  expect(sendNote("queued")).toBe("Queued: the topic reads it when its current turn ends.");
  expect([sendNote("turn"), sendNote("steered")]).toEqual([null, null]);
 });
@@ -122,4 +123,22 @@ test("a failed list read keeps Topics for an agent whose session holds topics; o
  offer = nextTopicsOffer(offer, { offered: false, loaded: true, problem: "Couldn't reach the agent." });
  expect(topicsShown(true, offer, true)).toBe(false);
  expect(topicsShown(false, { offered: true, refused: false }, true)).toBe(false);
+});
+
+// The owner's report (2026-11-25): only Inbox listed under "The agent didn't answer in time.".
+test("the list shows the session file's topics until the agent answers, then the agent's; a stale empty answer is not its word", () => {
+ const seeds = seededTopics([{ topicID: "s1", title: "Board pack", createdMs: 2 }, { topicID: "s2", title: "", createdMs: 5 }]);
+ expect(seeds.map(t => [t.topic_id, t.title, t.state, statusText(t)])).toEqual([["s2", "", "unknown", null], ["s1", "Board pack", "unknown", null]]);
+ const answered = [{ topic_id: "a", title: "A", state: "idle", queued: 0, turns: 1, created_unix_ms: 1, last_activity_unix_ms: 1 }] as TopicInfo[];
+ expect(listedTopics(null, seeds)).toEqual(seeds);
+ // A first read that failed (a timeout): not offered yet, the seeds stay.
+ expect(listedTopics({ offered: false, topics: [] }, seeds)).toEqual(seeds);
+ expect(listedTopics({ offered: true, topics: answered }, seeds)).toEqual(answered);
+ expect(listedTopics({ offered: true, topics: [], stale: true }, seeds)).toEqual(seeds);
+ expect(listedTopics({ offered: true, topics: [] }, seeds)).toEqual([]);
+});
+
+test("a topic works while it runs or starts, or its page has a working turn", () => {
+ expect(["running", "starting", "idle", "closed", "unknown"].map(state => topicWorking({ state } as TopicInfo, null))).toEqual([true, true, false, false, false]);
+ expect(topicWorking({ state: "unknown" } as TopicInfo, { working: { intent: "Reading" } })).toBe(true);
 });
