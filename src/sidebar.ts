@@ -85,6 +85,10 @@ export function storedSidebarWidth(raw: string | null, min: number, max: number)
   return Number.isFinite(width) ? Math.min(max, Math.max(min, Math.round(width))) : min;
 }
 
+/** The desktop's dragged width, on the root element: style.css derives the one effective
+ *  --sidebar-width from it, which a phone's layout overrides with the screen's (#496). */
+const PREFERENCE = "--sidebar-width-preference";
+
 /** Drags the sidebar's edge between the bounds, as the split view's divider does; the width is
  *  stored once it has held still for half a second (HerdrApp.swift sidebarWidthSettle), so a
  *  drag commits once, where it ended. Arrow keys move it 10 px for keyboard users. */
@@ -103,9 +107,9 @@ function sidebarResizer(changed: () => void): HTMLElement {
   let settle = 0;
   const set = (next: number) => {
    next = Math.min(max, Math.max(min, Math.round(next)));
-   if (next === width && root.style.getPropertyValue("--sidebar-width")) return;
+   if (next === width && root.style.getPropertyValue(PREFERENCE)) return;
    width = next;
-   root.style.setProperty("--sidebar-width", `${width}px`);
+   root.style.setProperty(PREFERENCE, `${width}px`);
    handle.setAttribute("aria-valuenow", String(width));
    changed();
    clearTimeout(settle);
@@ -113,7 +117,7 @@ function sidebarResizer(changed: () => void): HTMLElement {
     try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)); } catch (error) { console.warn("Sidebar width is session-only", error); }
    }, 500);
   };
-  root.style.setProperty("--sidebar-width", `${width}px`);
+  root.style.setProperty(PREFERENCE, `${width}px`);
   handle.setAttribute("aria-valuenow", String(width));
   handle.onpointerdown = event => {
    if (event.button !== 0) return;
