@@ -32,6 +32,24 @@ export const SIGNED_IN_FOUND_KEY = "herdrup.web.signedInFound";
  *  while signed in (the guest page then doesn't send them back to the owner's). */
 export const boot = { guestInstead: false };
 
+/** What the guest page's first screen depends on: the guest's way chosen at boot (boot) or on the
+ *  sign-in (guestChosen), a share left (owner), an invite's failure (error), the session, and the
+ *  sign-in providers the account service offers. */
+export interface FirstScreenFacts { bootGuest: boolean; guestChosen: boolean; owner: boolean; error: boolean; signedIn: boolean; providers: number }
+
+/** Whether the guest page shows the desktop's sign-in first: a signed-out plain visit while the
+ *  service offers sign-in. The guest's way chosen at boot counts as chosen already, so it reaches
+ *  the invite's words with that one click (#513). */
+export function signInFirst(f: FirstScreenFacts): boolean {
+ return !f.bootGuest && !f.guestChosen && !f.owner && !f.error && !f.signedIn && f.providers > 0;
+}
+
+/** Whether the guest page waits for the account lookup before its first plain screen (to show the
+ *  sign-in rather than the invite's words first): never once the guest's way was chosen at boot. */
+export function waitsForAccount(plain: boolean, bootGuest: boolean): boolean {
+ return plain && !bootGuest;
+}
+
 export interface BootFacts {
  /** The address carries an invite (/web/#…). */
  fragment: boolean;

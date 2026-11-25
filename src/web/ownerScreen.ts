@@ -7,7 +7,6 @@
 import qrcode from "qrcode-generator";
 import type { EnvelopeMachine, EnvelopeSkipped } from "../webguest/approve";
 import { element as el, hostRowChevron, hostRowIcon, hostRowLines, hostRowValue, hostSection, type BrowserAccess } from "../hostHome";
-import { ACCESS_CHOICES } from "../webAccessModel";
 import type { OwnerPhase } from "./ownerApproval";
 import { deviceLabel, parseUserAgent } from "./browserIdentity";
 import type { OwnerRecord } from "./ownerStore";
@@ -173,13 +172,13 @@ export function approvedByLabel(record: OwnerRecord): string {
  return `APPROVED BY ${[...new Set(record.approvers.map(a => a.name))].join(", ")}`.toUpperCase();
 }
 
-/** What this browser may do on a machine it was approved for (Settings → Machines, its ACCESS
- *  group): who approved it, the access, until when; null when the list no longer has it. */
+/** The approval behind a machine this browser was approved for (Settings → Machines, its ACCESS
+ *  group): who approved it and until when; null when the list no longer has it. */
 export function machineAccess(record: OwnerRecord, hostID: string): BrowserAccess | null {
  const { machines, approvedBy } = approvedMachines(record);
  const m = machines.find(x => x.hostID === hostID);
  if (m === undefined) return null;
- return { approvedBy: approvedBy.get(hostID) ?? "", access: ACCESS_CHOICES.find(([scope]) => scope === m.scope)?.[1] ?? m.scope, until: until(m.expiresUnix) };
+ return { approvedBy: approvedBy.get(hostID) ?? "", until: until(m.expiresUnix) };
 }
 
 /** The approved machines: each granted machine with its probe's status and whether it can be
