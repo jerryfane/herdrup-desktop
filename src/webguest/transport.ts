@@ -24,7 +24,7 @@
 import { accountRefusal, closed, expired, freshStatementMayAdmit, GuestError, HerdrAPIError, hostOffline, notSent, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
-import { HELLO_MIN_LEFT_MS, pinned, REFRESH_AHEAD_MS, REFRESH_MIN_LEFT_MS, type AccountStatement, type StatementSource } from "./accountStatement";
+import { accountChanged, HELLO_MIN_LEFT_MS, REFRESH_AHEAD_MS, REFRESH_MIN_LEFT_MS, type AccountStatement, type StatementSource } from "./accountStatement";
 
 /** A call's whole round trip, handshake included (session.go:18). */
 export const ROUND_TRIP_LIMIT_MS = 60_000;
@@ -370,10 +370,10 @@ class Session {
  /** Keeps an account-bound session past its deadline (herdr link/session.rs refreshed): before
   *  each deadline a newer statement goes as one whole message, {"t":"account.refresh",…}, which
   *  never reaches the API and gets no reply. A statement that can't be had lets the host end the
-  *  session at its deadline; the next call connects with a fresh one. A statement whose session
-  *  is no longer the page's (live false, or throwing: signed out, or another sign-in for a pinned
-  *  link) is never sent, and refreshing stops. */
- keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<AccountStatement>, now: () => number) {
+  *  session at its deadline; the next call connects with a fresh one. Refreshing stops once the
+  *  sign-in the session was admitted in ends (admitted false: signed out, or another sign-in),
+  *  and a statement whose own sign-in ended is never sent. */
+ keepAccount(deadlineMs: number, next: (signal: AbortSignal) => Promise<AccountStatement>, now: () => number, admitted: () => boolean) {
   const life = new AbortController();
   let timer: ReturnType<typeof setTimeout> | null = null;
   this.whenEnded(() => { life.abort(); if (timer !== null) clearTimeout(timer); });
@@ -381,11 +381,11 @@ class Session {
    if (life.signal.aborted) return;
    timer = setTimeout(async () => {
     timer = null;
+    // The session stays with the sign-in it was admitted in (admitted: its hello's statement).
+    if (!admitted()) return;
     let statement: AccountStatement;
     try { statement = await next(life.signal); } catch { return; }
-    let live = false;
-    try { live = statement.live(); } catch { /* the sign-in changed: live stays false */ }
-    if (life.signal.aborted || !live) return;
+    if (life.signal.aborted || !admitted() || !statement.live()) return;
     try { this.socket.send(this.noise.encrypt(new TextEncoder().encode(JSON.stringify({ t: "account.refresh", account: statement.jws })))); }
     catch { return; }
     arm(statement.expMs);
@@ -411,7 +411,9 @@ class Session {
 /** The hello's session ended before it went out. */
 const helloStale = () => closed();
 
-async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory, live?: () => boolean, refuse: (code: string) => GuestError = refusal): Promise<Session> {
+/** live, when given, is checked right before dialing and before sending; stale is the error when
+ *  it says the hello may no longer go. */
+async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8Array, signal: AbortSignal, factory: WebSocketFactory, live?: () => boolean, refuse: (code: string) => GuestError = refusal, stale: () => GuestError = helloStale): Promise<Session> {
  const address = socketURL(endpoint);
  if (endpoint.hostPublicKey.length !== 32) throw other("The shared machine's saved identity is damaged.");
  const handshake = new Initiator({ hostID: endpoint.hostID, hostPublicKey: endpoint.hostPublicKey, staticKey: identity });
@@ -421,10 +423,10 @@ async function openSession(endpoint: Endpoint, identity: StaticKey, hello: Uint8
  } catch (error) {
   throw other(`prepare secure guest hello: ${error instanceof Error ? error.message : String(error)}`);
  }
- if (live && !live()) throw helloStale();
+ if (live && !live()) throw stale();
  const socket = await RelaySocket.connect(address, factory, signal);
  try {
-  if (live && !live()) throw helloStale();
+  if (live && !live()) throw stale();
   socket.send(message);
   const reply = await socket.read();
   if (reply === null) throw other("The shared machine closed the connection during the secure handshake.");
@@ -464,15 +466,22 @@ export interface AcceptOptions {
 export async function acceptInvite(invite: Invite, identity: StaticKey, device: string, options: AcceptOptions = {}): Promise<Access> {
  const now = options.now ?? Date.now();
  if (now >= invite.expires.getTime()) throw expired();
- const statements = invite.accounts && options.account ? pinned(options.account) : undefined;
+ const statements = invite.accounts ? options.account : undefined;
  const { signal, dispose } = linkSignals([options.signal], ROUND_TRIP_LIMIT_MS);
  try {
   let connected: Session;
+  let first: AccountStatement | undefined;
   for (let attempt = 0; ; attempt++) {
-   const statement = statements === undefined ? undefined : await statements.get(invite.endpoint.hostID, HELLO_MIN_LEFT_MS, signal);
+   // A retry stays in the sign-in of the first hello: herdr would bind the invite to another
+   // account for good.
+   if (first !== undefined && !first.live()) throw accountChanged();
+   const got = statements === undefined ? undefined : await statements.get(invite.endpoint.hostID, HELLO_MIN_LEFT_MS, signal);
+   const pin = first;
+   const statement = got === undefined || pin === undefined ? got : { ...got, live: () => pin.live() && got.live() };
+   first ??= got;
    const hello = invite.helloPayload(device, statement?.jws);
    try {
-    connected = await openSession(invite.endpoint, identity, hello, signal, options.webSocket ?? browserWebSocket, statement?.live);
+    connected = await openSession(invite.endpoint, identity, hello, signal, options.webSocket ?? browserWebSocket, statement?.live, refusal, pin === undefined ? helloStale : accountChanged);
     break;
    } catch (error) {
     if (attempt === 0 && statement !== undefined && freshStatementMayAdmit(error)) { statements?.drop(invite.endpoint.hostID, statement.jws); continue; }
@@ -592,24 +601,28 @@ export function decodeReply(line: string): unknown {
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
 export interface TransportLink {
  endpoint: Endpoint;
- /** The hello for one connect. refused, when given, opts into one more connect after the host
-  *  refuses the hello's statement, and drops that exact statement first. live, when given, is
-  *  checked just before dialing and before sending: a hello whose session ended (sign-out)
-  *  is never sent. */
- hello(signal: AbortSignal): Promise<{ payload: Uint8Array; refused?: () => void; live?: () => boolean }>;
+ /** The hello for one connect; previous is the attempt before it within this connect (a retry
+  *  after a refused statement), none for a connect's first. refused, when given, opts into one
+  *  more attempt after the host refuses the hello's statement, and drops that exact statement
+  *  first. live, when given, is checked just before dialing and before sending: a hello whose
+  *  session ended (sign-out) is never sent; stale is then the error (default: closed). */
+ hello(signal: AbortSignal, previous?: LinkHello): Promise<LinkHello>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<AccountStatement>;
  /** The link's own reading of a hello's refusal code (an owner's), or null for the guest one. */
  refusal?(code: string): GuestError | null;
 }
+/** One connect attempt's hello (TransportLink.hello). */
+export interface LinkHello { payload: Uint8Array; refused?: () => void; live?: () => boolean; stale?: () => GuestError }
 
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation.
  *  An account-bound share's hello adds its account's statement for the host, and its session is
  *  kept past each statement deadline with fresh ones (herdr guest/store.rs admit_returning); a
- *  bound share with no statements to give is account_required before anything is dialed. Its
- *  statements are pinned to the sign-in of the first: past a switch, its hellos and refreshes
- *  stop (account_changed) and nothing goes out under another account. */
+ *  bound share with no statements to give is account_required before anything is dialed. A
+ *  retry within one connect stays in the sign-in of its first hello (another account's share is
+ *  account_mismatch); each new connect takes the current sign-in's statement, and herdr checks
+ *  it is the share's account. */
 export function guestLink(access: Access, statements?: StatementSource): TransportLink {
  const hostID = access.endpoint.hostID;
  if (!access.accountBound) {
@@ -620,19 +633,21 @@ export function guestLink(access: Access, statements?: StatementSource): Transpo
    admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
   };
  }
- const pin = statements === undefined ? undefined : pinned(statements);
  const source = () => {
-  if (pin === undefined) throw accountRefusal("account_required")!;
-  return pin;
+  if (statements === undefined) throw accountRefusal("account_required")!;
+  return statements;
  };
  return {
   endpoint: access.endpoint,
-  async hello(signal) {
+  async hello(signal, previous) {
+   const prior = previous?.live;
+   if (prior && !prior()) throw accountRefusal("account_mismatch")!;
    const { jws, live } = await source().get(hostID, HELLO_MIN_LEFT_MS, signal);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
     refused: () => source().drop(hostID, jws),
-    live,
+    live: prior ? () => prior() && live() : live,
+    ...(prior ? { stale: () => accountRefusal("account_mismatch")! } : {}),
    };
   },
   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
@@ -818,23 +833,26 @@ export class GuestTransport {
   const refusals = this.#refusals;
   if (this.#now() < this.#retryAt) throw rateLimited();
   let session: Session;
+  let previous: LinkHello | undefined;
   for (let attempt = 0; ; attempt++) {
-   let hello: { payload: Uint8Array; refused?: () => void; live?: () => boolean } | null = null;
+   let hello: LinkHello | null = null;
    try {
-    hello = await this.#link.hello(signal);
-    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live, code => this.#link.refusal?.(code) ?? refusal(code));
+    hello = await this.#link.hello(signal, previous);
+    session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live, code => this.#link.refusal?.(code) ?? refusal(code), hello.stale);
+    previous = hello;
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
     // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); continue; }
+    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); previous = hello; continue; }
     throw error;
    }
   }
   try { this.#link.admit(session.reply); } catch (error) { session.close(); throw error; }
   if (session.reply.deadlineUnix > 0 && this.#link.statement) {
    const statement = this.#link.statement.bind(this.#link);
-   session.keepAccount(session.reply.deadlineUnix * 1000, statement, this.#now);
+   // Its refreshes stay in the sign-in its hello went in (previous: the attempt admitted).
+   session.keepAccount(session.reply.deadlineUnix * 1000, statement, this.#now, previous?.live ?? (() => true));
   }
   this.#admitted(refusals, session.reply.features);
   this.#scope = session.reply.scope;

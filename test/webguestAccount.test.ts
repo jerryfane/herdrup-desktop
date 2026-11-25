@@ -303,7 +303,7 @@ test("a redemption whose sign-in changed while its retry's statement was fetched
  expect(relay.connects).toBe(1);
 }, CONNECTS_LIMIT_MS);
 
-test("a bound share's returning hello whose sign-in changed before its retry sends nothing more", async () => {
+test("a bound share's returning hello whose sign-in changed before its retry, within one connect, sends nothing more", async () => {
  const s = statements();
  const hellos: unknown[] = [];
  const relay = relayWith(async (_conn, handshake) => {
@@ -314,8 +314,28 @@ test("a bound share's returning hello whose sign-in changed before its retry sen
  });
  const transport = new GuestTransport(guestLink(accessOn(relay, true), s), await identity());
  const error = await transport.call("ping").catch(e => e);
- expect(kindAndMessage(error)).toEqual(["account_changed", CHANGED]);
- expect([hellos, relay.connects]).toEqual([["jws-1"], 1]);
+ expect(kindAndMessage(error)).toEqual(["account_mismatch", "This share belongs to another HerdrUp account. Sign in to that account to open it."]);
+ // Not even a statement is asked for under the other sign-in.
+ expect([hellos, relay.connects, s.issued]).toEqual([["jws-1"], 1, 1]);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
+
+// A sign-out the service refused (a 503), then the same account restored: the page's sign-in is a
+// new one. The saved share's next connect takes its statement, and herdr checks the account.
+test("a saved share's next connect after its sign-in ended and came back goes with the current statement", async () => {
+ const s = statements();
+ const hellos: unknown[] = [];
+ const relay = relayWith(async (_conn, handshake) => {
+  const h = await handshake();
+  hellos.push(h.hello.account);
+  const session = h.reply({ ...admitted(Math.floor(Date.now() / 1000) + 660), features: { gram: false, push: true, multi_request: false } });
+  await ping(session);
+ });
+ const transport = new GuestTransport(guestLink(accessOn(relay, true), s), await identity());
+ expect(await transport.call("ping")).toEqual({ type: "pong" });
+ s.switchAccount();
+ expect(await transport.call("ping")).toEqual({ type: "pong" });
+ expect([hellos, relay.connects]).toEqual([["jws-1", "jws-2"], 2]);
  transport.close();
 }, CONNECTS_LIMIT_MS);
 

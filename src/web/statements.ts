@@ -9,7 +9,7 @@
 // and each stops waiting when its own signal aborts while the request goes on.
 
 import { untilAborted } from "../webguest/abort";
-import { accountChanged, type StatementSource } from "../webguest/accountStatement";
+import type { StatementSource } from "../webguest/accountStatement";
 import { accountRefusal } from "../webguest/errors";
 import { AccountServiceError, SignedOutError, type WebAccount } from "./account";
 
@@ -69,15 +69,14 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
 }
 
 /** source as a share bound to the account asks it (the guest Desk's): signed out is the share's
- *  account_required, and a sign-in that changed during the lookup its account_changed, each as
- *  the guest's errors say them; any other failure (the service's) stays as it is. */
+ *  account_required, as the guest's errors say it; any other failure (the service's) stays as it
+ *  is. */
 export function boundShareStatements(source: StatementSource): StatementSource {
  return {
   async get(hostID, minLeftMs, signal) {
    try { return await source.get(hostID, minLeftMs, signal); }
    catch (error) {
     if (error instanceof SignedOutError) throw accountRefusal("account_required")!;
-    if (error instanceof AccountServiceError && error.code === "account_changed") throw accountChanged();
     throw error;
    }
   },
