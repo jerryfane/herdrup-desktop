@@ -381,22 +381,33 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
 
 /** A signed-in window with a sidebar foot and the composer, where one browser asks for approval and
  *  shows its code when ready() is called. type() presses keys as a person does: each goes to the
- *  element with focus, and the document hears its keydown and input. */
-function askingWindow() {
+ *  element with focus, and the document hears its keydown and input. With holdMachines, each machine
+ *  lookup waits in heldMachines until the test answers it. calls counts the bridge's calls by name. */
+function askingWindow({ holdMachines = false, requests = [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }] } = {}) {
  jest.useFakeTimers();
  const doc = new FakeDocument();
  const on = new Map<string, (payload: unknown) => void>();
+ const machines = [{ id: "a", label: "hetzner", available: true }];
+ const heldMachines: (() => void)[] = [];
+ const calls = new Map<string, number>();
+ const asking = { requests };
  G.document = doc;
  G.devicePixelRatio = 1;
  G.mygo = {
   on: (name: string, l: (payload: unknown) => void) => { on.set(name, l); return () => on.delete(name); },
   call: async (method: string) => {
+   calls.set(method, (calls.get(method) ?? 0) + 1);
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
     case "Desk.WebAccessOffered": return true;
-    case "Desk.WebAccessRequests": return [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
+    case "Desk.WebAccessRequests": return asking.requests;
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
-    case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
+    case "Desk.WebAccessMachines": {
+     if (!holdMachines) return machines;
+     const { promise, resolve } = Promise.withResolvers<typeof machines>();
+     heldMachines.push(() => resolve(machines));
+     return promise;
+    }
     case "Desk.WebAccessStart": return undefined;
     default: return Promise.withResolvers<never>().promise;
    }
@@ -408,9 +419,13 @@ function askingWindow() {
  const clock = handClock(0);
  const dialog = () => doc.body.children.find(c => c.tagName === "dialog");
  return {
-  doc, composer, clock, dialog,
+  doc, composer, clock, dialog, heldMachines, asking,
+  calls: (method: string) => calls.get(method) ?? 0,
+  dialogs: () => doc.body.children.filter(c => c.tagName === "dialog").length,
+  notices: () => foot.children.filter(n => n.className === "web-access-notice").length,
   code: () => dialog()?.all().find(n => n.className === "web-access-code"),
   notice: () => foot.children.find(n => n.className === "web-access-notice"),
+  review: () => foot.children.find(n => n.className === "web-access-notice")!.children.find(n => n.tagName === "button" && n.textContent === "Review")!.click(),
   start: () => { initWebAccess(clock); doc.dispatchEvent(new Event("visibilitychange")); },
   ready: () => on.get("web-access:update")?.({ id: "r1", state: "ready" }),
   type: (text: string) => {
@@ -438,15 +453,14 @@ test("a request while the composer has focus opens no sheet: a notice says so, t
   expect(w.composer.value).toBe("hello, world");
   expect(w.doc.activeElement).toBe(w.composer);
   expect(w.dialog()).toBeUndefined();
-  w.notice()!.children.find(n => n.tagName === "button" && n.textContent === "Review")!.click();
+  expect(w.clock.queued).toHaveLength(1);
+  w.review();
+  // Review cancelled the pause's pending look: it can't open the sheet again later.
+  expect(w.clock.queued).toHaveLength(0);
   await until("an open sheet", () => w.dialog()?.open === true);
   expect(w.notice()).toBeUndefined();
   w.ready();
   expect(w.doc.activeElement).toBe(w.code());
-  // Review cancelled the pause's look: it doesn't open the sheet again later.
-  w.clock.to(60_000);
-  for (let i = 0; i < 50; i++) { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
-  expect(w.doc.body.children.filter(c => c.tagName === "dialog")).toHaveLength(1);
  } finally {
   jest.clearAllTimers();
   jest.useRealTimers();
@@ -491,6 +505,104 @@ test("with no field taking typing focused the sheet opens at once, as before, an
   w.ready();
   expect(w.code()!.disabled).toBe(false);
   expect(w.doc.activeElement).toBe(w.composer);
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("typing that resumes while the paused notice looks up the machines keeps the notice, and the sheet waits for the next pause (#474)", async () => {
+ const w = askingWindow({ holdMachines: true });
+ try {
+  w.composer.focus();
+  w.start();
+  await until("the look's machine lookup", () => w.heldMachines.length === 1);
+  w.heldMachines[0]();
+  await until("the notice", () => w.notice() !== undefined);
+  // The pause is up: the sheet's machines are asked for, and the notice stays while they come.
+  w.clock.to(TYPING_PAUSE_MS);
+  await until("the pause's machine lookup", () => w.heldMachines.length === 2);
+  expect(w.notice()).toBeDefined();
+  w.clock.to(TYPING_PAUSE_MS + 500);
+  w.type("so");
+  w.heldMachines[1]();
+  // Typing resumed: no sheet takes the keys, the notice stays and waits a full pause from the last key.
+  await until("the next pause armed", () => w.clock.queued.length === 1);
+  expect(w.dialog()).toBeUndefined();
+  expect(w.notice()).toBeDefined();
+  w.type("on");
+  expect(w.composer.value).toBe("soon");
+  expect(w.doc.activeElement).toBe(w.composer);
+  w.clock.to(2 * TYPING_PAUSE_MS + 500 - 1);
+  expect(w.heldMachines).toHaveLength(2);
+  w.clock.to(2 * TYPING_PAUSE_MS + 500);
+  await until("the next pause's machine lookup", () => w.heldMachines.length === 3);
+  w.heldMachines[2]();
+  await until("an open sheet", () => w.dialog()?.open === true);
+  expect(w.notice()).toBeUndefined();
+  expect(w.dialogs()).toBe(1);
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("Review opens the sheet once its machines come, even if typing resumed meanwhile (#474)", async () => {
+ const w = askingWindow({ holdMachines: true });
+ try {
+  w.composer.focus();
+  w.start();
+  await until("the look's machine lookup", () => w.heldMachines.length === 1);
+  w.heldMachines[0]();
+  await until("the notice", () => w.notice() !== undefined);
+  w.review();
+  await until("Review's machine lookup", () => w.heldMachines.length === 2);
+  expect(w.notice()).toBeDefined();
+  w.type("x");
+  w.heldMachines[1]();
+  await until("an open sheet", () => w.dialog()?.open === true);
+  expect(w.notice()).toBeUndefined();
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("a look whose machines come after the user began typing puts up the notice, not the sheet (#474)", async () => {
+ const w = askingWindow({ holdMachines: true });
+ try {
+  w.start();
+  await until("the look's machine lookup", () => w.heldMachines.length === 1);
+  w.composer.focus();
+  w.type("hi");
+  w.heldMachines[0]();
+  await until("the notice", () => w.notice() !== undefined);
+  expect(w.dialog()).toBeUndefined();
+  expect(w.doc.activeElement).toBe(w.composer);
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
+
+test("looks that overlap, the poll's and coming back to the window, put up one notice for one request", async () => {
+ const w = askingWindow({ requests: [] });
+ try {
+  w.composer.focus();
+  w.start();
+  w.doc.dispatchEvent(new Event("visibilitychange"));
+  // The second look found the first in flight and asked nothing.
+  expect(w.calls("Desk.AccountState")).toBe(1);
+  await until("the look's end", () => w.calls("Desk.WebAccessRequests") === 1 && jest.getTimerCount() === 1);
+  // Once a look ends the next one runs: the request it finds gets one notice.
+  w.asking.requests = [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
+  jest.runOnlyPendingTimers();
+  w.doc.dispatchEvent(new Event("visibilitychange"));
+  await until("the notice", () => w.notice() !== undefined);
+  await until("the look's end", () => jest.getTimerCount() === 1);
+  expect(w.calls("Desk.AccountState")).toBe(2);
+  expect(w.notices()).toBe(1);
+  expect(w.dialogs()).toBe(0);
  } finally {
   jest.clearAllTimers();
   jest.useRealTimers();

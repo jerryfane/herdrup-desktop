@@ -184,8 +184,8 @@ html, body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* The tab bar floats over the list's end (safeAreaInset), and so does a foot notice while it
-     shows (agentActions.ts reserve sets --foot-notice). */
+  /* The tab bar floats over the list's end (safeAreaInset), and so do the foot's notices while
+     they show (sidebar.ts reserveFootNotices sets --foot-notice). */
   padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scroll-padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scrollbar-width: none;
@@ -907,7 +907,11 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
   .desk .detail { left: 0; bottom: 0; z-index: 2; }
   .desk .detail > .gram::after { display: none; }
   .desk body:not([data-detail="page"]):not([data-detail="bars"]) > .detail { display: none; }
-  .desk body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: var(--tabbar-inset); overflow: hidden; }
+  /* Gram, and an agent's or a Settings page while a foot notice shows (sidebar.ts
+     reserveFootNotices: the Topics switch's, a browser asking to be approved), end above the
+     foot, so the notice is seen and Review takes clicks over the page the user types in. */
+  .desk body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px)); overflow: hidden; }
+  .desk.foot-notice body[data-detail="page"] > .detail { bottom: calc(var(--tabbar-inset) + var(--foot-notice)); }
   /* The sidebar can't be minimised: it is the screen. Gram's conversation rows give way to
      its page, whose header has the Saved bookmark (GramView.swift headerTrailing). */
   .desk .topbar [aria-label="Minimise sidebar"], .desk .topbar .slot[title="Minimise sidebar"] { display: none; }
