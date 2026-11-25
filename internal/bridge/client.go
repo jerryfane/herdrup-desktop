@@ -80,18 +80,17 @@ func (e *APIError) UnmarshalJSON(b []byte) error {
 var errChannelClosed = errors.New("herdr api-bridge channel closed")
 
 // ErrNotSent means a request was not written to its channel, so herdr
-// cannot have it: Call then sends it down the per-request path instead, and
-// OnOneChannel fails it (a request held to one channel goes on no other).
+// cannot have it: Call then sends it down the per-request path instead,
+// unless its context has ended, when it fails with it (unsent's error).
 var ErrNotSent = errors.New("herdr api-bridge --multi channel unavailable")
 
-// Unsent is the error of a request that was never written, and the one way
-// a held or --multi call (bridge and guest) fails so: ErrNotSent, with
-// reason (why it was not written, such as a probe's or the transport's
-// failure) when there is one, and with ctx's end when ctx has ended, so
-// errors.Is finds context.Canceled or DeadlineExceeded whichever exit
-// gave up. Without either it is ErrNotSent alone: a herdr with no --multi
-// channel to give.
-func Unsent(ctx context.Context, reason error) error {
+// unsent is the error of a request that was never written to the --multi
+// channel, the one way every unsent exit fails: ErrNotSent, with reason
+// (why it was not written, such as the transport's failure) when there is
+// one, and with ctx's end when ctx has ended, so errors.Is finds
+// context.Canceled or DeadlineExceeded whichever exit gave up. Without
+// either it is ErrNotSent alone: a herdr with no --multi channel to give.
+func unsent(ctx context.Context, reason error) error {
 	err := ErrNotSent
 	switch {
 	case reason == nil:
@@ -331,7 +330,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 		if ctx.Err() != nil {
 			// The context ended, so the request takes no other path: it
 			// fails unsent, keeping why (#492).
-			err = Unsent(ctx, err)
+			err = unsent(ctx, err)
 		} else {
 			reply, err = c.oneShot(ctx, line)
 		}

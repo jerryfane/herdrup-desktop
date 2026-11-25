@@ -5,61 +5,70 @@ import (
 	"sync"
 )
 
-// PaneWrite is one pane.send_text request as herdr received it.
+// PaneWrite is one write to a pane as herdr received it: pane.send_text, or
+// pane.send_bracketed_text (Bracketed).
 type PaneWrite struct {
 	Pane      string
 	Text      string
 	Bracketed bool
 }
 
-// PaneWrites is herdr's pane.send_text with bracketed paste (herdr #512).
-// It records every request; a bracketed one is refused, with nothing
-// written, where the pane's program has not turned bracketed paste on.
+// PaneWrites is herdr's pane writes with pane.send_bracketed_text (herdr
+// #517). It records every write that reaches a pane's program, or would
+// have but for bracketed paste being off there.
 type PaneWrites struct {
 	mu sync.Mutex
-	// Bracketed advertises pane_send_text_bracketed on ping. Without it a
-	// bracketed request goes on to next as a plain write, as a herdr that
-	// predates the flag would take it.
+	// Bracketed serves pane.send_bracketed_text and advertises
+	// pane_send_bracketed_text on ping. Without it the method is refused
+	// with invalid_request, nothing written, as a herdr that predates it
+	// does (an unknown variant of its request enum).
 	Bracketed bool
 	// PasteOff is true when the pane's program has not turned bracketed paste
-	// on: a bracketed request answers bracketed_paste_unavailable.
+	// on: a bracketed write answers bracketed_paste_unavailable.
 	PasteOff bool
 	writes   []PaneWrite
 }
 
-// Writes returns the pane.send_text requests received, in order.
+// Writes returns the writes received, in order.
 func (w *PaneWrites) Writes() []PaneWrite {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]PaneWrite(nil), w.writes...)
 }
 
-// Serve answers through w, then next: the pong gains the capability, and a
-// pane.send_text is recorded, refused or passed on.
+// Serve answers through w, then next: the pong gains the capability, a
+// pane.send_text is recorded and passed on, and a pane.send_bracketed_text
+// is answered here.
 func (w *PaneWrites) Serve(next func(string, json.RawMessage) (any, *APIError)) func(string, json.RawMessage) (any, *APIError) {
 	return func(method string, raw json.RawMessage) (any, *APIError) {
 		switch method {
-		case "pane.send_text":
+		case "pane.send_text", "pane.send_bracketed_text":
+			bracketed := method == "pane.send_bracketed_text"
+			if bracketed && !w.Bracketed {
+				return nil, &APIError{Code: "invalid_request", Message: "unknown variant `pane.send_bracketed_text`, expected one of `ping`, `pane.send_text`"}
+			}
 			var p struct {
-				Pane      string `json:"pane_id"`
-				Text      string `json:"text"`
-				Bracketed bool   `json:"bracketed"`
+				Pane string `json:"pane_id"`
+				Text string `json:"text"`
 			}
 			if err := json.Unmarshal(raw, &p); err != nil {
 				return nil, &APIError{Code: "invalid_request", Message: err.Error()}
 			}
 			w.mu.Lock()
-			w.writes = append(w.writes, PaneWrite{Pane: p.Pane, Text: p.Text, Bracketed: p.Bracketed})
-			refused := p.Bracketed && w.Bracketed && w.PasteOff
+			w.writes = append(w.writes, PaneWrite{Pane: p.Pane, Text: p.Text, Bracketed: bracketed})
 			w.mu.Unlock()
-			if refused {
+			if !bracketed {
+				return next(method, raw)
+			}
+			if w.PasteOff {
 				return nil, &APIError{Code: "bracketed_paste_unavailable", Message: "the program in this pane has not turned on bracketed paste"}
 			}
+			return map[string]any{"type": "ok"}, nil
 		case "ping":
 			value, err := next(method, raw)
 			if err == nil && w.Bracketed {
 				if caps, ok := value.(map[string]any)["capabilities"].(map[string]bool); ok {
-					caps["pane_send_text_bracketed"] = true
+					caps["pane_send_bracketed_text"] = true
 				}
 			}
 			return value, err

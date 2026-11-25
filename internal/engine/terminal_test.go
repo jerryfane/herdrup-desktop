@@ -4,169 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
-	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
-	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
-// A bracketed write goes out only on a ping that advertises
-// pane_send_text_bracketed (issue #392): a failed probe and a host without
-// the flag are told apart, and neither sends anything.
-func TestBracketedWriteNeedsTheAdvertisedCapability(t *testing.T) {
-	writes := &fakeherdr.PaneWrites{}
+// A bracketed write is one pane.send_bracketed_text (herdr #517), with no
+// check of its own first: a herdr without the method refuses it, which
+// reads as *ErrUnsupported and writes nothing, and one with it takes it.
+func TestBracketedWriteIsOneCallOfItsOwnMethod(t *testing.T) {
 	ok := func(string, json.RawMessage) (any, *fakeherdr.APIError) { return map[string]string{"type": "ok"}, nil }
-	h, c := start(t, map[string]bool{"events_v2": true, "api_bridge_multi": true}, writes.Serve(ok), nil)
-	h.pingErr.Store(true)
-	err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb")
-	var probe *engine.ErrProbeFailed
-	if !errors.As(err, &probe) || probe.Capability != herdrapi.CapabilityPaneSendTextBracketed || errors.Is(err, engine.ErrBracketedUnsupported) {
-		t.Fatalf("with the probe failing: %v, want ErrProbeFailed", err)
+	older := &fakeherdr.PaneWrites{}
+	_, c := start(t, map[string]bool{"api_bridge_multi": true}, older.Serve(ok), nil)
+	var unsupported *engine.ErrUnsupported
+	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb"); !errors.As(err, &unsupported) || unsupported.Method != "pane.send_bracketed_text" {
+		t.Fatalf("on a herdr without the method: %v, want ErrUnsupported", err)
 	}
-	h.pingErr.Store(false)
-	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb"); !errors.Is(err, engine.ErrBracketedUnsupported) {
-		t.Fatalf("without the capability: %v, want ErrBracketedUnsupported", err)
+	if got := older.Writes(); len(got) != 0 {
+		t.Fatalf("a herdr without the method wrote %+v", got)
 	}
-	if got := writes.Writes(); len(got) != 0 {
-		t.Fatalf("a bracketed write went out without the capability: %+v", got)
-	}
-	_, c = start(t, map[string]bool{"pane_send_text_bracketed": true, "api_bridge_multi": true}, writes.Serve(ok), nil)
+	writes := &fakeherdr.PaneWrites{Bracketed: true}
+	_, c = start(t, map[string]bool{"api_bridge_multi": true}, writes.Serve(ok), nil)
 	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb"); err != nil {
 		t.Fatal(err)
 	}
 	if got := writes.Writes(); len(got) != 1 || got[0] != (fakeherdr.PaneWrite{Pane: "w1:p1", Text: "a\nb", Bracketed: true}) {
 		t.Fatalf("writes %+v, want one bracketed write", got)
-	}
-}
-
-// switchableHerdr is a fake herdr whose ping advertises api_bridge_multi,
-// and pane_send_text_bracketed while bracketed is set: a herdr that can be
-// rolled back to a build without it.
-func switchableHerdr(t *testing.T, writes *fakeherdr.PaneWrites) (*herdr, *engine.Client, *atomic.Bool) {
-	t.Helper()
-	var bracketed atomic.Bool
-	bracketed.Store(true)
-	ok := func(string, json.RawMessage) (any, *fakeherdr.APIError) { return map[string]string{"type": "ok"}, nil }
-	h, c := start(t, map[string]bool{"api_bridge_multi": true}, writes.Serve(ok), func(s *fakeherdr.Server) {
-		inner := s.Handle
-		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
-			if method == "ping" {
-				return map[string]any{"type": "pong", "version": "0.9.5", "protocol": 22, "capabilities": map[string]bool{
-					"api_bridge_multi": true, "pane_send_text_bracketed": bracketed.Load()}}, nil
-			}
-			return inner(method, params)
-		}
-	})
-	return h, c, &bracketed
-}
-
-// #476: a bracketed write is checked against the herdr that takes it, not
-// a cached pong. The first goes on a herdr with the capability. herdr is
-// then rolled back (its bridge channel ends, and the next one serves a
-// build without the capability): the second write pings that one and is
-// refused, nothing written.
-func TestABracketedWriteChecksTheHerdrThatTakesIt(t *testing.T) {
-	writes := &fakeherdr.PaneWrites{}
-	h, c, bracketed := switchableHerdr(t, writes)
-	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "a\nb"); err != nil {
-		t.Fatal(err)
-	}
-	bracketed.Store(false)
-	h.srv.EndMultiChannels()
-	if err := c.PaneSendBracketedText(ctx(t), "w1:p1", "c\nd"); !errors.Is(err, engine.ErrBracketedUnsupported) {
-		t.Fatalf("the write to the rolled-back herdr: %v, want ErrBracketedUnsupported", err)
-	}
-	if got := writes.Writes(); len(got) != 1 || got[0].Text != "a\nb" {
-		t.Fatalf("writes %+v, want only the first", got)
-	}
-}
-
-// channelEndsAfterPing is a transport whose held channel answers its ping
-// (Held.Ping) advertising pane_send_text_bracketed and then ends: every
-// request sent with Held.Call is unsent (bridge.ErrNotSent), and recorded
-// in onHeld. Requests sent any other way are recorded in elsewhere.
-type channelEndsAfterPing struct {
-	engine.Transport
-	mu        sync.Mutex
-	onHeld    []string
-	elsewhere []string
-}
-
-func (e *channelEndsAfterPing) Call(_ context.Context, method string, _, _ any) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.elsewhere = append(e.elsewhere, method)
-	return nil
-}
-
-func (e *channelEndsAfterPing) OnOneChannel(_ context.Context, work func(h engine.Held) error) error {
-	return work(endedHeld{e})
-}
-
-type endedHeld struct{ e *channelEndsAfterPing }
-
-func (h endedHeld) Ping(_ context.Context, result any) error {
-	return json.Unmarshal([]byte(`{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"pane_send_text_bracketed":true}}`), result)
-}
-
-func (h endedHeld) Call(_ context.Context, method string, _, _ any) error {
-	h.e.mu.Lock()
-	defer h.e.mu.Unlock()
-	h.e.onHeld = append(h.e.onHeld, method)
-	return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
-}
-
-// #476: the bracketed write pings with Held.Ping, the one request that may
-// move to a fresh channel, and sends the write with Held.Call, at most
-// once. A held channel that ends between its pong and the write sends the
-// write nowhere else (another channel may reach another herdr): it is
-// refused unchecked, nothing written.
-func TestABracketedWriteWhoseChannelEndsAfterItsPingIsNotSent(t *testing.T) {
-	tr := &channelEndsAfterPing{}
-	err := engine.New(tr).PaneSendBracketedText(ctx(t), "w1:p1", "a\nb")
-	var probe *engine.ErrProbeFailed
-	if !errors.As(err, &probe) {
-		t.Fatalf("%v, want ErrProbeFailed", err)
-	}
-	if len(tr.elsewhere) != 0 || len(tr.onHeld) != 1 || tr.onHeld[0] != "pane.send_text" {
-		t.Fatalf("held calls %v, elsewhere %v; want the ping by Held.Ping and only the write by Held.Call", tr.onHeld, tr.elsewhere)
-	}
-}
-
-// #476: a bracketed write's ping and the write itself go on one --multi
-// channel, back to back, and the write is bracketed.
-func TestABracketedWritePingsOnItsOwnChannel(t *testing.T) {
-	writes := &fakeherdr.PaneWrites{}
-	h, c, _ := switchableHerdr(t, writes)
-	for _, text := range []string{"a\nb", "c\nd"} {
-		if err := c.PaneSendBracketedText(ctx(t), "w1:p1", text); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := writes.Writes(); len(got) != 2 || !got[0].Bracketed || !got[1].Bracketed {
-		t.Fatalf("writes %+v, want two bracketed writes", got)
-	}
-	var multi []fakeherdr.Request
-	for _, r := range h.srv.Requests() {
-		if r.Multi {
-			multi = append(multi, r)
-		}
-	}
-	// The channel's opening ping, then a ping and its write for each.
-	want := []string{"ping", "ping", "pane.send_text", "ping", "pane.send_text"}
-	if len(multi) != len(want) {
-		t.Fatalf("on --multi %+v, want %v", multi, want)
-	}
-	for i, r := range multi {
-		if r.Method != want[i] || r.Channel != multi[0].Channel {
-			t.Fatalf("on --multi %+v, want %v on one channel", multi, want)
-		}
 	}
 }
 

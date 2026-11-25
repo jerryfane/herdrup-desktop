@@ -118,11 +118,11 @@ func (p *pool) slot(session string) *slot {
 }
 
 // viaMulti sends a request on the session's --multi channel. It returns
-// an error wrapping ErrNotSent (Unsent) when nothing was written, and the
+// an error wrapping ErrNotSent (unsent) when nothing was written, and the
 // request must take the per-request path.
 func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) ([]byte, error) {
 	if !multiRoutable(method, line) {
-		return nil, Unsent(ctx, nil)
+		return nil, unsent(ctx, nil)
 	}
 	p := &c.pool
 	p.mu.Lock()
@@ -130,7 +130,7 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 	switch s.capability {
 	case capUnsupported:
 		p.mu.Unlock()
-		return nil, Unsent(ctx, nil)
+		return nil, unsent(ctx, nil)
 	case capUnknown:
 		// A ping learns the capability from its own reply.
 		if method != "ping" && !s.probing {
@@ -138,12 +138,12 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 			go c.probeCapability()
 		}
 		p.mu.Unlock()
-		return nil, Unsent(ctx, nil)
+		return nil, unsent(ctx, nil)
 	}
 	p.mu.Unlock()
 	m := c.readyChannel(ctx)
 	if m == nil {
-		return nil, Unsent(ctx, nil)
+		return nil, unsent(ctx, nil)
 	}
 	return m.do(ctx, id, line)
 }
@@ -164,40 +164,32 @@ func (c *Client) probeCapability() {
 	}
 }
 
-// multiPong is what a pong says about --multi.
-type multiPong struct {
-	Capabilities *struct {
-		APIBridgeMulti  bool `json:"api_bridge_multi"`
-		APIBridgeFrames bool `json:"api_bridge_frames"`
-	} `json:"capabilities"`
-}
-
 // learnCapability records api_bridge_multi from a ping reply. A reply that
 // is not a ping result (an error, or no result) leaves the capability as
-// it was.
+// it was. Learning support starts opening the channel, off the request
+// path.
 func (c *Client) learnCapability(reply []byte) {
 	var r struct {
-		Result *multiPong `json:"result"`
+		Result *struct {
+			Capabilities *struct {
+				APIBridgeMulti  bool `json:"api_bridge_multi"`
+				APIBridgeFrames bool `json:"api_bridge_frames"`
+			} `json:"capabilities"`
+		} `json:"result"`
 	}
 	if json.Unmarshal(reply, &r) != nil || r.Result == nil {
 		return
 	}
-	c.learnPong(*r.Result)
-}
-
-// learnPong records api_bridge_multi from a successful pong. Learning
-// support starts opening the channel, off the request path.
-func (c *Client) learnPong(pong multiPong) {
-	supported := pong.Capabilities != nil && pong.Capabilities.APIBridgeMulti
+	supported := r.Result.Capabilities != nil && r.Result.Capabilities.APIBridgeMulti
 	p := &c.pool
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.slot(c.cfg.Session)
-	s.frames = supported && pong.Capabilities.APIBridgeFrames
+	s.frames = supported && r.Result.Capabilities.APIBridgeFrames
 	if !supported {
 		s.capability = capUnsupported
 		if s.ch != nil {
-			// The session's herdr changed under a held channel.
+			// The session's herdr changed under the channel.
 			go s.ch.close()
 			s.ch = nil
 		}
@@ -276,147 +268,6 @@ func (c *Client) readyChannel(ctx context.Context) *multiChannel {
 	}
 }
 
-// maxHeldChannelTries is how many channels a held Ping takes, at most, when
-// the channel turns out to have ended before it answered.
-const maxHeldChannelTries = 3
-
-// OnOneChannel runs work on one --multi channel of the session, held for it
-// (HeldChannel): one `herdr api-bridge --multi` process, so one herdr
-// answers every request work sends, and what one answer says (a ping's
-// capabilities) holds for the next. A herdr that restarted or was rolled
-// back comes with another channel. The channel is taken first, opening a
-// fresh one when none is live (after a herdr restart, the last one ended),
-// as Call would; a session whose capability is not yet known is pinged
-// per-request to learn it. With no channel to be had, OnOneChannel fails
-// with an error wrapping ErrNotSent, and work does not run.
-//
-// Two rules say where a request goes:
-//   - Every request is sent at most once. One that goes through Call goes
-//     on the held channel or nowhere, first or not: when the channel ended
-//     before it was written, it fails with an error wrapping ErrNotSent
-//     (herdr does not have it); when the channel ended after it was
-//     written and before it answered, it fails with the channel's error
-//     (herdr may have it). It is never sent again, on that channel or any
-//     other, nor down the per-request path.
-//   - Only a request marked idempotent may move: Ping, until the held
-//     channel has answered one of work's requests. The channel taken may
-//     have ended without the client hearing yet; a Ping it failed to carry
-//     goes on a fresh channel in its place (nothing was learnt from the
-//     ended one, and a ping changes nothing), which is held from then on.
-//     Once the channel has answered, a Ping stays on it like any request.
-func (c *Client) OnOneChannel(ctx context.Context, work func(h *HeldChannel) error) error {
-	m, err := c.heldChannel(ctx)
-	if err != nil {
-		return err
-	}
-	return work(&HeldChannel{c: c, m: m})
-}
-
-// HeldChannel is the channel OnOneChannel holds for its work, which sends
-// its requests one at a time.
-type HeldChannel struct {
-	c        *Client
-	m        *multiChannel
-	answered bool // m has answered one of work's requests
-}
-
-// Call sends one request on the held channel, at most once
-// (OnOneChannel), and decodes its result into result.
-func (h *HeldChannel) Call(ctx context.Context, method string, params, result any) error {
-	return h.send(ctx, method, params, result, false)
-}
-
-// Ping sends a ping, an idempotent request: until the held channel has
-// answered, one it failed to carry goes on a fresh channel (OnOneChannel).
-func (h *HeldChannel) Ping(ctx context.Context, result any) error {
-	return h.send(ctx, "ping", nil, result, true)
-}
-
-func (h *HeldChannel) send(ctx context.Context, method string, params, result any, idempotent bool) error {
-	c := h.c
-	if ctx.Err() != nil {
-		// Nothing was written: herdr does not have it, and the cause stays.
-		return fmt.Errorf("%s: %w", method, Unsent(ctx, nil))
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
-		defer cancel()
-	}
-	id := c.nextID(method)
-	line, err := EncodeRequest(id, method, params)
-	if err != nil {
-		return err
-	}
-	if !multiRoutable(method, line) {
-		return fmt.Errorf("%s: %w", method, Unsent(ctx, nil))
-	}
-	reply, err := h.m.do(ctx, id, line)
-	for tries := 1; err != nil && idempotent && !h.answered && tries < maxHeldChannelTries && ctx.Err() == nil && !h.m.alive(); tries++ {
-		// The channel ended before it answered anything: an idempotent
-		// request goes on a fresh one, held from then on.
-		fresh, takeErr := c.heldChannel(ctx)
-		if takeErr != nil {
-			return fmt.Errorf("%s: %w", method, takeErr)
-		}
-		h.m = fresh
-		id = c.nextID(method)
-		if line, err = EncodeRequest(id, method, params); err != nil {
-			return err
-		}
-		reply, err = h.m.do(ctx, id, line)
-	}
-	if err != nil {
-		return fmt.Errorf("%s: %w", method, err)
-	}
-	h.answered = true
-	if method == "ping" {
-		c.learnCapability(reply)
-	}
-	return DecodeReply(reply, result)
-}
-
-// heldChannel is the session's open channel for OnOneChannel. A session
-// whose capability is not known yet is pinged per-request first, which
-// learns it and starts the open. With still no channel, Unsent's error,
-// with why: that probe's failure (its transport error, or herdr's error
-// reply), and ctx's end.
-func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
-	if m := c.readyChannel(ctx); m != nil {
-		return m, nil
-	}
-	p := &c.pool
-	p.mu.Lock()
-	unknown := p.slot(c.cfg.Session).capability == capUnknown
-	p.mu.Unlock()
-	var probeErr error
-	if unknown {
-		line, err := EncodeRequest(c.nextID("ping"), "ping", nil)
-		if err != nil {
-			return nil, err
-		}
-		reply, err := c.oneShot(ctx, line)
-		if err == nil {
-			// The pong and its error, decoded once; only a pong teaches.
-			var pong multiPong
-			if err = DecodeReply(reply, &pong); err == nil {
-				c.learnPong(pong)
-			}
-		}
-		if err != nil {
-			probeErr = fmt.Errorf("probing for --multi: %w", err)
-		}
-		if m := c.readyChannel(ctx); m != nil {
-			return m, nil
-		}
-	}
-	reason := errors.New("no herdr api-bridge --multi channel to hold")
-	if probeErr != nil {
-		reason = fmt.Errorf("%w: %w", reason, probeErr)
-	}
-	return nil, Unsent(ctx, reason)
-}
-
 // multiChannel is one `herdr api-bridge --multi` process. Requests are
 // written one per line; replies may come back in any order and are matched
 // by id.
@@ -445,7 +296,7 @@ func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 //     failed with err.
 //
 // Every exit of a request that was not written, in any state, fails with
-// Unsent's error, which keeps ctx's end when ctx has ended. A request the
+// unsent's error, which keeps ctx's end when ctx has ended. A request the
 // channel refuses to take (refusedLocked) carries err too when it is dead.
 type multiChannel struct {
 	sess   *ssh.Session
@@ -702,7 +553,7 @@ func (m *multiChannel) deliver(id string, line []byte) {
 // do sends one request and waits for its reply. It waits for a free slot
 // when maxMultiInFlight requests are outstanding. When the request is not
 // written (the channel retired or dead, or ctx ended before the write) it
-// fails with Unsent's error, from every branch alike.
+// fails with unsent's error, from every branch alike.
 func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, error) {
 	slot := false
 	select {
@@ -721,7 +572,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 		}
 		if err == nil {
 			// Ended before a slot was had: nothing was written.
-			err = Unsent(ctx, nil)
+			err = unsent(ctx, nil)
 		}
 		return nil, err
 	}
@@ -740,7 +591,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	if ctx.Err() != nil {
 		m.wmu.Unlock()
 		m.withdraw(id)
-		return nil, Unsent(ctx, nil)
+		return nil, unsent(ctx, nil)
 	}
 	n, err := m.stdin.Write(append(line, '\n'))
 	m.wmu.Unlock()
@@ -753,7 +604,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 			m.mu.Lock()
 			m.retireLocked()
 			m.mu.Unlock()
-			return nil, Unsent(ctx, err)
+			return nil, unsent(ctx, err)
 		}
 		// The remote process is gone. The read loop is about to fail every
 		// pending request with the reason it exited, which says more than
@@ -871,14 +722,14 @@ func (m *multiChannel) closeIfDrainedLocked() bool {
 
 // refusedLocked is why the channel takes no new request, nil while it is
 // open: the one admission check, whichever of do's branches led to it.
-// Dead, it is Unsent's error with what fail recorded; retired, Unsent's
+// Dead, it is unsent's error with what fail recorded; retired, unsent's
 // error alone. Either keeps ctx's end. m.mu must be held.
 func (m *multiChannel) refusedLocked(ctx context.Context) error {
 	switch {
 	case m.err != nil:
-		return Unsent(ctx, m.err)
+		return unsent(ctx, m.err)
 	case m.retired:
-		return Unsent(ctx, nil)
+		return unsent(ctx, nil)
 	}
 	return nil
 }

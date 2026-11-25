@@ -135,13 +135,11 @@ func (e unwritten) Error() string { return string(e) }
 const (
 	errTerminalLineBreak    unwritten = "Write one line at a time: a line break would run the text before it."
 	errTerminalPasteRefused unwritten = "This program can't take a pasted block. Write one line at a time."
-	errTerminalUnchecked    unwritten = "Couldn't check whether this machine takes a pasted block — nothing was written. Try again."
 )
 
 // writeToTerminal writes a draft to a plain terminal without running it. One
 // line goes as it is. A draft with a line break goes as one bracketed paste
-// where the machine can send one (pane_send_text_bracketed), and otherwise
-// not at all.
+// (pane.send_bracketed_text), and where it can't, not at all.
 func writeToTerminal(ctx context.Context, v *interaction, text string) error {
 	if !strings.ContainsAny(text, "\r\n") {
 		return v.client.PaneSendText(ctx, v.PaneID, text)
@@ -150,19 +148,33 @@ func writeToTerminal(ctx context.Context, v *interaction, text string) error {
 }
 
 // bracketedWriteError is the composer's reason for a bracketed write that
-// wrote nothing; other errors pass through.
+// herdr refused, writing nothing, so the draft is kept: a herdr without the
+// method (it refuses it with invalid_request or unknown_method, which the
+// engine may have read as *ErrUnsupported), or a program with bracketed
+// paste off. Other errors pass through, a write never sent
+// (bridge.ErrNotSent) with its own reason (writeKept).
 func bracketedWriteError(err error) error {
-	var probe *engine.ErrProbeFailed
+	var unsupported *engine.ErrUnsupported
 	var api *bridge.APIError
 	switch {
-	case errors.Is(err, engine.ErrBracketedUnsupported):
-		return errTerminalLineBreak
-	case errors.As(err, &probe):
-		return errTerminalUnchecked
 	case errors.As(err, &api) && api.Code == "bracketed_paste_unavailable":
 		return errTerminalPasteRefused
+	case errors.As(err, &api) && (api.Code == "invalid_request" || api.Code == "unknown_method"),
+		errors.As(err, &unsupported):
+		return errTerminalLineBreak
 	}
 	return err
+}
+
+// writeKept reports whether a plain terminal's write failed with nothing
+// written, so the composer keeps the draft and shows err: a refusal before
+// anything reached the terminal (unwritten, *ErrUnsupported), or a write
+// never sent (bridge.ErrNotSent), one line or a block alike, with its own
+// reason.
+func writeKept(err error) bool {
+	var unsupported *engine.ErrUnsupported
+	var kept unwritten
+	return errors.As(err, &unsupported) || errors.As(err, &kept) || errors.Is(err, bridge.ErrNotSent)
 }
 
 // Delivery uncertainty consumes the draft, just as native PromptRejection does:
@@ -173,9 +185,7 @@ func submitPanePrompt(ctx context.Context, v *interaction, text string) (string,
 	if v.PlainTerminal {
 		err = writeToTerminal(ctx, v, text)
 		delivery, note = "written", "Written to terminal; press Enter to run it."
-		var unsupported *engine.ErrUnsupported
-		var kept unwritten
-		if errors.As(err, &unsupported) || errors.As(err, &kept) {
+		if writeKept(err) {
 			return "", err
 		}
 	} else {
