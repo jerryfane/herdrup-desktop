@@ -23,7 +23,6 @@ import { probeList, type MachineStatus } from "./ownerProbe";
 import { OwnerRuns } from "./ownerRuns";
 import { approvalParts, approvedMachines, machineAccess, machineSection, noticeCard, ownerLayout, thisBrowser, type MachineSection, type RowGlyphs } from "./ownerScreen";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
-import { statementCache } from "./statements";
 
 /** The page starts over for whoever is signed in now (boot.ts chooses again): a sign-out, another
  *  account, or the person asking for the guest page (a choice, which takes the place of the page
@@ -42,7 +41,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
  const store = new IndexedDBOwnerStore();
  const browser = thisBrowser(navigator.userAgent, navigator.maxTouchPoints);
  const deviceName = browser.name;
- const statements = statementCache(ownerAccess.account);
+ const statements = ownerAccess.statements;
  const statuses = new Map<string, MachineStatus>();
  const runs = new OwnerRuns();
  // The account session owner links, probes and the approval belong to. A sign-out ends it, and

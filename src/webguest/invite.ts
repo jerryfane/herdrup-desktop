@@ -35,6 +35,9 @@ export class Invite {
   readonly expires: Date,
   inviteID: string,
   secret: string,
+  /** The host lets the guest bind the share to their HerdrUp account (the payload's "acct": 1,
+   *  herdr guest/store.rs invite_payload under `[guest] accounts`); false for older invites. */
+  readonly accounts = false,
  ) {
   this.#inviteID = inviteID;
   this.#secret = secret;
@@ -43,9 +46,10 @@ export class Invite {
  toString() { return "guest invitation (bearer secret redacted)"; }
  toJSON() { return this.toString(); }
 
- /** The redeeming hello, message 1's payload (session.go:220-225). */
- helloPayload(device: string): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({ v: 1, invite_id: this.#inviteID, secret: this.#secret, device }));
+ /** The redeeming hello, message 1's payload (session.go:220-225). With account, a statement for
+  *  this host and device, the share is bound to that account (herdr guest/store.rs admit_in). */
+ helloPayload(device: string, account?: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ v: 1, invite_id: this.#inviteID, secret: this.#secret, device, ...(account === undefined ? {} : { account }) }));
  }
 }
 
@@ -85,7 +89,7 @@ function relayURL(text: string): URL | null {
  return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]") ? u : null;
 }
 
-const FIELDS = ["v", "relay", "host_id", "host_pub", "invite_id", "secret", "machine_label", "owner_name", "agent_name", "guest_name", "expires_unix"] as const;
+const FIELDS = ["v", "relay", "host_id", "host_pub", "invite_id", "secret", "machine_label", "owner_name", "agent_name", "guest_name", "expires_unix", "acct"] as const;
 type Field = (typeof FIELDS)[number];
 
 /** The v1 validation every link form runs, a short link's opened invite included (invite.go:123-167).
@@ -99,7 +103,7 @@ export function decodeInviteJSON(raw: Uint8Array): Invite {
  for (const [key, value] of Object.entries(parsed ?? {})) {
   const field = FIELDS.find((f) => f === key) ?? FIELDS.find((f) => f === key.toLowerCase());
   if (field === undefined || value === null) continue;
-  const integer = field === "v" || field === "expires_unix";
+  const integer = field === "v" || field === "expires_unix" || field === "acct";
   if (integer ? !Number.isSafeInteger(value) : typeof value !== "string") mistyped = true;
   else wire[field] = value;
  }
@@ -116,7 +120,7 @@ export function decodeInviteJSON(raw: Uint8Array): Invite {
  }
  const expires = (wire.expires_unix as number | undefined) ?? 0;
  if (!validGuestName(text("guest_name")) || !validLabel(text("machine_label")) || !validLabel(text("owner_name")) || !validLabel(text("agent_name")) || expires <= 0) throw notInvite();
- return new Invite({ relay: text("relay"), hostID: text("host_id"), hostPublicKey: hostPublicKey! }, text("machine_label"), text("owner_name"), text("agent_name"), text("guest_name"), new Date(expires * 1000), text("invite_id"), text("secret"));
+ return new Invite({ relay: text("relay"), hostID: text("host_id"), hostPublicKey: hostPublicKey! }, text("machine_label"), text("owner_name"), text("agent_name"), text("guest_name"), new Date(expires * 1000), text("invite_id"), text("secret"), wire.acct === 1);
 }
 
 // A short link's last path segment: a 12-character id (9 random bytes) then a 22-character key

@@ -13,6 +13,16 @@ export type GuestErrorKind =
  | "timeout" // a call's round-trip limit (session.go:18)
  | "closed" // the transport or socket was closed (context.Canceled)
  | "statement" // an owner hello's account statement was refused (missing, stale, another account)
+ // An account-bound share's refusals and closes (herdr guest/account.rs codes), each its own kind
+ // as Go has a sentinel for each (internal/guest ErrAccountRequired … ErrAccountsDisabled).
+ | "account_required" // ErrAccountRequired
+ | "account_mismatch" // ErrAccountMismatch
+ | "statement_invalid" // ErrStatementInvalid
+ | "statement_expired" // ErrStatementExpired
+ | "account_keys_stale" // ErrAccountKeysStale
+ | "device_removed" // ErrDeviceRemoved
+ | "accounts_disabled" // ErrAccountsDisabled
+ | "account_changed" // ErrAccountChanged: the sign-in a redemption started in ended before its retry (transport.ts acceptInvite)
  | "other";
 
 export class GuestError extends Error {
@@ -65,6 +75,27 @@ export function ownerRefusal(code: string): GuestError {
    return new GuestError("statement", "The machine didn't accept this browser's account statement. Sign in again if this persists.");
   default: return other("The machine refused this browser's connection.");
  }
+}
+
+/** A guest hello's or session's account code (herdr guest/account.rs codes): a hello refused with
+ *  it, or a session closed with it as the reason. null for any other code. */
+export function accountRefusal(code: string): GuestError | null {
+ switch (code) {
+  case "account_required": return new GuestError(code, "Sign in to the HerdrUp account that holds this share.");
+  case "account_mismatch": return new GuestError(code, "This share belongs to another HerdrUp account. Sign in to that account to open it.");
+  case "statement_invalid": return new GuestError(code, "The shared machine didn't accept this browser's HerdrUp sign-in. Try again, and sign in again if this persists.");
+  case "statement_expired": return new GuestError(code, "This browser's HerdrUp sign-in for the shared machine expired. Try again.");
+  case "account_keys_stale": return new GuestError(code, "The shared machine can't check HerdrUp accounts right now. Try again later.");
+  case "device_removed": return new GuestError(code, "The owner removed this browser from the shared access. Ask the owner for a new invitation.");
+  case "accounts_disabled": return new GuestError(code, "The owner doesn't allow adding shared access to a HerdrUp account on this machine. Accept it for this browser only.");
+  default: return null;
+ }
+}
+
+/** Whether a connect refused for error may be admitted with a fresh statement: the one sent may
+ *  have gone stale or been refused on the way. Once is enough; other refusals stay. */
+export function freshStatementMayAdmit(error: unknown): boolean {
+ return error instanceof GuestError && (error.kind === "statement" || error.kind === "statement_expired" || error.kind === "statement_invalid");
 }
 
 /** herdr's API error object (internal/bridge/client.go:59-68): code and message, and the whole
