@@ -520,3 +520,104 @@ func TestAFailedProbeForAHeldChannelKeepsItsError(t *testing.T) {
 		})
 	}
 }
+
+// #492: only a successful pong teaches the capability. A probe herdr
+// refused leaves it unknown, so the next held channel probes again, and
+// gets one from that pong.
+func TestARefusedProbeLeavesTheCapabilityUnknown(t *testing.T) {
+	var pings atomic.Int32
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "ping" && pings.Add(1) == 1 {
+				return nil, &fakeherdr.APIError{Code: "server_unavailable", Message: "busy"}
+			}
+			return echoHandler(method, params)
+		}
+	})
+	c := m.dial(t)
+	var api *bridge.APIError
+	if err := c.OnOneChannel(context.Background(), func(*bridge.HeldChannel) error {
+		t.Fatal("work ran without a channel")
+		return nil
+	}); !errors.Is(err, bridge.ErrNotSent) || !errors.As(err, &api) || api.Code != "server_unavailable" {
+		t.Fatalf("%v; want ErrNotSent with the refused probe's error", err)
+	}
+	if err := c.OnOneChannel(context.Background(), func(h *bridge.HeldChannel) error {
+		return h.Ping(context.Background(), nil)
+	}); err != nil {
+		t.Fatalf("%v; want a held channel once a probe is answered", err)
+	}
+}
+
+// #492: a call whose deadline ends while the session's --multi channel is
+// still opening takes no other path, and fails unsent keeping its cause:
+// ErrNotSent with context.DeadlineExceeded. The channel's opening ping is
+// held until the test ends, so the open can't finish first.
+func TestACallWhoseDeadlineEndsWhileTheChannelOpensKeepsItsCause(t *testing.T) {
+	release := make(chan struct{})
+	var pings atomic.Int32
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "ping" && pings.Add(1) > 1 {
+				<-release // the channel's opening ping: the open waits
+			}
+			return echoHandler(method, params)
+		}
+	})
+	t.Cleanup(func() { close(release) })
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err) // per-request: learns --multi, and the open starts
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := c.Call(ctx, "agent.list", nil, nil)
+	if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%v; want ErrNotSent with context.DeadlineExceeded", err)
+	}
+	for _, r := range m.srv.Requests() {
+		if r.Method == "agent.list" {
+			t.Fatalf("agent.list went out after its deadline: %+v", r)
+		}
+	}
+}
+
+// cancelOnEncode is request params whose encoding ends the call's context:
+// the request is cancelled while it is being encoded.
+type cancelOnEncode struct{ cancel context.CancelFunc }
+
+func (p cancelOnEncode) MarshalJSON() ([]byte, error) {
+	p.cancel()
+	return []byte(`{}`), nil
+}
+
+// #492: a held request cancelled while it is encoded is never written,
+// whichever of a free slot and the cancellation the channel's select picks:
+// the write boundary checks the context, so none of them reaches herdr,
+// and each fails ErrNotSent with context.Canceled.
+func TestAHeldRequestCancelledWhileEncodedIsNeverWritten(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	heldPing(t, m, c) // the session's channel is open
+	const tries = 32
+	if err := c.OnOneChannel(context.Background(), func(h *bridge.HeldChannel) error {
+		if err := h.Ping(context.Background(), nil); err != nil {
+			return err
+		}
+		for range tries {
+			ctx, cancel := context.WithCancel(context.Background())
+			err := h.Call(ctx, "pane.send_text", cancelOnEncode{cancel}, nil)
+			if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+				t.Errorf("%v; want ErrNotSent with context.Canceled", err)
+			}
+		}
+		return h.Ping(context.Background(), nil) // the channel still answers
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range m.srv.Requests() {
+		if r.Method == "pane.send_text" {
+			t.Fatalf("a request cancelled while encoded reached herdr: %+v", r)
+		}
+	}
+}

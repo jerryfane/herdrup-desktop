@@ -377,7 +377,9 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 // flight fails with an error wrapping bridge.ErrNotSent, before any frame
 // of it is sent. Once work returns, the handle is released, and whatever
 // it is asked fails so too; then the session is left idle for the next
-// call when it is still fit to carry one.
+// call when it is still fit to carry one and no request of the handle's is
+// in flight (one work left running is not waited for: its session is
+// closed instead).
 func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) error) error {
 	if err := t.ctx.Err(); err != nil {
 		return err
@@ -401,15 +403,16 @@ func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) e
 	err := work(h)
 	// Released before the session is parked: a handle work kept sends
 	// nothing on it once the next borrower may have it. A request of the
-	// handle's still in flight finishes first.
+	// handle's still in flight (work let it run on) is not waited for: its
+	// session is closed, not pooled.
 	h.mu.Lock()
 	h.released = true
-	spent := h.spent
+	reusable := !h.spent && !h.inFlight
 	h.mu.Unlock()
-	if spent {
-		s.close()
-	} else {
+	if reusable {
 		t.park(s)
+	} else {
+		s.close()
 	}
 	return err
 }
@@ -418,9 +421,10 @@ func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) e
 type heldSession struct {
 	t *Transport
 	s *session
-	// mu is held by the request in flight; spent and released change
-	// under it.
+	// mu guards the state below, held only to read or change it, never
+	// across a request's I/O or decoding.
 	mu       sync.Mutex
+	inFlight bool // a request is being sent, read or decoded
 	spent    bool // the session can carry no more requests
 	released bool // work returned: the handle sends nothing more
 }
@@ -430,19 +434,34 @@ func (h *heldSession) Ping(ctx context.Context, result any) error {
 }
 
 func (h *heldSession) Call(ctx context.Context, method string, params, result any) error {
-	if !h.mu.TryLock() {
-		return fmt.Errorf("%s: %w: another request of this held session is in flight", method, bridge.ErrNotSent)
-	}
-	defer h.mu.Unlock()
-	if h.released {
+	h.mu.Lock()
+	switch {
+	case h.released:
+		h.mu.Unlock()
 		return fmt.Errorf("%s: %w: the held session was released", method, bridge.ErrNotSent)
-	}
-	if h.spent {
+	case h.inFlight:
+		h.mu.Unlock()
+		return fmt.Errorf("%s: %w: another request of this held session is in flight", method, bridge.ErrNotSent)
+	case h.spent:
+		h.mu.Unlock()
 		return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
 	}
+	h.inFlight = true
+	h.mu.Unlock()
+	reusable, err := h.send(ctx, method, params, result)
+	h.mu.Lock()
+	h.inFlight = false
+	h.spent = h.spent || !reusable
+	h.mu.Unlock()
+	return err
+}
+
+// send is Call's request on the held session, and whether the session can
+// carry another.
+func (h *heldSession) send(ctx context.Context, method string, params, result any) (reusable bool, err error) {
 	if err := ctx.Err(); err != nil {
 		// Nothing was written: herdr does not have it, and the cause stays.
-		return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
+		return true, fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
 	defer cancel()
@@ -450,20 +469,17 @@ func (h *heldSession) Call(ctx context.Context, method string, params, result an
 	defer stop()
 	request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(h.t.seq.Add(1), 10), method, params)
 	if err != nil {
-		return err
+		return true, err
 	}
 	line, sent, open, err := roundTrip(ctx, h.s, request)
 	if err != nil {
-		h.spent = true
 		if !sent {
 			// No write of it was attempted, whatever ended the call.
-			return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
+			return false, fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
 		}
-		return err
+		return false, err
 	}
-	reusable, err := decodeReply(h.s, open, line, result)
-	h.spent = !reusable
-	return err
+	return decodeReply(h.s, open, line, result)
 }
 
 // OpenStream sends one request on a fresh session of its own, whose reply
