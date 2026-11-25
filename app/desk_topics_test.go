@@ -374,6 +374,40 @@ func TestTopicsListSurvivesAMissedAgentAndFollowsItsFreshness(t *testing.T) {
 	}
 }
 
+// A list whose freshness fields come in another shape (stale not a bool)
+// is kept but shown as stale, and its as_of_unix_ms is not taken: a later
+// answer with an older timestamp still replaces it.
+func TestTopicsListWithMalformedFreshnessIsStale(t *testing.T) {
+	topic := func(id string) map[string]any {
+		return map[string]any{"topic_id": id, "title": id, "state": "idle", "created_unix_ms": 1, "last_activity_unix_ms": 1, "queued": 0, "turns": 1}
+	}
+	var mu sync.Mutex
+	next := 0
+	d, updates := topicsListDesk(t, func() (any, *fakeherdr.APIError) {
+		mu.Lock()
+		defer mu.Unlock()
+		next++
+		if next == 1 {
+			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a")}, "stale": "no", "as_of_unix_ms": 5000}, nil
+		}
+		return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("b")}, "as_of_unix_ms": 4000}, nil
+	})
+	read := func(n int) TopicsUpdate {
+		t.Helper()
+		if err := d.TopicsRefresh(context.Background(), "view"); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "a list answer", func() bool { return len(updates()) >= n })
+		return updates()[n-1]
+	}
+	if u := read(1); !u.Offered || !u.Stale || len(u.Topics) != 1 || u.Topics[0].TopicID != "a" {
+		t.Fatalf("malformed freshness must keep the list as stale: %+v", u)
+	}
+	if u := read(2); u.Stale || len(u.Topics) != 1 || u.Topics[0].TopicID != "b" {
+		t.Fatalf("a malformed timestamp must not hold back the next list: %+v", u)
+	}
+}
+
 // The page lists the topics the agent's session file holds (topic_sessions)
 // until the agent's first list answers: the view carries them, one without
 // an id left out, never null.
