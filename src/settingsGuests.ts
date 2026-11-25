@@ -163,6 +163,9 @@ export class GuestSettings {
   /** Tells settings.ts the page shown when it changes. */
   private title(name: string | null) { if (name !== this.shown) { this.shown = name; this.paged(name); } }
   private async refresh() {
+    // A menu open now would act on rows the refresh is about to replace (render closes one opened
+    // meanwhile).
+    this.closeMenu?.();
     const token = this.token, at = ++this.generation;
     const results = await Promise.all(this.machines.map(async machine => {
       try { return { ...JSON.parse(await Desk.settingsGuestMachine(token, machine.alias)), machine } as Result; }
@@ -309,20 +312,28 @@ export class GuestSettings {
       `Remove ${person.name}`, [agents, devices], () => { void this.act(machine, "person:" + person.id, token => Desk.revokeGuestPerson(token, machine.alias, person.id)); });
   }
   /** Removes the device from every share of the person that admits it, while this Settings scope
-   *  lasts: one that can't be updated doesn't stop the others, and each is said after. */
+   *  lasts: one that can't be updated doesn't stop the others, and each is said after. The shares
+   *  are the listing's when the removal is confirmed, not when the dialog opened: a refresh may
+   *  have shown another one since. */
   private confirmRemoveDevice(machine: Machine, person: Person, device: PersonDevice) {
     this.confirm(`Remove ${device.name}?`, `${person.name} can no longer open ${person.guests.length === 1 ? agentName(person.guests[0]!) : "these agents"} on ${device.name}, and its open sessions close. ${person.name}'s other devices keep access.`,
       "Remove device", [], () => {
         void this.act(machine, "device:" + device.fingerprint, async token => {
           const failed: string[] = [];
-          for (const id of device.guests) {
+          for (const share of this.deviceShares(machine, person.id, device.fingerprint)) {
             if (token !== this.token) return;
-            try { await Desk.removeGuestDevice(token, machine.alias, id, device.fingerprint); }
-            catch (error) { failed.push(`Couldn't remove from ${agentName(person.guests.find(guest => guest.guest_id === id)!)}: ${errorText(error)}`); }
+            try { await Desk.removeGuestDevice(token, machine.alias, share.guest_id, device.fingerprint); }
+            catch (error) { failed.push(`Couldn't remove from ${agentName(share)}: ${errorText(error)}`); }
           }
           if (failed.length) throw new Error(failed.join("\n"));
         });
       });
+  }
+  /** The shares of person on machine that admit the device now, as the last listing has them. */
+  private deviceShares(machine: Machine, person: string, fingerprint: string): Guest[] {
+    const listed = sharePeople(this.results.find(result => result.machine.alias === machine.alias)?.listing?.guests ?? []).people.find(p => p.id === person);
+    const ids = listed?.devices.find(d => d.fingerprint === fingerprint)?.guests ?? [];
+    return listed?.guests.filter(guest => ids.includes(guest.guest_id)) ?? [];
   }
   /** A share of an older herdr (no person): today's row, Revoke and Share Gram on it. */
   private guestRow(machine: Machine, guest: Guest) {
