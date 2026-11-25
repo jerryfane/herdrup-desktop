@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"sync"
@@ -349,6 +350,72 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 	t.admitted(refusals, connected.reply.Features)
 	connected.handshook = t.clock.Now()
 	return connected, nil
+}
+
+// OnOneChannel runs work with call, which sends each request on one
+// session, the same one throughout (engine.OneChannel): the herdr process
+// that session reached answers every one, so what one answer says (a
+// ping's capabilities) holds for the next. The session is taken first, the
+// idle one or else a fresh one. A request goes on it or nowhere: once the
+// session ended or herdr spent it (a host without features.multi_request
+// serves one request a session) before the request was written, call fails
+// with an error wrapping bridge.ErrNotSent, and herdr does not have the
+// request; with no session to be had, OnOneChannel does. Each call is
+// otherwise as Call's. The session is left idle for the next call when
+// work ends with it still fit to carry one.
+func (t *Transport) OnOneChannel(ctx context.Context, work func(call engine.CallFunc) error) error {
+	if err := t.ctx.Err(); err != nil {
+		return err
+	}
+	held := t.takeIdle()
+	if held == nil {
+		connectCtx, cancel := context.WithTimeout(ctx, roundTripLimit)
+		stop := context.AfterFunc(t.ctx, cancel)
+		connected, err := t.connect(connectCtx)
+		stop()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%w: %w", bridge.ErrNotSent, err)
+		}
+		if connected.reply.Features.MultiRequest {
+			connected.startPump()
+		}
+		held = connected
+	}
+	spent := false
+	call := func(ctx context.Context, method string, params, result any) error {
+		if spent {
+			return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
+		}
+		ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
+		defer cancel()
+		stop := context.AfterFunc(t.ctx, cancel)
+		defer stop()
+		request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(t.seq.Add(1), 10), method, params)
+		if err != nil {
+			return err
+		}
+		line, sent, open, err := roundTrip(ctx, held, request)
+		if err != nil {
+			spent = true
+			if !sent && ctx.Err() == nil {
+				return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
+			}
+			return err
+		}
+		err = bridge.DecodeReply(line, result)
+		if !open || held.frames == nil || !keepsSession(err) {
+			spent = true
+		}
+		return err
+	}
+	err := work(call)
+	if spent {
+		held.close()
+	} else {
+		t.park(held)
+	}
+	return err
 }
 
 // OpenStream sends one request on a fresh session of its own, whose reply

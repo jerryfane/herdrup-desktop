@@ -330,3 +330,43 @@ func TestAbandonedRequestUnansweredPastTheGraceRetiresTheChannel(t *testing.T) {
 		t.Errorf("the live request on the retired channel failed: %v", err)
 	}
 }
+
+// #476: requests held to one --multi channel all go on it, the herdr that
+// answered the first answering the rest; once it ended, a request goes on
+// no other channel (one that may reach a restarted herdr) and not
+// per-request either: it fails ErrNotSent, unsent.
+func TestARequestHeldToOneChannelGoesOnNoOther(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	ctx := context.Background()
+	err := c.OnOneChannel(ctx, func(call func(context.Context, string, any, any) error) error {
+		if err := call(ctx, "ping", nil, nil); err != nil {
+			return err
+		}
+		if err := call(ctx, "agent.list", nil, nil); err != nil {
+			return err
+		}
+		m.srv.EndMultiChannels()
+		eventually(t, "the held channel to end", func() bool { return !bridge.MultiAlive(c) })
+		if err := call(ctx, "pane.send_text", nil, nil); !errors.Is(err, bridge.ErrNotSent) {
+			t.Errorf("a request after the held channel ended: %v, want ErrNotSent", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []int // the --multi channel of each request work sent
+	for _, r := range m.srv.Requests() {
+		if r.Method == "pane.send_text" {
+			t.Fatalf("the request went out after its channel ended: %+v", r)
+		}
+		if r.Multi {
+			held = append(held, r.Channel)
+		}
+	}
+	// The channel's own opening ping, then work's ping and agent.list.
+	if len(held) != 3 || held[0] != held[1] || held[1] != held[2] {
+		t.Fatalf("requests %+v; want the held ping and agent.list on the one --multi channel", m.srv.Requests())
+	}
+}

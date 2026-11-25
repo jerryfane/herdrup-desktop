@@ -118,11 +118,11 @@ func (p *pool) slot(session string) *slot {
 }
 
 // viaMulti sends a request on the session's --multi channel. It returns
-// errNotSent when nothing was written, and the request must take the
+// ErrNotSent when nothing was written, and the request must take the
 // per-request path.
 func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) ([]byte, error) {
 	if !multiRoutable(method, line) {
-		return nil, errNotSent
+		return nil, ErrNotSent
 	}
 	p := &c.pool
 	p.mu.Lock()
@@ -130,7 +130,7 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 	switch s.capability {
 	case capUnsupported:
 		p.mu.Unlock()
-		return nil, errNotSent
+		return nil, ErrNotSent
 	case capUnknown:
 		// A ping learns the capability from its own reply.
 		if method != "ping" && !s.probing {
@@ -138,12 +138,12 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 			go c.probeCapability()
 		}
 		p.mu.Unlock()
-		return nil, errNotSent
+		return nil, ErrNotSent
 	}
 	p.mu.Unlock()
 	m := c.readyChannel(ctx)
 	if m == nil {
-		return nil, errNotSent
+		return nil, ErrNotSent
 	}
 	return m.do(ctx, id, line)
 }
@@ -265,6 +265,79 @@ func (c *Client) readyChannel(ctx context.Context) *multiChannel {
 			return nil
 		}
 	}
+}
+
+// OnOneChannel runs work with call, which sends each request on one --multi
+// channel of the session, the same one throughout: one `herdr api-bridge
+// --multi` process, so one herdr answers every one of them, and what one
+// answer says (a ping's capabilities) holds for the next. A herdr that
+// restarted or was rolled back comes with another channel. The channel is
+// taken first, opening it as Call would (a session whose capability is not
+// yet known is pinged per-request to learn it). A request goes on that
+// channel or nowhere: with no channel to be had, or once it ended before
+// the request was written, call fails with an error wrapping ErrNotSent,
+// and herdr does not have the request. Each call is otherwise as Call's.
+func (c *Client) OnOneChannel(ctx context.Context, work func(call func(ctx context.Context, method string, params, result any) error) error) error {
+	m, err := c.heldChannel(ctx)
+	if err != nil {
+		return err
+	}
+	return work(func(ctx context.Context, method string, params, result any) error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%s: %w", method, err)
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
+			defer cancel()
+		}
+		id := c.nextID(method)
+		line, err := EncodeRequest(id, method, params)
+		if err != nil {
+			return err
+		}
+		if !multiRoutable(method, line) {
+			return fmt.Errorf("%s: %w", method, ErrNotSent)
+		}
+		reply, err := m.do(ctx, id, line)
+		if err != nil {
+			return fmt.Errorf("%s: %w", method, err)
+		}
+		if method == "ping" {
+			c.learnCapability(reply)
+		}
+		return DecodeReply(reply, result)
+	})
+}
+
+// heldChannel is the session's open channel for OnOneChannel. A session
+// whose capability is not known yet is pinged per-request first, which
+// learns it and starts the open; an error wrapping ErrNotSent when there is
+// still no channel.
+func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
+	if m := c.readyChannel(ctx); m != nil {
+		return m, nil
+	}
+	p := &c.pool
+	p.mu.Lock()
+	unknown := p.slot(c.cfg.Session).capability == capUnknown
+	p.mu.Unlock()
+	if unknown {
+		line, err := EncodeRequest(c.nextID("ping"), "ping", nil)
+		if err != nil {
+			return nil, err
+		}
+		if reply, err := c.oneShot(ctx, line); err == nil {
+			c.learnCapability(reply)
+		}
+		if m := c.readyChannel(ctx); m != nil {
+			return m, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("no herdr api-bridge --multi channel to hold: %w", ErrNotSent)
 }
 
 // multiChannel is one `herdr api-bridge --multi` process. Requests are
@@ -528,15 +601,15 @@ func (m *multiChannel) deliver(id string, line []byte) {
 }
 
 // do sends one request and waits for its reply. It waits for a free slot
-// when maxMultiInFlight requests are outstanding, and returns errNotSent
+// when maxMultiInFlight requests are outstanding, and returns ErrNotSent
 // when the channel ends before the request is written.
 func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, error) {
 	select {
 	case m.inFlight <- struct{}{}:
 	case <-m.dead:
-		return nil, errNotSent
+		return nil, ErrNotSent
 	case <-m.retiredC:
-		return nil, errNotSent
+		return nil, ErrNotSent
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -544,12 +617,12 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	m.mu.Lock()
 	if m.err != nil {
 		m.mu.Unlock()
-		return nil, errNotSent
+		return nil, ErrNotSent
 	}
 	if m.retired {
 		m.mu.Unlock()
 		<-m.inFlight
-		return nil, errNotSent
+		return nil, ErrNotSent
 	}
 	if _, dup := m.pending[id]; dup {
 		m.mu.Unlock()
@@ -565,7 +638,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	if err != nil {
 		if n == 0 {
 			m.withdraw(id)
-			return nil, errNotSent
+			return nil, ErrNotSent
 		}
 		// The remote process is gone. The read loop is about to fail every
 		// pending request with the reason it exited, which says more than

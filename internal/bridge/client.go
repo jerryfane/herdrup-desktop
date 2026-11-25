@@ -77,12 +77,12 @@ func (e *APIError) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-var (
-	errChannelClosed = errors.New("herdr api-bridge channel closed")
-	// errNotSent means a request was not written to the --multi channel, so
-	// it may safely go down the per-request path instead.
-	errNotSent = errors.New("herdr api-bridge --multi channel unavailable")
-)
+var errChannelClosed = errors.New("herdr api-bridge channel closed")
+
+// ErrNotSent means a request was not written to its channel, so herdr
+// cannot have it: Call then sends it down the per-request path instead, and
+// OnOneChannel fails it (a request held to one channel goes on no other).
+var ErrNotSent = errors.New("herdr api-bridge --multi channel unavailable")
 
 // Client is a view of one SSH connection to a machine running herdr,
 // addressing one herdr session. ForSession makes views of other sessions
@@ -305,7 +305,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 		return err
 	}
 	reply, err := c.viaMulti(ctx, method, id, line)
-	if errors.Is(err, errNotSent) {
+	if errors.Is(err, ErrNotSent) {
 		reply, err = c.oneShot(ctx, line)
 	}
 	if err != nil {

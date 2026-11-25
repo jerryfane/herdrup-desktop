@@ -65,6 +65,20 @@ type Duplex interface {
 	CloseWrite() error
 }
 
+// CallFunc is Transport.Call: one request, its result decoded into result.
+type CallFunc func(ctx context.Context, method string, params, result any) error
+
+// OneChannel is a Transport that can hold one channel to herdr for a few
+// requests: one herdr process answers every request work sends with call,
+// so what one answer says (a ping's capabilities) holds for the next. A
+// herdr that restarted or was rolled back comes with another channel, which
+// a held one never turns into: a request the held channel can't carry (it
+// ended, or never could be had) fails with an error wrapping
+// bridge.ErrNotSent, and herdr does not have it.
+type OneChannel interface {
+	OnOneChannel(ctx context.Context, work func(call CallFunc) error) error
+}
+
 // Bridge adapts a bridge.Client to Transport and Duplexer.
 func Bridge(c *bridge.Client) Transport { return bridgeTransport{c} }
 
@@ -84,6 +98,10 @@ func (b bridgeTransport) OpenDuplex(ctx context.Context) (Duplex, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+func (b bridgeTransport) OnOneChannel(ctx context.Context, work func(call CallFunc) error) error {
+	return b.Client.OnOneChannel(ctx, func(call func(context.Context, string, any, any) error) error { return work(call) })
 }
 
 // Client is a typed client for one herdr session.
@@ -294,12 +312,18 @@ func (c *Client) do(ctx context.Context, name string, params any) (herdrapi.Resp
 // doRaw is do that also returns the result as herdr sent it, for fields
 // the schema leaves out.
 func (c *Client) doRaw(ctx context.Context, name string, params any) (herdrapi.ResponseResultVariant, json.RawMessage, error) {
-	m := method(name)
-	if err := c.gate(ctx, m); err != nil {
+	if err := c.gate(ctx, method(name)); err != nil {
 		return nil, nil, err
 	}
+	return c.callWith(ctx, c.t.Call, name, params)
+}
+
+// callWith sends one request with call and returns its checked result, and
+// the result as herdr sent it, ungated.
+func (c *Client) callWith(ctx context.Context, call CallFunc, name string, params any) (herdrapi.ResponseResultVariant, json.RawMessage, error) {
+	m := method(name)
 	var raw json.RawMessage
-	if err := c.t.Call(ctx, name, params, &raw); err != nil {
+	if err := call(ctx, name, params, &raw); err != nil {
 		return nil, nil, c.mapError(name, err)
 	}
 	var r herdrapi.ResponseResult
