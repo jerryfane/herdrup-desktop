@@ -1,6 +1,7 @@
 // This browser's account statements per machine (POST /v1/statements; AccountService
-// statements.ts: 600 s each, exp absolute). An owner hello and its in-band refresh carry one. A
-// statement belongs to the session it was issued in (WebAccount.generation and the account):
+// statements.ts: 600 s each, exp absolute). An owner hello, an account-bound share's hello, and
+// their in-band refresh carry one. A statement belongs to the session it was issued in
+// (WebAccount.generation and the account):
 // the cache holds only the current session's, drops them all when the session changes, and
 // stores or hands one out only while that session is still the page's; each statement it gives
 // says live() for the transport to check again right before it dials and sends. A statement is
@@ -8,8 +9,9 @@
 // and each stops waiting when its own signal aborts while the request goes on.
 
 import { untilAborted } from "../webguest/abort";
-import type { StatementSource } from "../webguest/owner";
-import { AccountServiceError, type WebAccount } from "./account";
+import type { StatementSource } from "../webguest/accountStatement";
+import { accountRefusal } from "../webguest/errors";
+import { AccountServiceError, SignedOutError, type WebAccount } from "./account";
 
 type Held = { jws: string; expMs: number };
 
@@ -63,5 +65,21 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
   drop(hostID, jws) {
    if (held.get(hostID)?.jws === jws) held.delete(hostID);
   },
+ };
+}
+
+/** source as a share bound to the account asks it (the guest Desk's): signed out is the share's
+ *  account_required, as the guest's errors say it; any other failure (the service's) stays as it
+ *  is. */
+export function boundShareStatements(source: StatementSource): StatementSource {
+ return {
+  async get(hostID, minLeftMs, signal) {
+   try { return await source.get(hostID, minLeftMs, signal); }
+   catch (error) {
+    if (error instanceof SignedOutError) throw accountRefusal("account_required")!;
+    throw error;
+   }
+  },
+  drop: (hostID, jws) => source.drop(hostID, jws),
  };
 }

@@ -15,7 +15,8 @@ import { resolveInvite, shareLabel, type SealedInviteFetch } from "../webguest/i
 import type { StaticKey } from "../webguest/noise";
 import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
 import { fromB64url } from "../webguest/b64url";
-import { ownerLink, type StatementSource } from "../webguest/owner";
+import { ownerLink } from "../webguest/owner";
+import type { StatementSource } from "../webguest/accountStatement";
 import type { EnvelopeMachine } from "../webguest/approve";
 import { buildBoard, displayName, isArchived, liveGroup, pathBase, senderFace, type AgentInfo } from "./board";
 import { checkTag, ErrUnsupported, GuestClient, ResultTagError, untagged } from "./engine";
@@ -28,6 +29,7 @@ import { currentOwnerLink, linkClosing, onBoard, OwnerRefusedError, SESSION_CHAN
 import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { findTerminal } from "./terminalsDesk";
 import { StartedAgents } from "./startedAgents";
+import { boundShareStatements } from "./statements";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, PEER_NOT_SHARED, setSharedAgents, setView, type GuestView } from "./view";
@@ -271,6 +273,9 @@ export interface DeskEnv {
  /** An owner's per-machine state on this browser; localStorage unless a test passes its own. */
  openFolders?: MachineLists;
  mutedPanes?: MachineLists;
+ /** This page's account statements (statements.ts statementCache, the owner links' cache): a
+  *  share bound to the account connects with them. None: a bound share is account_required. */
+ statements?: StatementSource;
 }
 
 interface Active {
@@ -313,6 +318,9 @@ interface MountedView extends GuestView {
   /** desk_topics.go settled: the newest read is the agent's word (a list with a known suggestions
    *  capability, or a refusal for good); until then the open Inbox asks again after retry's wait. */
   settled: boolean; retry: ReturnType<typeof setTimeout> | null; retries: number;
+  /** desk_topics.go asOf: when the agent last answered the list shown (a cached list's
+   *  as_of_unix_ms; 0 when unsaid). */
+  asOf: number;
  };
  active: Active;
  view: AgentView;
@@ -421,7 +429,8 @@ export function createGuestDesk(env: DeskEnv) {
     const u: TopicsUpdate = { ...t.last, token: v.token, loaded: true };
     delete u.changed;
     const requested = Date.now();
-    type Listed = { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"] };
+    // stale and as_of_unix_ms: a herdr serving the list from its cache (desk_topics.go TopicsFreshness).
+    type Listed = { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"]; stale?: boolean; as_of_unix_ms?: number };
     let list: Listed | null = null;
     try {
      list = untagged(await v.active.client.call("agent.topics.list", { target: v.paneID }, "agent_topics", "", within(v))) as Listed;
@@ -429,11 +438,16 @@ export function createGuestDesk(env: DeskEnv) {
      if (v.life.signal.aborted) return;
      const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
      t.settled = topicsNotOffered(code);
-     if (t.settled) { u.topics = []; u.offered = false; delete u.problem; u.suggestions = []; u.suggestionsServed = false; }
+     if (t.settled) { u.topics = []; u.offered = false; delete u.problem; delete u.stale; u.suggestions = []; u.suggestionsServed = false; t.asOf = 0; }
      else u.problem = topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
     }
+    const asOf = typeof list?.as_of_unix_ms === "number" ? list.as_of_unix_ms : 0;
+    // An answer older than the list shown (a cache behind the refresh that brought it): the newer stays.
+    if (list && asOf !== 0 && asOf < t.asOf) list = null;
     if (list) {
      u.topics = orderedTopics(list.topics ?? []); u.offered = true; delete u.problem;
+     if (list.stale === true) u.stale = true; else delete u.stale;
+     if (asOf !== 0) t.asOf = asOf;
      // desk_topics.go: Organise shows where the list carries suggestions on a host advertising them.
      u.suggestions = (list.suggestions ?? []).filter(x => x.suggestion_id !== ""); u.requestedMs = requested;
      // The capability is read apart from the list: a ping that fails keeps the last answer and
@@ -479,7 +493,7 @@ export function createGuestDesk(env: DeskEnv) {
   const life = new AbortController();
   const token = view.token;
   const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, shareDetails, life, sending: false, terminal: null,
-   topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0 } };
+   topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0, asOf: 0 } };
   l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
   mounted = v;
   setView(v);
@@ -614,7 +628,7 @@ export function createGuestDesk(env: DeskEnv) {
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
-   const transport = new GuestTransport(guestLink(grant), identity, { now, webSocket: env.webSocket });
+   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements)), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], conn: connection({ access: grant, transport }, print, "connecting", "", ""), listedAt: "" };
    active = l;
@@ -702,7 +716,8 @@ export function createGuestDesk(env: DeskEnv) {
     guest: true, guestGram: l.transport.features.gram, ...(l.access.ownerName !== "" ? { guestOwner: l.access.ownerName } : {}),
     // desk_interaction.go AskForm: a guest's gate advertises no capabilities; form_answerable decides.
     askForm: true,
-    topicSessions: (agent.topic_sessions ?? []).some(t => !!t.topic_id),
+    // desk_interaction.go topicSessions: the topics its session file holds, one without an id left out.
+    topicSessions: (agent.topic_sessions ?? []).filter(t => !!t.topic_id).map(t => ({ topicID: t.topic_id!, title: t.title ?? "", createdMs: t.created_unix_ms ?? 0 })),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
    mountView(l, view, shareDetails(agent, name, linkShareLabel(l)), ownerAvailability([agent], view.paneID));
@@ -721,7 +736,7 @@ export function createGuestDesk(env: DeskEnv) {
    if (l.transport.scope !== "terminal") throw new OwnerRefusedError("pane.stream");
    const saved = findTerminal(l.owner.hostID, target.paneID);
    const view: AgentView = { token, paneID: saved.paneID, name: saved.label, harness: "", heading: saved.label, group: "terminal", status: "Terminal",
-    guest: true, guestGram: false, askForm: false, topicSessions: false, plainTerminal: true };
+    guest: true, guestGram: false, askForm: false, topicSessions: [], plainTerminal: true };
    mountView(l, view, { agentName: saved.label, machineLabel: linkShareLabel(l) }, "");
    return view;
   },
@@ -809,22 +824,42 @@ export function createGuestDesk(env: DeskEnv) {
    return created.topic_id;
   },
 
+  /** desk_topics.go TopicsSend: a message to one topic from the page's composer, its files going
+   *  as the Inbox's do (panePromptAttachments: posted as Grams, named in the message); a refusal
+   *  keeps them for a retry. */
   async topicsSend(token: string, topicID: string, text: string): Promise<TopicSendReply> {
    const v = viewOf(token);
    text = text.trim();
-   if (text === "") throw new Error("prompt is empty");
-   if (messageTooLong(text)) return { mode: "", delivery: "refused", problem: TOPIC_TOO_LONG };
+   const send = async (message: string): Promise<TopicSendReply> => {
+    if (messageTooLong(message)) return { mode: "", delivery: "refused", problem: TOPIC_TOO_LONG };
+    try {
+     const sent = untagged(await v.active.client.call("agent.topics.send", { target: v.paneID, topic_id: topicID, message }, "agent_topic_sent", "", within(v))) as { mode: string };
+     return { mode: sent.mode, delivery: "sent" };
+    } catch (error) {
+     if (v.life.signal.aborted) throw error;
+     const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
+     const delivery = topicSendDelivery(code);
+     // The agent's words when it answered; a broken link only says it may have arrived (iOS).
+     const problem = code === "" ? "Couldn't confirm delivery. Check the topic before sending again." : topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
+     return { mode: "", delivery, problem };
+    } finally { readTopics(v); }
+   };
+   if (v.sending) throw new Error(ERR_SENDING);
+   v.sending = true;
    try {
-    const sent = untagged(await v.active.client.call("agent.topics.send", { target: v.paneID, topic_id: topicID, message: text }, "agent_topic_sent", "", within(v))) as { mode: string };
-    return { mode: sent.mode, delivery: "sent" };
-   } catch (error) {
-    if (v.life.signal.aborted) throw error;
-    const code = error instanceof HerdrAPIError ? error.code : error instanceof ErrUnsupported ? "unsupported" : "";
-    const delivery = topicSendDelivery(code);
-    // The agent's words when it answered; a broken link only says it may have arrived (iOS).
-    const problem = code === "" ? "Couldn't confirm delivery. Check the topic before sending again." : topicsProblem(code, error instanceof HerdrAPIError ? error.apiMessage : "");
-    return { mode: "", delivery, problem };
-   } finally { readTopics(v); }
+    let reply: TopicSendReply | null = null;
+    const withFiles = panePromptAttachments(token, text, async prompt => {
+     reply = await send(prompt);
+     if (reply.delivery === "refused") throw new Error(reply.problem ?? "The agent refused.");
+     return "";
+    });
+    if (withFiles === null) {
+     if (text === "") throw new Error("prompt is empty");
+     return await send(text);
+    }
+    try { await withFiles; } catch (error) { if ((reply as TopicSendReply | null)?.delivery !== "refused") throw error; }
+    return reply!;
+   } finally { v.sending = false; }
   },
 
   async topicsClose(token: string, topicID: string): Promise<void> {

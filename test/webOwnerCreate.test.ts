@@ -6,7 +6,7 @@ import { generateIdentity, MemoryIdentityStore } from "../src/webguest/identity"
 import { toB64url } from "../src/webguest/b64url";
 import { HerdrAPIError, NotSentError, notSent, relayRefused } from "../src/webguest/errors";
 import type { EnvelopeMachine } from "../src/webguest/approve";
-import type { StatementSource } from "../src/webguest/owner";
+import type { StatementSource } from "../src/webguest/accountStatement";
 import { createGuestDesk, promptReceipt, terminalWriteReceipt } from "../src/web/desk";
 import { events } from "../src/web/events";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";

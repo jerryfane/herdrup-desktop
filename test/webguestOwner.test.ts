@@ -3,7 +3,8 @@
 // with the statement's deadline, the refusal codes, and the in-band account.refresh.
 import { expect, test } from "bun:test";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
-import { ownerLink, type StatementSource } from "../src/webguest/owner";
+import { ownerLink } from "../src/webguest/owner";
+import type { StatementSource } from "../src/webguest/accountStatement";
 import { GuestTransport } from "../src/webguest/transport";
 import { GuestError } from "../src/webguest/errors";
 import { statementCache } from "../src/web/statements";

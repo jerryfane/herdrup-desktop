@@ -192,6 +192,9 @@ var Methods = []Method{
 	{Name: "guest.revoke", Params: typeOf[GuestRevokeParams](), Results: []Result{result[ResponseResultGuestRevoked]("guest_revoked")}},
 	// schema.rs:101; guest_owner.rs:154.
 	{Name: "guest.update", Params: typeOf[GuestUpdateParams](), Results: []Result{result[ResponseResultGuestUpdated]("guest_updated")}},
+	// schema.rs:108; guest_owner.rs:171 (herdr 0e651ed). Owner only; a plain
+	// share answers guest_not_account_bound.
+	{Name: "guest.remove_device", Params: typeOf[GuestRemoveDeviceParams](), Results: []Result{result[ResponseResultGuestDeviceRemoved]("guest_device_removed")}},
 	// schema.rs:102; guest_owner.rs:164.
 	{Name: "guest.audit", Params: typeOf[GuestAuditParams](), Results: []Result{result[ResponseResultGuestAudit]("guest_audit")}},
 	{Name: "pane.send_text", Params: typeOf[PaneSendTextParams](), Results: []Result{result[ResponseResultOk]("ok")}},

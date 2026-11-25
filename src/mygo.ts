@@ -244,11 +244,12 @@ export interface AgentView {
    */
   askForm: boolean;
   /**
-   * TopicSessions: the agent's session file already holds topics
-   * (topic_sessions), so the page offers Topics before or without a list
-   * answer (herdrup #745 topicsAvailable).
+   * TopicSessions: the topics the agent's session file already holds
+   * (topic_sessions, read from disk): the page offers Topics before or
+   * without a list answer (herdrup #745 topicsAvailable), and lists them
+   * until the agent's first list answers.
    */
-  topicSessions: boolean;
+  topicSessions: TopicSession[];
 }
 
 /** AppUpdateState is what Settings shows about updating Herdrup itself. */
@@ -1271,6 +1272,16 @@ export interface TopicSendReply {
 }
 
 /**
+ * TopicSession is one topic as the agent's session file records it: its id,
+ * its newest title and when it started (0 when the file doesn't say).
+ */
+export interface TopicSession {
+  topicID: string;
+  title: string;
+  createdMs: number;
+}
+
+/**
  * TopicsSwitched is how the owner's Topics switch ended: Changed is false
  * when the agent already ran that way, and then nothing was restarted.
  */
@@ -1282,10 +1293,12 @@ export interface TopicsSwitched {
 /**
  * TopicsUpdate is the page's Topics state for one view: the list, ordered
  * as the Topics view lists it, or why the newest read failed (the last list
- * stays on screen: topics_unreachable keeps it). Offered says the agent
- * answered agent.topics.list this session, so the page offers Topics;
- * Changed names a topic whose conversation changed (an owner's event), so
- * an open topic chat reads its tail.
+ * stays on screen: every failure but topics_unsupported keeps it). Offered
+ * says the agent answered agent.topics.list this session, so the page
+ * offers Topics; Changed names a topic whose conversation changed (an
+ * owner's event), so an open topic chat reads its tail. Stale says the
+ * list is a herdr's cached answer whose last refresh from the agent failed:
+ * an empty one is not the agent's word that it has no topics.
  *
  * Suggestions are the agent's open topic suggestions, oldest first (herdr
  * #490): Organise's proposals and the ones it made in the Inbox.
@@ -1300,6 +1313,7 @@ export interface TopicsUpdate {
   topics: AgentTopicInfo[];
   offered: boolean;
   loaded: boolean;
+  stale?: boolean;
   problem?: string;
   changed?: string;
   suggestions: AgentTopicSuggestionInfo[];
@@ -2076,6 +2090,16 @@ export const Desk = {
     return call("Desk.RecheckSettingsServerUpdate", token, lookAgain);
   },
   /**
+   * RemoveGuestDevice drops one device (its fingerprint, deviceID) from the
+   * account-bound share guestID on machine (guest.remove_device); the person's
+   * other devices keep it. A share herdr no longer has active (guest_not_found:
+   * revoked meanwhile, from another device or page) is gone for that device
+   * too, so it is done.
+   */
+  removeGuestDevice(token: string, machine: string, guestID: string, deviceID: string): Promise<void> {
+    return call("Desk.RemoveGuestDevice", token, machine, guestID, deviceID);
+  },
+  /**
    * RemoveMachine forgets a saved machine. Removing the active machine
    * disconnects it and leaves no machine active.
    */
@@ -2116,6 +2140,16 @@ export const Desk = {
   },
   revokeGuestAccess(token: string, machine: string, id: string, invite: boolean): Promise<void> {
     return call("Desk.RevokeGuestAccess", token, machine, id, invite);
+  },
+  /**
+   * RevokeGuestPerson revokes every share of one person on machine at once
+   * (guest.revoke {person}): a person from guest.list, the HerdrUp account
+   * behind an account-bound share, else a plain share's device fingerprint.
+   * Settings groups shares per person per machine only, so person never
+   * reaches another machine's shares.
+   */
+  revokeGuestPerson(token: string, machine: string, person: string): Promise<void> {
+    return call("Desk.RevokeGuestPerson", token, machine, person);
   },
   /**
    * SaveMachine updates the saved profile without opening a connection. A running
@@ -2414,7 +2448,12 @@ export const Desk = {
   topicsReopen(token: string, topicID: string): Promise<void> {
     return call("Desk.TopicsReopen", token, topicID);
   },
-  /** TopicsSend sends a message to one topic (agent.topics.send). */
+  /**
+   * TopicsSend sends a message to one topic (agent.topics.send), from the
+   * page's composer: with its files, they go as the Inbox's do (sendAttached:
+   * posted as Grams, named in the message), the topic running in the same omp.
+   * A refusal keeps the files for a retry.
+   */
   topicsSend(token: string, topicID: string, text: string): Promise<TopicSendReply> {
     return call("Desk.TopicsSend", token, topicID, text);
   },

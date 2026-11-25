@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -44,9 +46,10 @@ func TestTopicsAreOrderedAsTheTopicsViewListsThem(t *testing.T) {
 	}
 }
 
-// A server without agent_topics, a topics_unsupported or agent_not_found
-// answer: the page stops offering Topics. Anything else keeps the list and
-// shows why the read failed.
+// A server without agent_topics or a topics_unsupported answer: the page
+// stops offering Topics. Anything else keeps the list and shows why the read
+// failed: agent_not_found too, which herdr answers while it briefly can't
+// resolve the agent (Topics vanished while the agent was busy).
 func TestTopicsRefusalsSayWhetherTheAgentStillHasTopics(t *testing.T) {
 	for _, c := range []struct {
 		err        error
@@ -55,7 +58,7 @@ func TestTopicsRefusalsSayWhetherTheAgentStillHasTopics(t *testing.T) {
 	}{
 		{&engine.ErrUnsupported{Method: "agent.topics.list", Capability: herdrapi.CapabilityAgentTopics}, true, "Couldn't reach the agent."},
 		{&bridge.APIError{Code: "topics_unsupported"}, true, "This agent has no topics."},
-		{&bridge.APIError{Code: "agent_not_found"}, true, "This agent is gone."},
+		{&bridge.APIError{Code: "agent_not_found"}, false, "This agent is gone."},
 		{&bridge.APIError{Code: "topics_unreachable"}, false, "Agent not reachable"},
 		{&bridge.APIError{Code: "topic_rejected", Message: "busy"}, false, "The agent refused: busy"},
 		{errors.New("eof"), false, "Couldn't reach the agent."},
@@ -268,5 +271,202 @@ func TestTopicSendDeliveryFollowsHerdrsCode(t *testing.T) {
 		if got := topicSendDelivery(c.err); got != c.want {
 			t.Errorf("%v: %s, want %s", c.err, got, c.want)
 		}
+	}
+}
+
+// topicsListDesk opens w1:p1 (an omp agent) on a fake herdr with agent_topics
+// whose agent.topics.list answers come from list, one a call, and records
+// what the page is sent.
+func topicsListDesk(t *testing.T, list func() (any, *fakeherdr.APIError)) (d *Desk, updates func() []TopicsUpdate) {
+	t.Helper()
+	var mu sync.Mutex
+	var recorded []TopicsUpdate
+	d, _ = federatedDesk(t, func(s *fakeherdr.Server) {
+		base := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			switch method {
+			case "agent.list":
+				return map[string]any{"type": "agent_list", "agents": []any{map[string]any{"pane_id": "w1:p1", "agent": "omp", "agent_status": "working",
+					"topic_sessions": []any{map[string]any{"topic_id": "t1", "title": "Q4 board pack", "path": "/s/t1.jsonl", "created_unix_ms": 1000}, map[string]any{"topic_id": "", "path": "/s/x.jsonl"}}}}}, nil
+			case "ping":
+				pong := fakeherdr.Pong(true)
+				pong["capabilities"].(map[string]bool)["agent_topics"] = true
+				return pong, nil
+			case "agent.topics.list":
+				return list()
+			}
+			return base(method, raw)
+		}
+	})
+	d.publishTopics = func(u TopicsUpdate) {
+		mu.Lock()
+		recorded = append(recorded, u)
+		mu.Unlock()
+	}
+	board := d.Board()
+	if _, err := d.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
+		t.Fatal(err)
+	}
+	return d, func() []TopicsUpdate {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(recorded)
+	}
+}
+
+// The owner's report (2026-11-25): Topics vanished while the agent was
+// busy. An agent_not_found answer keeps the list and says why; a herdr's
+// cached answer (stale, as_of_unix_ms) is shown as it says, and one older
+// than the list shown doesn't replace it.
+func TestTopicsListSurvivesAMissedAgentAndFollowsItsFreshness(t *testing.T) {
+	topic := func(id string) map[string]any {
+		return map[string]any{"topic_id": id, "title": id, "state": "idle", "created_unix_ms": 1, "last_activity_unix_ms": 1, "queued": 0, "turns": 1}
+	}
+	answers := []func() (any, *fakeherdr.APIError){
+		func() (any, *fakeherdr.APIError) {
+			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a")}, "as_of_unix_ms": 2000}, nil
+		},
+		func() (any, *fakeherdr.APIError) {
+			return nil, &fakeherdr.APIError{Code: "agent_not_found", Message: "no agent"}
+		},
+		func() (any, *fakeherdr.APIError) {
+			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a"), topic("b")}, "stale": true, "as_of_unix_ms": 3000}, nil
+		},
+		func() (any, *fakeherdr.APIError) {
+			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("c")}, "as_of_unix_ms": 2500}, nil
+		},
+	}
+	var mu sync.Mutex
+	next := 0
+	d, updates := topicsListDesk(t, func() (any, *fakeherdr.APIError) {
+		mu.Lock()
+		defer mu.Unlock()
+		answer := answers[min(next, len(answers)-1)]
+		next++
+		return answer()
+	})
+	ids := func(u TopicsUpdate) []string {
+		out := []string{}
+		for _, topic := range u.Topics {
+			out = append(out, topic.TopicID)
+		}
+		return out
+	}
+	read := func(n int) TopicsUpdate {
+		t.Helper()
+		if err := d.TopicsRefresh(context.Background(), "view"); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "a list answer", func() bool { return len(updates()) >= n })
+		return updates()[n-1]
+	}
+	if u := read(1); !u.Offered || u.Stale || !slices.Equal(ids(u), []string{"a"}) {
+		t.Fatalf("first list %+v", u)
+	}
+	if u := read(2); !u.Offered || u.Problem != "This agent is gone." || !slices.Equal(ids(u), []string{"a"}) {
+		t.Fatalf("agent_not_found must keep the list and say why: %+v", u)
+	}
+	if u := read(3); !u.Offered || !u.Stale || u.Problem != "" || !slices.Equal(ids(u), []string{"a", "b"}) {
+		t.Fatalf("a stale cached list is shown as stale: %+v", u)
+	}
+	if u := read(4); !u.Stale || !slices.Equal(ids(u), []string{"a", "b"}) {
+		t.Fatalf("an answer older than the list shown must not replace it: %+v", u)
+	}
+}
+
+// The page lists the topics the agent's session file holds (topic_sessions)
+// until the agent's first list answers: the view carries them, one without
+// an id left out, never null.
+func TestAgentViewCarriesTheTopicSessions(t *testing.T) {
+	d, _ := topicsListDesk(t, func() (any, *fakeherdr.APIError) { return nil, &fakeherdr.APIError{Code: "topics_timeout"} })
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []TopicSession{{TopicID: "t1", Title: "Q4 board pack", CreatedMs: 1000}}; !slices.Equal(v.TopicSessions, want) {
+		t.Fatalf("topic sessions %+v, want %+v", v.TopicSessions, want)
+	}
+	if got := topicSessions(nil); got == nil || len(got) != 0 {
+		t.Fatalf("no sessions must be [] (the page reads a list), got %#v", got)
+	}
+}
+
+// The topic's composer is the Inbox's (owner, 2026-11-25): a file attached
+// there goes up as the Inbox's do (gram.upload_chunk, then gram.post to the
+// agent), and the topic's message (agent.topics.send) carries the Inbox's
+// composed reference to it. A refusal keeps the file for the retry, which
+// posts no second Gram.
+func TestTopicSendCarriesTheComposersFilesAsTheInboxDoes(t *testing.T) {
+	g := fakeherdr.NewGram("pane-files")
+	var mu sync.Mutex
+	var sent []map[string]string
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		inner := s.Handle
+		s.Duplex = g.Duplex
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if result, err, ok := g.Handle(method, raw); ok {
+				return result, err
+			}
+			switch method {
+			case "agent.list":
+				return map[string]any{"type": "agent_list", "agents": []any{map[string]any{"pane_id": "w1:p1", "name": "writer", "agent": "omp", "agent_status": "idle"}}}, nil
+			case "ping":
+				pong := fakeherdr.Pong(true)
+				pong["capabilities"].(map[string]bool)["agent_topics"] = true
+				return pong, nil
+			case "agent.topics.list":
+				return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{}}, nil
+			case "agent.topics.send":
+				var p map[string]string
+				if err := json.Unmarshal(raw, &p); err != nil {
+					return nil, &fakeherdr.APIError{Code: "invalid_params", Message: err.Error()}
+				}
+				mu.Lock()
+				sent = append(sent, p)
+				attempt := len(sent)
+				mu.Unlock()
+				if attempt == 1 {
+					return nil, &fakeherdr.APIError{Code: "topic_rejected", Message: "busy"}
+				}
+				return map[string]any{"type": "agent_topic_sent", "agent": "w1:p1", "pane_id": "w1:p1", "topic_id": p["topic_id"], "mode": "turn"}, nil
+			}
+			return inner(method, raw)
+		}
+	})
+	path := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(path, []byte("attachment bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b := d.Board()
+	view, err := d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: "w1:p1"}, "view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PaneAttachFiles("view", []string{path}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if reply, err := d.TopicsSend(ctx, "view", "t1", "read this"); err != nil || reply.Delivery != "refused" || reply.Problem != "The agent refused: busy" {
+		t.Fatalf("a refused topic send: %+v, %v", reply, err)
+	}
+	if reply, err := d.TopicsSend(ctx, "view", "t1", "read this"); err != nil || reply.Delivery != "sent" {
+		t.Fatalf("the retry: %+v, %v", reply, err)
+	}
+	messages := g.Messages()
+	if len(messages) != 1 || messages[0].To == nil || *messages[0].To != view.Name || messages[0].File == nil {
+		t.Fatalf("one Gram with the file to the agent, posted once: %+v", messages)
+	}
+	recorded := func() []map[string]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(sent)
+	}
+	want := "read this\n\n[File notes.txt attached via Herdr Gram message " + messages[0].ID + ". Download it with `herdr gram get-file " + messages[0].ID + " -o /tmp/herdr-file-" + messages[0].ID + ".txt`, then inspect /tmp/herdr-file-" + messages[0].ID + ".txt.]"
+	if got := recorded(); len(got) != 2 || got[0]["message"] != want || got[1]["message"] != want || got[1]["topic_id"] != "t1" || got[1]["target"] != "w1:p1" {
+		t.Fatalf("topic messages %q, want each %q", got, want)
+	}
+	// The file left with the send: the next message is text alone.
+	if reply, err := d.TopicsSend(ctx, "view", "t1", "thanks"); err != nil || reply.Delivery != "sent" || recorded()[2]["message"] != "thanks" {
+		t.Fatalf("after the files left: %+v, %v, %q", reply, err, recorded())
 	}
 }

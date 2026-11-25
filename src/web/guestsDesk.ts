@@ -57,6 +57,23 @@ export const guestsDesk = {
   await settingsCall(scope, "guest.revoke", invite ? { invite_id: id } : { guest_id: id }, "guest_revoked");
  },
 
+ /** RevokeGuestPerson: every share of one person on this machine (guest.revoke {person}). */
+ async revokeGuestPerson(token: string, machine: string, person: string): Promise<void> {
+  const scope = settingsScope(token);
+  thisMachineOnly(machine);
+  if (person === "") throw new Error("no person to remove");
+  await settingsCall(scope, "guest.revoke", { person }, "guest_revoked");
+ },
+
+ /** RemoveGuestDevice: one device (its fingerprint) off one account-bound share (guest.remove_device).
+  *  A share herdr no longer has active (guest_not_found) is gone for that device too: done. */
+ async removeGuestDevice(token: string, machine: string, guestID: string, deviceID: string): Promise<void> {
+  const scope = settingsScope(token);
+  thisMachineOnly(machine);
+  try { await settingsCall(scope, "guest.remove_device", { guest_id: guestID, fingerprint: deviceID }, "guest_device_removed"); }
+  catch (error) { if (!(error instanceof HerdrAPIError && error.code === "guest_not_found")) throw error; }
+ },
+
  /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine, whose guests
   *  see the machine by the label sealed in the browser's approval (the view's share details). A
   *  federated peer's agent is not this machine's to invite to (PEER_NOT_SHARED): nothing is sent.
