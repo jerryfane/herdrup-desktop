@@ -76,6 +76,21 @@ export function validLabel(value: string): boolean {
  return true;
 }
 
+/** herdr's bound on an invite's machine_label (guest.invite.create, src/guest/mod.rs
+ *  create_invite): 64 Unicode characters. */
+const SHARE_LABEL_MAX = 64;
+
+/** desk_guest_invite.go shareLabel: value as a label herdr takes for an invite and its guests can
+ *  decode (validLabel). herdr refuses control characters (Cc) and more than SHARE_LABEL_MAX
+ *  characters, the readers format characters (Cf) too: those are dropped, the rest trimmed and cut
+ *  after SHARE_LABEL_MAX code points (not UTF-16 units), then trimmed again. "" when nothing
+ *  printable is left. */
+export function shareLabel(value: string): string {
+ const kept = value.replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
+ const points = [...kept];
+ return points.length > SHARE_LABEL_MAX ? points.slice(0, SHARE_LABEL_MAX).join("").trim() : kept;
+}
+
 /** A relay URL as invite.go:105-113 admits it: https, or http on loopback only. */
 function relayURL(text: string): URL | null {
  let u: URL;

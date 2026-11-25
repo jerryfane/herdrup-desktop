@@ -178,6 +178,7 @@ func TestShareLabelIsALabelHerdrAndTheGuestsTake(t *testing.T) {
 		{"\ufeffbom\u0085next\tline\n", "bomnextline"},
 		{"\x00\a\u200b", ""},
 		{"   ", ""},
+		{strings.Repeat("😀", 70), strings.Repeat("😀", 64)},
 	} {
 		got := shareLabel(c.in)
 		if got != c.want {

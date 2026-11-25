@@ -1,7 +1,7 @@
 // Ports of internal/guest/invite_test.go and short_invite_test.go.
 import { afterEach, expect, test } from "bun:test";
 import { GuestError } from "../src/webguest/errors";
-import { APP_LINK_PREFIX, decode64, httpSealedInviteFetch, linkParts, MAX_SEALED_INVITE, openSealed, parseInvite, resolveInvite, SEALED_INVITE_DEADLINE_MS, sealedURL, socketURL, type SealedInviteFetch } from "../src/webguest/invite";
+import { APP_LINK_PREFIX, decode64, httpSealedInviteFetch, linkParts, MAX_SEALED_INVITE, openSealed, parseInvite, resolveInvite, SEALED_INVITE_DEADLINE_MS, sealedURL, shareLabel, socketURL, validLabel, type SealedInviteFetch } from "../src/webguest/invite";
 
 const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
 const now = 1800000000 * 1000;
@@ -12,6 +12,30 @@ const syncKind = (fn: () => unknown) => kindOf((async () => fn())());
 
 // A link that carries its payload must never reach the network.
 const offline: SealedInviteFetch = async () => { throw new Error("a link that carries its payload was fetched"); };
+
+// desk_guest_invite_test.go TestShareLabelIsALabelHerdrAndTheGuestsTake's vectors: every label is
+// one herdr takes for an invite (1 to 64 characters, none a control character) and the invite's
+// readers decode (validLabel), cut after 64 code points, not UTF-16 units.
+test("shareLabel gives a label herdr and the guests take, as the desktop's shareLabel does", () => {
+ for (const [input, want] of [
+  ["Studio Mac", "Studio Mac"],
+  ["  padded  ", "padded"],
+  ["x".repeat(64), "x".repeat(64)],
+  ["x".repeat(65), "x".repeat(64)],
+  ["x".repeat(63) + " tail", "x".repeat(63)],
+  ["日".repeat(80), "日".repeat(64)],
+  ["👩\u200d💻 desk", "👩💻 desk"],
+  ["\ufeffbom\u0085next\tline\n", "bomnextline"],
+  ["\x00\x07\u200b", ""],
+  ["   ", ""],
+  // Astral characters count once each: 128 UTF-16 units here.
+  ["😀".repeat(70), "😀".repeat(64)],
+ ] as const) {
+  const got = shareLabel(input);
+  expect([input, got]).toEqual([input, want]);
+  if (got !== "") expect([got, validLabel(got), [...got].length <= 64, /\p{Cc}/u.test(got), got.trim() === got]).toEqual([got, true, true, false, true]);
+ }
+});
 
 test("invitation origin, expiry and identity boundaries (invite_test.go:16-56)", async () => {
  const encoded = (size: number) => b64url(new Uint8Array(size).fill(7));

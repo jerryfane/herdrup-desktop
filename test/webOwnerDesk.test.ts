@@ -148,6 +148,38 @@ test("an invite names the link's own agent's machine by the approval's label; a 
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
+// An approval sealed before the desktop bounded its label may carry one herdr refuses (#521): the
+// share sheet and the invite name the machine by it as herdr takes it (shareLabel), else by the
+// machine's herdr host id. The host refuses a label as herdr's create_invite does.
+test("an approval's label herdr wouldn't take is cut to 64 code points, its control characters dropped, else the host id names the machine", async () => {
+ const invites: Record<string, unknown>[] = [];
+ const relay = host({
+  scope: () => "terminal",
+  other: (session, req) => {
+   const params = (req as Request & { params: Record<string, unknown> }).params;
+   if (req.method !== "guest.invite.create") { answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); return; }
+   invites.push(params);
+   const label = String(params.machine_label ?? "");
+   if (label.trim() === "" || [...label].length > 64 || /\p{Cc}/u.test(label)) { answer(session, req, { error: { code: "invalid_params", message: "machine_label must be 1 to 64 printable characters" } }); return; }
+   answer(session, req, { result: { type: "guest_invite_created", invite: { invite_id: `i${invites.length}` }, url: "https://herdrup.app/web/#x" } });
+  },
+ });
+ try {
+  for (const [sealed, want] of [["\u0007" + "😀".repeat(70), "😀".repeat(64)], ["\u0007\u200b", relay.hostID]] as const) {
+   const desk = await deskWithKey();
+   try {
+    const listed = boardOf(relay);
+    await desk.connectOwner({ ...machineOn(relay), label: sealed }, statements, "x", new AbortController().signal);
+    await listed;
+    await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "share");
+    expect((await desk.guestShareDetails("share")).machineLabel).toBe(want);
+    await guestsDesk.createGuestInvite("share", "ana", "Jerry", false);
+   } finally { desk.disconnectOwner(); }
+  }
+  expect(invites.map(p => p.machine_label)).toEqual(["😀".repeat(64), relay.hostID]);
+ } finally { relay.stop(); }
+});
+
 test("the machine probe counts the agents of a machine that admits this browser, and says when one no longer does", async () => {
  const key = staticKey(await generateIdentity());
  const online = host();

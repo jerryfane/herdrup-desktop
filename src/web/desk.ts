@@ -11,7 +11,7 @@ import type {
 } from "../mygo";
 import { GuestError, HerdrAPIError, NotSentError, notSent, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
-import { resolveInvite, type SealedInviteFetch } from "../webguest/invite";
+import { resolveInvite, shareLabel, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
 import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
 import { fromB64url } from "../webguest/b64url";
@@ -705,7 +705,7 @@ export function createGuestDesk(env: DeskEnv) {
     topicSessions: (agent.topic_sessions ?? []).some(t => !!t.topic_id),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
    };
-   mountView(l, view, shareDetails(agent, name, state().machine), ownerAvailability([agent], view.paneID));
+   mountView(l, view, shareDetails(agent, name, linkShareLabel(l)), ownerAvailability([agent], view.paneID));
    return view;
   },
 
@@ -722,7 +722,7 @@ export function createGuestDesk(env: DeskEnv) {
    const saved = findTerminal(l.owner.hostID, target.paneID);
    const view: AgentView = { token, paneID: saved.paneID, name: saved.label, harness: "", heading: saved.label, group: "terminal", status: "Terminal",
     guest: true, guestGram: false, askForm: false, topicSessions: false, plainTerminal: true };
-   mountView(l, view, { agentName: saved.label, machineLabel: state().machine }, "");
+   mountView(l, view, { agentName: saved.label, machineLabel: linkShareLabel(l) }, "");
    return view;
   },
 
@@ -1336,6 +1336,13 @@ function shareDetails(agent: AgentInfo, name: string, hostLabel: string): GuestS
  const machine = agent.machine_id ?? "";
  if (machine !== "" && (agent.pane_id ?? "").startsWith(machine + "/")) return null;
  return { agentName: name, machineLabel: hostLabel };
+}
+
+/** The link's machine as its guests see it (desk_web_access.go machineLabel): the label sealed in
+ *  the browser's approval as herdr takes it (shareLabel; an approval sealed before the desktop
+ *  bounded it may carry more than herdr's 64 characters), else the machine's herdr host id. */
+function linkShareLabel(l: Active): string {
+ return shareLabel(l.access.machineLabel) || (l.owner?.hostID ?? "");
 }
 
 
