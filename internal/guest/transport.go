@@ -347,40 +347,42 @@ func (t *Transport) park(s *session) {
 // (herdr src/guest/store.rs:1121-1128 refuses one without), and the session
 // it opens keeps it fresh once started (startRefresh). A hello refused for
 // its statement (statement_invalid, statement_expired) goes once more with
-// a fresh one, in the sign-in of the first: past a switch, nothing goes out
-// and the share is another account's (ErrAccountMismatch). Each connect
-// starts in the current sign-in; herdr checks it is the share's account.
+// a fresh one, in the sign-in of the first: past a change of sign-in,
+// nothing goes out (ErrSignInChanged). Each connect starts in the current
+// sign-in; herdr checks it is the share's account (account_mismatch).
 func (t *Transport) connect(ctx context.Context) (*session, error) {
-	var prior func() bool
+	var earlier func() bool
 	for attempt := 0; ; attempt++ {
-		connected, bound, err := t.connectOnce(ctx, prior)
+		connected, bound, err := t.connectOnce(ctx, earlier)
 		if err == nil {
 			return connected, nil
 		}
 		if attempt == 0 && bound != nil && freshStatementMayAdmit(err) {
 			t.statements.Drop(bound.host, bound.jws)
-			prior = bound.admitted
+			earlier = bound.admitted
 			continue
 		}
 		return nil, err
 	}
 }
 
-// connectOnce is one attempt of connect; prior is the live of the attempt
-// before it in this handshake, nil for the first. bound is the statement
-// the attempt's hello carried, nil for a plain share or none sent.
-func (t *Transport) connectOnce(ctx context.Context, prior func() bool) (*session, *boundStatement, error) {
+// connectOnce is one attempt of connect; earlier is the liveness of the
+// attempt before it in this handshake, nil for the first. bound is the
+// statement the attempt's hello carried, nil for a plain share or none
+// sent.
+func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*session, *boundStatement, error) {
 	var bound *boundStatement
 	stale := errHelloStale
 	if t.access.AccountBound {
 		if t.statements == nil {
 			return nil, nil, ErrAccountRequired
 		}
-		if prior != nil {
-			if !prior() {
-				return nil, nil, ErrAccountMismatch
+		if earlier != nil {
+			// The retry stays in the sign-in of the attempt before it.
+			if !earlier() {
+				return nil, nil, ErrSignInChanged
 			}
-			stale = ErrAccountMismatch
+			stale = ErrSignInChanged
 		}
 		host := t.access.Endpoint.accountHost()
 		st, err := t.statements.Statement(ctx, host, statementLead)
@@ -388,8 +390,8 @@ func (t *Transport) connectOnce(ctx context.Context, prior func() bool) (*sessio
 			return nil, nil, err
 		}
 		admitted := st.Live
-		if prior != nil {
-			admitted = func() bool { return prior() && st.Live() }
+		if earlier != nil {
+			admitted = func() bool { return earlier() && st.Live() }
 		}
 		bound = &boundStatement{statements: t.statements, host: host, exp: st.Exp, jws: st.JWS, admitted: admitted}
 	}

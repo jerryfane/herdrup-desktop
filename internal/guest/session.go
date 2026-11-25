@@ -152,8 +152,14 @@ var (
 // ErrAccountChanged is a redemption whose sign-in ended before its hello
 // went out: nothing was sent, since herdr would bind the invitation to
 // whichever account's statement it carried, for good. Only a redemption not
-// yet admitted says so; a saved share's says ErrAccountMismatch.
+// yet admitted says so.
 var ErrAccountChanged = errors.New("Your HerdrUp account changed; open the invite again")
+
+// ErrSignInChanged is a saved share's retry within one connect (after a
+// refused statement) whose first attempt's sign-in ended (a sign-out, a
+// sign-in again, another account): nothing was sent. herdr's own account
+// comparison is ErrAccountMismatch.
+var ErrSignInChanged = errors.New("Your HerdrUp sign-in changed. Try again.")
 
 // errHelloStale is a connect whose statement's sign-in ended before its
 // hello went out: nothing was sent.

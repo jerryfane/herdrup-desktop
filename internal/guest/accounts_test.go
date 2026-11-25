@@ -441,9 +441,11 @@ func TestABoundSessionsRefreshAfterASwitchSendsNothingAndStops(t *testing.T) {
 }
 
 // A returning hello refused for its statement goes once more with a fresh
-// one, in the same sign-in; past a switch, the retry sends nothing and the
-// share reads as another account's.
-func TestARetryAfterASwitchIsAnotherAccountsShare(t *testing.T) {
+// one, in the same sign-in. When the sign-in changes meanwhile (a failed
+// sign-out that brought the same account back), the retry sends nothing and
+// says the sign-in changed, not herdr's account_mismatch: both before it
+// asks for its statement, and at the send.
+func TestARetryAfterTheSignInChangedSendsNothing(t *testing.T) {
 	h := newAccountHost(t, true)
 	access := h.accept(t, h.statements)
 	host := h.relay.HostID()
@@ -456,16 +458,35 @@ func TestARetryAfterASwitchIsAnotherAccountsShare(t *testing.T) {
 	if hellos := h.relay.Hellos(); len(hellos) != 3 || hellos[1] != "acct.1."+host || hellos[2] != "acct.2."+host {
 		t.Fatalf("hellos %q; want the refused statement, then a fresh one", hellos)
 	}
+	changed := func(when string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrSignInChanged) || err.Error() != "Your HerdrUp sign-in changed. Try again." || errors.Is(err, ErrAccountMismatch) || errors.Is(err, ErrAccountChanged) {
+			t.Fatalf("a retry past a change of sign-in (%s): %v, want ErrSignInChanged", when, err)
+		}
+	}
+	// The sign-in changes before the retry asks for its statement.
 	h.mu.Lock()
 	h.refuseOnce = "statement_expired"
 	h.mu.Unlock()
-	h.statements.onDrop = func() { h.statements.switchTo("other") }
+	h.statements.onDrop = func() { h.statements.switchTo("acct") }
 	asked := h.statements.asked()
-	err := list(h.transport(t, access, h.statements))
-	if !errors.Is(err, ErrAccountMismatch) || errors.Is(err, ErrAccountChanged) {
-		t.Fatalf("a retry past a switch: %v, want ErrAccountMismatch", err)
-	}
+	changed("before its statement", list(h.transport(t, access, h.statements)))
 	if hellos := h.relay.Hellos(); len(hellos) != 4 || h.statements.asked() != asked+1 {
+		t.Fatalf("hellos %q, statements asked %d more; want the refused hello alone", hellos, h.statements.asked()-asked)
+	}
+	// The sign-in changes while the retry's statement is asked for: the
+	// stale statement is not sent.
+	h.mu.Lock()
+	h.refuseOnce = "statement_expired"
+	h.mu.Unlock()
+	h.statements.onDrop = func() {
+		h.statements.mu.Lock()
+		h.statements.onAsk = func() { h.statements.switchTo("acct") }
+		h.statements.mu.Unlock()
+	}
+	asked = h.statements.asked()
+	changed("at the send", list(h.transport(t, access, h.statements)))
+	if hellos := h.relay.Hellos(); len(hellos) != 5 || h.statements.asked() != asked+2 {
 		t.Fatalf("hellos %q, statements asked %d more; want the refused hello alone", hellos, h.statements.asked()-asked)
 	}
 }
