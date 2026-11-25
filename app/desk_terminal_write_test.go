@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -50,28 +51,38 @@ func (a answering) Call(_ context.Context, _ string, _, result any) error {
 
 // A plain terminal's write, by how it failed: herdr's refusals keep the
 // draft with "one line at a time" (or the pasted-block variant); a write
-// never sent keeps it with its own reason, one line or a block alike; a
-// timeout after the write is unconfirmed; ok is written.
+// the transport never sent keeps it with errTerminalNotSent, one line or a
+// block alike, and one the view's closing cancelled with that cancellation
+// alone (its page is gone); a timeout after the write is unconfirmed; ok
+// is written.
 func TestTerminalWriteOutcomeByError(t *testing.T) {
-	notSent := fmt.Errorf("pane.send_text: %w: %w", bridge.ErrNotSent, context.Canceled)
+	lost := fmt.Errorf("pane.send_text: %w: %w", bridge.ErrNotSent, errors.New("ssh: connection closed"))
+	cancelled := fmt.Errorf("pane.send_bracketed_text: %w: %w", bridge.ErrNotSent, context.Canceled)
 	for _, c := range []struct {
 		name     string
 		text     string
 		err      error
+		closed   bool   // the view closed: the request's context ended
 		kept     string // the error a kept draft shows; "" when not kept
 		delivery string
 	}{
-		{"invalid_request", twoLines, &bridge.APIError{Code: "invalid_request", Message: "bad request"}, string(errTerminalLineBreak), ""},
-		{"unknown_method", twoLines, &bridge.APIError{Code: "unknown_method", Message: "pane.send_bracketed_text"}, string(errTerminalLineBreak), ""},
-		{"bracketed paste off", twoLines, &bridge.APIError{Code: "bracketed_paste_unavailable", Message: "off"}, string(errTerminalPasteRefused), ""},
-		{"a block never sent", twoLines, notSent, notSent.Error(), ""},
-		{"a line never sent", "printf hello", notSent, notSent.Error(), ""},
-		{"a timeout after the write", twoLines, &bridge.APIError{Code: "timeout", Message: "no answer"}, "", "unconfirmed"},
-		{"ok", twoLines, nil, "", "written"},
+		{"invalid_request", twoLines, &bridge.APIError{Code: "invalid_request", Message: "bad request"}, false, string(errTerminalLineBreak), ""},
+		{"unknown_method", twoLines, &bridge.APIError{Code: "unknown_method", Message: "pane.send_bracketed_text"}, false, string(errTerminalLineBreak), ""},
+		{"bracketed paste off", twoLines, &bridge.APIError{Code: "bracketed_paste_unavailable", Message: "off"}, false, string(errTerminalPasteRefused), ""},
+		{"a block never sent", twoLines, lost, false, string(errTerminalNotSent), ""},
+		{"a line never sent", "printf hello", lost, false, string(errTerminalNotSent), ""},
+		{"a block the view's closing cancelled", twoLines, cancelled, true, context.Canceled.Error(), ""},
+		{"a timeout after the write", twoLines, &bridge.APIError{Code: "timeout", Message: "no answer"}, false, "", "unconfirmed"},
+		{"ok", twoLines, nil, false, "", "written"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := &interaction{AgentView: AgentView{PaneID: "w1:p1", PlainTerminal: true}, client: engine.New(answering{err: c.err})}
-			receipt, err := submitPanePrompt(context.Background(), v, c.text)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if c.closed {
+				cancel()
+			}
+			receipt, err := submitPanePrompt(ctx, v, c.text)
 			if c.kept != "" {
 				if receipt != "" || err == nil || err.Error() != c.kept {
 					t.Fatalf("%q %v; want the draft kept with %q", receipt, err, c.kept)

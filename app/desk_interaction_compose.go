@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -135,6 +136,7 @@ func (e unwritten) Error() string { return string(e) }
 const (
 	errTerminalLineBreak    unwritten = "Write one line at a time: a line break would run the text before it."
 	errTerminalPasteRefused unwritten = "This program can't take a pasted block. Write one line at a time."
+	errTerminalNotSent      unwritten = "Nothing was sent: the connection to this machine was lost. Your draft is kept."
 )
 
 // writeToTerminal writes a draft to a plain terminal without running it. One
@@ -152,7 +154,7 @@ func writeToTerminal(ctx context.Context, v *interaction, text string) error {
 // method (it refuses it with invalid_request or unknown_method, which the
 // engine may have read as *ErrUnsupported), or a program with bracketed
 // paste off. Other errors pass through, a write never sent
-// (bridge.ErrNotSent) with its own reason (writeKept).
+// (bridge.ErrNotSent) for writeKept.
 func bracketedWriteError(err error) error {
 	var unsupported *engine.ErrUnsupported
 	var api *bridge.APIError
@@ -166,15 +168,27 @@ func bracketedWriteError(err error) error {
 	return err
 }
 
-// writeKept reports whether a plain terminal's write failed with nothing
-// written, so the composer keeps the draft and shows err: a refusal before
-// anything reached the terminal (unwritten, *ErrUnsupported), or a write
-// never sent (bridge.ErrNotSent), one line or a block alike, with its own
-// reason.
-func writeKept(err error) bool {
+// writeKept is the error a plain terminal's write that failed with nothing
+// written fails the send with, so the composer keeps the draft and shows
+// it; nil when the write may have reached the terminal. A refusal before
+// anything reached it (unwritten, *ErrUnsupported) is itself. A write
+// never sent (bridge.ErrNotSent), one line or a block alike, is the
+// request's own cancellation when ctx ended on it (the view closed, so
+// the page that would show it is gone), and otherwise errTerminalNotSent,
+// the transport's or channel's error logged.
+func writeKept(ctx context.Context, err error) error {
 	var unsupported *engine.ErrUnsupported
 	var kept unwritten
-	return errors.As(err, &unsupported) || errors.As(err, &kept) || errors.Is(err, bridge.ErrNotSent)
+	switch {
+	case errors.As(err, &unsupported), errors.As(err, &kept):
+		return err
+	case !errors.Is(err, bridge.ErrNotSent):
+		return nil
+	case ctx.Err() != nil && errors.Is(err, context.Canceled):
+		return context.Canceled
+	}
+	log.Printf("terminal write: %v", err)
+	return errTerminalNotSent
 }
 
 // Delivery uncertainty consumes the draft, just as native PromptRejection does:
@@ -185,8 +199,8 @@ func submitPanePrompt(ctx context.Context, v *interaction, text string) (string,
 	if v.PlainTerminal {
 		err = writeToTerminal(ctx, v, text)
 		delivery, note = "written", "Written to terminal; press Enter to run it."
-		if writeKept(err) {
-			return "", err
+		if kept := writeKept(ctx, err); kept != nil {
+			return "", kept
 		}
 	} else {
 		result, promptErr := v.client.AgentPrompt(ctx, herdrapi.AgentPromptParams{Target: v.PaneID, Text: text, Wait: &promptWait})
