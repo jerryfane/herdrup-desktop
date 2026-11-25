@@ -102,9 +102,9 @@ test("For says the length in whole days and the day it ends; grants that end on 
 
 // ---- The rows, the code field and the sheet run in the shared fake document (fakeDom.ts) ----
 
-const G = globalThis as { document?: unknown; devicePixelRatio?: unknown; mygo?: unknown; window?: unknown };
-const saved = { document: G.document, devicePixelRatio: G.devicePixelRatio, mygo: G.mygo, window: G.window };
-afterEach(() => { G.document = saved.document; G.devicePixelRatio = saved.devicePixelRatio; G.mygo = saved.mygo; G.window = saved.window; });
+const G = globalThis as { document?: unknown; devicePixelRatio?: unknown; mygo?: unknown; window?: unknown; ResizeObserver?: unknown };
+const saved = { document: G.document, devicePixelRatio: G.devicePixelRatio, mygo: G.mygo, window: G.window, ResizeObserver: G.ResizeObserver };
+afterEach(() => { G.document = saved.document; G.devicePixelRatio = saved.devicePixelRatio; G.mygo = saved.mygo; G.window = saved.window; G.ResizeObserver = saved.ResizeObserver; });
 
 /** A clock the test moves by hand: after() queues a call, to() moves the time and runs what's due. */
 function handClock(start: number) {
@@ -393,6 +393,8 @@ function askingWindow({ holdMachines = false, requests = [{ id: "r1", browserNam
  const asking = { requests };
  G.document = doc;
  G.devicePixelRatio = 1;
+ // The notices' region measures itself (notices.ts); nothing here lays it out.
+ G.ResizeObserver = class { observe() {} };
  G.mygo = {
   on: (name: string, l: (payload: unknown) => void) => { on.set(name, l); return () => on.delete(name); },
   call: async (method: string) => {
