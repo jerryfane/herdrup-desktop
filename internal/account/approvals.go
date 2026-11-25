@@ -132,11 +132,20 @@ func (c *Client) DenyBrowser(ctx context.Context, acct, id string) error {
 
 // Statements returns this device's account statements for hosts (≤ 50).
 func (c *Client) Statements(ctx context.Context, acct string, hosts []string) ([]Statement, error) {
+	statements, _, err := c.statements(ctx, Round{Account: acct}, hosts)
+	return statements, err
+}
+
+// statements is Statements for r, with the answer's exp (unix seconds, the
+// same for every statement: AccountService src/statements.ts).
+func (c *Client) statements(ctx context.Context, r Round, hosts []string) ([]Statement, int64, error) {
 	var out struct {
 		Statements []Statement `json:"statements"`
+		Exp        int64       `json:"exp"`
 	}
-	if err := c.authed(ctx, acct, http.MethodPost, "/v1/statements", map[string]any{"hosts": hosts}, &out); err != nil {
-		return nil, err
+	body := map[string]any{"hosts": hosts}
+	if err := c.authedEach(ctx, r, http.MethodPost, "/v1/statements", func() (any, error) { return body, nil }, nil, &out); err != nil {
+		return nil, 0, err
 	}
-	return out.Statements, nil
+	return out.Statements, out.Exp, nil
 }

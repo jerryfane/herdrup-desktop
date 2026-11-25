@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,6 +36,8 @@ type fakeService struct {
 	// extra, when set, answers paths the fake has no case for (devices);
 	// it returns false to fall through.
 	extra func(w http.ResponseWriter, r *http.Request, body map[string]string) bool
+	// raw is the body of the request being answered, for extra.
+	raw []byte
 }
 
 func newFake(t *testing.T) (*fakeService, *httptest.Server) {
@@ -67,8 +70,10 @@ func (f *fakeService) serve(w http.ResponseWriter, r *http.Request) {
 		reply(503, map[string]string{"error": "unavailable"})
 		return
 	}
+	raw, _ := io.ReadAll(r.Body)
+	f.raw = raw
 	var body map[string]string
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = json.Unmarshal(raw, &body)
 	if f.extra != nil && f.extra(w, r, body) {
 		return
 	}
