@@ -25,8 +25,11 @@ export type Keep = "account" | "device";
  *  this device" or "Add to my account". Signed out: "Keep it on all your devices" with the
  *  service's sign-in (Apple, Google), which accepts into the account once signed in, or "Only this
  *  device". With no sign-in offered, the plain Accept. redeem accepts, given the pressed button;
- *  report shows a failure; dispose stops waiting for a sign-in. */
-export async function acceptChoices(invite: Pick<GuestInvitation, "account">, redeem: (keep: Keep, pressed: HTMLButtonElement) => void, report: (failure: unknown) => void) {
+ *  report shows a failure; dispose stops waiting for a sign-in. hooks: the browser's sign-in
+ *  leaves the page, so it keeps the invite first (before: false keeps the page, as a failure the
+ *  caller reports) and lets it go again if the sign-in fails to start (failed). */
+export async function acceptChoices(invite: Pick<GuestInvitation, "account">, redeem: (keep: Keep, pressed: HTMLButtonElement) => void, report: (failure: unknown) => void,
+ hooks: { before?(): boolean; failed?(): void } = {}) {
  const root = node("div", "guest-choices");
  const buttons: HTMLButtonElement[] = [];
  let stop = () => {};
@@ -47,6 +50,7 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
  const waiting = node("p", "guest-note"); waiting.setAttribute("role", "status"); waiting.hidden = true;
  const pair = node("div", "guest-choice-pair");
  const signIn = providerButtons(providers, provider => {
+  if (hooks.before && !hooks.before()) return;
   for (const button of buttons) button.disabled = true;
   waiting.textContent = "Finish signing in in your browser."; waiting.hidden = false;
   stop();
@@ -61,6 +65,7 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
   Desk.accountSignIn(provider).catch((failure: unknown) => {
    stop(); waiting.hidden = true;
    for (const button of buttons) button.disabled = false;
+   hooks.failed?.();
    report(failure);
   });
  });
@@ -105,6 +110,15 @@ export function showGuestScan(saved: () => Promise<void>, opened: () => void) {
  sheet.addEventListener("close", () => { disposed = true; stop(); if (active === sheet) active = null; sheet.remove(); }, { once: true });
  document.body.append(sheet); sheet.showModal(); start();
 }
+
+/** A reviewed invitation's words (the sheet's, and the browser's bind choice, web/bindChoice.ts):
+ *  who shared which agent, what the guest gets, and how they appear. */
+export function inviteReview(invite: Omit<GuestInvitation, "account" | "expires">): HTMLElement[] {
+ const summary = details([["Machine", invite.machineLabel], ["Agent", invite.agentName], ["You appear as", invite.guestName]]);
+ return [node("h3", "guest-hero", `${invite.ownerName} shared ${invite.agentName} with you`), node("p", "", "You can use this agent, not the owner's other agents or machines."), summary,
+  node("p", "guest-note", `Every message you send reaches ${invite.agentName} starting with “${invite.guestName} (via HerdrUp):”. ${invite.ownerName} can see what you send and can remove access at any time.`),
+  node("p", "guest-note", `This device's key: ${invite.fingerprint}`)];
+}
 export function showGuestAccept(saved: () => Promise<void>, opened: () => void, initialText = "") {
  active?.close();
  const sheet = node("dialog", "settings-sheet guest-accept"); active = sheet;
@@ -125,10 +139,7 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
    const choices = await acceptChoices(invite, (keep, pressed) => { void redeem(keep, pressed); }, report);
    if (disposed || input.value !== reviewed) { choices.dispose(); return; }
    stopChoices(); stopChoices = choices.dispose;
-   const summary = details([["Machine", invite.machineLabel], ["Agent", invite.agentName], ["You appear as", invite.guestName]]);
-   content.replaceChildren(node("h3", "guest-hero", `${invite.ownerName} shared ${invite.agentName} with you`), node("p", "", "You can use this agent, not the owner's other agents or machines."), summary,
-    node("p", "guest-note", `Every message you send reaches ${invite.agentName} starting with “${invite.guestName} (via HerdrUp):”. ${invite.ownerName} can see what you send and can remove access at any time.`),
-    node("p", "guest-note", `This device's key: ${invite.fingerprint}`), choices.root);
+   content.replaceChildren(...inviteReview(invite), choices.root);
    async function redeem(keep: Keep, pressed: HTMLButtonElement) {
     if (busy || disposed) return; busy = true; cancel.disabled = true; error.textContent = "";
     const label = [...pressed.childNodes];

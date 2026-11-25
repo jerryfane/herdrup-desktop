@@ -13,6 +13,12 @@
 .web-welcome-account .account-panel { align-items: center; }
 .web-welcome-account .account-sign-out { align-self: center; }
 .web-welcome-card .account-note { font-size: 13px; color: var(--color-text-faint); }
+/* The landing's "Add to my account", signed out (bindChoice.ts): the shared invitation's review
+   and choices (guest.css), as the sheet draws them, on the card; it scrolls when taller. */
+.web-welcome:has(> .web-bind-choice) { overflow-y: auto; align-items: flex-start; }
+.web-bind-choice { align-items: stretch; width: 100%; margin: auto; box-sizing: border-box; }
+.web-bind-choice .guest-hero { margin: 0; font-size: 20px; }
+.web-welcome-card.web-bind-choice p.guest-note, .web-welcome-card.web-bind-choice p.guest-choice-label { font-size: 13px; }
 
 /* A phone (the invite's main use): one column, as the iPhone app's stack. The list fills the
    screen; an open agent covers it, with its own back button; Settings and Gram sit between the

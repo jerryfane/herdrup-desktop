@@ -39,6 +39,9 @@ const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...g
 startAccountLabels();
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
 export const signInReturned = account.signInReturned;
+/** How this load's sign-in ended, for the page that shows it itself (accountDesk.ts): the invite
+ *  that waited for it (start.ts takePendingBind). */
+export const signInEnded = account.signInEnded;
 /** What owner access (ownerApproval.ts) works with: this page's account session, its statements and
  *  the browser's key. */
 export const ownerAccess = { account: account.account, statements, identities: env.identities };

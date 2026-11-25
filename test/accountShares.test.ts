@@ -1,16 +1,21 @@
 // Account-linked guest shares (#700, owner pick A): the shared invitation's keep choices
 // (guestAccept.ts acceptChoices: plain, signed in, signed out), the notice after a share went into
 // the account (notices.ts), SHARED WITH YOU's rows (sharedWithYou.ts: grants and synced shares by
-// machine, openSyncedShare), the browser's start with the landing's bind=1 (web/start.ts) and Leave
-// share's words (guestHome.ts). The refusals come worded from Go (internal/guest/session.go). The
-// app's Desk calls go to a fake mygo bridge; test/fakeDom.ts stands in for the DOM.
+// machine, openSyncedShare), the browser's start with the landing's bind=1 and provider (web/start.ts:
+// a bind at once, a named sign-in with the invite kept in the tab, its resume) and the choice the
+// page asks with (web/bindChoice.ts), and Leave share's words (guestHome.ts). The refusals come
+// worded from Go (internal/guest/session.go). The app's Desk calls go to a fake mygo bridge;
+// test/fakeDom.ts stands in for the DOM.
 import { afterEach, expect, test } from "bun:test";
 import { acceptChoices, type Keep } from "../src/guestAccept";
 import { accountNote, sharedLine, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
 import { accountShareNotice, showAccountShareNotice } from "../src/notices";
 import { leaveWords } from "../src/guestHome";
 import { errorText } from "../src/errors";
-import { bindRequest, start } from "../src/web/start";
+import { bindRequest, PENDING_BIND_KEY, pendingBindWaits, start, takePendingBind, type Started } from "../src/web/start";
+import { showBindChoice, signInToBind, type BindPage } from "../src/web/bindChoice";
+import { createAccountDesk } from "../src/web/accountDesk";
+import { notInvite } from "../src/webguest/errors";
 import { Desk, type Access, type SyncedShare } from "../src/mygo";
 import { FakeDocument, type FakeElement } from "./fakeDom";
 
@@ -187,24 +192,169 @@ test("the account's shares are asked for only when signed in; a list that can't 
  expect(await syncedSharesNow(true)).toEqual([]);
 });
 
-test("the browser keeps a share in the account only for the landing's bind=1 while signed in", async () => {
- expect(bindRequest("PAYLOAD&bind=1")).toEqual({ payload: "PAYLOAD", bind: true });
- expect(bindRequest("PAYLOAD")).toEqual({ payload: "PAYLOAD", bind: false });
- const run = async (fragment: string, signedIn: boolean, bound: boolean) => {
-  const keeps: string[] = [], asked: boolean[] = [];
-  const desk = {
-   sharedConnections: async () => [],
-   acceptGuestInvitation: async (text: string, keep: string) => { keeps.push(`${text} ${keep}`); return grant("H", "G", "enyo", "jerry", "hetzner", bound && keep === "account"); },
-   connectGuest: async () => {},
-  };
-  const started = await start(desk, fragment, "https://guest.herdrup.app", () => null, async () => { asked.push(true); return signedIn; });
-  return { keeps, asked: asked.length, started };
+test("the landing's fragment: <payload>, then bind=1, then provider=apple|google; any other shape is refused", () => {
+ expect(bindRequest("PAYLOAD")).toEqual({ payload: "PAYLOAD", bind: false, provider: null });
+ expect(bindRequest("PAYLOAD&bind=1")).toEqual({ payload: "PAYLOAD", bind: true, provider: null });
+ expect(bindRequest("PAYLOAD&bind=1&provider=apple")).toEqual({ payload: "PAYLOAD", bind: true, provider: "apple" });
+ expect(bindRequest("PAYLOAD&bind=1&provider=google")).toEqual({ payload: "PAYLOAD", bind: true, provider: "google" });
+ expect(bindRequest("")).toEqual({ payload: "", bind: false, provider: null });
+ for (const refused of ["PAYLOAD&bind=1&provider=github", "PAYLOAD&bind=2", "PAYLOAD&bind=10", "PAYLOAD&keep=1", "PAYLOAD&provider=apple",
+  "PAYLOAD&bind=1&bind=1", "PAYLOAD&bind=1&provider=apple&provider=google", "PAYLOAD&bind=1&provider=apple&x=1", "PAYLOAD&provider=apple&bind=1",
+  "PAYLOAD&bind=1&provider=", "PAYLOAD&", "&bind=1"]) expect(bindRequest(refused)).toBeNull();
+});
+
+/** This tab's sessionStorage. */
+function tabStorage(entries: [string, string][] = []) {
+ const items = new Map(entries);
+ return { items, storage: { getItem: (k: string) => items.get(k) ?? null, setItem: (k: string, v: string) => { items.set(k, v); }, removeItem: (k: string) => { items.delete(k); } } };
+}
+const KEPT: [string, string] = [PENDING_BIND_KEY, JSON.stringify({ payload: "PAYLOAD", bind: true })];
+
+/** start() against a desk that records each accept's text and keep. */
+async function startWith(fragment: string, account: { signedIn: boolean; pending?: string | null; signIn?: { problem: string | null } | null }, bound = true, held: Access[] = []) {
+ const keeps: string[] = [], connects: string[] = [];
+ let asked = 0;
+ const desk = {
+  sharedConnections: async () => held,
+  acceptGuestInvitation: async (text: string, keep: string) => { keeps.push(`${text} ${keep}`); return grant("H", "G", "enyo", "jerry", "hetzner", bound && keep === "account"); },
+  connectGuest: async (id: string) => { connects.push(id); },
  };
- expect(await run("PAYLOAD&bind=1", true, true)).toEqual({ keeps: ["herdrup://guest-invite#PAYLOAD account"], asked: 1, started: { kind: "connected", id: "H/G", inAccount: "enyo" } });
- expect(await run("PAYLOAD&bind=1", false, true)).toEqual({ keeps: ["herdrup://guest-invite#PAYLOAD device"], asked: 1, started: { kind: "connected", id: "H/G" } });
- expect(await run("PAYLOAD", true, true)).toEqual({ keeps: ["herdrup://guest-invite#PAYLOAD device"], asked: 0, started: { kind: "connected", id: "H/G" } });
+ const started = await start(desk, fragment, "https://guest.herdrup.app", () => null, {
+  signedIn: async () => { asked++; return account.signedIn; }, pending: account.pending ?? null, signIn: account.signIn ?? null,
+ });
+ return { keeps, asked, started, connects };
+}
+
+test("only the payload reaches the invite decoder; a fragment of another shape is refused as a malformed invite", async () => {
+ expect((await startWith("PAYLOAD&bind=1&provider=apple", { signedIn: true })).keeps).toEqual(["herdrup://guest-invite#PAYLOAD account"]);
+ expect((await startWith("PAYLOAD", { signedIn: true })).keeps).toEqual(["herdrup://guest-invite#PAYLOAD device"]);
+ const refused = await startWith("PAYLOAD&bind=1&provider=github", { signedIn: false });
+ expect(refused).toEqual({ keeps: [], asked: 0, connects: [], started: { kind: "welcome", welcome: { owner: null, error: errorText(notInvite()) } } });
+ // With a share held here, the refused link opens it, as a failed redemption does.
+ const held = await startWith("PAYLOAD&bind=2", { signedIn: true }, true, [grant("H", "G0", "enyo", "jerry", "hetzner")]);
+ expect(held).toEqual({ keeps: [], asked: 0, connects: ["H/G0"], started: { kind: "connected", id: "H/G0" } });
+});
+
+test("signed in, bind=1 binds at once, whatever provider the landing named; a plain link stays on this browser", async () => {
+ const bound = { keeps: ["herdrup://guest-invite#PAYLOAD account"], asked: 1, connects: ["H/G"], started: { kind: "connected", id: "H/G", inAccount: "enyo" } };
+ expect(await startWith("PAYLOAD&bind=1", { signedIn: true })).toEqual(bound);
+ expect(await startWith("PAYLOAD&bind=1&provider=google", { signedIn: true })).toEqual(bound);
+ expect(await startWith("PAYLOAD", { signedIn: true })).toEqual({ keeps: ["herdrup://guest-invite#PAYLOAD device"], asked: 0, connects: ["H/G"], started: { kind: "connected", id: "H/G" } });
  // Asked for the account but not bound by the machine: no notice.
- expect((await run("PAYLOAD&bind=1", true, false)).started).toEqual({ kind: "connected", id: "H/G" });
+ expect((await startWith("PAYLOAD&bind=1", { signedIn: true }, false)).started).toEqual({ kind: "connected", id: "H/G" });
+});
+
+test("signed out, bind=1 never falls back to this browser: a named provider signs in, else the page asks", async () => {
+ expect(await startWith("PAYLOAD&bind=1&provider=apple", { signedIn: false })).toEqual({ keeps: [], asked: 1, connects: [], started: { kind: "signIn", payload: "PAYLOAD", provider: "apple" } });
+ expect(await startWith("PAYLOAD&bind=1", { signedIn: false })).toEqual({ keeps: [], asked: 1, connects: [], started: { kind: "bind", payload: "PAYLOAD", problem: "" } });
+});
+
+/** The page the bind choice draws on: what it showed, and how it ended. */
+function bindPage(tab = tabStorage()) {
+ const log: string[] = [], done: Started[] = [];
+ let card: FakeElement | null = null;
+ const page: BindPage = {
+  origin: "https://guest.herdrup.app", storage: () => tab.storage, owner: () => null,
+  show: c => { card = c as unknown as FakeElement; log.push("show"); }, opening: () => { log.push("opening"); }, done: s => { done.push(s); },
+ };
+ return { tab, page, log, done, card: () => card! };
+}
+const INVITE = { machineLabel: "hetzner", ownerName: "jerry", agentName: "enyo", guestName: "nike", expires: "2026-12-01T00:00:00Z", fingerprint: "AB:CD", account: false };
+
+test("a named provider keeps the invite in this tab and starts that sign-in with no screen", async () => {
+ const { calls } = bridge({ "Desk.AccountProviders": ["apple", "google"], "Desk.AccountSignIn": undefined });
+ const p = bindPage();
+ await signInToBind("PAYLOAD", "google", p.page);
+ expect(calls).toEqual([["Desk.AccountProviders"], ["Desk.AccountSignIn", "google"]]);
+ expect(p.log).toEqual([]);
+ expect([...p.tab.items]).toEqual([KEPT]);
+});
+
+test("a named sign-in that can't start lets the invite go and asks, with why", async () => {
+ const { calls } = bridge({ "Desk.AccountProviders": ["apple", "google"], "Desk.AccountSignIn": new Error("Sign-in isn't available right now."),
+  "Desk.InspectGuestInvitation": INVITE, "Desk.AccountState": { signedIn: false } });
+ const p = bindPage();
+ await signInToBind("PAYLOAD", "apple", p.page);
+ expect(p.tab.items.size).toBe(0);
+ expect(p.log).toEqual(["show"]);
+ expect(shown(p.card())).toContain("Sign-in isn't available right now.");
+ expect(calls).toContainEqual(["Desk.InspectGuestInvitation", "herdrup://guest-invite#PAYLOAD"]);
+});
+
+test("back from the sign-in with a session: the kept invite is taken (the key gone) and goes in the account", async () => {
+ const tab = tabStorage([KEPT]);
+ // Boot gives this load the guest page (boot.ts: a kept invite counts as the fragment).
+ expect(pendingBindWaits(() => tab.storage)).toBe(true);
+ const pending = takePendingBind(() => tab.storage);
+ expect(pendingBindWaits(() => tab.storage)).toBe(false);
+ expect(pending).toBe("PAYLOAD");
+ expect(tab.items.size).toBe(0);
+ expect(takePendingBind(() => tab.storage)).toBeNull();
+ expect(await startWith("", { signedIn: true, pending, signIn: { problem: null } })).toEqual({ keeps: ["herdrup://guest-invite#PAYLOAD account"], asked: 1, connects: ["H/G"], started: { kind: "connected", id: "H/G", inAccount: "enyo" } });
+ // Back from the provider without an answer: asked again, nothing accepted.
+ expect(await startWith("", { signedIn: false, pending, signIn: null })).toEqual({ keeps: [], asked: 0, connects: [], started: { kind: "bind", payload: "PAYLOAD", problem: "" } });
+ // A load with no invite kept: the plain start.
+ expect((await startWith("", { signedIn: true, pending: null, signIn: { problem: null } })).started).toEqual({ kind: "welcome", welcome: { owner: null } });
+});
+
+test("a sign-in that ended with an error: the key cleared, the choice again with the error in words", async () => {
+ const tab = tabStorage([KEPT]);
+ const pending = takePendingBind(() => tab.storage);
+ expect(tab.items.size).toBe(0);
+ const problem = "The sign-in took too long. Sign in again.";
+ const { started } = await startWith("", { signedIn: false, pending, signIn: { problem } });
+ expect(started).toEqual({ kind: "bind", payload: "PAYLOAD", problem });
+
+ bridge({ "Desk.InspectGuestInvitation": INVITE, "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple", "google"] });
+ const p = bindPage(tab);
+ await showBindChoice("PAYLOAD", problem, p.page);
+ expect(shown(p.card())).toContain("jerry shared enyo with you");
+ expect(shown(p.card())).toContain(problem);
+ expect(buttons(p.card()).map(b => b.text())).toEqual(["Continue with Apple", "Continue with Google", "Only this device"]);
+ expect(tab.items.size).toBe(0);
+});
+
+test("the web account says how the sign-in ended once: the page that shows it takes it", async () => {
+ const fail = (async () => new Response("{}", { status: 401 })) as unknown as typeof fetch;
+ const here = { key: async () => null, name: "", storage: () => ({ getItem: () => null, setItem() {}, removeItem() {}, key: () => null, length: 0 }), locks: null, background: false };
+ const replaced: string[] = [];
+ const page = (href: string) => ({ origin: "https://guest.herdrup.app", href, fetch: fail, navigate() {}, replaceURL: (url: string) => { replaced.push(url); } });
+ const failed = createAccountDesk(page("https://guest.herdrup.app/web/?account_error=flow_expired"), here);
+ expect(replaced).toEqual(["https://guest.herdrup.app/web/"]);
+ expect(failed.signInEnded()).toEqual({ problem: "The sign-in took too long. Sign in again." });
+ expect((await failed.desk.accountState()).problem).toBeUndefined();
+ expect(createAccountDesk(page("https://guest.herdrup.app/web/?account=1"), here).signInEnded()).toEqual({ problem: null });
+ expect(createAccountDesk(page("https://guest.herdrup.app/web/"), here).signInEnded()).toBeNull();
+});
+
+test("Only this device accepts on this browser and clears the kept invite; a provider keeps it and signs in", async () => {
+ const { calls } = bridge({ "Desk.InspectGuestInvitation": INVITE, "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple", "google"],
+  "Desk.AcceptGuestInvitation": grant("H", "G", "enyo", "jerry", "hetzner"), "Desk.ConnectGuest": undefined, "Desk.AccountSignIn": undefined });
+ const p = bindPage(tabStorage([KEPT]));
+ await showBindChoice("PAYLOAD", "", p.page);
+ named(p.card(), "Only this device").click();
+ await settle();
+ expect(p.tab.items.size).toBe(0);
+ expect(calls).toContainEqual(["Desk.AcceptGuestInvitation", "herdrup://guest-invite#PAYLOAD", "device"]);
+ expect(p.log).toEqual(["show", "opening"]);
+ expect(p.done).toEqual([{ kind: "connected", id: "H/G" }]);
+
+ const q = bindPage();
+ await showBindChoice("PAYLOAD", "", q.page);
+ named(q.card(), "Continue with Apple").click();
+ await settle();
+ expect([...q.tab.items]).toEqual([KEPT]);
+ expect(calls).toContainEqual(["Desk.AccountSignIn", "apple"]);
+});
+
+test("a choice's sign-in that fails to start lets the kept invite go and says why", async () => {
+ bridge({ "Desk.InspectGuestInvitation": INVITE, "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple"], "Desk.AccountSignIn": new Error("Sign-in isn't available right now.") });
+ const p = bindPage();
+ await showBindChoice("PAYLOAD", "", p.page);
+ named(p.card(), "Continue with Apple").click();
+ await settle();
+ expect(p.tab.items.size).toBe(0);
+ expect(shown(p.card())).toContain("Sign-in isn't available right now.");
 });
 
 test("leaving a share in the account says it leaves every device; a plain share, this device", () => {

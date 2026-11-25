@@ -39,19 +39,22 @@ function fakeDesk(kept: Access[], accept: (text: string) => Promise<Access>) {
  };
 }
 
+/** A start with no "Add to my account" in play. */
+const plain = { signedIn: async () => false, pending: null, signIn: null };
+
 test("first visit redeems and connects; a later visit resumes; nothing kept says whom to ask", async () => {
  const first = fakeDesk([], async () => access("G1"));
- expect(await start(first.desk, "PAYLOAD", "https://guest.herdrup.app", () => null)).toEqual({ kind: "connected", id: "HOST/G1" });
+ expect(await start(first.desk, "PAYLOAD", "https://guest.herdrup.app", () => null, plain)).toEqual({ kind: "connected", id: "HOST/G1" });
  expect(first.log).toEqual(["accept herdrup://guest-invite#PAYLOAD", "connect HOST/G1"]);
 
  const later = fakeDesk([access("G1")], async () => { throw new Error("unreachable"); });
- expect(await start(later.desk, "", "https://guest.herdrup.app", () => null)).toEqual({ kind: "connected", id: "HOST/G1" });
+ expect(await start(later.desk, "", "https://guest.herdrup.app", () => null, plain)).toEqual({ kind: "connected", id: "HOST/G1" });
  expect(later.log).toEqual(["connect HOST/G1"]);
 
  const none = fakeDesk([], async () => access("G1"));
- expect(await start(none.desk, "", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null } });
+ expect(await start(none.desk, "", "https://x", () => null, plain)).toEqual({ kind: "welcome", welcome: { owner: null } });
  expect(welcome({ owner: null }).title).toBe("Open the invite link the owner sent you");
- expect(await start(none.desk, "", "https://x", () => "Jerry")).toEqual({ kind: "welcome", welcome: { owner: "Jerry" } });
+ expect(await start(none.desk, "", "https://x", () => "Jerry", plain)).toEqual({ kind: "welcome", welcome: { owner: "Jerry" } });
  expect(welcome({ owner: "Jerry" }).title).toBe("Ask Jerry for a new invite");
  expect(none.log).toEqual([]);
 });
@@ -59,9 +62,9 @@ test("first visit redeems and connects; a later visit resumes; nothing kept says
 test("a link opened again resumes the kept grant; a failed first redemption says why", async () => {
  const used = new GuestError("other", "This invitation was already used. Ask the owner for a new one.");
  const again = fakeDesk([access("G1")], async () => { throw used; });
- expect(await start(again.desk, "PAYLOAD", "https://x", () => "Jerry")).toEqual({ kind: "connected", id: "HOST/G1" });
+ expect(await start(again.desk, "PAYLOAD", "https://x", () => "Jerry", plain)).toEqual({ kind: "connected", id: "HOST/G1" });
  const fresh = fakeDesk([], async () => { throw used; });
- expect(await start(fresh.desk, "PAYLOAD", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null, error: used.message } });
+ expect(await start(fresh.desk, "PAYLOAD", "https://x", () => null, plain)).toEqual({ kind: "welcome", welcome: { owner: null, error: used.message } });
 });
 
 test("availability reads the transport's errors as desk_guest.go guestAvailability does", () => {
