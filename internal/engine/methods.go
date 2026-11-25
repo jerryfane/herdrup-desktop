@@ -14,9 +14,18 @@ import (
 // the answer for capability checks. A failed ping leaves the cache as it
 // was.
 func (c *Client) Ping(ctx context.Context) (herdrapi.ResponseResultPong, error) {
-	pong, err := call[herdrapi.ResponseResultPong](ctx, c, "ping", herdrapi.PingParams{})
+	return c.pingWith(ctx, c.t.Call)
+}
+
+// pingWith is Ping sent with call.
+func (c *Client) pingWith(ctx context.Context, call CallFunc) (herdrapi.ResponseResultPong, error) {
+	v, _, err := c.callWith(ctx, call, "ping", herdrapi.PingParams{})
 	if err != nil {
-		return pong, err
+		return herdrapi.ResponseResultPong{}, err
+	}
+	pong, ok := v.(herdrapi.ResponseResultPong)
+	if !ok {
+		return pong, fmt.Errorf("ping: herdr answered %T", v)
 	}
 	c.mu.Lock()
 	c.probed, c.pong = true, pong

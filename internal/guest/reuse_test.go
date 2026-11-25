@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
+	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 )
 
@@ -501,5 +502,39 @@ func TestASessionIsNotReusedPastItsAgeLimit(t *testing.T) {
 	}
 	if !h.transport.Features().Gram {
 		t.Fatal("the owner's Gram sharing did not reach the guest after the age limit")
+	}
+}
+
+// #476: requests held to one session (OnOneChannel) go on it, the herdr
+// that answered the first answering the rest. A host without
+// multi_request spends a session on its first request, so the next one
+// goes on no other session: it fails ErrNotSent, and herdr never has it.
+func TestAGuestRequestHeldToOneSessionGoesOnNoOther(t *testing.T) {
+	for _, multi := range []bool{true, false} {
+		t.Run(fmt.Sprintf("multi_request=%v", multi), func(t *testing.T) {
+			h := newReuseHost(t, multi)
+			ctx := context.Background()
+			var promptErr error
+			err := h.transport.OnOneChannel(ctx, func(held engine.Held) error {
+				if err := held.Ping(ctx, nil); err != nil {
+					return err
+				}
+				promptErr = held.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "held"}, nil)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			connects := h.connects()
+			if multi {
+				if promptErr != nil || len(connects) != 1 || connects[0].Requests != 2 || len(prompts(h.relay)) != 1 {
+					t.Fatalf("prompt %v, connects %+v; want the ping and the prompt on one session", promptErr, connects)
+				}
+				return
+			}
+			if !errors.Is(promptErr, bridge.ErrNotSent) || len(connects) != 1 || len(prompts(h.relay)) != 0 {
+				t.Fatalf("prompt %v, connects %+v, prompts %v; want the prompt unsent once the session was spent", promptErr, connects, prompts(h.relay))
+			}
+		})
 	}
 }
