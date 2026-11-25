@@ -11,6 +11,16 @@ import "./settings.css";
 
 type GuestState = NonNullable<ConnState["guest"]>;
 
+/** Leave share's words. A share in the HerdrUp account (Access.accountBound, #700) leaves every
+ *  device signed in to it (forgetGuestConnection deletes the account's item); a plain one, this
+ *  device. */
+export function leaveWords(access: Pick<GuestState["access"], "machineLabel" | "agentName" | "ownerName" | "accountBound">): { title: string; message: string; note: string } {
+ const back = `To come back, ${access.ownerName} has to send a new invite.`;
+ return access.accountBound
+  ? { title: `Leave ${access.machineLabel} on all your devices?`, message: `${access.agentName} disappears from every device signed in to your HerdrUp account.`, note: `You stop seeing ${access.agentName} on all your devices. ${back}` }
+  : { title: `Leave ${access.machineLabel}?`, message: `${access.agentName} disappears from this device.`, note: `You stop seeing ${access.agentName}. ${back}` };
+}
+
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the roster row's
  * avatar with its status badge (faces.ts rowAvatar), the initial placement and the loading spinner. */
 export interface GuestHomeDeps {
@@ -192,10 +202,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const fingerprint = node("span", "", guest.fingerprint || "Unavailable"); fingerprint.dataset.testid = "guest-settings-fingerprint";
   device.append(node("span", "", "Device key"), fingerprint);
   const leave = node("button", "guest-leave button-destructive button-large", "Leave share"); leave.type = "button"; leave.dataset.testid = "guest-leave";
-  leave.onclick = () => confirmLeave(`Leave ${access.machineLabel}?`, `${access.agentName} disappears from this device.`, "Leave share", id);
+  const words = leaveWords(access);
+  leave.onclick = () => confirmLeave(words.title, words.message, "Leave share", id);
   return [node("h3", "guest-settings-section", "Shared with you"), shared, node("h3", "guest-settings-section", "This device"), device,
    node("p", "guest-settings-note", `${access.ownerName} sees the same key next to your name, so you can compare them.`), leave,
-   node("p", "guest-settings-note guest-leave-note", `You stop seeing ${access.agentName}. To come back, ${access.ownerName} has to send a new invite.`)];
+   node("p", "guest-settings-note guest-leave-note", words.note)];
  }
 
  /** The share's page for the app's own Settings (settings.ts, the desktop's guest mode). */

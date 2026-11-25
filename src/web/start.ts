@@ -9,7 +9,9 @@ import { APP_LINK_PREFIX, shortSegment } from "../webguest/invite";
 type StartDesk = Pick<typeof Desk, "sharedConnections" | "acceptGuestInvitation" | "connectGuest">;
 
 interface Welcome { title: string; body: string; error?: string }
-export type Started = { kind: "connected"; id: string } | { kind: "welcome"; welcome: WelcomeState };
+/** connected: the grant opened; inAccount, the agent's name when this start put it in the HerdrUp
+ *  account (Access.accountBound), for the notice that says so. */
+export type Started = { kind: "connected"; id: string; inAccount?: string } | { kind: "welcome"; welcome: WelcomeState };
 
 /** The fragment's payload, removed from the address bar before anything else runs; "" when none. */
 export function takeFragment(location: Pick<Location, "hash" | "pathname" | "search">, history: Pick<History, "replaceState" | "state">): string {
@@ -52,16 +54,26 @@ export function welcome(state: WelcomeState): Welcome {
  return { ...words, ...(error ? { error } : {}) };
 }
 
-/** Redeems the fragment's invitation for this browser alone ("device": the page asks nothing
- *  first), or resumes the kept grant. A failed redemption with a grant already kept resumes it
- *  (most often the same link opened again: "already used"). */
-export async function start(desk: StartDesk, payload: string, origin: string, owner: () => string | null): Promise<Started> {
+/** The invite landing's "Add to my account" (herdrup i.html): the payload it hands this page ends
+ *  in "&bind=1". Returns the payload without it, and whether it was there. */
+export function bindRequest(payload: string): { payload: string; bind: boolean } {
+ const BIND = "&bind=1";
+ return payload.endsWith(BIND) ? { payload: payload.slice(0, -BIND.length), bind: true } : { payload, bind: false };
+}
+
+/** Redeems the fragment's invitation, or resumes the kept grant. A failed redemption with a grant
+ *  already kept resumes it (most often the same link opened again: "already used"). The grant goes
+ *  in the HerdrUp account (keep "account") only when the landing asked for it (bindRequest) and
+ *  this browser is signed in (signedIn); otherwise it is this browser's only ("device"). */
+export async function start(desk: StartDesk, fragment: string, origin: string, owner: () => string | null, signedIn: () => Promise<boolean>): Promise<Started> {
  const kept = (await desk.sharedConnections())[0];
+ const { payload, bind } = bindRequest(fragment);
  if (payload !== "") {
   try {
-   const access = await desk.acceptGuestInvitation(inviteText(payload, origin), "device");
+   const keep = bind && await signedIn() ? "account" : "device";
+   const access = await desk.acceptGuestInvitation(inviteText(payload, origin), keep);
    await desk.connectGuest(shareID(access));
-   return { kind: "connected", id: shareID(access) };
+   return { kind: "connected", id: shareID(access), ...(keep === "account" && access.accountBound ? { inAccount: access.agentName } : {}) };
   } catch (error) {
    if (kept === undefined) return { kind: "welcome", welcome: { owner: owner(), error: error instanceof Error ? error.message : String(error) } };
   }

@@ -1,4 +1,8 @@
-import { Desk } from "./mygo";
+import { Desk, events } from "./mygo";
+import type { GuestInvitation } from "./mygo";
+import { errorText } from "./errors";
+import { providerButtons } from "./herdrupAccount";
+import { showAccountShareNotice } from "./notices";
 import "./guest.css";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
@@ -11,6 +15,60 @@ export function details(entries: [string, string][]) {
  return card;
 }
 let active: HTMLDialogElement | null = null;
+
+/** Where an accepted share is kept (acceptGuestInvitation's keep): the HerdrUp account, so every
+ *  device signed in to it has it, or this device only. */
+export type Keep = "account" | "device";
+
+/** The choices under a reviewed invitation (#700, owner pick A, frames opt-a-g1d/g2d). A plain
+ *  invite: Accept, as before. One that offers the account, signed in: "Signed in as …", then "Only
+ *  this device" or "Add to my account". Signed out: "Keep it on all your devices" with the
+ *  service's sign-in (Apple, Google), which accepts into the account once signed in, or "Only this
+ *  device". With no sign-in offered, the plain Accept. redeem accepts, given the pressed button;
+ *  report shows a failure; dispose stops waiting for a sign-in. */
+export async function acceptChoices(invite: Pick<GuestInvitation, "account">, redeem: (keep: Keep, pressed: HTMLButtonElement) => void, report: (failure: unknown) => void) {
+ const root = node("div", "guest-choices");
+ const buttons: HTMLButtonElement[] = [];
+ let stop = () => {};
+ const choice = (text: string, cls: string, keep: Keep) => { const button = action(text, () => redeem(keep, button)); button.className = cls; buttons.push(button); return button; };
+ const done = { root, buttons, dispose: () => stop() };
+ const plain = () => { root.append(choice("Accept", "", "device")); return done; };
+ if (!invite.account) return plain();
+ const state = await Desk.accountState().catch(() => null);
+ if (state?.signedIn) {
+  const pair = node("div", "guest-choice-pair");
+  pair.append(choice("Only this device", "button-secondary button-large", "device"), choice("Add to my account", "button-filled button-large", "account"));
+  if (state.displayHint) root.append(node("p", "guest-note guest-choice-account", `Signed in as ${state.displayHint}`));
+  root.append(pair);
+  return done;
+ }
+ const providers = await Desk.accountProviders().catch(() => [] as string[]);
+ if (providers.length === 0) return plain();
+ const waiting = node("p", "guest-note"); waiting.setAttribute("role", "status"); waiting.hidden = true;
+ const pair = node("div", "guest-choice-pair");
+ const signIn = providerButtons(providers, provider => {
+  for (const button of buttons) button.disabled = true;
+  waiting.textContent = "Finish signing in in your browser."; waiting.hidden = false;
+  stop();
+  const off = events.accountChanged.on(next => {
+   if (!next.signedIn) return;
+   stop(); waiting.hidden = true;
+   // providerButtons lists Apple, then Google, each when offered.
+   const pressed = signIn[(["apple", "google"] as const).filter(p => providers.includes(p)).indexOf(provider)];
+   if (pressed) redeem("account", pressed);
+  });
+  stop = () => { off(); stop = () => {}; };
+  Desk.accountSignIn(provider).catch((failure: unknown) => {
+   stop(); waiting.hidden = true;
+   for (const button of buttons) button.disabled = false;
+   report(failure);
+  });
+ });
+ buttons.push(...signIn);
+ pair.append(...signIn);
+ root.append(node("p", "guest-choice-label", "Keep it on all your devices"), pair, choice("Only this device", "button-secondary button-large guest-choice-wide", "device"), waiting);
+ return done;
+}
 
 export function showGuestScan(saved: () => Promise<void>, opened: () => void) {
  active?.close();
@@ -55,7 +113,8 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
  const content = node("div", "guest-content"); const error = node("p", "guest-error"); error.setAttribute("role", "alert");
  const input = node("textarea"); input.placeholder = "Paste the invitation link sent by the owner"; input.setAttribute("aria-label", "Invitation link"); input.value = initialText; input.autocomplete = "off"; input.spellcheck = false;
  let busy = false, disposed = false;
- const report = (failure: unknown) => { if (!disposed) error.textContent = String(failure); };
+ const report = (failure: unknown) => { if (!disposed) error.textContent = errorText(failure); };
+ let stopChoices = () => {};
  const inspect = async () => {
   if (busy || disposed) return; busy = true; error.textContent = ""; review.disabled = true;
   try {
@@ -63,21 +122,31 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
    const reviewed = input.value;
    const invite = await Desk.inspectGuestInvitation(reviewed);
    if (disposed || input.value !== reviewed) return;
-   const accept = action("Accept", () => { void redeem(); });
+   const choices = await acceptChoices(invite, (keep, pressed) => { void redeem(keep, pressed); }, report);
+   if (disposed || input.value !== reviewed) { choices.dispose(); return; }
+   stopChoices(); stopChoices = choices.dispose;
    const summary = details([["Machine", invite.machineLabel], ["Agent", invite.agentName], ["You appear as", invite.guestName]]);
    content.replaceChildren(node("h3", "guest-hero", `${invite.ownerName} shared ${invite.agentName} with you`), node("p", "", "You can use this agent, not the owner's other agents or machines."), summary,
     node("p", "guest-note", `Every message you send reaches ${invite.agentName} starting with “${invite.guestName} (via HerdrUp):”. ${invite.ownerName} can see what you send and can remove access at any time.`),
-    node("p", "guest-note", `This device's key: ${invite.fingerprint}`), accept);
-   async function redeem() {
-    if (busy || disposed) return; busy = true; cancel.disabled = true; accept.disabled = true; accept.textContent = "Accepting…"; error.textContent = "";
+    node("p", "guest-note", `This device's key: ${invite.fingerprint}`), choices.root);
+   async function redeem(keep: Keep, pressed: HTMLButtonElement) {
+    if (busy || disposed) return; busy = true; cancel.disabled = true; error.textContent = "";
+    const label = [...pressed.childNodes];
+    for (const button of choices.buttons) button.disabled = true;
+    pressed.textContent = "Accepting…";
     try {
-     const access = await Desk.acceptGuestInvitation(reviewed, "device");
+     const access = await Desk.acceptGuestInvitation(reviewed, keep);
      input.value = ""; await saved();
      if (disposed) return;
-     content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", `${access.agentName} is saved on this device.`), action("Open shared agent", () => {
+     const inAccount = keep === "account" && access.accountBound === true;
+     content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", inAccount ? `${access.agentName} is in your HerdrUp account.` : `${access.agentName} is saved on this device.`), action("Open shared agent", () => {
       void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(() => { sheet.close(); opened(); }).catch(report);
      }));
-    } catch (failure) { report(failure); accept.disabled = false; accept.textContent = "Accept"; }
+     if (inAccount) showAccountShareNotice(access.agentName);
+    } catch (failure) {
+     report(failure); pressed.replaceChildren(...label);
+     for (const button of choices.buttons) button.disabled = false;
+    }
     finally { busy = false; cancel.disabled = false; }
    }
   } catch (failure) { report(failure); }
@@ -86,7 +155,7 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
  const review = action("Review invitation", () => { void inspect(); });
  content.append(input, review); sheet.append(header, content, error);
  sheet.addEventListener("cancel", event => { if (busy) event.preventDefault(); });
- sheet.addEventListener("close", () => { disposed = true; input.value = ""; if (active === sheet) active = null; sheet.remove(); }, { once: true });
+ sheet.addEventListener("close", () => { disposed = true; stopChoices(); input.value = ""; if (active === sheet) active = null; sheet.remove(); }, { once: true });
  document.body.append(sheet); sheet.showModal(); input.focus();
  if (initialText) void inspect();
 }

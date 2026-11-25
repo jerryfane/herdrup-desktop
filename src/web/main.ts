@@ -20,6 +20,7 @@ import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
 import { plainWelcome, start, takeFragment, welcome, type WelcomeState } from "./start";
+import { showAccountShareNotice } from "../notices";
 import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAccount";
 import { pageExit, signInReturned } from "./mygo";
 import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst } from "./bootChoice";
@@ -227,7 +228,7 @@ async function init() {
  if (payload !== "") showOpening();
  let started;
  try {
-  started = await start(Desk, payload, location.origin, () => localOwnerHint.get());
+  started = await start(Desk, payload, location.origin, () => localOwnerHint.get(), () => Desk.accountState().then(s => s.signedIn, () => false));
  } catch (error) {
   started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
@@ -242,6 +243,7 @@ async function init() {
  const waits = started.kind === "welcome" && plainWelcome(started.welcome) && !boot.guestInstead;
  if (waits) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);
  showWelcome(started.kind === "welcome" ? started.welcome : null);
+ if (started.kind === "connected" && started.inAccount !== undefined) showAccountShareNotice(started.inAccount);
  // Back from the account service (?account=1 or ?account_error=) with a share: its Settings,
  // where the result shows. Either way the panel is asked once, so the result shows once.
  if (started.kind === "connected" && signInReturned) guestActions.settings();

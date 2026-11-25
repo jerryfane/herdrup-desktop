@@ -485,6 +485,11 @@ html, body {
 }
 .sidebar-minimized > .notices { left: var(--size-rail); right: 0; width: auto; bottom: var(--home-inset); }
 .sidebar-minimized > .detail { bottom: calc(var(--home-inset) + var(--foot-notice, 0px)); }
+/* A share put in the HerdrUp account (notices.ts showAccountShareNotice): one quiet line with OK,
+   as webAccess.css .web-access-notice. */
+.account-share-notice { display: flex; align-items: center; gap: 10px; box-sizing: border-box; padding: 8px 16px 8px 20px; border-top: 1px solid var(--color-hairline-quiet); color: var(--color-text-dim); font: 400 13px/1.4 var(--font-app); }
+.account-share-notice-text { flex: 1; min-width: 0; }
+.account-share-notice button { flex: none; }
 /* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
    iOS 26 Liquid Glass material has no CSS equivalent; this is its colour over the bare
    sidebar in every 9845ecf reference (#31354e: board, Gram and detail captures alike), and

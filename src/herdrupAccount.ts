@@ -29,8 +29,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: stri
 const APPLE_MARK = '<svg viewBox="0 0 17 20" width="15" height="18" aria-hidden="true"><path fill="currentColor" d="M14.06 10.62c-.02-2.2 1.8-3.26 1.88-3.31-1.03-1.5-2.62-1.7-3.18-1.73-1.35-.14-2.64.8-3.33.8-.69 0-1.74-.78-2.87-.76-1.47.02-2.83.86-3.59 2.17-1.54 2.66-.39 6.6 1.1 8.76.73 1.06 1.6 2.24 2.73 2.2 1.1-.04 1.51-.71 2.84-.71 1.32 0 1.7.71 2.86.69 1.18-.02 1.93-1.07 2.65-2.13.84-1.22 1.18-2.4 1.2-2.46-.03-.01-2.3-.88-2.32-3.5zM11.88 4.16c.6-.73 1-1.74.89-2.75-.86.04-1.9.57-2.52 1.3-.55.64-1.04 1.67-.91 2.66.96.07 1.94-.49 2.54-1.21z"/></svg>';
 const GOOGLE_MARK = '<svg viewBox="0 0 18 18" width="17" height="17" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>';
 
-/** "Continue with Apple" and "Continue with Google", for the providers the service offers. */
-function providerButtons(providers: readonly string[], pick: (provider: "apple" | "google") => void): HTMLButtonElement[] {
+/** "Continue with Apple" and "Continue with Google", for the providers the service offers (also the
+ *  shared invitation's "Keep it on all your devices", guestAccept.ts). */
+export function providerButtons(providers: readonly string[], pick: (provider: "apple" | "google") => void): HTMLButtonElement[] {
  const apple = el("button", "account-provider button-filled button-large"); apple.type = "button";
  apple.innerHTML = APPLE_MARK; apple.append(el("span", "", "Continue with Apple")); apple.onclick = () => pick("apple");
  const google = el("button", "account-provider button-secondary button-large"); google.type = "button";
