@@ -19,6 +19,7 @@ import type { Avatar, BoardUpdate, ConnState } from "../src/mygo";
 import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 import { ComposerDrafts, type DraftStore } from "../src/composerDraft";
 import { ErrUnsupported } from "../src/web/engine";
+import { guestsDesk } from "../src/web/guestsDesk";
 
 const statements: StatementSource = { get: async () => ({ jws: "jws", expMs: Date.now() + 600_000 }), drop() {} };
 const agents = [{ pane_id: "p1", terminal_id: "t1", name: "herdr-app", agent: "claude" }, { pane_id: "p2", terminal_id: "t2", name: "web-owner", agent: "codex" }, { pane_id: "p3", terminal_id: "t3", name: "relay", agent: "claude" }];
@@ -102,6 +103,38 @@ test("an owner link sends the owner hello and lists every agent on the machine, 
   expect(board.board.sections.flatMap(s => s.rows.map(r => r.name)).sort()).toEqual(["herdr-app", "relay", "web-owner"]);
   expect(hellos[0]).toEqual({ v: 1, mode: "owner", account: "jws", device: "Chrome on macOS" });
   expect((await desk.state()).guest?.access.machineLabel).toBe("dev2306");
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+// desk_guest_invite.go shareRoute in the browser: an invite to a federated peer's agent names the
+// machine as herdr labels that peer (else by its id); one to the link's own agent by the label
+// sealed in the browser's approval.
+test("an invite names a federated peer's agent's machine by herdr's label for it, else its id; the link's own agent by the approval's label", async () => {
+ const peer = "11111111111111111111111111111111", other = "22222222222222222222222222222222";
+ const labels: unknown[] = [];
+ const relay = host({
+  scope: () => "terminal",
+  agents: () => [
+   { pane_id: "p1", terminal_id: "t1", name: "local", agent: "claude" },
+   { pane_id: `${peer}/p2`, terminal_id: "t2", name: "remote", agent: "claude", machine_id: peer, machine_label: "render-box" },
+   { pane_id: `${other}/p3`, terminal_id: "t3", name: "unlabelled", agent: "claude", machine_id: other },
+  ],
+  other: (session, req) => {
+   if (req.method !== "guest.invite.create") { answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); return; }
+   labels.push((req as Request & { params: { machine_label?: string } }).params.machine_label);
+   answer(session, req, { result: { type: "guest_invite_created", invite: { invite_id: `i${labels.length}` }, url: "https://herdrup.app/web/#x" } });
+  },
+ });
+ const desk = await deskWithKey();
+ try {
+  const listed = boardOf(relay);
+  await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
+  await listed;
+  for (const pane of ["p1", `${peer}/p2`, `${other}/p3`]) {
+   await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: pane }, "share");
+   await guestsDesk.createGuestInvite("share", "ana", "Jerry", false);
+  }
+  expect(labels).toEqual(["dev2306", "render-box", other]);
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 

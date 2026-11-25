@@ -145,7 +145,7 @@ func (d *Desk) ConnectGuest(id string) error {
 	}
 	transport := guest.NewTransport(*access, identity, d.guestClock)
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: "guest:" + id, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
+	l := &link{id: "guest:" + id, shareLabel: access.MachineLabel, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()

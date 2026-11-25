@@ -57,14 +57,17 @@ export const guestsDesk = {
   await settingsCall(scope, "guest.revoke", invite ? { invite_id: id } : { guest_id: id }, "guest_revoked");
  },
 
- /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine. A lost answer
-  *  is not retried: herdr may already have made the invite. */
+ /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine. Its guests see
+  *  the machine as the view's share details name it (desk_guest_invite.go): a federated peer's
+  *  agent by herdr's machine_label for it (else the peer's id), the link's own agents by the label
+  *  sealed in the browser's approval (link.machine.label). A lost answer is not retried: herdr may
+  *  already have made the invite. */
  async createGuestInvite(token: string, name: string, ownerName: string, shareGram: boolean): Promise<string> {
   const view = agentView(token);
   const link = currentOwnerLink();
   if (link === null) throw new Error("not connected");
   const created = await ownerCall("guest.invite.create", {
-   target: view.paneID, machine_label: link.machine.label, name: name.trim(), owner_name: ownerName.trim(), ...(shareGram ? { share_gram: true } : {}),
+   target: view.paneID, machine_label: view.share.details.machineLabel, name: name.trim(), owner_name: ownerName.trim(), ...(shareGram ? { share_gram: true } : {}),
   }, "guest_invite_created", { signal: view.signal, link });
   return JSON.stringify(created);
  },

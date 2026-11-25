@@ -250,8 +250,13 @@ func (d *Desk) WebAccessMachines() ([]WebAccessMachine, error) {
 	return out, nil
 }
 
+// machineLabel is a saved machine's name as others see it (iOS
+// SavedHost.label): its nickname, else its host, never user@ or a port. It
+// names the machine in a browser's sealed approval (webEnvelopeMachine.Label)
+// and to the guests of its shares (link.shareLabel). A nickname that is only
+// the user@host pairing gives a machine (PairMachine) is no name of its own.
 func machineLabel(m Machine) string {
-	if n := strings.TrimSpace(m.Nickname); n != "" {
+	if n := strings.TrimSpace(m.Nickname); n != "" && n != m.User+"@"+m.Host {
 		return n
 	}
 	return m.Host

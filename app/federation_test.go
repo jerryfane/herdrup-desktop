@@ -30,6 +30,13 @@ const (
 // of a peer with no saved machine.
 func federatedDesk(t *testing.T, configure func(*fakeherdr.Server)) (*Desk, *fakeherdr.Server) {
 	t.Helper()
+	return federatedDeskAs(t, "", configure)
+}
+
+// federatedDeskAs is federatedDesk with the connected machine saved under
+// nickname (as user dev, on the fake's 127.0.0.1 port).
+func federatedDeskAs(t *testing.T, nickname string, configure func(*fakeherdr.Server)) (*Desk, *fakeherdr.Server) {
+	t.Helper()
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	hostKey, _ := ssh.NewSignerFromKey(priv)
 	_, clientPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -75,7 +82,7 @@ func federatedDesk(t *testing.T, configure func(*fakeherdr.Server)) (*Desk, *fak
 	port, _ := strconv.Atoi(portStr)
 	d := newDesk(t.TempDir())
 	t.Cleanup(d.Disconnect)
-	if err := d.Connect(Machine{Host: host, Port: port, User: "dev", KeyPath: keyPath}, ""); err != nil {
+	if err := d.Connect(Machine{Nickname: nickname, Host: host, Port: port, User: "dev", KeyPath: keyPath}, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "a board", func() bool { return d.Board() != nil })
