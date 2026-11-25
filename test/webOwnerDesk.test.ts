@@ -109,9 +109,12 @@ test("an owner link sends the owner hello and lists every agent on the machine, 
 
 // desk_guest_invite.go shareRoute in the browser: an invite to the link's own agent names the
 // machine by the label sealed in the browser's approval. A federated peer's agent can't be shared
-// from the browser (#522): the host here keeps herdr's owner gate (owner_gate.rs) — a `machine`
-// param is refused, and an invite without one runs on this machine, where only its own panes are —
-// and the browser sends it nothing.
+// from the browser (#522), and the browser sends it nothing. The host here answers as herdr's owner
+// gate (owner_gate.rs serve_request) does: an id or target naming a peer (`alias/…`) or a guest.*
+// call naming a saved machine is refused with owner_forbidden before anything resolves. Owner
+// agent lists are local-only there; the peer rows here are a list herdr wouldn't give, so the
+// browser's own refusal is what keeps them unshared. Every invite attempt is recorded, refused
+// or not.
 test("an invite names the link's own agent's machine by the approval's label; a federated peer's agent is not shared, and nothing is sent", async () => {
  const peer = "11111111111111111111111111111111", other = "22222222222222222222222222222222";
  const listed = [
@@ -125,9 +128,9 @@ test("an invite names the link's own agent's machine by the approval's label; a 
   agents: () => listed,
   other: (session, req) => {
    const params = (req as Request & { params: Record<string, unknown> }).params;
-   if (req.method !== "guest.invite.create" || params.machine !== undefined) { answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); return; }
-   invites.push(params);
-   if (!listed.some(a => a.pane_id === params.target && !("machine_id" in a))) { answer(session, req, { error: { code: "agent_not_found", message: `agent ${String(params.target)} not found` } }); return; }
+   if (req.method === "guest.invite.create") invites.push(params);
+   if (req.method !== "guest.invite.create" || String(params.target ?? "").includes("/") || params.machine !== undefined) { answer(session, req, { error: { code: "owner_forbidden", message: "not allowed for this owner" } }); return; }
+   if (!listed.some(a => a.pane_id === params.target)) { answer(session, req, { error: { code: "agent_not_found", message: `agent ${String(params.target)} not found` } }); return; }
    answer(session, req, { result: { type: "guest_invite_created", invite: { invite_id: `i${invites.length}` }, url: "https://herdrup.app/web/#x" } });
   },
  });
