@@ -57,7 +57,7 @@ type Calls = { method: string; args: unknown[] }[];
  *  at once); every write is recorded, then answered as answers says (default: done). Put back
  *  afterwards. */
 type Answer = (...args: unknown[]) => Promise<void>;
-async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
+async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?: string }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
   const names = ["settingsGuestMachine", "revokeGuestPerson", "removeGuestDevice", "revokeGuestAccess", "setGuestGramSharing"] as const;
   const saved = { document: Reflect.get(globalThis, "document"), localStorage: Reflect.get(globalThis, "localStorage"), innerWidth: Reflect.get(globalThis, "innerWidth"), innerHeight: Reflect.get(globalThis, "innerHeight"),
     addEventListener: Reflect.get(globalThis, "addEventListener"), removeEventListener: Reflect.get(globalThis, "removeEventListener"), desk: Object.fromEntries(names.map(n => [n, Desk[n]])) };
@@ -71,6 +71,8 @@ async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: 
     Object.assign(Desk, {
       settingsGuestMachine: async (token: string, machine: string) => {
         await answers.settingsGuestMachine?.(token, machine);
+        // A guest.list that failed comes as Go's SettingsGuestMachine says it: no listing, its error.
+        if (machine === "" && listing.error) return JSON.stringify({ error: listing.error, entries: null });
         return JSON.stringify(machine === "" ? { listing: { guests: listing.guests, invites: [] }, entries: listing.entries ?? [] } : { listing: { guests: [], invites: [] }, entries: [] });
       },
       revokeGuestPerson: record("revokeGuestPerson"), removeGuestDevice: record("removeGuestDevice"), revokeGuestAccess: record("revokeGuestAccess"), setGuestGramSharing: record("setGuestGramSharing"),
@@ -222,22 +224,103 @@ test("a device menu opened while the listing is out closes when it lands, and a 
   }, { settingsGuestMachine: (token, machine) => hold.answer(token, machine) });
 });
 
-// #529 post-merge P3: a removal asked for before a listing lands is confirmed after it: it goes to
-// the shares listed when confirmed.
-test("a device removal confirmed after a listing showed another share of the person removes it there too", async () => {
-  const listing = { guests: [...current.guests] }, hold = listingHold();
+// #535 review (#536 and its P3s): Remove names the shares the shown listing has the device on, and
+// Confirm reads them afresh: it removes only when they are still exactly those.
+/** Opens the MacBook's removal confirmation from Nike's page; the dialog. */
+function askRemoveMacBook(root: FakeElement, body: FakeElement): FakeElement {
+  click(root.having("settings-guest-open")[0]!);
+  click(root.button("Manage MacBook"));
+  click(body.having("account-device-menu")[0]!.button("Remove"));
+  return body.having("settings-guest-confirm")[0]!;
+}
+const withMac = (guests: Guest[], on: Record<string, boolean>) => guests.map(g => g.guest_id in on
+  ? { ...g, devices: g.devices!.map(d => d.fingerprint === "SHA256:mac" ? { ...d, removed: !on[g.guest_id] } : d) } : g);
+const removals = (calls: Calls) => calls.filter(c => c.method === "removeGuestDevice").map(c => c.args[2]);
+
+test("Remove names the device's shares, and Confirm with them unchanged removes it from all (not another person's on that device)", async () => {
+  // Another HerdrUp account signed in on the same MacBook has a share of its own: it isn't Nike's.
+  const other: Guest = { ...nike("ana-1", "enyo", 500_000), name: "Ana", person: "acct-ana", fingerprint: "SHA256:mac", device: "MacBook", devices: [] };
+  await withPage({ guests: [...current.guests, other] }, async ({ root, body, calls }) => {
+    const dialog = askRemoveMacBook(root, body);
+    expect(dialog.textContent).toContain("Nike can no longer open enyo, orgstudio on MacBook.");
+    click(dialog.button("Remove device"));
+    await settle();
+    expect(removals(calls)).toEqual(["nike-1", "nike-2"]);
+  });
+});
+
+test("Confirm when the shares' listing can't be read sends nothing and says so", async () => {
+  for (const fails of ["error", "throw"] as const) {
+    const listing: { guests: Guest[]; error?: string } = { guests: [...current.guests] };
+    let unreadable = false;
+    await withPage(listing, async ({ root, body, calls, reported }) => {
+      const dialog = askRemoveMacBook(root, body);
+      if (fails === "error") listing.error = "herdr: guest_store_unavailable: try again"; else unreadable = true;
+      click(dialog.button("Remove device"));
+      await settle();
+      expect([fails, removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message)])
+        .toEqual([fails, [], [], ["Couldn't check MacBook's access. Nothing was removed. Try again."]]);
+    }, { settingsGuestMachine: async () => { if (unreadable) throw new Error("Settings changed: open it again"); } });
+  }
+});
+
+test("Confirm when the device has since come to another share asks again with them all, and sends nothing until then", async () => {
+  const listing = { guests: withMac(current.guests, { "nike-2": false }) };
   await withPage(listing, async ({ root, body, calls }) => {
-    click(root.having("settings-guest-open")[0]!);
-    click(root.button("Manage MacBook"));
-    click(body.having("account-device-menu")[0]!.button("Remove"));
-    hold.arm(); switchGram(root);
+    const dialog = askRemoveMacBook(root, body);
+    expect(dialog.textContent).toContain("Nike can no longer open enyo on MacBook.");
+    listing.guests = [...current.guests]; // orgstudio's share now has the MacBook too
+    click(dialog.button("Remove device"));
+    await settle();
+    expect(removals(calls)).toEqual([]);
+    const again = body.having("settings-guest-confirm")[0]!;
+    expect(again.textContent).toContain("Nike's MacBook now has access to: enyo, orgstudio.");
+    click(again.button("Remove device"));
+    await settle();
+    expect(removals(calls)).toEqual(["nike-1", "nike-2"]);
+  });
+});
+
+test("Confirm when the device has since left one of the shares asks again with the rest, and sends nothing until then", async () => {
+  const listing = { guests: [...current.guests] };
+  await withPage(listing, async ({ root, body, calls }) => {
+    const dialog = askRemoveMacBook(root, body);
+    listing.guests = withMac(current.guests, { "nike-2": false });
+    click(dialog.button("Remove device"));
+    await settle();
+    expect(removals(calls)).toEqual([]);
+    const again = body.having("settings-guest-confirm")[0]!;
+    expect(again.textContent).toContain("Nike's MacBook now has access to: enyo.");
+    click(again.button("Remove device"));
+    await settle();
+    expect(removals(calls)).toEqual(["nike-1"]);
+  });
+});
+
+test("Confirm when the device has no share left says so, and sends nothing", async () => {
+  const listing = { guests: [...current.guests] };
+  await withPage(listing, async ({ root, body, calls, reported }) => {
+    const dialog = askRemoveMacBook(root, body);
+    listing.guests = withMac(current.guests, { "nike-1": false, "nike-2": false });
+    click(dialog.button("Remove device"));
+    await settle();
+    expect([removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message)])
+      .toEqual([[], [], ["Nike's MacBook no longer has access on hetzner. Nothing was removed."]]);
+  });
+});
+
+test("Confirm whose Settings scope ends while the shares are read again sends nothing, nor asks again there", async () => {
+  const hold = listingHold(), listing = { guests: [...current.guests] };
+  await withPage(listing, async ({ card, root, body, calls }) => {
+    const dialog = askRemoveMacBook(root, body);
+    hold.arm();
+    click(dialog.button("Remove device"));
     await hold.started;
-    listing.guests.push(nike("nike-3", "landing", 600_000));
+    card.setScope("tok2"); // Settings closed and opened again while Confirm reads the shares
+    listing.guests = withMac(current.guests, { "nike-2": false });
     hold.release();
     await settle();
-    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
-    await settle();
-    expect(calls.filter(c => c.method === "removeGuestDevice").map(c => c.args[2])).toEqual(["nike-1", "nike-2", "nike-3"]);
+    expect([removals(calls), body.having("settings-guest-confirm")]).toEqual([[], []]);
   }, { settingsGuestMachine: (token, machine) => hold.answer(token, machine) });
 });
 
