@@ -84,6 +84,28 @@ var errChannelClosed = errors.New("herdr api-bridge channel closed")
 // OnOneChannel fails it (a request held to one channel goes on no other).
 var ErrNotSent = errors.New("herdr api-bridge --multi channel unavailable")
 
+// Unsent is the error of a request that was never written, and the one way
+// a held or --multi call (bridge and guest) fails so: ErrNotSent, with
+// reason (why it was not written, such as a probe's or the transport's
+// failure) when there is one, and with ctx's end when ctx has ended, so
+// errors.Is finds context.Canceled or DeadlineExceeded whichever exit
+// gave up. Without either it is ErrNotSent alone: a herdr with no --multi
+// channel to give.
+func Unsent(ctx context.Context, reason error) error {
+	err := ErrNotSent
+	switch {
+	case reason == nil:
+	case errors.Is(reason, ErrNotSent):
+		err = reason
+	default:
+		err = fmt.Errorf("%w: %w", ErrNotSent, reason)
+	}
+	if cause := ctx.Err(); cause != nil && !errors.Is(err, cause) {
+		err = fmt.Errorf("%w: %w", err, cause)
+	}
+	return err
+}
+
 // Client is a view of one SSH connection to a machine running herdr,
 // addressing one herdr session. ForSession makes views of other sessions
 // that share the connection.
@@ -306,12 +328,10 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 	}
 	reply, err := c.viaMulti(ctx, method, id, line)
 	if errors.Is(err, ErrNotSent) {
-		if cause := ctx.Err(); cause != nil {
+		if ctx.Err() != nil {
 			// The context ended, so the request takes no other path: it
 			// fails unsent, keeping why (#492).
-			if !errors.Is(err, cause) {
-				err = fmt.Errorf("%w: %w", err, cause)
-			}
+			err = Unsent(ctx, err)
 		} else {
 			reply, err = c.oneShot(ctx, line)
 		}
