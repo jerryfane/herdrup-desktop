@@ -289,8 +289,9 @@ type link struct {
 	// shareLabel names the machine to the guests of its agents' shares
 	// (guest.invite.create's machine_label, shown on the invite page and
 	// under SHARED WITH YOU): the saved machine's nickname, else its host,
-	// never user@host:port (machineLabel, as iOS SavedHost.label). A guest's
-	// link has its access's label.
+	// never user@host:port (machineLabel, as iOS SavedHost.label), as saved
+	// now: SaveMachine renews it under d.mu. A guest's link has its access's
+	// label.
 	shareLabel string
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
@@ -546,6 +547,14 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
+	// The live link to this machine names it to its guests as saved now: a
+	// share view opened after a rename sends the new name (#523). A view
+	// already open keeps the name it opened with.
+	d.mu.Lock()
+	if d.link != nil && d.link.guest == nil && d.link.id == id {
+		d.link.shareLabel = machineLabel(m)
+	}
+	d.mu.Unlock()
 	if replacing != "" && replacing != id {
 		d.boards.forget(replacing)
 	}

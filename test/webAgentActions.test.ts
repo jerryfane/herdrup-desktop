@@ -712,6 +712,26 @@ test("a menu offers writes as its link is once its answers are in, and drops a w
  } finally { desk.disconnectOwner(); relay.stop(); }
 }, 30_000); // a renewal per step over a loopback relay
 
+// #522: the browser can't invite to a federated peer's agent (herdr's owner gate refuses the
+// `machine` that routes it): its ••• menu has no Share, as on a guest's page; the link's own
+// agent's has.
+test("a federated peer's agent's ••• menu offers no Share with someone; the link's own agent's does", async () => {
+ const peer = "11111111111111111111111111111111";
+ const relay = host("terminal", { agents: () => [listed[0], { pane_id: `${peer}/p9`, terminal_id: "t9", name: "remote", agent: "claude", machine_id: peer, machine_label: "render-box" }] });
+ const desk = await newDesk();
+ const p = page();
+ try {
+  await open(desk, relay, "terminal");
+  const shares: boolean[] = [];
+  for (const paneID of ["p1", `${peer}/p9`]) {
+   await desk.openAgentView({ ...p1(relay), paneID }, "view-1");
+   expect(await desk.paneMenu({ ...pane, paneID })).toBe(true);
+   shares.push(p.labels().includes("Share with someone"));
+  }
+  expect(shares).toEqual([true, false]);
+ } finally { desk.disconnectOwner(); relay.stop(); }
+}, 30_000);
+
 test("a Close acknowledged after its agent page was mounted again is not that page's", async () => {
  const hold: { ping: Promise<void> | null; close: Promise<void> | null } = { ping: null, close: null };
  const closing = { wait: Promise.withResolvers<void>() }, relisted = { wait: Promise.withResolvers<void>() };

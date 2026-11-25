@@ -361,7 +361,7 @@ test("guest changes go to this machine only: never a machine param, and another 
 test("an invite is for the open agent view's pane, on the link's machine", async () => {
  const created = { type: "guest_invite_created", invite: { invite_id: "i1" }, url: "https://herdrup.app/web/#x" };
  const host = ownerLink((method) => { if (method === "guest.invite.create") return created; });
- setView({ token: "view-1", paneID: "p7", signal: new AbortController().signal, share: { details: { agentName: "Worker", machineLabel: "dev2306" } } });
+ setView({ token: "view-1", paneID: "p7", signal: new AbortController().signal, shareDetails: { agentName: "Worker", machineLabel: "dev2306" } });
  expect(JSON.parse(await guestsDesk.createGuestInvite("view-1", " ana ", " Jerry ", true))).toEqual({ invite: { invite_id: "i1" }, url: "https://herdrup.app/web/#x" });
  expect(host.of("guest.invite.create")[0]!.params).toEqual({ target: "p7", machine_label: "dev2306", name: "ana", owner_name: "Jerry", share_gram: true });
  await expect(guestsDesk.createGuestInvite("view-2", "ana", "Jerry", false)).rejects.toThrow("agent view changed");

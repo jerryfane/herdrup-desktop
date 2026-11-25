@@ -42,7 +42,7 @@ export function showPairing(saved: () => Promise<void>, open: (machine: PairedMa
       });
       const status = el("p", "pairing-error"); status.hidden = true; status.setAttribute("role", "status");
       const command = el("code", "pairing-command", "herdr");
-      content.replaceChildren(el("h3", "", "Connected"), el("p", "", `${machine.nickname} is saved on this device. If herdr isn't running on that computer yet, start it there:`), command, button("Copy command", () => { void Desk.gramCopyText("herdr").catch(error => { if (!disposed) { status.textContent = errorText(error); status.hidden = false; } }); }), openButton, status);
+      content.replaceChildren(el("h3", "", "Connected"), el("p", "", `${machine.label} is saved on this device. If herdr isn't running on that computer yet, start it there:`), command, button("Copy command", () => { void Desk.gramCopyText("herdr").catch(error => { if (!disposed) { status.textContent = errorText(error); status.hidden = false; } }); }), openButton, status);
     } catch (error) { failure("Pairing didn't work", errorText(error)); }
   }
   async function found(text: string) {

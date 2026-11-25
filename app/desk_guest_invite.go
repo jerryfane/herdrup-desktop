@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
@@ -21,6 +23,10 @@ type guestShareRoute struct {
 	machine *string
 }
 
+// shareRoute routes an invite to agent and names its machine to the guests:
+// hostLabel (machineLabel, already a shareLabel) for this machine's agents, a
+// federated peer's by herdr's machine_label for it (as a shareLabel), else the
+// peer's id.
 func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string) guestShareRoute {
 	route := guestShareRoute{details: GuestShareDetails{AgentName: name, MachineLabel: hostLabel}, target: agent.PaneID}
 	if agent.MachineID != nil && *agent.MachineID != "" && strings.HasPrefix(agent.PaneID, *agent.MachineID+"/") {
@@ -28,11 +34,36 @@ func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string) guestShareRout
 		route.machine = agent.MachineID
 		route.details.AgentName = strings.TrimPrefix(name, *agent.MachineID+"/")
 		route.details.MachineLabel = *agent.MachineID
-		if agent.MachineLabel != nil && *agent.MachineLabel != "" {
-			route.details.MachineLabel = *agent.MachineLabel
+		if agent.MachineLabel != nil {
+			if label := shareLabel(*agent.MachineLabel); label != "" {
+				route.details.MachineLabel = label
+			}
 		}
 	}
 	return route
+}
+
+// shareLabelMax is herdr's bound on an invite's machine_label (guest.invite.create,
+// src/guest/mod.rs create_invite): 64 Unicode characters.
+const shareLabelMax = 64
+
+// shareLabel is s as a label herdr takes for an invite and its guests can
+// decode: herdr refuses control characters (Cc) and more than shareLabelMax
+// characters, and the invite's readers (internal/guest validLabel, the web's
+// invite.ts) refuse format characters (Cf) too. Those are dropped, the rest
+// trimmed and cut after shareLabelMax runes, then trimmed again. "" when
+// nothing printable is left.
+func shareLabel(s string) string {
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s))
+	if utf8.RuneCountInString(s) > shareLabelMax {
+		s = strings.TrimSpace(string([]rune(s)[:shareLabelMax]))
+	}
+	return s
 }
 
 func (d *Desk) GuestShareDetails(token string) (GuestShareDetails, error) {

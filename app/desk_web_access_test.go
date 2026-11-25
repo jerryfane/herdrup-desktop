@@ -272,6 +272,8 @@ func TestWebAccessSealsTheMachineByItsNicknameElseItsHost(t *testing.T) {
 		{"", "127.0.0.1"},
 		{" Studio Mac ", "Studio Mac"},
 		{"dev@127.0.0.1", "127.0.0.1"},
+		// Within herdr's 64 characters, as the invite the browser makes with it (#521).
+		{strings.Repeat("N", 65), strings.Repeat("N", 64)},
 	} {
 		d, w, machine := webAccessDesk(t, "https://guest.herdrup.app")
 		d.storeMu.Lock()

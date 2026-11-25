@@ -251,15 +251,19 @@ func (d *Desk) WebAccessMachines() ([]WebAccessMachine, error) {
 }
 
 // machineLabel is a saved machine's name as others see it (iOS
-// SavedHost.label): its nickname, else its host, never user@ or a port. It
-// names the machine in a browser's sealed approval (webEnvelopeMachine.Label)
-// and to the guests of its shares (link.shareLabel). A nickname that is only
-// the user@host pairing gives a machine (PairMachine) is no name of its own.
+// SavedHost.label): its nickname, else its host, never user@ or a port, as a
+// label herdr takes for an invite (shareLabel). It names the machine in a
+// browser's sealed approval (webEnvelopeMachine.Label) and to the guests of
+// its shares (link.shareLabel). Pairing once saved user@host as a machine's
+// nickname (PairMachine leaves it unset now): that exact text, for that
+// machine, is no name of its own.
 func machineLabel(m Machine) string {
-	if n := strings.TrimSpace(m.Nickname); n != "" && n != m.User+"@"+m.Host {
-		return n
+	if n := strings.TrimSpace(m.Nickname); n != m.User+"@"+m.Host {
+		if label := shareLabel(n); label != "" {
+			return label
+		}
 	}
-	return m.Host
+	return shareLabel(m.Host)
 }
 
 // WebAccessStart claims request id for this computer and waits (in the
