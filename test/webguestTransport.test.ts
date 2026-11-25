@@ -6,7 +6,7 @@ import { GuestError, HerdrAPIError, NotSentError } from "../src/webguest/errors"
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { Invite } from "../src/webguest/invite";
 import { MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT } from "../src/webguest/noise";
-import { acceptInvite, guestLink, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type RelayWebSocket, type WebSocketFactory } from "../src/webguest/transport";
+import { acceptInvite, guestLink, GuestTransport, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_REPLY_LINE_BYTES, relayBackoff, ROUND_TRIP_LIMIT_MS, type Access, type HeldSession, type RelayWebSocket, type WebSocketFactory } from "../src/webguest/transport";
 import { memoryRelay, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 import { GuestClient } from "../src/web/engine";
 import { transportLink } from "../src/web/link";
@@ -523,6 +523,36 @@ test("a call cancelled before it is sent leaves the idle session to the next cal
   await transport.call("ping");
   expect(received).toEqual(["ping", "ping"]);
   expect(relay.connects).toBe(1);
+ } finally { transport.close(); }
+});
+
+test("a held session's handle kept past its callback sends nothing: its request is NotSentError, and the session it left idle carries the next call alone", async () => {
+ const { relay, received } = answeringHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ try {
+  let kept: HeldSession | null = null;
+  await transport.callOn(async (session) => { kept = session; await session.call("ping"); });
+  const late = await kept!.call("ping").catch((error: unknown) => error);
+  expect(late).toBeInstanceOf(NotSentError);
+  await transport.call("pane.send_text", { text: "ls" });
+  expect([received, relay.connects]).toEqual([["ping", "pane.send_text"], 1]);
+ } finally { transport.close(); }
+});
+
+test("a held session carries one request at a time: a second while the first is out is NotSentError, nothing of it sent, and the first's reply is its own", async () => {
+ const { relay, received } = answeringHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ try {
+  const [first, second] = await transport.callOn(async (session) => {
+   const a = session.call("ping"), b = session.call("pane.send_text", { text: "ls" }).catch((error: unknown) => error);
+   return [await a, await b] as const;
+  });
+  expect((first as { type: string }).type).toBe("pong");
+  expect(second).toBeInstanceOf(NotSentError);
+  expect(received).toEqual(["ping"]);
+  // Once the first is answered, the session carries the next request.
+  await transport.callOn(async (session) => { await session.call("ping"); await session.call("pane.send_text", { text: "ls" }); });
+  expect([received, relay.connects]).toEqual([["ping", "ping", "pane.send_text"], 1]);
  } finally { transport.close(); }
 });
 

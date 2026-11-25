@@ -82,12 +82,7 @@ export class GuestClient {
   *  from another session is never used. */
  onOneSession<T>(work: (session: OneSession) => Promise<T>, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T> {
   return this.link.onOneSession(async (held) => {
-   const call = async <R>(method: string, params: unknown, tag: string): Promise<R> => {
-    let result: unknown;
-    try { result = await held.call(method, params); } catch (error) { throw this.mapError(method, error); }
-    checkTag(method, result, tag);
-    return result as R;
-   };
+   const call = <R>(method: string, params: unknown, tag: string): Promise<R> => this.#result<R>(method, tag, () => held.call(method, params));
    const pong = async (): Promise<Pong> => {
     const known = this.#sessionPong;
     if (known !== null && known.session === held.id) return known.pong;
@@ -123,8 +118,14 @@ export class GuestClient {
  async call<T>(method: string, params: unknown, tag: string, capability = "", signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T> {
   const unsent = sendSignal === undefined ? undefined : signal === undefined ? sendSignal : AbortSignal.any([signal, sendSignal]);
   await this.gate(method, capability, unsent ?? signal);
+  return this.#result<T>(method, tag, () => this.link.call(method, params, signal, unsent));
+ }
+
+ /** A request's result, on whichever session send puts it: its error mapped (mapError), its
+  *  result's tag checked (checkTag); the result keeps its tag. call's and onOneSession's alike. */
+ async #result<T>(method: string, tag: string, send: () => Promise<unknown>): Promise<T> {
   let result: unknown;
-  try { result = await this.link.call(method, params, signal, unsent); } catch (error) { throw this.mapError(method, error); }
+  try { result = await send(); } catch (error) { throw this.mapError(method, error); }
   checkTag(method, result, tag);
   return result as T;
  }

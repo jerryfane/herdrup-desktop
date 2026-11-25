@@ -759,8 +759,14 @@ export class GuestTransport {
   } finally {
    opening.dispose();
   }
-  let spent = false;
+  // The handle's contract, kept before any frame: a request after work returned (the session is
+  // the idle pool's, or closed, by then) or while another request on it is out (its reply could
+  // be taken for the other's) is never sent.
+  let spent = false, returned = false, inFlight = false;
   const request = async (method: string, params?: unknown): Promise<unknown> => {
+   if (returned) throw notSent(other(`${method}: this session was handed back before the request was sent.`));
+   if (inFlight) throw notSent(other(`${method}: another request is out on this session; this one was not sent.`));
+   inFlight = true;
    const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
    const { signal: unsent, dispose: disposeUnsent } = linkSignals([options.sendSignal, signal]);
    try {
@@ -769,13 +775,11 @@ export class GuestTransport {
     if (spent) throw notSent(other("The shared machine's connection for this request ended before it was sent."));
     const outcome = await roundTrip(held, line, { signal, unsent, detach: disposeUnsent });
     if (!("line" in outcome)) { spent = true; throw outcome.error; }
-    let result: unknown, failure: unknown = null;
-    try { result = decodeReply(outcome.line); } catch (error) { failure = error; }
-    // transport.go decode, without parking: herdr ended or spent the session, or serves no more.
-    if (!outcome.open || !held.reply.features.multiRequest || !keepsSession(failure)) spent = true;
-    if (failure !== null) throw failure;
-    return result;
+    const reply = this.#reply(held, outcome);
+    if (!reply.carries) spent = true;
+    return reply.value();
    } finally {
+    inFlight = false;
     disposeUnsent();
     dispose();
    }
@@ -783,7 +787,8 @@ export class GuestTransport {
   try {
    return await work({ id: held, call: request });
   } finally {
-   if (!spent && held.reply.features.multiRequest) this.#park(held);
+   returned = true;
+   if (!spent && !inFlight && held.reply.features.multiRequest) this.#park(held);
    else held.close();
   }
  }
@@ -839,15 +844,25 @@ export class GuestTransport {
   return session;
  }
 
- /** Decodes the reply line session carried, then leaves session idle for the next call when it is
-  *  open and herdr keeps serving it, or closes it (transport.go decode). */
- #decode(session: Session, outcome: { line: string; open: boolean }): unknown {
+ /** A reply line session carried (transport.go decode): value() is its result, or throws its
+  *  failure; carries is whether session is fit for another request (open, and herdr keeps serving
+  *  it after that reply). Where session goes next is the caller's. */
+ #reply(session: Session, outcome: { line: string; open: boolean }): { value: () => unknown; carries: boolean } {
   let result: unknown, failure: unknown = null;
   try { result = decodeReply(outcome.line); } catch (error) { failure = error; }
-  if (outcome.open && session.reply.features.multiRequest && keepsSession(failure)) this.#park(session);
+  return {
+   value: () => { if (failure !== null) throw failure; return result; },
+   carries: outcome.open && session.reply.features.multiRequest && keepsSession(failure),
+  };
+ }
+
+ /** Decodes the reply line session carried, then leaves session idle for the next call when it
+  *  can carry one, or closes it (transport.go decode). */
+ #decode(session: Session, outcome: { line: string; open: boolean }): unknown {
+  const reply = this.#reply(session, outcome);
+  if (reply.carries) this.#park(session);
   else session.close();
-  if (failure !== null) throw failure;
-  return result;
+  return reply.value();
  }
 
  /** Takes the idle session for a call, or null when there is none fit to carry one: herdr ended it
