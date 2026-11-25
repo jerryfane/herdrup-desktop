@@ -2074,7 +2074,9 @@ export const Desk = {
   /**
    * RemoveGuestDevice drops one device (its fingerprint, deviceID) from the
    * account-bound share guestID on machine (guest.remove_device); the person's
-   * other devices keep it.
+   * other devices keep it. A share herdr no longer has active (guest_not_found:
+   * revoked meanwhile, from another device or page) is gone for that device
+   * too, so it is done.
    */
   removeGuestDevice(token: string, machine: string, guestID: string, deviceID: string): Promise<void> {
     return call("Desk.RemoveGuestDevice", token, machine, guestID, deviceID);

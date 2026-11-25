@@ -29,10 +29,11 @@ export interface Person { id: string; name: string; accountBound: boolean; guest
 const latest = (a: number | null, b: number | null | undefined) => b == null ? a : a === null ? b : Math.max(a, b);
 
 /** The devices guest admits now: the one that accepted, then the ones added, less those removed (a
- *  removed entry may name the accepting device). */
+ *  removed entry may name the accepting device). The accepting device has no activity of its own on
+ *  the wire: the share's last_seen_ms is any of its devices', so it stays the person's. */
 function admitted(guest: Guest): Map<string, Omit<PersonDevice, "guests">> {
   const out = new Map<string, Omit<PersonDevice, "guests">>();
-  if (guest.fingerprint) out.set(guest.fingerprint, { fingerprint: guest.fingerprint, name: guest.device || "A device", addedMs: guest.created_ms ?? 0, lastSeenMs: guest.last_seen_ms ?? null });
+  if (guest.fingerprint) out.set(guest.fingerprint, { fingerprint: guest.fingerprint, name: guest.device || "A device", addedMs: guest.created_ms ?? 0, lastSeenMs: null });
   for (const d of guest.devices ?? []) {
     if (d.removed) out.delete(d.fingerprint);
     else out.set(d.fingerprint, { fingerprint: d.fingerprint, name: d.device || "A device", addedMs: d.added_ms ?? 0, lastSeenMs: d.last_seen_ms ?? null });
@@ -120,6 +121,8 @@ export class GuestSettings {
   private open: { alias: string; person: string } | null = null;
   /** The page settings.ts was last told (paged): a person's name, or null for the list. */
   private shown: string | null = null;
+  /** Closes the device menu this view opened (and its listeners); null while none is open. */
+  private closeMenu: (() => void) | null = null;
   /** paged names the page shown: a person's name on their page, null on the list (settings.ts
    *  titles the page with it). */
   constructor(private report: (message: unknown) => void, private summarize: (value: string, header: string) => void,
@@ -149,12 +152,13 @@ export class GuestSettings {
     if (JSON.stringify(machines) === JSON.stringify(this.machines)) return;
     this.machines = machines; if (this.token) void this.refresh();
   }
-  closeDialogs() { this.modal?.close(); document.querySelector(".account-device-menu")?.remove(); }
+  closeDialogs() { this.modal?.close(); this.closeMenu?.(); }
   /** Back to the list from a person's page; false when the list shows already. */
   back(): boolean { if (!this.open) return false; this.open = null; this.closeDialogs(); this.render(); return true; }
   /** Tells settings.ts the page shown when it changes. */
   private title(name: string | null) { if (name !== this.shown) { this.shown = name; this.paged(name); } }
   private async refresh() {
+    this.closeMenu?.();
     const token = this.token, at = ++this.generation;
     const results = await Promise.all(this.machines.map(async machine => {
       try { return { ...JSON.parse(await Desk.settingsGuestMachine(token, machine.alias)), machine } as Result; }
@@ -220,8 +224,9 @@ export class GuestSettings {
     const head = el("div", "settings-guest-page-head"), back = el("button", "settings-guest-back", "‹"); back.type = "button";
     back.setAttribute("aria-label", "Back to Shared access"); back.onclick = () => { this.back(); };
     const identity = el("div", "settings-guest-page-identity"), mark = initial(person.name); mark.classList.add("settings-guest-page-initial");
-    const last = seen(person.lastSeenMs), where = person.devices.reduce<PersonDevice | null>((a, b) => (b.lastSeenMs ?? -1) > (a?.lastSeenMs ?? -1) ? b : a, null);
-    const status = presence(person.lastSeenMs, "", last ? `${last.active ? "Active now" : `Last active ${last.text}`}${where ? ` on ${where.name}` : ""}` : "Not connected yet");
+    // The share's activity is any of the person's devices': which one, the wire doesn't say.
+    const last = seen(person.lastSeenMs);
+    const status = presence(person.lastSeenMs, "", last ? (last.active ? "Active now" : `Last active ${last.text}`) : "Not connected yet");
     identity.append(mark, el("h2", "settings-guest-page-name", person.name), status,
       el("div", "settings-row-subtitle", person.accountBound ? `HerdrUp account · ${person.devices.length} device${person.devices.length === 1 ? "" : "s"}` : "Only this device"));
     head.append(back, identity);
@@ -244,7 +249,9 @@ export class GuestSettings {
   }
   private deviceRow(machine: Machine, person: Person, device: PersonDevice) {
     const row = el("div", "settings-guest-top settings-guest-device"), lines = el("div", "settings-row-lines");
-    lines.append(el("div", "settings-row-label", device.name), presence(device.lastSeenMs, device.addedMs ? ` · added ${day(device.addedMs)}` : ""));
+    const added = device.addedMs ? `added ${day(device.addedMs)}` : "";
+    // An added device says when it was last active; the accepting one only when it was added.
+    lines.append(el("div", "settings-row-label", device.name), device.lastSeenMs === null ? el("div", "settings-guest-presence", added) : presence(device.lastSeenMs, added ? ` · ${added}` : ""));
     row.append(this.glyph(deviceGlyph(device.name), 20), lines);
     // A plain share is its one device: Remove the person instead (herdr: guest_not_account_bound).
     if (person.accountBound) {
@@ -257,9 +264,11 @@ export class GuestSettings {
   }
   /** The device's ⋯ menu (as the account page's): Remove. */
   private deviceMenu(machine: Machine, person: Person, device: PersonDevice, anchor: HTMLElement) {
-    document.querySelector(".account-device-menu")?.remove();
+    this.closeMenu?.();
     const menu = el("div", "account-device-menu"); menu.setAttribute("role", "menu");
-    const close = () => { menu.remove(); document.removeEventListener("pointerdown", outside, true); removeEventListener("scroll", close, true); removeEventListener("resize", close); };
+    // The one menu this view opened, closed with its listeners on a refresh, a navigation or a new scope.
+    const close = () => { menu.remove(); document.removeEventListener("pointerdown", outside, true); removeEventListener("scroll", close, true); removeEventListener("resize", close); if (this.closeMenu === close) this.closeMenu = null; };
+    this.closeMenu = close;
     const outside = (e: Event) => { if (!menu.contains(e.target as Node)) close(); };
     const remove = el("button", "", "Remove"); remove.type = "button"; remove.setAttribute("role", "menuitem");
     remove.onclick = () => { close(); this.confirmRemoveDevice(machine, person, device); };
@@ -290,11 +299,23 @@ export class GuestSettings {
     deviceLines.append(el("div", "settings-row-label", person.devices.map(d => d.name).join(", ") || "No devices"), el("div", "settings-row-subtitle", `${person.devices.length} device${person.devices.length === 1 ? "" : "s"}`));
     devices.append(this.glyph(deviceGlyph(person.devices[0]?.name ?? ""), 20), deviceLines);
     this.confirm(`Remove ${person.name}?`, `${person.name} loses access on ${person.accountBound ? "every device" : "their device"} right away, and open sessions close. To come back, ${person.name} needs a new invite.`,
-      `Remove ${person.name}`, [agents, devices], () => { void this.act(machine, "person:" + person.id, () => Desk.revokeGuestPerson(this.token, machine.alias, person.id)); });
+      `Remove ${person.name}`, [agents, devices], () => { void this.act(machine, "person:" + person.id, token => Desk.revokeGuestPerson(token, machine.alias, person.id)); });
   }
+  /** Removes the device from every share of the person that admits it, while this Settings scope
+   *  lasts: one that can't be updated doesn't stop the others, and each is said after. */
   private confirmRemoveDevice(machine: Machine, person: Person, device: PersonDevice) {
     this.confirm(`Remove ${device.name}?`, `${person.name} can no longer open ${person.guests.length === 1 ? agentName(person.guests[0]!) : "these agents"} on ${device.name}, and its open sessions close. ${person.name}'s other devices keep access.`,
-      "Remove device", [], () => { void this.act(machine, "device:" + device.fingerprint, async () => { for (const id of device.guests) await Desk.removeGuestDevice(this.token, machine.alias, id, device.fingerprint); }); });
+      "Remove device", [], () => {
+        void this.act(machine, "device:" + device.fingerprint, async token => {
+          const failed: string[] = [];
+          for (const id of device.guests) {
+            if (token !== this.token) return;
+            try { await Desk.removeGuestDevice(token, machine.alias, id, device.fingerprint); }
+            catch (error) { failed.push(`Couldn't remove from ${agentName(person.guests.find(guest => guest.guest_id === id)!)}: ${errorText(error)}`); }
+          }
+          if (failed.length) throw new Error(failed.join("\n"));
+        });
+      });
   }
   /** A share of an older herdr (no person): today's row, Revoke and Share Gram on it. */
   private guestRow(machine: Machine, guest: Guest) {
@@ -337,20 +358,21 @@ export class GuestSettings {
     let detail = `${invite.grant?.agent_name || "An agent"} on ${machine.label}${invite.share_gram ? " · Gram shared" : ""}`;
     if (invite.expires_ms !== undefined) { const seconds = Math.max(0, Math.floor((invite.expires_ms - Date.now()) / 1000)); detail += seconds < 3600 ? ` · expires in ${Math.max(1, Math.floor(seconds / 60))} min` : ` · expires in ${Math.floor(seconds / 3600)} h`; }
     lines.append(el("div", "settings-row-label", invite.name), el("div", "settings-row-subtitle", detail));
-    const cancel = button("Cancel", () => { void this.act(machine, invite.invite_id, () => Desk.revokeGuestAccess(this.token, machine.alias, invite.invite_id, true)); }); cancel.disabled = this.revoking.has(this.key(machine, invite.invite_id)); cancel.setAttribute("aria-label", `Cancel invite for ${invite.name}`);
+    const cancel = button("Cancel", () => { void this.act(machine, invite.invite_id, token => Desk.revokeGuestAccess(token, machine.alias, invite.invite_id, true)); }); cancel.disabled = this.revoking.has(this.key(machine, invite.invite_id)); cancel.setAttribute("aria-label", `Cancel invite for ${invite.name}`);
     row.append(lines, cancel); return row;
   }
   /** Revoke one share: from a person's page, Remove an agent (o2); on an older herdr's row, Revoke. */
   private confirmRevoke(machine: Machine, guest: Guest, person?: Person) {
-    const agent = agentName(guest), run = () => { void this.act(machine, guest.guest_id, () => Desk.revokeGuestAccess(this.token, machine.alias, guest.guest_id, false)); };
+    const agent = agentName(guest), run = () => { void this.act(machine, guest.guest_id, token => Desk.revokeGuestAccess(token, machine.alias, guest.guest_id, false)); };
     if (person) this.confirm(`Remove ${agent}?`, `${person.name} loses access to ${agent} on ${person.accountBound ? "every device" : "their device"} right away, and any open session closes.`, "Remove", [], run);
     else this.confirm(`Revoke ${guest.name}?`, `${guest.name} loses access to ${guest.grant?.agent_name || "the agent"} right away, and any open session closes.`, "Revoke", [], run);
   }
-  /** One change on machine (id names what it changes, so its controls wait), then the lists again. */
-  private async act(machine: Machine, id: string, work: () => Promise<void>) {
+  /** One change on machine (id names what it changes, so its controls wait), then the lists again.
+   *  work gets the Settings scope it began in, and sends only on it. */
+  private async act(machine: Machine, id: string, work: (token: string) => Promise<void>) {
     const token = this.token, key = this.key(machine, id); if (this.revoking.has(key)) return;
     this.revoking.add(key); this.render();
-    try { await work(); } catch (error) { if (token === this.token) this.report(error); }
+    try { await work(token); } catch (error) { if (token === this.token) this.report(error); }
     finally { this.revoking.delete(key); if (token === this.token) await this.refresh(); }
   }
   private logRow(entry: Entry, guest?: Guest) {
@@ -360,10 +382,11 @@ export class GuestSettings {
     header.append(el("span", "", headlines[entry.event] || `${who} ${entry.event}`), el("time", "", clock(entry.ts_ms))); row.append(header);
     const details: Record<string, string> = { accepted: "Accepted your invite", connected: `Opened ${agent}`, denied: `Blocked ${entry.method || "a request"}`, paused: `${agent} left the foreground, so the stream paused`, revoked: "Access revoked" };
     const device = entry.event === "device_added" || entry.event === "device_removed";
-    const text = entry.event === "prompt" ? entry.text || "" : entry.event === "upload" ? `${entry.file?.name || "a file"}${entry.file?.size !== undefined ? " · " + entry.file.size.toLocaleString() + " bytes" : ""}` : device ? entry.text || "A device" : details[entry.event];
-    if (text) row.append(el("p", "settings-guest-log-body", text));
-    // The device the entry is from, by its fingerprint: an account-bound share has several.
+    // The device the entry is from, by its fingerprint, removed ones included: an account-bound
+    // share has several, and herdr writes device_removed without its name.
     const named = guest && entry.fingerprint ? admitted({ ...guest, devices: (guest.devices ?? []).map(d => ({ ...d, removed: false })) }).get(entry.fingerprint)?.name : guest?.device;
+    const text = entry.event === "prompt" ? entry.text || "" : entry.event === "upload" ? `${entry.file?.name || "a file"}${entry.file?.size !== undefined ? " · " + entry.file.size.toLocaleString() + " bytes" : ""}` : device ? entry.text || named || "A device" : details[entry.event];
+    if (text) row.append(el("p", "settings-guest-log-body", text));
     if (entry.fingerprint) row.append(el("div", "settings-account-email", "key " + [entry.fingerprint, device ? (guest?.account_bound ? `from ${who}'s account` : "") : named].filter(Boolean).join(" · ")));
     return row;
   }

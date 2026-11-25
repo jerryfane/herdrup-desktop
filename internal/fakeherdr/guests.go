@@ -102,8 +102,10 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		data, _ := json.Marshal(value)
 		return json.RawMessage(data), nil, true
 	}
+	// herdr guest_owner.rs: no guest, invite or person with that id (or no
+	// active guest, for guest.update and guest.remove_device).
 	missing := func() (any, *APIError, bool) {
-		return nil, &APIError{Code: "not_found", Message: "guest or invite not found on this machine"}, true
+		return nil, &APIError{Code: "guest_not_found", Message: "no guest, invite or person with that id"}, true
 	}
 	switch method {
 	case "guest.invite.create":
@@ -135,25 +137,32 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 			return snapshot(map[string]any{"type": "guest_updated", "guest": guest})
 		}
 	case "guest.revoke":
+		// herdr store.rs revoke_in: revoking a known guest or person again is
+		// a success that changes nothing; only an unknown one is not found.
 		if p.GuestID != "" {
 			for _, guest := range store.guests {
 				if guest["guest_id"] != p.GuestID {
 					continue
 				}
-				guest["revoked"] = true
-				store.entries = append(store.entries, map[string]any{"event": "revoked", "guest_id": p.GuestID, "name": guest["name"], "ts_ms": time.Now().UnixMilli(), "fingerprint": guest["fingerprint"]})
+				if guest["revoked"] != true {
+					guest["revoked"] = true
+					store.entries = append(store.entries, map[string]any{"event": "revoked", "guest_id": p.GuestID, "name": guest["name"], "ts_ms": time.Now().UnixMilli(), "fingerprint": guest["fingerprint"]})
+				}
 				return snapshot(map[string]any{"type": "guest_revoked", "guest_id": p.GuestID, "closed_streams": 0})
 			}
 		} else if p.Person != "" {
-			revoked := false
+			known := false
 			for _, guest := range store.guests {
-				if guest["person"] != p.Person || guest["revoked"] == true {
+				if guest["person"] != p.Person {
 					continue
 				}
-				guest["revoked"], revoked = true, true
-				store.entries = append(store.entries, map[string]any{"event": "revoked", "guest_id": guest["guest_id"], "name": guest["name"], "ts_ms": time.Now().UnixMilli(), "fingerprint": guest["fingerprint"]})
+				known = true
+				if guest["revoked"] != true {
+					guest["revoked"] = true
+					store.entries = append(store.entries, map[string]any{"event": "revoked", "guest_id": guest["guest_id"], "name": guest["name"], "ts_ms": time.Now().UnixMilli(), "fingerprint": guest["fingerprint"]})
+				}
 			}
-			if revoked {
+			if known {
 				return snapshot(map[string]any{"type": "guest_revoked", "person": p.Person, "closed_streams": 0})
 			}
 		} else {
@@ -177,9 +186,14 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 			devices, _ := guest["devices"].([]map[string]any)
 			found := false
 			for _, device := range devices {
-				if device["fingerprint"] == p.Fingerprint {
-					device["removed"], found = true, true
+				if device["fingerprint"] != p.Fingerprint {
+					continue
 				}
+				if device["removed"] == true {
+					// Removed before: success again, no audit entry (remove_device_at).
+					return snapshot(map[string]any{"type": "guest_device_removed", "guest": guest, "closed_streams": 0})
+				}
+				device["removed"], found = true, true
 			}
 			if !found && guest["fingerprint"] == p.Fingerprint {
 				guest["devices"] = append(devices, map[string]any{"fingerprint": p.Fingerprint, "device": guest["device"], "added_ms": guest["created_ms"], "removed": true})

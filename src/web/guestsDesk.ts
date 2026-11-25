@@ -65,11 +65,13 @@ export const guestsDesk = {
   await settingsCall(scope, "guest.revoke", { person }, "guest_revoked");
  },
 
- /** RemoveGuestDevice: one device (its fingerprint) off one account-bound share (guest.remove_device). */
+ /** RemoveGuestDevice: one device (its fingerprint) off one account-bound share (guest.remove_device).
+  *  A share herdr no longer has active (guest_not_found) is gone for that device too: done. */
  async removeGuestDevice(token: string, machine: string, guestID: string, deviceID: string): Promise<void> {
   const scope = settingsScope(token);
   thisMachineOnly(machine);
-  await settingsCall(scope, "guest.remove_device", { guest_id: guestID, fingerprint: deviceID }, "guest_device_removed");
+  try { await settingsCall(scope, "guest.remove_device", { guest_id: guestID, fingerprint: deviceID }, "guest_device_removed"); }
+  catch (error) { if (!(error instanceof HerdrAPIError && error.code === "guest_not_found")) throw error; }
  },
 
  /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine. Its guests see

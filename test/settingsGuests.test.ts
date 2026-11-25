@@ -53,8 +53,10 @@ const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(
 
 type Calls = { method: string; args: unknown[] }[];
 /** run with the fake document and window, and the Desk's guest methods answering listing for
- *  machine "" (anything else: no guests); every write is recorded. Put back afterwards. */
-async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; titles: (string | null)[]; summary: string[] }) => Promise<void>) {
+ *  machine "" (anything else: no guests); every write is recorded, then answered as answers says
+ *  (default: done). Put back afterwards. */
+type Answer = (...args: unknown[]) => Promise<void>;
+async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
   const names = ["settingsGuestMachine", "revokeGuestPerson", "removeGuestDevice", "revokeGuestAccess", "setGuestGramSharing"] as const;
   const saved = { document: Reflect.get(globalThis, "document"), localStorage: Reflect.get(globalThis, "localStorage"), innerWidth: Reflect.get(globalThis, "innerWidth"), innerHeight: Reflect.get(globalThis, "innerHeight"),
     addEventListener: Reflect.get(globalThis, "addEventListener"), removeEventListener: Reflect.get(globalThis, "removeEventListener"), desk: Object.fromEntries(names.map(n => [n, Desk[n]])) };
@@ -64,18 +66,18 @@ async function withPage(listing: { guests: Guest[]; entries?: unknown[] }, run: 
     Reflect.set(globalThis, "localStorage", { getItem: () => null, setItem() {} });
     Reflect.set(globalThis, "innerWidth", 1440); Reflect.set(globalThis, "innerHeight", 900);
     Reflect.set(globalThis, "addEventListener", () => {}); Reflect.set(globalThis, "removeEventListener", () => {});
-    const record = (method: string) => async (...args: unknown[]) => { calls.push({ method, args }); };
+    const record = (method: string) => async (...args: unknown[]) => { calls.push({ method, args }); await answers[method]?.(...args); };
     Object.assign(Desk, {
       settingsGuestMachine: async (_token: string, machine: string) => JSON.stringify(machine === "" ? { listing: { guests: listing.guests, invites: [] }, entries: listing.entries ?? [] } : { listing: { guests: [], invites: [] }, entries: [] }),
       revokeGuestPerson: record("revokeGuestPerson"), removeGuestDevice: record("removeGuestDevice"), revokeGuestAccess: record("revokeGuestAccess"), setGuestGramSharing: record("setGuestGramSharing"),
     });
-    const titles: (string | null)[] = [], summary: string[] = [];
+    const titles: (string | null)[] = [], summary: string[] = [], reported: unknown[] = [];
     const glyph = (name: string) => { const g = new FakeElement("span"); g.className = "glyph"; g.dataset.symbol = name; return g as unknown as HTMLElement; };
-    const card = new GuestSettings(error => { throw error; }, value => summary.push(value), glyph, title => titles.push(title));
+    const card = new GuestSettings(error => { reported.push(error); }, value => summary.push(value), glyph, title => titles.push(title));
     card.setMachines("hetzner", [], []);
     card.setScope("tok");
     await settle();
-    await run({ card, root: card.root as unknown as FakeElement, body, calls, titles, summary });
+    await run({ card, root: card.root as unknown as FakeElement, body, calls, titles, summary, reported });
   } finally {
     for (const [k, v] of Object.entries(saved)) if (k !== "desk") Reflect.set(globalThis, k, v);
     Object.assign(Desk, saved.desk);
@@ -145,10 +147,62 @@ test("removing a device takes it off every share of the person that has it; remo
   });
 });
 
+// #524 review P2: one share that can't be updated (revoked meanwhile elsewhere, or any refusal)
+// doesn't keep the device on the others.
+test("removing a device tries every share of the person, and says which ones couldn't be updated", async () => {
+  await withPage(current, async ({ root, body, calls, reported }) => {
+    click(root.having("settings-guest-open")[0]!);
+    click(root.button("Manage MacBook"));
+    click(body.having("account-device-menu")[0]!.button("Remove"));
+    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
+    await settle();
+    expect(calls.map(c => c.args[2])).toEqual(["nike-1", "nike-2"]);
+    expect(reported.map(e => (e as Error).message)).toEqual(["Couldn't remove from enyo: herdr: guest_busy: try again"]);
+  }, { removeGuestDevice: async (...args) => { if (args[2] === "nike-1") throw new Error("herdr: guest_busy: try again"); } });
+});
+
+// #524 review P3: a removal batch sends on the Settings scope it began in, and no more once it ends.
+test("a device removal begun in one Settings scope sends nothing once that scope has ended", async () => {
+  const held = Promise.withResolvers<void>();
+  await withPage(current, async ({ card, root, body, calls }) => {
+    click(root.having("settings-guest-open")[0]!);
+    click(root.button("Manage MacBook"));
+    click(body.having("account-device-menu")[0]!.button("Remove"));
+    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
+    await settle();
+    card.setScope("tok2"); // Settings closed and opened again while the first removal is out
+    held.resolve();
+    await settle();
+    expect(calls.filter(c => c.method === "removeGuestDevice")).toEqual([{ method: "removeGuestDevice", args: ["tok", "", "nike-1", "SHA256:mac"] }]);
+  }, { removeGuestDevice: () => held.promise });
+});
+
+test("this page's device menu closes alone: another view's menu stays", async () => {
+  await withPage(current, async ({ root, body }) => {
+    const accountMenu = new FakeElement("div"); accountMenu.className = "account-device-menu"; body.append(accountMenu);
+    click(root.having("settings-guest-open")[0]!);
+    click(root.button("Manage MacBook"));
+    expect(body.having("account-device-menu")).toHaveLength(2);
+    click(root.button("Back to Shared access"));
+    expect(body.having("account-device-menu")).toEqual([accountMenu]);
+  });
+});
+
+test("a removed device's audit row names it by fingerprint; share activity isn't put on one device", async () => {
+  const removedMac = current.guests.map(g => g.guest_id === "nike-1" ? { ...g, devices: g.devices!.map(d => d.fingerprint === "SHA256:mac" ? { ...d, removed: true } : d) } : g);
+  const entries = [{ event: "device_removed", guest_id: "nike-1", name: "Nike", pane: "t-enyo", ts_ms: now - 60_000, fingerprint: "SHA256:mac" }];
+  await withPage({ guests: removedMac, entries }, async ({ root }) => {
+    expect(root.having("settings-guest-log-body").map(e => e.textContent)).toEqual(["MacBook"]);
+    click(root.having("settings-guest-open")[0]!);
+    expect(root.having("settings-guest-page-identity")[0]!.having("settings-guest-presence")[0]!.textContent).toBe("Active now");
+    expect(rowText(root.having("settings-guest-device")[0]!)).toEqual(["iPhone", `added ${new Date(now - 800_000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`]);
+  });
+});
+
 test("a plain share's page has its one device and no device menu", async () => {
   await withPage(current, async ({ root }) => {
     click(root.having("settings-guest-open")[1]!);
-    expect(root.having("settings-guest-device").map(rowText)).toEqual([["iPhone", "2 h ago · added " + new Date(sam.created_ms!).toLocaleDateString("en-GB", { day: "numeric", month: "short" })]]);
+    expect(root.having("settings-guest-device").map(rowText)).toEqual([["iPhone", "added " + new Date(sam.created_ms!).toLocaleDateString("en-GB", { day: "numeric", month: "short" })]]);
     expect(root.having("settings-guest-more")).toEqual([]);
   });
 });

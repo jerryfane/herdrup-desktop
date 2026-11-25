@@ -106,7 +106,9 @@ func (d *Desk) RevokeGuestPerson(ctx context.Context, token, machine, person str
 
 // RemoveGuestDevice drops one device (its fingerprint, deviceID) from the
 // account-bound share guestID on machine (guest.remove_device); the person's
-// other devices keep it.
+// other devices keep it. A share herdr no longer has active (guest_not_found:
+// revoked meanwhile, from another device or page) is gone for that device
+// too, so it is done.
 func (d *Desk) RemoveGuestDevice(ctx context.Context, token, machine, guestID, deviceID string) error {
 	view, err := d.settingsView(token)
 	if err != nil {
@@ -115,5 +117,8 @@ func (d *Desk) RemoveGuestDevice(ctx context.Context, token, machine, guestID, d
 	ctx, cancel := viewRequest(ctx, view.ctx)
 	defer cancel()
 	_, err = view.client.GuestRemoveDevice(ctx, herdrapi.GuestRemoveDeviceParams{Machine: guestMachineAlias(machine), GuestID: guestID, Fingerprint: deviceID})
+	if api := (*bridge.APIError)(nil); errors.As(err, &api) && api.Code == "guest_not_found" {
+		return nil
+	}
 	return err
 }
