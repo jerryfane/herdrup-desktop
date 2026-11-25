@@ -207,6 +207,9 @@ type Desk struct {
 	webApproval *webApproval
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
+	// publishTopics sends a Topics update to the page (broadcastTopics); a
+	// test sets its own recorder before a view opens.
+	publishTopics func(TopicsUpdate)
 
 	mu                 sync.Mutex
 	pendingGuestInvite string
@@ -339,6 +342,7 @@ func newDesk(dir string) *Desk {
 	}
 	d.account, d.accountStore = newAccountClient(runtime.GOOS)
 	d.openBrowser = mygo.Shell.OpenExternal
+	d.publishTopics = broadcastTopics
 	d.crash = newCrashReporter(filepath.Join(dir, "crash-reports"), d.usage, mygo.App.Version())
 	return d
 }

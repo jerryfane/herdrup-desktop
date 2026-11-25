@@ -384,7 +384,7 @@ func TestSubscribeThatNeverOpensEndsTheWatchWithoutRelisting(t *testing.T) {
 
 // #38: the agent goes blocked while a list is in flight, then more events
 // arrive than the ledger keeps. The list was begun with the agent working:
-// it must not be published and undo the blocked patch; a fresh list is.
+// it must not be published and undo the patches; a fresh list is.
 func TestLedgerOverflowDoesNotLetALateListUndoAPatch(t *testing.T) {
 	f, c := newFake(t, true)
 	updates, _ := watch(t, c)
@@ -402,17 +402,18 @@ func TestLedgerOverflowDoesNotLetALateListUndoAPatch(t *testing.T) {
 	for i := range 256 {
 		f.events <- `{"seq":` + strconv.Itoa(3+i) + `,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p9","agent_status":"idle","workspace_id":"w1"}}`
 	}
-	// The stream is handled in order: once this last change's patch is
-	// out, every change before it was recorded, so the ledger overflowed
-	// before the list in flight answers.
-	f.events <- `{"seq":259,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"blocked","workspace_id":"w1"}}`
-	if u := next(t, updates); firstGroup(u) != "needsYou" {
-		t.Fatalf("last patch: %q", firstGroup(u))
+	// The stream is handled in order: once this last change, the agent
+	// going idle, shows, every change before it was recorded, so the
+	// ledger overflowed before the list in flight answers.
+	f.status.Store("idle")
+	f.events <- `{"seq":259,"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"idle","workspace_id":"w1"}}`
+	if u := next(t, updates); firstGroup(u) != "idle" {
+		t.Fatalf("last patch: %q, want idle", firstGroup(u))
 	}
 	f.hold.Store(false)
 	f.release <- struct{}{}
-	if u := next(t, updates); firstGroup(u) != "needsYou" {
-		t.Fatalf("the list that was in flight undid the patch: %q", firstGroup(u))
+	if u := next(t, updates); firstGroup(u) != "idle" {
+		t.Fatalf("the list that was in flight undid the patches: %q, want idle", firstGroup(u))
 	}
 	if got := f.lists.Load(); got != 3 {
 		t.Fatalf("%d lists, want a fresh one after the overflowed list", got)
