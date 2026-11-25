@@ -75,6 +75,26 @@ export async function initSidebarRail(sidebar: HTMLElement, select: (tab: Tab) =
   };
 }
 
+/** The room the sidebar foot's notices take (the Topics switch's, a browser asking to be approved,
+ *  wrapped or not, margins in): the foot's height but its own padding, which holds the tab bar
+ *  (style.css .sidebar-foot; the bar floats in it). A hidden notice takes none. */
+export function footNoticeRoom(foot: HTMLElement): number {
+  return Math.max(0, foot.offsetHeight - parseFloat(getComputedStyle(foot).paddingBottom));
+}
+
+/** Keeps --foot-notice on the root at the foot's notices' room, live: they come, go and rewrap as
+ *  the sidebar narrows. The sidebar's lists end above them (style.css .roster, gram.css, settings.css)
+ *  and so does the phone's detail (style.css), which then leaves the foot showing; the root's
+ *  foot-notice class says some notice shows. */
+export function reserveFootNotices(foot: HTMLElement, root: HTMLElement = document.documentElement): void {
+  const reserve = () => {
+    const room = footNoticeRoom(foot);
+    root.style.setProperty("--foot-notice", `${room}px`);
+    root.classList.toggle("foot-notice", room > 0);
+  };
+  new ResizeObserver(reserve).observe(foot);
+}
+
 /** Where the dragged width is remembered (HerdrApp.swift "ui.sidebarWidth"). */
 export const SIDEBAR_WIDTH_KEY = "ui.sidebarWidth";
 

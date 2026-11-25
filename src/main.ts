@@ -15,7 +15,7 @@ import { initHosts } from "./hosts";
 import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
 import { onTextSizeChanged } from "./textSize";
-import { initSidebarRail } from "./sidebar";
+import { initSidebarRail, reserveFootNotices } from "./sidebar";
 import { showNewAgent, showNewTerminal } from "./create";
 import { terminalRows } from "./terminals";
 import { initGuestHome } from "./guestHome";
@@ -738,6 +738,7 @@ async function init(rendered: () => void) {
     cancelAnimationFrame(fieldFrame);
     fieldFrame = requestAnimationFrame(() => { if (!field.hidden) drawField(); });
   }).observe($("detail"));
+  reserveFootNotices($("sidebar-foot"));
   if (holdsStill) document.documentElement.classList.add("holds-still");
   // Hovering an agent row makes it type its line in the field at the row's height
   // (HerdrApp.swift 4274-4283, onContinuousHover).
