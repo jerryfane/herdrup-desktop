@@ -53,15 +53,15 @@ const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(
 
 type Calls = { method: string; args: unknown[] }[];
 /** run with the fake document and window, and the Desk's guest methods answering listing for
- *  machine "" (anything else: no guests), each listing after answers.settingsGuestMachine (default:
- *  at once); every write is recorded, then answered as answers says (default: done). Put back
- *  afterwards. */
+ *  machine "" (anything else: no guests), each listing after answers.settingsGuestMachine or
+ *  answers.settingsGuestList (default: at once; reads names them in order); every write is
+ *  recorded, then answered as answers says (default: done). Put back afterwards. */
 type Answer = (...args: unknown[]) => Promise<void>;
-async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?: string }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
-  const names = ["settingsGuestMachine", "revokeGuestPerson", "removeGuestDevice", "revokeGuestAccess", "setGuestGramSharing"] as const;
+async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?: string }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; reads: string[]; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
+  const names = ["settingsGuestMachine", "settingsGuestList", "revokeGuestPerson", "removeGuestDevice", "revokeGuestAccess", "setGuestGramSharing"] as const;
   const saved = { document: Reflect.get(globalThis, "document"), localStorage: Reflect.get(globalThis, "localStorage"), innerWidth: Reflect.get(globalThis, "innerWidth"), innerHeight: Reflect.get(globalThis, "innerHeight"),
     addEventListener: Reflect.get(globalThis, "addEventListener"), removeEventListener: Reflect.get(globalThis, "removeEventListener"), desk: Object.fromEntries(names.map(n => [n, Desk[n]])) };
-  const body = new FakeElement("body"), calls: Calls = [];
+  const body = new FakeElement("body"), calls: Calls = [], reads: string[] = [];
   try {
     Reflect.set(globalThis, "document", { createElement: (tag: string) => new FakeElement(tag), createTextNode: text, body, querySelector: (s: string) => body.querySelector(s), addEventListener() {}, removeEventListener() {} });
     Reflect.set(globalThis, "localStorage", { getItem: () => null, setItem() {} });
@@ -70,10 +70,18 @@ async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?:
     const record = (method: string) => async (...args: unknown[]) => { calls.push({ method, args }); await answers[method]?.(...args); };
     Object.assign(Desk, {
       settingsGuestMachine: async (token: string, machine: string) => {
+        reads.push("settingsGuestMachine");
         await answers.settingsGuestMachine?.(token, machine);
         // A guest.list that failed comes as Go's SettingsGuestMachine says it: no listing, its error.
         if (machine === "" && listing.error) return JSON.stringify({ error: listing.error, entries: null });
         return JSON.stringify(machine === "" ? { listing: { guests: listing.guests, invites: [] }, entries: listing.entries ?? [] } : { listing: { guests: [], invites: [] }, entries: [] });
+      },
+      // guest.list alone: one that failed throws.
+      settingsGuestList: async (token: string, machine: string) => {
+        reads.push("settingsGuestList");
+        await answers.settingsGuestList?.(token, machine);
+        if (machine === "" && listing.error) throw new Error(listing.error);
+        return JSON.stringify({ guests: machine === "" ? listing.guests : [], invites: [] });
       },
       revokeGuestPerson: record("revokeGuestPerson"), removeGuestDevice: record("removeGuestDevice"), revokeGuestAccess: record("revokeGuestAccess"), setGuestGramSharing: record("setGuestGramSharing"),
     });
@@ -83,7 +91,7 @@ async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?:
     card.setMachines("hetzner", [], []);
     card.setScope("tok");
     await settle();
-    await run({ card, root: card.root as unknown as FakeElement, body, calls, titles, summary, reported });
+    await run({ card, root: card.root as unknown as FakeElement, body, calls, reads, titles, summary, reported });
   } finally {
     for (const [k, v] of Object.entries(saved)) if (k !== "desk") Reflect.set(globalThis, k, v);
     Object.assign(Desk, saved.desk);
@@ -237,15 +245,18 @@ const withMac = (guests: Guest[], on: Record<string, boolean>) => guests.map(g =
   ? { ...g, devices: g.devices!.map(d => d.fingerprint === "SHA256:mac" ? { ...d, removed: !on[g.guest_id] } : d) } : g);
 const removals = (calls: Calls) => calls.filter(c => c.method === "removeGuestDevice").map(c => c.args[2]);
 
-test("Remove names the device's shares, and Confirm with them unchanged removes it from all (not another person's on that device)", async () => {
+test("Remove names the device's shares, and Confirm checks them with the list alone, then removes it from all (not another person's on that device)", async () => {
   // Another HerdrUp account signed in on the same MacBook has a share of its own: it isn't Nike's.
   const other: Guest = { ...nike("ana-1", "enyo", 500_000), name: "Ana", person: "acct-ana", fingerprint: "SHA256:mac", device: "MacBook", devices: [] };
-  await withPage({ guests: [...current.guests, other] }, async ({ root, body, calls }) => {
+  await withPage({ guests: [...current.guests, other] }, async ({ root, body, calls, reads }) => {
     const dialog = askRemoveMacBook(root, body);
     expect(dialog.textContent).toContain("Nike can no longer open enyo, orgstudio on MacBook.");
+    const before = reads.length;
     click(dialog.button("Remove device"));
     await settle();
     expect(removals(calls)).toEqual(["nike-1", "nike-2"]);
+    // The check waits on no activity log (guest.audit): the page's refresh after loads that.
+    expect(reads.slice(before)).toEqual(["settingsGuestList", "settingsGuestMachine"]);
   });
 });
 
@@ -260,7 +271,7 @@ test("Confirm when the shares' listing can't be read sends nothing and says so",
       await settle();
       expect([fails, removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message)])
         .toEqual([fails, [], [], ["Couldn't check MacBook's access. Nothing was removed. Try again."]]);
-    }, { settingsGuestMachine: async () => { if (unreadable) throw new Error("Settings changed: open it again"); } });
+    }, { settingsGuestList: async () => { if (unreadable) throw new Error("Settings changed: open it again"); } });
   }
 });
 
@@ -321,7 +332,51 @@ test("Confirm whose Settings scope ends while the shares are read again sends no
     hold.release();
     await settle();
     expect([removals(calls), body.having("settings-guest-confirm")]).toEqual([[], []]);
-  }, { settingsGuestMachine: (token, machine) => hold.answer(token, machine) });
+  }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
+});
+
+// #537 review: a recheck that comes back changed asks again only on the page and confirmation it
+// began from; otherwise it lets the page be.
+test("a recheck that comes back changed after the page moved on asks nothing over it: another person's confirmation, another on Nike's page, Nike's page opened again", async () => {
+  const ana: Guest = { ...nike("ana-1", "zeta", 500_000), name: "Ana", person: "acct-ana", last_seen_ms: now - 60_000, fingerprint: "SHA256:ana", device: "iPad", devices: [] };
+  const openRow = (root: FakeElement, name: string) => click(root.having("settings-guest-open").find(row => row.getAttribute("aria-label")!.startsWith(name + ","))!);
+  const moves: [string, (root: FakeElement) => void, string[]][] = [
+    ["Back, then Ana's Remove zeta", root => { click(root.button("Back to Shared access")); openRow(root, "Ana"); click(root.button("Remove zeta from Ana")); }, ["Remove zeta?"]],
+    ["Nike's Remove enyo", root => click(root.button("Remove enyo from Nike")), ["Remove enyo?"]],
+    ["Back, then Nike's page again", root => { click(root.button("Back to Shared access")); openRow(root, "Nike"); }, []],
+  ];
+  for (const [move, act, dialogs] of moves) {
+    const hold = listingHold(), listing = { guests: [...current.guests, ana] };
+    await withPage(listing, async ({ root, body, calls }) => {
+      const dialog = askRemoveMacBook(root, body);
+      hold.arm();
+      click(dialog.button("Remove device"));
+      await hold.started;
+      listing.guests = [...withMac(current.guests, { "nike-2": false }), ana];
+      act(root);
+      hold.release();
+      await settle();
+      expect([move, removals(calls), body.having("settings-guest-confirm").map(d => d.children[0]!.textContent)]).toEqual([move, [], dialogs]);
+    }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
+  }
+});
+
+test("a recheck that comes back changed after the person's page has gone asks nothing", async () => {
+  const hold = listingHold(), listing = { guests: [...current.guests] };
+  await withPage(listing, async ({ root, body, calls, titles }) => {
+    const dialog = askRemoveMacBook(root, body);
+    hold.arm();
+    click(dialog.button("Remove device"));
+    await hold.started;
+    // A refresh meanwhile (a Gram switch) finds no share of Nike's: the page goes back to the list.
+    listing.guests = [sam]; switchGram(root);
+    await settle();
+    expect(titles.at(-1)).toBeNull();
+    listing.guests = withMac(current.guests, { "nike-2": false });
+    hold.release();
+    await settle();
+    expect([removals(calls), body.having("settings-guest-confirm")]).toEqual([[], []]);
+  }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
 });
 
 test("a device menu already open when a refresh starts closes then, before the listing lands", async () => {
@@ -390,11 +445,14 @@ test("an older herdr's guests, which name no person, keep a row each with Revoke
   });
 });
 
-test("a person's devices are the ones their shares admit now: removed ones go, the accepting one included", () => {
-  const removedPhone: Guest = { ...nike("nike-1", "enyo", 800_000), devices: [...nike("x", "y", 0).devices!, { fingerprint: "SHA256:phone", device: "iPhone", added_ms: 0, removed: true }] };
-  const { people, ungrouped } = sharePeople([removedPhone, { ...nike("nike-2", "orgstudio", 700_000), devices: [] }, { ...sam, revoked: true }]);
+test("a person's devices are the ones their shares admit now, by the host's rule: any removed entry takes the device off that share, the accepting one included", () => {
+  // nike-1 lists the MacBook removed, then again not removed: herdr admits it no longer (a removed
+  // entry wins, whatever its place), so the page doesn't show it either.
+  const [mac, web] = nike("x", "y", 0).devices!;
+  const removed: Guest = { ...nike("nike-1", "enyo", 800_000), devices: [{ ...mac!, removed: true }, mac!, web!, { fingerprint: "SHA256:phone", device: "iPhone", added_ms: 0, removed: true }] };
+  const { people, ungrouped } = sharePeople([removed, { ...nike("nike-2", "orgstudio", 700_000), devices: [] }, { ...sam, revoked: true }]);
   expect(ungrouped).toEqual([]);
-  expect(people.map(p => [p.id, p.name, p.accountBound, p.devices.map(d => [d.name, d.guests])])).toEqual([
-    ["acct-nike", "Nike", true, [["iPhone", ["nike-2"]], ["MacBook", ["nike-1"]], ["Chrome on macOS", ["nike-1"]]]],
+  expect(people.map(p => [p.id, p.name, p.accountBound, p.devices.map(d => d.name)])).toEqual([
+    ["acct-nike", "Nike", true, ["iPhone", "Chrome on macOS"]],
   ]);
 });

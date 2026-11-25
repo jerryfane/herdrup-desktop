@@ -57,6 +57,24 @@ func (d *Desk) SettingsGuestMachine(ctx context.Context, token, machine string) 
 	return string(data), err
 }
 
+// SettingsGuestList is the machine's guest.list alone, for a check before a
+// change (a device removal's confirmation): no activity log, and a listing that
+// can't be read is an error, never an empty one.
+func (d *Desk) SettingsGuestList(ctx context.Context, token, machine string) (string, error) {
+	view, err := d.settingsView(token)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := viewRequest(ctx, view.ctx)
+	defer cancel()
+	listing, err := view.client.GuestList(ctx, herdrapi.GuestListParams{Machine: guestMachineAlias(machine)})
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(listing)
+	return string(data), err
+}
+
 func (d *Desk) SetGuestGramSharing(ctx context.Context, token, machine, guestID string, share bool) error {
 	view, err := d.settingsView(token)
 	if err != nil {
