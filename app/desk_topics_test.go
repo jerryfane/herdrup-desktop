@@ -326,7 +326,9 @@ func TestTopicsListSurvivesAMissedAgentAndFollowsItsFreshness(t *testing.T) {
 		func() (any, *fakeherdr.APIError) {
 			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a")}, "as_of_unix_ms": 2000}, nil
 		},
-		func() (any, *fakeherdr.APIError) { return nil, &fakeherdr.APIError{Code: "agent_not_found", Message: "no agent"} },
+		func() (any, *fakeherdr.APIError) {
+			return nil, &fakeherdr.APIError{Code: "agent_not_found", Message: "no agent"}
+		},
 		func() (any, *fakeherdr.APIError) {
 			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a"), topic("b")}, "stale": true, "as_of_unix_ms": 3000}, nil
 		},
