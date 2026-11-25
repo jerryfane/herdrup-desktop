@@ -1,4 +1,5 @@
 import type { AskForm, AskFormAnswer, AskFormStatus } from "./askFormModel";
+import type { SuggestionRow } from "./topicSuggestionsModel";
 export interface Question { question: string; options: string[]; multi: boolean; recommended?: number }
 export interface PlanItem { text: string; status?: string; done?: boolean; phase?: string; blocker?: string }
 export interface Entry {
@@ -203,6 +204,13 @@ export function chatDayLabel(ms: number, now: Date, locale?: string): { day: str
  if (Math.trunc((now.getTime() - ms) / 86_400_000) < 7) return { day: date.toLocaleDateString(locale, { weekday: "long" }), time };
  if (date.getFullYear() === now.getFullYear()) return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric" }), time };
  return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric", year: "numeric" }), time };
+}
+
+/** A transcript row as its kept node is matched against (interaction.ts drawChat, topicsView.ts
+ *  TopicChat.draw): a day separator with the label it reads now (chatDayLabel), which turns from
+ *  Today to Yesterday at midnight while the row stays the same; any other row as it is. */
+export function rowShown(row: ChatRow | SuggestionRow, now: Date): unknown {
+ return row.kind === "day" ? [row, chatDayLabel(row.ms, now)] : row;
 }
 
 // TranscriptGrouping.turns: consecutive thoughts/steps form one run. A prompt, a handover from

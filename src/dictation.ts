@@ -98,7 +98,8 @@ export class ComposerDictation {
       const spinner = document.createElement("span"); spinner.className = "composer-mic-spinner";
       this.button.replaceChildren(spinner);
     } else this.button.replaceChildren(composerGlyph("mic", 20));
-    this.input.disabled = this.busy;
+    // The field takes no typing while dictation writes it (busy): its composer renders that, with
+    // its own reasons, from `changed`.
     this.input.hidden = this.recording && !this.input.value;
     this.strip.hidden = !this.recording;
     if (notify) this.changed();

@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
@@ -463,8 +463,8 @@ class Detail {
  dictation = new ComposerDictation(this.input, () => {
   const busy = this.dictation?.busy ?? false, paused = !!this.guestPaused;
   this.send.disabled = paused || this.sending || busy; this.prompts.button.disabled = paused || this.sending || busy;
-  // Dictation's render sets the field's disabled state from its own busy flag alone: the field
-  // is the page's, the topic's (closed) and dictation's together (#533).
+  // Dictation reports its busy state; the field's disabled state is this page's to render, from
+  // the page's pause, the topic's (closed) and dictation's together (fieldDisabled, #533).
   this.input.disabled = this.fieldDisabled();
   this.relayout();
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
@@ -1794,10 +1794,11 @@ class Detail {
   if (rows.length && (this.drawFrom === null || !rows.some(row => row.id === this.drawFrom))) this.drawFrom = windowStarting(rows, windowStart);
   const start = this.findOpen ? 0 : windowStart;
   this.drawnIndex = start;
+  const now = new Date();
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id)
-    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null] : row);
+    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null] : rowShown(row, now));
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "suggestion" || row.kind === "mark" ? this.renderSuggestionRow(row, true)
     : row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);

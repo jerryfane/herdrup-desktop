@@ -9,7 +9,7 @@ import { errorText } from "./errors";
 import { ConversationColumn } from "./conversationColumn";
 import { ChatTail, placeRows } from "./chatTail";
 import { chatPollDelay, reconcileOutgoing, type Outgoing } from "./chatPoll";
-import { currentPlan, groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
+import { currentPlan, groupTranscript, mergeTranscript, readLive, rowShown, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, canFold, foldShortcutLabel, listedTopics, messageTooLong, searchTopics, seededTopics, statusDot, statusText, topicSections, topicsLayout, topicTitle, topicWorking, type TopicInfo } from "./topicsModel";
 import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
@@ -123,6 +123,10 @@ export class TopicsPane {
  private selected: string | null = null;
  private chat: TopicChat | null = null;
  private actionNote: string | null = null;
+ /** The latest note each topic's composer had (a send's receipt or refusal, a file's problem, an
+  *  action's), by topic id: a send that settles after its topic was left shows there when the
+  *  topic opens again. */
+ private readonly notes = new Map<string, string>();
  private inbox = "";
  private wide = false;
  private shown = false;
@@ -268,7 +272,10 @@ export class TopicsPane {
   this.chat?.dispose(); this.chat = null;
   const topic = id ? this.topics().find(t => t.topic_id === id) : undefined;
   if (topic) {
-   this.chat = new TopicChat(this.host, topic, () => this.showList());
+   this.chat = new TopicChat(this.host, topic, () => this.showList(), {
+    read: topicID => this.notes.get(topicID) ?? null,
+    write: (topicID, note) => this.setNote(topicID, note),
+   });
    this.chat.setActive(this.shown);
    this.side.replaceChildren(this.chat.root);
    this.chat.focus();
@@ -277,6 +284,12 @@ export class TopicsPane {
    if (this.wide) this.drawPlaceholder(); else this.side.replaceChildren();
   }
   this.layout();
+ }
+
+ /** A topic's note, drawn now when that topic is the one open. */
+ private setNote(topicID: string, note: string | null) {
+  if (note) this.notes.set(topicID, note); else this.notes.delete(topicID);
+  if (this.chat?.topicID === topicID) this.chat.drawNote(note);
  }
 
  private drawList() {
@@ -556,6 +569,12 @@ export class TopicsPane {
  }
 }
 
+/** The pane's notes by topic id (TopicsPane.notes), as an open topic reads and writes its own. */
+interface TopicNotes {
+ read(topicID: string): string | null;
+ write(topicID: string, note: string | null): void;
+}
+
 /** One topic's conversation (TopicChat): agent.transcript with `topic`, under it the page's own
  *  composer (the Inbox's, lent while the topic shows: TopicsHost.composer), which sends to this
  *  topic only (agent.topics.send). */
@@ -593,7 +612,7 @@ class TopicChat {
  /** What the page's composer needs of this topic while it writes here. */
  private readonly composer: TopicComposer;
 
- constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void) {
+ constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, private readonly notes: TopicNotes) {
   // The topic's header (Apple clean, owner picks 2026-11-24, items 14 and 15): [sidebar Topics ⌥⌘T |]
   // ‹ Inbox | title, status … •••, its text buttons capsules.
   this.listButton = button("Topics", "topic-list-open button-compact", showList);
@@ -628,6 +647,7 @@ class TopicChat {
   };
   this.column = new ConversationColumn(this.root, () => this.layout());
   this.root.append(header, this.notice, this.messages, this.note, this.composerSlot, ...this.column.handles, this.column.readout);
+  this.drawNote(notes.read(topic.topic_id));
   this.setTopic(topic);
   this.messages.append(this.earlier);
   this.resize = new ResizeObserver(() => this.layout());
@@ -678,7 +698,12 @@ class TopicChat {
  /** The open topic changed (an owner's agent.topics.changed): read its tail now. */
  refresh() { if (this.active) void this.load(false); }
 
- private showNote(note: string | null) {
+ get topicID(): string { return this.topic.topic_id; }
+
+ /** The topic's note: kept by the pane (TopicNotes), so a send that settles after this
+  *  conversation closed still shows when the topic opens again. */
+ private showNote(note: string | null) { this.notes.write(this.topic.topic_id, note); }
+ drawNote(note: string | null) {
   this.note.textContent = note ?? ""; this.note.hidden = !note;
  }
 
@@ -747,11 +772,13 @@ class TopicChat {
   const page = this.page;
   const expanded = new Set([...this.messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
   // An unchanged row stays attached, as the Inbox's do (interaction.ts drawChat): a handover's
-  // Show less keeps its focus across polls.
+  // Show less keeps its focus across polls. A day separator whose label moved on (rowShown) is
+  // drawn again.
   const kept = new Map<string, HTMLElement>();
   for (const node of this.messages.children) if (node instanceof HTMLElement && node.dataset.id) kept.set(node.dataset.id, node);
+  const now = new Date();
   const nodes = groupTranscript(this.entries, !!page?.working).map(row => {
-   const signature = JSON.stringify(row);
+   const signature = JSON.stringify(rowShown(row, now));
    const old = kept.get(row.id);
    if (old?.dataset.signature === signature) return old;
    const node = this.host.renderRow(row, this.unfolded);
