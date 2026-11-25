@@ -326,7 +326,9 @@ func (h *HeldChannel) Ping(ctx context.Context, result any) error {
 func (h *HeldChannel) send(ctx context.Context, method string, params, result any, idempotent bool) error {
 	c := h.c
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("%s: %w", method, err)
+		// Nothing was written: herdr does not have it (ErrNotSent), and
+		// the cause stays.
+		return fmt.Errorf("%s: %w: %w", method, ErrNotSent, err)
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -368,8 +370,10 @@ func (h *HeldChannel) send(ctx context.Context, method string, params, result an
 
 // heldChannel is the session's open channel for OnOneChannel. A session
 // whose capability is not known yet is pinged per-request first, which
-// learns it and starts the open; an error wrapping ErrNotSent when there is
-// still no channel.
+// learns it and starts the open. With still no channel, an error wrapping
+// ErrNotSent, joined with why: that probe's failure (its transport error,
+// or herdr's error reply), or ctx ending; none for a session whose herdr
+// just has no --multi channel to give.
 func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 	if m := c.readyChannel(ctx); m != nil {
 		return m, nil
@@ -378,22 +382,26 @@ func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 	p.mu.Lock()
 	unknown := p.slot(c.cfg.Session).capability == capUnknown
 	p.mu.Unlock()
+	var probeErr error
 	if unknown {
 		line, err := EncodeRequest(c.nextID("ping"), "ping", nil)
 		if err != nil {
 			return nil, err
 		}
-		if reply, err := c.oneShot(ctx, line); err == nil {
+		reply, err := c.oneShot(ctx, line)
+		if err == nil {
+			err = DecodeReply(reply, nil)
 			c.learnCapability(reply)
+		}
+		if err != nil {
+			probeErr = fmt.Errorf("probing for --multi: %w", err)
 		}
 		if m := c.readyChannel(ctx); m != nil {
 			return m, nil
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return nil, fmt.Errorf("no herdr api-bridge --multi channel to hold: %w", ErrNotSent)
+	notSent := fmt.Errorf("no herdr api-bridge --multi channel to hold: %w", ErrNotSent)
+	return nil, errors.Join(notSent, probeErr, ctx.Err())
 }
 
 // multiChannel is one `herdr api-bridge --multi` process. Requests are
@@ -667,7 +675,8 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	case <-m.retiredC:
 		return nil, ErrNotSent
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		// Ended before a slot was had: nothing was written.
+		return nil, fmt.Errorf("%w: %w", ErrNotSent, ctx.Err())
 	}
 	ch := make(chan reply, 1)
 	m.mu.Lock()

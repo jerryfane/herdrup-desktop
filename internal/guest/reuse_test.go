@@ -538,3 +538,74 @@ func TestAGuestRequestHeldToOneSessionGoesOnNoOther(t *testing.T) {
 		})
 	}
 }
+
+// #481 review: a held request whose context ended before it was written is
+// unsent (bridge.ErrNotSent) and keeps its cause (context.Canceled); herdr
+// never gets it.
+func TestAHeldGuestRequestCancelledBeforeItsWriteIsUnsent(t *testing.T) {
+	h := newReuseHost(t, true)
+	var promptErr error
+	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
+		ended, cancel := context.WithCancel(context.Background())
+		cancel()
+		promptErr = held.Call(ended, "agent.prompt", map[string]string{"target": "worker", "text": "late"}, nil)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(promptErr, bridge.ErrNotSent) || !errors.Is(promptErr, context.Canceled) {
+		t.Fatalf("%v; want ErrNotSent with context.Canceled", promptErr)
+	}
+	if got := prompts(h.relay); len(got) != 0 {
+		t.Fatalf("prompts %q; want the cancelled one never sent", got)
+	}
+}
+
+// #481 review: a held handle that work kept past its return is released
+// before its session is parked: it sends nothing on the session the next
+// call borrows.
+func TestAReleasedHeldGuestHandleSendsNothing(t *testing.T) {
+	h := newReuseHost(t, true)
+	var kept engine.Held
+	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
+		kept = held
+		return held.Ping(context.Background(), nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := kept.Call(context.Background(), "agent.prompt", map[string]string{"target": "worker", "text": "escaped"}, nil)
+	if !errors.Is(err, bridge.ErrNotSent) {
+		t.Fatalf("%v; want the released handle's request unsent", err)
+	}
+	if got := prompts(h.relay); len(got) != 0 {
+		t.Fatalf("prompts %q; want none from the released handle", got)
+	}
+	h.list(t) // the parked session still serves the next borrower
+}
+
+// #481 review: a held handle carries one request at a time: one asked while
+// another is in flight fails unsent, before any frame of it goes.
+func TestAnOverlappingHeldGuestRequestIsRefusedUnsent(t *testing.T) {
+	h := newReuseHost(t, true)
+	h.mu.Lock()
+	h.gate = make(chan struct{})
+	h.mu.Unlock()
+	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
+		slow := make(chan error, 1)
+		go func() {
+			slow <- held.Call(context.Background(), "agent.transcript", map[string]string{"target": "worker"}, nil)
+		}()
+		eventually(t, "the slow request to reach herdr", func() bool { return len(h.relay.Calls()) > 0 })
+		err := held.Call(context.Background(), "agent.prompt", map[string]string{"target": "worker", "text": "overlap"}, nil)
+		close(h.gate)
+		if !errors.Is(err, bridge.ErrNotSent) {
+			t.Errorf("%v; want the overlapping request unsent", err)
+		}
+		return <-slow
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := prompts(h.relay); len(got) != 0 {
+		t.Fatalf("prompts %q; want the overlapping one never sent", got)
+	}
+}

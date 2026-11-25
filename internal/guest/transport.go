@@ -231,15 +231,25 @@ func roundTrip(ctx context.Context, s *session, request []byte) (line []byte, se
 }
 
 // decode decodes the reply line s carried, then leaves s idle for the next
-// call when it is open and herdr keeps serving it, or closes it.
+// call when it can carry one (decodeReply), or closes it.
 func (t *Transport) decode(s *session, open bool, line []byte, result any) error {
-	err := bridge.DecodeReply(line, result)
-	if open && s.frames != nil && keepsSession(err) {
+	reusable, err := decodeReply(s, open, line, result)
+	if reusable {
 		t.park(s)
 	} else {
 		s.close()
 	}
 	return err
+}
+
+// decodeReply decodes the reply line s carried into result, and says
+// whether s can carry another request: it is still open, a session herdr
+// serves in turn (multi_request, read by its pump), and herdr keeps it
+// after that reply (keepsSession). What to do with s, park it now or hold
+// it for the next request, is the caller's.
+func decodeReply(s *session, open bool, line []byte, result any) (reusable bool, err error) {
+	err = bridge.DecodeReply(line, result)
+	return open && s.frames != nil && keepsSession(err), err
 }
 
 // keepsSession says herdr serves further requests after a reply that
@@ -362,9 +372,12 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 // features.multi_request serves one request a session) before the request
 // was written, it fails with an error wrapping bridge.ErrNotSent, and herdr
 // does not have it; it is never sent again. (A guest's held session is not
-// swapped even for a ping.) Each request is otherwise as Call's. The
-// session is left idle for the next call when work ends with it still fit
-// to carry one.
+// swapped even for a ping.) Each request is otherwise as Call's. The held
+// handle carries one request at a time: one asked while another is in
+// flight fails with an error wrapping bridge.ErrNotSent, before any frame
+// of it is sent. Once work returns, the handle is released, and whatever
+// it is asked fails so too; then the session is left idle for the next
+// call when it is still fit to carry one.
 func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) error) error {
 	if err := t.ctx.Err(); err != nil {
 		return err
@@ -386,7 +399,14 @@ func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) e
 	}
 	h := &heldSession{t: t, s: s}
 	err := work(h)
-	if h.spent {
+	// Released before the session is parked: a handle work kept sends
+	// nothing on it once the next borrower may have it. A request of the
+	// handle's still in flight finishes first.
+	h.mu.Lock()
+	h.released = true
+	spent := h.spent
+	h.mu.Unlock()
+	if spent {
 		s.close()
 	} else {
 		t.park(s)
@@ -396,9 +416,13 @@ func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) e
 
 // heldSession is the session OnOneChannel holds for its work.
 type heldSession struct {
-	t     *Transport
-	s     *session
-	spent bool // the session can carry no more requests
+	t *Transport
+	s *session
+	// mu is held by the request in flight; spent and released change
+	// under it.
+	mu       sync.Mutex
+	spent    bool // the session can carry no more requests
+	released bool // work returned: the handle sends nothing more
 }
 
 func (h *heldSession) Ping(ctx context.Context, result any) error {
@@ -406,8 +430,19 @@ func (h *heldSession) Ping(ctx context.Context, result any) error {
 }
 
 func (h *heldSession) Call(ctx context.Context, method string, params, result any) error {
+	if !h.mu.TryLock() {
+		return fmt.Errorf("%s: %w: another request of this held session is in flight", method, bridge.ErrNotSent)
+	}
+	defer h.mu.Unlock()
+	if h.released {
+		return fmt.Errorf("%s: %w: the held session was released", method, bridge.ErrNotSent)
+	}
 	if h.spent {
 		return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
+	}
+	if err := ctx.Err(); err != nil {
+		// Nothing was written: herdr does not have it, and the cause stays.
+		return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
 	defer cancel()
@@ -420,15 +455,14 @@ func (h *heldSession) Call(ctx context.Context, method string, params, result an
 	line, sent, open, err := roundTrip(ctx, h.s, request)
 	if err != nil {
 		h.spent = true
-		if !sent && ctx.Err() == nil {
+		if !sent {
+			// No write of it was attempted, whatever ended the call.
 			return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
 		}
 		return err
 	}
-	err = bridge.DecodeReply(line, result)
-	if !open || h.s.frames == nil || !keepsSession(err) {
-		h.spent = true
-	}
+	reusable, err := decodeReply(h.s, open, line, result)
+	h.spent = !reusable
 	return err
 }
 

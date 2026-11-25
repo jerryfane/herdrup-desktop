@@ -305,7 +305,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 		return err
 	}
 	reply, err := c.viaMulti(ctx, method, id, line)
-	if errors.Is(err, ErrNotSent) {
+	if errors.Is(err, ErrNotSent) && ctx.Err() == nil {
 		reply, err = c.oneShot(ctx, line)
 	}
 	if err != nil {
