@@ -41,7 +41,7 @@ const fail = (code: string): Answer => ({ error: { code, message: code.replaceAl
  *  A connect whose hello hold() takes is never answered. */
 function host(script: {
  scope?: string | (() => string); agents?: () => unknown[]; answers?: (req: Request) => Answer | Promise<Answer> | undefined;
- admit?: () => Response | undefined; endAfter?: string; hold?: () => boolean; ping?: () => Answer;
+ admit?: () => Response | undefined; endAfter?: string; hold?: () => boolean;
 }) {
  const calls: Request[] = [];
  const conns = new Set<HostConn>();
@@ -61,7 +61,7 @@ function host(script: {
     calls.push(req);
     if (req.method === "agent.list") { listing?.(); listing = null; }
     const reply = req.method === "agent.list" ? ok({ type: "agent_list", agents: script.agents?.() ?? [{ pane_id: "p1", name: "herdr-app", agent: "claude" }] })
-     : req.method === "ping" ? script.ping?.() ?? ok({ type: "pong", version: "0.9.0", capabilities: {} })
+     : req.method === "ping" ? ok({ type: "pong", version: "0.9.0", capabilities: {} })
      : script.answers?.(req) ?? fail("owner_forbidden");
     void Promise.resolve(reply).then(async r => {
      let tail = "";
@@ -928,19 +928,25 @@ test("a draft with line breaks goes to a plain terminal as one pane.send_bracket
 
 // #489: whatever herdr answers pane.send_bracketed_text with when it wrote nothing keeps the draft:
 // a herdr without the method (invalid_request as an unlisted method, unknown_method), a grant that
-// may not write to a terminal (owner_forbidden), a program with bracketed paste off.
+// may not write to a terminal (owner_forbidden), a program with bracketed paste off. #507: the
+// write went, so not a NotSentError: the user's reason, herdr's answer (as GuestClient maps it) its
+// cause.
 test.each([
- ["invalid_request naming the method", (req: Request) => unlisted(req.method), "Write one line at a time: a line break would run the text before it."],
- ["invalid_request in other words", () => fail("invalid_request"), "Write one line at a time: a line break would run the text before it."],
- ["unknown_method", () => fail("unknown_method"), "Write one line at a time: a line break would run the text before it."],
- ["owner_forbidden", () => fail("owner_forbidden"), "Write one line at a time: a line break would run the text before it."],
- ["bracketed_paste_unavailable", () => fail("bracketed_paste_unavailable"), "This program can't take a pasted block. Write one line at a time."],
-] as const)("herdr answering a bracketed write with %s wrote nothing: a definite not-sent, the draft comes back with the reason", async (_code, answer, reason) => {
+ ["invalid_request naming the method", (req: Request) => unlisted(req.method), "Write one line at a time: a line break would run the text before it.", ErrUnsupported, null],
+ ["invalid_request in other words", () => fail("invalid_request"), "Write one line at a time: a line break would run the text before it.", HerdrAPIError, "invalid_request"],
+ ["unknown_method", () => fail("unknown_method"), "Write one line at a time: a line break would run the text before it.", ErrUnsupported, null],
+ ["owner_forbidden", () => fail("owner_forbidden"), "Write one line at a time: a line break would run the text before it.", HerdrAPIError, "owner_forbidden"],
+ ["bracketed_paste_unavailable", () => fail("bracketed_paste_unavailable"), "This program can't take a pasted block. Write one line at a time.", HerdrAPIError, "bracketed_paste_unavailable"],
+] as const)("herdr answering a bracketed write with %s wrote nothing: a refusal with the reason, herdr's answer its cause, so the draft comes back", async (_code, answer, reason, causeClass, causeCode) => {
  const { h, desk, writes } = await terminalOn(answer);
  try {
-  const refused = await desk.chatPrompt("term-1", "echo one\necho two").catch(e => e);
-  expect(refused).toBeInstanceOf(NotSentError);
-  expect(String(refused)).toContain(reason);
+  const refused: unknown = await desk.chatPrompt("term-1", "echo one\necho two").catch(e => e);
+  expect(refused).toBeInstanceOf(Error);
+  expect(refused).not.toBeInstanceOf(NotSentError);
+  const { message, cause } = refused as Error;
+  expect(message).toBe(reason);
+  expect(cause).toBeInstanceOf(causeClass);
+  if (causeCode !== null) expect((cause as HerdrAPIError).code).toBe(causeCode);
   expect(writes().map((w) => w.method)).toEqual(["pane.send_bracketed_text"]);
  } finally { desk.disconnectOwner(); h.relay.stop(); }
 });

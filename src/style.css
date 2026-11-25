@@ -17,8 +17,10 @@
   /* iOS 27's accepted regular-width references start the 320 pt sidebar
      at the window edge, without the former floating card's inset. */
   --sidebar-inset: 0px;
-  /* The column's width: dragged between the size tokens and remembered (sidebar.ts). */
-  --sidebar-width: var(--size-sidebar-min);
+  /* The column's width, the one every surface beside or over it reads (the sidebar, the
+     notices, the detail's edge): the desktop's dragged and remembered width (sidebar.ts sets
+     --sidebar-width-preference inline), the screen's on a phone (Phone layout below). */
+  --sidebar-width: var(--sidebar-width-preference, var(--size-sidebar-min));
   /* The tab bar sits 12 pt above the safe area's bottom (H:2786-2861). */
   --tabbar-bottom: calc(var(--home-inset) + 12px - var(--sidebar-inset));
   /* The sidebar lists end above the bar: it is their bottom safe-area inset, 62 pt with
@@ -916,19 +918,17 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
    have no home indicator inset here (cage). ==== */
 .compact-back-button { display: none; }
 @media (max-width: 700px) {
-  /* --phone-layout: read by ConversationColumn, so this rule alone decides the phone layout. */
+  /* --phone-layout: read by ConversationColumn, so this rule alone decides the phone layout.
+     The column is the screen: the sidebar and the notices, which read --sidebar-width, span it,
+     never the desktop preference (#490, #496). */
   :root.desk { --home-inset: 0px; --sidebar-width: 100vw; --phone-layout: 1; }
-  .desk .sidebar { width: 100vw !important; }
   .desk .sidebar-resizer, .desk .select, .desk .field { display: none !important; }
   .desk .detail { left: 0; bottom: 0; z-index: 2; }
   .desk .detail > .gram::after { display: none; }
   .desk body:not([data-detail="page"]):not([data-detail="bars"]) > .detail { display: none; }
-  /* The notices span the screen, as the sidebar does: never the stored desktop width, which still
-     sets --sidebar-width inline (sidebar.ts) and would push Review off a narrow screen (#490).
-     Gram ends above them, over the tab bar. An agent's or a Settings page covers the list and its
-     tab bar: the notices cross the screen's bottom and the page ends above them, so Review is seen
-     and takes clicks there, and nothing of the list behind shows (#486). */
-  .desk .notices { left: 0; right: 0; width: auto; }
+  /* Gram ends above the notices, over the tab bar. An agent's or a Settings page covers the list
+     and its tab bar: the notices cross the screen's bottom and the page ends above them, so Review
+     is seen and takes clicks there, and nothing of the list behind shows (#486). */
   .desk body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px)); overflow: hidden; }
   .desk body[data-detail="page"] > .detail { bottom: var(--foot-notice, 0px); }
   .desk body[data-detail="page"] > .notices { bottom: 0; }
