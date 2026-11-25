@@ -1,7 +1,7 @@
 // Web owner access, the approving computer's side (WIRE-PLAN §2, D1; mockups
 // herdrup-accounts-mockups/web-owner sections 2 and 5): while the app is in front and signed in,
 // it looks for browsers asking to reach the owner's machines (no push in v1), and opens
-// "Approve a browser?", or, while the user is typing, says so in the sidebar's foot until Review or
+// "Approve a browser?", or, while the user is typing, says so among the window's notices until Review or
 // a pause in typing opens it (#464). The user types the code the browser shows, picks machines,
 // access and time, and this computer adds a grant on each machine over SSH. Desktop only: the web
 // guest is the browser being approved, never the approver.
@@ -12,6 +12,7 @@ import type { WebAccessLength, WebAccessMachine } from "./mygo";
 import { errorText } from "./errors";
 import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
+import { noticeRegion } from "./notices";
 import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
  slotSelection, timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
@@ -209,9 +210,11 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
    const req = nextRequest(await Desk.webAccessRequests() as WebAccessRequestView[], closed);
    if (!req) return;
    const lengths = await Desk.webAccessLengths();
-   const machines = await machinesNow();
    const done = () => { closed.add(req.id); open = null; };
-   // Checked after the last wait, right before the sheet would open: typing may have begun meanwhile.
+   // Typing owns the focus: the notice at once; its sheet asks for the machines when it opens.
+   if (takesTyping(document.activeElement)) { notify(req, lengths, done); return; }
+   const machines = await machinesNow();
+   // Checked again after the last wait, right before the sheet would open: typing may have begun meanwhile.
    if (takesTyping(document.activeElement)) notify(req, lengths, done);
    else await showSheet(req, lengths, machines, done);
   } catch { /* the next look tries again */ }
@@ -222,15 +225,15 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  schedule();
 
  /** A request that came while the user was typing: a modal sheet would take the keys mid-word
-  *  (its code field kept four of them, #464), so a line in the sidebar's foot says so instead,
-  *  taking no focus. Review opens the sheet, and so does a pause in typing that still holds once
-  *  the sheet is ready to open (#474). */
+  *  (its code field kept four of them, #464), so a line among the window's notices (notices.ts)
+  *  says so instead, taking no focus. Review opens the sheet, and so does a pause in typing that
+  *  still holds once the sheet is ready to open (#474). */
  function notify(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): void {
   open = req.id;
   const notice = el("div", "web-access-notice"); notice.setAttribute("role", "status");
   const review = el("button", "button-secondary button-compact", "Review"); review.type = "button";
   notice.append(el("span", "web-access-notice-text", "A browser wants to reach your machines."), review);
-  (document.getElementById("sidebar-foot") ?? document.body).prepend(notice);
+  noticeRegion().prepend(notice);
   let cancel = () => {};
   const pause = () => clock.now() - typedAt;
   // The notice stays until the sheet opens. Typing may resume while the machines come: then,

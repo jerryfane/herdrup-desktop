@@ -184,8 +184,8 @@ html, body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* The tab bar floats over the list's end (safeAreaInset), and so do the foot's notices while
-     they show (sidebar.ts reserveFootNotices sets --foot-notice). */
+  /* The tab bar floats over the list's end (safeAreaInset), and so do the window's notices while
+     they show (notices.ts reserveNotices sets --foot-notice). */
   padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scroll-padding-bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px));
   scrollbar-width: none;
@@ -452,9 +452,9 @@ html, body {
   color: var(--color-text-dim);
 }
 
-/* The sidebar's foot: the glass tab bar and any notice over it (agentActions.ts), floating over
-   the bare ground at the sidebar's bottom. It takes no room: the lists end above the bar by
-   --tabbar-inset, as herdrup's safe-area inset does. */
+/* The sidebar's foot: the glass tab bar, floating over the bare ground at the sidebar's bottom.
+   It takes no room: the lists end above the bar by --tabbar-inset, as herdrup's safe-area inset
+   does. */
 .sidebar-foot {
   position: absolute;
   left: 0;
@@ -467,6 +467,22 @@ html, body {
   pointer-events: none;
 }
 .sidebar-foot > * { pointer-events: auto; }
+/* The window's notices (notices.ts): over the sidebar's foot, above the tab bar, on the sidebar's
+   ground; the lists end above them by --foot-notice. Outside the sidebar, so its minimised
+   hidden, inert state doesn't reach them (#486): then they cross the window's bottom beside the
+   rail, and the detail ends above them. */
+.notices {
+  position: fixed;
+  left: var(--sidebar-inset);
+  width: var(--sidebar-width);
+  bottom: calc(var(--sidebar-inset) + var(--tabbar-inset));
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-ground);
+}
+.sidebar-minimized > .notices { left: var(--size-rail); right: 0; width: auto; bottom: var(--home-inset); }
+.sidebar-minimized > .detail { bottom: calc(var(--home-inset) + var(--foot-notice, 0px)); }
 /* Sidebar tab bar: a 62 pt glass capsule at most 320 wide, 14 pt sides. The
    iOS 26 Liquid Glass material has no CSS equivalent; this is its colour over the bare
    sidebar in every 9845ecf reference (#31354e: board, Gram and detail captures alike), and
@@ -907,11 +923,12 @@ dialog.folder-naming .buttons { display: flex; justify-content: flex-end; gap: v
   .desk .detail { left: 0; bottom: 0; z-index: 2; }
   .desk .detail > .gram::after { display: none; }
   .desk body:not([data-detail="page"]):not([data-detail="bars"]) > .detail { display: none; }
-  /* Gram, and an agent's or a Settings page while a foot notice shows (sidebar.ts
-     reserveFootNotices: the Topics switch's, a browser asking to be approved), end above the
-     foot, so the notice is seen and Review takes clicks over the page the user types in. */
+  /* Gram ends above the notices over the tab bar. An agent's or a Settings page covers the list and
+     its tab bar: the notices cross the screen's bottom and the page ends above them, so Review is
+     seen and takes clicks there, and nothing of the list behind shows (#486). */
   .desk body[data-detail="bars"] > .detail { top: calc(var(--size-top-bar) + var(--space-stack-medium)); bottom: calc(var(--tabbar-inset) + var(--foot-notice, 0px)); overflow: hidden; }
-  .desk.foot-notice body[data-detail="page"] > .detail { bottom: calc(var(--tabbar-inset) + var(--foot-notice)); }
+  .desk body[data-detail="page"] > .detail { bottom: var(--foot-notice, 0px); }
+  .desk body[data-detail="page"] > .notices { left: 0; right: 0; width: auto; bottom: 0; }
   /* The sidebar can't be minimised: it is the screen. Gram's conversation rows give way to
      its page, whose header has the Saved bookmark (GramView.swift headerTrailing). */
   .desk .topbar [aria-label="Minimise sidebar"], .desk .topbar .slot[title="Minimise sidebar"] { display: none; }

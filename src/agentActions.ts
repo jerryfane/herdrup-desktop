@@ -16,6 +16,7 @@ import { switchAction, switchMessage, switchStatusText, switchTitle, type Switch
 import { openSheet, type SheetRequest } from "./sheetOpening";
 import "./agentActions.css";
 import { errorText } from "./errors";
+import { noticeRegion } from "./notices";
 
 /** What the sheets borrow from the Agents list (main.ts). */
 export interface AgentActionDeps {
@@ -142,15 +143,15 @@ async function switchTopics(action: AgentAction) {
 
 let bannerShown: SwitchStatus | null = null;
 /** TopicsSwitchBanner: one status at a time; a result clears itself after 6 s unless replaced.
- * It sits in the sidebar's foot, over the glass tab bar (style.css .sidebar-foot); while it shows,
- * the sidebar's lists end above it too (sidebar.ts reserveFootNotices). */
+ * It sits among the window's notices (notices.ts), over the glass tab bar while the sidebar shows;
+ * the sidebar's lists end above it (notices.ts reserveNotices). */
 function switchBanner() {
-  const foot = document.getElementById("sidebar-foot") ?? document.body;
-  let banner = foot.querySelector<HTMLElement>(":scope > .topics-switch-banner");
+  const region = noticeRegion();
+  let banner = region.querySelector<HTMLElement>(":scope > .topics-switch-banner");
   if (!banner) {
     banner = el("div", "topics-switch-banner");
     banner.setAttribute("role", "status");
-    foot.prepend(banner);
+    region.prepend(banner);
   }
   const node = banner;
   return (status: SwitchStatus) => {

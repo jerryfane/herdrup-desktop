@@ -15,10 +15,10 @@
 /* A share's sidebar: its agent list, its Gram's inbox (gram.ts, #697), or on the desktop the
    app's Settings index (settings.ts). */
 .guest-mode #sidebar > :not(.topbar, .sidebar-foot, .guest-navigation, .gram-side, .settings-index) { display: none !important; }
-/* The foot keeps the tab bar and a browser asking to reach the user's machines (webAccess.ts
-   notify): the user may be typing in a share then. The Topics switch's notice is about the
-   user's own agents, and takes no room in a share's sidebar. */
-.guest-mode #sidebar-foot > :not(.tabbar, .web-access-notice) { display: none !important; }
+/* The window's notices (notices.ts) keep a browser asking to reach the user's machines
+   (webAccess.ts notify): the user may be typing in a share then. The Topics switch's notice is
+   about the user's own agents, and takes no room in a share's sidebar. */
+.guest-mode .notices > .topics-switch-banner { display: none !important; }
 .guest-navigation[hidden], .guest-settings[hidden] { display: none; }
 .guest-navigation {
   flex: 1;
