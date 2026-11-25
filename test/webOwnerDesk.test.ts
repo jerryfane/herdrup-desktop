@@ -167,25 +167,65 @@ test("switching machines, the new link's watchers find it usable and Desk.state(
 });
 
 test("a new link tells the connecting snapshot it was made with, then a new one only when the connection changes", async () => {
- let lists = 0;
- const listed = [Promise.withResolvers<void>(), Promise.withResolvers<void>(), Promise.withResolvers<void>()];
- const relay = host({ list: (session, req) => { answer(session, req, { result: { type: "agent_list", agents } }); listed[lists++]?.resolve(); } });
+ const relay = host();
  const desk = await deskWithKey();
  const told: ConnState[] = [];
  const offState = events.stateChanged.on(s => told.push(s));
  let seeded: Promise<ConnState> | null = null;
  const offLink = onLinkChanged((_link, owner) => { if (owner) seeded = desk.state(); });
  try {
+  const first = boardOf(relay);
   await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
-  await listed[0]!.promise;
-  // Two more lists with the same answer: the connection hasn't changed, nothing more is told.
-  currentOwnerLink()!.relist(); await listed[1]!.promise;
-  currentOwnerLink()!.relist(); await listed[2]!.promise;
-  await new Promise(r => setTimeout(r, 20));
+  await first;
+  // Two more lists with the same answer, each awaited to its board (published after the state):
+  // the connection hasn't changed, nothing more is told.
+  for (let i = 0; i < 2; i++) { const listed = boardOf(relay); currentOwnerLink()!.relist(); await listed; }
   expect(told.map(s => s.phase)).toEqual(["connecting", "connected"]);
   expect(told[0]).toBe(await seeded!); // the very snapshot the link's watchers read
   expect(await desk.state()).toBe(told[1]!);
  } finally { offState(); offLink(); desk.disconnectOwner(); relay.stop(); }
+});
+
+test("a guest's shared agent renamed on the host is the connection's name from the first list that has it; a list the same tells nothing", async () => {
+ // agent.list answers in turn, the last one again; anything else is refused (an answer's finally lists again).
+ const names = ["Renamed", "Renamed", "Renamed again"];
+ let lists = 0;
+ const relay = startRelay({
+  async serve(_conn, handshake) {
+   const session = (await handshake()).reply({ ok: true, guest_id: "grant-1", features: { multi_request: true } });
+   for (;;) {
+    const line = await session.readLine();
+    if (line === null) return;
+    const req = JSON.parse(line) as Request;
+    if (req.method === "agent.list") answer(session, req, { result: { type: "agent_list", agents: [{ pane_id: "p1", terminal_id: "t1", name: names[Math.min(lists++, names.length - 1)], agent: "claude" }] } });
+    else answer(session, req, { error: { code: "forbidden", message: "no" } });
+   }
+  },
+ });
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put({ guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date() });
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const id = `${relay.hostID}/grant-1`;
+ const nextBoard = () => { const got = Promise.withResolvers<void>(); const off = events.boardChanged.on(b => { if (b?.machineID === `guest:${id}`) { off(); got.resolve(); } }); return got.promise; };
+ const told: ConnState[] = [];
+ const offState = events.stateChanged.on(s => told.push(s));
+ const nameNow = async () => (await desk.state()).guest?.access.agentName;
+ try {
+  let listed = nextBoard();
+  await desk.connectGuest(id);
+  await listed;
+  expect(await nameNow()).toBe("Renamed");
+  await desk.openAgentView({ machineID: `guest:${id}`, session: "", paneID: "p1" }, "view-1");
+  const before = told.length;
+  listed = nextBoard(); await desk.chatAnswer("view-1", "a", "1"); await listed; // the same name again
+  expect([await nameNow(), told.length]).toEqual(["Renamed", before]);
+  listed = nextBoard(); await desk.chatAnswer("view-1", "a", "1"); await listed;
+  expect(await nameNow()).toBe("Renamed again");
+  expect(told.map(s => s.guest?.access.agentName)).toEqual(["Worker", "Renamed", "Renamed again"]);
+ } finally { offState(); await desk.forgetGuestConnection(id); relay.stop(); }
 });
 
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
