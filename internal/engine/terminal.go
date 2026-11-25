@@ -19,50 +19,15 @@ func (c *Client) PaneSendText(ctx context.Context, pane, text string) error {
 	return err
 }
 
-// ErrBracketedUnsupported: the host's ping does not advertise
-// pane_send_text_bracketed, so PaneSendBracketedText sent nothing.
-var ErrBracketedUnsupported = errors.New("this herdr cannot write a bracketed paste (no pane_send_text_bracketed capability)")
-
-// PaneSendBracketedText writes text as one bracketed paste (herdr #512), so
-// a line break in it does not run the text before it. It sends only on
-// positive evidence from the herdr the write reaches: one without
-// pane_send_text_bracketed may ignore bracketed and write the text raw, and
-// a cached pong may be another herdr process's (one restarted or rolled
-// back since, issue #476). So the transport holds one channel (OneChannel)
-// and a ping, then the write, go on it back to back; the pong is never
-// taken from the cache. Without the capability it answers
-// ErrBracketedUnsupported; when no channel can be held, the ping fails, or
-// the channel ends before the write is sent, ErrProbeFailed. Either way
-// nothing was written. herdr itself refuses with bracketed_paste_unavailable,
-// writing nothing, when the pane's program has not turned bracketed paste
-// on.
+// PaneSendBracketedText writes text as one bracketed paste
+// (pane.send_bracketed_text, herdr #517), so a line break in it does not
+// run the text before it. It is one ordinary call: a herdr without the
+// method refuses it (*ErrUnsupported when its pong says so or it answers
+// unknown_method or an unknown variant, else invalid_request), and one
+// whose pane's program has bracketed paste off answers
+// bracketed_paste_unavailable; either way nothing was written.
 func (c *Client) PaneSendBracketedText(ctx context.Context, pane, text string) error {
-	unchecked := func(err error) error {
-		return &ErrProbeFailed{Capability: herdrapi.CapabilityPaneSendTextBracketed, Err: err}
-	}
-	one, ok := c.t.(OneChannel)
-	if !ok {
-		return unchecked(errors.New("this connection can't hold one channel to herdr"))
-	}
-	sent := false // the write went out on the held channel
-	err := one.OnOneChannel(ctx, func(h Held) error {
-		// The ping is the one request that may move to a fresh channel
-		// (Held.Ping); the write goes at most once.
-		pong, err := c.pingWith(ctx, func(ctx context.Context, _ string, _, result any) error { return h.Ping(ctx, result) })
-		if err != nil {
-			return err
-		}
-		if !herdrapi.CapabilityPaneSendTextBracketed.Supported(pong.Capabilities) {
-			return ErrBracketedUnsupported
-		}
-		bracketed := true
-		_, _, err = c.callWith(ctx, h.Call, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, Bracketed: &bracketed, InputSource: c.inputSource()})
-		sent = !errors.Is(err, bridge.ErrNotSent)
-		return err
-	})
-	if err != nil && !sent && !errors.Is(err, ErrBracketedUnsupported) {
-		return unchecked(err)
-	}
+	_, err := c.do(ctx, "pane.send_bracketed_text", herdrapi.PaneSendBracketedTextParams{PaneID: pane, Text: text, InputSource: c.inputSource()})
 	return err
 }
 

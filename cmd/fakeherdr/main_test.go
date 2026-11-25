@@ -114,20 +114,20 @@ func TestBracketedWriteFlagServesTheWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, bracketed := json.RawMessage(`{"pane_id":"w1:p1","text":"ls"}`), json.RawMessage(`{"pane_id":"w1:p1","text":"a\nb","bracketed":true}`)
+	plain, bracketed := json.RawMessage(`{"pane_id":"w1:p1","text":"ls"}`), json.RawMessage(`{"pane_id":"w1:p1","text":"a\nb"}`)
 	for mode, wantBracketed := range map[string]string{"on": "", "paste-off": "bracketed_paste_unavailable"} {
 		handle, err := bracketedWrites(mode, base)
 		if err != nil {
 			t.Fatal(err)
 		}
 		pong, _ := handle("ping", nil)
-		if !pong.(map[string]any)["capabilities"].(map[string]bool)["pane_send_text_bracketed"] {
-			t.Fatalf("%s: ping does not advertise pane_send_text_bracketed: %v", mode, pong)
+		if !pong.(map[string]any)["capabilities"].(map[string]bool)["pane_send_bracketed_text"] {
+			t.Fatalf("%s: ping does not advertise pane_send_bracketed_text: %v", mode, pong)
 		}
 		if _, apiErr := handle("pane.send_text", plain); apiErr != nil {
 			t.Fatalf("%s: plain write: %v", mode, apiErr)
 		}
-		_, apiErr := handle("pane.send_text", bracketed)
+		_, apiErr := handle("pane.send_bracketed_text", bracketed)
 		code := ""
 		if apiErr != nil {
 			code = apiErr.Code

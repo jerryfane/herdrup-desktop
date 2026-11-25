@@ -71,10 +71,6 @@ const (
 	// suggestions on agent.topics.list and topic_suggestion transcript
 	// entries (herdr #490).
 	CapabilityAgentTopicSuggestions Capability = "agent_topic_suggestions"
-	// pane.send_text bracketed: one bracketed paste where the pane's program
-	// turned bracketed paste on, else bracketed_paste_unavailable and nothing
-	// written (herdr #512).
-	CapabilityPaneSendTextBracketed Capability = "pane_send_text_bracketed"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -122,8 +118,6 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentTopicsSwitch
 	case CapabilityAgentTopicSuggestions:
 		return caps.AgentTopicSuggestions
-	case CapabilityPaneSendTextBracketed:
-		return caps.PaneSendTextBracketed
 	}
 	return false
 }
@@ -201,6 +195,11 @@ var Methods = []Method{
 	// schema.rs:102; guest_owner.rs:164.
 	{Name: "guest.audit", Params: typeOf[GuestAuditParams](), Results: []Result{result[ResponseResultGuestAudit]("guest_audit")}},
 	{Name: "pane.send_text", Params: typeOf[PaneSendTextParams](), Results: []Result{result[ResponseResultOk]("ok")}},
+	// herdr #517 (3ce315f): schema.rs dispatches it to handle_pane_send_text
+	// with bracketed on, which answers ok. Not gated on its capability
+	// (pane_send_bracketed_text): a herdr without the method refuses it,
+	// writing nothing, so the write needs no ping first.
+	{Name: "pane.send_bracketed_text", Params: typeOf[PaneSendBracketedTextParams](), Results: []Result{result[ResponseResultOk]("ok")}},
 	{Name: "pane.set_pty_size", Params: typeOf[PaneSetPtySizeParams](), Results: []Result{result[ResponseResultPanePTYSize]("pane_pty_size")}},
 	// schema.rs:131; src/app/api/agents.rs:59.
 	{Name: "agent.list", Params: typeOf[AgentListParams](), Results: []Result{result[ResponseResultAgentList]("agent_list")}},

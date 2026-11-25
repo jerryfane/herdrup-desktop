@@ -14,7 +14,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
-	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 )
 
@@ -505,147 +504,81 @@ func TestASessionIsNotReusedPastItsAgeLimit(t *testing.T) {
 	}
 }
 
-// #476: requests held to one session (OnOneChannel) go on it, the herdr
-// that answered the first answering the rest. A host without
-// multi_request spends a session on its first request, so the next one
-// goes on no other session: it fails ErrNotSent, and herdr never has it.
-func TestAGuestRequestHeldToOneSessionGoesOnNoOther(t *testing.T) {
-	for _, multi := range []bool{true, false} {
-		t.Run(fmt.Sprintf("multi_request=%v", multi), func(t *testing.T) {
-			h := newReuseHost(t, multi)
-			ctx := context.Background()
-			var promptErr error
-			err := h.transport.OnOneChannel(ctx, func(held engine.Held) error {
-				if err := held.Ping(ctx, nil); err != nil {
-					return err
-				}
-				promptErr = held.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "held"}, nil)
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			connects := h.connects()
-			if multi {
-				if promptErr != nil || len(connects) != 1 || connects[0].Requests != 2 || len(prompts(h.relay)) != 1 {
-					t.Fatalf("prompt %v, connects %+v; want the ping and the prompt on one session", promptErr, connects)
-				}
-				return
-			}
-			if !errors.Is(promptErr, bridge.ErrNotSent) || len(connects) != 1 || len(prompts(h.relay)) != 0 {
-				t.Fatalf("prompt %v, connects %+v, prompts %v; want the prompt unsent once the session was spent", promptErr, connects, prompts(h.relay))
-			}
-		})
-	}
-}
-
-// #481 review: a held request whose context ended before it was written is
-// unsent (bridge.ErrNotSent) and keeps its cause (context.Canceled); herdr
-// never gets it.
-func TestAHeldGuestRequestCancelledBeforeItsWriteIsUnsent(t *testing.T) {
+// A request whose context already ended is never sent, on the idle session
+// or a fresh one: it fails unsent (ErrNotSent with context.Canceled), and
+// herdr records nothing. A stream asked for so opens no session.
+func TestAGuestRequestWithAnEndedContextIsNeverSent(t *testing.T) {
 	h := newReuseHost(t, true)
-	var promptErr error
-	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
-		ended, cancel := context.WithCancel(context.Background())
-		cancel()
-		promptErr = held.Call(ended, "agent.prompt", map[string]string{"target": "worker", "text": "late"}, nil)
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !errors.Is(promptErr, bridge.ErrNotSent) || !errors.Is(promptErr, context.Canceled) {
-		t.Fatalf("%v; want ErrNotSent with context.Canceled", promptErr)
-	}
-	if got := prompts(h.relay); len(got) != 0 {
-		t.Fatalf("prompts %q; want the cancelled one never sent", got)
-	}
-}
-
-// #481 review: a held handle that work kept past its return is released
-// before its session is parked: it sends nothing on the session the next
-// call borrows.
-func TestAReleasedHeldGuestHandleSendsNothing(t *testing.T) {
-	h := newReuseHost(t, true)
-	var kept engine.Held
-	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
-		kept = held
-		return held.Ping(context.Background(), nil)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	err := kept.Call(context.Background(), "agent.prompt", map[string]string{"target": "worker", "text": "escaped"}, nil)
-	if !errors.Is(err, bridge.ErrNotSent) {
-		t.Fatalf("%v; want the released handle's request unsent", err)
-	}
-	if got := prompts(h.relay); len(got) != 0 {
-		t.Fatalf("prompts %q; want none from the released handle", got)
-	}
-	h.list(t) // the parked session still serves the next borrower
-}
-
-// #481 review: a held handle carries one request at a time: one asked while
-// another is in flight fails unsent, before any frame of it goes.
-func TestAnOverlappingHeldGuestRequestIsRefusedUnsent(t *testing.T) {
-	h := newReuseHost(t, true)
-	h.mu.Lock()
-	h.gate = make(chan struct{})
-	h.mu.Unlock()
-	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
-		slow := make(chan error, 1)
-		go func() {
-			slow <- held.Call(context.Background(), "agent.transcript", map[string]string{"target": "worker"}, nil)
-		}()
-		eventually(t, "the slow request to reach herdr", func() bool { return len(h.relay.Calls()) > 0 })
-		err := held.Call(context.Background(), "agent.prompt", map[string]string{"target": "worker", "text": "overlap"}, nil)
-		close(h.gate)
-		if !errors.Is(err, bridge.ErrNotSent) {
-			t.Errorf("%v; want the overlapping request unsent", err)
+	h.list(t) // a session is idle for the next call
+	calls, connects := len(h.relay.Calls()), len(h.connects())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 20 {
+		if err := h.transport.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "never"}, nil); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
 		}
-		return <-slow
-	}); err != nil {
-		t.Fatal(err)
+	}
+	if _, err := h.transport.OpenStream(ctx, "pane.stream", map[string]string{"pane_id": "p1"}); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("stream: %v; want ErrNotSent with context.Canceled", err)
+	}
+	if got := h.relay.Calls(); len(got) != calls {
+		t.Fatalf("herdr got %+v after the cancelled requests", got[calls:])
+	}
+	if got := len(h.connects()); got != connects {
+		t.Fatalf("%d connects after the cancelled requests, want %d", got, connects)
+	}
+}
+
+// cancelOnEncode is request params whose encoding ends the call's context:
+// the request is cancelled while it is being encoded.
+type cancelOnEncode struct{ cancel context.CancelFunc }
+
+func (p cancelOnEncode) MarshalJSON() ([]byte, error) {
+	p.cancel()
+	return []byte(`{"target":"worker","text":"never"}`), nil
+}
+
+// #506 review: a request cancelled while it is encoded, on a warm session,
+// is never written: the write boundary checks the context before the first
+// frame, so herdr gets none of them, and each fails unsent (ErrNotSent with
+// context.Canceled).
+func TestAGuestRequestCancelledWhileEncodedIsNeverSent(t *testing.T) {
+	h := newReuseHost(t, true)
+	for range 20 {
+		h.list(t) // a warm session is idle for the next call
+		ctx, cancel := context.WithCancel(context.Background())
+		err := h.transport.Call(ctx, "agent.prompt", cancelOnEncode{cancel}, nil)
+		if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+		}
 	}
 	if got := prompts(h.relay); len(got) != 0 {
-		t.Fatalf("prompts %q; want the overlapping one never sent", got)
+		t.Fatalf("herdr got %d prompts cancelled while encoded: %q", len(got), got)
 	}
 }
 
-// blockingResult is a reply result whose decoding, caller-controlled,
-// signals entered and then waits for release.
-type blockingResult struct{ entered, release chan struct{} }
-
-func (r blockingResult) UnmarshalJSON([]byte) error {
-	close(r.entered)
-	<-r.release
-	return nil
-}
-
-// #492: releasing a held handle does not wait for a request work left
-// running (here, stuck decoding its result): OnOneChannel returns at
-// once, and that request's session is closed, not pooled, so the next
-// call connects afresh.
-func TestAHeldGuestReleaseDoesNotWaitForARequestInFlight(t *testing.T) {
+// #506 review: a request cancelled while its first frame is encrypted, on
+// a warm session, is never written: the write boundary checks the context
+// once the frame is ready, right before the socket write, so herdr gets
+// none of them, and each fails unsent (ErrNotSent with context.Canceled).
+func TestAGuestRequestCancelledWhileEncryptedIsNeverSent(t *testing.T) {
 	h := newReuseHost(t, true)
-	result := blockingResult{entered: make(chan struct{}), release: make(chan struct{})}
-	left := make(chan error, 1)
-	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
-		go func() { left <- held.Call(context.Background(), "agent.list", nil, &result) }()
-		select {
-		case <-result.entered: // the request is in flight, decoding
-			return nil
-		case err := <-left:
-			return fmt.Errorf("the request ended before decoding its result: %v", err)
+	for range 64 {
+		h.list(t) // a warm session is idle for the next call
+		h.transport.idleMu.Lock()
+		idle := h.transport.idle
+		h.transport.idleMu.Unlock()
+		if idle == nil {
+			t.Fatal("no idle session after a call")
 		}
-	}); err != nil {
-		t.Fatal(err)
+		ctx, cancel := context.WithCancel(context.Background())
+		idle.session.encrypted = cancel
+		err := h.transport.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "never"}, nil)
+		if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+		}
 	}
-	close(result.release)
-	if err := <-left; err != nil {
-		t.Fatal(err)
-	}
-	before := len(h.connects())
-	h.list(t)
-	if got := len(h.connects()); got != before+1 {
-		t.Fatalf("%d connects after the release, want %d: the session with a request in flight was pooled", got, before+1)
+	if got := prompts(h.relay); len(got) != 0 {
+		t.Fatalf("herdr got %d prompts cancelled while encrypted: %q", len(got), got)
 	}
 }

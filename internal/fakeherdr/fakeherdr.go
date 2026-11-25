@@ -67,10 +67,6 @@ type Server struct {
 	// Gzip: with Frames, a hello asking compress:"gzip" gets it, and replies
 	// of 1024 bytes or more are framed gzipped (herdr #414).
 	Gzip bool
-	// EndMultiOn, when set, is asked of each request a --multi channel
-	// reads: true records the request, then ends that channel there,
-	// unanswered, as a herdr that restarted under it does.
-	EndMultiOn func(method string) bool
 	// Handle answers a request. Whether a herdr advertises api_bridge_multi
 	// is up to the pong it returns for "ping"; see Pong.
 	Handle func(method string, params json.RawMessage) (any, *APIError)
@@ -111,8 +107,6 @@ type Server struct {
 	requests     []Request
 	machineCalls []MachineCall
 	inFlight     int // --multi requests being answered now
-	multiSeq     int // --multi channels opened so far
-	multiOpen    map[int]ssh.Channel
 	maxInFlight  int
 	gzipReplies  int // replies sent gzipped (Gzip)
 	conns        int
@@ -139,9 +133,6 @@ type Request struct {
 	// Multi is true for a request on an `api-bridge --multi` channel and
 	// false for one exec per request.
 	Multi bool
-	// Channel numbers the --multi channel the request came on (1 for the
-	// first opened); 0 for one exec per request.
-	Channel int
 	// Bytes is the length of the request line.
 	Bytes int
 }
@@ -210,18 +201,6 @@ func (s *Server) DropConns() {
 	defer s.mu.Unlock()
 	for sc := range s.live {
 		sc.Close()
-	}
-}
-
-// EndMultiChannels closes every open `api-bridge --multi` channel, as a
-// herdr that restarted or was rolled back ends its bridge processes; the
-// SSH connection stays.
-func (s *Server) EndMultiChannels() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for n, ch := range s.multiOpen {
-		ch.Close()
-		delete(s.multiOpen, n)
 	}
 }
 
@@ -547,19 +526,6 @@ var multiStreamingMethods = map[string]bool{
 // stop reading at 16 requests in flight: it counts them (MultiInFlight),
 // so a test sees a client that sends more.
 func (s *Server) multi(ch ssh.Channel, session string) {
-	s.mu.Lock()
-	s.multiSeq++
-	channel := s.multiSeq
-	if s.multiOpen == nil {
-		s.multiOpen = map[int]ssh.Channel{}
-	}
-	s.multiOpen[channel] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.multiOpen, channel)
-		s.mu.Unlock()
-	}()
 	var wg sync.WaitGroup
 	out := &bridgeOut{w: ch, frameBytes: s.FrameBytes, delay: s.FrameDelay}
 	out.onGzip = func() { s.mu.Lock(); s.gzipReplies++; s.mu.Unlock() }
@@ -573,15 +539,6 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 	for {
 		line, err := r.ReadBytes('\n')
 		line = bytes.TrimSuffix(line, []byte("\n"))
-		if len(line) > 0 && s.EndMultiOn != nil {
-			var head request
-			if json.Unmarshal(line, &head) == nil && s.EndMultiOn(head.Method) {
-				s.record(Request{Method: head.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
-				wg.Wait()
-				ch.Close()
-				return
-			}
-		}
 		if len(line) > 0 {
 			var req request
 			switch {
@@ -589,20 +546,20 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				// herdr reads the id from the line's head; the fake can
 				// parse it whole.
 				_ = json.Unmarshal(line, &req)
-				s.record(Request{Method: req.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				out.reply(req.ID, map[string]any{"id": req.ID, "error": APIError{Code: "invalid_request",
 					Message: fmt.Sprintf("api-bridge: request line exceeds %d bytes", multiMaxLineBytes)}})
 			case json.Unmarshal(line, &req) != nil:
 				out.reply("", map[string]any{"id": "", "error": APIError{Code: "invalid_request", Message: "bad json"}})
 			case s.Frames && req.Method == "bridge.hello":
-				s.record(Request{Method: req.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				var p struct {
 					Compress string `json:"compress"`
 				}
 				_ = json.Unmarshal(req.Params, &p)
 				out.hello(req.ID, s.Gzip && p.Compress == "gzip")
 			case s.Frames && req.Method == "bridge.cancel":
-				s.record(Request{Method: req.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				var p struct {
 					ID string `json:"id"`
 				}
@@ -616,11 +573,11 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 				}
 				out.reply(req.ID, map[string]any{"id": req.ID, "result": map[string]any{"type": "bridge_cancel", "cancelled": ok}})
 			case multiStreamingMethods[req.Method]:
-				s.record(Request{Method: req.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				out.reply(req.ID, map[string]any{"id": req.ID, "error": APIError{Code: "unsupported_method",
 					Message: "api-bridge --multi does not forward streaming method " + req.Method}})
 			default:
-				s.record(Request{Method: req.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
+				s.record(Request{Method: req.Method, Session: session, Multi: true, Bytes: len(line)})
 				s.mu.Lock()
 				s.inFlight++
 				s.maxInFlight = max(s.maxInFlight, s.inFlight)
