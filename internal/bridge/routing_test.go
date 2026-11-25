@@ -555,8 +555,8 @@ func TestARequestOnADeadChannelKeepsWhyItDied(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := ch.Do(ctx, "pane.send_text"); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
-			t.Errorf("%v; want ErrNotSent with context.Canceled", err)
+		if err := ch.Do(ctx, "pane.send_text"); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) || !errors.Is(err, died) {
+			t.Errorf("%v; want ErrNotSent with context.Canceled and why the channel died", err)
 		}
 	}
 }

@@ -563,7 +563,6 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	case <-m.retiredC:
 	case <-ctx.Done():
 	}
-	ch := make(chan reply, 1)
 	m.mu.Lock()
 	if err := m.refusedLocked(ctx); err != nil || !slot {
 		m.mu.Unlock()
@@ -581,6 +580,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 		<-m.inFlight
 		return nil, fmt.Errorf("duplicate request id %q", id)
 	}
+	ch := make(chan reply, 1)
 	m.pending[id] = ch
 	m.mu.Unlock()
 
