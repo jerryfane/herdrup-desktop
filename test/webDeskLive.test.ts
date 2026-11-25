@@ -1,6 +1,7 @@
-// The browser Desk end to end against cmd/fakeherdr -interactions -guest-relay: redeem the logged
-// invitation, list the shared agent (state and board events as desk_guest.go publishes them),
-// open it, send a prompt, read the transcript, watch the terminal, press a menu key, and pause.
+// The browser Desk end to end against cmd/fakeherdr -interactions -guest-relay -guest-gram: redeem
+// the logged invitation, list the shared agent (state and board events as desk_guest.go publishes
+// them), open it, send a prompt, read the transcript, send to a topic (a file too), watch the
+// terminal, press a menu key, and pause.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +9,11 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { MemoryIdentityStore } from "../src/webguest/identity";
 import { createGuestDesk } from "../src/web/desk";
+import { gramDesk, panePromptAttachments } from "../src/web/gram";
+import { registerFiles } from "../src/web/files";
+import { currentLink } from "../src/web/link";
+import { readChunks, type FileChunk } from "../src/web/gramFiles";
+import type { TranscriptPage } from "../src/interactionModel";
 import { events } from "../src/web/events";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import type { BoardUpdate, ConnState, TerminalEvent, TopicsUpdate } from "../src/mygo";
@@ -24,7 +30,7 @@ beforeAll(async () => {
  const binary = join(dir, "fakeherdr");
  const build = Bun.spawnSync([go, "build", "-o", binary, "./cmd/fakeherdr"], { cwd: repo, env: { ...process.env, CGO_ENABLED: "0" }, stderr: "pipe" });
  if (build.exitCode !== 0) throw new Error("go build ./cmd/fakeherdr: " + build.stderr.toString());
- fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-guest-relay", "127.0.0.1:0", "-guest-pause-file", join(dir, "paused"), "-topics-list-fail-file", join(dir, "topics-fail")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+ fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-guest-relay", "127.0.0.1:0", "-guest-gram", "-guest-pause-file", join(dir, "paused"), "-topics-list-fail-file", join(dir, "topics-fail")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
  const found = Promise.withResolvers<string>();
  void (async () => {
   let log = "";
@@ -102,6 +108,23 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const conversation = await desk.topicTranscript("view-1", topic, "", "", "");
  expect(conversation).toContain("visitor (via HerdrUp): From the browser");
  expect(conversation).not.toContain("September minutes");
+ // A send with a file from the page's composer, to an idle topic (its message starts a turn at
+ // once): the file goes as the Inbox's do (posted to the agent as a Gram, panePromptAttachments),
+ // and the topic's message is the Inbox's composed text naming it.
+ const deck = Uint8Array.from({ length: 70_000 }, (_, i) => i % 251);
+ const [deckPath] = registerFiles([new File([deck], "deck.bin", { type: "application/octet-stream" })]);
+ await gramDesk.paneAttachFiles!("view-1", [deckPath!]);
+ expect(await desk.topicsSend("view-1", "t2", "With the deck")).toEqual({ mode: "turn", delivery: "sent" });
+ const withFile: TranscriptPage = JSON.parse(await desk.topicTranscript("view-1", "t2", "", "", ""));
+ const sent = withFile.entries.map((e) => e.text ?? "").find((t) => t.includes("With the deck"));
+ const gram = /With the deck\n\n\[File deck\.bin attached via Herdr Gram message (\S+)\./.exec(sent ?? "")?.[1];
+ expect(gram).toBeDefined();
+ const parts: Uint8Array[] = [];
+ const meta = await readChunks((offset) => currentLink()!.call<FileChunk>("gram.get_file_chunk", { id: gram, offset }), deck.length, (p) => { parts.push(p); }, () => undefined);
+ expect(meta.name).toBe("deck.bin");
+ expect(new Uint8Array(await new Blob(parts).arrayBuffer())).toEqual(deck);
+ // The file left the composer with the send.
+ expect(panePromptAttachments("view-1", "again", async () => "x")).toBeNull();
  expect(await desk.topicsSend("view-1", "t3", "hi")).toEqual({ mode: "", delivery: "refused", problem: "The agent refused: the topic is closed" });
  await expect(desk.topicTranscript("view-1", "t99", "", "", "")).rejects.toThrow("This topic's conversation can't be found.");
  await desk.topicsFollow("view-1", false);
