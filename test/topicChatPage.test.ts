@@ -3,7 +3,7 @@
 // conversation, its width handles, and the Inbox's own composer lent to the topic (the grow handle,
 // files pasted or dropped as chips, saved prompts and the mic); and a handover between the Inbox
 // and a topic (relay) as both chats draw it.
-import { afterAll, beforeAll, beforeEach, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, mock, setSystemTime, test } from "bun:test";
 import { FakeDocument, FakeElement } from "./fakeDom";
 import type { AgentTarget, GramAttachment } from "../src/mygo";
 import type * as Interaction from "../src/interaction";
@@ -261,4 +261,204 @@ test("a long handover folds after about six lines with Show all; a short one has
  toggle(long!).click();
  expect(body(long!).dataset.folded).toBe("true");
  expect(toggle(long!).textContent).toBe("Show all");
+});
+
+// Post-merge review of #528 (P3): the topic redrew every row on each read, so a reader's Show less
+// lost its focus when the topic changed; an unchanged row now stays attached, as the Inbox's do.
+test("an unfolded handover keeps its row and its focus when the topic reads again", async () => {
+ const { transcript, token } = await openTopic(topicPage({ entries: [relay("r5", "Inbox", "to_topic", LONG)] }));
+ const row = withClass(transcript, "relay")[0]!;
+ const body = withClass(row, "chat-relay-body")[0]!, toggle = withClass(row, "chat-relay-toggle")[0]!;
+ body.scrollHeight = 480; body.clientHeight = 150; resized(body);
+ toggle.click(); toggle.focus();
+ const reads = calls.filter(c => c.method === "Desk.TopicTranscript").length;
+ emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+  offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicTranscript").length).toBeGreaterThan(reads);
+ expect(withClass(transcript, "relay")[0]).toBe(row);
+ expect(doc.activeElement).toBe(toggle);
+ expect(toggle.textContent).toBe("Show less");
+});
+
+// #531: a saved desktop terminal's view (Desk.OpenTerminalView) carried topicSessions null, and the
+// page threw on its length before the terminal mounted.
+test("a saved terminal opens though its view carries no topic sessions", async () => {
+ answers = {
+  "Desk.OpenTerminalView": (_target: unknown, token: unknown) => ({ token, paneID: "p9", name: "Build logs", heading: "Build logs", group: "terminal", status: "Terminal", guest: false, guestGram: false, plainTerminal: true, askForm: false, topicSessions: null }),
+  "Desk.PaneMuted": () => false,
+ };
+ await page.selectInteraction(target, undefined, true);
+ await settle();
+ expect(doc.body.text()).not.toContain("topicSessions");
+ // The terminal's surface went up: its key bar is drawn (the fake DOM can't run xterm itself).
+ expect(withClass(doc.body, "terminal-key-scroll").length).toBe(1);
+});
+
+/** Two topics listed for the open page: Board pack (t1) and Beta (t2), both idle. */
+function twoTopics(token: string) {
+ const ms = Date.now() - 60_000;
+ const info = (topic_id: string, title: string) => ({ topic_id, title, state: "idle", turns: 1, queued: 0, created_unix_ms: ms, last_activity_unix_ms: ms });
+ emit("topics:changed", { token, topics: [info("t1", TOPIC.title), info("t2", "Beta")], offered: true, loaded: true, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+}
+/** Opens a topic from the list; the narrow page brings the list back first (the header's Topics). */
+async function openRow(title: string) {
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-list-open"))?.click();
+ await settle();
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-row") && n.text().includes(title))!.click();
+ await settle();
+}
+const type = (input: FakeElement, text: string) => { input.value = text; input.dispatchEvent(new Event("input")); };
+
+// #532: with Board pack's send (a file and its caption) out, the owner opens Beta and types the same
+// caption. The send's reply clears the caption from Board pack's draft, not Beta's, and its receipt
+// is Board pack's, not shown under Beta.
+test("a send with a file settles against the topic it was sent to, not the one on screen", async () => {
+ const { input, token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ emit("pane:attachments", { token, files: [file("deck.pdf")], note: "" });
+ type(input!, "Same caption");
+ let reply: (value: unknown) => void = () => {};
+ answers["Desk.TopicsSend"] = () => new Promise(resolve => { reply = resolve; });
+ input!.dispatchEvent(Object.assign(new Event("keydown"), { key: "Enter" }));
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicsSend").map(c => c.args.slice(1))).toEqual([["t1", "Same caption"]]);
+ await openRow("Beta");
+ const beta = doc.body.all().find(n => n.className === "topic-chat")!;
+ expect(beta.text()).toContain("Beta");
+ type(input!, "Same caption");
+ reply({ mode: "queued", delivery: "sent" });
+ await settle();
+ expect(input!.value).toBe("Same caption");
+ expect(beta.text()).not.toContain("Queued");
+ // Board pack's draft lost the caption that went out.
+ await openRow(TOPIC.title);
+ expect(input!.value).toBe("");
+});
+
+/** Board pack's send with a file and its caption, out while the owner opens Beta and then Board
+ *  pack again; herdr's reply (answer) comes after. Returns the reopened topic's note and the field. */
+async function sendThenReopen(answer: unknown) {
+ const { input, token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ emit("pane:attachments", { token, files: [file("deck.pdf")], note: "" });
+ type(input!, "Same caption");
+ const reply = Promise.withResolvers<unknown>();
+ answers["Desk.TopicsSend"] = () => reply.promise;
+ input!.dispatchEvent(Object.assign(new Event("keydown"), { key: "Enter" }));
+ await settle();
+ await openRow("Beta");
+ await openRow(TOPIC.title);
+ reply.resolve(answer);
+ await settle();
+ const note = () => doc.body.all().find(n => n.className === "topic-chat")!.all().find(n => n.className === "topic-send-note")!;
+ return { input: input!, note };
+}
+
+// #539 review (P2): a send that settled after its topic was left and opened again wrote its notice
+// into the conversation it was sent from, gone by then. The pane keeps each topic's latest notice:
+// the reopened topic shows it, Beta doesn't, and it is still there when the topic opens again.
+test("a refused send's reason shows in its topic opened again before the reply, the caption kept", async () => {
+ const { input, note } = await sendThenReopen({ delivery: "refused", problem: "The agent is busy with another topic." });
+ expect([note().hidden, note().text(), input.value]).toEqual([false, "The agent is busy with another topic.", "Same caption"]);
+ await openRow("Beta");
+ expect(note().hidden).toBe(true);
+ await openRow(TOPIC.title);
+ expect([note().hidden, note().text()]).toEqual([false, "The agent is busy with another topic."]);
+});
+
+test("an unconfirmed send's warning shows in its topic opened again before the reply, the caption gone", async () => {
+ const { input, note } = await sendThenReopen({ delivery: "unconfirmed" });
+ expect([note().hidden, note().text(), input.value]).toEqual([false, "Couldn't confirm delivery. Check the topic before sending again.", ""]);
+});
+
+// #539 review (P3): a kept row's day header was matched on the prompt's time alone, so after
+// midnight yesterday's prompt still said Today. The header is matched on the label it reads now.
+test("a topic's day header says Yesterday once midnight passed, when the topic reads again", async () => {
+ const evening = new Date(2026, 10, 25, 23, 0).getTime();
+ setSystemTime(new Date(evening));
+ try {
+  const prompt = { kind: "user", id: "u1", ts_ms: evening - 30 * 60_000, text: "Draft the intro." };
+  const { transcript, token } = await openTopic(topicPage({ entries: [prompt] }));
+  const day = () => withClass(transcript, "chat-day").map(n => n.text());
+  expect(day()).toHaveLength(1);
+  expect(day()[0]).toStartWith("Today");
+  setSystemTime(new Date(evening + 90 * 60_000));
+  emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+   offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+  await settle();
+  expect(day()).toHaveLength(1);
+  expect(day()[0]).toStartWith("Yesterday");
+ } finally { setSystemTime(); }
+});
+
+// The Inbox keeps its rows the same way (drawChat): its day header moves on at midnight too.
+test("the Inbox's day header says Yesterday once midnight passed, when the Inbox draws again", async () => {
+ const evening = new Date(2026, 10, 25, 23, 0).getTime();
+ setSystemTime(new Date(evening));
+ try {
+  const prompt = { kind: "user", id: "u1", ts_ms: evening - 30 * 60_000, text: "Draft the intro." };
+  await openPage("chat", topicPage(), topicPage({ entries: [prompt] }));
+  const day = () => withClass(inboxTranscript(), "chat-day").map(n => n.text());
+  expect(day()).toHaveLength(1);
+  expect(day()[0]).toStartWith("Today");
+  setSystemTime(new Date(evening + 90 * 60_000));
+  const token = String(calls.find(c => c.method === "Desk.OpenAgentView")!.args[1]);
+  twoTopics(token);
+  await settle();
+  expect(day()).toHaveLength(1);
+  expect(day()[0]).toStartWith("Yesterday");
+ } finally { setSystemTime(); }
+});
+
+/** A topics:changed for the open page: herdr's list of one topic, Board pack, in state. */
+function listed(token: string, state: string, stale: boolean) {
+ const ms = Date.now() - 60_000;
+ emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state, turns: 0, queued: 0, created_unix_ms: ms, last_activity_unix_ms: ms }],
+  offered: true, loaded: true, stale, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+}
+
+/** Starts dictation from the composer's mic; returns its token (Dictation.Start's). */
+async function dictate(slot: FakeElement): Promise<string> {
+ // Answered: the page's dictation queue waits on each call (one capture at a time).
+ answers["Dictation.Start"] = () => undefined; answers["Dictation.Stop"] = () => undefined;
+ slot.all().find(n => n.tagName === "button" && n.className.includes("composer-microphone"))!.click();
+ await settle();
+ const start = calls.filter(c => c.method === "Dictation.Start").at(-1);
+ if (!start) throw new Error("dictation didn't start");
+ return String(start.args[0]);
+}
+
+// #533: dictation started in Board pack kept writing after the composer moved to Beta: its next
+// result replaced Beta's draft. Changing drafts stops the capture.
+test("dictation stops when the composer moves to another topic; a late result writes nowhere", async () => {
+ const { slot, input, token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ const dictation = await dictate(slot);
+ emit("dictation:changed", { token: dictation, state: "recording", text: "Alpha words" });
+ await settle();
+ expect(input!.value).toBe("Alpha words");
+ await openRow("Beta");
+ expect(calls.filter(c => c.method === "Dictation.Stop").map(c => c.args[0])).toEqual([dictation]);
+ expect(input!.disabled).toBe(false);
+ type(input!, "Beta draft");
+ emit("dictation:changed", { token: dictation, state: "recording", text: "Alpha words and more" });
+ await settle();
+ expect(input!.value).toBe("Beta draft");
+});
+
+// #533: the field's disabled state is the topic's and dictation's together: stopping dictation in
+// a topic that closed meanwhile leaves its field disabled.
+test("stopping dictation keeps a closed topic's field disabled", async () => {
+ const { slot, input, token } = await openTopic();
+ await dictate(slot);
+ expect(input!.disabled).toBe(true);
+ listed(token, "closed", false);
+ await settle();
+ slot.all().find(n => n.tagName === "button" && n.className.includes("composer-microphone"))!.click();
+ await settle();
+ expect(input!.disabled).toBe(true);
 });

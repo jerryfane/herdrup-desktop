@@ -395,8 +395,12 @@ func (c *Client) AgentTopicsList(ctx context.Context, target string) (list herdr
 	if !ok {
 		return list, fresh, fmt.Errorf("engine: agent.topics.list result decoded as %T, want %T", v, list)
 	}
-	// A freshness this herdr writes in another shape reads as a live answer.
-	_ = json.Unmarshal(raw, &fresh)
+	// Absent fields (a herdr that reads the agent live) decode as a live
+	// answer. Fields in another shape are no word on freshness: the list is
+	// kept, as stale and of no known age, never as a fresh read.
+	if json.Unmarshal(raw, &fresh) != nil {
+		fresh = TopicsFreshness{Stale: true}
+	}
 	return list, fresh, nil
 }
 

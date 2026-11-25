@@ -15,14 +15,11 @@ export function relayLabel(entry: Pick<Entry, "from" | "direction">): string {
  return entry.direction === "to_inbox" ? `From topic ${name}` : `From ${name}`;
 }
 
-/** The relays the reader unfolded, by entry id: a chat redraws its rows on each read, and an
- *  unfolded one stays so. */
-const unfolded = new Set<string>();
-
 /** The relay's row: its label, then body (the caller's markdown of entry.text) folded to about six
  *  lines (interaction.css .chat-relay-body[data-folded]). Show all appears once the folded body
- *  is seen to hold more (measured as it lays out); Show less folds it again. */
-export function relayRow(entry: Entry, body: HTMLElement): HTMLElement {
+ *  is seen to hold more (measured as it lays out); Show less folds it again. unfolded is the
+ *  conversation's: the ids of the relays its reader opened, kept as its rows are redrawn. */
+export function relayRow(entry: Entry, body: HTMLElement, unfolded: Set<string>): HTMLElement {
  const row = document.createElement("article"); row.className = "chat-message relay";
  const label = document.createElement("span"); label.className = "chat-relay-from"; label.textContent = relayLabel(entry);
  const text = document.createElement("div"); text.className = "chat-relay-body"; text.append(body);

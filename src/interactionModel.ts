@@ -1,4 +1,5 @@
 import type { AskForm, AskFormAnswer, AskFormStatus } from "./askFormModel";
+import type { SuggestionRow } from "./topicSuggestionsModel";
 export interface Question { question: string; options: string[]; multi: boolean; recommended?: number }
 export interface PlanItem { text: string; status?: string; done?: boolean; phase?: string; blocker?: string }
 export interface Entry {
@@ -160,6 +161,18 @@ export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?:
  const added = page.filter(e => !oldIDs.has(e.id));
  return older ? [...added, ...merged] : [...merged, ...added];
 }
+/** A composer send's receipt, as the page settles it: how it went (submitted, unconfirmed, a plain
+ *  terminal's written) and what to say about it. */
+export interface ComposerReceipt { delivery: string; note?: string }
+/** Desk.chatPrompt's receipt, JSON at that binding. The text already went out, so a reply in
+ *  another shape is an unconfirmed send, never a failed one (which would put the text back). */
+export function chatReceipt(raw: string): ComposerReceipt {
+ try {
+  const r = JSON.parse(raw) as { delivery?: unknown; note?: unknown } | null;
+  if (typeof r?.delivery === "string") return typeof r.note === "string" ? { delivery: r.delivery, note: r.note } : { delivery: r.delivery };
+ } catch { /* below */ }
+ return { delivery: "unconfirmed" };
+}
 export function remainingDraft(current: string, sent: string): string {
  return current === sent ? "" : current;
 }
@@ -191,6 +204,13 @@ export function chatDayLabel(ms: number, now: Date, locale?: string): { day: str
  if (Math.trunc((now.getTime() - ms) / 86_400_000) < 7) return { day: date.toLocaleDateString(locale, { weekday: "long" }), time };
  if (date.getFullYear() === now.getFullYear()) return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric" }), time };
  return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric", year: "numeric" }), time };
+}
+
+/** A transcript row as its kept node is matched against (interaction.ts drawChat, topicsView.ts
+ *  TopicChat.draw): a day separator with the label it reads now (chatDayLabel), which turns from
+ *  Today to Yesterday at midnight while the row stays the same; any other row as it is. */
+export function rowShown(row: ChatRow | SuggestionRow, now: Date): unknown {
+ return row.kind === "day" ? [row, chatDayLabel(row.ms, now)] : row;
 }
 
 // TranscriptGrouping.turns: consecutive thoughts/steps form one run. A prompt, a handover from

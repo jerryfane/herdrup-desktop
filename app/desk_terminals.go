@@ -95,7 +95,8 @@ func (d *Desk) OpenTerminalView(target AgentTarget, token string) (AgentView, er
 		return AgentView{}, ErrSessionChanged
 	}
 	ctx, cancel := context.WithCancel(at.link.ctx)
-	v := &interaction{AgentView: AgentView{Token: token, PaneID: saved.PaneID, Name: saved.Label, Heading: saved.Label, Group: "terminal", Status: "Terminal", PlainTerminal: true}, at: at, ctx: ctx, cancel: cancel, client: client}
+	// TopicSessions is a list, never null: the page reads its length (#531).
+	v := &interaction{AgentView: AgentView{Token: token, PaneID: saved.PaneID, Name: saved.Label, Heading: saved.Label, Group: "terminal", Status: "Terminal", PlainTerminal: true, TopicSessions: []TopicSession{}}, at: at, ctx: ctx, cancel: cancel, client: client}
 	return d.mountInteractionLocked(v), nil
 }
 

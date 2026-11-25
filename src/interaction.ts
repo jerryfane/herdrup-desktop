@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
@@ -27,7 +27,7 @@ import { connectionOfView, guestPausedPage, guestSendFailure, isGuestPaused, typ
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
 import type { AskForm, AskFormAnswer, AskFormStatus, FieldValue } from "./askFormModel";
-import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
+import type { ByteFrame, ChatRow, ComposerReceipt, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { forgetChats, recallChat, rememberChat } from "./chatMemory";
 import { forgetScreens, recallScreen, rememberScreen } from "./terminalMemory";
 import { drawnStart, pendingCardShown, revealedAbove, slidWindow, topAction, windowStarting, type OlderLoad } from "./chatWindow";
@@ -405,6 +405,8 @@ class Detail {
  drawnIndex = 0;
  // Disclosures the reader opened, kept for rows that leave the window and come back.
  openRows = new Set<string>();
+ /** The Inbox's handovers its reader unfolded (chatRelay.ts), by entry id. */
+ unfoldedRelays = new Set<string>();
  transcript = el("div", "chat-transcript");
  chatScroll = el("div", "chat-scroll");
  chatFollowing = true;
@@ -461,10 +463,14 @@ class Detail {
  dictation = new ComposerDictation(this.input, () => {
   const busy = this.dictation?.busy ?? false, paused = !!this.guestPaused;
   this.send.disabled = paused || this.sending || busy; this.prompts.button.disabled = paused || this.sending || busy;
-  // Dictation's render sets the field's disabled state from its own busy flag alone.
-  if (paused) this.input.disabled = true;
+  // Dictation reports its busy state; the field's disabled state is this page's to render, from
+  // the page's pause, the topic's (closed) and dictation's together (fieldDisabled, #533).
+  this.input.disabled = this.fieldDisabled();
   this.relayout();
  }, () => { this.setCtrl(false); this.editor?.collapse(); });
+ /** The field takes no typing while the page is paused, dictation writes it, or it writes to a
+  *  closed topic. */
+ private fieldDisabled(): boolean { return !!this.guestPaused || (this.dictation?.busy ?? false) || !!this.sendsToTopic()?.closed(); }
  /** The pane's draft and unsent text (composerDraft.ts); the composer stays editable while a write
   *  is out (as Swift's replyBar), and the write's outcome settles there. */
  draft: PaneDraft;
@@ -528,8 +534,9 @@ class Detail {
  private sendsToTopic(): TopicComposer | null { return this.mode === "topics" ? this.topicComposer : null; }
  /** What the composer has to say (a send's, a file's, the draft's): under the open topic it
   *  writes to, else on the page's note line. */
- private composerNote(text: string) {
-  const topic = this.sendsToTopic();
+ private composerNote(text: string) { this.noteTo(this.sendsToTopic(), text); }
+ /** A note for one destination: under that topic (shown again when it is), else the page's line. */
+ private noteTo(topic: TopicComposer | null, text: string) {
   if (topic) topic.note(text); else this.status.textContent = text;
  }
  /** The field's prompt: the topic's (Message <title>, or Closed) where it writes to one. */
@@ -547,13 +554,15 @@ class Detail {
   if (card.parentElement !== parent) parent.append(card, this.composerLines);
   const key = JSON.stringify(topic ? { ...this.target, topic: topic.topicID } : this.target);
   if (key !== this.draftKey) {
+   // Dictation writes the draft it started in: it stops before the field shows another (#533).
+   this.dictation.stop();
    this.stored(this.draft.flush()); this.draft.detach(this.draftView);
    this.draftKey = key; this.draft = composerDrafts.pane(key);
    this.draft.attach(this.draftView);
    this.input.value = this.draft.draft();
    this.drawUnsent(); this.drawOlder();
   }
-  this.input.disabled = !!this.guestPaused || !!topic?.closed();
+  this.input.disabled = this.fieldDisabled();
   this.input.placeholder = this.guestPaused?.placeholder ?? this.composerPlaceholder();
   this.relayout();
  }
@@ -827,7 +836,7 @@ class Detail {
   // render must not re-enable the input after the lines below.
   if (paused) this.dictation.stop();
   this.updateStatus(...this.shownStatus);
-  this.input.disabled = paused || !!this.sendsToTopic()?.closed();
+  this.input.disabled = this.fieldDisabled();
   this.input.placeholder = this.guestPaused?.placeholder ?? this.composerPlaceholder();
   this.send.disabled = paused || this.sending || this.dictation.busy;
   this.attach.disabled = paused || this.sending || this.picking;
@@ -1139,13 +1148,14 @@ class Detail {
  dispose() { this.disposed = true; this.topics?.dispose(); this.stopSurface(); this.stored(this.draft.flush()); this.queuedSend?.cancel(); this.draft.detach(this.draftView); void Desk.closeAgentView(this.token); }
  /** Topics' text follows the chat's size. */
  textSurface(): TextSurface { return this.mode === "terminal" ? "terminal" : "chat"; }
- topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions.length); }
+ // A saved terminal's view from an older desk carries no list (#531): null is none.
+ topicsAvailable(): boolean { return topicsShown(this.topicsCapable, this.topicsOffer, !!this.view?.topicSessions?.length); }
  resolvedMode(): ChatMode { return resolvedMode(this.asked, this.chatAvailable, this.topicsAvailable()); }
  mountTopics(view: AgentView) {
   const pane = new TopicsPane({
    token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
    topicSessions: view.topicSessions,
-   renderRow: row => this.renderRow(row),
+   renderRow: (row, unfolded) => this.renderRow(row, unfolded),
    // The Inbox's own cards, drawn into the topic's transcript; a topic's subagents don't open.
    renderPlan: (items, container, session) => this.renderPlan(items, container, session),
    renderSubagents: (agents, container) => this.renderSubagents(agents, container, false),
@@ -1442,9 +1452,9 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.unfoldedRelays.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
   this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
-  this.input.disabled = !!this.guestPaused; this.send.disabled = this.sending || !!this.guestPaused;
+  this.input.disabled = this.fieldDisabled(); this.send.disabled = this.sending || !!this.guestPaused;
   const composer = this.composerCard = el("div", "chat-composer");
   const actions = el("div", "composer-actions");
   this.attach.className = "composer-action";
@@ -1784,10 +1794,11 @@ class Detail {
   if (rows.length && (this.drawFrom === null || !rows.some(row => row.id === this.drawFrom))) this.drawFrom = windowStarting(rows, windowStart);
   const start = this.findOpen ? 0 : windowStart;
   this.drawnIndex = start;
+  const now = new Date();
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id)
-    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null] : row);
+    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null] : rowShown(row, now));
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "suggestion" || row.kind === "mark" ? this.renderSuggestionRow(row, true)
     : row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
@@ -2042,6 +2053,8 @@ class Detail {
   this.subagentSheet = dialog;
   const header = el("header"); header.append(el("strong", "", id), button("Done", () => dialog.close()));
   const messages = el("div", "chat-transcript"), notice = el("p", "interaction-status");
+  // The sheet's own conversation: the handovers its reader unfolds stay unfolded while it is open.
+  const unfolded = new Set<string>();
   const earlier = button("Earlier messages", () => { void load(true); }); earlier.className = "chat-earlier button-plain button-compact"; earlier.hidden = true;
   dialog.append(header, notice, messages); document.body.append(dialog);
   let open = true, busy = false, page: TranscriptPage | null = null, entries: Entry[] = [], before: string | undefined, timer: number | undefined;
@@ -2058,7 +2071,7 @@ class Detail {
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
     const nodes = groupTranscript(entries, !!page?.working).map(row => {
-     const node = this.renderRow(row);
+     const node = this.renderRow(row, unfolded);
      node.dataset.id = row.id;
      if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
      node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
@@ -2324,16 +2337,16 @@ class Detail {
   const row = el("div", "chat-day"); row.append(el("strong", "", day), document.createTextNode(` ${time}`));
   return row;
  }
- renderRow(row: ChatRow): HTMLElement {
+ renderRow(row: ChatRow, unfolded = this.unfoldedRelays): HTMLElement {
   if (row.kind === "day") return this.renderDay(row.ms);
   if (row.kind === "work") return this.renderWork(row);
-  return this.renderEntry(row.entry);
+  return this.renderEntry(row.entry, unfolded);
  }
  /** Who reads this chat (ChatView.swift ChatViewer). */
  private viewer(): Viewer {
   return this.view?.guest ? { guest: true, me: this.view.guestSelf ?? "", owner: this.view.guestOwner ?? "" } : { guest: false };
  }
- renderEntry(entry: Entry): HTMLElement {
+ renderEntry(entry: Entry, unfolded = this.unfoldedRelays): HTMLElement {
   if (entry.kind === "ask") return this.renderQuestion(entry, undefined, false, false);
   if (entry.kind === "note") return this.renderNote(entry);
   // A topic's or subagent's chat shows a suggestion without Start and Not now.
@@ -2363,7 +2376,7 @@ class Detail {
   }
   // A handover between the Inbox and a topic (chatRelay.ts): the agent's side, under who sent it.
   if (entry.kind === "relay") {
-   const row = relayRow(entry, markdown(entry.text ?? ""));
+   const row = relayRow(entry, markdown(entry.text ?? ""), unfolded);
    this.bindMessageMenu(row, entry.text ?? "", true, true);
    return row;
   }
@@ -2416,9 +2429,14 @@ class Detail {
   // Under an open topic the same send goes to the topic (topicCall); a closed topic takes none.
   const topic = this.sendsToTopic();
   if (this.guestPaused || this.sending || this.dictation.busy || topic?.closed() || (!text.trim() && !this.attachments.length)) return;
-  // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather than doing nothing.
-  if (this.inputFailed) { this.composerNote("An earlier key send failed. Reconnect before sending again."); return; }
+  // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather
+  // than doing nothing. A topic's send (agent.topics.send) never goes through that line.
+  if (!topic && this.inputFailed) { this.composerNote("An earlier key send failed. Reconnect before sending again."); return; }
   const hasAttachments = this.attachments.length > 0;
+  // The send settles where it was sent from (#532): its draft and its topic as at the click, not
+  // whichever the composer shows when the reply comes back.
+  const draftKey = this.draftKey, draft = this.draft;
+  const note = (text: string) => this.noteTo(topic, text);
   // Motion spec §1, all in the tap's frame: the composer clearing (its height shrinking on the
   // bubble's curve), the press, the bubble entering and the chat gliding to it.
   const mode = motionMode();
@@ -2466,13 +2484,15 @@ class Detail {
   }
   this.sending = true; this.dictation.button.disabled = true; this.send.disabled = true; this.attach.disabled = true; this.prompts.button.disabled = true; this.renderAttachments();
   try {
-   // The send's turn, behind earlier terminal input; or its end, when its page gave it up (back
-   // from the back/forward cache: its text is back), which frees the composer at once.
-   const turn = await (send ? Promise.race([this.inputQueue.then(() => true), send.gaveUp.then(() => false)]) : this.inputQueue.then(() => true));
+   // The send's turn, behind earlier terminal input (a topic's send skips it: it writes no
+   // terminal); or its end, when its page gave it up (back from the back/forward cache: its text
+   // is back), which frees the composer at once.
+   const queue = topic ? Promise.resolve() : this.inputQueue;
+   const turn = await (send ? Promise.race([queue.then(() => true), send.gaveUp.then(() => false)]) : queue.then(() => true));
    if (!turn) { setOutgoing(null); return; }
    // Closed while queued: dispose released the reservation.
    if (this.disposed) return;
-   if (this.inputFailed) {
+   if (!topic && this.inputFailed) {
     send?.cancel();
     throw new Error("An earlier key send failed. Reconnect before sending again.");
    }
@@ -2480,23 +2500,29 @@ class Detail {
    this.queuedSend = null;
    // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
    if (!topic) this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
-   const call = topic ? (prompt: string) => this.topicCall(topic, prompt) : (prompt: string) => Desk.chatPrompt(this.token, prompt);
+   // Each Desk's reply as one typed receipt, at its own binding: only the Inbox's is JSON.
+   const call = topic ? (prompt: string) => this.topicCall(topic, prompt) : async (prompt: string) => chatReceipt(await Desk.chatPrompt(this.token, prompt));
    // Rule 3: the send's dispatch puts the text back only when the Desk call rejects (it throws then).
    const outcome = send ? await send.dispatch(call) : { sent: true as const, value: await call(text) };
    if (!outcome.sent) {
     this.sendFollow = null;
     setOutgoing(null);
-    if (outcome.outcome === "refused" && !this.disposed) this.composerNote("Couldn't save the draft; not sent.");
+    if (outcome.outcome === "refused" && !this.disposed) note("Couldn't save the draft; not sent.");
     return;
    }
    dispatched = true;
    const ownerSend = this.view?.guest === false;
-   const result = JSON.parse(outcome.value);
+   const result = outcome.value;
    setOutgoing(result.delivery === "submitted" ? "submitted" : "unconfirmed");
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
-   if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.input.dispatchEvent(new Event("input")); }
-   if (!this.disposed) this.composerNote(result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again."));
+   if (hasAttachments) {
+    // The caption leaves its own draft: the field when it still shows that draft, else the store.
+    const left = remainingDraft(draft.draft(), text);
+    if (!this.disposed && this.draftKey === draftKey) { this.input.value = left; this.input.dispatchEvent(new Event("input")); }
+    else this.stored(draft.saveDraft(left));
+   }
+   if (!this.disposed) note(result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again."));
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
    // A guest has no events: look for the prompt now rather than at the next poll (GuestPaneView.swift:882-886).
    if (!this.disposed && this.view?.guest && this.mode === "chat") void this.refreshChat(this.generation);
@@ -2504,7 +2530,7 @@ class Detail {
    if (dispatched) {
     // The text went out: the failure is this page's (the receipt, the drawing), not the send's.
     console.error("after a send", e);
-    if (!this.disposed) this.composerNote(errorText(e));
+    if (!this.disposed) note(errorText(e));
     return;
    }
    this.sendFollow = null;
@@ -2512,7 +2538,7 @@ class Detail {
    setOutgoing(null);
    if (!this.disposed) {
     const message = errorText(e);
-    this.composerNote((this.view?.guest && guestSendFailure(message, this.view.name)) || message);
+    note((this.view?.guest && guestSendFailure(message, this.view.name)) || message);
     // A refused send moves the page to paused at once (failureNote's apply, GuestPaneView.swift:915-917).
     if (this.view?.guest && isGuestPaused(message)) this.applyGuestAvailability("paused");
    }
@@ -2529,11 +2555,11 @@ class Detail {
   *  posted as the Inbox posts them and named in the message): refused, it rejects with herdr's
   *  reason, so the draft and the files stay; else the receipt the send reads, with the topic's
   *  note (a queued message says so; an unconfirmed one asks to check). */
- private async topicCall(topic: TopicComposer, prompt: string): Promise<string> {
+ private async topicCall(topic: TopicComposer, prompt: string): Promise<ComposerReceipt> {
   const reply = await Desk.topicsSend(this.token, topic.topicID, prompt);
   if (reply.delivery === "refused") throw new Error(reply.problem || "The agent refused.");
-  return JSON.stringify(reply.delivery === "sent" ? { delivery: "submitted", note: sendNote(reply.mode) ?? "" }
-   : { delivery: "unconfirmed", note: reply.problem || "Couldn't confirm delivery. Check the topic before sending again." });
+  return reply.delivery === "sent" ? { delivery: "submitted", note: sendNote(reply.mode) ?? "" }
+   : { delivery: "unconfirmed", note: reply.problem || "Couldn't confirm delivery. Check the topic before sending again." };
  }
  async answer(askID: string, option: string) {
   if (this.answering || this.localAnswers.has(askID)) return;

@@ -374,6 +374,40 @@ func TestTopicsListSurvivesAMissedAgentAndFollowsItsFreshness(t *testing.T) {
 	}
 }
 
+// A list whose freshness fields come in another shape (stale not a bool)
+// is kept but shown as stale, and its as_of_unix_ms is not taken: a later
+// answer with an older timestamp still replaces it.
+func TestTopicsListWithMalformedFreshnessIsStale(t *testing.T) {
+	topic := func(id string) map[string]any {
+		return map[string]any{"topic_id": id, "title": id, "state": "idle", "created_unix_ms": 1, "last_activity_unix_ms": 1, "queued": 0, "turns": 1}
+	}
+	var mu sync.Mutex
+	next := 0
+	d, updates := topicsListDesk(t, func() (any, *fakeherdr.APIError) {
+		mu.Lock()
+		defer mu.Unlock()
+		next++
+		if next == 1 {
+			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a")}, "stale": "no", "as_of_unix_ms": 5000}, nil
+		}
+		return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("b")}, "as_of_unix_ms": 4000}, nil
+	})
+	read := func(n int) TopicsUpdate {
+		t.Helper()
+		if err := d.TopicsRefresh(context.Background(), "view"); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "a list answer", func() bool { return len(updates()) >= n })
+		return updates()[n-1]
+	}
+	if u := read(1); !u.Offered || !u.Stale || len(u.Topics) != 1 || u.Topics[0].TopicID != "a" {
+		t.Fatalf("malformed freshness must keep the list as stale: %+v", u)
+	}
+	if u := read(2); u.Stale || len(u.Topics) != 1 || u.Topics[0].TopicID != "b" {
+		t.Fatalf("a malformed timestamp must not hold back the next list: %+v", u)
+	}
+}
+
 // The page lists the topics the agent's session file holds (topic_sessions)
 // until the agent's first list answers: the view carries them, one without
 // an id left out, never null.
@@ -397,10 +431,61 @@ func TestAgentViewCarriesTheTopicSessions(t *testing.T) {
 // composed reference to it. A refusal keeps the file for the retry, which
 // posts no second Gram.
 func TestTopicSendCarriesTheComposersFilesAsTheInboxDoes(t *testing.T) {
-	g := fakeherdr.NewGram("pane-files")
+	d, g, view, recorded := topicFilesDesk(t)
+	ctx := context.Background()
+	if reply, err := d.TopicsSend(ctx, "view", "t1", "read this"); err != nil || reply.Delivery != "refused" || reply.Problem != "The agent refused: busy" {
+		t.Fatalf("a refused topic send: %+v, %v", reply, err)
+	}
+	if reply, err := d.TopicsSend(ctx, "view", "t1", "read this"); err != nil || reply.Delivery != "sent" {
+		t.Fatalf("the retry: %+v, %v", reply, err)
+	}
+	messages := g.Messages()
+	if len(messages) != 1 || messages[0].To == nil || *messages[0].To != view.Name || messages[0].File == nil {
+		t.Fatalf("one Gram with the file to the agent, posted once: %+v", messages)
+	}
+	want := "read this\n\n[File notes.txt attached via Herdr Gram message " + messages[0].ID + ". Download it with `herdr gram get-file " + messages[0].ID + " -o /tmp/herdr-file-" + messages[0].ID + ".txt`, then inspect /tmp/herdr-file-" + messages[0].ID + ".txt.]"
+	if got := recorded(); len(got) != 2 || got[0]["message"] != want || got[1]["message"] != want || got[1]["topic_id"] != "t1" || got[1]["target"] != "w1:p1" {
+		t.Fatalf("topic messages %q, want each %q", got, want)
+	}
+	// The file left with the send: the next message is text alone.
+	if reply, err := d.TopicsSend(ctx, "view", "t1", "thanks"); err != nil || reply.Delivery != "sent" || recorded()[2]["message"] != "thanks" {
+		t.Fatalf("after the files left: %+v, %v, %q", reply, err, recorded())
+	}
+}
+
+// #534: a caption already over the topic's cap is refused before any file
+// is posted: the agent gets no Gram for a message that can't go, and the
+// file stays in the composer.
+func TestTopicSendRefusesAnOversizedCaptionBeforePostingItsFiles(t *testing.T) {
+	d, g, _, recorded := topicFilesDesk(t)
+	reply, err := d.TopicsSend(context.Background(), "view", "t1", strings.Repeat("x", topicMessageBytes+1))
+	if err != nil || reply.Delivery != "refused" || reply.Problem != errTopicTooLong.Error() {
+		t.Fatalf("an oversized caption: %+v, %v; want refused as too long", reply, err)
+	}
+	if messages := g.Messages(); len(messages) != 0 {
+		t.Fatalf("an oversized caption posted %d Gram(s) before its refusal", len(messages))
+	}
+	if got := recorded(); len(got) != 0 {
+		t.Fatalf("an oversized caption reached agent.topics.send: %d", len(got))
+	}
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chips := v.composer.Snapshot().Chips; len(chips) != 1 {
+		t.Fatalf("the file must stay in the composer: %d chips", len(chips))
+	}
+}
+
+// topicFilesDesk is an omp agent's view on a herdr with Gram and topics, a
+// file (notes.txt) in its composer. Its first agent.topics.send is refused
+// (topic_rejected: busy), the rest sent; recorded is every send's params.
+func topicFilesDesk(t *testing.T) (d *Desk, g *fakeherdr.Gram, view AgentView, recorded func() []map[string]string) {
+	t.Helper()
+	g = fakeherdr.NewGram("pane-files")
 	var mu sync.Mutex
 	var sent []map[string]string
-	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+	d, _ = federatedDesk(t, func(s *fakeherdr.Server) {
 		inner := s.Handle
 		s.Duplex = g.Duplex
 		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
@@ -445,28 +530,9 @@ func TestTopicSendCarriesTheComposersFilesAsTheInboxDoes(t *testing.T) {
 	if err := d.PaneAttachFiles("view", []string{path}); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	if reply, err := d.TopicsSend(ctx, "view", "t1", "read this"); err != nil || reply.Delivery != "refused" || reply.Problem != "The agent refused: busy" {
-		t.Fatalf("a refused topic send: %+v, %v", reply, err)
-	}
-	if reply, err := d.TopicsSend(ctx, "view", "t1", "read this"); err != nil || reply.Delivery != "sent" {
-		t.Fatalf("the retry: %+v, %v", reply, err)
-	}
-	messages := g.Messages()
-	if len(messages) != 1 || messages[0].To == nil || *messages[0].To != view.Name || messages[0].File == nil {
-		t.Fatalf("one Gram with the file to the agent, posted once: %+v", messages)
-	}
-	recorded := func() []map[string]string {
+	return d, g, view, func() []map[string]string {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(sent)
-	}
-	want := "read this\n\n[File notes.txt attached via Herdr Gram message " + messages[0].ID + ". Download it with `herdr gram get-file " + messages[0].ID + " -o /tmp/herdr-file-" + messages[0].ID + ".txt`, then inspect /tmp/herdr-file-" + messages[0].ID + ".txt.]"
-	if got := recorded(); len(got) != 2 || got[0]["message"] != want || got[1]["message"] != want || got[1]["topic_id"] != "t1" || got[1]["target"] != "w1:p1" {
-		t.Fatalf("topic messages %q, want each %q", got, want)
-	}
-	// The file left with the send: the next message is text alone.
-	if reply, err := d.TopicsSend(ctx, "view", "t1", "thanks"); err != nil || reply.Delivery != "sent" || recorded()[2]["message"] != "thanks" {
-		t.Fatalf("after the files left: %+v, %v, %q", reply, err, recorded())
 	}
 }

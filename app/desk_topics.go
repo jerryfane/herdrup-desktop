@@ -594,6 +594,11 @@ func (d *Desk) TopicsSend(ctx context.Context, token, topicID, text string) (Top
 	if !attached {
 		return d.topicSend(ctx, v, topicID, text), nil
 	}
+	// A caption already over the cap can't go with any file: refused before
+	// one is posted (#534). topicSend checks the composed message too.
+	if len(text) > topicMessageBytes {
+		return TopicSendReply{Delivery: "refused", Problem: errTopicTooLong.Error()}, nil
+	}
 	if !v.sendMu.TryLock() {
 		return TopicSendReply{}, gramstore.ErrSending
 	}

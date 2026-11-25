@@ -109,9 +109,11 @@ export class FakeElement extends Listened {
  all(): FakeElement[] { return [this, ...this.children.flatMap(c => c.all())]; }
  contains(n: unknown): boolean { return this.all().includes(n as FakeElement); }
  text(): string { return this.all().map(n => n.textContent).join(""); }
- /** The first element inside matching a tag and classes ("div", ".a.b", "div.a"); null for any
-  *  other selector. */
+ /** The first element inside matching a tag and classes ("div", ".a.b", "div.a") or a data-id
+  *  (`[data-id="…"]`, as a chat finds its kept row); null for any other selector. */
  querySelector(selector: string): FakeElement | null {
+  const id = /^\[data-id="(.*)"\]$/.exec(selector);
+  if (id) return this.all().find(n => n !== this && n.dataset.id === id[1]) ?? null;
   const m = /^([a-z0-9]*)((?:\.[\w-]+)*)$/i.exec(selector);
   if (!m) return null;
   const [, tag, classes] = m;

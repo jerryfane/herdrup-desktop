@@ -1688,6 +1688,8 @@ function renderComposer() {
   attach.append(icon("paperclip", 18, "regular", "dim"));
   attach.disabled = sending || picking;
   if (dictation) dictation.button.disabled = sending || posting;
+  // The field takes no typing while dictation writes it.
+  input.disabled = !!dictation?.busy;
   const nodes: HTMLElement[] = dictation ? [attach, dictation.button] : [attach];
   // Send takes the saved prompts' place once there is something to send.
   if (attachments.length > 0 || draft.trim() !== "") {

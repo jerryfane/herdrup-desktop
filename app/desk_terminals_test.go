@@ -39,8 +39,13 @@ func TestSavedTerminalSurvivesReopenWithoutCrossingScope(t *testing.T) {
 	if starts.Load() != 0 {
 		t.Fatal("plain terminal started an agent")
 	}
-	if _, err := d.OpenTerminalView(target, "shell"); err != nil {
+	view, err := d.OpenTerminalView(target, "shell")
+	if err != nil {
 		t.Fatal(err)
+	}
+	// #531: the page reads topicSessions' length; null kept the saved terminal from opening.
+	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), `"topicSessions":[]`) {
+		t.Fatalf("a saved terminal's view must carry an empty topic list: %s", raw)
 	}
 	forged := target
 	forged.PaneID = "not-saved"
