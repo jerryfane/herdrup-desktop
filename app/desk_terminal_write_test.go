@@ -58,6 +58,11 @@ func (a answering) Call(_ context.Context, _ string, _, result any) error {
 func TestTerminalWriteOutcomeByError(t *testing.T) {
 	lost := fmt.Errorf("pane.send_text: %w: %w", bridge.ErrNotSent, errors.New("ssh: connection closed"))
 	cancelled := fmt.Errorf("pane.send_bracketed_text: %w: %w", bridge.ErrNotSent, context.Canceled)
+	ended, end := context.WithCancel(context.Background())
+	end()
+	// What bridge.Client.Call answers a call whose context ended before it
+	// started.
+	cancelledFirst := fmt.Errorf("pane.send_text: %w", bridge.Unsent(ended, nil))
 	for _, c := range []struct {
 		name     string
 		text     string
@@ -72,6 +77,7 @@ func TestTerminalWriteOutcomeByError(t *testing.T) {
 		{"a block never sent", twoLines, lost, false, string(errTerminalNotSent), ""},
 		{"a line never sent", "printf hello", lost, false, string(errTerminalNotSent), ""},
 		{"a block the view's closing cancelled", twoLines, cancelled, true, context.Canceled.Error(), ""},
+		{"a line cancelled before the call", "printf hello", cancelledFirst, true, context.Canceled.Error(), ""},
 		{"a timeout after the write", twoLines, &bridge.APIError{Code: "timeout", Message: "no answer"}, false, "", "unconfirmed"},
 		{"ok", twoLines, nil, false, "", "written"},
 	} {

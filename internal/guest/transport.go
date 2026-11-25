@@ -169,14 +169,20 @@ func (t *Transport) admitted(refusals uint64, features Features) {
 // write of the request was attempted, so herdr cannot have it, the request
 // goes once more on a fresh session. Once a write was attempted the request
 // is never sent again, whatever the write returned: herdr may have it, and it
-// could be an agent.prompt (herdrup#612 review).
+// could be an agent.prompt (herdrup#612 review). A request that fails
+// before any write of it was attempted because its context ended, or the
+// transport closed, fails unsent (bridge.Unsent).
 func (t *Transport) Call(ctx context.Context, method string, params, result any) error {
+	if ctx.Err() != nil {
+		// Never sent: a cancelled request must not race its session's close.
+		return bridge.Unsent(ctx, nil)
+	}
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
 	defer cancel()
 	stop := context.AfterFunc(t.ctx, cancel)
 	defer stop()
 	if err := t.ctx.Err(); err != nil {
-		return err
+		return bridge.Unsent(ctx, err)
 	}
 	request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(t.seq.Add(1), 10), method, params)
 	if err != nil {
@@ -187,19 +193,28 @@ func (t *Transport) Call(ctx context.Context, method string, params, result any)
 		if err == nil {
 			return t.decode(reused, open, line, result)
 		}
-		if sent || ctx.Err() != nil {
+		if sent {
 			return err
+		}
+		if ctx.Err() != nil {
+			return bridge.Unsent(ctx, err)
 		}
 	}
 	connected, err := t.connect(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return bridge.Unsent(ctx, err)
+		}
 		return err
 	}
 	if connected.reply.Features.MultiRequest {
 		connected.startPump()
 	}
-	line, _, open, err := roundTrip(ctx, connected, request)
+	line, sent, open, err := roundTrip(ctx, connected, request)
 	if err != nil {
+		if !sent && ctx.Err() != nil {
+			return bridge.Unsent(ctx, err)
+		}
 		return err
 	}
 	return t.decode(connected, open, line, result)
@@ -364,10 +379,13 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 		}
 	}()
 	if err := t.ctx.Err(); err != nil {
-		return nil, err
+		return nil, bridge.Unsent(ctx, err)
 	}
 	connected, err := t.connect(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, bridge.Unsent(ctx, err)
+		}
 		return nil, err
 	}
 	defer func() {
@@ -379,7 +397,10 @@ func (t *Transport) OpenStream(parent context.Context, method string, params any
 	if err != nil {
 		return nil, err
 	}
-	if _, err := connected.sendLine(ctx, request); err != nil {
+	if sent, err := connected.sendLine(ctx, request); err != nil {
+		if !sent && ctx.Err() != nil {
+			return nil, bridge.Unsent(ctx, err)
+		}
 		return nil, err
 	}
 	stream := &relayStream{lineReader: lineReader{session: connected, ctx: ctx}, cancel: cancel, stopParent: stop}

@@ -503,3 +503,28 @@ func TestASessionIsNotReusedPastItsAgeLimit(t *testing.T) {
 		t.Fatal("the owner's Gram sharing did not reach the guest after the age limit")
 	}
 }
+
+// A request whose context already ended is never sent, on the idle session
+// or a fresh one: it fails unsent (ErrNotSent with context.Canceled), and
+// herdr records nothing. A stream asked for so opens no session.
+func TestAGuestRequestWithAnEndedContextIsNeverSent(t *testing.T) {
+	h := newReuseHost(t, true)
+	h.list(t) // a session is idle for the next call
+	calls, connects := len(h.relay.Calls()), len(h.connects())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 20 {
+		if err := h.transport.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "never"}, nil); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+		}
+	}
+	if _, err := h.transport.OpenStream(ctx, "pane.stream", map[string]string{"pane_id": "p1"}); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("stream: %v; want ErrNotSent with context.Canceled", err)
+	}
+	if got := h.relay.Calls(); len(got) != calls {
+		t.Fatalf("herdr got %+v after the cancelled requests", got[calls:])
+	}
+	if got := len(h.connects()); got != connects {
+		t.Fatalf("%d connects after the cancelled requests, want %d", got, connects)
+	}
+}

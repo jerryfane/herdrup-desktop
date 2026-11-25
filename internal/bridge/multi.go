@@ -118,11 +118,11 @@ func (p *pool) slot(session string) *slot {
 }
 
 // viaMulti sends a request on the session's --multi channel. It returns
-// an error wrapping ErrNotSent (unsent) when nothing was written, and the
+// an error wrapping ErrNotSent (Unsent) when nothing was written, and the
 // request must take the per-request path.
 func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) ([]byte, error) {
 	if !multiRoutable(method, line) {
-		return nil, unsent(ctx, nil)
+		return nil, Unsent(ctx, nil)
 	}
 	p := &c.pool
 	p.mu.Lock()
@@ -130,7 +130,7 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 	switch s.capability {
 	case capUnsupported:
 		p.mu.Unlock()
-		return nil, unsent(ctx, nil)
+		return nil, Unsent(ctx, nil)
 	case capUnknown:
 		// A ping learns the capability from its own reply.
 		if method != "ping" && !s.probing {
@@ -138,12 +138,12 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 			go c.probeCapability()
 		}
 		p.mu.Unlock()
-		return nil, unsent(ctx, nil)
+		return nil, Unsent(ctx, nil)
 	}
 	p.mu.Unlock()
 	m := c.readyChannel(ctx)
 	if m == nil {
-		return nil, unsent(ctx, nil)
+		return nil, Unsent(ctx, nil)
 	}
 	return m.do(ctx, id, line)
 }
@@ -296,7 +296,7 @@ func (c *Client) readyChannel(ctx context.Context) *multiChannel {
 //     failed with err.
 //
 // Every exit of a request that was not written, in any state, fails with
-// unsent's error, which keeps ctx's end when ctx has ended. A request the
+// Unsent's error, which keeps ctx's end when ctx has ended. A request the
 // channel refuses to take (refusedLocked) carries err too when it is dead.
 type multiChannel struct {
 	sess   *ssh.Session
@@ -553,7 +553,7 @@ func (m *multiChannel) deliver(id string, line []byte) {
 // do sends one request and waits for its reply. It waits for a free slot
 // when maxMultiInFlight requests are outstanding. When the request is not
 // written (the channel retired or dead, or ctx ended before the write) it
-// fails with unsent's error, from every branch alike.
+// fails with Unsent's error, from every branch alike.
 func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, error) {
 	slot := false
 	select {
@@ -571,7 +571,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 		}
 		if err == nil {
 			// Ended before a slot was had: nothing was written.
-			err = unsent(ctx, nil)
+			err = Unsent(ctx, nil)
 		}
 		return nil, err
 	}
@@ -591,7 +591,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	if ctx.Err() != nil {
 		m.wmu.Unlock()
 		m.withdraw(id)
-		return nil, unsent(ctx, nil)
+		return nil, Unsent(ctx, nil)
 	}
 	n, err := m.stdin.Write(append(line, '\n'))
 	m.wmu.Unlock()
@@ -604,7 +604,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 			m.mu.Lock()
 			m.retireLocked()
 			m.mu.Unlock()
-			return nil, unsent(ctx, err)
+			return nil, Unsent(ctx, err)
 		}
 		// The remote process is gone. The read loop is about to fail every
 		// pending request with the reason it exited, which says more than
@@ -722,14 +722,14 @@ func (m *multiChannel) closeIfDrainedLocked() bool {
 
 // refusedLocked is why the channel takes no new request, nil while it is
 // open: the one admission check, whichever of do's branches led to it.
-// Dead, it is unsent's error with what fail recorded; retired, unsent's
+// Dead, it is Unsent's error with what fail recorded; retired, Unsent's
 // error alone. Either keeps ctx's end. m.mu must be held.
 func (m *multiChannel) refusedLocked(ctx context.Context) error {
 	switch {
 	case m.err != nil:
-		return unsent(ctx, m.err)
+		return Unsent(ctx, m.err)
 	case m.retired:
-		return unsent(ctx, nil)
+		return Unsent(ctx, nil)
 	}
 	return nil
 }

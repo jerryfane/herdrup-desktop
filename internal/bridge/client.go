@@ -79,18 +79,20 @@ func (e *APIError) UnmarshalJSON(b []byte) error {
 
 var errChannelClosed = errors.New("herdr api-bridge channel closed")
 
-// ErrNotSent means a request was not written to its channel, so herdr
-// cannot have it: Call then sends it down the per-request path instead,
-// unless its context has ended, when it fails with it (unsent's error).
+// ErrNotSent means a request was not written, so herdr cannot have it: on
+// the --multi channel, Call then sends it down the per-request path
+// instead, unless its context has ended, when it fails with it (Unsent's
+// error).
 var ErrNotSent = errors.New("herdr api-bridge --multi channel unavailable")
 
-// unsent is the error of a request that was never written to the --multi
-// channel, the one way every unsent exit fails: ErrNotSent, with reason
-// (why it was not written, such as the transport's failure) when there is
-// one, and with ctx's end when ctx has ended, so errors.Is finds
-// context.Canceled or DeadlineExceeded whichever exit gave up. Without
-// either it is ErrNotSent alone: a herdr with no --multi channel to give.
-func unsent(ctx context.Context, reason error) error {
+// Unsent is the error of a request that was never written, the one way
+// every unsent exit fails, the bridge's and the guest transport's: ErrNotSent,
+// with reason (why it was not written, such as the transport's failure)
+// when there is one, and with ctx's end when ctx has ended, so errors.Is
+// finds context.Canceled or DeadlineExceeded whichever exit gave up.
+// Without either it is ErrNotSent alone: a herdr with no --multi channel to
+// give.
+func Unsent(ctx context.Context, reason error) error {
 	err := ErrNotSent
 	switch {
 	case reason == nil:
@@ -312,8 +314,8 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 	// A request whose context has already ended is never sent. The channel's
 	// select would otherwise pick at random between a free slot and Done, and
 	// sometimes send it (a cancelled history page came back as a page).
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("%s: %w", method, err)
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", method, Unsent(ctx, nil))
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -330,7 +332,7 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 		if ctx.Err() != nil {
 			// The context ended, so the request takes no other path: it
 			// fails unsent, keeping why (#492).
-			err = unsent(ctx, err)
+			err = Unsent(ctx, err)
 		} else {
 			reply, err = c.oneShot(ctx, line)
 		}
@@ -384,13 +386,14 @@ func (c *Client) openStream(ctx context.Context, line []byte) (*Stream, error) {
 	return s, err
 }
 
-// newSession opens an exec channel, returning ctx's error as soon as ctx
+// newSession opens an exec channel, failing unsent (Unsent) as soon as ctx
 // ends: ssh.Client.NewSession waits for the server's channel-open reply,
-// which a stalled server may never send. A channel that opens after ctx
-// ended is closed.
+// which a stalled server may never send, and no request has gone on the
+// channel yet (it goes with the command, after). A channel that opens after
+// ctx ended is closed.
 func (c *Client) newSession(ctx context.Context) (*ssh.Session, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if ctx.Err() != nil {
+		return nil, Unsent(ctx, nil)
 	}
 	type opened struct {
 		sess *ssh.Session
@@ -410,7 +413,7 @@ func (c *Client) newSession(ctx context.Context) (*ssh.Session, error) {
 				o.sess.Close()
 			}
 		}()
-		return nil, ctx.Err()
+		return nil, Unsent(ctx, nil)
 	}
 }
 

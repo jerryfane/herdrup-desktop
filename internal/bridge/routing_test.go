@@ -560,3 +560,37 @@ func TestARequestOnADeadChannelKeepsWhyItDied(t *testing.T) {
 		}
 	}
 }
+
+// A call, stream or duplex whose context already ended starts nothing: it
+// fails unsent (ErrNotSent with context.Canceled), on the --multi channel
+// and per-request alike, and herdr records no request and no new channel.
+func TestARequestWithAnEndedContextIsNeverSent(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the --multi channel", func() bool { return bridge.MultiAlive(c) })
+	requests, commands := len(m.srv.Requests()), len(m.srv.Commands())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	notSent := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Errorf("%s: %v; want ErrNotSent with context.Canceled", what, err)
+		}
+	}
+	for range 20 {
+		notSent("call", c.Call(ctx, "pane.send_text", map[string]string{"pane_id": "w1:p1", "text": "never"}, nil))
+	}
+	_, err := c.OpenStream(ctx, "events.subscribe", nil)
+	notSent("stream", err)
+	_, err = c.OpenDuplex(ctx)
+	notSent("duplex", err)
+	if got := m.srv.Requests(); len(got) != requests {
+		t.Fatalf("herdr got %+v after the cancelled requests", got[requests:])
+	}
+	if got := m.srv.Commands(); len(got) != commands {
+		t.Fatalf("herdr ran %v after the cancelled requests", got[commands:])
+	}
+}
