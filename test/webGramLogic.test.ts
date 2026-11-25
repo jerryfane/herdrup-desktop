@@ -49,6 +49,8 @@ function chunks(bytes: Uint8Array, piece = DOWNLOAD_CHUNK_BYTES, tamper?: (c: Fi
  } };
 }
 
+// Six reads of 1 MiB through base64 both ways: 0.6 s at load 80, past 5 s at load 100 and above
+// (#540). Its limit is its own.
 test("readChunks asks each next offset and rejects a chunk at another offset, size or past the end", async () => {
  const bytes = data(DOWNLOAD_CHUNK_BYTES * 2 + 5);
  const src = chunks(bytes);
@@ -67,7 +69,7 @@ test("readChunks asks each next offset and rejects a chunk at another offset, si
  const short = data(10);
  expect(await readChunks(async () => ({ data_base64: toBase64(data(11)), mime: "", name: "", offset: 0, sha256: "", size: 10 }), 0, () => {}, () => {}).then(() => "ok", (e: Error) => e.message)).toBe(FILE_DATA_ERROR);
  expect(short.length).toBe(10);
-});
+}, 30_000);
 
 test("a save streams where it can, else is held in memory only up to the cap, decided before it starts", () => {
  expect(BLOB_SAVE_MAX_BYTES).toBe(200_000_000);

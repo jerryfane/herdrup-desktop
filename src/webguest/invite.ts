@@ -319,6 +319,9 @@ export function httpSealedInviteFetch(fetchFn: typeof fetch = globalThis.fetch.b
    } catch {
     throw unreachable();
    }
+   // The deadline or the caller ended the read: a body that then ends cleanly is cut short, not
+   // the sealed invite (#540: a fetch's abort can end its body as done rather than with an error).
+   if (controller.signal.aborted) throw unreachable();
    if (length > MAX_SEALED_INVITE) throw notInvite();
    return blob.slice(0, length);
   } finally {

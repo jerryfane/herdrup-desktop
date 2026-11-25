@@ -285,3 +285,11 @@ test("the deadline covers the whole exchange (short_invite_test.go:340-370)", as
  }
  expect(SEALED_INVITE_DEADLINE_MS).toBe(15_000);
 });
+
+// What the real-time test above met under load (#540): the deadline's abort ended the body as done,
+// not with an error. A body that ends that way is cut short, never the sealed invite.
+test("a body that ends cleanly as the deadline aborts its fetch is unreachable, not an empty invite", async () => {
+ const endsOnAbort: typeof fetch = Object.assign(async (_input: string | URL | Request, init?: RequestInit) =>
+  new Response(new ReadableStream({ start(c) { init!.signal!.addEventListener("abort", () => c.close()); } }), { status: 200 }), { preconnect: fetch.preconnect });
+ expect(await kindOf(httpSealedInviteFetch(endsOnAbort, 20)(relayOrigin + "/v1/invite/" + testID))).toBe("invite_unreachable");
+});
