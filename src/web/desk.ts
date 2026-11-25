@@ -501,12 +501,12 @@ export function createGuestDesk(env: DeskEnv) {
   const signal = l.life.signal;
   // An owner link also says the scope its grant was admitted under (ownerScope). A snapshot is
   // made, and told, only when the connection changed: its phase, message, availability, admitted
-  // scope or features.
+  // scope, features, or the shared agent's name (a guest's access, renamed on the host).
   const publish = (phase: string, msg: string, availability: string) => {
    const now = l.conn, guest = now.guest, features = l.transport.features;
    const same = now.phase === phase && now.message === msg && (guest?.availability ?? "") === availability
-    && (guest?.ownerScope ?? "") === (l.owner ? l.transport.scope : "")
-    && guest?.features.gram === features.gram && guest.features.push === features.push && guest.features.multi_request === features.multiRequest;
+    && (guest?.ownerScope ?? "") === (l.owner ? l.transport.scope : "") && guest?.access.agentName === l.access.agentName
+    && guest.features.gram === features.gram && guest.features.push === features.push && guest.features.multi_request === features.multiRequest;
    if (!same) setState(l, connection(l, print, phase, msg, availability));
   };
   // The snapshot made with the link ("connecting") is the first one told.
@@ -534,11 +534,13 @@ export function createGuestDesk(env: DeskEnv) {
     if (l.owner) l.started?.listed(result!.agents);
     const open = mounted?.active === l && !mounted.view.plainTerminal ? mounted.paneID : null;
     const { agents, availability } = l.owner ? { agents: result!.agents, availability: open !== null && l.started?.get(open) ? "" : ownerAvailability(result!.agents, open) } : sharedListing(result!, l.access.agentTarget);
+    // A guest's shared agent as the host names it now: in the access before publication, so a
+    // rename is a change of the connection (the roster and share Settings read it from there).
+    if (!l.owner && agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
     publish("connected", "", availability);
     if (signal.aborted || active !== l) return;
     l.agents = agents;
     setSharedAgents(agents.map((a) => ({ pane_id: a.pane_id ?? "", name: a.name ?? null })));
-    if (!l.owner && agents.length > 0) l.access = { ...l.access, agentName: displayName(agents[0]!) };
     l.listedAt = goTime(new Date(now())).replace(/\.\d+Z$/, "Z");
     publishBoard(l);
     // desk_groups.go: a list reads the folder document again, at most once a minute.
