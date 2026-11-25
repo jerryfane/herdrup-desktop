@@ -24,16 +24,22 @@ const accessOn = (relay: TestRelay, guestID = "grant-1"): Access => ({
  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date(),
 });
 
-test("guest acceptance and returning traffic authenticate both peers (guest_test.go:73-264)", async () => {
+/** A test of up to five fresh connects: 3 s each, on a machine so loaded a handshake takes 1 s. */
+const CONNECTS_LIMIT_MS = 15_000;
+
+/** guest_test.go:73-264's host, for guest: it checks the guest's key and hello on every connect
+ *  and admits by fixture.mode (0 the grant with an agent and gram, 1 another grant, 2 revoked, 3
+ *  the grant without features, 4 never answers); a request with mode 0 or 3 is answered as one
+ *  API line split between frames, then a second line in the same frame. */
+async function guestHost() {
  const guest = await identity();
- let mode = 0;
- let sessions = 0;
- const requests: string[] = [];
+ const fixture = { mode: 0, sessions: 0, requests: [] as string[] };
  const relay = track(startRelay({
   async serve(conn, handshake) {
    const { hello, guestPublic, reply } = await handshake();
    expect(guestPublic).toEqual(guest.publicKey);
-   sessions++;
+   fixture.sessions++;
+   const mode = fixture.mode;
    if (mode === 4) return; // never answers: the guest's cancellation must end it
    const host = reply(
     mode === 1 ? { ok: true, guest_id: "wrong-grant" } :
@@ -49,7 +55,7 @@ test("guest acceptance and returning traffic authenticate both peers (guest_test
    const line = await host.readLine();
    const request = JSON.parse(line!) as { id: string; method: string; params: { text?: string } };
    expect(request.id).toMatch(/^herdrup:guest:\d+$/);
-   requests.push(request.params.text ?? request.method);
+   fixture.requests.push(request.params.text ?? request.method);
    // Split one API line between frames, then put two lines in a frame.
    host.write(`{"result":{"text":"hel`);
    host.write(`lo"}}\n{"result":{"text":"second"}}\n`);
@@ -57,36 +63,52 @@ test("guest acceptance and returning traffic authenticate both peers (guest_test
   },
  }));
  const invite = new Invite({ relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, "Machine", "Owner", "Worker", "visitor", new Date(Date.now() + 60_000), "invitation", "one-use-bearer");
+ return { guest, fixture, relay, invite };
+}
+
+// guest_test.go:73-264, split by what each part checks (#428: each connect is a handshake).
+test("guest acceptance and returning traffic authenticate both peers (guest_test.go:73-264)", async () => {
+ const { guest, fixture, invite } = await guestHost();
  const access = await acceptInvite(invite, guest, "Desktop");
  expect([access.agentTarget, access.guestID, access.ownerName, access.agentName]).toEqual(["%42", "grant-1", "Owner", "Worker"]);
-
  const transport = new GuestTransport(guestLink(access), guest);
  const longText = "x".repeat(MAX_NOISE_PLAINTEXT * 2);
  expect(await transport.call("pane.send_text", { text: longText })).toEqual({ text: "hello" });
- expect(requests.pop()).toBe(longText);
+ expect(fixture.requests.pop()).toBe(longText);
  expect(transport.features.gram).toBe(true);
-
  const stream = await transport.openStream("events.subscribe");
  expect(await stream.next()).toBe(`{"result":{"text":"hello"}}`);
  expect(await stream.next()).toBe(`{"result":{"text":"second"}}`);
  expect(await stream.next()).toBeNull();
  stream.close();
- expect(sessions).toBe(3);
+ expect(fixture.sessions).toBe(3);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
 
- mode = 3;
+test("a returning guest's admission sets its features; another grant's or a revoked one reads as revoked (guest_test.go:73-264)", async () => {
+ const { guest, fixture, relay } = await guestHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), guest);
+ await transport.call("ping");
+ expect(transport.features.gram).toBe(true);
+ fixture.mode = 3;
  await transport.call("ping");
  expect(transport.features.gram).toBe(false);
- for (mode of [1, 2]) expect([mode, await kindOf(transport.call("ping"))]).toEqual([mode, "revoked"]);
+ for (fixture.mode of [1, 2]) expect([fixture.mode, await kindOf(transport.call("ping"))]).toEqual([fixture.mode, "revoked"]);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
 
+test("a host without the saved key isn't accepted; a stream whose hello goes unanswered ends with its signal; a closed transport opens nothing (guest_test.go:73-264)", async () => {
+ const { guest, fixture, relay } = await guestHost();
+ const access = accessOn(relay);
  const wrongKey = { ...access, endpoint: { ...access.endpoint, hostPublicKey: new Uint8Array(32).fill(9) } };
  expect(await kindOf(new GuestTransport(guestLink(wrongKey), guest).call("ping"))).not.toBe("accepted");
-
- mode = 4;
+ const transport = new GuestTransport(guestLink(access), guest);
+ fixture.mode = 4;
  const cancelled = await transport.openStream("events.subscribe", undefined, { signal: AbortSignal.timeout(30) }).then(() => null, (error) => error);
  expect(cancelled).not.toBeNull();
  transport.close();
  expect(await kindOf(transport.openStream("ping"))).toBe("closed");
-});
+}, CONNECTS_LIMIT_MS);
 
 test("a stream keeps its socket and yields lines until the host closes", async () => {
  let host: HostSession | undefined;
@@ -126,21 +148,34 @@ test("closing the transport ends its open streams", async () => {
  expect(await kindOf(next)).toBe("closed");
 });
 
-test("API errors, closes and refusals read as the Go client words them", async () => {
- let script: (host: HostSession) => void = () => {};
- let admission: unknown = { ok: true, guest_id: "grant-1" };
+/** A host that admits each connect with fixture.admission and answers its one request with
+ *  fixture.script(host). Each case of the error tests below is a fresh connect, a Noise handshake
+ *  each (about 1 s on a loaded machine, #428): they are split by kind, and one with several
+ *  connects has a time limit of its own, CONNECTS_LIMIT_MS. */
+function scriptedHost() {
+ const fixture = { script: (_host: HostSession) => {}, admission: { ok: true, guest_id: "grant-1" } as unknown };
  const relay = track(startRelay({
   async serve(_conn, handshake) {
-   const host = (await handshake()).reply(admission);
+   const host = (await handshake()).reply(fixture.admission);
    await host.readLine();
-   script(host);
+   fixture.script(host);
   },
  }));
+ return { fixture, relay };
+}
+
+test("an API error reads as the Go client words it", async () => {
+ const { fixture, relay } = scriptedHost();
  const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
- script = (host) => host.write(`{"id":"x","error":{"code":"not_found","message":"no such pane","current":7}}\n`);
+ fixture.script = (host) => host.write(`{"id":"x","error":{"code":"not_found","message":"no such pane","current":7}}\n`);
  const apiError = await transport.call("pane.get").catch((error) => error);
  expect(apiError).toBeInstanceOf(HerdrAPIError);
  expect([apiError.code, apiError.message, apiError.raw.current]).toEqual(["not_found", "herdr: not_found: no such pane", 7]);
+});
+
+test("closes and malformed replies read as the Go client words them", async () => {
+ const { fixture, relay } = scriptedHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  // Bun's server sends 1001 as 1000, so the relay's 1001 host_offline is checked with a scripted
  // socket below.
  const closes: [number, string, string][] = [
@@ -149,21 +184,31 @@ test("API errors, closes and refusals read as the Go client words them", async (
   [4000, "replaced", "The shared connection closed (code 4000)."],
  ];
  for (const [code, reason, message] of closes) {
-  script = (host) => host.conn.close(code, reason);
+  fixture.script = (host) => host.conn.close(code, reason);
   expect(await transport.call("ping").catch((error: Error) => error.message)).toBe(message);
  }
- script = (host) => host.conn.send("plain text");
+ fixture.script = (host) => host.conn.send("plain text");
  expect(await transport.call("ping").catch((error: Error) => error.message)).toBe("The relay sent an unencrypted message; the connection was refused.");
- script = (host) => { host.write(`{"result":"partial`); host.conn.close(1000); };
+ fixture.script = (host) => { host.write(`{"result":"partial`); host.conn.close(1000); };
  expect(await kindOf(transport.call("ping"))).toBe("other");
+}, CONNECTS_LIMIT_MS);
+
+test("the host's refusals of a guest read as the Go client words them", async () => {
+ const { fixture, relay } = scriptedHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  for (const [code, message] of [["unknown", "This shared access is no longer available. Ask the owner for a new invitation."], ["invite_used", "This invitation was already used. Ask the owner for a new one."], ["invite_expired", "This invitation has expired. Ask the owner for a new invitation."], ["invite_invalid", "The owner did not accept this invitation. Ask for a new link."], ["other", "The shared machine refused this guest connection."]]) {
-  admission = { ok: false, error: code };
+  fixture.admission = { ok: false, error: code };
   expect(await transport.call("ping").catch((error: Error) => error.message)).toBe(message!);
  }
- for (admission of [{ guest_id: "grant-1" }, { ok: "yes" }, [], { ok: true, guest_id: 7 }]) {
+}, CONNECTS_LIMIT_MS);
+
+test("an admission that isn't one reads as an invalid secure reply", async () => {
+ const { fixture, relay } = scriptedHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ for (fixture.admission of [{ guest_id: "grant-1" }, { ok: "yes" }, [], { ok: true, guest_id: 7 }]) {
   expect(await transport.call("ping").catch((error: Error) => error.message)).toBe("The shared machine's secure reply is invalid.");
  }
-});
+}, CONNECTS_LIMIT_MS);
 
 // GuestRelay src/host.ts:178 closes a guest with 1001 host_offline when the host goes away.
 test("the relay's going-away close reads as the host offline", async () => {
@@ -326,8 +371,12 @@ test("a connect the relay admits ends the backoff", async () => {
  expect(transport.rateLimitedUntil()).toBe(clock + 15_000);
 });
 
-test("a call fails as NotSentError for every failure before its request reaches the socket, and never after", async () => {
- let mode = "", helloed = Promise.withResolvers<void>(), received = Promise.withResolvers<void>();
+/** A host for one case of the not-sent test below, by mode: the relay refuses the connect
+ *  ("refuse"), the host holds the hello ("hold"), refuses it ("refuseHello"), closes once it has
+ *  the request ("close"), or else takes the request and waits. helloed and received settle as it
+ *  gets there. */
+function notSentHost(mode: string) {
+ const helloed = Promise.withResolvers<void>(), received = Promise.withResolvers<void>();
  const relay = track(startRelay({
   admit: () => mode === "refuse" ? new Response(null, { status: 429 }) : undefined,
   async serve(conn, handshake) {
@@ -341,8 +390,6 @@ test("a call fails as NotSentError for every failure before its request reaches 
    if (mode === "close") conn.close();
   },
  }));
- const gone = startRelay({ async serve() {} });
- gone.stop();
  const transportOn = async (r: TestRelay, callLimitMs?: number) => new GuestTransport(guestLink(accessOn(r)), await identity(), callLimitMs ? { callLimitMs } : {});
  /** A call aborted (with reason) through its signal, or its sendSignal, once the host has reached at. */
  const cancelled = async (at: () => Promise<void>, through: "signal" | "sendSignal" = "signal") => {
@@ -352,28 +399,34 @@ test("a call fails as NotSentError for every failure before its request reaches 
   call.abort(new Error("sheet dismissed"));
   return pending;
  };
- const cases: [string, string, "not sent" | "maybe sent", () => Promise<unknown>][] = [
-  ["the relay refuses the connect (429)", "refuse", "not sent", async () => (await transportOn(relay)).call("agent.start")],
-  ["the relay can't be reached", "", "not sent", async () => (await transportOn(gone)).call("agent.start")],
-  ["the host refuses the hello", "refuseHello", "not sent", async () => (await transportOn(relay)).call("agent.start")],
-  ["the call was aborted before it began", "", "not sent", async () => {
-   const transport = await transportOn(relay), call = new AbortController();
-   call.abort(new Error("sheet dismissed"));
-   return transport.call("agent.start", {}, { signal: call.signal });
-  }],
-  ["the call is cancelled while its hello waits", "hold", "not sent", () => cancelled(() => helloed.promise)],
-  ["the call's sendSignal ends while its hello waits", "hold", "not sent", () => cancelled(() => helloed.promise, "sendSignal")],
-  ["the transport closed before the call", "", "not sent", async () => { const transport = await transportOn(relay); transport.close(); return transport.call("agent.start"); }],
-  ["the host closes once it has the request", "close", "maybe sent", async () => (await transportOn(relay)).call("agent.start")],
-  ["the call is cancelled once the host has the request", "wait", "maybe sent", () => cancelled(() => received.promise)],
-  ["the round-trip limit passes while its hello waits", "hold", "not sent", async () => (await transportOn(relay, 200)).call("agent.start")],
- ];
- for (const [name, m, want, run] of cases) {
-  mode = m; helloed = Promise.withResolvers(); received = Promise.withResolvers();
-  const error = await run().then(() => "answered", (e: unknown) => e);
-  expect(`${name}: ${error instanceof NotSentError ? "not sent" : error instanceof Error ? "maybe sent" : String(error)}`).toBe(`${name}: ${want}`);
- }
-});
+ return { relay, helloed: helloed.promise, received: received.promise, transportOn, cancelled };
+}
+
+// One test per case, each its own host (#428: each connect is a handshake).
+test.each([
+ ["the relay refuses the connect (429)", "refuse", "not sent", async (h) => (await h.transportOn(h.relay)).call("agent.start")],
+ ["the relay can't be reached", "", "not sent", async (h) => {
+  const gone = startRelay({ async serve() {} });
+  gone.stop();
+  return (await h.transportOn(gone)).call("agent.start");
+ }],
+ ["the host refuses the hello", "refuseHello", "not sent", async (h) => (await h.transportOn(h.relay)).call("agent.start")],
+ ["the call was aborted before it began", "", "not sent", async (h) => {
+  const transport = await h.transportOn(h.relay), call = new AbortController();
+  call.abort(new Error("sheet dismissed"));
+  return transport.call("agent.start", {}, { signal: call.signal });
+ }],
+ ["the call is cancelled while its hello waits", "hold", "not sent", (h) => h.cancelled(() => h.helloed)],
+ ["the call's sendSignal ends while its hello waits", "hold", "not sent", (h) => h.cancelled(() => h.helloed, "sendSignal")],
+ ["the transport closed before the call", "", "not sent", async (h) => { const transport = await h.transportOn(h.relay); transport.close(); return transport.call("agent.start"); }],
+ ["the host closes once it has the request", "close", "maybe sent", async (h) => (await h.transportOn(h.relay)).call("agent.start")],
+ ["the call is cancelled once the host has the request", "wait", "maybe sent", (h) => h.cancelled(() => h.received)],
+ ["the round-trip limit passes while its hello waits", "hold", "not sent", async (h) => (await h.transportOn(h.relay, 200)).call("agent.start")],
+] as [string, string, "not sent" | "maybe sent", (h: ReturnType<typeof notSentHost>) => Promise<unknown>][])(
+ "a call fails as NotSentError for every failure before its request reaches the socket, and never after: %s", async (_name, mode, want, run) => {
+  const error = await run(notSentHost(mode)).then(() => "answered", (e: unknown) => e);
+  expect(error instanceof NotSentError ? "not sent" : error instanceof Error ? "maybe sent" : String(error)).toBe(want);
+ }, CONNECTS_LIMIT_MS);
 
 // The hand-off (transport.ts handOff): a request's signal or sendSignal ending at any point before
 // its first frame reaches the socket sends nothing, on a reused session and a fresh one; once the
