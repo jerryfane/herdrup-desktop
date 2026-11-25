@@ -303,6 +303,11 @@ test("a redemption whose sign-in changed while its retry's statement was fetched
  expect(relay.connects).toBe(1);
 }, CONNECTS_LIMIT_MS);
 
+// A failed sign-out that restores the same account while a returning hello waits on a refusal:
+// the share may well be this account's, so the retry stops on the changed sign-in, not on whose
+// share it is (herdr alone says that: account_mismatch).
+const SIGN_IN_CHANGED = ["sign_in_changed", "Your HerdrUp sign-in changed. Try again."];
+
 test("a bound share's returning hello whose sign-in changed before its retry, within one connect, sends nothing more", async () => {
  const s = statements();
  const hellos: unknown[] = [];
@@ -314,9 +319,26 @@ test("a bound share's returning hello whose sign-in changed before its retry, wi
  });
  const transport = new GuestTransport(guestLink(accessOn(relay, true), s), await identity());
  const error = await transport.call("ping").catch(e => e);
- expect(kindAndMessage(error)).toEqual(["account_mismatch", "This share belongs to another HerdrUp account. Sign in to that account to open it."]);
+ expect(kindAndMessage(error)).toEqual(SIGN_IN_CHANGED);
  // Not even a statement is asked for under the other sign-in.
  expect([hellos, relay.connects, s.issued]).toEqual([["jws-1"], 1, 1]);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
+
+test("a bound share's retry whose sign-in changed while its statement was fetched isn't sent", async () => {
+ const s = statements();
+ s.afterGet = n => { if (n === 2) s.switchAccount(); };
+ const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "statement_expired" }); });
+ const transport = new GuestTransport(guestLink(accessOn(relay, true), s), await identity());
+ expect(kindAndMessage(await transport.call("ping").catch(e => e))).toEqual(SIGN_IN_CHANGED);
+ expect(relay.connects).toBe(1);
+ transport.close();
+}, CONNECTS_LIMIT_MS);
+
+test("herdr's account_mismatch says whose share it is", async () => {
+ const relay = relayWith(async (_conn, handshake) => { (await handshake()).reply({ ok: false, error: "account_mismatch" }); });
+ const transport = new GuestTransport(guestLink(accessOn(relay, true), statements()), await identity());
+ expect(kindAndMessage(await transport.call("ping").catch(e => e))).toEqual(["account_mismatch", "This share belongs to another HerdrUp account. Sign in to that account to open it."]);
  transport.close();
 }, CONNECTS_LIMIT_MS);
 

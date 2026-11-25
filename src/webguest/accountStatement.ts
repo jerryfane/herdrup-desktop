@@ -28,3 +28,6 @@ export const REFRESH_AHEAD_MS = 120_000;
 
 /** The sign-in a redemption started in is no longer the page's: its retry isn't sent. */
 export const accountChanged = () => new GuestError("account_changed", "Your HerdrUp account changed; open the invite again");
+/** The sign-in a saved share's connect started in is no longer the page's: its retry isn't sent.
+ *  Whose account the share is herdr alone says (account_mismatch); a new connect tries again. */
+export const shareSignInChanged = () => new GuestError("sign_in_changed", "Your HerdrUp sign-in changed. Try again.");
