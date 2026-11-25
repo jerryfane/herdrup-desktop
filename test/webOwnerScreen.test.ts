@@ -5,6 +5,9 @@
 import { afterEach, expect, test } from "bun:test";
 import jsQR from "jsqr";
 import { approvalParts, approvedByLabel, copyText, guideCode, guideSteps, IOS_APP_URL, machineAccess, machineRows, machineSection, noticeCard, ownerLayout, pageLink, thisBrowser, timeLeft, unsupportedNotice, type OwnerLayout } from "../src/web/ownerScreen";
+import { signInFirst, waitsForAccount } from "../src/web/bootChoice";
+import { admittedAccess } from "../src/shellModel";
+import type { ConnState } from "../src/mygo";
 import { hostHomeHeader } from "../src/hostHome";
 import { AccountWelcome } from "../src/herdrupAccount";
 import type { OwnerPhase } from "../src/web/ownerApproval";
@@ -138,12 +141,34 @@ test("each machine's status and whether it opens; a machine whose access ended c
  expect(skipped).toEqual([{ label: "nas", reason: "Needs a herdr update (herdr 0.8.2)" }, { label: "win", reason: "Doesn't support browser access" }]);
 });
 
-test("a machine's access, for Settings → Machines: who approved its latest grant, the desktop's access words, until when", () => {
+test("a machine's approval, for Settings → Machines: who approved its latest grant and until when (not its scope: the link's is live)", () => {
  const record = recordOf(approver("Mac", [m("hetzner", "h1", "chat", 1_800_000_000)]), approver("iPhone", [m("hetzner", "h1", "terminal", 1_900_000_000), m("mini", "h2", "chat")]));
- expect(machineAccess(record, "h1")).toMatchObject({ approvedBy: "iPhone", access: "Chat and terminal" });
- expect(machineAccess(record, "h2")).toMatchObject({ approvedBy: "iPhone", access: "Chat only" });
+ expect(Object.keys(machineAccess(record, "h1")!).sort()).toEqual(["approvedBy", "until"]);
+ expect(machineAccess(record, "h1")?.approvedBy).toBe("iPhone");
  expect(machineAccess(record, "h1")?.until).not.toBe("");
  expect(machineAccess(record, "gone")).toBeNull();
+});
+
+test("Settings → Machines' Access is the scope the live link was admitted under, even when a renewal changed it from the approval's (#514)", () => {
+ // The approval said chat; the host admitted the renewed link under terminal, and the reverse.
+ const linked = (phase: string, ownerScope?: string) => ({ phase, guest: { ownerScope } as ConnState["guest"] });
+ expect(admittedAccess(linked("connected", "terminal"))).toBe("Chat and terminal");
+ expect(admittedAccess(linked("connected", "chat"))).toBe("Chat only");
+ // Not yet known while it connects; nothing to say with no link.
+ expect(admittedAccess(linked("connecting"))).toBe("Checking…");
+ expect(admittedAccess(linked("connected"))).toBe("Checking…");
+ for (const phase of ["idle", "error"]) expect(admittedAccess(linked(phase, "terminal"))).toBeNull();
+ expect(admittedAccess(null)).toBeNull();
+});
+
+test("the guest's way chosen at boot reaches the invite's words with that one click, sign-in providers or not (#513)", () => {
+ const plainVisit = { bootGuest: false, guestChosen: false, owner: false, error: false, signedIn: false, providers: 2 };
+ expect(signInFirst(plainVisit)).toBe(true);
+ expect(signInFirst({ ...plainVisit, bootGuest: true })).toBe(false);
+ expect(signInFirst({ ...plainVisit, guestChosen: true })).toBe(false);
+ expect(signInFirst({ ...plainVisit, providers: 0 })).toBe(false);
+ // Nor does it wait for the account lookup first.
+ expect([waitsForAccount(true, false), waitsForAccount(true, true), waitsForAccount(false, false)]).toEqual([true, false, false]);
 });
 
 test("one section names every approver in its label, each once", () => {

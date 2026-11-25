@@ -13,10 +13,11 @@ export function element<K extends keyof HTMLElementTagNameMap>(tag: K, cls: stri
  const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 }
 
-/** What the browser may do on the machine it opened (web/hosts.ts), for Settings → Machines: who
- *  approved it, the access ("Chat and terminal", "Chat only") and until when. The desktop's
+/** The approval behind the machine the browser opened (web/hosts.ts), for Settings → Machines: who
+ *  approved it and until when, as the saved approval says. The access itself is the live link's
+ *  (shellModel.ts admittedAccess): a renewal may admit it under another scope. The desktop's
  *  machines have none. */
-export interface BrowserAccess { approvedBy: string; access: string; until: string }
+export interface BrowserAccess { approvedBy: string; until: string }
 
 export interface HostHomeHeader {
  root: HTMLElement;

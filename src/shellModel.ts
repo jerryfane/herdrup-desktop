@@ -5,6 +5,7 @@
 
 import { Desk, type BoardUpdate, type ConnState } from "./mygo";
 import { webGuest } from "./platform";
+import { ACCESS_CHOICES, choiceLabel } from "./webAccessModel";
 
 /** Whether this build's Desk has every one of methods. The desktop's has them all; the browser's
  *  only the method groups web/mygo.ts registers, so a screen gated on its group's methods shows
@@ -77,6 +78,15 @@ export function boardAfter<B extends Pick<BoardUpdate, "machineID">>(previous: P
  *  owner always may; a web owner's link only under a terminal-scope grant. */
 export function ownerWrites(state: Pick<ConnState, "guest">, browser = webGuest): boolean {
   return !browser || state.guest?.ownerScope === "terminal";
+}
+
+/** Settings → Machines' Access in a browser: the scope the live link was admitted under, not the
+ *  saved approval's (a renewal may admit the same link under another scope); "Checking…" while
+ *  it connects or before its scope is known; null with no link (nothing to say). */
+export function admittedAccess(state: Pick<ConnState, "phase" | "guest"> | null): string | null {
+  if (state?.phase !== "connected" && state?.phase !== "connecting") return null;
+  const scope = state.guest?.ownerScope;
+  return scope ? choiceLabel(ACCESS_CHOICES, scope) : "Checking…";
 }
 
 /** Whether the agent page offers "Share with someone" (guest.invite.create): on the desktop for the
