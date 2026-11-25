@@ -506,6 +506,45 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
  }
 }
 
+/** The first connect on this browser of a share bound to the account, from the account's item for
+ *  it (AccountService DESIGN §5.1): a returning hello with the grant's id and the account's
+ *  statement, which herdr (guest/store.rs admit_returning) takes from any device of the account,
+ *  adding this one to the share. A statement refused as stale or invalid is dropped and a fresh
+ *  one sent once. Returns the grant as the host admitted it, bound to the account. */
+export async function openShare(share: Pick<Access, "endpoint" | "guestID" | "machineLabel" | "ownerName" | "agentName">, identity: StaticKey, statements: StatementSource, options: Omit<AcceptOptions, "account"> = {}): Promise<Access> {
+ const link = guestLink({ ...share, guestName: "", agentTarget: "", acceptedAt: new Date(0), accountBound: true }, statements);
+ const { signal, dispose } = linkSignals([options.signal], ROUND_TRIP_LIMIT_MS);
+ try {
+  let connected: Session;
+  let earlier: (() => boolean) | undefined;
+  for (let attempt = 0; ; attempt++) {
+   // A retry stays in the sign-in of the attempt before it (guestLink's earlier).
+   const hello = await link.hello(signal, earlier);
+   try {
+    connected = await openSession(share.endpoint, identity, hello.payload, signal, options.webSocket ?? browserWebSocket, hello.live, refusal, hello.stale);
+    break;
+   } catch (error) {
+    if (attempt === 0 && freshStatementMayAdmit(error)) { hello.refused?.(); earlier = hello.live; continue; }
+    throw error;
+   }
+  }
+  connected.close();
+  const reply = connected.reply;
+  link.admit(reply);
+  // herdr bound this browser to the share only with a statement deadline in its reply.
+  if (reply.deadlineUnix === 0) throw other("The shared machine didn't take this browser into your account's shared access.");
+  if (reply.agent === null || reply.agent.target === "") {
+   throw other("The shared machine returned incomplete access. Ask the owner to inspect the guest grant before trying again.");
+  }
+  return {
+   guestID: reply.guestID, guestName: reply.name, machineLabel: reply.machineLabel || share.machineLabel, ownerName: reply.ownerName || share.ownerName,
+   agentName: reply.agent.name || share.agentName, agentTarget: reply.agent.target, endpoint: share.endpoint, acceptedAt: new Date(options.now ?? Date.now()), accountBound: true,
+  };
+ } finally {
+  dispose();
+ }
+}
+
 /** A session's reply lines (transport.go lineReader); frame boundaries are unrelated to them. next
  *  resolves to null after the host's clean close. */
 class LineReader {

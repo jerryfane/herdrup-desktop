@@ -52,8 +52,9 @@ export function welcome(state: WelcomeState): Welcome {
  return { ...words, ...(error ? { error } : {}) };
 }
 
-/** Redeems the fragment's invitation, or resumes the kept grant. A failed redemption with a grant
- *  already kept resumes it (most often the same link opened again: "already used"). */
+/** Redeems the fragment's invitation for this browser alone ("device": the page asks nothing
+ *  first), or resumes the kept grant. A failed redemption with a grant already kept resumes it
+ *  (most often the same link opened again: "already used"). */
 export async function start(desk: StartDesk, payload: string, origin: string, owner: () => string | null): Promise<Started> {
  const kept = (await desk.sharedConnections())[0];
  if (payload !== "") {
