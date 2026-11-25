@@ -160,7 +160,7 @@
 .chat-relay-body { align-self: stretch; min-width: 0; }
 .chat-relay-body[data-folded="true"] { max-height: calc(6 * (1em * var(--leading-app) + 3px)); overflow: hidden; }
 /* Folded with more below: the cut line fades out rather than ending mid-glyph. */
-.chat-relay-body[data-folded="true"]:has(+ .chat-relay-toggle:not([hidden])) { mask-image: linear-gradient(to bottom, #000 calc(100% - 1.5em), transparent); }
+.chat-relay-body[data-folded="true"]:has(+ .chat-relay-toggle:not([hidden])) { mask-image: linear-gradient(to bottom, currentColor calc(100% - 1.5em), transparent); }
 .chat-relay-toggle[hidden] { display: none; }
 /* ChatView.outgoingBubble: the receipt, 11 pt textFaint, 6 pt in; the bubble grows from its
    bottom-trailing corner (motion spec §1.3). */
