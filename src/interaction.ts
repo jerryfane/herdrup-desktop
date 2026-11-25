@@ -405,6 +405,8 @@ class Detail {
  drawnIndex = 0;
  // Disclosures the reader opened, kept for rows that leave the window and come back.
  openRows = new Set<string>();
+ /** The Inbox's handovers its reader unfolded (chatRelay.ts), by entry id. */
+ unfoldedRelays = new Set<string>();
  transcript = el("div", "chat-transcript");
  chatScroll = el("div", "chat-scroll");
  chatFollowing = true;
@@ -1153,7 +1155,7 @@ class Detail {
   const pane = new TopicsPane({
    token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
    topicSessions: view.topicSessions,
-   renderRow: row => this.renderRow(row),
+   renderRow: (row, unfolded) => this.renderRow(row, unfolded),
    // The Inbox's own cards, drawn into the topic's transcript; a topic's subagents don't open.
    renderPlan: (items, container, session) => this.renderPlan(items, container, session),
    renderSubagents: (agents, container) => this.renderSubagents(agents, container, false),
@@ -1450,7 +1452,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.unfoldedRelays.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
   this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
   this.input.disabled = this.fieldDisabled(); this.send.disabled = this.sending || !!this.guestPaused;
   const composer = this.composerCard = el("div", "chat-composer");
@@ -2050,6 +2052,8 @@ class Detail {
   this.subagentSheet = dialog;
   const header = el("header"); header.append(el("strong", "", id), button("Done", () => dialog.close()));
   const messages = el("div", "chat-transcript"), notice = el("p", "interaction-status");
+  // The sheet's own conversation: the handovers its reader unfolds stay unfolded while it is open.
+  const unfolded = new Set<string>();
   const earlier = button("Earlier messages", () => { void load(true); }); earlier.className = "chat-earlier button-plain button-compact"; earlier.hidden = true;
   dialog.append(header, notice, messages); document.body.append(dialog);
   let open = true, busy = false, page: TranscriptPage | null = null, entries: Entry[] = [], before: string | undefined, timer: number | undefined;
@@ -2066,7 +2070,7 @@ class Detail {
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
     const nodes = groupTranscript(entries, !!page?.working).map(row => {
-     const node = this.renderRow(row);
+     const node = this.renderRow(row, unfolded);
      node.dataset.id = row.id;
      if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
      node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
@@ -2332,16 +2336,16 @@ class Detail {
   const row = el("div", "chat-day"); row.append(el("strong", "", day), document.createTextNode(` ${time}`));
   return row;
  }
- renderRow(row: ChatRow): HTMLElement {
+ renderRow(row: ChatRow, unfolded = this.unfoldedRelays): HTMLElement {
   if (row.kind === "day") return this.renderDay(row.ms);
   if (row.kind === "work") return this.renderWork(row);
-  return this.renderEntry(row.entry);
+  return this.renderEntry(row.entry, unfolded);
  }
  /** Who reads this chat (ChatView.swift ChatViewer). */
  private viewer(): Viewer {
   return this.view?.guest ? { guest: true, me: this.view.guestSelf ?? "", owner: this.view.guestOwner ?? "" } : { guest: false };
  }
- renderEntry(entry: Entry): HTMLElement {
+ renderEntry(entry: Entry, unfolded = this.unfoldedRelays): HTMLElement {
   if (entry.kind === "ask") return this.renderQuestion(entry, undefined, false, false);
   if (entry.kind === "note") return this.renderNote(entry);
   // A topic's or subagent's chat shows a suggestion without Start and Not now.
@@ -2371,7 +2375,7 @@ class Detail {
   }
   // A handover between the Inbox and a topic (chatRelay.ts): the agent's side, under who sent it.
   if (entry.kind === "relay") {
-   const row = relayRow(entry, markdown(entry.text ?? ""));
+   const row = relayRow(entry, markdown(entry.text ?? ""), unfolded);
    this.bindMessageMenu(row, entry.text ?? "", true, true);
    return row;
   }

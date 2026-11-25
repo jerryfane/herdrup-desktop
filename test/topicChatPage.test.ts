@@ -263,6 +263,24 @@ test("a long handover folds after about six lines with Show all; a short one has
  expect(toggle(long!).textContent).toBe("Show all");
 });
 
+// Post-merge review of #528 (P3): the topic redrew every row on each read, so a reader's Show less
+// lost its focus when the topic changed; an unchanged row now stays attached, as the Inbox's do.
+test("an unfolded handover keeps its row and its focus when the topic reads again", async () => {
+ const { transcript, token } = await openTopic(topicPage({ entries: [relay("r5", "Inbox", "to_topic", LONG)] }));
+ const row = withClass(transcript, "relay")[0]!;
+ const body = withClass(row, "chat-relay-body")[0]!, toggle = withClass(row, "chat-relay-toggle")[0]!;
+ body.scrollHeight = 480; body.clientHeight = 150; resized(body);
+ toggle.click(); toggle.focus();
+ const reads = calls.filter(c => c.method === "Desk.TopicTranscript").length;
+ emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+  offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicTranscript").length).toBeGreaterThan(reads);
+ expect(withClass(transcript, "relay")[0]).toBe(row);
+ expect(doc.activeElement).toBe(toggle);
+ expect(toggle.textContent).toBe("Show less");
+});
+
 // #531: a saved desktop terminal's view (Desk.OpenTerminalView) carried topicSessions null, and the
 // page threw on its length before the terminal mounted.
 test("a saved terminal opens though its view carries no topic sessions", async () => {

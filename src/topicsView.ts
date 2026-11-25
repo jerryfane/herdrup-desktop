@@ -49,7 +49,7 @@ export interface TopicsHost {
  topicSessions: readonly TopicSession[];
  /** The chat's renderer for one transcript row; a question in it is not answered here (#745
   *  ChatModel.answersQuestions: a topic's question is the Inbox's, in the terminal). */
- renderRow(row: ChatRow): HTMLElement;
+ renderRow(row: ChatRow, unfolded: Set<string>): HTMLElement;
  /** The chat's to-do card and subagents card (interaction.ts), drawn into a topic's transcript as
   *  into the Inbox's; a topic's subagents don't open. */
  renderPlan(items: PlanItem[], container: HTMLElement, session: string | undefined): HTMLElement;
@@ -568,6 +568,8 @@ class TopicChat {
  private readonly title = el("strong", "topic-chat-title");
  private readonly status = el("span", "topic-chat-status");
  private readonly messages = el("div", "chat-transcript topic-transcript");
+ /** The topic's handovers its reader unfolded (chatRelay.ts), by entry id. */
+ private readonly unfolded = new Set<string>();
  private readonly notice = el("p", "interaction-status topic-notice");
  private readonly note = el("p", "topic-send-note");
  /** Where the page's composer sits while this topic shows. */
@@ -744,9 +746,16 @@ class TopicChat {
  private draw(follow: boolean) {
   const page = this.page;
   const expanded = new Set([...this.messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
+  // An unchanged row stays attached, as the Inbox's do (interaction.ts drawChat): a handover's
+  // Show less keeps its focus across polls.
+  const kept = new Map<string, HTMLElement>();
+  for (const node of this.messages.children) if (node instanceof HTMLElement && node.dataset.id) kept.set(node.dataset.id, node);
   const nodes = groupTranscript(this.entries, !!page?.working).map(row => {
-   const node = this.host.renderRow(row);
-   node.dataset.id = row.id;
+   const signature = JSON.stringify(row);
+   const old = kept.get(row.id);
+   if (old?.dataset.signature === signature) return old;
+   const node = this.host.renderRow(row, this.unfolded);
+   node.dataset.id = row.id; node.dataset.signature = signature;
    if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
    node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
    return node;
