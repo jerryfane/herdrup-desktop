@@ -697,3 +697,28 @@ test("stopping dictation keeps a closed topic's field disabled", async () => {
  await settle();
  expect(input!.disabled).toBe(true);
 });
+
+test("a topic herdr read from the session file (state unknown) claims neither Idle nor Working, in its row or its header", async () => {
+ await openPage("topics", topicPage());
+ const token = String(calls.find(c => c.method === "Desk.OpenAgentView")!.args[1]);
+ const statuses = () => withClass(doc.body, "topic-status").map(n => n.text());
+ // herdr #520: before omp first answers, the list comes from disk, stale, every state unknown.
+ listed(token, "unknown", true);
+ await settle();
+ expect(statuses()).toEqual([]);
+ // omp answered: the row says so.
+ listed(token, "running", false);
+ await settle();
+ expect(statuses()).toEqual(["Working"]);
+ // The open topic's header too (the narrow page keeps the list's rows, hidden).
+ listed(token, "unknown", true);
+ await settle();
+ doc.body.all().find(n => n.tagName === "button" && n.text().includes(TOPIC.title))!.click();
+ await settle();
+ const chat = doc.body.all().find(n => n.className === "topic-chat")!;
+ expect(statuses()).toEqual([]);
+ expect(withClass(chat, "chat-working")).toEqual([]);
+ listed(token, "running", false);
+ await settle();
+ expect([withClass(chat, "topic-status").map(n => n.text()), statuses().length]).toEqual([["Working"], 2]);
+});

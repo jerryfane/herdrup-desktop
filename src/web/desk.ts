@@ -404,11 +404,13 @@ export function createGuestDesk(env: DeskEnv) {
  }
 
  /** desk_topics.go topicsWatch: the poll runs while Topics shows, or while the Inbox is open on an
-  *  agent whose suggestions are served; an open Inbox whose newest read didn't settle asks again. */
+  *  agent whose suggestions are served; Topics on screen or an open Inbox whose newest read didn't
+  *  settle (topics_unreachable or topics_timeout, both retryable in herdr #520) asks again, keeping
+  *  the list. */
  function watchTopics(v: MountedView) {
   const t = v.topics;
   const want = !v.life.signal.aborted && (t.shown || (t.inbox && t.last.suggestionsServed));
-  const retry = !want && !v.life.signal.aborted && t.inbox && !t.settled;
+  const retry = !v.life.signal.aborted && (t.shown || t.inbox) && !t.settled;
   if (retry && t.retry === null) {
    const wait = retryMs[Math.min(t.retries, retryMs.length - 1)]!;
    t.retries++;

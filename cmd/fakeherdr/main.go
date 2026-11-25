@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -56,7 +57,7 @@ func main() {
 	topics := flag.Bool("topics", false, "serve herdr #475 agent topics: agent.topics.*, agent.transcript with topic and agent_topics_changed events (ping advertises agent_topics and agent_transcript_topic); every agent has three sample topics")
 	topicSuggestions := flag.Bool("topic-suggestions", false, "with -topics, also serve herdr #489/#490: the Topics switch (agent.topics.set_enabled, topics_enabled on omp agents) and topic suggestions with Organise (ping advertises agent_topics_switch and agent_topic_suggestions); every agent's Inbox suggests one topic")
 	topicsOff := flag.String("topics-off", "", "with -topic-suggestions, comma-separated pane ids whose topics start switched off")
-	topicsListFail := flag.String("topics-list-fail-file", "", "with -topics, agent.topics.list answers topics_unreachable while this file exists")
+	topicsListFail := flag.String("topics-list-fail-file", "", "with -topics, agent.topics.list answers the error code this file holds (topics_unreachable when empty) while it exists")
 	topicsPlain := flag.String("topics-no-suggestions", "", "with -topic-suggestions, comma-separated pane ids of omp agents without suggestions (topics_unsupported)")
 	topicsTurn := flag.Duration("topics-turn", 2*time.Second, "with -topics, how long a topic's turn runs before its reply")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
@@ -286,7 +287,13 @@ func main() {
 		// The switch restarts an agent: the app lists the roster again.
 		fixture.OnSwitch = func() { set.set(set.get()) }
 		if *topicsListFail != "" {
-			fixture.ListFail = func() bool { _, err := os.Stat(*topicsListFail); return err == nil }
+			fixture.ListFail = func() string {
+				code, err := os.ReadFile(*topicsListFail)
+				if err != nil {
+					return ""
+				}
+				return cmp.Or(strings.TrimSpace(string(code)), "topics_unreachable")
+			}
 		}
 		events := s.Events
 		s.Handle = fixture.Serve(s.Handle)

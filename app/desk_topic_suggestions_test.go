@@ -418,15 +418,22 @@ func TestTopicsSettleSuggestionsReportsTheFirstRefusal(t *testing.T) {
 }
 
 // An open Inbox whose first lists fail for a passing reason (an omp agent
-// whose topics are not reachable yet) asks again on topicsRetry's schedule,
-// then follows the served suggestions.
+// that didn't answer in time, then one whose topics are not reachable yet)
+// asks again on topicsRetry's schedule, then follows the served suggestions.
 func TestTopicsInboxAsksAgainAfterAFailedList(t *testing.T) {
 	saved := topicsRetry
 	topicsRetry = []time.Duration{20 * time.Millisecond}
 	t.Cleanup(func() { topicsRetry = saved })
-	failures := 2
+	failures := []string{"topics_timeout", "topics_unreachable"}
 	d, _, updates := suggestionsDesk(t, func(f *fakeherdr.Topics) {
-		f.ListFail = func() bool { failures--; return failures >= 0 }
+		f.ListFail = func() string {
+			if len(failures) == 0 {
+				return ""
+			}
+			code := failures[0]
+			failures = failures[1:]
+			return code
+		}
 	}, nil)
 	if err := d.TopicsFollowInbox("view", true); err != nil {
 		t.Fatal(err)
@@ -453,7 +460,7 @@ func TestTopicsClosingTheViewDropsTheInboxRetry(t *testing.T) {
 	topicsRetry = []time.Duration{time.Hour}
 	t.Cleanup(func() { topicsRetry = saved })
 	d, _, updates := suggestionsDesk(t, func(f *fakeherdr.Topics) {
-		f.ListFail = func() bool { return true }
+		f.ListFail = func() string { return "topics_unreachable" }
 	}, nil)
 	if err := d.TopicsFollowInbox("view", true); err != nil {
 		t.Fatal(err)

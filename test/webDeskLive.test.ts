@@ -135,6 +135,20 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  expect(panePromptAttachments("view-1", "again", async () => "x")).toBeNull();
  expect(await desk.topicsSend("view-1", "t3", "hi")).toEqual({ mode: "", delivery: "refused", problem: "The agent refused: the topic is closed" });
  await expect(desk.topicTranscript("view-1", "t99", "", "", "")).rejects.toThrow("This topic's conversation can't be found.");
+ // Topics on screen: herdr #520 answers topics_unreachable on a moment's miss, and topics_timeout
+ // when omp doesn't answer in time. The list stays, says why, and is asked for again on the
+ // retry schedule (100 ms here), not the 15 s poll. (The fail file holds the code; empty is
+ // topics_unreachable.)
+ for (const [code, problem] of [["", "Agent not reachable"], ["topics_timeout", "The agent didn't answer in time."]] as const) {
+  writeFileSync(join(dir, "topics-fail"), code);
+  const failedList = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.token === "view-1" && !!u.problem);
+  await desk.topicsRefresh("view-1");
+  const kept = await failedList;
+  expect([kept.offered, kept.topics.length > 0, kept.problem]).toEqual([true, true, problem]);
+  const askedAgain = next<TopicsUpdate>((f) => events.topicsChanged.on(f), (u) => u.token === "view-1" && !u.problem, 5_000);
+  rmSync(join(dir, "topics-fail"));
+  expect((await askedAgain).topics.length).toBeGreaterThan(0);
+ }
  await desk.topicsFollow("view-1", false);
 
  // The open Inbox asks again after a list that failed for a passing reason (herdrup #796): here

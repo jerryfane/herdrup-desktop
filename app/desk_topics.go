@@ -216,13 +216,15 @@ func (t *topicsState) stopRetry() {
 }
 
 // topicsWatch starts the follower when Topics shows or the Inbox is open on
-// served suggestions, and stops it when neither holds. Otherwise an open
-// Inbox whose newest read didn't settle asks again after a backoff.
+// served suggestions, and stops it when neither holds. Topics on screen or
+// an open Inbox whose newest read didn't settle (topics_unreachable on a
+// moment's miss, topics_timeout when omp didn't answer in time; herdr #520
+// retries both) asks again after a backoff, keeping the list.
 func (d *Desk) topicsWatch(v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
 	want := t.shown || (t.inbox && t.last.SuggestionsServed)
-	retry := !want && t.inbox && !t.settled && v.ctx.Err() == nil
+	retry := (t.shown || t.inbox) && !t.settled && v.ctx.Err() == nil
 	switch {
 	case retry && t.retry == nil:
 		wait := topicsRetry[min(t.retries, len(topicsRetry)-1)]
@@ -288,7 +290,11 @@ func (d *Desk) followTopics(ctx context.Context, v *interaction) {
 				if json.Unmarshal(e.Line.Data, &change) != nil || change.PaneID != v.PaneID {
 					return
 				}
-				d.topicsChangedTopic(v, change.TopicID)
+				// reason "listed" (herdr #520) names no topic: herdr's list
+				// changed, so the read below is all it asks for.
+				if change.TopicID != "" {
+					d.topicsChangedTopic(v, change.TopicID)
+				}
 				select {
 				case events <- struct{}{}:
 				default:

@@ -42,10 +42,11 @@ type Topics struct {
 	// Refuse answers a suggestion's accept or dismiss with this error, by
 	// suggestion id, before anything else is checked.
 	Refuse map[string]*APIError
-	// ListFail, when it says so, answers agent.topics.list
-	// topics_unreachable (the steady answer of an omp agent whose topics are
-	// not reachable yet). It runs under the fixture's lock.
-	ListFail func() bool
+	// ListFail, when set, names the error agent.topics.list answers, "" for
+	// none: topics_unreachable (an omp agent whose topics are not reachable
+	// yet) or topics_timeout (one that didn't answer in time; herdr #520
+	// retries both). It runs under the fixture's lock.
+	ListFail func() string
 	// off: agents whose topics are switched off; plain: omp agents without
 	// suggestions (their omp answers the suggestion methods topics_unsupported).
 	off, plain map[string]bool
@@ -146,8 +147,10 @@ func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		return fields
 	}
 	if method == "agent.topics.list" {
-		if t.ListFail != nil && t.ListFail() {
-			return nil, &APIError{Code: "topics_unreachable", Message: "the agent's topics are not reachable"}, true
+		if t.ListFail != nil {
+			if code := t.ListFail(); code != "" {
+				return nil, &APIError{Code: code, Message: "the agent's topics did not answer"}, true
+			}
 		}
 		list := make([]any, 0, len(a.order))
 		for _, id := range a.order {
@@ -284,6 +287,20 @@ func (t *Topics) changedLocked(target, id, reason string) {
 		default:
 		}
 	}
+}
+
+// Relist is herdr #520's refresh behind an agent.topics.list answer finding a
+// different list: the agent has topic id (title) though no change of its own
+// reached the stream, and herdr says so with reason `listed` and no topic.
+func (t *Topics) Relist(target, id, title string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a := t.agent(target)
+	ms := t.now().UnixMilli()
+	a.order = append(a.order, id)
+	a.topics[id] = &fakeTopic{info: map[string]any{"topic_id": id, "title": title, "state": "idle", "turns": uint64(0), "queued": uint64(0),
+		"created_unix_ms": ms, "last_activity_unix_ms": ms, "last_activity": ""}}
+	t.changedLocked(target, "", "listed")
 }
 
 // Events writes agent_topics_changed lines to one events.subscribe stream
