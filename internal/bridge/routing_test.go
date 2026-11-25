@@ -458,3 +458,65 @@ func TestANonIdempotentFirstRequestIsSentAtMostOnce(t *testing.T) {
 		t.Fatalf("pane.send_text sent %d times, want once: %v", copies, sendErr)
 	}
 }
+
+// #481 review: a held request whose context ended before it was written is
+// unsent (ErrNotSent) and keeps its cause (context.Canceled); herdr never
+// gets it.
+func TestAHeldRequestCancelledBeforeItsWriteIsUnsent(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	heldPing(t, m, c) // the session's channel is open
+	var sendErr error
+	if err := c.OnOneChannel(context.Background(), func(h *bridge.HeldChannel) error {
+		ended, cancel := context.WithCancel(context.Background())
+		cancel()
+		sendErr = h.Call(ended, "pane.send_text", nil, nil)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(sendErr, bridge.ErrNotSent) || !errors.Is(sendErr, context.Canceled) {
+		t.Fatalf("%v; want ErrNotSent with context.Canceled", sendErr)
+	}
+	for _, r := range m.srv.Requests() {
+		if r.Method == "pane.send_text" {
+			t.Fatalf("the cancelled request went out: %+v", r)
+		}
+	}
+}
+
+// #481 review: when the per-request probe for --multi fails, the held
+// channel's refusal keeps the probe's error with ErrNotSent, so a failed
+// probe is told apart from a herdr with no --multi channel to give.
+func TestAFailedProbeForAHeldChannelKeepsItsError(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		probe func(method string, params json.RawMessage) (any, *fakeherdr.APIError)
+		code  string
+	}{
+		{"probe refused", func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "ping" {
+				return nil, &fakeherdr.APIError{Code: "server_unavailable", Message: "busy"}
+			}
+			return echoHandler(method, params)
+		}, "server_unavailable"},
+		{"no --multi", func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "ping" {
+				return fakeherdr.Pong(false), nil
+			}
+			return echoHandler(method, params)
+		}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := startMachine(t, func(s *fakeherdr.Server) { s.Handle = c.probe })
+			err := m.dial(t).OnOneChannel(context.Background(), func(*bridge.HeldChannel) error {
+				t.Fatal("work ran without a channel")
+				return nil
+			})
+			var api *bridge.APIError
+			if !errors.Is(err, bridge.ErrNotSent) || errors.As(err, &api) != (c.code != "") || c.code != "" && api.Code != c.code {
+				t.Fatalf("%v; want ErrNotSent, with the probe's %q error when it failed", err, c.code)
+			}
+		})
+	}
+}
