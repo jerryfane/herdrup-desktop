@@ -305,8 +305,16 @@ func (c *Client) Call(ctx context.Context, method string, params, result any) er
 		return err
 	}
 	reply, err := c.viaMulti(ctx, method, id, line)
-	if errors.Is(err, ErrNotSent) && ctx.Err() == nil {
-		reply, err = c.oneShot(ctx, line)
+	if errors.Is(err, ErrNotSent) {
+		if cause := ctx.Err(); cause != nil {
+			// The context ended, so the request takes no other path: it
+			// fails unsent, keeping why (#492).
+			if !errors.Is(err, cause) {
+				err = fmt.Errorf("%w: %w", err, cause)
+			}
+		} else {
+			reply, err = c.oneShot(ctx, line)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", method, err)

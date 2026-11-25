@@ -609,3 +609,43 @@ func TestAnOverlappingHeldGuestRequestIsRefusedUnsent(t *testing.T) {
 		t.Fatalf("prompts %q; want the overlapping one never sent", got)
 	}
 }
+
+// blockingResult is a reply result whose decoding, caller-controlled,
+// signals entered and then waits for release.
+type blockingResult struct{ entered, release chan struct{} }
+
+func (r blockingResult) UnmarshalJSON([]byte) error {
+	close(r.entered)
+	<-r.release
+	return nil
+}
+
+// #492: releasing a held handle does not wait for a request work left
+// running (here, stuck decoding its result): OnOneChannel returns at
+// once, and that request's session is closed, not pooled, so the next
+// call connects afresh.
+func TestAHeldGuestReleaseDoesNotWaitForARequestInFlight(t *testing.T) {
+	h := newReuseHost(t, true)
+	result := blockingResult{entered: make(chan struct{}), release: make(chan struct{})}
+	left := make(chan error, 1)
+	if err := h.transport.OnOneChannel(context.Background(), func(held engine.Held) error {
+		go func() { left <- held.Call(context.Background(), "agent.list", nil, &result) }()
+		select {
+		case <-result.entered: // the request is in flight, decoding
+			return nil
+		case err := <-left:
+			return fmt.Errorf("the request ended before decoding its result: %v", err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(result.release)
+	if err := <-left; err != nil {
+		t.Fatal(err)
+	}
+	before := len(h.connects())
+	h.list(t)
+	if got := len(h.connects()); got != before+1 {
+		t.Fatalf("%d connects after the release, want %d: the session with a request in flight was pooled", got, before+1)
+	}
+}

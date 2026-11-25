@@ -164,27 +164,36 @@ func (c *Client) probeCapability() {
 	}
 }
 
+// multiPong is what a pong says about --multi.
+type multiPong struct {
+	Capabilities *struct {
+		APIBridgeMulti  bool `json:"api_bridge_multi"`
+		APIBridgeFrames bool `json:"api_bridge_frames"`
+	} `json:"capabilities"`
+}
+
 // learnCapability records api_bridge_multi from a ping reply. A reply that
-// is not a ping result leaves the capability as it was. Learning support
-// starts opening the channel, off the request path.
+// is not a ping result (an error, or no result) leaves the capability as
+// it was.
 func (c *Client) learnCapability(reply []byte) {
 	var r struct {
-		Result *struct {
-			Capabilities *struct {
-				APIBridgeMulti  bool `json:"api_bridge_multi"`
-				APIBridgeFrames bool `json:"api_bridge_frames"`
-			} `json:"capabilities"`
-		} `json:"result"`
+		Result *multiPong `json:"result"`
 	}
 	if json.Unmarshal(reply, &r) != nil || r.Result == nil {
 		return
 	}
-	supported := r.Result.Capabilities != nil && r.Result.Capabilities.APIBridgeMulti
+	c.learnPong(*r.Result)
+}
+
+// learnPong records api_bridge_multi from a successful pong. Learning
+// support starts opening the channel, off the request path.
+func (c *Client) learnPong(pong multiPong) {
+	supported := pong.Capabilities != nil && pong.Capabilities.APIBridgeMulti
 	p := &c.pool
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.slot(c.cfg.Session)
-	s.frames = supported && r.Result.Capabilities.APIBridgeFrames
+	s.frames = supported && pong.Capabilities.APIBridgeFrames
 	if !supported {
 		s.capability = capUnsupported
 		if s.ch != nil {
@@ -390,8 +399,11 @@ func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 		}
 		reply, err := c.oneShot(ctx, line)
 		if err == nil {
-			err = DecodeReply(reply, nil)
-			c.learnCapability(reply)
+			// The pong and its error, decoded once; only a pong teaches.
+			var pong multiPong
+			if err = DecodeReply(reply, &pong); err == nil {
+				c.learnPong(pong)
+			}
 		}
 		if err != nil {
 			probeErr = fmt.Errorf("probing for --multi: %w", err)
@@ -698,6 +710,14 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	m.mu.Unlock()
 
 	m.wmu.Lock()
+	// The write boundary: a request whose context ended by now (while it
+	// was encoded, or waited for a slot or the write lock) is not written,
+	// whichever way the select above went.
+	if cause := ctx.Err(); cause != nil {
+		m.wmu.Unlock()
+		m.withdraw(id)
+		return nil, fmt.Errorf("%w: %w", ErrNotSent, cause)
+	}
 	n, err := m.stdin.Write(append(line, '\n'))
 	m.wmu.Unlock()
 	if err != nil {
