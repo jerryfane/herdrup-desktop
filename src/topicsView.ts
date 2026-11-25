@@ -4,13 +4,14 @@
 // place of it otherwise. The list comes from Go (Desk.topicsFollow publishes topicsChanged).
 import "./topics.css";
 import { Desk, events } from "./mygo";
-import type { AgentTopicSuggestionInfo, TopicsUpdate } from "./mygo";
+import type { AgentTopicSuggestionInfo, TopicSession, TopicsUpdate } from "./mygo";
 import { errorText } from "./errors";
-import { composerEnterSends } from "./composer";
-import { CHAT_SEND_FOLLOW_MS, chatPollDelay, outgoingReceipt, reconcileOutgoing, type Outgoing } from "./chatPoll";
-import { groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type TranscriptPage } from "./interactionModel";
+import { ConversationColumn } from "./conversationColumn";
+import { ChatTail, placeRows } from "./chatTail";
+import { chatPollDelay, reconcileOutgoing, type Outgoing } from "./chatPoll";
+import { currentPlan, groupTranscript, mergeTranscript, readLive, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
 import { rowTime } from "./gramDates";
-import { activityMs, canFold, foldShortcutLabel, messageTooLong, searchTopics, sendNote, statusDot, statusText, topicSections, topicsLayout, topicTitle, type TopicInfo } from "./topicsModel";
+import { activityMs, canFold, foldShortcutLabel, listedTopics, messageTooLong, searchTopics, seededTopics, statusDot, statusText, topicSections, topicsLayout, topicTitle, topicWorking, type TopicInfo } from "./topicsModel";
 import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
 import { appleSymbols } from "./platform";
 import infoIcon from "../third_party/phosphor/web/info.svg?url";
@@ -20,7 +21,6 @@ import untickedIcon from "../third_party/phosphor/web/circle.svg?url";
 /** iPad's regular width: the list beside the open topic's chat at this page width and above. */
 export const TOPICS_WIDE_PX = 760;
 const TOO_LONG = "Messages are limited to 32 KB. Send it in parts.";
-const UNCONFIRMED = "Couldn't confirm delivery. Check the topic before sending again.";
 /** "About topics", word for word as the owner approved it (topics-info proposal 1, 22 Nov). */
 const ABOUT_TOPICS: readonly [string, string][] = [
  ["One subject each", "Topics are separate conversations with the same agent, one per subject (for example “Q4 board pack”). Each keeps its own history, so subjects don’t mix."],
@@ -45,12 +45,40 @@ export interface TopicsHost {
  /** The agent's name as its row shows it: "SUGGESTED BY <NAME>". */
  agentName: string;
  guest: boolean;
+ /** The topics the agent's session file holds: the list until the agent answers. */
+ topicSessions: readonly TopicSession[];
  /** The chat's renderer for one transcript row; a question in it is not answered here (#745
   *  ChatModel.answersQuestions: a topic's question is the Inbox's, in the terminal). */
  renderRow(row: ChatRow): HTMLElement;
+ /** The chat's to-do card and subagents card (interaction.ts), drawn into a topic's transcript as
+  *  into the Inbox's; a topic's subagents don't open. */
+ renderPlan(items: PlanItem[], container: HTMLElement, session: string | undefined): HTMLElement;
+ renderSubagents(agents: TranscriptSubagent[], container: HTMLElement): HTMLElement;
+ /** The chat's bubble for a send from its composer (its files folded under it), until the
+  *  transcript shows it. */
+ renderOutgoing(message: Outgoing): HTMLElement;
+ /** Lends the page's one composer (the Inbox's: files, dictation, saved prompts, its grow handle,
+  *  its drafts and sends) to the open topic, or takes it back (null). */
+ composer(topic: TopicComposer | null): void;
  /** Opens the agent's own conversation: the page's Chat view. */
  openInbox(): void;
  symbol(name: string, size: number, weight: string): Promise<Element>;
+}
+
+/** What the page's composer needs of the open topic it writes to (interaction.ts sendPrompt). */
+export interface TopicComposer {
+ topicID: string;
+ /** Where the composer sits, under the topic's conversation. */
+ slot: HTMLElement;
+ /** The height its editor may grow into: the conversation's. */
+ room(): number;
+ /** A closed topic takes no message. */
+ closed(): boolean;
+ placeholder(): string;
+ /** What the composer has to say (a send's note, a file's problem), under the topic. */
+ note(text: string): void;
+ /** A send's bubble at the topic's tail; it settles with the receipt, or goes (null). */
+ stage(message: Outgoing): (state: Outgoing["state"] | null) => void;
 }
 
 // Menus go through the native popup (Desk.gramMenu): its choice comes back as a gramMenu event.
@@ -90,6 +118,8 @@ export class TopicsPane {
  private readonly rows = el("div", "topics-list");
  private readonly searchInput = el("input", "topics-search");
  private update: TopicsUpdate | null = null;
+ /** The topics the agent's session file holds, listed until the agent answers its list. */
+ private readonly seeded: TopicInfo[];
  private selected: string | null = null;
  private chat: TopicChat | null = null;
  private actionNote: string | null = null;
@@ -117,6 +147,7 @@ export class TopicsPane {
  /** Create N topics or Not now is going through the proposals. */
  private settling = false;
  constructor(private readonly host: TopicsHost) {
+  this.seeded = seededTopics(host.topicSessions);
   const head = el("div", "topics-head");
   // The fold: a circle (an icon-only button), shown where there is a column to fold.
   this.foldButton.setAttribute("aria-label", "Hide topics"); this.foldButton.title = `Hide topics (${FOLD_HINT})`;
@@ -179,13 +210,13 @@ export class TopicsPane {
   this.unticked = keptUnticks(this.unticked, u.suggestions ?? []);
   this.update = u;
   this.drawList();
-  if (this.pendingOpen && u.topics.some(t => t.topic_id === this.pendingOpen)) { const id = this.pendingOpen; this.pendingOpen = null; this.select(id); }
-  const open = this.selected ? u.topics.find(t => t.topic_id === this.selected) : undefined;
+  if (this.pendingOpen && this.topics().some(t => t.topic_id === this.pendingOpen)) { const id = this.pendingOpen; this.pendingOpen = null; this.select(id); }
+  const open = this.selected ? this.topics().find(t => t.topic_id === this.selected) : undefined;
   if (open && this.chat) { this.chat.setTopic(open); if (u.changed === open.topic_id) this.chat.refresh(); }
   if (this.wide && !this.chat) this.drawPlaceholder();
  }
 
- private topics(): TopicInfo[] { return this.update?.topics ?? []; }
+ private topics(): TopicInfo[] { return listedTopics(this.update, this.seeded); }
 
  /** Opens a topic by id (a suggestion's Start or its "Continued in topic" line): one that just
   *  started opens once the list brings it. */
@@ -250,7 +281,9 @@ export class TopicsPane {
 
  private drawList() {
   const u = this.update, query = this.searchInput.value;
-  const note = this.actionNote ?? u?.problem ?? "";
+  // Why the newest read failed shows only while the list has no rows: the rows it kept say more
+  // (the agent busy with another topic misses a read; its topics are still there).
+  const note = this.actionNote ?? (this.topics().length ? "" : u?.problem ?? "");
   this.problem.replaceChildren(); this.problem.hidden = note === "" && this.organiseText === null;
   // A refusal or problem has a dot; what Organise is doing is plain dim text (TopicsView: topics-organise-note).
   if (note) { const dot = el("span", "topics-problem-dot"); dot.setAttribute("aria-hidden", "true"); this.problem.append(dot, el("span", "", note)); }
@@ -268,7 +301,7 @@ export class TopicsPane {
    nodes.push(el("h3", "topics-section", section.id));
    for (const topic of section.topics) nodes.push(this.row(topic));
   }
-  if (u?.loaded && !this.topics().length && !u.problem) nodes.push(el("p", "topics-empty", "No topics yet. A topic is a lasting line of work with its own conversation."));
+  if (u?.loaded && !this.topics().length && !u.problem && !u.stale) nodes.push(el("p", "topics-empty", "No topics yet. A topic is a lasting line of work with its own conversation."));
   else if (query.trim() !== "" && !shown.length) nodes.push(el("p", "topics-empty", "No topic matches."));
   this.rows.replaceChildren(...nodes);
   this.drawBar();
@@ -484,7 +517,8 @@ export class TopicsPane {
     // Its row arrives with the list the start publishes; the chat opens on it now.
     if (!this.topics().some(t => t.topic_id === id)) {
      const now = Date.now();
-     this.update = { ...(this.update ?? { token: this.host.token, offered: true, loaded: true, topics: [], suggestions: [], suggestionsServed: false, requestedMs: 0 }),
+     this.update = { ...(this.update ?? { token: this.host.token, loaded: true, topics: [], suggestions: [], suggestionsServed: false, requestedMs: 0 }),
+      offered: true, stale: false,
       topics: [{ topic_id: id, title: title.value.trim(), state: "starting", queued: 0, turns: 0, created_unix_ms: now, last_activity_unix_ms: now }, ...this.topics()] };
     }
     this.select(id);
@@ -522,8 +556,9 @@ export class TopicsPane {
  }
 }
 
-/** One topic's conversation (TopicChat): agent.transcript with `topic`, and a composer that sends
- *  to this topic only (agent.topics.send). */
+/** One topic's conversation (TopicChat): agent.transcript with `topic`, under it the page's own
+ *  composer (the Inbox's, lent while the topic shows: TopicsHost.composer), which sends to this
+ *  topic only (agent.topics.send). */
 class TopicChat {
  readonly root = el("div", "topic-chat");
  /** "Topics ⌥⌘T": shown wherever the list is not (folded, or narrow). */
@@ -535,21 +570,26 @@ class TopicChat {
  private readonly messages = el("div", "chat-transcript topic-transcript");
  private readonly notice = el("p", "interaction-status topic-notice");
  private readonly note = el("p", "topic-send-note");
- private readonly input = el("textarea", "topic-input");
- private readonly send: HTMLButtonElement;
+ /** Where the page's composer sits while this topic shows. */
+ private readonly composerSlot = el("div", "topic-composer-slot");
  private readonly earlier = button("Earlier messages", "chat-earlier button-plain button-compact", () => { void this.load(true); });
  private page: TranscriptPage | null = null;
  private entries: Entry[] = [];
  private before: string | undefined;
  private outgoing: Outgoing[] = [];
- private outgoingCount = 0;
  private followUntil = 0;
- private sending = false;
  private busy = false;
  private again = false;
  private active = false;
  private disposed = false;
  private timer: number | undefined;
+ /** The working dots, the recap and the model line under the topic, as under the Inbox. */
+ private readonly tail = new ChatTail();
+ /** The conversation's width, with the Inbox's edge handles and saved width (shared with Gram). */
+ private readonly column: ConversationColumn;
+ private readonly resize: ResizeObserver;
+ /** What the page's composer needs of this topic while it writes here. */
+ private readonly composer: TopicComposer;
 
  constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void) {
   // The topic's header (Apple clean, owner picks 2026-11-24, items 14 and 15): [sidebar Topics ⌥⌘T |]
@@ -576,16 +616,26 @@ class TopicChat {
   this.earlier.hidden = true;
   this.notice.setAttribute("role", "status");
   this.note.setAttribute("role", "status"); this.note.hidden = true;
-  this.input.rows = 1;
-  this.input.oninput = () => { this.showNote(null); this.updateComposer(); };
-  this.input.onkeydown = event => { if (composerEnterSends(event)) { event.preventDefault(); void this.sendText(); } };
-  this.send = button("", "topic-send", () => { void this.sendText(); });
-  this.send.setAttribute("aria-label", "Send to topic");
-  void host.symbol("arrow.up", 14, "semibold").then(icon => this.send.append(icon));
-  const composer = el("div", "topic-composer"); composer.append(this.input, this.send);
-  this.root.append(header, this.notice, this.messages, this.note, composer);
+  this.composer = {
+   topicID: topic.topic_id, slot: this.composerSlot,
+   room: () => this.messages.clientHeight,
+   closed: () => this.topic.state === "closed",
+   placeholder: () => this.topic.state === "closed" ? "Closed. Reopen it to continue." : `Message ${this.topic.title.trim() ? this.topic.title.trim() : "this topic"}`,
+   note: text => this.showNote(text),
+   stage: message => this.stage(message),
+  };
+  this.column = new ConversationColumn(this.root, () => this.layout());
+  this.root.append(header, this.notice, this.messages, this.note, this.composerSlot, ...this.column.handles, this.column.readout);
   this.setTopic(topic);
   this.messages.append(this.earlier);
+  this.resize = new ResizeObserver(() => this.layout());
+  this.resize.observe(this.root);
+ }
+
+ /** The column's width and handles (the composer lays itself out where it sits). */
+ private layout() {
+  if (this.disposed || !this.root.isConnected) return;
+  this.column.update();
  }
 
  /** The "Topics" button wherever the list is not shown; its ⌥⌘T hint only where the shortcut folds. */
@@ -593,16 +643,22 @@ class TopicChat {
   this.list.hidden = !shown; this.hint.hidden = !foldable;
   this.listButton.title = foldable ? `Show topics (${FOLD_HINT})` : "Show topics";
  }
- focus() { if (!this.input.disabled) this.input.focus(); }
+ focus() { const input = this.composerSlot.querySelectorAll("textarea")[0]; if (input && !input.disabled) input.focus(); }
 
+ /** On screen (Topics shows it): it reads its conversation and the page's composer writes here. */
  setActive(active: boolean) {
   if (active === this.active || this.disposed) return;
   this.active = active;
   clearTimeout(this.timer);
+  this.host.composer(active ? this.composer : null);
   if (active) void this.load(false);
  }
 
- dispose() { this.disposed = true; this.active = false; clearTimeout(this.timer); }
+ dispose() {
+  if (this.active) this.host.composer(null);
+  this.disposed = true; this.active = false; clearTimeout(this.timer);
+  this.resize.disconnect(); this.column.dispose();
+ }
 
  setTopic(topic: TopicInfo) {
   this.topic = topic;
@@ -610,10 +666,11 @@ class TopicChat {
   this.title.textContent = title;
   const status = topicStatus(topic);
   this.status.replaceChildren(...(status ? [status] : []));
-  const closed = topic.state === "closed";
-  this.input.placeholder = closed ? "Closed. Reopen it to continue." : `Message ${topic.title.trim() ? topic.title.trim() : "this topic"}`;
-  this.input.setAttribute("aria-label", this.input.placeholder);
-  this.updateComposer();
+  this.root.dataset.closed = String(topic.state === "closed");
+  // The composer's prompt and whether it takes a message follow the topic (closed, its title).
+  if (this.active) this.host.composer(this.composer);
+  // Its state decides the working dots (topicWorking): a change shows or hides them at once.
+  if (this.page) this.draw(false);
  }
 
  /** The open topic changed (an owner's agent.topics.changed): read its tail now. */
@@ -623,40 +680,19 @@ class TopicChat {
   this.note.textContent = note ?? ""; this.note.hidden = !note;
  }
 
- private updateComposer() {
-  const closed = this.topic.state === "closed";
-  this.input.disabled = closed;
-  this.root.dataset.closed = String(closed);
-  this.send.disabled = closed || this.sending || this.input.value.trim() === "";
- }
-
- private async sendText() {
-  const text = this.input.value.trim();
-  if (this.topic.state === "closed" || this.sending || text === "") return;
-  if (messageTooLong(text)) { this.showNote(TOO_LONG); return; }
-  const message: Outgoing = { id: `topic-outgoing:${++this.outgoingCount}`, text, files: [], guest: this.host.guest ? this.host.guestSelf : "", state: "sending", until: Date.now() + CHAT_SEND_FOLLOW_MS };
+ /** A send from the page's composer: its bubble at the topic's tail until the transcript shows it
+  *  (reconcileOutgoing), and its settling: the receipt it ends with, or gone (refused). */
+ private stage(message: Outgoing): (state: Outgoing["state"] | null) => void {
   this.outgoing = [...this.outgoing, message];
-  this.sending = true; this.showNote(null); this.input.value = ""; this.updateComposer();
   this.followUntil = message.until;
   this.draw(true);
-  const settle = (state: Outgoing["state"] | null) => {
+  return state => {
    this.outgoing = state ? this.outgoing.map(o => o.id === message.id ? { ...o, state } : o) : this.outgoing.filter(o => o.id !== message.id);
+   if (this.disposed) return;
+   this.draw(false);
+   if (state) void this.load(false);
   };
-  try {
-   const reply = await Desk.topicsSend(this.host.token, this.topic.topic_id, text);
-   // Desk classifies the send (TopicSendReply.delivery); its problem text is only shown.
-   if (reply.delivery === "sent") { settle("submitted"); this.showNote(sendNote(reply.mode)); }
-   else if (reply.delivery === "refused") { settle(null); if (this.input.value === "") this.input.value = text; this.showNote(reply.problem ?? null); }
-   else { settle("unconfirmed"); this.showNote(reply.problem ?? UNCONFIRMED); }
-  } catch (error) {
-   // The page itself failed (the view closed, the link went): it may have been sent.
-   settle("unconfirmed"); this.showNote(errorText(error) || UNCONFIRMED);
-  } finally {
-   this.sending = false;
-   if (!this.disposed) { this.updateComposer(); this.draw(false); void this.load(false); }
-  }
  }
-
  private async load(older: boolean) {
   if (this.disposed || !this.active || (older && !this.before)) return;
   if (this.busy) { if (!older) this.again = true; return; }
@@ -697,30 +733,36 @@ class TopicChat {
    if (!this.disposed && this.active) {
     if (this.again) { this.again = false; void this.load(false); }
     else {
-     const working = !!this.page?.working || this.topic.state === "running" || this.topic.state === "starting";
-     this.timer = window.setTimeout(() => { void this.load(false); }, chatPollDelay({ guest: this.host.guest, working, sendPending: this.outgoing.length > 0, followUntil: this.followUntil, now: Date.now() }));
+     this.timer = window.setTimeout(() => { void this.load(false); }, chatPollDelay({ guest: this.host.guest, working: topicWorking(this.topic, this.page), sendPending: this.outgoing.length > 0, followUntil: this.followUntil, now: Date.now() }));
     }
    }
   }
  }
 
+ /** The topic's rows, then what the Inbox draws under its own (interaction.ts drawChat): the
+  *  to-do and subagents cards, the working dots, the recap and the model line. */
  private draw(follow: boolean) {
+  const page = this.page;
   const expanded = new Set([...this.messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
-  const nodes = groupTranscript(this.entries, !!this.page?.working).map(row => {
+  const nodes = groupTranscript(this.entries, !!page?.working).map(row => {
    const node = this.host.renderRow(row);
    node.dataset.id = row.id;
    if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
    node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
    return node;
   });
-  for (const message of this.outgoing) {
-   const node = el("article", "chat-message user chat-outgoing");
-   const bubble = el("div", "chat-user-text"); bubble.append(el("span", "chat-user-content", message.text));
-   const line = el("span", "chat-send-receipt", outgoingReceipt(message.state)); line.setAttribute("role", "status");
-   node.append(bubble, line); nodes.push(node);
-  }
+  // The Inbox's bubble (its files folded under it, its receipt), kept attached while it waits.
+  for (const message of this.outgoing) nodes.push(this.host.renderOutgoing(message));
+  const plan = currentPlan(page, this.entries);
+  if (plan.length) nodes.push(this.host.renderPlan(plan, this.messages, page?.session_id));
+  const agents = page?.subagents ?? [];
+  if (agents.length) nodes.push(this.host.renderSubagents(agents, this.messages));
+  const working = topicWorking(this.topic, page);
+  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model)];
+  for (const node of tail) if (node) nodes.push(node);
   this.earlier.hidden = !this.before;
-  this.messages.replaceChildren(this.earlier, ...nodes);
+  // The tail's rows stay attached, so the dots' animation runs on across polls.
+  placeRows(this.messages, [this.earlier, ...nodes]);
   if (follow) this.messages.scrollTop = this.messages.scrollHeight;
  }
 }

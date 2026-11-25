@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { chatDayLabel, groupTranscript, mergeTranscript, needsDaySeparator, remainingDraft, TerminalSequence } from "../src/interactionModel";
+import { relayLabel } from "../src/chatRelay";
 
 test("incremental transcript replaces changed entries without duplicating older pages", () => {
  const initial = [{ kind: "reply", id: "r", ts_ms: 2, text: "Partial" }];
@@ -83,4 +84,31 @@ test("chat day labels follow ChatDay.label", () => {
  expect(day(at(2026, 9, 23))).toBe("Friday");
  expect(day(at(2026, 9, 20))).toBe("Oct 20");
  expect(day(at(2025, 9, 20))).toBe("Oct 20, 2025");
+});
+
+test("a handover (relay) is a row of its own and starts a turn as a prompt does, without a day label", () => {
+ const rows = groupTranscript([
+  { kind: "user", id: "u", ts_ms: 1_000, text: "Prompt" },
+  { kind: "plan", id: "p", ts_ms: 2_000, items: [{ text: "One" }] },
+  { kind: "thinking", id: "t", ts_ms: 3_000, text: "Hmm" },
+  { kind: "relay", id: "r", ts_ms: 4_000, from: "Inbox", direction: "to_topic", text: "Handed over" },
+  { kind: "reply", id: "a", ts_ms: 5_000, text: "On it" },
+ ], false);
+ expect(rows.map(r => r.kind === "entry" ? r.entry.id : r.kind)).toEqual(["day", "u", "p", "work", "r", "a"]);
+ // A new turn: its plan doesn't replace the one of the turn before.
+ const later = groupTranscript([
+  { kind: "plan", id: "p1", ts_ms: 1, items: [] },
+  { kind: "relay", id: "r", ts_ms: 2, from: "Board pack", direction: "to_inbox", text: "Done" },
+  { kind: "plan", id: "p2", ts_ms: 3, items: [] },
+ ], false);
+ expect(later.map(r => r.id)).toEqual(["p1", "r", "p2"]);
+});
+
+test("a handover's label names who sent it, as iOS TranscriptRelay.label", () => {
+ expect(relayLabel({ from: "Inbox", direction: "to_topic" })).toBe("From Inbox");
+ expect(relayLabel({ from: "Board pack", direction: "to_inbox" })).toBe("From topic Board pack");
+ expect(relayLabel({ from: "", direction: "to_topic" })).toBe("From Inbox");
+ expect(relayLabel({ from: "", direction: "to_inbox" })).toBe("From topic a topic");
+ // A way this client doesn't know: who sent it, as given.
+ expect(relayLabel({ from: "Board pack", direction: "sideways" })).toBe("From Board pack");
 });

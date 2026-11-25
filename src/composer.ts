@@ -1,6 +1,7 @@
 import { Desk, events, type GramAttachment, type SavedPrompt } from "./mygo";
 import { onFileDrop } from "mygo-runtime";
 import { chipGlyph, chipRing } from "./gramModel";
+import { COMPOSER_TEXT_PITCH } from "./composerMetrics";
 
 // AdaptiveComposer's editor stays in its card. The same textarea, selection,
 // undo stack and send action remain mounted while the handle changes its height.
@@ -13,6 +14,15 @@ export function closeWriter() {
  *  that confirms an input method's composition (Japanese, Chinese…) sends nothing. */
 export function composerEnterSends(e: Pick<KeyboardEvent, "key" | "shiftKey" | "isComposing">): boolean {
   return e.key === "Enter" && !e.shiftKey && !e.isComposing;
+}
+
+/** The lines text takes at width in a composer, counted at the drawn pitch on its hidden probe
+ *  (a `composer-text-probe`, the field's font): at least one. The Inbox's composer and a topic's
+ *  size their ComposerEditor from it. */
+export function composerLines(probe: HTMLElement, text: string, width: number, pitch = COMPOSER_TEXT_PITCH): number {
+  probe.style.width = `${Math.max(1, width)}px`;
+  probe.textContent = text + (text.endsWith("\n") || !text ? " " : "");
+  return Math.max(1, Math.round(probe.getBoundingClientRect().height / pitch));
 }
 
 // MyGo supplies real native paths without reading large files into JS memory.

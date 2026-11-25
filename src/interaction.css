@@ -152,6 +152,16 @@
 /* ChatView.promptBubble's byline: a trailing VStack, 4 pt apart; 12 pt medium, textFaint, 6 pt in. */
 .chat-message.user.has-byline, .chat-message.user.chat-outgoing, .chat-message.user:has(.chat-attachments) { flex-direction: column; align-items: flex-end; gap: 4px; }
 .chat-byline { padding-right: 6px; color: var(--color-text-faint); font: 500 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+/* A handover between the Inbox and a topic (chatRelay.ts, iOS ChatRelayView): the agent's text on
+   the left, no card or colour, under "From Inbox" / "From topic …" (12 pt, textFaint, 4 pt
+   above), its body folded at six of the markdown's paragraph lines, then Show all. */
+.chat-message.relay { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.chat-relay-from { color: var(--color-text-faint); font: 400 calc(12px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.chat-relay-body { align-self: stretch; min-width: 0; }
+.chat-relay-body[data-folded="true"] { max-height: calc(6 * (1em * var(--leading-app) + 3px)); overflow: hidden; }
+/* Folded with more below: the cut line fades out rather than ending mid-glyph. */
+.chat-relay-body[data-folded="true"]:has(+ .chat-relay-toggle:not([hidden])) { mask-image: linear-gradient(to bottom, currentColor calc(100% - 1.5em), transparent); }
+.chat-relay-toggle[hidden] { display: none; }
 /* ChatView.outgoingBubble: the receipt, 11 pt textFaint, 6 pt in; the bubble grows from its
    bottom-trailing corner (motion spec §1.3). */
 .chat-outgoing { transform-origin: bottom right; }

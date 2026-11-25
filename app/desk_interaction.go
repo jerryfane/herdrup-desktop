@@ -44,10 +44,39 @@ type AgentView struct {
 	// A guest's gate advertises no capabilities, so for a guest herdr's
 	// form_answerable on the pending ask decides alone.
 	AskForm bool `json:"askForm"`
-	// TopicSessions: the agent's session file already holds topics
-	// (topic_sessions), so the page offers Topics before or without a list
-	// answer (herdrup #745 topicsAvailable).
-	TopicSessions bool `json:"topicSessions"`
+	// TopicSessions: the topics the agent's session file already holds
+	// (topic_sessions, read from disk): the page offers Topics before or
+	// without a list answer (herdrup #745 topicsAvailable), and lists them
+	// until the agent's first list answers.
+	TopicSessions []TopicSession `json:"topicSessions"`
+}
+
+// TopicSession is one topic as the agent's session file records it: its id,
+// its newest title and when it started (0 when the file doesn't say).
+type TopicSession struct {
+	TopicID   string `json:"topicID"`
+	Title     string `json:"title"`
+	CreatedMs uint64 `json:"createdMs"`
+}
+
+// topicSessions are an agent's topic_sessions as the page lists them, one
+// without an id left out; never null (the page reads a list).
+func topicSessions(sessions []herdrapi.AgentTopicSession) []TopicSession {
+	out := []TopicSession{}
+	for _, s := range sessions {
+		if s.TopicID == "" {
+			continue
+		}
+		session := TopicSession{TopicID: s.TopicID}
+		if s.Title != nil {
+			session.Title = *s.Title
+		}
+		if s.CreatedUnixMs != nil {
+			session.CreatedMs = *s.CreatedUnixMs
+		}
+		out = append(out, session)
+	}
+	return out
 }
 
 type interaction struct {
@@ -143,7 +172,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
 			GuestOwner: guestOwner(l), GuestSelf: guestSelf(l),
 			AskForm:       l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
-			TopicSessions: slices.ContainsFunc(agent.TopicSessions, func(t herdrapi.AgentTopicSession) bool { return t.TopicID != "" }),
+			TopicSessions: topicSessions(agent.TopicSessions),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		// The machine as its guests see it (link.shareLabel), not the
@@ -426,13 +455,23 @@ func (d *Desk) ChatPrompt(ctx context.Context, token, text string) (string, erro
 	defer v.at.link.pollGuestStatus()
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	chips := v.composer.Snapshot().Chips
-	if len(chips) == 0 {
+	if len(v.composer.Snapshot().Chips) == 0 {
 		if strings.TrimSpace(text) == "" {
 			return "", errors.New("prompt is empty")
 		}
 		return submitPanePrompt(ctx, v, text)
 	}
+	return d.sendAttached(ctx, v, text, func(prompt string) (string, error) { return submitPanePrompt(ctx, v, prompt) })
+}
+
+// sendAttached is a send with the pane composer's files, to the Inbox
+// (ChatPrompt) or one of its topics (TopicsSend): each file is posted to the
+// agent as a Gram, then submit sends text with the files named in it
+// (paneAttachmentPrompt). The files leave once submit reports the message
+// reached (or may have reached) the agent; a rejection keeps them for a retry
+// without posting their Grams twice. v.sendMu is held.
+func (d *Desk) sendAttached(ctx context.Context, v *interaction, text string, submit func(prompt string) (string, error)) (string, error) {
+	chips := v.composer.Snapshot().Chips
 	if _, err := d.paneRecipient(v); err != nil {
 		return "", err
 	}
@@ -461,9 +500,9 @@ func (d *Desk) ChatPrompt(ctx context.Context, token, text string) (string, erro
 		return result.Message.ID, nil
 	}
 	var receipt string
-	err = v.composer.SendPrompt(ctx, paths, post, func(files []gramstore.Attachment) (bool, error) {
+	err := v.composer.SendPrompt(ctx, paths, post, func(files []gramstore.Attachment) (bool, error) {
 		var submitErr error
-		receipt, submitErr = submitPanePrompt(ctx, v, paneAttachmentPrompt(text, files))
+		receipt, submitErr = submit(paneAttachmentPrompt(text, files))
 		return submitErr == nil, submitErr
 	})
 	return receipt, err

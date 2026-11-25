@@ -373,10 +373,31 @@ func (c *Client) GuestAudit(ctx context.Context, p herdrapi.GuestAuditParams) (h
 	return call[herdrapi.ResponseResultGuestAudit](ctx, c, "guest.audit", p)
 }
 
-// AgentTopicsList reads an omp agent's topics, live from the agent (herdr
-// #475). An agent that cannot be reached answers topics_unreachable.
-func (c *Client) AgentTopicsList(ctx context.Context, target string) (herdrapi.ResponseResultAgentTopics, error) {
-	return call[herdrapi.ResponseResultAgentTopics](ctx, c, "agent.topics.list", herdrapi.AgentTarget{Target: target})
+// TopicsFreshness is how current a herdr's agent.topics.list answer is, for
+// a herdr that serves the list from its cache (fields the pinned schema
+// leaves out): Stale says its last refresh from the agent failed, AsOfMs
+// when the agent last answered (Unix ms; 0 from a herdr that reads the
+// agent live).
+type TopicsFreshness struct {
+	Stale  bool   `json:"stale"`
+	AsOfMs uint64 `json:"as_of_unix_ms"`
+}
+
+// AgentTopicsList reads an omp agent's topics (herdr #475), with how
+// current they are. An agent that cannot be reached answers
+// topics_unreachable.
+func (c *Client) AgentTopicsList(ctx context.Context, target string) (list herdrapi.ResponseResultAgentTopics, fresh TopicsFreshness, err error) {
+	v, raw, err := c.doRaw(ctx, "agent.topics.list", herdrapi.AgentTarget{Target: target})
+	if err != nil {
+		return list, fresh, err
+	}
+	list, ok := v.(herdrapi.ResponseResultAgentTopics)
+	if !ok {
+		return list, fresh, fmt.Errorf("engine: agent.topics.list result decoded as %T, want %T", v, list)
+	}
+	// A freshness this herdr writes in another shape reads as a live answer.
+	_ = json.Unmarshal(raw, &fresh)
+	return list, fresh, nil
 }
 
 // AgentTopicsNew starts a topic with its title and first message.
