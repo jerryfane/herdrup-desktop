@@ -2424,8 +2424,9 @@ class Detail {
   // Under an open topic the same send goes to the topic (topicCall); a closed topic takes none.
   const topic = this.sendsToTopic();
   if (this.guestPaused || this.sending || this.dictation.busy || topic?.closed() || (!text.trim() && !this.attachments.length)) return;
-  // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather than doing nothing.
-  if (this.inputFailed) { this.composerNote("An earlier key send failed. Reconnect before sending again."); return; }
+  // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather
+  // than doing nothing. A topic's send (agent.topics.send) never goes through that line.
+  if (!topic && this.inputFailed) { this.composerNote("An earlier key send failed. Reconnect before sending again."); return; }
   const hasAttachments = this.attachments.length > 0;
   // The send settles where it was sent from (#532): its draft and its topic as at the click, not
   // whichever the composer shows when the reply comes back.
@@ -2478,13 +2479,15 @@ class Detail {
   }
   this.sending = true; this.dictation.button.disabled = true; this.send.disabled = true; this.attach.disabled = true; this.prompts.button.disabled = true; this.renderAttachments();
   try {
-   // The send's turn, behind earlier terminal input; or its end, when its page gave it up (back
-   // from the back/forward cache: its text is back), which frees the composer at once.
-   const turn = await (send ? Promise.race([this.inputQueue.then(() => true), send.gaveUp.then(() => false)]) : this.inputQueue.then(() => true));
+   // The send's turn, behind earlier terminal input (a topic's send skips it: it writes no
+   // terminal); or its end, when its page gave it up (back from the back/forward cache: its text
+   // is back), which frees the composer at once.
+   const queue = topic ? Promise.resolve() : this.inputQueue;
+   const turn = await (send ? Promise.race([queue.then(() => true), send.gaveUp.then(() => false)]) : queue.then(() => true));
    if (!turn) { setOutgoing(null); return; }
    // Closed while queued: dispose released the reservation.
    if (this.disposed) return;
-   if (this.inputFailed) {
+   if (!topic && this.inputFailed) {
     send?.cancel();
     throw new Error("An earlier key send failed. Reconnect before sending again.");
    }
