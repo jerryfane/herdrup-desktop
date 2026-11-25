@@ -2,7 +2,7 @@
 // serverUpdateDesk.ts) on an owner link: the desktop's Go logic (desk_settings*.go,
 // desk_guest_invite.go, desk_updates.go) against a fake herdr behind the link's real engine client,
 // and once over a real owner link to a relay host refusing the method (an older herdr).
-import { afterEach, beforeEach, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { HerdrAPIError, notSent, NotSentError } from "../src/webguest/errors";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1326,6 +1326,25 @@ test("a sent split whose link ends while its operation goes on is awaited CLOSIN
   jest.useRealTimers();
  }
 });
+
+// #485: a split whose operation or link has already ended is never sent and waits for no answer.
+for (const ended of ["operation", "link"] as const) {
+ test(`a split whose ${ended} already ended is not sent, with that end's reason, and arms no reply window`, async () => {
+  const host = ownerLink(async (method) => { if (method === "pane.split") return { type: "pane_info", pane: { pane_id: "made" } }; });
+  await settleAll();
+  const reason = new Error(`the ${ended} ended`);
+  const operation = new AbortController();
+  (ended === "operation" ? operation : host.life).abort(reason);
+  const timers = spyOn(globalThis, "setTimeout");
+  try {
+   const outcome = await ownerSplit(host.link, operation.signal, { direction: "down" }).catch((error: unknown) => error);
+   expect(outcome).toBeInstanceOf(NotSentError);
+   expect((outcome as NotSentError).error).toBe(reason);
+   expect(timers.mock.calls.filter((call) => call[1] === CLOSING_WAIT_MS)).toEqual([]);
+  } finally { timers.mockRestore(); }
+  expect(host.of("pane.split")).toEqual([]);
+ });
+}
 
 // ---- #360 post-merge review ----
 

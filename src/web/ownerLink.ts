@@ -103,16 +103,17 @@ export const LINK_CHANGED = "the machine changed; the request was not sent";
  *  NotSentError, as the transport's failures before a send are. Throws OwnerRefusedError on
  *  owner_forbidden, ErrUnsupported for a capability the host lacks, else the transport's or
  *  herdr's error. It ends with the link, or with signal. With unsent, the call has two lifetimes:
- *  until it is handed to the transport it ends with the link or unsent (not sent); once sent,
- *  only signal (its reply's window) ends it, the link's end included: herdr may have acted, and
- *  its answer is still wanted. */
+ *  until it is handed to the transport it ends with unsent, which the caller composes with the
+ *  link's end itself (ownerSplit: the same lifetime arms its reply window), so not sent; once
+ *  sent, only signal (its reply's window) ends it, the link's end included: herdr may have acted,
+ *  and its answer is still wanted. */
 export async function ownerCall<T>(method: string, params: unknown, tag: string, options: { capability?: string; signal?: AbortSignal; unsent?: AbortSignal; link?: OwnerLink | null } = {}): Promise<T> {
  const link = currentOwnerLink();
  if (options.link !== undefined && options.link !== link) throw notSent(new Error(LINK_CHANGED));
  if (link === null) throw notSent(new Error("not connected"));
  const capability = options.capability ?? "";
  try {
-  if (options.unsent !== undefined) return untagged<T>(await link.client.call(method, params, tag, capability, options.signal, AbortSignal.any([link.signal, options.unsent])));
+  if (options.unsent !== undefined) return untagged<T>(await link.client.call(method, params, tag, capability, options.signal, options.unsent));
   const signal = options.signal ? AbortSignal.any([link.signal, options.signal]) : link.signal;
   return untagged<T>(await link.client.call(method, params, tag, capability, signal));
  } catch (error) {
@@ -121,18 +122,20 @@ export async function ownerCall<T>(method: string, params: unknown, tag: string,
 }
 
 /** engine SplitPane on link, for an operation that lasts until `operation` ends (New terminal's
- *  creation, a Settings sign-in or logout): the new pane's id. Both ends are the helper's: the
- *  split lasts while the operation and the link both do. Until it is handed to the transport it
- *  ends with either, unsent (NotSentError). Once sent, herdr may make the pane and only its answer
- *  names it: that is awaited until either ends and CLOSING_WAIT_MS more (ownerCall's unsent and
- *  reply window), so a slow relay admission takes none of that window. The window's listener and
- *  timer last only while the split is out. The pane it names is the caller's to keep or close. */
+ *  creation, a Settings sign-in or logout): the new pane's id. Both ends are the helper's, composed
+ *  once: the split lasts while the operation and the link both do. Until it is handed to the
+ *  transport it ends with either, unsent (NotSentError); one already ended is never sent and arms
+ *  nothing. Once sent, herdr may make the pane and only its answer names it: that is awaited until
+ *  either ends and CLOSING_WAIT_MS more (ownerCall's unsent and reply window), so a slow relay
+ *  admission takes none of that window. The window's listener and timer last only while the split
+ *  is out. The pane it names is the caller's to keep or close. */
 export async function ownerSplit(link: OwnerLink, operation: AbortSignal, params: Record<string, unknown>): Promise<string> {
  const ends = AbortSignal.any([link.signal, operation]);
  const reply = new AbortController();
  let timer: ReturnType<typeof setTimeout> | undefined;
  const arm = () => { timer = setTimeout(() => reply.abort(ends.reason), CLOSING_WAIT_MS); };
- if (ends.aborted) arm(); else ends.addEventListener("abort", arm, { once: true });
+ // Already ended, the listener never runs: ownerCall's not-sent path, no timer.
+ ends.addEventListener("abort", arm, { once: true });
  try {
   return (await ownerCall<{ pane: { pane_id: string } }>("pane.split", params, "pane_info", { link, unsent: ends, signal: reply.signal })).pane.pane_id;
  } finally {

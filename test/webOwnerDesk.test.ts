@@ -167,19 +167,27 @@ test("switching machines, the new link's watchers find it usable and Desk.state(
 });
 
 test("a new link tells the connecting snapshot it was made with, then a new one only when the connection changes", async () => {
- const relay = host();
+ // Each list marks its agents with its own status time, a board-only change: a board from
+ // another source (a folders lookup refused) never passes for a relist's.
+ let mark = 1;
+ const relay = host({ agents: () => agents.map(a => ({ ...a, status_since_unix_ms: mark })) });
+ const listedWith = (m: number) => {
+  const got = Promise.withResolvers<void>();
+  const off = events.boardChanged.on(b => { if (b?.machineID === `owner:${relay.hostID}` && b.board.sections.some(s => s.rows.some(r => r.statusSinceUnixMs === m))) { off(); got.resolve(); } });
+  return got.promise;
+ };
  const desk = await deskWithKey();
  const told: ConnState[] = [];
  const offState = events.stateChanged.on(s => told.push(s));
  let seeded: Promise<ConnState> | null = null;
  const offLink = onLinkChanged((_link, owner) => { if (owner) seeded = desk.state(); });
  try {
-  const first = boardOf(relay);
+  const first = listedWith(mark);
   await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
   await first;
-  // Two more lists with the same answer, each awaited to its board (published after the state):
-  // the connection hasn't changed, nothing more is told.
-  for (let i = 0; i < 2; i++) { const listed = boardOf(relay); currentOwnerLink()!.relist(); await listed; }
+  // Two more lists, each awaited to its own board (published after the state): the connection
+  // hasn't changed, nothing more is told.
+  for (let i = 0; i < 2; i++) { const listed = listedWith(++mark); currentOwnerLink()!.relist(); await listed; }
   expect(told.map(s => s.phase)).toEqual(["connecting", "connected"]);
   expect(told[0]).toBe(await seeded!); // the very snapshot the link's watchers read
   expect(await desk.state()).toBe(told[1]!);
