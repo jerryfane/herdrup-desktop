@@ -1,15 +1,13 @@
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
 import type { Machine, PairingOffer, SavedMachine, SyncedMachine } from "./mygo";
-import "./hosts.css";
+import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
 import { showPairing } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
 import networkIcon from "../third_party/phosphor/web/network.svg?url";
 import lockOpenIcon from "../third_party/phosphor/web/lock-open.svg?url";
-import personIcon from "../third_party/phosphor/web/user-fill.svg?url";
-import { accountAvatar } from "./accountAvatar";
 
 // HerdrSetup (HerdrApp.swift 746-760). Only "this iPhone" becomes "this computer"
 // (coordinator 379911); the rest of the copy is the native text.
@@ -25,10 +23,6 @@ import clipboardIcon from "../third_party/phosphor/web/clipboard.svg?url";
 import { errorText } from "./errors";
 import { appleSymbols } from "./platform";
 
-type SymbolRenderer = (name: string, size: number, weight: string) => Promise<HTMLElement>;
-function element<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text = ""): HTMLElementTagNameMap[K] {
- const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
-}
 function action(text: string, run: () => void) {
  const button = element("button", "", text); button.type = "button"; button.onclick = run; return button;
 }
@@ -37,30 +31,15 @@ function action(text: string, run: () => void) {
 // `spinner` is the shared small progress view.
 export function initHosts(container: HTMLElement, form: HTMLFormElement, showAgents: () => void, symbol: SymbolRenderer, spinner: string, holdChanged: () => void, openAccount: () => void) {
  const home = element("div", "host-home");
- const header = element("header", "host-home-header");
- const mark = element("img", "host-home-mark"); mark.src = "/herdrup/app-logo.png"; mark.alt = "";
  // The account avatar (accountAvatar.ts) at the end of the logo row; it opens Settings, HerdrUp
  // account, which is also where signing in happens.
- const avatar = element("button", "host-home-account"); avatar.type = "button"; avatar.hidden = true;
- avatar.onclick = openAccount;
- const person = element("span", "host-home-account-person"); person.setAttribute("aria-hidden", "true");
- if (appleSymbols()) void symbol("person.fill", 15, "regular").then(node => person.append(node));
- else { const icon = element("span", "host-home-account-glyph"); icon.style.setProperty("--host-icon", `url("${personIcon}")`); person.append(icon); }
- const logoRow = element("div", "host-home-logo-row"); logoRow.append(mark, avatar);
- const identity = element("div", "host-home-identity");
- const heading = element("h1", "", "herdrup");
- const subtitle = element("p", "", "connect to your machine");
- identity.append(heading, subtitle); header.append(logoRow, identity);
+ const header = hostHomeHeader(symbol, openAccount);
  // "Welcome back" while the account has machines to pair here (1B-dk), else the plain title; a
  // sign-out puts the plain one back.
  let hasShares = false;
- const drawIdentity = (welcomeBack: boolean) => {
-  heading.textContent = welcomeBack ? "Welcome back" : "herdrup";
-  subtitle.textContent = welcomeBack ? (accountHint ? `Signed in · ${accountHint}` : "Signed in") : hasShares ? "your shared agents" : "connect to your machine";
- };
- const section = element("section", "host-home-saved");
- const rows = element("div", "host-home-rows");
- section.append(element("h2", "", "SAVED"), rows);
+ const drawIdentity = (welcomeBack: boolean) => header.title(welcomeBack ? "Welcome back" : "herdrup",
+  welcomeBack ? (accountHint ? `Signed in · ${accountHint}` : "Signed in") : hasShares ? "your shared agents" : "connect to your machine");
+ const { root: section, rows } = hostSection("SAVED");
  const message = element("p", "host-home-message"); message.setAttribute("role", "status"); message.hidden = true;
  const report = (error: unknown) => { message.textContent = errorText(error); message.hidden = false; };
  const sheet = element("dialog", "host-editor");
@@ -85,9 +64,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  pair.dataset.smoke = "host-action";
  // 1B-dk "Welcome back": the account's machines this device hasn't saved, each to pair here.
  // Rows are the saved rows' neutral style (no colour per machine).
- const synced = element("section", "host-home-saved host-home-synced"); synced.hidden = true;
- const syncedRows = element("div", "host-home-rows");
- synced.append(element("h2", "", "FROM YOUR ACCOUNT"), syncedRows);
+ const { root: synced, rows: syncedRows } = hostSection("FROM YOUR ACCOUNT", "host-home-synced"); synced.hidden = true;
  let syncedMachines: SyncedMachine[] = [];
  let accountHint: string | null = null; // null: signed out
  const pairSynced = (m: SyncedMachine) => {
@@ -100,8 +77,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   synced.hidden = accountHint === null || syncedMachines.length === 0;
   syncedRows.replaceChildren(...syncedMachines.map(m => {
    const row = element("div", "host-home-row host-home-synced-row");
-   const lines = element("span", "host-home-lines");
-   lines.append(element("span", "host-home-name", m.nickname?.trim() || m.host), element("span", "host-home-address", `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`));
+   const lines = hostRowLines(m.nickname?.trim() || m.host, `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`);
    const pairButton = action("Pair this device", () => pairSynced(m)); pairButton.className = "host-home-pair-synced";
    row.append(lines, pairButton);
    return row;
@@ -117,23 +93,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   const providers = state?.signedIn ? [] : await Desk.accountProviders().catch(() => null);
   if (at !== accountVersion) return;
   accountHint = state?.signedIn ? state.displayHint ?? "" : null;
-  const look = accountAvatar(state, providers === null || providers.length > 0);
-  avatar.hidden = !look.shown;
-  if (look.shown) {
-   const circle = element("span", `host-home-account-circle ${state?.signedIn ? "in" : "out"}`);
-   circle.append(look.initial ?? person);
-   if (look.dot) circle.append(element("span", `host-home-account-dot ${look.dot}`));
-   avatar.replaceChildren(circle);
-   avatar.setAttribute("aria-label", `HerdrUp account, ${look.value}`); avatar.title = look.value;
-  }
+  header.showAccount(state, providers === null || providers.length > 0);
   syncedMachines = accountHint === null ? [] : await Desk.syncedMachines().catch(() => []);
   drawSynced();
  };
  events.syncedMachinesChanged.on(list => { syncedMachines = list; drawSynced(); });
  events.accountChanged.on(() => { void refreshAccount(); });
  void refreshAccount();
- const shared = element("section", "host-home-saved");
- const sharedRows = element("div", "host-home-rows"); shared.append(element("h2", "", "SHARED WITH YOU"), sharedRows);
+ const { root: shared, rows: sharedRows } = hostSection("SHARED WITH YOU");
  const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite button-secondary button-large";
  let pasting = false;
  const paste = action("Paste", () => {
@@ -210,7 +177,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
- home.append(header, section, synced, shared, empty, pair, add, inviteActions, message);
+ home.append(header.root, section, synced, shared, empty, pair, add, inviteActions, message);
  // The first-launch sign-in (1B) stands in front of the host home until it is answered. (The
  // browser has its own host home, web/hosts.ts.)
  const welcome = new AccountWelcome(() => { home.hidden = false; });
@@ -338,13 +305,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    for (const access of shares) {
     const row = action("", () => { row.disabled = true; void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(showAgents).catch(report).finally(() => { row.disabled = connecting; }); });
     row.className = "host-home-row"; row.disabled = connecting;
-    const icon = element("span", "host-home-icon");
-    if (appleSymbols()) icon.append(await symbol("person.2", 19, "regular"));
-    else { const glyph = element("span", "host-computer-glyph"); glyph.style.setProperty("--host-computer", `url("${usersIcon}")`); icon.append(glyph); }
-    const lines = element("span", "host-home-lines");
-    lines.append(element("span", "host-home-name", access.machineLabel), element("span", "host-home-address", `${access.agentName} · shared by ${access.ownerName}`));
-    const chevron = element("span", "host-home-chevron"); chevron.setAttribute("aria-hidden", "true");
-    chevron.append(await symbol("chevron.right", 13, "semibold"));
+    const icon = hostRowIcon(await hostGlyph(symbol, "person.2", usersIcon));
+    const lines = hostRowLines(access.machineLabel, `${access.agentName} · shared by ${access.ownerName}`);
+    const chevron = hostRowChevron(await symbol("chevron.right", 13, "semibold"));
     row.append(icon, lines, chevron); sharedNodes.push(row);
    }
    if (generation !== version) return;
@@ -362,22 +325,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     row.className = "host-home-row" + (busy ? " connecting" : ""); row.dataset.label = labelOf(machine);
     row.disabled = connecting;
     if (busy) row.setAttribute("aria-busy", "true");
-    const icon = element("span", "host-home-icon");
-    if (appleSymbols()) icon.append(await symbol("desktopcomputer", 19, "regular"));
-    else {
-     // SF Symbols are licensed only for Apple platforms; use the same pinned
-     // open icon family as the portable symbol renderer.
-     const glyph = element("span", "host-computer-glyph");
-     glyph.style.setProperty("--host-computer", `url("${desktopIcon}")`); icon.append(glyph);
-    }
-    const lines = element("span", "host-home-lines");
+    // SF Symbols are licensed only for Apple platforms; elsewhere the same pinned open icon
+    // family as the portable symbol renderer (hostGlyph).
+    const icon = hostRowIcon(await hostGlyph(symbol, "desktopcomputer", desktopIcon));
     // SavedHost.label and ConnectView.secondaryLine: the nickname over user@host, or the
     // host over the user name alone.
     const nickname = machine.nickname?.trim() ?? "";
-    lines.append(element("span", "host-home-name", nickname || machine.host), element("span", "host-home-address", busy ? "Connecting…" : nickname ? `${machine.user}@${machine.host}` : machine.user));
-    const chevron = element("span", "host-home-chevron"); chevron.setAttribute("aria-hidden", "true");
-    if (busy) { chevron.classList.add("host-home-spinner"); chevron.innerHTML = spinner; }
-    else chevron.append(await symbol("chevron.right", 13, "semibold"));
+    const lines = hostRowLines(nickname || machine.host, busy ? "Connecting…" : nickname ? `${machine.user}@${machine.host}` : machine.user);
+    const chevron = busy ? hostRowChevron(null, spinner) : hostRowChevron(await symbol("chevron.right", 13, "semibold"));
     row.append(icon, lines, chevron);
     const openMenu = (x: number, y: number) => {
      closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
@@ -414,5 +369,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    const secret = machine.keyPath ? "" : await password(machine);
    if (secret !== null) await Desk.selectMachine(machine.id, secret);
   },
+  /** The browser's access to the machine it opened (web/hosts.ts); a desktop's machines are its own. */
+  access: (): BrowserAccess | null => null,
  };
 }

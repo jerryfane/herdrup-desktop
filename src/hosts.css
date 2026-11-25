@@ -42,6 +42,33 @@
 .host-home-spinner { color:var(--color-text-dim); }
 .host-home-spinner svg { display:block; width:20px; height:20px; animation:gspin 1.3s steps(8) infinite; }
 @media (prefers-reduced-motion:reduce) { .host-home-spinner svg { animation:none; } }
+/* A row's focus ring sits inside the card, which clips what goes past its corners. */
+.host-home .host-home-row:focus-visible { outline-offset:-2px; }
+/* The browser's approved machines (web/ownerScreen.ts machineSection): a short status at the row's
+   end, in the dim ink with no dot; a machine the approval skipped is a dimmed row that opens nothing. */
+.host-home-value { flex:none; font-size:calc(14px * var(--ui-font-scale, 1)); line-height:var(--leading-system); color:var(--color-text-dim); white-space:nowrap; }
+.host-home-value[hidden] { display:none; }
+.host-home .host-home-row:disabled { cursor:default; }
+.host-home-row.host-home-row-off { opacity:.55; }
+/* The browser's approval (web/ownerScreen.ts approvalParts): one section, what the page waits for,
+   the code and its expiry over the three steps as rows, whose lines wrap. */
+.host-home-approval-head { display:flex; flex-direction:column; align-items:flex-start; gap:10px; padding:18px 18px 16px; }
+.host-home-approval-status { display:flex; align-items:center; gap:8px; font-size:calc(14px * var(--ui-font-scale, 1)); color:var(--color-text-dim); }
+.host-home-approval-status .host-home-spinner svg { width:16px; height:16px; }
+.host-home-approval-title { margin:0; font-size:calc(20px * var(--ui-font-scale, 1)); font-weight:600; line-height:var(--leading-system); color:var(--color-text); }
+.host-home-approval-lead { margin:0; font-size:calc(14px * var(--ui-font-scale, 1)); line-height:1.4; color:var(--color-text-dim); }
+.host-home-approval-lead.host-home-approval-problem { color:var(--color-text); }
+.host-home-code { display:flex; gap:10px; margin:6px 0 2px; user-select:all; -webkit-user-select:all; }
+.host-home-code span { display:grid; place-items:center; width:52px; height:64px; border-radius:12px; background:var(--color-surface-raised); font:500 34px/1 var(--font-machine); color:var(--color-text); }
+.host-home-code-none span { color:var(--color-text-faint); user-select:none; -webkit-user-select:none; }
+.host-home-approval-actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin-top:4px; }
+.host-home-approval-actions button { display:flex; align-items:center; justify-content:center; gap:8px; }
+.host-home-approval-expiry { font-size:calc(14px * var(--ui-font-scale, 1)); color:var(--color-text-dim); }
+.host-home-approval-expiry b { margin-left:4px; font:500 14px var(--font-machine); color:var(--color-text); }
+.host-home-step .host-home-icon { font-size:calc(15px * var(--ui-font-scale, 1)); font-weight:600; }
+.host-home-step .host-home-name, .host-home-step .host-home-address { white-space:normal; }
+.host-home .host-home-guest { align-self:flex-start; }
+.host-home-note { margin:0 18px; font-size:calc(13px * var(--ui-font-scale, 1)); line-height:1.4; color:var(--color-text-faint); }
 /* The host actions are large capsules (buttons.css): Scan pairing code filled, the others secondary. */
 .host-home .host-add, .host-home .host-pair, .host-home .host-invite { display:flex; align-items:center; justify-content:center; gap:8px; }
 .host-home .host-pair, .host-home .host-invite { width:100%; }

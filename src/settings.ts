@@ -49,6 +49,7 @@ import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
 import { appleSymbols } from "./platform";
 import { deskOffers, ownerWrites, parts } from "./shellModel";
+import type { BrowserAccess } from "./hostHome";
 
 /** The machine's pages this build's Desk serves (shellModel.ts): all on the desktop; in the
  *  browser, each once its method group is registered. A page not served has no row. */
@@ -99,8 +100,9 @@ function button(label: string, action: () => void) {
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** `opened` runs when a page is chosen: the phone layout shows it in place of the index
- *  (main.ts, compact). */
-export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>, opened: () => void) {
+ *  (main.ts, compact). `access` is the browser's access to the machine it opened (hosts.ts), the
+ *  Machines page's ACCESS group; null on the desktop. */
+export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>, access: () => BrowserAccess | null, opened: () => void) {
   const index = el("nav", "settings-index"); index.setAttribute("aria-label", "Settings"); index.hidden = true;
   sidebar.insertBefore(index, document.getElementById("sidebar-foot"));
   const page = el("section", "settings-detail"); page.hidden = true; detail.append(page);
@@ -235,6 +237,13 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     if (subtitle) lines.append(el("span", "settings-row-subtitle", subtitle));
     node.append(typeof icon === "string" ? glyph(icon, 18) : icon, lines);
     if (value) node.append(typeof value === "string" ? el("span", "settings-row-value", value) : value);
+    return node;
+  }
+  /** A row that only says something: its label, and its value at the end. */
+  function info(label: string, value: string) {
+    const node = el("div", "settings-row"), lines = el("span", "settings-row-lines");
+    lines.append(el("span", "settings-row-label", label));
+    node.append(lines, el("span", "settings-row-value", value));
     return node;
   }
   function link(label: string, icon: string | HTMLElement, url: string) {
@@ -455,7 +464,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
         copy.textContent = "Copied"; window.setTimeout(() => { copy.textContent = "Copy diagnostics"; }, 2000);
       }).catch(report);
     }); copy.className = "settings-plain-row action";
-    body.append(hero, ...(served.serverUpdate && administers() ? [updates.root] : []), group("CONNECTION", [reconnectButton, copy]), ...(parts.federation ? [federation()] : []));
+    // The browser's: who approved it for this machine, the access and until when (web/hosts.ts).
+    const browserAccess = share ? null : access();
+    const accessGroup = browserAccess === null ? [] : [group("ACCESS FROM THIS BROWSER", [info("Approved by", browserAccess.approvedBy), info("Access", browserAccess.access), info("Until", browserAccess.until)])];
+    body.append(hero, ...accessGroup, ...(served.serverUpdate && administers() ? [updates.root] : []), group("CONNECTION", [reconnectButton, copy]), ...(parts.federation ? [federation()] : []));
     if (parts.federation) { reach = el("p", "settings-reach"); body.append(reach); }
     updateConnection();
   }

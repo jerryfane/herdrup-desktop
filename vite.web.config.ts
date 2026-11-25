@@ -39,6 +39,8 @@ const runtimeAssets = [
   "fonts/Geist-OFL.txt", "fonts/IBMPlexMono-OFL.txt", "herdrup/fonts/NerdFonts-LICENSE.txt",
   // Settings' Join the Discord row (settings.ts discordGlyph), with its brand notice.
   "herdrup/discord-mark.png", "herdrup/NOTICE-Discord-Brand.txt",
+  // The host home's logo and the signed-out page's (hostHome.ts, herdrupAccount.ts AccountWelcome).
+  "herdrup/app-logo.png",
 ];
 function runtimeFiles(): Plugin {
   return {

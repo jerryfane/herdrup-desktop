@@ -793,7 +793,7 @@ async function init(rendered: () => void) {
   // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
   // connection, not the bar last drawn: from the host chooser over a share there is no guest bar
   // yet, and the account avatar still opens the share's Settings (#270).
-  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, () => { if ((shareShown(state) ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, hosts.access, () => { if ((shareShown(state) ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
   startupStep("gram");
   await initGram(
     {

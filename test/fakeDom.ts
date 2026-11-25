@@ -1,6 +1,7 @@
 // A fake document for tests that draw real page code (Bun has no DOM): the approve sheet's rows,
-// code field and sheet (webAccessModel.test.ts), and the web owner's menus and agent sheets
-// (webAgentActions.test.ts). It behaves as a browser's does only where that code depends on it.
+// code field and sheet (webAccessModel.test.ts), the web owner's menus and agent sheets
+// (webAgentActions.test.ts), and the host home's parts and notice in the browser, and its sign-in
+// (webOwnerScreen.test.ts). It behaves as a browser's does only where that code depends on it.
 
 /** An event target that keeps the listeners it holds, to see a press stop being followed. A
  *  listener added with a signal goes when it aborts, and isn't added once it has. */
@@ -45,12 +46,16 @@ export class FakeDocument extends EventTarget {
 export class FakeElement extends Listened {
  className = ""; textContent = ""; hidden = false; disabled = false; type = ""; name = ""; value = ""; id = ""; htmlFor = ""; checked = false;
  inputMode = ""; autocomplete = ""; maxLength = -1; selectionStart = 0; selectionEnd = 0; open = false;
+ innerHTML = ""; title = ""; src = ""; alt = ""; href = ""; target = ""; rel = ""; readOnly = false;
  onclick: ((e: Event) => void) | null = null; onchange: ((e: Event) => void) | null = null; oninput: ((e: Event) => void) | null = null;
  parent: FakeElement | null = null;
  readonly children: FakeElement[] = [];
  readonly attributes = new Map<string, string>();
  readonly classList = { toggle() {}, add() {}, remove() {} };
- readonly style: Record<string, string> = {};
+ /** Inline style: properties set directly or with setProperty (custom properties too). */
+ readonly style: Record<string, string> = Object.defineProperty({}, "setProperty", { value(this: Record<string, string>, name: string, value: string) { this[name] = value; } });
+ readonly dataset: Record<string, string> = {};
+ get isConnected() { return this.connected(); }
  /** The pointers captured on this element, in order, and the ones it holds now (a release, a
  *  pointerup or a pointercancel lets go, as a browser's implicit release does). */
  readonly captured: number[] = [];
