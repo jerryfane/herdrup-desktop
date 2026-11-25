@@ -5,6 +5,8 @@ export interface Entry {
  kind: string; id: string; ts_ms: number; text?: string; body?: string; title?: string;
  intent?: string; detail?: string; tool?: string; status?: string; error?: string;
  source?: string; from?: string;
+ /** A relay's way (chatRelay.ts): "to_topic" from the Inbox, "to_inbox" from a topic. */
+ direction?: string;
  questions?: Question[]; answer?: string[]; items?: PlanItem[];
  /** omp's HTML-form ask (herdr ask-form contract): the form, and once the tool result arrives
   *  its answers and how it ended. */
@@ -191,8 +193,9 @@ export function chatDayLabel(ms: number, now: Date, locale?: string): { day: str
  return { day: date.toLocaleDateString(locale, { month: "short", day: "numeric", year: "numeric" }), time };
 }
 
-// TranscriptGrouping.turns: consecutive thoughts/steps form one run. A prompt or
-// compaction starts a new turn; only that turn's newest plan remains visible.
+// TranscriptGrouping.turns: consecutive thoughts/steps form one run. A prompt, a handover from
+// the Inbox or a topic (relay) or a compaction starts a new turn; only that turn's newest plan
+// remains visible.
 export function groupTranscript(entries: Entry[], working: boolean): ChatRow[] {
  const rows: (ChatRow | null)[] = [];
  let work: WorkRow | null = null;
@@ -212,9 +215,9 @@ export function groupTranscript(entries: Entry[], working: boolean): ChatRow[] {
    continue;
   }
   if (entry.kind === "reply" && !(entry.text ?? "").trim()) continue;
-  if (!["user", "reply", "note", "plan", "ask", "turn_end", "summary", "topic_suggestion"].includes(entry.kind)) continue;
+  if (!["user", "relay", "reply", "note", "plan", "ask", "turn_end", "summary", "topic_suggestion"].includes(entry.kind)) continue;
   close(entry.ts_ms);
-  if (entry.kind === "user" || entry.kind === "summary") plan = null;
+  if (entry.kind === "user" || entry.kind === "relay" || entry.kind === "summary") plan = null;
   if (entry.kind === "user" && entry.ts_ms > 0) {
    if (needsDaySeparator(previousPrompt, entry.ts_ms)) rows.push({ kind: "day", id: `day:${entry.id}`, ms: entry.ts_ms });
    previousPrompt = entry.ts_ms;

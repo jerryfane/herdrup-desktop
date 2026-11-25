@@ -41,6 +41,8 @@ export class FakeDocument extends EventTarget {
  /** The element under a point: the one a test points at (a file dropped there, say). */
  pointed: FakeElement | null = null;
  elementFromPoint(_x: number, _y: number) { return this.pointed; }
+ /** A range over nothing laid out: it has no line boxes. */
+ createRange() { return { selectNodeContents() {}, getClientRects: () => [] }; }
 }
 
 /** The DOM the page code uses, behaving as a browser's does where that code depends on it: events
@@ -94,6 +96,7 @@ export class FakeElement extends Listened {
   return node;
  }
  get firstChild(): FakeElement | null { return this.children[0] ?? null; }
+ get firstElementChild(): FakeElement | null { return this.children.find(c => c.tagName !== "#text") ?? null; }
  get nextSibling(): FakeElement | null { const siblings = this.parent?.children; return siblings?.[siblings.indexOf(this) + 1] ?? null; }
  get parentElement(): FakeElement | null { return this.parent; }
  select() {}

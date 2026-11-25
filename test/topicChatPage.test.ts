@@ -1,11 +1,19 @@
 // An open topic as the agent's page draws it (interaction.ts with topicsView.ts TopicChat), on the
 // shared fake document (fakeDom.ts) with Go answered here: the Inbox's rows under the topic's
 // conversation, its width handles, and the Inbox's own composer lent to the topic (the grow handle,
-// files pasted or dropped as chips, saved prompts and the mic).
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+// files pasted or dropped as chips, saved prompts and the mic); and a handover between the Inbox
+// and a topic (relay) as both chats draw it.
+import { afterAll, beforeAll, beforeEach, expect, mock, test } from "bun:test";
 import { FakeDocument, FakeElement } from "./fakeDom";
 import type { AgentTarget, GramAttachment } from "../src/mygo";
 import type * as Interaction from "../src/interaction";
+import * as chatMarkdown from "../src/chatMarkdown";
+
+// DOMPurify needs a real DOM, which Bun lacks: a message's markdown is its text here.
+mock.module("../src/chatMarkdown", () => ({
+ ...chatMarkdown,
+ markdown: (text: string) => { const body = document.createElement("div"); body.className = "chat-markdown"; body.textContent = text; return body; },
+}));
 
 type Answer = (...args: unknown[]) => unknown;
 
@@ -43,6 +51,7 @@ beforeAll(async () => {
   window: Object.assign(doc.defaultView, { setTimeout, clearTimeout, setInterval, clearInterval, devicePixelRatio: 1 }),
   localStorage: { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => { stored.set(k, String(v)); }, removeItem: (k: string) => { stored.delete(k); } },
   getComputedStyle: () => ({ getPropertyValue: () => "" }),
+  CSS: { escape: (text: string) => text },
   // Reduced motion: a send plays no press animation (the fake elements have no animate()).
   matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
   requestAnimationFrame: (run: () => void) => setImmediate(run),
@@ -77,19 +86,27 @@ beforeAll(async () => {
 afterAll(() => { page.closeInteraction(); for (const [k, v] of Object.entries(saved)) G[k] = v; });
 beforeEach(() => { page.closeInteraction(); calls = []; stored.clear(); });
 
-/** Opens the agent's page on Topics (its saved choice) and the topic in it; transcript is the
- *  topic's page. Returns the page's parts the tests read. */
-async function openTopic(transcript: string = topicPage()) {
- stored.set("chat.ompOpensIn", "topics");
+/** Opens the agent's page on its saved choice (Topics or the Inbox's chat); topic is a topic's
+ *  page, inbox the Inbox's. */
+async function openPage(mode: "topics" | "chat", topic: string, inbox = topicPage()) {
+ stored.set("chat.ompOpensIn", mode);
  answers = {
   "Desk.OpenAgentView": (_target: unknown, token: unknown) => ({ token, paneID: "p1", name: "herdr-app", harness: "omp", heading: "herdr-app", group: "idle", status: "idle", guest: false, guestGram: false, plainTerminal: false, askForm: false, topicSessions: [TOPIC] }),
   "Desk.TopicsAvailable": () => true,
   "Desk.PaneMuted": () => false,
-  "Desk.TopicTranscript": () => transcript,
+  "Desk.TopicTranscript": () => topic,
+  "Desk.ChatTranscript": () => inbox,
   "Desk.SavedPrompts": () => [{ id: "p1", nickname: "Standup", text: "Post the daily standup" }],
   "Desk.TopicsSend": () => ({ mode: "", delivery: "sent" }),
  };
  await page.selectInteraction(target);
+ await settle();
+}
+
+/** Opens the agent's page on Topics (its saved choice) and the topic in it; transcript is the
+ *  topic's page. Returns the page's parts the tests read. */
+async function openTopic(transcript: string = topicPage()) {
+ await openPage("topics", transcript);
  const row = doc.body.all().find(n => n.tagName === "button" && n.text().includes(TOPIC.title));
  if (!row) throw new Error("no row for the topic");
  row.click();
@@ -189,4 +206,59 @@ test("the topic's composer has the mic and the saved prompts, and a saved prompt
  standup!.click();
  await settle();
  expect(calls.filter(c => c.method === "Desk.TopicsSend").map(c => c.args.slice(1))).toEqual([["t1", "Post the daily standup"]]);
+});
+
+// ---- Handovers between the Inbox and a topic (herdr kind "relay", chatRelay.ts) ----
+
+const LONG = Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of the minutes.`).join("\n\n");
+function relay(id: string, from: string, direction: string, text: string) {
+ return { kind: "relay", id, ts_ms: Date.now() - 1000, from, topic_id: "t1", direction, text };
+}
+/** The chat's rows: the topic's when open, else the Inbox's transcript. */
+function inboxTranscript() {
+ return doc.body.all().find(n => n.className.split(" ").includes("chat-transcript") && !n.className.includes("topic-transcript"))!;
+}
+
+test("a handover reads From Inbox in the topic and From topic <title> in the Inbox, left as the agent's text", async () => {
+ const { transcript } = await openTopic(topicPage({ entries: [relay("r1", "Inbox", "to_topic", "Draft the **board pack** intro.")] }));
+ const inTopic = withClass(transcript, "relay");
+ expect(inTopic).toHaveLength(1);
+ expect(inTopic[0]!.className).toBe("chat-message relay");
+ expect(withClass(inTopic[0]!, "chat-relay-from").map(n => n.textContent)).toEqual(["From Inbox"]);
+ expect(withClass(inTopic[0]!, "chat-markdown").map(n => n.textContent)).toEqual(["Draft the **board pack** intro."]);
+ // Not the owner's bubble.
+ expect(withClass(transcript, "user")).toEqual([]);
+
+ page.closeInteraction();
+ const older = { kind: "user", id: "u1", ts_ms: Date.now() - 500, text: "<irc>\nAsked by Inbox (`Main`):\n\nOld shape" };
+ await openPage("chat", topicPage(), topicPage({ entries: [relay("r2", "Board pack", "to_inbox", "The intro is drafted."), older] }));
+ const inbox = inboxTranscript();
+ const inInbox = withClass(inbox, "relay");
+ expect(withClass(inInbox[0]!, "chat-relay-from").map(n => n.textContent)).toEqual(["From topic Board pack"]);
+ // An older herdr's handover (kind "user") stays the owner's bubble, as before.
+ const bubbles = withClass(inbox, "user");
+ expect(bubbles).toHaveLength(1);
+ expect(bubbles[0]!.text()).toContain("Old shape");
+});
+
+test("a long handover folds after about six lines with Show all; a short one has no toggle", async () => {
+ const { transcript } = await openTopic(topicPage({ entries: [relay("r3", "Inbox", "to_topic", LONG), relay("r4", "Inbox", "to_topic", "Short.")] }));
+ const [long, short] = withClass(transcript, "relay");
+ const body = (row: FakeElement) => withClass(row, "chat-relay-body")[0]!;
+ const toggle = (row: FakeElement) => withClass(row, "chat-relay-toggle")[0]!;
+ expect(body(long!).dataset.folded).toBe("true");
+ // Laid out: the long body runs past its six-line fold, the short one fits.
+ body(long!).scrollHeight = 480; body(long!).clientHeight = 150; resized(body(long!));
+ body(short!).scrollHeight = 24; body(short!).clientHeight = 24; resized(body(short!));
+ expect(toggle(long!).shown()).toBe(true);
+ expect(toggle(long!).textContent).toBe("Show all");
+ expect(toggle(short!).shown()).toBe(false);
+ toggle(long!).click();
+ expect(body(long!).dataset.folded).toBe("false");
+ expect(toggle(long!).textContent).toBe("Show less");
+ // A capsule, as every button.
+ expect(toggle(long!).className.split(" ")).toContain("button-compact");
+ toggle(long!).click();
+ expect(body(long!).dataset.folded).toBe("true");
+ expect(toggle(long!).textContent).toBe("Show all");
 });

@@ -19,6 +19,7 @@ import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
+import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
 import { canAnswer, chooser, guestQuestion, promptByline, refusesResize, typesInTerminal, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
 import { CHAT_SEND_FOLLOW_MS, chatPollDelay, isRelayRateLimited, outgoingReceipt, reconcileOutgoing, RELAY_RECONNECTING, sendShown, type Outgoing } from "./chatPoll";
@@ -2358,6 +2359,12 @@ class Detail {
    if (appleSymbols()) void symbol(aborted ? "stop.circle" : "exclamationmark.circle", 12, "semibold").then(glyph => icon.append(glyph));
    else { const glyph = el("span", "chat-plan-fallback"); glyph.style.setProperty("--plan-icon", `url("${aborted ? stopCircleIcon : warningCircleIcon}")`); icon.append(glyph); }
    row.append(icon, el("span", "chat-turn-failed-text", aborted ? "Stopped" : `Failed${entry.error ? ` · ${entry.error}` : ""}`));
+   return row;
+  }
+  // A handover between the Inbox and a topic (chatRelay.ts): the agent's side, under who sent it.
+  if (entry.kind === "relay") {
+   const row = relayRow(entry, markdown(entry.text ?? ""));
+   this.bindMessageMenu(row, entry.text ?? "", true, true);
    return row;
   }
   if (entry.kind === "user" || entry.kind === "reply") {
