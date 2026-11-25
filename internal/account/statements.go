@@ -27,10 +27,6 @@ type HostStatement struct {
 // ErrNoStatement is an answer without a statement for the host asked for.
 var ErrNoStatement = errors.New("account: the account service gave no statement for this machine")
 
-// StatementRefreshLead is how much of a statement is left when a client asks
-// for a new one (DESIGN §3.3: "less than 2 minutes remain").
-const StatementRefreshLead = 2 * time.Minute
-
 // StatementCache holds the current session's statements by host, as the
 // web's src/web/statements.ts statementCache does: one is reused while it has
 // at least the time asked for left, and asked for again otherwise; callers

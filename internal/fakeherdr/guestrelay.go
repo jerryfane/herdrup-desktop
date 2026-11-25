@@ -85,6 +85,10 @@ type GuestRelay struct {
 	// with its code.
 	Accounts       bool
 	CheckStatement func(jws string) (sub string, exp time.Time, code string)
+	// AccountDeadline, when set, is a bound session's deadline for a
+	// statement expiring at exp (the hello reply's deadline_unix); herdr's
+	// is exp + 60 s (src/guest/mod.rs).
+	AccountDeadline func(exp time.Time) time.Time
 
 	hostID   string
 	host     noise.DHKey
@@ -95,10 +99,12 @@ type GuestRelay struct {
 	issues string
 	srv    *http.Server
 
-	mu       sync.Mutex
-	guestID  string
-	guestKey []byte
-	calls    []GuestCall
+	mu      sync.Mutex
+	guestID string
+	// guestKeys are the device keys the grant admits: the redeeming one,
+	// and each one a bound share took in by its account's statement.
+	guestKeys [][]byte
+	calls     []GuestCall
 	// connects are the guest's relay connects; past connectLimit in a minute
 	// the relay refuses one with 429 rate_limited (LimitConnects).
 	connects     []GuestConnect
@@ -229,6 +235,13 @@ func (r *GuestRelay) Bound() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.account
+}
+
+// Devices counts the device keys the grant admits.
+func (r *GuestRelay) Devices() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.guestKeys)
 }
 
 // Connects returns every guest connect to the relay, refused ones included,
@@ -497,14 +510,19 @@ func (r *GuestRelay) claims(hello guestHello) bool {
 	return hello.GuestID != "" && hello.GuestID == r.guestID
 }
 
-// hello answers the guest's handshake payload: an invitation redeemed once,
-// then the returning guest by its id and device key. request says a request
-// line follows (a returning guest's), and bound that the session is an
-// account-bound one's. With Accounts, a statement in the hello is checked
-// first (CheckStatement); one in a redemption binds the share to its
-// account, and every hello for a bound share needs one for that account
-// (herdr src/guest/store.rs:1008-1022, 1121-1128). Without Accounts a
-// statement is ignored, as by a herdr older than accounts.
+// hello answers the guest's handshake payload as herdr does
+// (src/guest/store.rs admit_in, admit_returning): the invitation or grant
+// is selected first, then the account's refusals apply. An invitation is
+// redeemed once; a statement in its redemption binds the share to its
+// account, and one refused (CheckStatement's code) leaves the invitation
+// unused. A returning guest's grant is selected by its id and either a
+// device key the grant holds or, for a bound share, a verified statement
+// of its account, which takes the new device in; every hello for a bound
+// share then needs a statement for that account (account_required, the
+// statement's own refusal, account_mismatch). request says a request line
+// follows (a returning guest's), and bound that the session is an
+// account-bound one's. Without Accounts a statement is ignored, as by a
+// herdr older than accounts.
 func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request, bound bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -513,29 +531,42 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 		b, _ := json.Marshal(map[string]any{"ok": false, "error": code})
 		return b, false, false
 	}
-	var sub string
+	var sub, refused string
 	var exp time.Time
 	if r.Accounts && hello.Account != "" {
-		var code string
-		if sub, exp, code = r.CheckStatement(hello.Account); code != "" {
-			return refuse(code)
+		sub, exp, refused = r.CheckStatement(hello.Account)
+		if refused != "" {
+			sub = ""
 		}
 	}
-	switch {
-	case hello.InviteID != "":
-		if hello.InviteID != r.inviteID || hello.Secret != r.secret {
+	if hello.InviteID != "" {
+		switch {
+		case hello.InviteID != r.inviteID || hello.Secret != r.secret:
 			return refuse("invite_invalid")
-		}
-		if r.guestID != "" {
+		case r.guestID != "":
 			return refuse("invite_used")
+		case refused != "":
+			return refuse(refused)
 		}
-		r.guestID, r.guestKey, r.account = cmp.Or(r.issues, "fake-guest-1"), slices.Clone(key), sub
-	case hello.GuestID == "" || hello.GuestID != r.guestID || !bytes.Equal(key, r.guestKey):
-		return refuse("unknown")
-	case r.account != "" && sub == "":
-		return refuse("account_required")
-	case r.account != "" && sub != r.account:
-		return refuse("account_mismatch")
+		r.guestID, r.guestKeys, r.account = cmp.Or(r.issues, "fake-guest-1"), [][]byte{slices.Clone(key)}, sub
+	} else {
+		held := slices.ContainsFunc(r.guestKeys, func(k []byte) bool { return bytes.Equal(k, key) })
+		if hello.GuestID == "" || hello.GuestID != r.guestID || !held && (r.account == "" || sub != r.account) {
+			return refuse("unknown")
+		}
+		if r.account != "" {
+			switch {
+			case hello.Account == "":
+				return refuse("account_required")
+			case refused != "":
+				return refuse(refused)
+			case sub != r.account:
+				return refuse("account_mismatch")
+			}
+			if !held {
+				r.guestKeys = append(r.guestKeys, slices.Clone(key))
+			}
+		}
 	}
 	// An older herdr says nothing of multi_request.
 	features := map[string]bool{"gram": r.Gram}
@@ -549,7 +580,11 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 	}
 	bound = r.account != ""
 	if bound {
-		answer["account"] = map[string]int64{"deadline_unix": exp.Unix() + 60}
+		deadline := exp.Add(60 * time.Second)
+		if r.AccountDeadline != nil {
+			deadline = r.AccountDeadline(exp)
+		}
+		answer["account"] = map[string]int64{"deadline_unix": deadline.Unix()}
 	}
 	b, _ := json.Marshal(answer)
 	return b, hello.InviteID == "", bound

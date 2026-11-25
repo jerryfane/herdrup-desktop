@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/flynn/noise"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
 )
 
@@ -33,9 +34,17 @@ type fakeStatements struct {
 	hosts   []string
 	// onAsk, when set, runs once inside the next ask, after its statement
 	// is issued (a switch while it was asked for); onDrop once inside the
-	// next Drop.
-	onAsk, onDrop func()
+	// next Drop. raceAsk runs once inside the next ask instead of issuing
+	// one, which then fails with errLookupRaced, as the account's cache
+	// does when its sign-in ended while it asked; failAsk fails the next
+	// ask with itself (the service's answer).
+	onAsk, onDrop, raceAsk func()
+	failAsk                error
 }
+
+// errLookupRaced is the account cache's answer to an ask whose sign-in
+// ended while it was out (account.ErrAccountChanged).
+var errLookupRaced = errors.New("account: the session changed while the statement was asked for")
 
 type heldStatement struct {
 	jws string
@@ -59,6 +68,17 @@ func (f *fakeStatements) switchTo(account string) {
 func (f *fakeStatements) Statement(_ context.Context, host string, minLeft time.Duration) (Statement, error) {
 	f.mu.Lock()
 	f.hosts = append(f.hosts, host)
+	race, fail := f.raceAsk, f.failAsk
+	f.raceAsk, f.failAsk = nil, nil
+	if race != nil {
+		f.mu.Unlock()
+		race()
+		return Statement{}, errLookupRaced
+	}
+	if fail != nil {
+		f.mu.Unlock()
+		return Statement{}, fail
+	}
 	if f.account == "" {
 		f.mu.Unlock()
 		return Statement{}, ErrAccountRequired
@@ -290,9 +310,10 @@ func (c *stepClock) waiting() int {
 	return len(c.waiters)
 }
 
-// A bound session sends a fresh statement in band once less than 2 minutes
-// of its own are left, before herdr's deadline (exp + 60 s), and again for
-// the next: on the clock, not on time.
+// A bound session sends a fresh statement in band 2 minutes before its
+// cutoff: first the host's deadline (herdr's: the statement's exp + 60 s),
+// then, the refresh being unacknowledged, the new statement's exp. On the
+// clock, not on time.
 func TestABoundSessionRefreshesItsStatementBeforeItExpires(t *testing.T) {
 	h := newAccountHost(t, true)
 	access := h.accept(t, h.statements)
@@ -306,20 +327,48 @@ func TestABoundSessionRefreshesItsStatementBeforeItExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := h.relay.HostID()
-	for n, want := range []string{"acct.2." + host, "acct.3." + host} {
-		// The refresh sleeps until 2 minutes before its statement's exp.
+	// DESIGN §3.3's 2 minutes, not the constant under test: the deadline at
+	// 660 s, then the refreshed statement's exp at 540 + 600 s.
+	for n, step := range []struct {
+		after time.Duration
+		want  string
+	}{{660*time.Second - 2*time.Minute, "acct.2." + host}, {600*time.Second - 2*time.Minute, "acct.3." + host}} {
 		eventually(t, "the refresh to wait", func() bool { return h.clock.waiting() == 1 })
-		// DESIGN §3.3's 2 minutes, not the constant under test.
-		h.clock.advance(600*time.Second - 2*time.Minute - time.Second)
+		h.clock.advance(step.after - time.Second)
 		if h.clock.waiting() != 1 || len(h.relay.Refreshes()) != n {
 			t.Fatalf("refresh %d: with more than 2 minutes left, refreshes %q", n+1, h.relay.Refreshes())
 		}
 		h.clock.advance(time.Second)
 		eventually(t, "the refresh", func() bool { return len(h.relay.Refreshes()) == n+1 })
-		if got := h.relay.Refreshes()[n]; got != want {
-			t.Fatalf("refresh %d sent %q, want %q", n+1, got, want)
+		if got := h.relay.Refreshes()[n]; got != step.want {
+			t.Fatalf("refresh %d sent %q, want %q", n+1, got, step.want)
 		}
 	}
+}
+
+// The host's advertised deadline is the session's first cutoff: one
+// earlier than the statement's exp brings the first refresh forward.
+func TestTheHostsDeadlineDrivesTheFirstRefresh(t *testing.T) {
+	h := newAccountHost(t, true)
+	h.relay.AccountDeadline = func(exp time.Time) time.Time { return exp.Add(-5 * time.Minute) }
+	access := h.accept(t, h.statements)
+	transport := h.transport(t, access, h.statements)
+	stream, err := transport.OpenStream(context.Background(), "pane.stream", map[string]string{"pane_id": "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	// The statement expires 600 s on, the host's deadline 300 s on.
+	eventually(t, "the refresh to wait", func() bool { return h.clock.waiting() == 1 })
+	h.clock.advance(300*time.Second - 2*time.Minute - time.Second)
+	if h.clock.waiting() != 1 || len(h.relay.Refreshes()) != 0 {
+		t.Fatalf("with more than 2 minutes to the host's deadline, refreshes %q", h.relay.Refreshes())
+	}
+	h.clock.advance(time.Second)
+	eventually(t, "the refresh before the host's deadline", func() bool { return len(h.relay.Refreshes()) == 1 })
 }
 
 // A refresh herdr refuses ends the session with its code, which the stream
@@ -340,7 +389,7 @@ func TestARefusedRefreshEndsTheSessionWithItsCode(t *testing.T) {
 	h.refuse = "device_removed"
 	h.mu.Unlock()
 	eventually(t, "the refresh to wait", func() bool { return h.clock.waiting() == 1 })
-	h.clock.advance(600*time.Second - 2*time.Minute)
+	h.clock.advance(660*time.Second - 2*time.Minute)
 	if _, err := stream.Next(); !errors.Is(err, ErrDeviceRemoved) {
 		t.Fatalf("after a refused refresh: %v, want ErrDeviceRemoved", err)
 	}
@@ -408,35 +457,38 @@ func TestARedemptionWhoseSignInChangesSendsNothing(t *testing.T) {
 	}
 }
 
-// A bound session's refreshes stay in the sign-in it was admitted in: one
-// whose sign-in changes while its statement is asked for sends nothing,
-// and the refreshing stops.
+// A bound session's refreshes stay in the sign-in it was admitted in: run
+// on its own, a session's refresh loop whose sign-in changes while its
+// statement is asked for writes nothing and returns.
 func TestABoundSessionsRefreshAfterASwitchSendsNothingAndStops(t *testing.T) {
-	h := newAccountHost(t, true)
-	access := h.accept(t, h.statements)
-	ended := make(chan struct{}, 8)
-	hear := func() { ended <- struct{}{} }
-	refreshEnded.Store(&hear)
-	t.Cleanup(func() { refreshEnded.Store(nil) })
-	transport := h.transport(t, access, h.statements)
-	stream, err := transport.OpenStream(context.Background(), "pane.stream", map[string]string{"pane_id": "p1"})
+	clock := &stepClock{now: time.Unix(1_000_000, 0)}
+	statements := newFakeStatements(clock, "acct")
+	admitted, err := statements.Statement(context.Background(), "host", statementLead)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stream.Close()
-	if _, err := stream.Next(); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, "the refresh to wait", func() bool { return h.clock.waiting() == 1 })
-	h.statements.onAsk = func() { h.statements.switchTo("other") }
-	h.clock.advance(600*time.Second - 2*time.Minute)
+	wrote := make(chan []byte, 4)
+	s := &session{send: noise.UnsafeNewCipherState(cipherSuite, [32]byte{}, 0), writeHook: func(_ context.Context, frame []byte) error {
+		wrote <- frame
+		return nil
+	}}
+	// Due now: its cutoff is statementLead away.
+	b := &boundStatement{statements: statements, host: "host", jws: admitted.JWS, cutoff: clock.Now().Add(statementLead), admitted: admitted.Live}
+	statements.onAsk = func() { statements.switchTo("other") }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.refresh(ctx, clock, b)
+	}()
 	select {
-	case <-ended:
+	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("the refresh went on after the switch; refreshes %q", h.relay.Refreshes())
+		t.Fatalf("the refresh went on after the switch; wrote %d frames", len(wrote))
 	}
-	if refreshes := h.relay.Refreshes(); len(refreshes) != 0 {
-		t.Fatalf("refreshes %q after the switch; want none", refreshes)
+	if len(wrote) != 0 || statements.asked() != 2 {
+		t.Fatalf("wrote %d frames, statements asked %d; want one ask and nothing written", len(wrote), statements.asked()-1)
 	}
 }
 
@@ -513,5 +565,137 @@ func TestAReconnectGoesUnderTheCurrentSignIn(t *testing.T) {
 	host := h.relay.HostID()
 	if hellos := h.relay.Hellos(); len(hellos) != 3 || hellos[2] != "acct.2."+host {
 		t.Fatalf("hellos %q; want the last under the current sign-in", hellos)
+	}
+}
+
+// A retry's statement lookup the change of sign-in spoiled (the account's
+// cache then fails it) is that change: ErrSignInChanged for a saved share,
+// ErrAccountChanged for a redemption, with nothing sent. A lookup that
+// fails in the same sign-in fails as itself.
+func TestARetrysLookupSpoiledByASignInChangeIsThatChange(t *testing.T) {
+	later := func(f *fakeStatements, set func()) func() {
+		return func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			set()
+		}
+	}
+	t.Run("a saved share", func(t *testing.T) {
+		h := newAccountHost(t, true)
+		access := h.accept(t, h.statements)
+		h.mu.Lock()
+		h.refuseOnce = "statement_expired"
+		h.mu.Unlock()
+		h.statements.onDrop = later(h.statements, func() { h.statements.raceAsk = func() { h.statements.switchTo("acct") } })
+		err := list(h.transport(t, access, h.statements))
+		if !errors.Is(err, ErrSignInChanged) || errors.Is(err, errLookupRaced) {
+			t.Fatalf("a lookup across a change of sign-in: %v, want ErrSignInChanged", err)
+		}
+		if hellos := h.relay.Hellos(); len(hellos) != 2 {
+			t.Fatalf("hellos %q; want the refused one alone", hellos)
+		}
+	})
+	t.Run("a redemption", func(t *testing.T) {
+		h := newAccountHost(t, true)
+		h.mu.Lock()
+		h.refuseOnce = "statement_invalid"
+		h.mu.Unlock()
+		h.statements.onDrop = later(h.statements, func() { h.statements.raceAsk = func() { h.statements.switchTo("acct") } })
+		_, err := Accept(context.Background(), h.invite(t), h.identity, "Desktop", h.now, h.statements)
+		if !errors.Is(err, ErrAccountChanged) || errors.Is(err, errLookupRaced) {
+			t.Fatalf("a redemption's lookup across a change of sign-in: %v, want ErrAccountChanged", err)
+		}
+		if hellos := h.relay.Hellos(); len(hellos) != 1 || h.relay.Bound() != "" {
+			t.Fatalf("hellos %q, bound to %q; want the refused one alone", hellos, h.relay.Bound())
+		}
+	})
+	t.Run("the same sign-in", func(t *testing.T) {
+		h := newAccountHost(t, true)
+		access := h.accept(t, h.statements)
+		service := errors.New("account service: 503 unavailable")
+		h.mu.Lock()
+		h.refuseOnce = "statement_expired"
+		h.mu.Unlock()
+		h.statements.onDrop = later(h.statements, func() { h.statements.failAsk = service })
+		if err := list(h.transport(t, access, h.statements)); !errors.Is(err, service) {
+			t.Fatalf("a saved share's lookup failing in its sign-in: %v, want the service's error", err)
+		}
+		fresh := newAccountHost(t, true)
+		fresh.mu.Lock()
+		fresh.refuseOnce = "statement_invalid"
+		fresh.mu.Unlock()
+		fresh.statements.onDrop = later(fresh.statements, func() { fresh.statements.failAsk = service })
+		if _, err := Accept(context.Background(), fresh.invite(t), fresh.identity, "Desktop", fresh.now, fresh.statements); !errors.Is(err, service) {
+			t.Fatalf("a redemption's lookup failing in its sign-in: %v, want the service's error", err)
+		}
+	})
+}
+
+// The relay picks the invitation or grant first, as herdr does
+// (src/guest/store.rs:984-1022, 1087-1166), and only then applies the
+// account's refusals: a bound share takes in a new device of its account by
+// its statement, a refused statement from a device it doesn't hold is an
+// unknown guest, and from one it holds is that refusal; a used invitation
+// is used whatever its statement.
+func TestTheRelaySelectsTheGrantBeforeTheAccountRefusals(t *testing.T) {
+	h := newAccountHost(t, true)
+	access := h.accept(t, h.statements)
+	device := func(name string) Identity {
+		identity, err := LoadIdentity(filepath.Join(t.TempDir(), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return identity
+	}
+	second := NewTransport(access, device("second"), h.clock, h.statements)
+	t.Cleanup(func() { _ = second.Close() })
+	if err := list(second); err != nil || h.relay.Devices() != 2 {
+		t.Fatalf("a new device of the account: %v, devices %d", err, h.relay.Devices())
+	}
+	h.mu.Lock()
+	h.refuseOnce = "statement_invalid"
+	h.mu.Unlock()
+	third := NewTransport(access, device("third"), h.clock, h.statements)
+	t.Cleanup(func() { _ = third.Close() })
+	if err := list(third); !errors.Is(err, ErrRevoked) || h.relay.Devices() != 2 {
+		t.Fatalf("a new device with a refused statement: %v, devices %d; want an unknown guest", err, h.relay.Devices())
+	}
+	h.mu.Lock()
+	h.refuse = "account_keys_stale"
+	h.mu.Unlock()
+	if err := list(h.transport(t, access, h.statements)); !errors.Is(err, ErrAccountKeysStale) {
+		t.Fatalf("a held device with a refused statement: %v, want its refusal", err)
+	}
+	h.mu.Lock()
+	h.refuse = "statement_invalid"
+	h.mu.Unlock()
+	_, err := Accept(context.Background(), h.invite(t), h.identity, "Desktop", h.now, h.statements)
+	if err == nil || errors.Is(err, ErrStatementInvalid) || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("a used invitation with a refused statement: %v, want invite_used", err)
+	}
+}
+
+// Only the host's own refusal of a statement, inside its authenticated
+// reply, earns a retry with a fresh one; the same code as a close reason,
+// or a lost connection, does not.
+func TestOnlyTheHostsOwnRefusalIsRetried(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		err   error
+		retry bool
+	}{
+		{"a refused hello, statement_invalid", helloRefused{refusal("statement_invalid")}, true},
+		{"a refused hello, statement_expired", helloRefused{refusal("statement_expired")}, true},
+		{"a refused hello, account_mismatch", helloRefused{refusal("account_mismatch")}, false},
+		{"a close, statement_invalid", socketError(websocket.CloseError{Code: websocket.StatusNormalClosure, Reason: "statement_invalid"}), false},
+		{"a close, statement_expired", socketError(websocket.CloseError{Code: websocket.StatusNormalClosure, Reason: "statement_expired"}), false},
+		{"a lost connection", errors.New("connect to guest relay: EOF"), false},
+	} {
+		if got := freshStatementMayAdmit(c.err); got != c.retry {
+			t.Errorf("%s: retried %v, want %v", c.name, got, c.retry)
+		}
+	}
+	if refused := (helloRefused{refusal("statement_invalid")}); !errors.Is(refused, ErrStatementInvalid) || refused.Error() != ErrStatementInvalid.Error() {
+		t.Errorf("a refused hello reads %v, want ErrStatementInvalid", refused)
 	}
 }

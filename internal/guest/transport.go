@@ -387,13 +387,18 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 		host := t.access.Endpoint.accountHost()
 		st, err := t.statements.Statement(ctx, host, statementLead)
 		if err != nil {
+			// A lookup the change of sign-in spoiled is that change; any
+			// other failure in the same sign-in is itself.
+			if earlier != nil && !earlier() {
+				return nil, nil, ErrSignInChanged
+			}
 			return nil, nil, err
 		}
 		admitted := st.Live
 		if earlier != nil {
 			admitted = func() bool { return earlier() && st.Live() }
 		}
-		bound = &boundStatement{statements: t.statements, host: host, exp: st.Exp, jws: st.JWS, admitted: admitted}
+		bound = &boundStatement{statements: t.statements, host: host, cutoff: st.Exp, jws: st.JWS, admitted: admitted}
 	}
 	refusals, ok := t.attempt()
 	if !ok {
@@ -424,6 +429,10 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 		return nil, nil, ErrRevoked
 	}
 	if bound != nil && connected.reply.Account != nil {
+		// The host's deadline for the session is its first cutoff.
+		if deadline := connected.reply.Account.DeadlineUnix; deadline > 0 {
+			bound.cutoff = time.Unix(deadline, 0)
+		}
 		connected.bound = bound
 	}
 	t.admitted(refusals, connected.reply.Features)
