@@ -289,8 +289,8 @@ type link struct {
 	// shareLabel names the machine to the guests of its agents' shares
 	// (guest.invite.create's machine_label, shown on the invite page and
 	// under SHARED WITH YOU): the saved machine's nickname, else its host,
-	// never user@host:port (machineLabel, as iOS SavedHost.label), as saved
-	// now: SaveMachine renews it under d.mu. A guest's link has its access's
+	// never user@host:port, as herdr takes it (inviteLabel), as saved now:
+	// SaveMachine renews it under d.mu. A guest's link has its access's
 	// label.
 	shareLabel string
 	// sessionGen counts session switches, so a read begun on one session
@@ -552,7 +552,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	// already open keeps the name it opened with.
 	d.mu.Lock()
 	if d.link != nil && d.link.guest == nil && d.link.id == id {
-		d.link.shareLabel = machineLabel(m)
+		d.link.shareLabel = inviteLabel(m)
 	}
 	d.mu.Unlock()
 	if replacing != "" && replacing != id {
@@ -833,7 +833,7 @@ func (d *Desk) remember(m Machine) error {
 
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), session: m.Session, shareLabel: machineLabel(m)}
+	l := &link{id: machineID(m), session: m.Session, shareLabel: inviteLabel(m)}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()

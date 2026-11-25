@@ -24,7 +24,7 @@ type guestShareRoute struct {
 }
 
 // shareRoute routes an invite to agent and names its machine to the guests:
-// hostLabel (machineLabel, already a shareLabel) for this machine's agents, a
+// hostLabel (inviteLabel, already a shareLabel) for this machine's agents, a
 // federated peer's by herdr's machine_label for it (as a shareLabel), else the
 // peer's id.
 func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string) guestShareRoute {
@@ -64,6 +64,17 @@ func shareLabel(s string) string {
 		s = strings.TrimSpace(string([]rune(s)[:shareLabelMax]))
 	}
 	return s
+}
+
+// inviteLabel names saved machine m to the guests of its agents' shares
+// (link.shareLabel): its name (machineLabel) as herdr takes it (shareLabel),
+// else its host so. Only the invite is bound: the person still sees the name
+// in full wherever the desktop shows it.
+func inviteLabel(m Machine) string {
+	if label := shareLabel(machineLabel(m)); label != "" {
+		return label
+	}
+	return shareLabel(m.Host)
 }
 
 func (d *Desk) GuestShareDetails(token string) (GuestShareDetails, error) {

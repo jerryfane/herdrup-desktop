@@ -101,7 +101,8 @@ func TestGuestInviteStaysWithSelectedPeerAndRejectsClosedView(t *testing.T) {
 
 // The machine_label an invite carries (the invite page, SHARED WITH YOU) is
 // the saved machine's nickname, else its bare host: never the connection's
-// user@host:port, nor the user@host nickname pairing once gave a machine. A
+// user@host:port. A user@host nickname the person gave is kept (only the one
+// pairing once gave the machine it paired is not: machineLabel). A
 // federated peer's agent keeps herdr's machine_label for it. Each is a label
 // herdr takes (the fake refuses one as herdr does): a nickname or peer label
 // longer than herdr's 64 characters is cut, its control and format characters
@@ -112,7 +113,7 @@ func TestGuestInviteNamesTheMachineByItsNicknameElseItsHost(t *testing.T) {
 	for _, c := range []struct{ nickname, want, peerLabel, wantPeer string }{
 		{"  Studio Mac  ", "Studio Mac", "render-box", "render-box"},
 		{"", "127.0.0.1", "render-box", "render-box"},
-		{"dev@127.0.0.1", "127.0.0.1", "render-box", "render-box"},
+		{"dev@127.0.0.1", "dev@127.0.0.1", "render-box", "render-box"},
 		{strings.Repeat("N", 65), strings.Repeat("N", 64), long, strings.Repeat("é", 64)},
 		{"Studio\u200d Mac\a", "Studio Mac", "\x1b\a", peerID},
 	} {
@@ -195,12 +196,13 @@ func TestShareLabelIsALabelHerdrAndTheGuestsTake(t *testing.T) {
 	}{
 		{Machine{Nickname: strings.Repeat("N", 65), User: "dev", Host: "box"}, strings.Repeat("N", 64)},
 		{Machine{Nickname: "\a", User: "dev", Host: "box"}, "box"},
-		{Machine{Nickname: "dev@box", User: "dev", Host: "box"}, "box"},
-		{Machine{Nickname: "ops@box", User: "dev", Host: "box"}, "ops@box"},
+		{Machine{Nickname: "dev@box", User: "dev", Host: "box", Paired: true}, "box"},
+		{Machine{Nickname: "dev@box", User: "dev", Host: "box"}, "dev@box"},
+		{Machine{Nickname: "ops@box", User: "dev", Host: "box", Paired: true}, "ops@box"},
 		{Machine{User: "dev", Host: strings.Repeat("h", 70) + ".example"}, strings.Repeat("h", 64)},
 	} {
-		if got := machineLabel(c.m); got != c.want {
-			t.Errorf("machineLabel(%+v) = %q, want %q", c.m, got, c.want)
+		if got := inviteLabel(c.m); got != c.want {
+			t.Errorf("inviteLabel(%+v) = %q, want %q", c.m, got, c.want)
 		}
 	}
 }
