@@ -23,6 +23,7 @@ export type GuestErrorKind =
  | "device_removed" // ErrDeviceRemoved
  | "accounts_disabled" // ErrAccountsDisabled
  | "account_changed" // ErrAccountChanged: the sign-in a redemption started in ended before its retry (transport.ts acceptInvite)
+ | "sign_in_changed" // ErrSignInChanged: the sign-in a saved share's connect started in ended before its retry (guestLink)
  | "other";
 
 export class GuestError extends Error {

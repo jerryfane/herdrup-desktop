@@ -24,7 +24,7 @@
 import { accountRefusal, closed, expired, freshStatementMayAdmit, GuestError, HerdrAPIError, hostOffline, notSent, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
 import { socketURL, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
-import { accountChanged, HELLO_MIN_LEFT_MS, REFRESH_AHEAD_MS, REFRESH_MIN_LEFT_MS, type AccountStatement, type StatementSource } from "./accountStatement";
+import { accountChanged, HELLO_MIN_LEFT_MS, REFRESH_AHEAD_MS, REFRESH_MIN_LEFT_MS, shareSignInChanged, type AccountStatement, type StatementSource } from "./accountStatement";
 
 /** A call's whole round trip, handshake included (session.go:18). */
 export const ROUND_TRIP_LIMIT_MS = 60_000;
@@ -601,12 +601,12 @@ export function decodeReply(line: string): unknown {
  *  gives the in-band refresh its statements, and may drop a statement the host refused. */
 export interface TransportLink {
  endpoint: Endpoint;
- /** The hello for one connect; previous is the attempt before it within this connect (a retry
-  *  after a refused statement), none for a connect's first. refused, when given, opts into one
-  *  more attempt after the host refuses the hello's statement, and drops that exact statement
-  *  first. live, when given, is checked just before dialing and before sending: a hello whose
-  *  session ended (sign-out) is never sent; stale is then the error (default: closed). */
- hello(signal: AbortSignal, previous?: LinkHello): Promise<LinkHello>;
+ /** The hello for one connect; earlier is the liveness of the attempt before it within this
+  *  connect (a retry after a refused statement), none for a connect's first. refused, when given,
+  *  opts into one more attempt after the host refuses the hello's statement, and drops that exact
+  *  statement first. live, when given, is checked just before dialing and before sending: a hello
+  *  whose session ended (sign-out) is never sent; stale is then the error (default: closed). */
+ hello(signal: AbortSignal, earlier?: () => boolean): Promise<LinkHello>;
  /** Throws to refuse a session the host admitted. */
  admit(reply: HelloReply): void;
  statement?(signal: AbortSignal): Promise<AccountStatement>;
@@ -620,9 +620,9 @@ export interface LinkHello { payload: Uint8Array; refused?: () => void; live?: (
  *  An account-bound share's hello adds its account's statement for the host, and its session is
  *  kept past each statement deadline with fresh ones (herdr guest/store.rs admit_returning); a
  *  bound share with no statements to give is account_required before anything is dialed. A
- *  retry within one connect stays in the sign-in of its first hello (another account's share is
- *  account_mismatch); each new connect takes the current sign-in's statement, and herdr checks
- *  it is the share's account. */
+ *  retry within one connect stays in the sign-in of its first hello (a change stops it here,
+ *  shareSignInChanged); each new connect takes the current sign-in's statement, and herdr checks
+ *  it is the share's account (account_mismatch). */
 export function guestLink(access: Access, statements?: StatementSource): TransportLink {
  const hostID = access.endpoint.hostID;
  if (!access.accountBound) {
@@ -639,15 +639,14 @@ export function guestLink(access: Access, statements?: StatementSource): Transpo
  };
  return {
   endpoint: access.endpoint,
-  async hello(signal, previous) {
-   const prior = previous?.live;
-   if (prior && !prior()) throw accountRefusal("account_mismatch")!;
+  async hello(signal, earlier) {
+   if (earlier && !earlier()) throw shareSignInChanged();
    const { jws, live } = await source().get(hostID, HELLO_MIN_LEFT_MS, signal);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
     refused: () => source().drop(hostID, jws),
-    live: prior ? () => prior() && live() : live,
-    ...(prior ? { stale: () => accountRefusal("account_mismatch")! } : {}),
+    live: earlier ? () => earlier() && live() : live,
+    ...(earlier ? { stale: shareSignInChanged } : {}),
    };
   },
   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
@@ -833,26 +832,27 @@ export class GuestTransport {
   const refusals = this.#refusals;
   if (this.#now() < this.#retryAt) throw rateLimited();
   let session: Session;
-  let previous: LinkHello | undefined;
+  // A retry's statement stays in the sign-in of the attempt before it (earlier); the session's
+  // refreshes stay in the sign-in of the attempt admitted (admittedLive).
+  let earlier: (() => boolean) | undefined, admittedLive: (() => boolean) | undefined;
   for (let attempt = 0; ; attempt++) {
    let hello: LinkHello | null = null;
    try {
-    hello = await this.#link.hello(signal, previous);
+    hello = await this.#link.hello(signal, earlier);
     session = await openSession(this.#link.endpoint, this.#identity, hello.payload, signal, this.#factory, hello.live, code => this.#link.refusal?.(code) ?? refusal(code), hello.stale);
-    previous = hello;
+    admittedLive = hello.live;
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
     // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); previous = hello; continue; }
+    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); earlier = hello.live; continue; }
     throw error;
    }
   }
   try { this.#link.admit(session.reply); } catch (error) { session.close(); throw error; }
   if (session.reply.deadlineUnix > 0 && this.#link.statement) {
    const statement = this.#link.statement.bind(this.#link);
-   // Its refreshes stay in the sign-in its hello went in (previous: the attempt admitted).
-   session.keepAccount(session.reply.deadlineUnix * 1000, statement, this.#now, previous?.live ?? (() => true));
+   session.keepAccount(session.reply.deadlineUnix * 1000, statement, this.#now, admittedLive ?? (() => true));
   }
   this.#admitted(refusals, session.reply.features);
   this.#scope = session.reply.scope;
