@@ -36,9 +36,10 @@ func (w *PaneWrites) Writes() []PaneWrite {
 	return append([]PaneWrite(nil), w.writes...)
 }
 
-// Serve answers through w, then next: the pong gains the capability, a
-// pane.send_text is recorded and passed on, and a pane.send_bracketed_text
-// is answered here.
+// Serve answers through w, then next: the pong gains the capability, and a
+// write is recorded and, once the paste policy allows it, passed on to
+// next as the one pane.send_text write path (a pane's output fixture
+// echoes it), whichever method asked for it.
 func (w *PaneWrites) Serve(next func(string, json.RawMessage) (any, *APIError)) func(string, json.RawMessage) (any, *APIError) {
 	return func(method string, raw json.RawMessage) (any, *APIError) {
 		switch method {
@@ -57,13 +58,10 @@ func (w *PaneWrites) Serve(next func(string, json.RawMessage) (any, *APIError)) 
 			w.mu.Lock()
 			w.writes = append(w.writes, PaneWrite{Pane: p.Pane, Text: p.Text, Bracketed: bracketed})
 			w.mu.Unlock()
-			if !bracketed {
-				return next(method, raw)
-			}
-			if w.PasteOff {
+			if bracketed && w.PasteOff {
 				return nil, &APIError{Code: "bracketed_paste_unavailable", Message: "the program in this pane has not turned on bracketed paste"}
 			}
-			return map[string]any{"type": "ok"}, nil
+			return next("pane.send_text", raw)
 		case "ping":
 			value, err := next(method, raw)
 			if err == nil && w.Bracketed {

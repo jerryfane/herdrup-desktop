@@ -368,9 +368,9 @@ func handler(mode string, agents func() []byte, w *writes) (func(string, json.Ra
 }
 
 // bracketedWrites is -bracketed-write: next with pane.send_bracketed_text
-// advertised and served. A plain write no other fixture serves (without
-// -interactions, say) answers herdr's ok, so a terminal can still take one
-// line at a time.
+// advertised and served. Both writes go on to next as pane.send_text (with
+// -interactions, echoed into the pane's output); one no other fixture
+// serves answers herdr's ok.
 func bracketedWrites(mode string, next func(string, json.RawMessage) (any, *fakeherdr.APIError)) (func(string, json.RawMessage) (any, *fakeherdr.APIError), error) {
 	switch mode {
 	case "":
