@@ -138,6 +138,10 @@ function host(conn: HostConn, hostID: string, hostSecret: Uint8Array, serve: Ser
  void serve(conn, handshake).catch(() => conn.close(1011, "test host failed"));
 }
 
+/** The limit of a test that makes fresh connects (a Noise handshake each, on these relays): at
+ *  load 60–80, tests of one connect took up to 5.2 s, of three 12.4 s, of six 11.9 s (#428, #493). */
+export const CONNECTS_LIMIT_MS = 30_000;
+
 /** A relay and host on 127.0.0.1. admit refuses an upgrade by returning a Response (the relay's
  *  429 or 503); serve runs each admitted connection. */
 export function startRelay(options: { hostID?: string; admit?: (connect: number) => Response | undefined; serve: Serve }): TestRelay {

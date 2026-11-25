@@ -18,6 +18,10 @@ const access = (n: number) => `a1.${"s".repeat(22)}.${String(n).padStart(43, "0"
 /** The most prompts an account holds (sync.ts COLLECTION_CAPS.prompts). */
 const PROMPTS_CAP = 500;
 
+/** The limit of a test that syncs tens of 8 KB prompts, or the same prompts round after round:
+ *  0.2–1.2 s at load 35, up to 11.7 s at load 65–80 (#493). */
+const BULK_SYNC_LIMIT_MS = 30_000;
+
 /** localStorage for one browser; writes counts setItem calls per key. With a quota (UTF-16 code
  *  units, as browsers count), a write past it throws QuotaExceededError and stores nothing, as
  *  does a write to a key refuses names (a storage near its quota for that one write). */
@@ -404,7 +408,7 @@ test("forty 8 KB prompts go in as many pushes as the service's byte limit needs"
  for (let i = 0; i < 40; i++) await save(mac, "", "", String(i).padStart(2, "0") + "x".repeat(8000));
  await syncEach(mac);
  expect([Object.keys(w.livePrompts()).length, w.pushes >= 2]).toEqual([40, true]);
-});
+}, BULK_SYNC_LIMIT_MS);
 
 test("a prompt deleted while its first upload is on the way is deleted in the account by the next sync", async () => {
  const w = worker();
@@ -1104,7 +1108,7 @@ test("nine rounds of ambiguous failures don't fill the browser's storage, and th
  const before = w.posts;
  await mac.accountSyncNow();
  expect([w.posts - before >= 1, Object.keys(w.livePrompts()).length]).toEqual([true, 30]);
-});
+}, BULK_SYNC_LIMIT_MS);
 
 test("a new prompt whose generated order alone would make it too large goes without one", async () => {
  const w = worker();
@@ -1170,7 +1174,7 @@ test("fifteen rounds of ambiguous uploads of 30 prompts' new versions stay withi
  await mac.accountSyncNow();
  const live = w.livePrompts();
  expect(ids.every((id, i) => JSON.parse(live[id]!).text === `prompt ${i} v15 ` + "x".repeat(200))).toBe(true);
-});
+}, BULK_SYNC_LIMIT_MS);
 
 test("an answer settles a prompt's other open sends only when the prompt moved off their base", () => {
  const entries = [{ base: 3, hash: "a", open: ["a1"] }, { base: 3, hash: "b", open: ["b1", "b2"] }];
@@ -1296,7 +1300,7 @@ test("at the variant cap large stale contents aren't sent again: no 413, an unre
  await mac.accountSyncNow();
  const live = w.livePrompts();
  expect([w.tooLarge, ids.every((id, i) => JSON.parse(live[id]!).text === `short ${i}`)]).toEqual([0, true]);
-});
+}, BULK_SYNC_LIMIT_MS);
 
 test("a push of several writes refused for its size is halved, all of it landing; a lone write refused so stays here", async () => {
  const w = worker();

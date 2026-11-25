@@ -31,7 +31,7 @@ import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
 import { updateSuggestion } from "../src/settingsUpdates";
 import { sharesAgent } from "../src/shellModel";
-import { startRelay, type HostSession } from "./webguestResponder";
+import { CONNECTS_LIMIT_MS, startRelay, type HostSession } from "./webguestResponder";
 
 type Call = { method: string; params: Record<string, unknown> };
 type Handler = (method: string, params: Record<string, unknown>) => unknown;
@@ -1515,7 +1515,7 @@ test("a request's sendSignal ending while the relay holds its connection: nothin
   await new Promise((r) => setTimeout(r, 100));
   expect(lines).toEqual([]);
  } finally { transport.close(); relay.stop(); }
-});
+}, CONNECTS_LIMIT_MS);
 
 test("a request's sendSignal ending once its frame is out: its answer is still awaited", async () => {
  const got = Promise.withResolvers<void>();
@@ -1538,7 +1538,7 @@ test("a request's sendSignal ending once its frame is out: its answer is still a
   answer.resolve();
   expect(await calling).toEqual({ type: "pane_info", pane: { pane_id: "made" } });
  } finally { transport.close(); relay.stop(); }
-});
+}, CONNECTS_LIMIT_MS);
 
 // ---- Over a real owner link ----
 
@@ -1576,7 +1576,7 @@ test("over a real owner link, Settings' accounts come from herdr, and an older h
   refuse = true;
   await expect(accounts.settingsAccounts("settings-1")).rejects.toBeInstanceOf(OwnerRefusedError);
  } finally { desk.disconnectOwner(); relay.stop(); }
-});
+}, CONNECTS_LIMIT_MS);
 
 test("leaving an owner link closes its transport once, after its groups' cleanup", async () => {
  const relay = startRelay({
@@ -1614,4 +1614,4 @@ test("leaving an owner link closes its transport once, after its groups' cleanup
   for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
   expect(closes).toHaveLength(1);
  } finally { GuestTransport.prototype.close = close; relay.stop(); }
-});
+}, CONNECTS_LIMIT_MS);

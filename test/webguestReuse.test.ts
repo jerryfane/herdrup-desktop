@@ -5,7 +5,7 @@ import { afterEach, expect, jest, test } from "bun:test";
 import { GuestError, HerdrAPIError } from "../src/webguest/errors";
 import { generateIdentity, staticKey } from "../src/webguest/identity";
 import { type Access, guestLink, GuestTransport, REUSE_AGE_LIMIT_MS, REUSE_IDLE_LIMIT_MS, type TransportOptions, type WebSocketFactory } from "../src/webguest/transport";
-import { guestGate, memoryRelay, startRelay, type GateAnswer, type TestRelay } from "./webguestResponder";
+import { CONNECTS_LIMIT_MS, guestGate, memoryRelay, startRelay, type GateAnswer, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
 let transports: GuestTransport[] = [];
@@ -84,20 +84,19 @@ const failure = async (promise: Promise<unknown>) => {
  try { await promise; return "accepted"; } catch (error) { return error instanceof HerdrAPIError ? error.code : error instanceof GuestError ? error.kind : String(error); }
 };
 
-test("calls share one session only when the host advertises multi_request", async () => {
- for (const multi of [true, false]) {
-  const { gate, relay, transport } = await setup(multi);
-  for (let i = 0; i < 6; i++) await list(transport);
-  expect(transport.features.multiRequest).toBe(multi);
-  if (multi) {
-   expect(relay.connects).toBe(1);
-   expect(gate.sessions.map(s => s.requests)).toEqual([6]);
-  } else {
-   expect(relay.connects).toBe(6);
-   expect(gate.sessions.map(s => s.requests)).toEqual([1, 1, 1, 1, 1, 1]);
-  }
+// One test per reuse_test.go subtest: six calls, one connect with multi_request, six without.
+test.each([true, false])("calls share one session only when the host advertises multi_request (multi_request=%p)", async (multi) => {
+ const { gate, relay, transport } = await setup(multi);
+ for (let i = 0; i < 6; i++) await list(transport);
+ expect(transport.features.multiRequest).toBe(multi);
+ if (multi) {
+  expect(relay.connects).toBe(1);
+  expect(gate.sessions.map(s => s.requests)).toEqual([6]);
+ } else {
+  expect(relay.connects).toBe(6);
+  expect(gate.sessions.map(s => s.requests)).toEqual([1, 1, 1, 1, 1, 1]);
  }
-});
+}, CONNECTS_LIMIT_MS);
 
 // The page hears herdr's close before the next call (memoryRelay delivers it ahead of the test's
 // await): the call connects afresh. A close still on its way when a frame goes out is a lost reply,
@@ -112,7 +111,7 @@ test("a server-closed idle session is replaced", async () => {
  await list(transport);
  expect(relay.connects).toBe(2);
  expect(gate.sessions.map(s => [s.requests, s.end])).toEqual([[2, "ended"], [1, ""]]);
-});
+}, CONNECTS_LIMIT_MS);
 
 // herdr's close crossed the call: the page's socket is closed but its close event not yet delivered,
 // so the transport takes the session as idle and the socket refuses the prompt's frame, which so
@@ -127,7 +126,7 @@ test("a request a closing socket refused goes once more on a fresh session", asy
  expect(await reply).toEqual({ type: "agent_prompted", text: "visitor (via HerdrUp): crossed" });
  expect(host.prompts).toEqual(["crossed"]);
  expect(relay.connects).toBe(2);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("a prompt whose reply was lost after sending is not resent", async () => {
  const { host, gate, relay, transport } = await setup(true);
@@ -138,7 +137,7 @@ test("a prompt whose reply was lost after sending is not resent", async () => {
  await gate.sessions[0]!.ended;
  expect(relay.connects).toBe(1);
  expect(gate.sessions.map(s => [s.requests, s.end])).toEqual([[2, "dropped"]]);
-});
+}, CONNECTS_LIMIT_MS);
 
 // herdrup#612 review (P1): a socket can throw after the frame left, and herdr then has the prompt.
 // Here the socket delivers the prompt's frame and throws; the call fails and never sends again.
@@ -161,7 +160,7 @@ test("a prompt whose send threw after the frame left is not resent", async () =>
  await Bun.sleep(100);
  expect(host.prompts).toEqual(["only once"]);
  expect(relay.connects).toBe(1);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("guest_paused ends reuse and guest_forbidden keeps it", async () => {
  const { host, gate, relay, transport } = await setup(true);
@@ -174,7 +173,7 @@ test("guest_paused ends reuse and guest_forbidden keeps it", async () => {
  await gate.sessions[0]!.ended;
  expect(relay.connects).toBe(2);
  expect(gate.sessions.map(s => [s.requests, s.end])).toEqual([[3, "guest_paused"], [1, ""]]);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("streams open their own session", async () => {
  const host = herdr();
@@ -204,13 +203,14 @@ test("streams open their own session", async () => {
  expect(relay.connects).toBe(2);
  expect(streams).toBe(1);
  expect(gate.sessions.map(s => s.requests)).toEqual([2]);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("concurrent calls never share a session at once", async () => {
  const { host, gate, relay, transport } = await setup(true);
  await list(transport);
  const held = host.hold();
  const slow = transport.call("agent.transcript", { target: "worker" });
+ slow.catch(() => {}); // awaited below; a test that fails before then leaves no rejection unhandled (#493)
  await held.arrived;
  const workers = await Promise.all([0, 1, 2, 3].map(async (w) => {
   for (let i = 0; i < 5; i++) {
@@ -224,7 +224,7 @@ test("concurrent calls never share a session at once", async () => {
  expect(gate.sessions.some(s => s.overlapped)).toBe(false);
  expect(gate.sessions.reduce((n, s) => n + s.requests, 0)).toBe(22);
  expect(relay.connects).toBeLessThan(21);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("an idle session closes before herdr's limit", async () => {
  expect(REUSE_IDLE_LIMIT_MS).toBeLessThan(60_000);
@@ -243,7 +243,7 @@ test("an idle session closes before herdr's limit", async () => {
  await list(transport);
  expect(relay.connects).toBe(2);
  expect(gate.sessions.map(s => s.requests)).toEqual([2, 1]);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("an idle session past the limit by the clock is not reused", async () => {
  let now = 1_000_000;
@@ -256,7 +256,7 @@ test("an idle session past the limit by the clock is not reused", async () => {
  await list(transport);
  expect(relay.connects).toBe(2);
  expect(await gate.sessions[0]!.ended).toBe("guest");
-});
+}, CONNECTS_LIMIT_MS);
 
 test("a reused session neither connects nor ends the backoff", async () => {
  const host = herdr();
@@ -272,6 +272,7 @@ test("a reused session neither connects nor ends the backoff", async () => {
  await list(transport);
  const held = host.hold();
  const slow = transport.call("agent.transcript", { target: "worker" });
+ slow.catch(() => {}); // awaited below; handled meanwhile (#493)
  await held.arrived;
  refuse = true;
  expect(await failure(transport.call("agent.list"))).toBe("rate_limited");
@@ -283,7 +284,7 @@ test("a reused session neither connects nor ends the backoff", async () => {
  expect(transport.rateLimitedUntil()).toBe(cooldown);
  expect(relay.connects).toBe(2);
  expect(gate.sessions.map(s => s.requests)).toEqual([3]);
-});
+}, CONNECTS_LIMIT_MS);
 
 test("closing the transport closes its idle session", async () => {
  const { gate, relay, transport } = await setup(true);
@@ -292,7 +293,7 @@ test("closing the transport closes its idle session", async () => {
  expect(relay.connects).toBe(1);
  transport.close();
  expect(await gate.sessions[0]!.ended).toBe("guest");
-});
+}, CONNECTS_LIMIT_MS);
 
 // herdr tells the guest its features only in the handshake; a session kept busy past
 // REUSE_AGE_LIMIT_MS is not reused, so the next call reads an owner's change of Gram sharing
@@ -310,4 +311,4 @@ test("a session is not reused past its age limit", async () => {
  expect(relay.connects).toBe(2);
  expect(transport.features.gram).toBe(true);
  expect(gate.sessions[0]!.requests).toBeGreaterThan(1);
-});
+}, CONNECTS_LIMIT_MS);
