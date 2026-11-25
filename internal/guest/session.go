@@ -76,6 +76,9 @@ type session struct {
 	stopPump context.CancelFunc
 	// writeHook, when set (tests only), writes a frame in place of the socket.
 	writeHook func(context.Context, []byte) error
+	// encrypted, when set (tests only), runs as each frame's encryption
+	// ends, before it is written.
+	encrypted func()
 	// handshook is when the handshake that read reply's features finished.
 	handshook time.Time
 }
@@ -223,27 +226,35 @@ func (s *session) close() {
 
 // sendLine sends line and its "\n". sent says a write of it was attempted:
 // from then on herdr may have the request, even when the write reports an
-// error (the bytes can leave before the connection fails), so it must never
-// go again. Until then sent is false only because ctx had already ended
-// (cancelled while the request was encoded, say) or the session was
-// already known to have ended (ended): nothing of the request was handed
-// over.
+// error (the bytes can leave before the connection fails, and the
+// WebSocket write does not refuse an ended ctx before sending), so it must
+// never go again. Until then sent is false only because ctx had already
+// ended when the first frame was ready (cancelled while the request was
+// encoded or encrypted, say) or the session was already known to have
+// ended (ended): nothing of the request was handed over. A frame encrypted
+// but not written leaves the session's cipher ahead of herdr's, so the
+// caller must not use the session again (roundTrip closes it).
 func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err error) {
-	// The write boundary, before the first frame: a request whose context
-	// ended by now is not written.
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
 	// Frame boundaries are unrelated to API line boundaries.
 	line = append(line, '\n')
 	for len(line) > 0 {
 		length := min(len(line), maxNoisePlaintext)
 		encrypted, err := s.send.Encrypt(nil, nil, line[:length])
+		if s.encrypted != nil {
+			s.encrypted()
+		}
 		if err != nil {
 			return sent, err
 		}
 		if err := s.ended(); err != nil {
 			return sent, err
+		}
+		// The write boundary, the first frame ready: a request whose
+		// context ended by now is not written.
+		if !sent {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
 		}
 		sent = true
 		if err := s.writeFrame(ctx, encrypted); err != nil {

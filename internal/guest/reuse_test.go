@@ -556,3 +556,29 @@ func TestAGuestRequestCancelledWhileEncodedIsNeverSent(t *testing.T) {
 		t.Fatalf("herdr got %d prompts cancelled while encoded: %q", len(got), got)
 	}
 }
+
+// #506 review: a request cancelled while its first frame is encrypted, on
+// a warm session, is never written: the write boundary checks the context
+// once the frame is ready, right before the socket write, so herdr gets
+// none of them, and each fails unsent (ErrNotSent with context.Canceled).
+func TestAGuestRequestCancelledWhileEncryptedIsNeverSent(t *testing.T) {
+	h := newReuseHost(t, true)
+	for range 64 {
+		h.list(t) // a warm session is idle for the next call
+		h.transport.idleMu.Lock()
+		idle := h.transport.idle
+		h.transport.idleMu.Unlock()
+		if idle == nil {
+			t.Fatal("no idle session after a call")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		idle.session.encrypted = cancel
+		err := h.transport.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "never"}, nil)
+		if !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+		}
+	}
+	if got := prompts(h.relay); len(got) != 0 {
+		t.Fatalf("herdr got %d prompts cancelled while encrypted: %q", len(got), got)
+	}
+}
