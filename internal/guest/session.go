@@ -76,9 +76,9 @@ type session struct {
 	stopPump context.CancelFunc
 	// writeHook, when set (tests only), writes a frame in place of the socket.
 	writeHook func(context.Context, []byte) error
-	// encrypted, when set (tests only), runs as each frame's encryption
-	// ends, before it is written.
-	encrypted func()
+	// firstFrameReady, when set (tests only), runs once a request's first
+	// frame is ready, immediately before the write boundary checks ctx.
+	firstFrameReady func()
 	// handshook is when the handshake that read reply's features finished.
 	handshook time.Time
 }
@@ -240,9 +240,6 @@ func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err err
 	for len(line) > 0 {
 		length := min(len(line), maxNoisePlaintext)
 		encrypted, err := s.send.Encrypt(nil, nil, line[:length])
-		if s.encrypted != nil {
-			s.encrypted()
-		}
 		if err != nil {
 			return sent, err
 		}
@@ -252,6 +249,9 @@ func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err err
 		// The write boundary, the first frame ready: a request whose
 		// context ended by now is not written.
 		if !sent {
+			if s.firstFrameReady != nil {
+				s.firstFrameReady()
+			}
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
