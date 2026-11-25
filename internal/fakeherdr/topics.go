@@ -27,7 +27,10 @@ type Topics struct {
 	seq    uint64
 	// Turn is how long a topic's turn takes before its reply (default 2 s).
 	Turn time.Duration
-	now  func() time.Time
+	// Answer, when set, replaces Turn: a turn is answered when a value is
+	// received from it (or it is closed), one value a turn.
+	Answer chan struct{}
+	now    func() time.Time
 	// Suggestions serves agent_topics_switch and agent_topic_suggestions.
 	Suggestions bool
 	// SwitchDelay is how long agent.topics.set_enabled's restart takes
@@ -217,8 +220,8 @@ func (t *Topics) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 	return reply("agent_topic_updated", map[string]any{"topic_id": id}), nil, true
 }
 
-// startTurnLocked records the owner's message and answers it after Turn;
-// a message queued meanwhile starts the next turn.
+// startTurnLocked records the owner's message and answers it after Turn
+// (or on Answer); a message queued meanwhile starts the next turn.
 func (t *Topics) startTurnLocked(target, id, message string) {
 	topic := t.agents[target].topics[id]
 	now := t.now().UnixMilli()
@@ -226,7 +229,7 @@ func (t *Topics) startTurnLocked(target, id, message string) {
 	topic.entries = append(topic.entries, map[string]any{"kind": "user", "id": fmt.Sprintf("%su%d", id, n), "ts_ms": now, "author": "owner", "text": message})
 	topic.info["state"], topic.info["last_activity_unix_ms"], topic.info["last_activity"] = "running", now, "Working on it"
 	t.changedLocked(target, id, "turn_started")
-	time.AfterFunc(t.Turn, func() {
+	answer := func() {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		now := t.now().UnixMilli()
@@ -242,7 +245,15 @@ func (t *Topics) startTurnLocked(target, id, message string) {
 			return
 		}
 		t.changedLocked(target, id, "turn_ended")
-	})
+	}
+	if gate := t.Answer; gate != nil {
+		go func() {
+			<-gate
+			answer()
+		}()
+		return
+	}
+	time.AfterFunc(t.Turn, answer)
 }
 
 // cloneEntries copies a page's entries: the reply is encoded after the lock

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,8 +71,12 @@ func TestTopicsRefusalsSayWhetherTheAgentStillHasTopics(t *testing.T) {
 }
 
 // topicsDesk opens w1:p1 (an omp agent) on a fake herdr with herdr #475's
-// topics, or one without them, and records what the page is sent.
-func topicsDesk(t *testing.T, withTopics bool) (*Desk, func() []TopicsUpdate) {
+// topics, or one without them, and records what the page is sent, each
+// update seen by observe first (on the goroutine that publishes it). A
+// topic's turn is answered on each value sent on the returned channel.
+// The cleanup ends the view and waits for its Topics watch before the
+// recorder is taken away.
+func topicsDesk(t *testing.T, withTopics bool, observe ...func(TopicsUpdate)) (*Desk, func() []TopicsUpdate, chan<- struct{}) {
 	t.Helper()
 	var mu sync.Mutex
 	var updates []TopicsUpdate
@@ -80,13 +85,18 @@ func topicsDesk(t *testing.T, withTopics bool) (*Desk, func() []TopicsUpdate) {
 		if u.Topics == nil {
 			u.Topics = []herdrapi.AgentTopicInfo{}
 		}
+		for _, see := range observe {
+			see(u)
+		}
 		mu.Lock()
 		updates = append(updates, u)
 		mu.Unlock()
 	}
 	t.Cleanup(func() { publishTopics = previous })
 	fixture := fakeherdr.NewTopics()
-	fixture.Turn = 50 * time.Millisecond
+	answer := make(chan struct{})
+	fixture.Answer = answer
+	t.Cleanup(func() { close(answer) })
 	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
 		base, events := s.Handle, s.Events
 		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
@@ -119,11 +129,28 @@ func topicsDesk(t *testing.T, withTopics bool) (*Desk, func() []TopicsUpdate) {
 	if _, err := d.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
 		t.Fatal(err)
 	}
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		v.cancel()
+		v.topics.wait()
+	})
 	return d, func() []TopicsUpdate {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(updates)
-	}
+	}, answer
+}
+
+// wait waits for the watch's goroutines once its view's context ended:
+// a goroutine starts only under mu with the view open, so after mu was
+// held once none starts.
+func (t *topicsState) wait() {
+	t.mu.Lock()
+	t.mu.Unlock() // orders every start before Wait
+	t.running.Wait()
 }
 
 // The owner's Topics view end to end: the agent's ordered list, a new
@@ -131,7 +158,7 @@ func topicsDesk(t *testing.T, withTopics bool) (*Desk, func() []TopicsUpdate) {
 // topic works, the topic's own transcript, and an agent_topics_changed
 // event naming the topic whose conversation changed.
 func TestOwnerTopicsListStartSendAndFollow(t *testing.T) {
-	d, updates := topicsDesk(t, true)
+	d, updates, answer := topicsDesk(t, true)
 	ctx := context.Background()
 	if ok, err := d.TopicsAvailable(ctx, "view"); !ok || err != nil {
 		t.Fatalf("TopicsAvailable %v, %v; want true for omp on a herdr with agent_topics", ok, err)
@@ -149,6 +176,7 @@ func TestOwnerTopicsListStartSendAndFollow(t *testing.T) {
 	if !first.Offered || first.Problem != "" || !slices.Equal(ids, []string{"t1", "t2", "t3"}) {
 		t.Fatalf("first list %+v; want offered t1 (working), t2 (idle), t3 (closed)", first)
 	}
+	waitTopicsSubscribed(t, d, updates)
 	id, err := d.TopicsNew(ctx, "view", "  Launch plan ", "Outline the launch.")
 	if err != nil || id == "" {
 		t.Fatalf("TopicsNew %q, %v", id, err)
@@ -164,6 +192,8 @@ func TestOwnerTopicsListStartSendAndFollow(t *testing.T) {
 	waitFor(t, "an event naming the new topic", func() bool {
 		return slices.ContainsFunc(updates(), func(u TopicsUpdate) bool { return u.Changed == id })
 	})
+	answer <- struct{}{} // the first turn; the queued message starts the next
+	answer <- struct{}{}
 	waitFor(t, "both turns answered", func() bool {
 		page, err := d.TopicTranscript(ctx, "view", id, "", "", "")
 		return err == nil && strings.Count(page, `"kind":"reply"`) == 2
@@ -182,11 +212,71 @@ func TestOwnerTopicsListStartSendAndFollow(t *testing.T) {
 	}
 }
 
+// waitTopicsSubscribed waits until the view's Topics follower hears
+// events: its subscription opens on its own goroutine, so t2 is renamed to
+// its own title until an event naming it shows. Events sent after this
+// are not sent before anyone listens.
+func waitTopicsSubscribed(t *testing.T, d *Desk, updates func() []TopicsUpdate) {
+	t.Helper()
+	waitFor(t, "the topics subscription", func() bool {
+		if slices.ContainsFunc(updates(), func(u TopicsUpdate) bool { return u.Changed == "t2" }) {
+			return true
+		}
+		if err := d.TopicsRename(context.Background(), "view", "t2", "Diokan renewal"); err != nil {
+			t.Fatal(err)
+		}
+		return false
+	})
+}
+
+// #497: ending a view waits for its Topics watch. A publish its follower's
+// subscription is still making when the view ends (here held until the
+// view's context ended) finishes before topicsState.wait returns, so a
+// test's cleanup can take its recorder away after it without a race.
+func TestEndingATopicsViewWaitsForItsFollower(t *testing.T) {
+	var armed atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	var unblock sync.Once
+	late := false // set by the held publish once released; read after wait
+	d, updates, _ := topicsDesk(t, true, func(u TopicsUpdate) {
+		if u.Changed == "t2" && armed.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+			late = true
+		}
+	})
+	// Runs before topicsDesk's cleanup waits for the watch.
+	t.Cleanup(func() { unblock.Do(func() { close(release) }) })
+	if err := d.TopicsFollow("view", true); err != nil {
+		t.Fatal(err)
+	}
+	waitTopicsSubscribed(t, d, updates)
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	armed.Store(true)
+	if err := d.TopicsRename(context.Background(), "view", "t2", "Diokan renewal"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered: // the follower is publishing that event, held
+	case <-time.After(10 * time.Second):
+		t.Fatal("the rename's event never reached the follower")
+	}
+	v.cancel()
+	unblock.Do(func() { close(release) })
+	v.topics.wait()
+	if !late {
+		t.Fatal("wait returned while the follower was still publishing")
+	}
+}
+
 // A herdr without agent_topics: no Topics button, a list read says not
 // offered (an empty list, not null), and a topic transcript is refused
 // rather than sent as the agent's main conversation.
 func TestTopicsWithoutTheCapabilityStayOff(t *testing.T) {
-	d, updates := topicsDesk(t, false)
+	d, updates, _ := topicsDesk(t, false)
 	ctx := context.Background()
 	if ok, _ := d.TopicsAvailable(ctx, "view"); ok {
 		t.Fatal("TopicsAvailable on a herdr without agent_topics")
