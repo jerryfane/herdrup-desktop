@@ -276,3 +276,45 @@ test("a saved terminal opens though its view carries no topic sessions", async (
  // The terminal's surface went up: its key bar is drawn (the fake DOM can't run xterm itself).
  expect(withClass(doc.body, "terminal-key-scroll").length).toBe(1);
 });
+
+/** Two topics listed for the open page: Board pack (t1) and Beta (t2), both idle. */
+function twoTopics(token: string) {
+ const ms = Date.now() - 60_000;
+ const info = (topic_id: string, title: string) => ({ topic_id, title, state: "idle", turns: 1, queued: 0, created_unix_ms: ms, last_activity_unix_ms: ms });
+ emit("topics:changed", { token, topics: [info("t1", TOPIC.title), info("t2", "Beta")], offered: true, loaded: true, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+}
+/** Opens a topic from the list; the narrow page brings the list back first (the header's Topics). */
+async function openRow(title: string) {
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-list-open"))?.click();
+ await settle();
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-row") && n.text().includes(title))!.click();
+ await settle();
+}
+const type = (input: FakeElement, text: string) => { input.value = text; input.dispatchEvent(new Event("input")); };
+
+// #532: with Board pack's send (a file and its caption) out, the owner opens Beta and types the same
+// caption. The send's reply clears the caption from Board pack's draft, not Beta's, and its receipt
+// is Board pack's, not shown under Beta.
+test("a send with a file settles against the topic it was sent to, not the one on screen", async () => {
+ const { input, token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ emit("pane:attachments", { token, files: [file("deck.pdf")], note: "" });
+ type(input!, "Same caption");
+ let reply: (value: unknown) => void = () => {};
+ answers["Desk.TopicsSend"] = () => new Promise(resolve => { reply = resolve; });
+ input!.dispatchEvent(Object.assign(new Event("keydown"), { key: "Enter" }));
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicsSend").map(c => c.args.slice(1))).toEqual([["t1", "Same caption"]]);
+ await openRow("Beta");
+ const beta = doc.body.all().find(n => n.className === "topic-chat")!;
+ expect(beta.text()).toContain("Beta");
+ type(input!, "Same caption");
+ reply({ mode: "queued", delivery: "sent" });
+ await settle();
+ expect(input!.value).toBe("Same caption");
+ expect(beta.text()).not.toContain("Queued");
+ // Board pack's draft lost the caption that went out.
+ await openRow(TOPIC.title);
+ expect(input!.value).toBe("");
+});

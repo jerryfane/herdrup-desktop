@@ -528,8 +528,9 @@ class Detail {
  private sendsToTopic(): TopicComposer | null { return this.mode === "topics" ? this.topicComposer : null; }
  /** What the composer has to say (a send's, a file's, the draft's): under the open topic it
   *  writes to, else on the page's note line. */
- private composerNote(text: string) {
-  const topic = this.sendsToTopic();
+ private composerNote(text: string) { this.noteTo(this.sendsToTopic(), text); }
+ /** A note for one destination: under that topic (shown again when it is), else the page's line. */
+ private noteTo(topic: TopicComposer | null, text: string) {
   if (topic) topic.note(text); else this.status.textContent = text;
  }
  /** The field's prompt: the topic's (Message <title>, or Closed) where it writes to one. */
@@ -2420,6 +2421,10 @@ class Detail {
   // A failed key send leaves the agent's input line unknown: say so, with the text kept, rather than doing nothing.
   if (this.inputFailed) { this.composerNote("An earlier key send failed. Reconnect before sending again."); return; }
   const hasAttachments = this.attachments.length > 0;
+  // The send settles where it was sent from (#532): its draft and its topic as at the click, not
+  // whichever the composer shows when the reply comes back.
+  const draftKey = this.draftKey, draft = this.draft;
+  const note = (text: string) => this.noteTo(topic, text);
   // Motion spec §1, all in the tap's frame: the composer clearing (its height shrinking on the
   // bubble's curve), the press, the bubble entering and the chat gliding to it.
   const mode = motionMode();
@@ -2487,7 +2492,7 @@ class Detail {
    if (!outcome.sent) {
     this.sendFollow = null;
     setOutgoing(null);
-    if (outcome.outcome === "refused" && !this.disposed) this.composerNote("Couldn't save the draft; not sent.");
+    if (outcome.outcome === "refused" && !this.disposed) note("Couldn't save the draft; not sent.");
     return;
    }
    dispatched = true;
@@ -2496,8 +2501,13 @@ class Detail {
    setOutgoing(result.delivery === "submitted" ? "submitted" : "unconfirmed");
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
-   if (!this.disposed && hasAttachments) { this.input.value = remainingDraft(this.input.value, text); this.input.dispatchEvent(new Event("input")); }
-   if (!this.disposed) this.composerNote(result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again."));
+   if (hasAttachments) {
+    // The caption leaves its own draft: the field when it still shows that draft, else the store.
+    const left = remainingDraft(draft.draft(), text);
+    if (!this.disposed && this.draftKey === draftKey) { this.input.value = left; this.input.dispatchEvent(new Event("input")); }
+    else this.stored(draft.saveDraft(left));
+   }
+   if (!this.disposed) note(result.note ?? (result.delivery === "submitted" ? "" : "Written to the terminal; submission not confirmed. Check Terminal before sending again."));
    if (!this.disposed && this.plainTerminal && result.delivery === "written") this.terminal?.focus();
    // A guest has no events: look for the prompt now rather than at the next poll (GuestPaneView.swift:882-886).
    if (!this.disposed && this.view?.guest && this.mode === "chat") void this.refreshChat(this.generation);
@@ -2505,7 +2515,7 @@ class Detail {
    if (dispatched) {
     // The text went out: the failure is this page's (the receipt, the drawing), not the send's.
     console.error("after a send", e);
-    if (!this.disposed) this.composerNote(errorText(e));
+    if (!this.disposed) note(errorText(e));
     return;
    }
    this.sendFollow = null;
@@ -2513,7 +2523,7 @@ class Detail {
    setOutgoing(null);
    if (!this.disposed) {
     const message = errorText(e);
-    this.composerNote((this.view?.guest && guestSendFailure(message, this.view.name)) || message);
+    note((this.view?.guest && guestSendFailure(message, this.view.name)) || message);
     // A refused send moves the page to paused at once (failureNote's apply, GuestPaneView.swift:915-917).
     if (this.view?.guest && isGuestPaused(message)) this.applyGuestAvailability("paused");
    }
