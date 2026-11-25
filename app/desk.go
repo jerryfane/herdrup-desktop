@@ -42,6 +42,10 @@ type Machine struct {
 	// Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
 	// rather than an unrelated ECDSA key or certificate served by the same sshd.
 	Paired bool `json:"paired,omitempty"`
+	// NicknameChecked marks a paired machine the one-time nickname migration
+	// has seen (clearPairingNicknames): a nickname it has now is the
+	// person's, whatever it says.
+	NicknameChecked bool `json:"nicknameChecked,omitempty"`
 	// SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
@@ -361,8 +365,42 @@ func (d *Desk) legacyMachinePath() string { return filepath.Join(d.dir, "machine
 
 // load reads the saved machines. Before machines.json exists it imports the
 // single machine.json as the active machine. A merge's commit a failure
-// left is finished first (replayCommit). d.storeMu must be held.
+// left is finished first (replayCommit). A paired machine the nickname
+// migration hasn't seen is migrated and the set saved
+// (clearPairingNicknames). d.storeMu must be held.
 func (d *Desk) load() (machineStore, error) {
+	st, err := d.loadSaved()
+	if err != nil || !st.clearPairingNicknames() {
+		return st, err
+	}
+	return st, d.store(st)
+}
+
+// clearPairingNicknames is the one-time nickname migration of paired
+// machines. Pairing once saved user@host as the nickname of the machine it
+// paired (PairMachine leaves it unset now), which is no name of the
+// person's: a paired machine not yet seen (NicknameChecked) loses that exact
+// nickname, and each is marked seen, so a name the person gives it later is
+// kept whatever it says. A machine not paired keeps its nickname. Reports
+// whether st changed.
+func (st *machineStore) clearPairingNicknames() bool {
+	changed := false
+	for i := range st.Machines {
+		m := &st.Machines[i]
+		if !m.Paired || m.NicknameChecked {
+			continue
+		}
+		if m.Nickname == m.User+"@"+m.Host {
+			m.Nickname = ""
+		}
+		m.NicknameChecked = true
+		changed = true
+	}
+	return changed
+}
+
+// loadSaved is load before the nickname migration.
+func (d *Desk) loadSaved() (machineStore, error) {
 	var st machineStore
 	if err := d.replayCommit(); err != nil {
 		return st, err
@@ -537,8 +575,10 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if index < 0 {
 		st.Machines = append(st.Machines, m)
 	} else {
-		// The page doesn't hold the sync id: an edit keeps the machine's.
+		// The page doesn't hold the sync id or the migration's mark: an edit
+		// keeps the machine's.
 		m.SyncID = st.Machines[index].SyncID
+		m.NicknameChecked = st.Machines[index].NicknameChecked
 		st.Machines[index] = m
 		if st.Active == replacing {
 			st.Active = id
@@ -816,8 +856,10 @@ func (d *Desk) remember(m Machine) error {
 	}
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
-		// The page doesn't hold the sync id: a reconnect keeps the machine's.
+		// The page doesn't hold the sync id or the migration's mark: a
+		// reconnect keeps the machine's.
 		m.SyncID = st.Machines[i].SyncID
+		m.NicknameChecked = st.Machines[i].NicknameChecked
 		st.Machines[i] = m
 	} else {
 		st.Machines = append(st.Machines, m)

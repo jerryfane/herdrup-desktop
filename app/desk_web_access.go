@@ -254,12 +254,10 @@ func (d *Desk) WebAccessMachines() ([]WebAccessMachine, error) {
 // SavedHost.label): its nickname in full, else its host, never user@ or a
 // port. It names the machine in the browser-access sheet (WebAccessMachines)
 // and in a browser's sealed approval (webEnvelopeMachine.Label); an invite
-// takes it as herdr does (inviteLabel). Pairing once saved user@host as the
-// nickname of the machine it paired (Paired; PairMachine leaves it unset
-// now): that exact text, on a paired machine, is no name of its own. Any
-// other machine keeps the nickname it was given, whatever it says.
+// takes it as herdr does (inviteLabel). The user@host nickname pairing once
+// gave is gone by now (load, clearPairingNicknames).
 func machineLabel(m Machine) string {
-	if n := strings.TrimSpace(m.Nickname); n != "" && !(m.Paired && n == m.User+"@"+m.Host) {
+	if n := strings.TrimSpace(m.Nickname); n != "" {
 		return n
 	}
 	return m.Host

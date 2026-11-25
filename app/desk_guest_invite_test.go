@@ -101,8 +101,8 @@ func TestGuestInviteStaysWithSelectedPeerAndRejectsClosedView(t *testing.T) {
 
 // The machine_label an invite carries (the invite page, SHARED WITH YOU) is
 // the saved machine's nickname, else its bare host: never the connection's
-// user@host:port. A user@host nickname the person gave is kept (only the one
-// pairing once gave the machine it paired is not: machineLabel). A
+// user@host:port. A user@host nickname the person gave is kept (the one
+// pairing once gave is cleared when the machines load: clearPairingNicknames). A
 // federated peer's agent keeps herdr's machine_label for it. Each is a label
 // herdr takes (the fake refuses one as herdr does): a nickname or peer label
 // longer than herdr's 64 characters is cut, its control and format characters
@@ -196,9 +196,8 @@ func TestShareLabelIsALabelHerdrAndTheGuestsTake(t *testing.T) {
 	}{
 		{Machine{Nickname: strings.Repeat("N", 65), User: "dev", Host: "box"}, strings.Repeat("N", 64)},
 		{Machine{Nickname: "\a", User: "dev", Host: "box"}, "box"},
-		{Machine{Nickname: "dev@box", User: "dev", Host: "box", Paired: true}, "box"},
+		{Machine{Nickname: "dev@box", User: "dev", Host: "box", Paired: true, NicknameChecked: true}, "dev@box"},
 		{Machine{Nickname: "dev@box", User: "dev", Host: "box"}, "dev@box"},
-		{Machine{Nickname: "ops@box", User: "dev", Host: "box", Paired: true}, "ops@box"},
 		{Machine{User: "dev", Host: strings.Repeat("h", 70) + ".example"}, strings.Repeat("h", 64)},
 	} {
 		if got := inviteLabel(c.m); got != c.want {

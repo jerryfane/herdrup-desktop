@@ -794,6 +794,12 @@ export interface Machine {
    */
   paired?: boolean;
   /**
+   * NicknameChecked marks a paired machine the one-time nickname migration
+   * has seen (clearPairingNicknames): a nickname it has now is the
+   * person's, whatever it says.
+   */
+  nicknameChecked?: boolean;
+  /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
    */
@@ -1072,6 +1078,12 @@ export interface SavedMachine {
    * rather than an unrelated ECDSA key or certificate served by the same sshd.
    */
   paired?: boolean;
+  /**
+   * NicknameChecked marks a paired machine the one-time nickname migration
+   * has seen (clearPairingNicknames): a nickname it has now is the
+   * person's, whatever it says.
+   */
+  nicknameChecked?: boolean;
   /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).

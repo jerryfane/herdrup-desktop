@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -112,9 +113,10 @@ func TestPairingPinsBeforeRedeemAndKeepsPrivateKeyOnDevice(t *testing.T) {
 	if err != nil || len(hosts) != 1 || hosts[0].ID != result.ID {
 		t.Fatalf("paired host was not durable: %+v %v", hosts, err)
 	}
-	// No nickname of its own: the list titles it by its host, as the result does.
-	if hosts[0].Nickname != "" || result.Label != hosts[0].Host {
-		t.Fatalf("paired host nickname %q, result label %q; want none and %q", hosts[0].Nickname, result.Label, hosts[0].Host)
+	// No nickname of its own: the list titles it by its host, as the result
+	// does. Seen by the nickname migration: a name given later is kept.
+	if hosts[0].Nickname != "" || result.Label != hosts[0].Host || !hosts[0].NicknameChecked {
+		t.Fatalf("paired host nickname %q (checked %v), result label %q; want none, checked, and %q", hosts[0].Nickname, hosts[0].NicknameChecked, result.Label, hosts[0].Host)
 	}
 	private, err := os.ReadFile(hosts[0].KeyPath)
 	if err != nil {
@@ -318,5 +320,69 @@ func TestPairingLinkShowsTheComputerAndPairsOnlyOnConnect(t *testing.T) {
 	}
 	if again, err := d.TakePairingLink(); again != nil || err != nil {
 		t.Fatalf("bad link kept: %+v %v", again, err)
+	}
+}
+
+// Pairing once saved user@host as the nickname of the machine it paired. The
+// machines' first load clears that exact nickname from a paired machine, once,
+// and saves the set: a name the person gives a paired machine afterwards,
+// user@host included, is kept through an edit (SaveMachine), a reconnect
+// (remember) and every load after. A machine not paired is never touched.
+func TestLoadClearsThePairingNicknameOnce(t *testing.T) {
+	d := newDesk(t.TempDir())
+	paired := func(nickname, host string) Machine {
+		return Machine{Nickname: nickname, Host: host, Port: 22, User: "dev", KeyPath: "/k", Paired: true}
+	}
+	d.storeMu.Lock()
+	err := d.store(machineStore{Machines: []Machine{
+		paired("dev@a.example", "a.example"),
+		paired("Studio", "b.example"),
+		{Nickname: "dev@c.example", Host: "c.example", Port: 22, User: "dev", KeyPath: "/k"},
+	}})
+	d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := func(d *Desk) []string {
+		t.Helper()
+		ms, err := d.WebAccessMachines()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, m := range ms {
+			got = append(got, m.Label)
+		}
+		return got
+	}
+	if got, want := names(d), []string{"a.example", "Studio", "dev@c.example"}; !slices.Equal(got, want) {
+		t.Fatalf("first load named %q, want %q", got, want)
+	}
+	// Saved as migrated: the next load (or build) starts from it.
+	data, err := os.ReadFile(d.machinesPath())
+	var disk machineStore
+	if err == nil {
+		err = json.Unmarshal(data, &disk)
+	}
+	if err != nil || len(disk.Machines) != 3 ||
+		disk.Machines[0].Nickname != "" || !disk.Machines[0].NicknameChecked ||
+		disk.Machines[1].Nickname != "Studio" || !disk.Machines[1].NicknameChecked ||
+		disk.Machines[2].Nickname != "dev@c.example" || disk.Machines[2].NicknameChecked {
+		t.Fatalf("saved %s, %v", data, err)
+	}
+	// The person names both paired machines user@host, as the page saves
+	// them (it doesn't hold the migration's mark).
+	if err := d.SaveMachine(paired("dev@a.example", "a.example"), "dev@a.example:22"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.remember(paired("dev@b.example", "b.example")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"dev@a.example", "dev@b.example", "dev@c.example"}
+	if got := names(d); !slices.Equal(got, want) {
+		t.Fatalf("after the renames, named %q, want %q", got, want)
+	}
+	if got := names(newDesk(d.dir)); !slices.Equal(got, want) {
+		t.Fatalf("reloaded, named %q, want %q", got, want)
 	}
 }

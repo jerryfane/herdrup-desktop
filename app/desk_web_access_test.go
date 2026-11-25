@@ -267,9 +267,9 @@ func TestWebAccessApprovalGrantsAndSealsTheMachineList(t *testing.T) {
 
 // The label sealed for the browser (the browser's host list; its guest
 // invites send it as machine_label, cut as herdr takes it) is the machine's
-// nickname in full, else its bare host: never user@host, nor the user@host
-// nickname pairing once gave the machine it paired. A machine not paired
-// keeps a nickname of that form.
+// nickname in full, else its bare host: never user@host. The user@host
+// nickname pairing once gave a machine it paired is cleared when the machines
+// load (clearPairingNicknames); a machine not paired keeps one of that form.
 func TestWebAccessSealsTheMachineByItsNicknameElseItsHost(t *testing.T) {
 	for _, c := range []struct {
 		nickname string
@@ -311,7 +311,8 @@ func TestWebAccessSealsTheMachineByItsNicknameElseItsHost(t *testing.T) {
 // The browser-access sheet names each saved machine in full: two whose
 // nicknames differ only after herdr's 64 invite characters are two names to
 // choose between, not one twice. An explicit user@host nickname is kept; only
-// the one pairing once gave the machine it paired gives way to the host.
+// the one pairing once gave the machine it paired, not yet migrated, gives
+// way to the host.
 func TestWebAccessMachinesNameEachMachineInFull(t *testing.T) {
 	d := newDesk(t.TempDir())
 	long := strings.Repeat("n", 64)
@@ -321,6 +322,7 @@ func TestWebAccessMachinesNameEachMachineInFull(t *testing.T) {
 		{Nickname: long + " staging", Host: "staging.example", Port: 22, User: "dev", KeyPath: "/k"},
 		{Nickname: "dev@studio.example", Host: "studio.example", Port: 22, User: "dev", KeyPath: "/k"},
 		{Nickname: "dev@pi.example", Host: "pi.example", Port: 22, User: "dev", KeyPath: "/k", Paired: true},
+		{Nickname: "dev@mac.example", Host: "mac.example", Port: 22, User: "dev", KeyPath: "/k", Paired: true, NicknameChecked: true},
 	}})
 	d.storeMu.Unlock()
 	if err != nil {
@@ -334,7 +336,7 @@ func TestWebAccessMachinesNameEachMachineInFull(t *testing.T) {
 	for _, m := range ms {
 		got = append(got, m.Label)
 	}
-	if want := []string{long + " production", long + " staging", "dev@studio.example", "pi.example"}; !slices.Equal(got, want) {
+	if want := []string{long + " production", long + " staging", "dev@studio.example", "pi.example", "dev@mac.example"}; !slices.Equal(got, want) {
 		t.Fatalf("labels %q, want %q", got, want)
 	}
 }
