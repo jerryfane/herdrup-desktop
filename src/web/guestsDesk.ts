@@ -57,6 +57,21 @@ export const guestsDesk = {
   await settingsCall(scope, "guest.revoke", invite ? { invite_id: id } : { guest_id: id }, "guest_revoked");
  },
 
+ /** RevokeGuestPerson: every share of one person on this machine (guest.revoke {person}). */
+ async revokeGuestPerson(token: string, machine: string, person: string): Promise<void> {
+  const scope = settingsScope(token);
+  thisMachineOnly(machine);
+  if (person === "") throw new Error("no person to remove");
+  await settingsCall(scope, "guest.revoke", { person }, "guest_revoked");
+ },
+
+ /** RemoveGuestDevice: one device (its fingerprint) off one account-bound share (guest.remove_device). */
+ async removeGuestDevice(token: string, machine: string, guestID: string, deviceID: string): Promise<void> {
+  const scope = settingsScope(token);
+  thisMachineOnly(machine);
+  await settingsCall(scope, "guest.remove_device", { guest_id: guestID, fingerprint: deviceID }, "guest_device_removed");
+ },
+
  /** CreateGuestInvite: an invite to the agent the view shows, on the link's machine. Its guests see
   *  the machine as the view's share details name it (desk_guest_invite.go): a federated peer's
   *  agent by herdr's machine_label for it (else the peer's id), the link's own agents by the label

@@ -84,3 +84,36 @@ func (d *Desk) RevokeGuestAccess(ctx context.Context, token, machine, id string,
 	_, err = view.client.GuestRevoke(ctx, params)
 	return err
 }
+
+// RevokeGuestPerson revokes every share of one person on machine at once
+// (guest.revoke {person}): a person from guest.list, the HerdrUp account
+// behind an account-bound share, else a plain share's device fingerprint.
+// Settings groups shares per person per machine only, so person never
+// reaches another machine's shares.
+func (d *Desk) RevokeGuestPerson(ctx context.Context, token, machine, person string) error {
+	if person == "" {
+		return errors.New("no person to remove")
+	}
+	view, err := d.settingsView(token)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := viewRequest(ctx, view.ctx)
+	defer cancel()
+	_, err = view.client.GuestRevoke(ctx, herdrapi.GuestRevokeParams{Machine: guestMachineAlias(machine), Person: &person})
+	return err
+}
+
+// RemoveGuestDevice drops one device (its fingerprint, deviceID) from the
+// account-bound share guestID on machine (guest.remove_device); the person's
+// other devices keep it.
+func (d *Desk) RemoveGuestDevice(ctx context.Context, token, machine, guestID, deviceID string) error {
+	view, err := d.settingsView(token)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := viewRequest(ctx, view.ctx)
+	defer cancel()
+	_, err = view.client.GuestRemoveDevice(ctx, herdrapi.GuestRemoveDeviceParams{Machine: guestMachineAlias(machine), GuestID: guestID, Fingerprint: deviceID})
+	return err
+}
