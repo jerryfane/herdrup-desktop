@@ -18,16 +18,23 @@ import (
 // fakeStatements is the account service's statements as the account's
 // StatementCache gives them, on clock: a host's statement is reused while it
 // has at least the time asked for left, and a new one, 600 s long, issued
-// otherwise. Its statements are "<account>.<n>.<host>".
+// otherwise. Its statements are "<account>.<n>.<host>", each live while the
+// sign-in it was issued in is the current one (switchTo starts another, and
+// drops the held ones). Signed out (account ""), it gives ErrAccountRequired.
 type fakeStatements struct {
-	clock   *stepClock
-	account string
+	clock *stepClock
 
-	mu    sync.Mutex
-	n     int
-	held  map[string]heldStatement
-	exps  map[string]time.Time
-	hosts []string
+	mu      sync.Mutex
+	account string
+	signIn  int
+	n       int
+	held    map[string]heldStatement
+	exps    map[string]time.Time
+	hosts   []string
+	// onAsk, when set, runs once inside the next ask, after its statement
+	// is issued (a switch while it was asked for); onDrop once inside the
+	// next Drop.
+	onAsk, onDrop func()
 }
 
 type heldStatement struct {
@@ -36,21 +43,58 @@ type heldStatement struct {
 }
 
 func newFakeStatements(clock *stepClock, account string) *fakeStatements {
-	return &fakeStatements{clock: clock, account: account, held: map[string]heldStatement{}, exps: map[string]time.Time{}}
+	f := &fakeStatements{clock: clock, exps: map[string]time.Time{}}
+	f.switchTo(account)
+	return f
 }
 
-func (f *fakeStatements) Statement(_ context.Context, host string, minLeft time.Duration) (string, time.Time, error) {
+// switchTo is another sign-in, to account ("" signed out): the statements
+// of the one before are no longer live.
+func (f *fakeStatements) switchTo(account string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.account, f.signIn, f.held = account, f.signIn+1, map[string]heldStatement{}
+}
+
+func (f *fakeStatements) Statement(_ context.Context, host string, minLeft time.Duration) (Statement, error) {
+	f.mu.Lock()
 	f.hosts = append(f.hosts, host)
-	now := f.clock.Now()
-	if h, ok := f.held[host]; ok && h.exp.Sub(now) >= minLeft {
-		return h.jws, h.exp, nil
+	if f.account == "" {
+		f.mu.Unlock()
+		return Statement{}, ErrAccountRequired
 	}
-	f.n++
-	h := heldStatement{jws: fmt.Sprintf("%s.%d.%s", f.account, f.n, host), exp: now.Add(600 * time.Second)}
-	f.held[host], f.exps[h.jws] = h, h.exp
-	return h.jws, h.exp, nil
+	now := f.clock.Now()
+	h, ok := f.held[host]
+	if !ok || h.exp.Sub(now) < minLeft {
+		f.n++
+		h = heldStatement{jws: fmt.Sprintf("%s.%d.%s", f.account, f.n, host), exp: now.Add(600 * time.Second)}
+		f.held[host], f.exps[h.jws] = h, h.exp
+	}
+	signIn, hook := f.signIn, f.onAsk
+	f.onAsk = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	live := func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.signIn == signIn
+	}
+	return Statement{JWS: h.jws, Exp: h.exp, Live: live}, nil
+}
+
+func (f *fakeStatements) Drop(host, jws string) {
+	f.mu.Lock()
+	if f.held[host].jws == jws {
+		delete(f.held, host)
+	}
+	hook := f.onDrop
+	f.onDrop = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (f *fakeStatements) asked() int {
@@ -62,7 +106,7 @@ func (f *fakeStatements) asked() int {
 // accountHost is a guest of a fakeherdr relay whose host takes accounts
 // (relay.Accounts unless plain): its statements are checked by their
 // account (the jws's first part) and expiry. refuse, when set, is the code
-// a refresh's statement is refused with.
+// every statement is refused with, and refuseOnce the next one's.
 type accountHost struct {
 	relay      *fakeherdr.GuestRelay
 	clock      *stepClock
@@ -71,8 +115,8 @@ type accountHost struct {
 	identity   Identity
 	now        time.Time
 
-	mu     sync.Mutex
-	refuse string
+	mu                 sync.Mutex
+	refuse, refuseOnce string
 }
 
 func newAccountHost(t *testing.T, accounts bool) *accountHost {
@@ -90,6 +134,9 @@ func newAccountHost(t *testing.T, accounts bool) *accountHost {
 	relay.CheckStatement = func(jws string) (string, time.Time, string) {
 		h.mu.Lock()
 		refuse := h.refuse
+		if h.refuseOnce != "" {
+			refuse, h.refuseOnce = h.refuseOnce, ""
+		}
 		h.mu.Unlock()
 		if refuse != "" {
 			return "", time.Time{}, refuse
@@ -301,6 +348,8 @@ func TestARefusedRefreshEndsTheSessionWithItsCode(t *testing.T) {
 
 // Every account code herdr sends, at a hello or as a session's close
 // reason, is its own error with its own words; other codes are as before.
+// A statement_expired close, which herdr also sends when an owner's grant
+// expires, says neither, and is still ErrStatementExpired.
 func TestAccountRefusalsAreDistinct(t *testing.T) {
 	codes := map[string]error{
 		"account_required":   ErrAccountRequired,
@@ -316,7 +365,12 @@ func TestAccountRefusalsAreDistinct(t *testing.T) {
 		if got := refusal(code); got != want {
 			t.Errorf("hello refusal %s: %v, want %v", code, got, want)
 		}
-		if got := socketError(websocket.CloseError{Code: websocket.StatusNormalClosure, Reason: code}); got != want {
+		got := socketError(websocket.CloseError{Code: websocket.StatusNormalClosure, Reason: code})
+		if code == "statement_expired" {
+			if !errors.Is(got, ErrStatementExpired) || got.Error() != "The shared machine ended the connection when its authorization expired. Try again." {
+				t.Errorf("close reason %s: %v", code, got)
+			}
+		} else if got != want {
 			t.Errorf("close reason %s: %v, want %v", code, got, want)
 		}
 		if other, dup := seen[want.Error()]; dup {
@@ -324,10 +378,119 @@ func TestAccountRefusalsAreDistinct(t *testing.T) {
 		}
 		seen[want.Error()] = code
 	}
+	if ErrStatementExpired.Error() != "Your HerdrUp account check expired. Reconnect to continue." {
+		t.Errorf("the statement_expired hello refusal says %q", ErrStatementExpired)
+	}
+	if ErrAccountRequired.Error() != "Sign in to the HerdrUp account that holds this share." ||
+		ErrAccountMismatch.Error() != "This share belongs to another HerdrUp account. Sign in to that account to open it." {
+		t.Errorf("account words: %q, %q", ErrAccountRequired, ErrAccountMismatch)
+	}
 	if refusal("revoked") != ErrRevoked || refusal("something_else").Error() != "The shared machine refused this guest connection." {
 		t.Error("the other codes changed")
 	}
 	if got := socketError(websocket.CloseError{Code: websocket.StatusNormalClosure, Reason: "revoked"}); errors.Is(got, ErrRevoked) {
 		t.Errorf("a non-account close reason: %v, want as before", got)
+	}
+}
+
+// A redemption whose sign-in changes while its statement is asked for
+// sends nothing: herdr would bind the invitation to the account of
+// whichever statement it carried, for good.
+func TestARedemptionWhoseSignInChangesSendsNothing(t *testing.T) {
+	h := newAccountHost(t, true)
+	h.statements.onAsk = func() { h.statements.switchTo("other") }
+	_, err := Accept(context.Background(), h.invite(t), h.identity, "Desktop", h.now, h.statements)
+	if !errors.Is(err, ErrAccountChanged) || err.Error() != "Your HerdrUp account changed; open the invite again" {
+		t.Fatalf("redemption across a switch: %v, want ErrAccountChanged", err)
+	}
+	if hellos := h.relay.Hellos(); len(hellos) != 0 || h.relay.Bound() != "" {
+		t.Fatalf("hellos %q, bound to %q; want nothing sent", hellos, h.relay.Bound())
+	}
+}
+
+// A bound session's refreshes stay in the sign-in it was admitted in: one
+// whose sign-in changes while its statement is asked for sends nothing,
+// and the refreshing stops.
+func TestABoundSessionsRefreshAfterASwitchSendsNothingAndStops(t *testing.T) {
+	h := newAccountHost(t, true)
+	access := h.accept(t, h.statements)
+	ended := make(chan struct{}, 8)
+	hear := func() { ended <- struct{}{} }
+	refreshEnded.Store(&hear)
+	t.Cleanup(func() { refreshEnded.Store(nil) })
+	transport := h.transport(t, access, h.statements)
+	stream, err := transport.OpenStream(context.Background(), "pane.stream", map[string]string{"pane_id": "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the refresh to wait", func() bool { return h.clock.waiting() == 1 })
+	h.statements.onAsk = func() { h.statements.switchTo("other") }
+	h.clock.advance(600*time.Second - 2*time.Minute)
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the refresh went on after the switch; refreshes %q", h.relay.Refreshes())
+	}
+	if refreshes := h.relay.Refreshes(); len(refreshes) != 0 {
+		t.Fatalf("refreshes %q after the switch; want none", refreshes)
+	}
+}
+
+// A returning hello refused for its statement goes once more with a fresh
+// one, in the same sign-in; past a switch, the retry sends nothing and the
+// share reads as another account's.
+func TestARetryAfterASwitchIsAnotherAccountsShare(t *testing.T) {
+	h := newAccountHost(t, true)
+	access := h.accept(t, h.statements)
+	host := h.relay.HostID()
+	h.mu.Lock()
+	h.refuseOnce = "statement_invalid"
+	h.mu.Unlock()
+	if err := list(h.transport(t, access, h.statements)); err != nil {
+		t.Fatalf("a retry with a fresh statement: %v", err)
+	}
+	if hellos := h.relay.Hellos(); len(hellos) != 3 || hellos[1] != "acct.1."+host || hellos[2] != "acct.2."+host {
+		t.Fatalf("hellos %q; want the refused statement, then a fresh one", hellos)
+	}
+	h.mu.Lock()
+	h.refuseOnce = "statement_expired"
+	h.mu.Unlock()
+	h.statements.onDrop = func() { h.statements.switchTo("other") }
+	asked := h.statements.asked()
+	err := list(h.transport(t, access, h.statements))
+	if !errors.Is(err, ErrAccountMismatch) || errors.Is(err, ErrAccountChanged) {
+		t.Fatalf("a retry past a switch: %v, want ErrAccountMismatch", err)
+	}
+	if hellos := h.relay.Hellos(); len(hellos) != 4 || h.statements.asked() != asked+1 {
+		t.Fatalf("hellos %q, statements asked %d more; want the refused hello alone", hellos, h.statements.asked()-asked)
+	}
+}
+
+// Only one handshake and the session it admitted stay in a sign-in: a new
+// connect after the sign-in ended and came back (a sign-out, then the same
+// account again) goes out with the current sign-in's statement.
+func TestAReconnectGoesUnderTheCurrentSignIn(t *testing.T) {
+	h := newAccountHost(t, true)
+	h.relay.MultiRequest = false // every request connects
+	access := h.accept(t, h.statements)
+	transport := h.transport(t, access, h.statements)
+	if err := list(transport); err != nil {
+		t.Fatal(err)
+	}
+	h.statements.switchTo("")
+	if err := list(transport); !errors.Is(err, ErrAccountRequired) {
+		t.Fatalf("signed out: %v, want ErrAccountRequired", err)
+	}
+	h.statements.switchTo("acct")
+	if err := list(transport); err != nil {
+		t.Fatalf("the sign-in back: %v", err)
+	}
+	host := h.relay.HostID()
+	if hellos := h.relay.Hellos(); len(hellos) != 3 || hellos[2] != "acct.2."+host {
+		t.Fatalf("hellos %q; want the last under the current sign-in", hellos)
 	}
 }

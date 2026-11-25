@@ -16,10 +16,12 @@ import (
 // device (403 device_required) or whose device was removed (403
 // device_removed) or withdrawn (403 device_withdrawn), as *APIError.
 
-// HostStatement is one host's statement and when it expires.
+// HostStatement is one host's statement, when it expires, and the sign-in
+// it was issued in (Live).
 type HostStatement struct {
-	JWS string
-	Exp time.Time
+	JWS   string
+	Exp   time.Time
+	round Round
 }
 
 // ErrNoStatement is an answer without a statement for the host asked for.
@@ -55,16 +57,28 @@ func NewStatementCache(c *Client) *StatementCache {
 	return &StatementCache{client: c}
 }
 
-// Statement is host's statement with at least minLeft left, or the newest
-// the service gives (which may have less: it is all there is). It fails with
-// ErrSignedOut when signed out, and ErrAccountChanged when the session ended
-// while it was asked for.
-func (s *StatementCache) Statement(ctx context.Context, host string, minLeft time.Duration) (string, time.Time, error) {
-	got, err := s.Get(ctx, host, minLeft)
-	return got.JWS, got.Exp, err
+// Live is whether the sign-in st was issued in is still the current one: a
+// statement of a session that ended (a sign-out, another sign-in, or a
+// sign-in again) is never sent.
+func (s *StatementCache) Live(st HostStatement) bool {
+	return st.JWS != "" && s.client.Holds(st.round)
 }
 
-// Get is Statement as a HostStatement.
+// Drop forgets jws for host if it is still the statement held: the machine
+// refused it, so the next Get asks for a new one. A newer one another
+// connection already took stays.
+func (s *StatementCache) Drop(host, jws string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if held, ok := s.held[host]; ok && held.JWS == jws {
+		delete(s.held, host)
+	}
+}
+
+// Get is host's statement with at least minLeft left, or the newest the
+// service gives (which may have less: it is all there is). It fails with
+// ErrSignedOut when signed out, and ErrAccountChanged when the session ended
+// while it was asked for.
 func (s *StatementCache) Get(ctx context.Context, host string, minLeft time.Duration) (HostStatement, error) {
 	r, ok, err := s.client.Round()
 	if err != nil {
@@ -123,7 +137,7 @@ func (s *StatementCache) ask(ctx context.Context, r Round, host string) (HostSta
 	}
 	for _, st := range statements {
 		if st.Host == host && st.JWS != "" && exp > 0 {
-			return HostStatement{JWS: st.JWS, Exp: time.Unix(exp, 0)}, nil
+			return HostStatement{JWS: st.JWS, Exp: time.Unix(exp, 0), round: r}, nil
 		}
 	}
 	return HostStatement{}, ErrNoStatement

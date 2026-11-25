@@ -345,53 +345,88 @@ func (t *Transport) park(s *session) {
 // connect opens a session for the access, unless the relay's backoff holds
 // connects back. A bound share's hello carries a statement for its account
 // (herdr src/guest/store.rs:1121-1128 refuses one without), and the session
-// it opens keeps it fresh once started (startRefresh).
+// it opens keeps it fresh once started (startRefresh). A hello refused for
+// its statement (statement_invalid, statement_expired) goes once more with
+// a fresh one, in the sign-in of the first: past a switch, nothing goes out
+// and the share is another account's (ErrAccountMismatch). Each connect
+// starts in the current sign-in; herdr checks it is the share's account.
 func (t *Transport) connect(ctx context.Context) (*session, error) {
+	var prior func() bool
+	for attempt := 0; ; attempt++ {
+		connected, bound, err := t.connectOnce(ctx, prior)
+		if err == nil {
+			return connected, nil
+		}
+		if attempt == 0 && bound != nil && freshStatementMayAdmit(err) {
+			t.statements.Drop(bound.host, bound.jws)
+			prior = bound.admitted
+			continue
+		}
+		return nil, err
+	}
+}
+
+// connectOnce is one attempt of connect; prior is the live of the attempt
+// before it in this handshake, nil for the first. bound is the statement
+// the attempt's hello carried, nil for a plain share or none sent.
+func (t *Transport) connectOnce(ctx context.Context, prior func() bool) (*session, *boundStatement, error) {
 	var bound *boundStatement
+	stale := errHelloStale
 	if t.access.AccountBound {
 		if t.statements == nil {
-			return nil, ErrAccountRequired
+			return nil, nil, ErrAccountRequired
+		}
+		if prior != nil {
+			if !prior() {
+				return nil, nil, ErrAccountMismatch
+			}
+			stale = ErrAccountMismatch
 		}
 		host := t.access.Endpoint.accountHost()
-		jws, exp, err := t.statements.Statement(ctx, host, statementLead)
+		st, err := t.statements.Statement(ctx, host, statementLead)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		bound = &boundStatement{statements: t.statements, host: host, exp: exp, jws: jws}
+		admitted := st.Live
+		if prior != nil {
+			admitted = func() bool { return prior() && st.Live() }
+		}
+		bound = &boundStatement{statements: t.statements, host: host, exp: st.Exp, jws: st.JWS, admitted: admitted}
 	}
 	refusals, ok := t.attempt()
 	if !ok {
-		return nil, ErrRateLimited
+		return nil, nil, ErrRateLimited
 	}
 	hello := struct {
 		Version int    `json:"v"`
 		GuestID string `json:"guest_id"`
 		Account string `json:"account,omitempty"`
 	}{Version: 1, GuestID: t.access.GuestID}
+	var live func() bool
 	if bound != nil {
-		hello.Account = bound.jws
+		hello.Account, live = bound.jws, bound.admitted
 	}
 	payload, err := json.Marshal(hello)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	connected, err := openSession(ctx, t.access.Endpoint, t.identity, payload)
+	connected, err := openSession(ctx, t.access.Endpoint, t.identity, payload, live, stale)
 	if errors.Is(err, ErrRateLimited) {
 		t.limited()
 	}
 	if err != nil {
-		return nil, err
+		return nil, bound, err
 	}
 	if connected.reply.GuestID != t.access.GuestID {
 		connected.close()
-		return nil, ErrRevoked
+		return nil, nil, ErrRevoked
 	}
 	if bound != nil && connected.reply.Account != nil {
 		connected.bound = bound
 	}
 	t.admitted(refusals, connected.reply.Features)
 	connected.handshook = t.clock.Now()
-	return connected, nil
+	return connected, nil, nil
 }
 
 // OpenStream sends one request on a fresh session of its own, whose reply

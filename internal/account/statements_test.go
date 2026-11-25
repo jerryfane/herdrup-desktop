@@ -51,9 +51,9 @@ func statementService(t *testing.T, f *fakeService, now *time.Time) (asked func(
 func TestStatementCacheAsksForTheHost(t *testing.T) {
 	f, c, _, now := signedIn(t)
 	statementService(t, f, now)
-	jws, exp, err := NewStatementCache(c).Statement(context.Background(), hostA, StatementRefreshLead)
-	if err != nil || jws != hostA+".jws.x" || !exp.Equal(now.Add(600*time.Second)) {
-		t.Fatalf("statement %q %v, %v", jws, exp, err)
+	got, err := NewStatementCache(c).Get(context.Background(), hostA, StatementRefreshLead)
+	if err != nil || got.JWS != hostA+".jws.x" || !got.Exp.Equal(now.Add(600*time.Second)) {
+		t.Fatalf("statement %+v, %v", got, err)
 	}
 	f.extra = func(w http.ResponseWriter, r *http.Request, _ map[string]string) bool {
 		reply(w, 403, map[string]string{"error": "device_removed"})
@@ -100,5 +100,33 @@ func TestStatementCacheIsTheSessions(t *testing.T) {
 	}
 	if _, err := cache.Get(context.Background(), hostA, StatementRefreshLead); !errors.Is(err, ErrSignedOut) || asked() != 1 {
 		t.Fatalf("after a sign-out: %v, asked %d", err, asked())
+	}
+}
+
+// A statement is live while the sign-in it was issued in is the current
+// one; a refused one dropped is asked for again, another one dropped is
+// not.
+func TestStatementCacheLiveAndDrop(t *testing.T) {
+	f, c, _, now := signedIn(t)
+	asked := statementService(t, f, now)
+	cache := NewStatementCache(c)
+	ctx := context.Background()
+	first, err := cache.Get(ctx, hostA, StatementRefreshLead)
+	if err != nil || !cache.Live(first) {
+		t.Fatalf("first: %+v, %v, live %v", first, err, cache.Live(first))
+	}
+	cache.Drop(hostA, "another")
+	if again, err := cache.Get(ctx, hostA, StatementRefreshLead); err != nil || again != first || asked() != 1 {
+		t.Fatalf("after dropping another: %+v, %v, asked %d", again, err, asked())
+	}
+	cache.Drop(hostA, first.JWS)
+	if fresh, err := cache.Get(ctx, hostA, StatementRefreshLead); err != nil || fresh.JWS == first.JWS || asked() != 2 {
+		t.Fatalf("after dropping it: %+v, %v, asked %d", fresh, err, asked())
+	}
+	if err := c.SignOut(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cache.Live(first) {
+		t.Fatal("a statement of a session that ended is live")
 	}
 }

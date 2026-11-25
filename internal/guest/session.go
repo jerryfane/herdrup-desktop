@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -29,11 +30,30 @@ const (
 	refreshRetry  = 15 * time.Second
 )
 
+// Statement is a HerdrUp account statement for one host: its JWS, when it
+// expires, and Live, whether the sign-in it was issued in is still the
+// current one (a plain answer, never an error). Nothing is sent with a
+// statement that is not live.
+type Statement struct {
+	JWS  string
+	Exp  time.Time
+	Live func() bool
+}
+
 // StatementSource gives this device's HerdrUp account statement for host (a
-// share's host id, base64url), with at least minLeft left when it can
-// (internal/account StatementCache).
+// share's host id, base64url), with at least minLeft left when it can, from
+// the current sign-in (internal/account StatementCache); signed out, it
+// fails with ErrAccountRequired. Drop forgets jws for host if it is still
+// the one held: the machine refused it.
+//
+// Only the attempts of one handshake (a retry after a refused statement)
+// and the refreshes of the session it admitted stay in the sign-in that
+// handshake started in. Every new connect takes the current sign-in's
+// statement, and herdr checks it is the share's account
+// (account_mismatch).
 type StatementSource interface {
-	Statement(ctx context.Context, host string, minLeft time.Duration) (jws string, exp time.Time, err error)
+	Statement(ctx context.Context, host string, minLeft time.Duration) (Statement, error)
+	Drop(host, jws string)
 }
 
 var cipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
@@ -120,14 +140,45 @@ type session struct {
 // A bound share's refusals (herdr src/guest/account.rs:53-68), at its hello
 // or as the reason its session closed with.
 var (
-	ErrAccountRequired  = errors.New("This shared access is linked to a HerdrUp account. Sign in to that account to open it.")
-	ErrAccountMismatch  = errors.New("This shared access is linked to another HerdrUp account. Sign in to that account to open it.")
+	ErrAccountRequired  = errors.New("Sign in to the HerdrUp account that holds this share.")
+	ErrAccountMismatch  = errors.New("This share belongs to another HerdrUp account. Sign in to that account to open it.")
 	ErrStatementInvalid = errors.New("The shared machine couldn't verify your HerdrUp account. Try again.")
 	ErrStatementExpired = errors.New("Your HerdrUp account check expired. Reconnect to continue.")
 	ErrAccountKeysStale = errors.New("The shared machine can't check HerdrUp accounts right now. Try again later.")
 	ErrDeviceRemoved    = errors.New("The owner removed this device from the shared access. Ask the owner for a new invitation.")
 	ErrAccountsDisabled = errors.New("The shared machine doesn't accept HerdrUp accounts. Ask the owner for a new invitation.")
 )
+
+// ErrAccountChanged is a redemption whose sign-in ended before its hello
+// went out: nothing was sent, since herdr would bind the invitation to
+// whichever account's statement it carried, for good. Only a redemption not
+// yet admitted says so; a saved share's says ErrAccountMismatch.
+var ErrAccountChanged = errors.New("Your HerdrUp account changed; open the invite again")
+
+// errHelloStale is a connect whose statement's sign-in ended before its
+// hello went out: nothing was sent.
+var errHelloStale = errors.New("The shared connection was closed.")
+
+// errRefreshStale is a refresh whose statement's sign-in, or the admitted
+// session's, ended before it went out: nothing was sent.
+var errRefreshStale = errors.New("the HerdrUp sign-in the session was admitted in has ended")
+
+// expiredClose is herdr ending a session with statement_expired: a bound
+// session's missed deadline, and also an owner grant's expiry, so its words
+// say neither (the next hello's refusal tells them apart). It is
+// ErrStatementExpired.
+type expiredClose struct{}
+
+func (expiredClose) Error() string {
+	return "The shared machine ended the connection when its authorization expired. Try again."
+}
+func (expiredClose) Is(target error) bool { return target == ErrStatementExpired }
+
+// freshStatementMayAdmit is a hello refused for its statement alone, which
+// one fresh statement may get past: it may have gone stale on the way.
+func freshStatementMayAdmit(err error) bool {
+	return errors.Is(err, ErrStatementInvalid) || errors.Is(err, ErrStatementExpired)
+}
 
 // accountRefusal is the error for one of herdr's account codes, or nil.
 func accountRefusal(code string) error {
@@ -225,6 +276,9 @@ func socketError(err error) error {
 		// (statement_expired at its deadline, a refused refresh's code), which
 		// the relay passes on with a normal close (GuestRelay host.ts:195).
 		if closed.Code == websocket.StatusNormalClosure {
+			if closed.Reason == "statement_expired" {
+				return expiredClose{}
+			}
 			if err := accountRefusal(closed.Reason); err != nil {
 				return err
 			}
@@ -240,7 +294,11 @@ func socketError(err error) error {
 	return err
 }
 
-func openSession(ctx context.Context, endpoint Endpoint, identity Identity, hello []byte) (*session, error) {
+// openSession dials, handshakes and reads the host's admission. live, when
+// given, is checked right before dialing and right before the hello is
+// written: a hello whose statement's sign-in ended is never sent, and stale
+// is the error then.
+func openSession(ctx context.Context, endpoint Endpoint, identity Identity, hello []byte, live func() bool, stale error) (*session, error) {
 	address, err := endpoint.socketURL()
 	if err != nil {
 		return nil, err
@@ -256,6 +314,9 @@ func openSession(ctx context.Context, endpoint Endpoint, identity Identity, hell
 	if err != nil {
 		return nil, fmt.Errorf("prepare secure guest hello: %w", err)
 	}
+	if live != nil && !live() {
+		return nil, stale
+	}
 	socket, response, err := websocket.Dial(ctx, address, nil)
 	if err != nil {
 		return nil, upgradeError(response, err)
@@ -267,6 +328,9 @@ func openSession(ctx context.Context, endpoint Endpoint, identity Identity, hell
 			_ = socket.CloseNow()
 		}
 	}()
+	if live != nil && !live() {
+		return nil, stale
+	}
 	if err := socket.Write(ctx, websocket.MessageBinary, message); err != nil {
 		return nil, socketError(err)
 	}
@@ -355,7 +419,7 @@ func (s *session) sendLine(ctx context.Context, line []byte) (sent bool, err err
 // API's bytes and answers with nothing: a valid statement moves the
 // session's deadline, any other ends the session with its code
 // (session.rs:439-459).
-func (s *session) sendRefresh(ctx context.Context, jws string) error {
+func (s *session) sendRefresh(ctx context.Context, jws string, live func() bool) error {
 	message, err := json.Marshal(struct {
 		T       string `json:"t"`
 		Account string `json:"account"`
@@ -371,6 +435,10 @@ func (s *session) sendRefresh(ctx context.Context, jws string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Right before the write: a statement whose sign-in ended goes nowhere.
+	if !live() {
+		return errRefreshStale
+	}
 	encrypted, err := s.send.Encrypt(nil, nil, message)
 	if err != nil {
 		return err
@@ -382,12 +450,14 @@ func (s *session) sendRefresh(ctx context.Context, jws string) error {
 }
 
 // boundStatement is what a bound session was admitted with: the statement,
-// its exp, and where the next one comes from.
+// its exp, where the next one comes from, and whether the sign-in its hello
+// went in is still the current one (admitted).
 type boundStatement struct {
 	statements StatementSource
 	host       string
 	jws        string
 	exp        time.Time
+	admitted   func() bool
 }
 
 // startRefresh keeps a bound session's statement ahead of its deadline
@@ -395,20 +465,30 @@ type boundStatement struct {
 // session.rs:405-434): once less than statementLead of it is left, it asks
 // for a newer one and sends it in band (sendRefresh), and so on for the
 // next one. An ask that fails, or gives nothing newer, is tried again after
-// refreshRetry, until the deadline passes. It stops when the session
-// closes, a refresh's write fails, or the deadline passed. Nothing for a
-// session that is not bound. Call it once, after startPump (when the
-// session is pumped) and before the session is shared.
+// refreshRetry, until the deadline passes. The refreshes stay in the
+// sign-in the session was admitted in: once that has ended (signed out, or
+// another sign-in), it stops, and a statement whose sign-in ended is never
+// sent. It also stops when the session closes, a refresh's write fails, or
+// the deadline passed. Nothing for a session that is not bound. Call it
+// once, after startPump (when the session is pumped) and before the session
+// is shared.
 func (s *session) startRefresh(clock Clock) {
 	if s.bound == nil {
 		return
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	s.stopRefresh = stop
-	go s.refresh(ctx, clock, s.bound.statements, s.bound.host, s.bound.exp)
+	go s.refresh(ctx, clock, s.bound)
 }
 
-func (s *session) refresh(ctx context.Context, clock Clock, statements StatementSource, host string, exp time.Time) {
+// refreshEnded, when set (tests only), hears each refresh loop end.
+var refreshEnded atomic.Pointer[func()]
+
+func (s *session) refresh(ctx context.Context, clock Clock, b *boundStatement) {
+	if ended := refreshEnded.Load(); ended != nil {
+		defer (*ended)()
+	}
+	exp := b.exp
 	wait := func(d time.Duration) bool {
 		if d <= 0 {
 			return ctx.Err() == nil
@@ -424,17 +504,23 @@ func (s *session) refresh(ctx context.Context, clock Clock, statements Statement
 		if !wait(exp.Add(-statementLead).Sub(clock.Now())) {
 			return
 		}
+		if !b.admitted() {
+			return
+		}
 		// Newer than the session's own: a statement with just its time
 		// left would be the same one again.
-		jws, next, err := statements.Statement(ctx, host, exp.Sub(clock.Now())+time.Second)
+		st, err := b.statements.Statement(ctx, b.host, exp.Sub(clock.Now())+time.Second)
 		switch {
 		case ctx.Err() != nil:
 			return
-		case err == nil && next.After(exp):
-			if s.sendRefresh(ctx, jws) != nil {
+		case err == nil && st.Exp.After(exp):
+			if s.sendRefresh(ctx, st.JWS, func() bool { return b.admitted() && st.Live() }) != nil {
 				return
 			}
-			exp = next
+			exp = st.Exp
+		case !b.admitted():
+			// The session's sign-in ended: herdr ends it at its deadline.
+			return
 		case !clock.Now().Before(exp.Add(statementSkew)):
 			// herdr has ended the session at its deadline.
 			return
@@ -554,13 +640,13 @@ func Accept(ctx context.Context, invite Invite, identity Identity, device string
 	}
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
 	defer cancel()
-	var statement string
+	var statement Statement
 	if invite.Account && bind != nil {
-		jws, _, err := bind.Statement(ctx, invite.Endpoint.accountHost(), statementLead)
+		st, err := bind.Statement(ctx, invite.Endpoint.accountHost(), statementLead)
 		if err != nil {
 			return Access{}, err
 		}
-		statement = jws
+		statement = st
 	}
 	hello, err := json.Marshal(struct {
 		Version  int    `json:"v"`
@@ -568,12 +654,18 @@ func Accept(ctx context.Context, invite Invite, identity Identity, device string
 		Secret   string `json:"secret"`
 		Device   string `json:"device"`
 		Account  string `json:"account,omitempty"`
-	}{1, invite.inviteID, invite.secret, device, statement})
+	}{1, invite.inviteID, invite.secret, device, statement.JWS})
 	if err != nil {
 		return Access{}, err
 	}
 	defer clear(hello)
-	connected, err := openSession(ctx, invite.Endpoint, identity, hello)
+	// The redemption stays in the sign-in of its statement: past a switch,
+	// nothing goes out (ErrAccountChanged).
+	var live func() bool
+	if statement.JWS != "" {
+		live = statement.Live
+	}
+	connected, err := openSession(ctx, invite.Endpoint, identity, hello, live, ErrAccountChanged)
 	if err != nil {
 		return Access{}, err
 	}
@@ -590,6 +682,6 @@ func Accept(ctx context.Context, invite Invite, identity Identity, device string
 	}
 	// A host that bound the share says so with the session's deadline; one
 	// that predates accounts ignores the statement, and the share is plain.
-	bound := statement != "" && reply.Account != nil
+	bound := statement.JWS != "" && reply.Account != nil
 	return Access{GuestID: reply.GuestID, GuestName: fallback(reply.Name, invite.GuestName), MachineLabel: fallback(reply.MachineLabel, invite.MachineLabel), OwnerName: fallback(reply.OwnerName, invite.OwnerName), AgentName: fallback(reply.Agent.Name, invite.AgentName), AgentTarget: reply.Agent.Target, Endpoint: invite.Endpoint, AcceptedAt: now, AccountBound: bound}, nil
 }
