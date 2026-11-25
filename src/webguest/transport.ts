@@ -630,13 +630,6 @@ function keepsSession(error: unknown): boolean {
  return error instanceof HerdrAPIError && !SESSION_ENDING_CODES.has(error.code);
 }
 
-/** A session callOn holds: its requests (call) all go on it. id is that session, opaque: it tells
- *  answers from one herdr process apart from another's. */
-export interface HeldSession {
- readonly id: object;
- call(method: string, params?: unknown): Promise<unknown>;
-}
-
 /** Opens authenticated Noise sessions for API requests (transport.go Transport). A host that answers
  *  further requests on a session (features.multi_request) keeps the one a call ends with for the
  *  next call, so polling stays under the relay's connect limit; otherwise every request has a fresh
@@ -741,58 +734,6 @@ export class GuestTransport {
   }
  }
 
- /** work's requests, all on one session: the herdr process that session reached answers each of
-  *  them, so what one answer says (a ping's capabilities) holds for the next. The session is taken
-  *  first (the idle one, else a fresh one, connected under sendSignal: NotSentError if it can't
-  *  be had), and work knows it (HeldSession.id) before any request goes. Each request is as call's
-  *  (within ROUND_TRIP_LIMIT_MS, sendSignal ending it only while unsent, NotSentError for any
-  *  failure before a frame was handed over), but goes on that session or not at all: a session
-  *  that ended, or that herdr won't carry another request on, is never swapped for another, which
-  *  could reach another herdr. The session is left idle for the next call when work ends with it
-  *  still fit to carry one. */
- async callOn<T>(work: (session: HeldSession) => Promise<T>, options: RequestOptions = {}): Promise<T> {
-  const opening = linkSignals([options.sendSignal, this.#life.signal, options.signal], this.#callLimitMs);
-  let held: Session;
-  try {
-   if (opening.signal.aborted) throw notSent(opening.signal.reason);
-   held = this.#takeIdle() ?? await beforeSend(() => this.#connect(opening.signal));
-  } finally {
-   opening.dispose();
-  }
-  // The handle's contract, kept before any frame: a request after work returned (the session is
-  // the idle pool's, or closed, by then) or while another request on it is out (its reply could
-  // be taken for the other's) is never sent.
-  let spent = false, returned = false, inFlight = false;
-  const request = async (method: string, params?: unknown): Promise<unknown> => {
-   if (returned) throw notSent(other(`${method}: this session was handed back before the request was sent.`));
-   if (inFlight) throw notSent(other(`${method}: another request is out on this session; this one was not sent.`));
-   inFlight = true;
-   const { signal, dispose } = linkSignals([this.#life.signal, options.signal], this.#callLimitMs);
-   const { signal: unsent, dispose: disposeUnsent } = linkSignals([options.sendSignal, signal]);
-   try {
-    const line = await beforeSend(() => this.#request(method, params));
-    if (unsent.aborted) throw notSent(unsent.reason);
-    if (spent) throw notSent(other("The shared machine's connection for this request ended before it was sent."));
-    const outcome = await roundTrip(held, line, { signal, unsent, detach: disposeUnsent });
-    if (!("line" in outcome)) { spent = true; throw outcome.error; }
-    const reply = this.#reply(held, outcome);
-    if (!reply.carries) spent = true;
-    return reply.value();
-   } finally {
-    inFlight = false;
-    disposeUnsent();
-    dispose();
-   }
-  };
-  try {
-   return await work({ id: held, call: request });
-  } finally {
-   returned = true;
-   if (!spent && !inFlight && held.reply.features.multiRequest) this.#park(held);
-   else held.close();
-  }
- }
-
  /** One request whose reply lines are read until the host closes, e.g. pane.stream, on a session of
   *  its own: pane.stream takes a session over (transport.go OpenStream). The caller closes the stream. */
  async openStream(method: string, params?: unknown, options: StreamOptions = {}): Promise<GuestStream> {
@@ -844,25 +785,15 @@ export class GuestTransport {
   return session;
  }
 
- /** A reply line session carried (transport.go decode): value() is its result, or throws its
-  *  failure; carries is whether session is fit for another request (open, and herdr keeps serving
-  *  it after that reply). Where session goes next is the caller's. */
- #reply(session: Session, outcome: { line: string; open: boolean }): { value: () => unknown; carries: boolean } {
+ /** Decodes the reply line session carried, then leaves session idle for the next call when it is
+  *  open and herdr keeps serving it, or closes it (transport.go decode). */
+ #decode(session: Session, outcome: { line: string; open: boolean }): unknown {
   let result: unknown, failure: unknown = null;
   try { result = decodeReply(outcome.line); } catch (error) { failure = error; }
-  return {
-   value: () => { if (failure !== null) throw failure; return result; },
-   carries: outcome.open && session.reply.features.multiRequest && keepsSession(failure),
-  };
- }
-
- /** Decodes the reply line session carried, then leaves session idle for the next call when it
-  *  can carry one, or closes it (transport.go decode). */
- #decode(session: Session, outcome: { line: string; open: boolean }): unknown {
-  const reply = this.#reply(session, outcome);
-  if (reply.carries) this.#park(session);
+  if (outcome.open && session.reply.features.multiRequest && keepsSession(failure)) this.#park(session);
   else session.close();
-  return reply.value();
+  if (failure !== null) throw failure;
+  return result;
  }
 
  /** Takes the idle session for a call, or null when there is none fit to carry one: herdr ended it

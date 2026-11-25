@@ -159,10 +159,25 @@ export function terminalWriteReceipt(error: unknown): string {
 // The composer's reasons a plain terminal's text was written nothing (app desk_interaction_compose.go
 // unwritten): each is a definite not-sent, so the draft is kept.
 const TERMINAL_TEXT_REFUSED = "Write plain text on one line: line breaks and control characters would act on the terminal before Enter.";
+const TERMINAL_LINE_BREAK = "Write one line at a time: a line break would run the text before it.";
 const TERMINAL_PASTE_REFUSED = "This program can't take a pasted block. Write one line at a time.";
-const TERMINAL_UNCHECKED = "Couldn't check whether this machine takes a pasted block — nothing was written. Try again.";
-/** herdr #512: pane.send_text writes a bracketed paste (bracketed: true). */
-const BRACKETED_WRITE = "pane_send_text_bracketed";
+
+/** A draft with a line break goes as one bracketed paste (herdr #517 pane.send_bracketed_text).
+ *  The reason it was written nothing, when herdr's answer says so, else null (a write that may
+ *  have arrived, or a not-sent with its own reason). A herdr without the method refuses it before
+ *  any pane: as an unlisted method (invalid_request), or as an unknown one, which GuestClient
+ *  maps to ErrUnsupported (unknown_method, or invalid_request naming the method as an unknown
+ *  variant). A chat-scope grant may not write to a terminal (owner_forbidden), and a program with
+ *  bracketed paste off takes none (bracketed_paste_unavailable). */
+function bracketedRefusal(error: unknown): string | null {
+ if (error instanceof ErrUnsupported) return TERMINAL_LINE_BREAK;
+ if (!(error instanceof HerdrAPIError)) return null;
+ switch (error.code) {
+  case "invalid_request": case "owner_forbidden": return TERMINAL_LINE_BREAK;
+  case "bracketed_paste_unavailable": return TERMINAL_PASTE_REFUSED;
+  default: return null;
+ }
+}
 
 /** Why this page won't write text to a plain terminal as it stands, or null. herdr writes a
  *  terminal's text to its PTY byte for byte (pane.send_text): a control character (C0, DEL, C1:
@@ -881,22 +896,16 @@ export function createGuestDesk(env: DeskEnv) {
       // As opening it (openTerminalView): a link renewed to another scope writes no shell.
       if (v.active.transport.scope !== "terminal") throw new OwnerRefusedError("pane.send_text");
       // app writeToTerminal: one line goes as it is; a draft with a line break goes as one
-      // bracketed paste, so the break doesn't run the text before it, and only where the
-      // machine's pong says it can write one (an older herdr may ignore bracketed). That pong and
-      // the write go on one session: another session may reach another herdr process (a restart,
-      // a rollback), so a pong another session answered is never relied on, and a session that
-      // ends after its pong writes nothing (#471).
+      // bracketed paste, so the break doesn't run the text before it. That is one call of its own
+      // method, which every herdr that can't write one refuses, nothing written: no pong is relied
+      // on, so a restart or a rollback between a pong and the write can't write it raw (#489).
       const params = { pane_id: v.paneID, text: prompt };
+      const multiline = /[\r\n]/.test(prompt);
       try {
-       if (!/[\r\n]/.test(prompt)) await v.active.client.call("pane.send_text", params, "ok", "", within(v));
-       else await v.active.client.onOneSession(async (session) => {
-        const pong = await session.pong().catch(() => { throw notSent(new Error(TERMINAL_UNCHECKED)); });
-        if (pong.capabilities?.[BRACKETED_WRITE] !== true) throw notSent(new Error(TERMINAL_TEXT_REFUSED));
-        await session.call("pane.send_text", { ...params, bracketed: true }, "ok");
-       }, within(v));
+       await v.active.client.call(multiline ? "pane.send_bracketed_text" : "pane.send_text", params, "ok", "", within(v));
       } catch (error) {
-       // herdr wrote nothing: the pane's program hasn't turned bracketed paste on.
-       failure = error instanceof HerdrAPIError && error.code === "bracketed_paste_unavailable" ? notSent(new Error(TERMINAL_PASTE_REFUSED)) : error;
+       const refusal = multiline ? bracketedRefusal(error) : null;
+       failure = refusal !== null ? notSent(new Error(refusal)) : error;
       }
       return terminalWriteReceipt(failure);
      }

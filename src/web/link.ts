@@ -4,7 +4,7 @@
 // requests per session can be reused there alone. ownerLink.ts is the owner view of this record.
 
 import type { Access as GuestAccess } from "../mygo";
-import type { Features, GuestTransport, HeldSession } from "../webguest/transport";
+import type { Features, GuestTransport } from "../webguest/transport";
 import type { OwnerLink } from "./ownerLink";
 
 export type { GuestAccess };
@@ -18,9 +18,6 @@ export interface WebLink {
   *  them (webguest/errors.ts), herdr's API errors as HerdrAPIError ("herdr: code: message").
   *  sendSignal ends it only while it is unsent (RequestOptions.sendSignal). */
  call<T = unknown>(method: string, params?: unknown, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T>;
- /** work's requests all on one session, so they reach one herdr process (GuestTransport.callOn);
-  *  signal and sendSignal as call's, for each of them. */
- onOneSession<T>(work: (session: HeldSession) => Promise<T>, signal?: AbortSignal, sendSignal?: AbortSignal): Promise<T>;
  /** A request whose reply lines are read until the host closes (pane.stream): each line as parsed
   *  JSON, the acknowledgement first. Aborting signal closes the connection. */
  stream(method: string, params: unknown, signal: AbortSignal): AsyncIterable<unknown>;
@@ -91,7 +88,6 @@ export function transportLink(access: GuestAccess, transport: GuestTransport): W
   access,
   features: () => transport.features,
   call: async <T>(method: string, params?: unknown, signal?: AbortSignal, sendSignal?: AbortSignal) => await transport.call(method, params, { signal, sendSignal }) as T,
-  onOneSession: <T>(work: (session: HeldSession) => Promise<T>, signal?: AbortSignal, sendSignal?: AbortSignal) => transport.callOn(work, { signal, sendSignal }),
   async *stream(method: string, params: unknown, signal: AbortSignal) {
    const lines = await transport.openStream(method, params, { signal });
    const close = () => lines.close();
