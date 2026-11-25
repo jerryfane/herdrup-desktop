@@ -363,6 +363,11 @@ func (c *Client) GuestUpdate(ctx context.Context, p herdrapi.GuestUpdateParams) 
 	return call[herdrapi.ResponseResultGuestUpdated](ctx, c, "guest.update", p)
 }
 
+// GuestRemoveDevice is guest.remove_device.
+func (c *Client) GuestRemoveDevice(ctx context.Context, p herdrapi.GuestRemoveDeviceParams) (herdrapi.ResponseResultGuestDeviceRemoved, error) {
+	return call[herdrapi.ResponseResultGuestDeviceRemoved](ctx, c, "guest.remove_device", p)
+}
+
 // GuestAudit is guest.audit.
 func (c *Client) GuestAudit(ctx context.Context, p herdrapi.GuestAuditParams) (herdrapi.ResponseResultGuestAudit, error) {
 	return call[herdrapi.ResponseResultGuestAudit](ctx, c, "guest.audit", p)

@@ -358,6 +358,30 @@ test("guest changes go to this machine only: never a machine param, and another 
  ]);
 });
 
+test("removing a person or one of their devices goes to this machine: guest.revoke {person}, guest.remove_device {guest_id, fingerprint}", async () => {
+ const host = ownerLink((method) => {
+  if (method === "guest.revoke") return { type: "guest_revoked", person: "acct-nike", closed_streams: 0 };
+  if (method === "guest.remove_device") return { type: "guest_device_removed", guest: {}, closed_streams: 0 };
+ });
+ await guestsDesk.removeGuestDevice("tok", "", "nike-1", "SHA256:mac");
+ await guestsDesk.revokeGuestPerson("tok", "", "acct-nike");
+ await expect(guestsDesk.revokeGuestPerson("tok", "", "")).rejects.toThrow("no person");
+ await expect(guestsDesk.revokeGuestPerson("tok", "box2", "acct-nike")).rejects.toThrow("other machines");
+ await expect(guestsDesk.removeGuestDevice("tok", "box2", "nike-1", "SHA256:mac")).rejects.toThrow("other machines");
+ expect(host.calls.filter((c) => c.method.startsWith("guest.")).map((c) => [c.method, c.params])).toEqual([
+  ["guest.remove_device", { guest_id: "nike-1", fingerprint: "SHA256:mac" }], ["guest.revoke", { person: "acct-nike" }],
+ ]);
+});
+
+test("a device removal on a share herdr no longer has active is done; any other refusal is not", async () => {
+ ownerLink((method, params) => {
+  if (method === "guest.remove_device" && params.guest_id === "gone") throw new HerdrAPIError("guest_not_found", "no active guest with that id", {});
+  if (method === "guest.remove_device") throw new HerdrAPIError("guest_not_account_bound", "this share is bound to one device; revoke the guest instead", {});
+ });
+ await guestsDesk.removeGuestDevice("tok", "", "gone", "SHA256:mac");
+ await expect(guestsDesk.removeGuestDevice("tok", "", "plain", "SHA256:mac")).rejects.toThrow("bound to one device");
+});
+
 test("an invite is for the open agent view's pane, on the link's machine", async () => {
  const created = { type: "guest_invite_created", invite: { invite_id: "i1" }, url: "https://herdrup.app/web/#x" };
  const host = ownerLink((method) => { if (method === "guest.invite.create") return created; });

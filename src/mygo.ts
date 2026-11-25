@@ -2072,6 +2072,16 @@ export const Desk = {
     return call("Desk.RecheckSettingsServerUpdate", token, lookAgain);
   },
   /**
+   * RemoveGuestDevice drops one device (its fingerprint, deviceID) from the
+   * account-bound share guestID on machine (guest.remove_device); the person's
+   * other devices keep it. A share herdr no longer has active (guest_not_found:
+   * revoked meanwhile, from another device or page) is gone for that device
+   * too, so it is done.
+   */
+  removeGuestDevice(token: string, machine: string, guestID: string, deviceID: string): Promise<void> {
+    return call("Desk.RemoveGuestDevice", token, machine, guestID, deviceID);
+  },
+  /**
    * RemoveMachine forgets a saved machine. Removing the active machine
    * disconnects it and leaves no machine active.
    */
@@ -2112,6 +2122,16 @@ export const Desk = {
   },
   revokeGuestAccess(token: string, machine: string, id: string, invite: boolean): Promise<void> {
     return call("Desk.RevokeGuestAccess", token, machine, id, invite);
+  },
+  /**
+   * RevokeGuestPerson revokes every share of one person on machine at once
+   * (guest.revoke {person}): a person from guest.list, the HerdrUp account
+   * behind an account-bound share, else a plain share's device fingerprint.
+   * Settings groups shares per person per machine only, so person never
+   * reaches another machine's shares.
+   */
+  revokeGuestPerson(token: string, machine: string, person: string): Promise<void> {
+    return call("Desk.RevokeGuestPerson", token, machine, person);
   },
   /**
    * SaveMachine updates the saved profile without opening a connection. A running

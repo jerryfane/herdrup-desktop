@@ -145,7 +145,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   const herdrupAccountSummary = el("span", "settings-row-value");
   let herdrupAccountShown = false;
   void herdrupAccount.refresh();
-  const guests = new GuestSettings(report, (value, header) => { guestSummary.textContent = value; setHeader("sharedAccess", header); });
+  // Shared access titles a person's page with their name (no summary under it).
+  let guestPage: string | null = null;
+  const guests = new GuestSettings(report, (value, header) => { guestSummary.textContent = value; setHeader("sharedAccess", header); }, glyph, person => {
+    guestPage = person;
+    if (selected === "sharedAccess") { title.textContent = person ?? "Shared access"; showSubtitle(); }
+  });
   const notifications = new NotificationsSettings(report, (value, header, warn) => {
     notificationSummary.textContent = value; notificationSummary.classList.toggle("warn", warn); setHeader("notifications", header, warn);
   }, select => menuPicker(select));
@@ -263,7 +268,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     slot.append(mark); return slot;
   }
   function showSubtitle() {
-    const line = selected === "typingLatency" ? { text: "Key press to screen, on this computer", warn: false } : headers[selected];
+    const line = selected === "typingLatency" ? { text: "Key press to screen, on this computer", warn: false } : selected === "sharedAccess" && guestPage !== null ? null : headers[selected];
     subtitle.textContent = line?.text ?? ""; subtitle.hidden = !line?.text; subtitle.classList.toggle("warn", !!line?.warn);
   }
   // suggestionsGroup (HerdrApp.swift 8087-8127): only while something waits, under the card.
@@ -294,7 +299,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   function choose(next: Page) {
     if (next !== "accounts") accounts.closeDialogs();
-    if (next !== "sharedAccess") guests.closeDialogs();
+    if (next !== "sharedAccess") { guests.closeDialogs(); guests.back(); }
     selected = next; message.hidden = true; renderIndex(); renderPage(); opened();
   }
   function renderIndex() {
@@ -413,7 +418,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     connectionNodes = connectionNodes.filter(node => index.contains(node));
     versionNodes = versionNodes.filter(node => index.contains(node));
     showSubtitle();
-    title.textContent = selected === "machines" ? "Machines" : selected === "herdrupAccount" ? ACCOUNT_TITLE : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : selected === "appUpdates" ? "App updates" : "Text size";
+    title.textContent = selected === "machines" ? "Machines" : selected === "herdrupAccount" ? ACCOUNT_TITLE : selected === "accounts" ? "Accounts" : selected === "sharedAccess" ? guestPage ?? "Shared access" : selected === "notifications" ? "Notifications" : selected === "typingLatency" ? "Typing latency" : selected === "appUpdates" ? "App updates" : "Text size";
     body.replaceChildren();
     if (share && selected === "machines") { title.textContent = "Shared with you"; body.append(share.details()); return; }
     if (selected === "herdrupAccount") { body.append(herdrupAccount.root); void herdrupAccount.refresh(true); return; }
