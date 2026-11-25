@@ -45,8 +45,10 @@ func (c *Client) PaneSendBracketedText(ctx context.Context, pane, text string) e
 		return unchecked(errors.New("this connection can't hold one channel to herdr"))
 	}
 	sent := false // the write went out on the held channel
-	err := one.OnOneChannel(ctx, func(call CallFunc) error {
-		pong, err := c.pingWith(ctx, call)
+	err := one.OnOneChannel(ctx, func(h Held) error {
+		// The ping is the one request that may move to a fresh channel
+		// (Held.Ping); the write goes at most once.
+		pong, err := c.pingWith(ctx, func(ctx context.Context, _ string, _, result any) error { return h.Ping(ctx, result) })
 		if err != nil {
 			return err
 		}
@@ -54,7 +56,7 @@ func (c *Client) PaneSendBracketedText(ctx context.Context, pane, text string) e
 			return ErrBracketedUnsupported
 		}
 		bracketed := true
-		_, _, err = c.callWith(ctx, call, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, Bracketed: &bracketed, InputSource: c.inputSource()})
+		_, _, err = c.callWith(ctx, h.Call, "pane.send_text", herdrapi.PaneSendTextParams{PaneID: pane, Text: text, Bracketed: &bracketed, InputSource: c.inputSource()})
 		sent = !errors.Is(err, bridge.ErrNotSent)
 		return err
 	})

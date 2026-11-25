@@ -515,11 +515,11 @@ func TestAGuestRequestHeldToOneSessionGoesOnNoOther(t *testing.T) {
 			h := newReuseHost(t, multi)
 			ctx := context.Background()
 			var promptErr error
-			err := h.transport.OnOneChannel(ctx, func(call engine.CallFunc) error {
-				if err := call(ctx, "ping", nil, nil); err != nil {
+			err := h.transport.OnOneChannel(ctx, func(held engine.Held) error {
+				if err := held.Ping(ctx, nil); err != nil {
 					return err
 				}
-				promptErr = call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "held"}, nil)
+				promptErr = held.Call(ctx, "agent.prompt", map[string]string{"target": "worker", "text": "held"}, nil)
 				return nil
 			})
 			if err != nil {

@@ -267,75 +267,103 @@ func (c *Client) readyChannel(ctx context.Context) *multiChannel {
 	}
 }
 
-// maxHeldChannelTries is how many channels OnOneChannel takes, at most, for
-// a first request whose channel turns out to have ended before it answered.
+// maxHeldChannelTries is how many channels a held Ping takes, at most, when
+// the channel turns out to have ended before it answered.
 const maxHeldChannelTries = 3
 
-// OnOneChannel runs work with call, which sends each request on one --multi
-// channel of the session, the same one throughout: one `herdr api-bridge
-// --multi` process, so one herdr answers every one of them, and what one
-// answer says (a ping's capabilities) holds for the next. A herdr that
-// restarted or was rolled back comes with another channel.
+// OnOneChannel runs work on one --multi channel of the session, held for it
+// (HeldChannel): one `herdr api-bridge --multi` process, so one herdr
+// answers every request work sends, and what one answer says (a ping's
+// capabilities) holds for the next. A herdr that restarted or was rolled
+// back comes with another channel. The channel is taken first, opening a
+// fresh one when none is live (after a herdr restart, the last one ended),
+// as Call would; a session whose capability is not yet known is pinged
+// per-request to learn it. With no channel to be had, OnOneChannel fails
+// with an error wrapping ErrNotSent, and work does not run.
 //
-// The channel is taken first, opening a fresh one when none is live (after
-// a herdr restart, the last one ended), as Call would; a session whose
-// capability is not yet known is pinged per-request to learn it. The
-// channel taken may have ended already without the client hearing yet:
-// until it has answered a request, a request it failed to carry (not
-// written, or a ping it died under) goes on a fresh channel in its place,
-// since nothing yet was learnt from the ended one. Once the channel has
-// answered, a request goes on it or nowhere: once it ended before the
-// request was written, call fails with an error wrapping ErrNotSent, and
-// herdr does not have the request; nor does it with no channel to be had.
-// Each call is otherwise as Call's.
-func (c *Client) OnOneChannel(ctx context.Context, work func(call func(ctx context.Context, method string, params, result any) error) error) error {
+// Two rules say where a request goes:
+//   - Every request is sent at most once. One that goes through Call goes
+//     on the held channel or nowhere, first or not: when the channel ended
+//     before it was written, it fails with an error wrapping ErrNotSent
+//     (herdr does not have it); when the channel ended after it was
+//     written and before it answered, it fails with the channel's error
+//     (herdr may have it). It is never sent again, on that channel or any
+//     other, nor down the per-request path.
+//   - Only a request marked idempotent may move: Ping, until the held
+//     channel has answered one of work's requests. The channel taken may
+//     have ended without the client hearing yet; a Ping it failed to carry
+//     goes on a fresh channel in its place (nothing was learnt from the
+//     ended one, and a ping changes nothing), which is held from then on.
+//     Once the channel has answered, a Ping stays on it like any request.
+func (c *Client) OnOneChannel(ctx context.Context, work func(h *HeldChannel) error) error {
 	m, err := c.heldChannel(ctx)
 	if err != nil {
 		return err
 	}
-	answered := false // m has answered a request of work's
-	return work(func(ctx context.Context, method string, params, result any) error {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("%s: %w", method, err)
+	return work(&HeldChannel{c: c, m: m})
+}
+
+// HeldChannel is the channel OnOneChannel holds for its work, which sends
+// its requests one at a time.
+type HeldChannel struct {
+	c        *Client
+	m        *multiChannel
+	answered bool // m has answered one of work's requests
+}
+
+// Call sends one request on the held channel, at most once
+// (OnOneChannel), and decodes its result into result.
+func (h *HeldChannel) Call(ctx context.Context, method string, params, result any) error {
+	return h.send(ctx, method, params, result, false)
+}
+
+// Ping sends a ping, an idempotent request: until the held channel has
+// answered, one it failed to carry goes on a fresh channel (OnOneChannel).
+func (h *HeldChannel) Ping(ctx context.Context, result any) error {
+	return h.send(ctx, "ping", nil, result, true)
+}
+
+func (h *HeldChannel) send(ctx context.Context, method string, params, result any, idempotent bool) error {
+	c := h.c
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", method, err)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
+		defer cancel()
+	}
+	id := c.nextID(method)
+	line, err := EncodeRequest(id, method, params)
+	if err != nil {
+		return err
+	}
+	if !multiRoutable(method, line) {
+		return fmt.Errorf("%s: %w", method, ErrNotSent)
+	}
+	reply, err := h.m.do(ctx, id, line)
+	for tries := 1; err != nil && idempotent && !h.answered && tries < maxHeldChannelTries && ctx.Err() == nil && !h.m.alive(); tries++ {
+		// The channel ended before it answered anything: an idempotent
+		// request goes on a fresh one, held from then on.
+		fresh, takeErr := c.heldChannel(ctx)
+		if takeErr != nil {
+			return fmt.Errorf("%s: %w", method, takeErr)
 		}
-		if _, ok := ctx.Deadline(); !ok {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, defaultCallTimeout)
-			defer cancel()
-		}
-		id := c.nextID(method)
-		line, err := EncodeRequest(id, method, params)
-		if err != nil {
+		h.m = fresh
+		id = c.nextID(method)
+		if line, err = EncodeRequest(id, method, params); err != nil {
 			return err
 		}
-		if !multiRoutable(method, line) {
-			return fmt.Errorf("%s: %w", method, ErrNotSent)
-		}
-		reply, err := m.do(ctx, id, line)
-		for tries := 1; err != nil && !answered && tries < maxHeldChannelTries && ctx.Err() == nil && !m.alive() &&
-			(errors.Is(err, ErrNotSent) || method == "ping"); tries++ {
-			// The channel ended before it answered anything: take a fresh
-			// one. A ping it died under is sent again; it changes nothing.
-			fresh, takeErr := c.heldChannel(ctx)
-			if takeErr != nil {
-				return fmt.Errorf("%s: %w", method, takeErr)
-			}
-			m = fresh
-			id = c.nextID(method)
-			if line, err = EncodeRequest(id, method, params); err != nil {
-				return err
-			}
-			reply, err = m.do(ctx, id, line)
-		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", method, err)
-		}
-		answered = true
-		if method == "ping" {
-			c.learnCapability(reply)
-		}
-		return DecodeReply(reply, result)
-	})
+		reply, err = h.m.do(ctx, id, line)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", method, err)
+	}
+	h.answered = true
+	if method == "ping" {
+		c.learnCapability(reply)
+	}
+	return DecodeReply(reply, result)
 }
 
 // heldChannel is the session's open channel for OnOneChannel. A session

@@ -340,17 +340,21 @@ func TestARequestHeldToOneChannelGoesOnNoOther(t *testing.T) {
 	m := startMachine(t, nil)
 	c := m.dial(t)
 	ctx := context.Background()
-	err := c.OnOneChannel(ctx, func(call func(context.Context, string, any, any) error) error {
-		if err := call(ctx, "ping", nil, nil); err != nil {
+	err := c.OnOneChannel(ctx, func(h *bridge.HeldChannel) error {
+		if err := h.Ping(ctx, nil); err != nil {
 			return err
 		}
-		if err := call(ctx, "agent.list", nil, nil); err != nil {
+		if err := h.Call(ctx, "agent.list", nil, nil); err != nil {
 			return err
 		}
 		m.srv.EndMultiChannels()
 		eventually(t, "the held channel to end", func() bool { return !bridge.MultiAlive(c) })
-		if err := call(ctx, "pane.send_text", nil, nil); !errors.Is(err, bridge.ErrNotSent) {
+		if err := h.Call(ctx, "pane.send_text", nil, nil); !errors.Is(err, bridge.ErrNotSent) {
 			t.Errorf("a request after the held channel ended: %v, want ErrNotSent", err)
+		}
+		// A ping after an answer stays on the held channel too.
+		if err := h.Ping(ctx, nil); !errors.Is(err, bridge.ErrNotSent) {
+			t.Errorf("a ping after the held channel answered and ended: %v, want ErrNotSent", err)
 		}
 		return nil
 	})
@@ -377,8 +381,8 @@ func TestARequestHeldToOneChannelGoesOnNoOther(t *testing.T) {
 func heldPing(t *testing.T, m *machine, c *bridge.Client) int {
 	t.Helper()
 	before := len(m.srv.Requests())
-	if err := c.OnOneChannel(context.Background(), func(call func(context.Context, string, any, any) error) error {
-		return call(context.Background(), "ping", nil, nil)
+	if err := c.OnOneChannel(context.Background(), func(h *bridge.HeldChannel) error {
+		return h.Ping(context.Background(), nil)
 	}); err != nil {
 		t.Fatalf("held ping: %v", err)
 	}
@@ -420,5 +424,37 @@ func TestAHeldChannelThatEndsBeforeAnsweringIsReplaced(t *testing.T) {
 	armed.Store(true)
 	if second := heldPing(t, m, c); second == first {
 		t.Fatalf("the held ping was answered on channel %d, the one that ended", second)
+	}
+}
+
+// #476: a request not marked idempotent is sent at most once, first or
+// not: when the held channel ends under it before it answers, it fails
+// and is never sent again, on a fresh channel or per-request.
+func TestANonIdempotentFirstRequestIsSentAtMostOnce(t *testing.T) {
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.EndMultiOn = func(method string) bool { return method == "pane.send_text" }
+	})
+	c := m.dial(t)
+	heldPing(t, m, c) // the session's channel is open
+	var sendErr error
+	if err := c.OnOneChannel(context.Background(), func(h *bridge.HeldChannel) error {
+		sendErr = h.Call(context.Background(), "pane.send_text", nil, nil)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if sendErr == nil {
+		t.Fatal("a request whose channel ended under it, unanswered, succeeded")
+	}
+	// herdr got it once, its channel ending under it; no copy went anywhere
+	// else.
+	copies := 0
+	for _, r := range m.srv.Requests() {
+		if r.Method == "pane.send_text" {
+			copies++
+		}
+	}
+	if copies != 1 {
+		t.Fatalf("pane.send_text sent %d times, want once: %v", copies, sendErr)
 	}
 }

@@ -352,23 +352,25 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 	return connected, nil
 }
 
-// OnOneChannel runs work with call, which sends each request on one
-// session, the same one throughout (engine.OneChannel): the herdr process
-// that session reached answers every one, so what one answer says (a
-// ping's capabilities) holds for the next. The session is taken first, the
-// idle one or else a fresh one. A request goes on it or nowhere: once the
-// session ended or herdr spent it (a host without features.multi_request
-// serves one request a session) before the request was written, call fails
-// with an error wrapping bridge.ErrNotSent, and herdr does not have the
-// request; with no session to be had, OnOneChannel does. Each call is
-// otherwise as Call's. The session is left idle for the next call when
-// work ends with it still fit to carry one.
-func (t *Transport) OnOneChannel(ctx context.Context, work func(call engine.CallFunc) error) error {
+// OnOneChannel runs work on one session, held for it (engine.OneChannel):
+// the herdr process that session reached answers every request work sends,
+// so what one answer says (a ping's capabilities) holds for the next. The
+// session is taken first, the idle one or else a fresh one; with none to be
+// had, OnOneChannel fails with an error wrapping bridge.ErrNotSent, and
+// work does not run. Every request, Ping included, goes on it at most once
+// or nowhere: once the session ended or herdr spent it (a host without
+// features.multi_request serves one request a session) before the request
+// was written, it fails with an error wrapping bridge.ErrNotSent, and herdr
+// does not have it; it is never sent again. (A guest's held session is not
+// swapped even for a ping.) Each request is otherwise as Call's. The
+// session is left idle for the next call when work ends with it still fit
+// to carry one.
+func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) error) error {
 	if err := t.ctx.Err(); err != nil {
 		return err
 	}
-	held := t.takeIdle()
-	if held == nil {
+	s := t.takeIdle()
+	if s == nil {
 		connectCtx, cancel := context.WithTimeout(ctx, roundTripLimit)
 		stop := context.AfterFunc(t.ctx, cancel)
 		connected, err := t.connect(connectCtx)
@@ -380,40 +382,52 @@ func (t *Transport) OnOneChannel(ctx context.Context, work func(call engine.Call
 		if connected.reply.Features.MultiRequest {
 			connected.startPump()
 		}
-		held = connected
+		s = connected
 	}
-	spent := false
-	call := func(ctx context.Context, method string, params, result any) error {
-		if spent {
-			return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
-		}
-		ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
-		defer cancel()
-		stop := context.AfterFunc(t.ctx, cancel)
-		defer stop()
-		request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(t.seq.Add(1), 10), method, params)
-		if err != nil {
-			return err
-		}
-		line, sent, open, err := roundTrip(ctx, held, request)
-		if err != nil {
-			spent = true
-			if !sent && ctx.Err() == nil {
-				return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
-			}
-			return err
-		}
-		err = bridge.DecodeReply(line, result)
-		if !open || held.frames == nil || !keepsSession(err) {
-			spent = true
+	h := &heldSession{t: t, s: s}
+	err := work(h)
+	if h.spent {
+		s.close()
+	} else {
+		t.park(s)
+	}
+	return err
+}
+
+// heldSession is the session OnOneChannel holds for its work.
+type heldSession struct {
+	t     *Transport
+	s     *session
+	spent bool // the session can carry no more requests
+}
+
+func (h *heldSession) Ping(ctx context.Context, result any) error {
+	return h.Call(ctx, "ping", nil, result)
+}
+
+func (h *heldSession) Call(ctx context.Context, method string, params, result any) error {
+	if h.spent {
+		return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
+	}
+	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
+	defer cancel()
+	stop := context.AfterFunc(h.t.ctx, cancel)
+	defer stop()
+	request, err := bridge.EncodeRequest("herdrup:guest:"+strconv.FormatUint(h.t.seq.Add(1), 10), method, params)
+	if err != nil {
+		return err
+	}
+	line, sent, open, err := roundTrip(ctx, h.s, request)
+	if err != nil {
+		h.spent = true
+		if !sent && ctx.Err() == nil {
+			return fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
 		}
 		return err
 	}
-	err := work(call)
-	if spent {
-		held.close()
-	} else {
-		t.park(held)
+	err = bridge.DecodeReply(line, result)
+	if !open || h.s.frames == nil || !keepsSession(err) {
+		h.spent = true
 	}
 	return err
 }

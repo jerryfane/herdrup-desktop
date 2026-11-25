@@ -87,13 +87,14 @@ func TestABracketedWriteChecksTheHerdrThatTakesIt(t *testing.T) {
 	}
 }
 
-// channelEndsAfterPing is a transport whose held channel answers a ping
-// advertising pane_send_text_bracketed and then ends: every later request
-// on it is unsent (bridge.ErrNotSent). Requests sent any other way are
-// recorded in elsewhere.
+// channelEndsAfterPing is a transport whose held channel answers its ping
+// (Held.Ping) advertising pane_send_text_bracketed and then ends: every
+// request sent with Held.Call is unsent (bridge.ErrNotSent), and recorded
+// in onHeld. Requests sent any other way are recorded in elsewhere.
 type channelEndsAfterPing struct {
 	engine.Transport
 	mu        sync.Mutex
+	onHeld    []string
 	elsewhere []string
 }
 
@@ -104,18 +105,26 @@ func (e *channelEndsAfterPing) Call(_ context.Context, method string, _, _ any) 
 	return nil
 }
 
-func (e *channelEndsAfterPing) OnOneChannel(_ context.Context, work func(call engine.CallFunc) error) error {
-	answered := false
-	return work(func(_ context.Context, method string, _, result any) error {
-		if answered {
-			return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
-		}
-		answered = true
-		return json.Unmarshal([]byte(`{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"pane_send_text_bracketed":true}}`), result)
-	})
+func (e *channelEndsAfterPing) OnOneChannel(_ context.Context, work func(h engine.Held) error) error {
+	return work(endedHeld{e})
 }
 
-// #476: a held channel that ends between its pong and the write sends the
+type endedHeld struct{ e *channelEndsAfterPing }
+
+func (h endedHeld) Ping(_ context.Context, result any) error {
+	return json.Unmarshal([]byte(`{"type":"pong","version":"0.9.5","protocol":22,"capabilities":{"pane_send_text_bracketed":true}}`), result)
+}
+
+func (h endedHeld) Call(_ context.Context, method string, _, _ any) error {
+	h.e.mu.Lock()
+	defer h.e.mu.Unlock()
+	h.e.onHeld = append(h.e.onHeld, method)
+	return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
+}
+
+// #476: the bracketed write pings with Held.Ping, the one request that may
+// move to a fresh channel, and sends the write with Held.Call, at most
+// once. A held channel that ends between its pong and the write sends the
 // write nowhere else (another channel may reach another herdr): it is
 // refused unchecked, nothing written.
 func TestABracketedWriteWhoseChannelEndsAfterItsPingIsNotSent(t *testing.T) {
@@ -125,8 +134,8 @@ func TestABracketedWriteWhoseChannelEndsAfterItsPingIsNotSent(t *testing.T) {
 	if !errors.As(err, &probe) {
 		t.Fatalf("%v, want ErrProbeFailed", err)
 	}
-	if len(tr.elsewhere) != 0 {
-		t.Fatalf("sent elsewhere: %v, want nothing", tr.elsewhere)
+	if len(tr.elsewhere) != 0 || len(tr.onHeld) != 1 || tr.onHeld[0] != "pane.send_text" {
+		t.Fatalf("held calls %v, elsewhere %v; want the ping by Held.Ping and only the write by Held.Call", tr.onHeld, tr.elsewhere)
 	}
 }
 

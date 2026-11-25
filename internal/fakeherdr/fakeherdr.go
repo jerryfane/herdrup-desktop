@@ -68,8 +68,8 @@ type Server struct {
 	// of 1024 bytes or more are framed gzipped (herdr #414).
 	Gzip bool
 	// EndMultiOn, when set, is asked of each request a --multi channel
-	// reads: true ends that channel there, unanswered, as a herdr that
-	// restarted under it does.
+	// reads: true records the request, then ends that channel there,
+	// unanswered, as a herdr that restarted under it does.
 	EndMultiOn func(method string) bool
 	// Handle answers a request. Whether a herdr advertises api_bridge_multi
 	// is up to the pong it returns for "ping"; see Pong.
@@ -576,6 +576,7 @@ func (s *Server) multi(ch ssh.Channel, session string) {
 		if len(line) > 0 && s.EndMultiOn != nil {
 			var head request
 			if json.Unmarshal(line, &head) == nil && s.EndMultiOn(head.Method) {
+				s.record(Request{Method: head.Method, Session: session, Multi: true, Channel: channel, Bytes: len(line)})
 				wg.Wait()
 				ch.Close()
 				return

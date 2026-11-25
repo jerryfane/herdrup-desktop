@@ -69,14 +69,27 @@ type Duplex interface {
 type CallFunc func(ctx context.Context, method string, params, result any) error
 
 // OneChannel is a Transport that can hold one channel to herdr for a few
-// requests: one herdr process answers every request work sends with call,
-// so what one answer says (a ping's capabilities) holds for the next. A
-// herdr that restarted or was rolled back comes with another channel, which
-// a held one never turns into: a request the held channel can't carry (it
-// ended, or never could be had) fails with an error wrapping
-// bridge.ErrNotSent, and herdr does not have it.
+// requests (Held): one herdr process answers every request work sends, so
+// what one answer says (a ping's capabilities) holds for the next. A herdr
+// that restarted or was rolled back comes with another channel, which a
+// held one never turns into. With no channel to be had, OnOneChannel fails
+// with an error wrapping bridge.ErrNotSent, and work does not run.
 type OneChannel interface {
-	OnOneChannel(ctx context.Context, work func(call CallFunc) error) error
+	OnOneChannel(ctx context.Context, work func(h Held) error) error
+}
+
+// Held is the channel OneChannel holds for work, which sends its requests
+// one at a time.
+//   - Call sends a request at most once, on the held channel or nowhere:
+//     one the channel can't carry fails, with an error wrapping
+//     bridge.ErrNotSent when it was never written (herdr does not have it),
+//     and is never sent again.
+//   - Ping is the one request marked idempotent: until the held channel has
+//     answered, a ping it failed to carry may go on a fresh channel, held
+//     from then on (the one taken may have ended unnoticed).
+type Held interface {
+	Call(ctx context.Context, method string, params, result any) error
+	Ping(ctx context.Context, result any) error
 }
 
 // Bridge adapts a bridge.Client to Transport and Duplexer.
@@ -100,8 +113,8 @@ func (b bridgeTransport) OpenDuplex(ctx context.Context) (Duplex, error) {
 	return d, nil
 }
 
-func (b bridgeTransport) OnOneChannel(ctx context.Context, work func(call CallFunc) error) error {
-	return b.Client.OnOneChannel(ctx, func(call func(context.Context, string, any, any) error) error { return work(call) })
+func (b bridgeTransport) OnOneChannel(ctx context.Context, work func(h Held) error) error {
+	return b.Client.OnOneChannel(ctx, func(h *bridge.HeldChannel) error { return work(h) })
 }
 
 // Client is a typed client for one herdr session.
