@@ -1,6 +1,8 @@
 // The mounted agent view (desk_interaction.go interaction) and the shared agent as the last list
 // gave it (link.agents), for the Desk methods outside desk.ts (gram.ts's composer attachments).
 
+import type { GuestShareDetails } from "../mygo";
+
 /** The fields of herdr's agent.list agent these readers use (herdrapi.AgentInfo). */
 export interface ListedAgent { pane_id: string; name?: string | null }
 
@@ -9,6 +11,10 @@ export interface GuestView {
  paneID: string;
  /** Aborted when the view closes or the connection changes (interaction.ctx). */
  signal: AbortSignal;
+ /** The agent as its guests would see it (desk_guest_invite.go shareRoute): a federated peer's
+  *  agent on herdr's machine_label for it (else the peer's id), the link's own on the link's
+  *  machine label. The share sheet shows it, and the view's invite sends it. */
+ share: { details: GuestShareDetails };
 }
 
 let view: GuestView | null = null;

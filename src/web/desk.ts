@@ -316,7 +316,6 @@ interface MountedView extends GuestView {
  };
  active: Active;
  view: AgentView;
- share: { details: GuestShareDetails };
  life: AbortController;
  sending: boolean;
  terminal: { id: string; life: AbortController; input: Promise<void>; failed: string | null } | null;
