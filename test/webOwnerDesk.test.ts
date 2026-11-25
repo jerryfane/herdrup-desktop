@@ -1,6 +1,6 @@
 // The browser Desk's owner link and the machine probe (web owner access D2c) against a local relay
 // whose host admits owner hellos as herdr's guest/owner.rs does and serves agent.list.
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { isGuestPaused } from "../src/guestPaused";
 import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
@@ -16,7 +16,7 @@ import { currentOwnerLink } from "../src/web/ownerLink";
 import { onLinkChanged } from "../src/web/link";
 import { closingLink } from "../src/web/ownerSession";
 import type { Avatar, BoardUpdate, ConnState } from "../src/mygo";
-import { startRelay, type HostSession, type TestRelay } from "./webguestResponder";
+import { CONNECTS_LIMIT_MS, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 import { ComposerDrafts, type DraftStore } from "../src/composerDraft";
 import { ErrUnsupported } from "../src/web/engine";
 import { guestsDesk } from "../src/web/guestsDesk";
@@ -24,6 +24,12 @@ import { PEER_NOT_SHARED } from "../src/web/view";
 
 const statements: StatementSource = { get: async () => ({ jws: "jws", expMs: Date.now() + 600_000 }), drop() {} };
 const agents = [{ pane_id: "p1", terminal_id: "t1", name: "herdr-app", agent: "claude" }, { pane_id: "p2", terminal_id: "t2", name: "web-owner", agent: "codex" }, { pane_id: "p3", terminal_id: "t3", name: "relay", agent: "claude" }];
+
+// Each test drives a real relay (a handshake per connect, then lists and streams), as
+// webOwnerCreate's do. Past bun's 5 s on a loaded machine a timed-out test isn't stopped: its
+// finally later closes the next test's owner link (the module's one link), and a relist of it
+// then finds none (#540). So each has the limit of a test that connects.
+setDefaultTimeout(CONNECTS_LIMIT_MS);
 
 type Request = { id: string; method: string };
 const answer = (session: HostSession, req: Request, body: object) => session.write(JSON.stringify({ id: req.id, ...body }) + "\n");
