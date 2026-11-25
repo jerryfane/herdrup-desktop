@@ -638,18 +638,21 @@ func within[T any](t *testing.T, what string, ch <-chan T) T {
 
 // #499: an earlier request herdr never answers gets the channel retired
 // while the last pending request waits for the write lock; cancelling that
-// one withdraws it, and the retired channel, now empty, closes.
+// one withdraws it, and the retired channel, now empty, closes: its SSH
+// channel ends, not only its state.
 func TestARetiredChannelClosesOnceItsLastPendingRequestIsWithdrawn(t *testing.T) {
-	release := make(chan struct{})
+	hold := make(chan struct{})
+	var released sync.Once
+	release := func() { released.Do(func() { close(hold) }) }
 	m := startMachine(t, func(s *fakeherdr.Server) {
 		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 			if method == "hang" {
-				<-release // never answered while the test runs
+				<-hold // unanswered until the test releases it
 			}
 			return echoHandler(method, params)
 		}
 	})
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(release)
 	c := m.dial(t)
 	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
 		t.Fatal(err)
@@ -664,7 +667,7 @@ func TestARetiredChannelClosesOnceItsLastPendingRequestIsWithdrawn(t *testing.T)
 	eventually(t, "the unanswered request written", func() bool {
 		return slices.ContainsFunc(m.srv.Requests(), func(r fakeherdr.Request) bool { return r.Method == "hang" && r.Multi })
 	})
-	unlock := ch.LockWrites()
+	unlock := ch.LockWrites(t)
 	lastCtx, cancelLast := context.WithCancel(context.Background())
 	defer cancelLast()
 	last := make(chan error, 1)
@@ -691,6 +694,11 @@ func TestARetiredChannelClosesOnceItsLastPendingRequestIsWithdrawn(t *testing.T)
 			t.Fatalf("the withdrawn request reached herdr: %+v", r)
 		}
 	}
+	// The fake keeps a channel until its handlers return; once the held
+	// one does, the channel's end shows only if the client closed its SSH
+	// session, before the connection itself is closed in cleanup.
+	release()
+	eventually(t, "the retired channel's SSH session to close", func() bool { return m.srv.OpenChannels() == 0 })
 }
 
 // #499: a cancelled request on a retired channel that has closed fails
@@ -731,7 +739,7 @@ func TestARequestCancelledAtTheWriteLockKeepsItsCause(t *testing.T) {
 	}
 	eventually(t, "the --multi channel", func() bool { return bridge.MultiAlive(c) })
 	ch := bridge.ChannelOf(c)
-	unlock := ch.LockWrites()
+	unlock := ch.LockWrites(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -744,5 +752,31 @@ func TestARequestCancelledAtTheWriteLockKeepsItsCause(t *testing.T) {
 	}
 	if n := ch.Pending(); n != 0 {
 		t.Fatalf("%d requests still pending after the withdrawal", n)
+	}
+}
+
+// #501 review: a request offered to a channel that died fails unsent with
+// why it died (the read or process error fail recorded), and with the
+// context's end too when that has ended, whichever of the free slot, the
+// death and the cancellation the channel's select picks.
+func TestARequestOnADeadChannelKeepsWhyItDied(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the --multi channel", func() bool { return bridge.MultiAlive(c) })
+	ch := bridge.ChannelOf(c)
+	died := errors.New("herdr api-bridge exited: broken pipe")
+	ch.Fail(died)
+	for range 32 {
+		if err := ch.Do(context.Background(), "pane.send_text"); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, died) {
+			t.Errorf("%v; want ErrNotSent with why the channel died", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := ch.Do(ctx, "pane.send_text"); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Errorf("%v; want ErrNotSent with context.Canceled", err)
+		}
 	}
 }
