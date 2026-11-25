@@ -65,13 +65,6 @@ func suggestionsDesk(t *testing.T, configure func(*fakeherdr.Topics), pong func(
 	t.Helper()
 	var mu sync.Mutex
 	var updates []TopicsUpdate
-	previous := publishTopics
-	publishTopics = func(u TopicsUpdate) {
-		mu.Lock()
-		updates = append(updates, withLists(u))
-		mu.Unlock()
-	}
-	t.Cleanup(func() { publishTopics = previous })
 	fixture := fakeherdr.NewTopics()
 	fixture.Turn, fixture.SwitchDelay, fixture.Suggestions = 50*time.Millisecond, 10*time.Millisecond, true
 	if configure != nil {
@@ -107,18 +100,17 @@ func suggestionsDesk(t *testing.T, configure func(*fakeherdr.Topics), pong func(
 			fixture.Events(ctx, emit)
 		}
 	})
+	// This Desk's own recorder, set before the view opens: a late publish
+	// of its watch lands here, never in another test's.
+	d.publishTopics = func(u TopicsUpdate) {
+		mu.Lock()
+		updates = append(updates, withLists(u))
+		mu.Unlock()
+	}
 	board := d.Board()
 	if _, err := d.OpenAgentView(AgentTarget{MachineID: board.MachineID, Session: board.Session, PaneID: "w1:p1"}, "view"); err != nil {
 		t.Fatal(err)
 	}
-	v, err := d.agentView("view")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { // the watch ends before the recorder is taken away
-		v.cancel()
-		v.topics.wait()
-	})
 	return d, fixture, func() []TopicsUpdate {
 		mu.Lock()
 		defer mu.Unlock()

@@ -289,10 +289,19 @@ func (t *Topics) changedLocked(target, id, reason string) {
 // Events writes agent_topics_changed lines to one events.subscribe stream
 // until ctx ends.
 func (t *Topics) Events(ctx context.Context, emit func([]byte) error) {
+	t.EventsReady(ctx, emit, nil)
+}
+
+// EventsReady is Events, calling ready (when set) once the stream is
+// registered: every agent_topics_changed after that goes to it.
+func (t *Topics) EventsReady(ctx context.Context, emit func([]byte) error, ready func()) {
 	c := make(chan []byte, 16)
 	t.mu.Lock()
 	t.subs[c] = true
 	t.mu.Unlock()
+	if ready != nil {
+		ready()
+	}
 	defer func() {
 		t.mu.Lock()
 		delete(t.subs, c)

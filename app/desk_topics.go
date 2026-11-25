@@ -80,9 +80,10 @@ type TopicsUpdate struct {
 
 var TopicsChanged = mygo.NewEvent[TopicsUpdate]("topics:changed")
 
-// publishTopics sends one update to the page; the lists are never null,
-// which the page reads as lists.
-var publishTopics = func(u TopicsUpdate) {
+// broadcastTopics sends one update to the page; the lists are never null,
+// which the page reads as lists. It is a Desk's publishTopics unless a
+// test gives the Desk its own.
+func broadcastTopics(u TopicsUpdate) {
 	TopicsChanged.Broadcast(withLists(u))
 }
 
@@ -117,10 +118,6 @@ type topicsState struct {
 	// no timer.
 	retryOnClose func() bool
 	retries      int
-	// running counts the watch's goroutines (the follower, its
-	// subscription, a list read). Each starts under mu while the view is
-	// open, so once the view's context ended none starts.
-	running sync.WaitGroup
 }
 
 // TopicsAvailable reports whether the view's server serves an omp agent's
@@ -261,12 +258,8 @@ func (d *Desk) topicsWatch(v *interaction) {
 	}
 	ctx, cancel := context.WithCancel(v.ctx)
 	t.cancel = cancel
-	t.running.Add(1)
 	t.mu.Unlock()
-	go func() {
-		defer t.running.Done()
-		d.followTopics(ctx, v)
-	}()
+	go d.followTopics(ctx, v)
 }
 
 // followTopics: a guest polls every topicsGuestPoll; the owner follows
@@ -276,9 +269,7 @@ func (d *Desk) followTopics(ctx context.Context, v *interaction) {
 	poll := topicsGuestPoll
 	if !v.Guest {
 		events := make(chan struct{}, 1)
-		v.topics.running.Add(1) // the follower's own count is held meanwhile
 		go func() {
-			defer v.topics.running.Done()
 			err := v.client.Subscribe(ctx, engine.SubscribeOptions{
 				Subscriptions: []herdrapi.Subscription{{Value: herdrapi.SubscriptionAgentTopicsChanged{}}},
 				NoList:        true,
@@ -342,7 +333,7 @@ func (d *Desk) topicsChangedTopic(v *interaction, topicID string) {
 	u := t.last
 	t.mu.Unlock()
 	u.Token, u.Changed = v.Token, topicID
-	publishTopics(u)
+	d.publishTopics(u)
 }
 
 // topicsRead reads the list once (or once more after the read in flight)
@@ -350,20 +341,14 @@ func (d *Desk) topicsChangedTopic(v *interaction, topicID string) {
 func (d *Desk) topicsRead(v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
-	if v.ctx.Err() != nil {
-		t.mu.Unlock()
-		return
-	}
 	if t.reading {
 		t.again = true
 		t.mu.Unlock()
 		return
 	}
 	t.reading = true
-	t.running.Add(1)
 	t.mu.Unlock()
 	go func() {
-		defer t.running.Done()
 		for {
 			d.topicsReadOnce(v)
 			t.mu.Lock()
@@ -418,7 +403,7 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	}
 	t.last = u
 	t.mu.Unlock()
-	publishTopics(u)
+	d.publishTopics(u)
 	// Suggestions served or not: the open Inbox follows the list or stops.
 	d.topicsWatch(v)
 }
