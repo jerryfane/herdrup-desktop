@@ -621,3 +621,128 @@ func TestAHeldRequestCancelledWhileEncodedIsNeverWritten(t *testing.T) {
 		}
 	}
 }
+
+// within fails the test unless ch yields within a bound, so a regression
+// fails rather than hanging the package.
+func within[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		var zero T
+		return zero
+	}
+}
+
+// #499: an earlier request herdr never answers gets the channel retired
+// while the last pending request waits for the write lock; cancelling that
+// one withdraws it, and the retired channel, now empty, closes.
+func TestARetiredChannelClosesOnceItsLastPendingRequestIsWithdrawn(t *testing.T) {
+	release := make(chan struct{})
+	m := startMachine(t, func(s *fakeherdr.Server) {
+		s.Handle = func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
+			if method == "hang" {
+				<-release // never answered while the test runs
+			}
+			return echoHandler(method, params)
+		}
+	})
+	t.Cleanup(func() { close(release) })
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the --multi channel", func() bool { return bridge.MultiAlive(c) })
+	ch := bridge.ChannelOf(c)
+
+	hangCtx, cancelHang := context.WithCancel(context.Background())
+	defer cancelHang()
+	hung := make(chan error, 1)
+	go func() { hung <- c.Call(hangCtx, "hang", nil, nil) }()
+	eventually(t, "the unanswered request written", func() bool {
+		return slices.ContainsFunc(m.srv.Requests(), func(r fakeherdr.Request) bool { return r.Method == "hang" && r.Multi })
+	})
+	unlock := ch.LockWrites()
+	lastCtx, cancelLast := context.WithCancel(context.Background())
+	defer cancelLast()
+	last := make(chan error, 1)
+	go func() { last <- c.Call(lastCtx, "agent.list", nil, nil) }()
+	eventually(t, "the last request pending at the write lock", func() bool { return ch.Pending() == 2 })
+	cancelHang() // abandoned: herdr still has it
+	if err := within(t, "the abandoned request's return", hung); !errors.Is(err, context.Canceled) {
+		t.Fatalf("abandoned request: %v", err)
+	}
+	ch.Retire()
+	select {
+	case <-ch.Dead():
+		t.Fatal("the retired channel closed with a request still pending")
+	default:
+	}
+	cancelLast()
+	unlock()
+	if err := within(t, "the withdrawn request's return", last); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+	}
+	within(t, "the retired channel to close once empty", ch.Dead())
+	for _, r := range m.srv.Requests() {
+		if r.Method == "agent.list" {
+			t.Fatalf("the withdrawn request reached herdr: %+v", r)
+		}
+	}
+}
+
+// #499: a cancelled request on a retired channel that has closed fails
+// unsent keeping context.Canceled, whichever of the free slot, the
+// retirement, the death and the cancellation the channel's select picks.
+func TestACancelledRequestOnARetiredClosedChannelKeepsItsCause(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the --multi channel", func() bool { return bridge.MultiAlive(c) })
+	ch := bridge.ChannelOf(c)
+	ch.Retire() // nothing pending: it closes at once
+	within(t, "the retired channel to close", ch.Dead())
+	for range 32 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := ch.Do(ctx, "pane.send_text"); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+			t.Errorf("%v; want ErrNotSent with context.Canceled", err)
+		}
+	}
+	for _, r := range m.srv.Requests() {
+		if r.Method == "pane.send_text" {
+			t.Fatalf("a cancelled request reached herdr: %+v", r)
+		}
+	}
+}
+
+// #499: a request cancelled while it waits for the write lock is withdrawn
+// at the write boundary, unsent, keeping context.Canceled on the channel
+// itself (Call would add the cause back otherwise).
+func TestARequestCancelledAtTheWriteLockKeepsItsCause(t *testing.T) {
+	m := startMachine(t, nil)
+	c := m.dial(t)
+	if err := c.Call(context.Background(), "ping", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the --multi channel", func() bool { return bridge.MultiAlive(c) })
+	ch := bridge.ChannelOf(c)
+	unlock := ch.LockWrites()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ch.Do(ctx, "pane.send_text") }()
+	eventually(t, "the request pending at the write lock", func() bool { return ch.Pending() == 1 })
+	cancel()
+	unlock()
+	if err := within(t, "the withdrawn request's return", done); !errors.Is(err, bridge.ErrNotSent) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v; want ErrNotSent with context.Canceled", err)
+	}
+	if n := ch.Pending(); n != 0 {
+		t.Fatalf("%d requests still pending after the withdrawal", n)
+	}
+}

@@ -118,11 +118,11 @@ func (p *pool) slot(session string) *slot {
 }
 
 // viaMulti sends a request on the session's --multi channel. It returns
-// ErrNotSent when nothing was written, and the request must take the
-// per-request path.
+// an error wrapping ErrNotSent (Unsent) when nothing was written, and the
+// request must take the per-request path.
 func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) ([]byte, error) {
 	if !multiRoutable(method, line) {
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	}
 	p := &c.pool
 	p.mu.Lock()
@@ -130,7 +130,7 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 	switch s.capability {
 	case capUnsupported:
 		p.mu.Unlock()
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	case capUnknown:
 		// A ping learns the capability from its own reply.
 		if method != "ping" && !s.probing {
@@ -138,12 +138,12 @@ func (c *Client) viaMulti(ctx context.Context, method, id string, line []byte) (
 			go c.probeCapability()
 		}
 		p.mu.Unlock()
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	}
 	p.mu.Unlock()
 	m := c.readyChannel(ctx)
 	if m == nil {
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	}
 	return m.do(ctx, id, line)
 }
@@ -334,10 +334,9 @@ func (h *HeldChannel) Ping(ctx context.Context, result any) error {
 
 func (h *HeldChannel) send(ctx context.Context, method string, params, result any, idempotent bool) error {
 	c := h.c
-	if err := ctx.Err(); err != nil {
-		// Nothing was written: herdr does not have it (ErrNotSent), and
-		// the cause stays.
-		return fmt.Errorf("%s: %w: %w", method, ErrNotSent, err)
+	if ctx.Err() != nil {
+		// Nothing was written: herdr does not have it, and the cause stays.
+		return fmt.Errorf("%s: %w", method, Unsent(ctx, nil))
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -350,7 +349,7 @@ func (h *HeldChannel) send(ctx context.Context, method string, params, result an
 		return err
 	}
 	if !multiRoutable(method, line) {
-		return fmt.Errorf("%s: %w", method, ErrNotSent)
+		return fmt.Errorf("%s: %w", method, Unsent(ctx, nil))
 	}
 	reply, err := h.m.do(ctx, id, line)
 	for tries := 1; err != nil && idempotent && !h.answered && tries < maxHeldChannelTries && ctx.Err() == nil && !h.m.alive(); tries++ {
@@ -379,10 +378,9 @@ func (h *HeldChannel) send(ctx context.Context, method string, params, result an
 
 // heldChannel is the session's open channel for OnOneChannel. A session
 // whose capability is not known yet is pinged per-request first, which
-// learns it and starts the open. With still no channel, an error wrapping
-// ErrNotSent, joined with why: that probe's failure (its transport error,
-// or herdr's error reply), or ctx ending; none for a session whose herdr
-// just has no --multi channel to give.
+// learns it and starts the open. With still no channel, Unsent's error,
+// with why: that probe's failure (its transport error, or herdr's error
+// reply), and ctx's end.
 func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 	if m := c.readyChannel(ctx); m != nil {
 		return m, nil
@@ -412,13 +410,42 @@ func (c *Client) heldChannel(ctx context.Context) (*multiChannel, error) {
 			return m, nil
 		}
 	}
-	notSent := fmt.Errorf("no herdr api-bridge --multi channel to hold: %w", ErrNotSent)
-	return nil, errors.Join(notSent, probeErr, ctx.Err())
+	reason := errors.New("no herdr api-bridge --multi channel to hold")
+	if probeErr != nil {
+		reason = fmt.Errorf("%w: %w", reason, probeErr)
+	}
+	return nil, Unsent(ctx, reason)
 }
 
 // multiChannel is one `herdr api-bridge --multi` process. Requests are
 // written one per line; replies may come back in any order and are matched
 // by id.
+//
+// Its states, open → retired → dead or open → dead, never back:
+//   - open: it takes new requests.
+//   - retired (retireLocked, from open): it takes no new request; the
+//     pending ones keep waiting for their replies, and it closes as soon as
+//     none is pending (closeIfDrainedLocked, at once when none is).
+//   - dead (fail, from open or retired; close is fail plus the process
+//     ending): err is set and dead closed; every pending request has
+//     failed with err, and none is taken.
+//
+// A pending request leaves only through removeLocked, which closes a
+// retired channel it leaves empty. Its exits, by state:
+//   - reply (deliver): open or retired: removed, its slot returned, the
+//     reply handed over. dead: none is pending; nothing to do.
+//   - cancel before its write (withdraw): open or retired: removed, its
+//     slot returned; unsent. dead: fail already failed it; unsent.
+//   - cancel after its write (abandon): open or retired: removed; its slot
+//     stays taken until herdr answers it, and an answer too late retires
+//     the channel. dead: fail already failed it.
+//   - write failure: nothing written: withdrawn as above, and the channel
+//     retired; partly written: the read loop's fail ends it.
+//   - death (fail): open or retired: every pending request removed and
+//     failed with err.
+//
+// Every exit of a request that was not written, in any state, fails with
+// Unsent's error, which keeps ctx's end when ctx has ended.
 type multiChannel struct {
 	sess   *ssh.Session
 	stdin  io.WriteCloser
@@ -659,11 +686,9 @@ func gunzipReply(b []byte) ([]byte, error) {
 // its slot.
 func (m *multiChannel) deliver(id string, line []byte) {
 	m.mu.Lock()
-	ch, ok := m.pending[id]
-	delete(m.pending, id)
+	ch, ok, _ := m.removeLocked(id)
 	abandoned := m.abandoned[id]
 	delete(m.abandoned, id)
-	drained := m.drainedLocked()
 	m.mu.Unlock()
 	if ok || abandoned {
 		<-m.inFlight
@@ -671,35 +696,33 @@ func (m *multiChannel) deliver(id string, line []byte) {
 	if ok {
 		ch <- reply{line: line}
 	}
-	if drained {
-		m.close()
-	}
 }
 
 // do sends one request and waits for its reply. It waits for a free slot
-// when maxMultiInFlight requests are outstanding, and returns ErrNotSent
-// when the channel ends before the request is written.
+// when maxMultiInFlight requests are outstanding. When the request is not
+// written (the channel retired or dead, or ctx ended before the write) it
+// fails with Unsent's error, from every branch alike.
 func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, error) {
 	select {
 	case m.inFlight <- struct{}{}:
 	case <-m.dead:
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	case <-m.retiredC:
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	case <-ctx.Done():
 		// Ended before a slot was had: nothing was written.
-		return nil, fmt.Errorf("%w: %w", ErrNotSent, ctx.Err())
+		return nil, Unsent(ctx, nil)
 	}
 	ch := make(chan reply, 1)
 	m.mu.Lock()
 	if m.err != nil {
 		m.mu.Unlock()
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	}
 	if m.retired {
 		m.mu.Unlock()
 		<-m.inFlight
-		return nil, ErrNotSent
+		return nil, Unsent(ctx, nil)
 	}
 	if _, dup := m.pending[id]; dup {
 		m.mu.Unlock()
@@ -713,10 +736,10 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 	// The write boundary: a request whose context ended by now (while it
 	// was encoded, or waited for a slot or the write lock) is not written,
 	// whichever way the select above went.
-	if cause := ctx.Err(); cause != nil {
+	if ctx.Err() != nil {
 		m.wmu.Unlock()
 		m.withdraw(id)
-		return nil, fmt.Errorf("%w: %w", ErrNotSent, cause)
+		return nil, Unsent(ctx, nil)
 	}
 	n, err := m.stdin.Write(append(line, '\n'))
 	m.wmu.Unlock()
@@ -729,7 +752,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 			m.mu.Lock()
 			m.retireLocked()
 			m.mu.Unlock()
-			return nil, ErrNotSent
+			return nil, Unsent(ctx, err)
 		}
 		// The remote process is gone. The read loop is about to fail every
 		// pending request with the reason it exited, which says more than
@@ -755,8 +778,7 @@ func (m *multiChannel) do(ctx context.Context, id string, line []byte) ([]byte, 
 func (m *multiChannel) withdraw(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.pending[id]; ok && m.err == nil {
-		delete(m.pending, id)
+	if _, ok, _ := m.removeLocked(id); ok {
 		<-m.inFlight
 	}
 }
@@ -768,15 +790,7 @@ func (m *multiChannel) withdraw(id string) {
 func (m *multiChannel) abandon(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.pending[id]; !ok {
-		return
-	}
-	delete(m.pending, id)
-	if m.err != nil {
-		return
-	}
-	if m.drainedLocked() {
-		go m.close()
+	if _, ok, closing := m.removeLocked(id); !ok || closing {
 		return
 	}
 	m.abandoned[id] = true
@@ -827,15 +841,31 @@ func (m *multiChannel) retireLocked() {
 	}
 	m.retired = true
 	close(m.retiredC)
-	if len(m.pending) == 0 {
-		go m.close()
-	}
+	m.closeIfDrainedLocked()
 }
 
-// drainedLocked reports whether a retired channel has no request left
-// waiting, so it can close. m.mu must be held.
-func (m *multiChannel) drainedLocked() bool {
-	return m.retired && m.err == nil && len(m.pending) == 0
+// removeLocked takes request id off the channel: the one way a pending
+// request leaves it, whichever exit (multiChannel). It returns the
+// request's reply channel, ok false when id was not pending, and closing
+// when that left a retired channel empty, which closes it now. m.mu must
+// be held.
+func (m *multiChannel) removeLocked(id string) (ch chan reply, ok, closing bool) {
+	if ch, ok = m.pending[id]; !ok {
+		return nil, false, false
+	}
+	delete(m.pending, id)
+	return ch, true, m.closeIfDrainedLocked()
+}
+
+// closeIfDrainedLocked closes a retired channel no request is pending on,
+// and reports whether it did: the one place a retired channel closes.
+// m.mu must be held.
+func (m *multiChannel) closeIfDrainedLocked() bool {
+	if !m.retired || m.err != nil || len(m.pending) > 0 {
+		return false
+	}
+	go m.close()
+	return true
 }
 
 // fail closes the channel for new requests and fails every waiting one.
@@ -847,9 +877,9 @@ func (m *multiChannel) fail(err error) {
 	}
 	m.err = err
 	close(m.dead)
-	for id, ch := range m.pending {
+	for id := range m.pending {
+		ch, _, _ := m.removeLocked(id)
 		ch <- reply{err: err}
-		delete(m.pending, id)
 	}
 	clear(m.abandoned)
 }

@@ -392,7 +392,7 @@ func (t *Transport) OnOneChannel(ctx context.Context, work func(h engine.Held) e
 		stop()
 		cancel()
 		if err != nil {
-			return fmt.Errorf("%w: %w", bridge.ErrNotSent, err)
+			return bridge.Unsent(ctx, err)
 		}
 		if connected.reply.Features.MultiRequest {
 			connected.startPump()
@@ -429,6 +429,11 @@ type heldSession struct {
 	released bool // work returned: the handle sends nothing more
 }
 
+var (
+	errHeldReleased = errors.New("the held session was released")
+	errHeldBusy     = errors.New("another request of this held session is in flight")
+)
+
 func (h *heldSession) Ping(ctx context.Context, result any) error {
 	return h.Call(ctx, "ping", nil, result)
 }
@@ -438,13 +443,13 @@ func (h *heldSession) Call(ctx context.Context, method string, params, result an
 	switch {
 	case h.released:
 		h.mu.Unlock()
-		return fmt.Errorf("%s: %w: the held session was released", method, bridge.ErrNotSent)
+		return fmt.Errorf("%s: %w", method, bridge.Unsent(ctx, errHeldReleased))
 	case h.inFlight:
 		h.mu.Unlock()
-		return fmt.Errorf("%s: %w: another request of this held session is in flight", method, bridge.ErrNotSent)
+		return fmt.Errorf("%s: %w", method, bridge.Unsent(ctx, errHeldBusy))
 	case h.spent:
 		h.mu.Unlock()
-		return fmt.Errorf("%s: %w", method, bridge.ErrNotSent)
+		return fmt.Errorf("%s: %w", method, bridge.Unsent(ctx, nil))
 	}
 	h.inFlight = true
 	h.mu.Unlock()
@@ -459,9 +464,9 @@ func (h *heldSession) Call(ctx context.Context, method string, params, result an
 // send is Call's request on the held session, and whether the session can
 // carry another.
 func (h *heldSession) send(ctx context.Context, method string, params, result any) (reusable bool, err error) {
-	if err := ctx.Err(); err != nil {
+	if ctx.Err() != nil {
 		// Nothing was written: herdr does not have it, and the cause stays.
-		return true, fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
+		return true, fmt.Errorf("%s: %w", method, bridge.Unsent(ctx, nil))
 	}
 	ctx, cancel := context.WithTimeout(ctx, roundTripLimit)
 	defer cancel()
@@ -475,7 +480,7 @@ func (h *heldSession) send(ctx context.Context, method string, params, result an
 	if err != nil {
 		if !sent {
 			// No write of it was attempted, whatever ended the call.
-			return false, fmt.Errorf("%s: %w: %w", method, bridge.ErrNotSent, err)
+			return false, fmt.Errorf("%s: %w", method, bridge.Unsent(ctx, err))
 		}
 		return false, err
 	}
