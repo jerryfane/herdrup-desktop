@@ -19,10 +19,10 @@ import { animateDisclosures, applyMotions } from "../motion";
 import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
-import { start, takeFragment, welcome, type WelcomeState } from "./start";
+import { plainWelcome, start, takeFragment, welcome, type WelcomeState } from "./start";
 import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAccount";
 import { pageExit, signInReturned } from "./mygo";
-import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst, waitsForAccount } from "./bootChoice";
+import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst } from "./bootChoice";
 import { boardAfter, connectionChanged } from "../shellModel";
 
 type GuestTab = "agents" | "gram" | "settings";
@@ -85,7 +85,7 @@ const signInScreen = new AccountWelcome(() => {}, {
  foot: "Sign in with the account your HerdrUp app uses. Got an invite link from someone? Open it instead: it needs no account.",
  take: () => { guestChosen = true; showWelcome(shownWelcome); },
 });
-const showsSignIn = (shown: WelcomeState) => signInFirst({ bootGuest: boot.guestInstead, guestChosen, owner: shown.owner !== null, error: !!shown.error,
+const showsSignIn = (shown: WelcomeState) => signInFirst({ bootGuest: boot.guestInstead, guestChosen, plain: plainWelcome(shown),
  signedIn: account.signedIn, providers: account.signInProviders.length });
 
 /** Shows the screen for shown (null hides it): the words asking for an invite. */
@@ -238,9 +238,8 @@ async function init() {
  // The plain first screen is the sign-in while the service offers it (signInFirst): the panel is
  // asked before it shows, so the invite's words don't show first; a service slower than boot's
  // own wait gets the invite's words, and the sign-in in their place once it answers. The guest's
- // way chosen at boot waits for nothing (waitsForAccount).
- const plain = started.kind === "welcome" && started.welcome.owner === null && !started.welcome.error;
- const waits = waitsForAccount(plain, boot.guestInstead);
+ // way chosen at boot shows no sign-in, so it waits for nothing.
+ const waits = started.kind === "welcome" && plainWelcome(started.welcome) && !boot.guestInstead;
  if (waits) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);
  showWelcome(started.kind === "welcome" ? started.welcome : null);
  // Back from the account service (?account=1 or ?account_error=) with a share: its Settings,

@@ -5,8 +5,9 @@
 import { afterEach, expect, test } from "bun:test";
 import jsQR from "jsqr";
 import { approvalParts, approvedByLabel, copyText, guideCode, guideSteps, IOS_APP_URL, machineAccess, machineRows, machineSection, noticeCard, ownerLayout, pageLink, thisBrowser, timeLeft, unsupportedNotice, type OwnerLayout } from "../src/web/ownerScreen";
-import { signInFirst, waitsForAccount } from "../src/web/bootChoice";
-import { admittedAccess } from "../src/shellModel";
+import { signInFirst } from "../src/web/bootChoice";
+import { plainWelcome } from "../src/web/start";
+import { admittedAccess, browserAccessRows } from "../src/shellModel";
 import type { ConnState } from "../src/mygo";
 import { hostHomeHeader } from "../src/hostHome";
 import { AccountWelcome } from "../src/herdrupAccount";
@@ -161,14 +162,28 @@ test("Settings → Machines' Access is the scope the live link was admitted unde
  expect(admittedAccess(null)).toBeNull();
 });
 
+test("Settings → Machines keeps the live Access for an open machine a newer approval list left out; the approval's rows show only with it (#516)", () => {
+ const record = recordOf(approver("Mac", [m("hetzner", "h1", "chat")]));
+ // The newer list (h2 only) no longer has h1, whose grant still holds: no approval details for it.
+ const newer = recordOf(approver("Mac", [m("mini", "h2", "terminal")]));
+ expect(browserAccessRows(machineAccess(newer, "h1"), false, true)).toEqual([]);
+ expect(browserAccessRows(machineAccess(record, "h1"), false, true)!.map(([label]) => label)).toEqual(["Approved by", "Approved until"]);
+ // No group on the desktop's own machines, nor in a share.
+ expect(browserAccessRows(machineAccess(record, "h1"), false, false)).toBeNull();
+ expect(browserAccessRows(null, true, true)).toBeNull();
+});
+
+test("only a plain welcome (no share left, no invite's failure) may be the sign-in", () => {
+ expect([plainWelcome({ owner: null }), plainWelcome({ owner: "Jerry" }), plainWelcome({ owner: null, error: "expired" })]).toEqual([true, false, false]);
+});
+
 test("the guest's way chosen at boot reaches the invite's words with that one click, sign-in providers or not (#513)", () => {
- const plainVisit = { bootGuest: false, guestChosen: false, owner: false, error: false, signedIn: false, providers: 2 };
+ const plainVisit = { bootGuest: false, guestChosen: false, plain: true, signedIn: false, providers: 2 };
  expect(signInFirst(plainVisit)).toBe(true);
  expect(signInFirst({ ...plainVisit, bootGuest: true })).toBe(false);
  expect(signInFirst({ ...plainVisit, guestChosen: true })).toBe(false);
  expect(signInFirst({ ...plainVisit, providers: 0 })).toBe(false);
- // Nor does it wait for the account lookup first.
- expect([waitsForAccount(true, false), waitsForAccount(true, true), waitsForAccount(false, false)]).toEqual([true, false, false]);
+ expect(signInFirst({ ...plainVisit, plain: false })).toBe(false);
 });
 
 test("one section names every approver in its label, each once", () => {

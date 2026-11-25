@@ -35,6 +35,13 @@ export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${acce
  *  the last grant this browser held, when it remembers; error is why an invite just failed. */
 export interface WelcomeState { owner: string | null; error?: string }
 
+/** A first visit's welcome: no share left (owner) and no invite's failure to say. The guest page
+ *  may show the sign-in only in its place (bootChoice.ts signInFirst), and waits for the account
+ *  lookup only before it (main.ts init). */
+export function plainWelcome(state: WelcomeState): boolean {
+ return state.owner === null && !state.error;
+}
+
 /** The screen's words for state. A signed-in owner's first visit shows the approval instead
  *  (main.ts, ownerScreen.ts). */
 export function welcome(state: WelcomeState): Welcome {

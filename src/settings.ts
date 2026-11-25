@@ -48,7 +48,7 @@ import { agentGuideFooter } from "./copyForAgent";
 import { federationAddCommand, federationAgentPrompt } from "./agentPrompts";
 import { errorText } from "./errors";
 import { appleSymbols } from "./platform";
-import { admittedAccess, deskOffers, ownerWrites, parts } from "./shellModel";
+import { admittedAccess, browserAccessRows, deskOffers, ownerWrites, parts } from "./shellModel";
 import type { BrowserAccess } from "./hostHome";
 
 /** The machine's pages this build's Desk serves (shellModel.ts): all on the desktop; in the
@@ -116,8 +116,9 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   let state: ConnState | null = null, board: BoardUpdate | null = null, machine: Machine | null = null, share: ShareSettings | null = null;
   let statuses: SavedMachineStatus[] = [], peers: PeerSummary[] = [], federationError = "";
   let machineNameNodes: HTMLElement[] = [], connectionNodes: HTMLElement[] = [];
-  /** Settings → Machines' Access row in a browser (admittedAccess), kept current as the link goes. */
-  let accessRow: HTMLElement | null = null;
+  /** Settings → Machines' Access in a browser (admittedAccess), kept current as the link goes: its
+   *  row, the value it shows, and its group (hidden with nothing in it). null on any other page. */
+  let accessView: { row: HTMLElement; value: HTMLElement; group: HTMLElement; approval: boolean } | null = null;
   let machineVersion = "";
   let versionNodes: HTMLElement[] = [];
   let reconnectButton: HTMLButtonElement | null = null, reach: HTMLElement | null = null;
@@ -241,11 +242,12 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     if (value) node.append(typeof value === "string" ? el("span", "settings-row-value", value) : value);
     return node;
   }
-  /** A row that only says something: its label, and its value at the end. */
-  function info(label: string, value: string) {
+  /** A row that only says something: its label, and its value at the end (an element to change
+   *  later, or the words). */
+  function info(label: string, value: HTMLElement | string) {
     const node = el("div", "settings-row"), lines = el("span", "settings-row-lines");
     lines.append(el("span", "settings-row-label", label));
-    node.append(lines, el("span", "settings-row-value", value));
+    node.append(lines, typeof value === "string" ? el("span", "settings-row-value", value) : value);
     return node;
   }
   function link(label: string, icon: string | HTMLElement, url: string) {
@@ -377,10 +379,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     updates.setHost(name());
     for (const node of machineNameNodes) node.textContent = name();
     const connected = state?.phase === "connected";
-    if (accessRow) {
+    if (accessView) {
       const admitted = admittedAccess(state);
-      accessRow.hidden = admitted === null;
-      accessRow.lastElementChild!.textContent = admitted ?? "";
+      accessView.value.textContent = admitted ?? "";
+      accessView.row.hidden = admitted === null;
+      accessView.group.hidden = admitted === null && !accessView.approval;
     }
     for (const node of connectionNodes) {
       const status = connected ? "Connected" : "Disconnected";
@@ -405,7 +408,7 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   }
   function renderPage() {
     clearInterval(latencyTimer);
-    reconnectButton = null; reconnectNote = null; reach = null;
+    reconnectButton = null; reconnectNote = null; reach = null; accessView = null;
     machineNameNodes = machineNameNodes.filter(node => index.contains(node));
     connectionNodes = connectionNodes.filter(node => index.contains(node));
     versionNodes = versionNodes.filter(node => index.contains(node));
@@ -472,10 +475,16 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
       }).catch(report);
     }); copy.className = "settings-plain-row action";
     // The browser's: the access its live link was admitted under (a renewal may change it from the
-    // approval's), then who approved it for this machine and until when (web/hosts.ts).
-    const browserAccess = share ? null : access();
-    accessRow = browserAccess === null ? null : info("Access", "");
-    const accessGroup = browserAccess === null || accessRow === null ? [] : [group("ACCESS FROM THIS BROWSER", [accessRow, info("Approved by", browserAccess.approvedBy), info("Until", browserAccess.until)])];
+    // approval's), then who approved it for this machine and until when (web/hosts.ts), when the
+    // approval list still has it.
+    const approvalRows = browserAccessRows(share ? null : access(), share !== null);
+    let accessGroup: HTMLElement[] = [];
+    if (approvalRows !== null) {
+      const value = el("span", "settings-row-value"), row = info("Access", value);
+      const box = group("ACCESS FROM THIS BROWSER", [row, ...approvalRows.map(([label, text]) => info(label, text))]);
+      accessView = { row, value, group: box, approval: approvalRows.length > 0 };
+      accessGroup = [box];
+    }
     body.append(hero, ...accessGroup, ...(served.serverUpdate && administers() ? [updates.root] : []), group("CONNECTION", [reconnectButton, copy]), ...(parts.federation ? [federation()] : []));
     if (parts.federation) { reach = el("p", "settings-reach"); body.append(reach); }
     updateConnection();
