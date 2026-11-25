@@ -6,6 +6,7 @@
 import { Desk, type BoardUpdate, type ConnState } from "./mygo";
 import { webGuest } from "./platform";
 import { ACCESS_CHOICES, choiceLabel } from "./webAccessModel";
+import type { BrowserAccess } from "./hostHome";
 
 /** Whether this build's Desk has every one of methods. The desktop's has them all; the browser's
  *  only the method groups web/mygo.ts registers, so a screen gated on its group's methods shows
@@ -87,6 +88,16 @@ export function admittedAccess(state: Pick<ConnState, "phase" | "guest"> | null)
   if (state?.phase !== "connected" && state?.phase !== "connecting") return null;
   const scope = state.guest?.ownerScope;
   return scope ? choiceLabel(ACCESS_CHOICES, scope) : "Checking…";
+}
+
+/** Settings → Machines' "ACCESS FROM THIS BROWSER" in a browser's owner link: the Access row, from
+ *  the live link alone (admittedAccess, kept current by Settings), then the saved approval's
+ *  details when the approval list still has the machine. A newer approval may leave the open
+ *  machine out without ending its grant (#516): the Access row stays. null: no group (the desktop's
+ *  own machines, and a share). */
+export function browserAccessRows(approval: BrowserAccess | null, share: boolean, browser = webGuest): [label: string, value: string][] | null {
+  if (!browser || share) return null;
+  return approval === null ? [] : [["Approved by", approval.approvedBy], ["Approved until", approval.until]];
 }
 
 /** Whether the agent page offers "Share with someone" (guest.invite.create): on the desktop for the
