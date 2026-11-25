@@ -177,6 +177,30 @@ test("a device removal begun in one Settings scope sends nothing once that scope
   }, { removeGuestDevice: () => held.promise });
 });
 
+// #524 post-merge P3: a menu opened while a Gram switch's refresh is pending goes with the rows it
+// was opened on when that refresh lands; the page then offers the device on the shares it shows now.
+test("a device menu open when the page is drawn again closes, and a new one removes the device from the shares shown now", async () => {
+  const listing = { guests: [...current.guests] }, gram = Promise.withResolvers<void>();
+  await withPage(listing, async ({ root, body, calls }) => {
+    click(root.having("settings-guest-open")[0]!);
+    const share = root.all().find(e => e.tagName === "input" && e.getAttribute("aria-label") === "Share Gram with Nike")!;
+    share.checked = !share.checked; share.onchange!();
+    await settle();
+    click(root.button("Manage MacBook"));
+    expect(body.having("account-device-menu")).toHaveLength(1);
+    // The refresh after the switch finds a third share of Nike's with the MacBook.
+    listing.guests.push(nike("nike-3", "landing", 600_000));
+    gram.resolve();
+    await settle();
+    expect(body.having("account-device-menu")).toEqual([]);
+    click(root.button("Manage MacBook"));
+    click(body.having("account-device-menu")[0]!.button("Remove"));
+    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
+    await settle();
+    expect(calls.filter(c => c.method === "removeGuestDevice").map(c => c.args[2])).toEqual(["nike-1", "nike-2", "nike-3"]);
+  }, { setGuestGramSharing: () => gram.promise });
+});
+
 test("this page's device menu closes alone: another view's menu stays", async () => {
   await withPage(current, async ({ root, body }) => {
     const accountMenu = new FakeElement("div"); accountMenu.className = "account-device-menu"; body.append(accountMenu);
