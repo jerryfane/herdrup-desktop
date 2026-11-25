@@ -160,6 +160,18 @@ export function mergeTranscript(current: Entry[], page: Entry[], opts: { older?:
  const added = page.filter(e => !oldIDs.has(e.id));
  return older ? [...added, ...merged] : [...merged, ...added];
 }
+/** A composer send's receipt, as the page settles it: how it went (submitted, unconfirmed, a plain
+ *  terminal's written) and what to say about it. */
+export interface ComposerReceipt { delivery: string; note?: string }
+/** Desk.chatPrompt's receipt, JSON at that binding. The text already went out, so a reply in
+ *  another shape is an unconfirmed send, never a failed one (which would put the text back). */
+export function chatReceipt(raw: string): ComposerReceipt {
+ try {
+  const r = JSON.parse(raw) as { delivery?: unknown; note?: unknown } | null;
+  if (typeof r?.delivery === "string") return typeof r.note === "string" ? { delivery: r.delivery, note: r.note } : { delivery: r.delivery };
+ } catch { /* below */ }
+ return { delivery: "unconfirmed" };
+}
 export function remainingDraft(current: string, sent: string): string {
  return current === sent ? "" : current;
 }

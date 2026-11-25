@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
-import { chatDayLabel, groupTranscript, mergeTranscript, needsDaySeparator, remainingDraft, TerminalSequence } from "../src/interactionModel";
+import { chatDayLabel, chatReceipt, groupTranscript, mergeTranscript, needsDaySeparator, remainingDraft, TerminalSequence } from "../src/interactionModel";
 import { relayLabel } from "../src/chatRelay";
+
+test("the Inbox's receipt is typed at its binding; one in another shape is an unconfirmed send, never a failure", () => {
+ expect(chatReceipt(`{"delivery":"submitted"}`)).toEqual({ delivery: "submitted" });
+ expect(chatReceipt(`{"delivery":"unconfirmed","note":"Check the terminal."}`)).toEqual({ delivery: "unconfirmed", note: "Check the terminal." });
+ expect([chatReceipt("not json"), chatReceipt("null"), chatReceipt(`{"delivery":1}`)]).toEqual([{ delivery: "unconfirmed" }, { delivery: "unconfirmed" }, { delivery: "unconfirmed" }]);
+});
 
 test("incremental transcript replaces changed entries without duplicating older pages", () => {
  const initial = [{ kind: "reply", id: "r", ts_ms: 2, text: "Partial" }];

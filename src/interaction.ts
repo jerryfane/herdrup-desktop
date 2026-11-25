@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
@@ -27,7 +27,7 @@ import { connectionOfView, guestPausedPage, guestSendFailure, isGuestPaused, typ
 import type { GuestQuestion, Viewer } from "./guestAnswersModel";
 import { askFormAnswered, askFormCard, askFormState, draftAnswers, type AnswerCredit, type AskFormState } from "./askFormCard";
 import type { AskForm, AskFormAnswer, AskFormStatus, FieldValue } from "./askFormModel";
-import type { ByteFrame, ChatRow, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
+import type { ByteFrame, ChatRow, ComposerReceipt, Entry, PlanItem, TranscriptPage, TranscriptSubagent, WorkRow } from "./interactionModel";
 import { forgetChats, recallChat, rememberChat } from "./chatMemory";
 import { forgetScreens, recallScreen, rememberScreen } from "./terminalMemory";
 import { drawnStart, pendingCardShown, revealedAbove, slidWindow, topAction, windowStarting, type OlderLoad } from "./chatWindow";
@@ -2492,7 +2492,8 @@ class Detail {
    this.queuedSend = null;
    // The poll goes fast until the prompt shows up (ChatModel.followSend, ChatView.swift:111-114).
    if (!topic) this.sendFollow = { until: Date.now() + CHAT_SEND_FOLLOW_MS };
-   const call = topic ? (prompt: string) => this.topicCall(topic, prompt) : (prompt: string) => Desk.chatPrompt(this.token, prompt);
+   // Each Desk's reply as one typed receipt, at its own binding: only the Inbox's is JSON.
+   const call = topic ? (prompt: string) => this.topicCall(topic, prompt) : async (prompt: string) => chatReceipt(await Desk.chatPrompt(this.token, prompt));
    // Rule 3: the send's dispatch puts the text back only when the Desk call rejects (it throws then).
    const outcome = send ? await send.dispatch(call) : { sent: true as const, value: await call(text) };
    if (!outcome.sent) {
@@ -2503,7 +2504,7 @@ class Detail {
    }
    dispatched = true;
    const ownerSend = this.view?.guest === false;
-   const result = JSON.parse(outcome.value);
+   const result = outcome.value;
    setOutgoing(result.delivery === "submitted" ? "submitted" : "unconfirmed");
    // Only a confirmed owner prompt counts: not a guest's, not a plain-terminal write, not unconfirmed.
    if (result.delivery === "submitted" && ownerSend) recordOwnerSend();
@@ -2546,11 +2547,11 @@ class Detail {
   *  posted as the Inbox posts them and named in the message): refused, it rejects with herdr's
   *  reason, so the draft and the files stay; else the receipt the send reads, with the topic's
   *  note (a queued message says so; an unconfirmed one asks to check). */
- private async topicCall(topic: TopicComposer, prompt: string): Promise<string> {
+ private async topicCall(topic: TopicComposer, prompt: string): Promise<ComposerReceipt> {
   const reply = await Desk.topicsSend(this.token, topic.topicID, prompt);
   if (reply.delivery === "refused") throw new Error(reply.problem || "The agent refused.");
-  return JSON.stringify(reply.delivery === "sent" ? { delivery: "submitted", note: sendNote(reply.mode) ?? "" }
-   : { delivery: "unconfirmed", note: reply.problem || "Couldn't confirm delivery. Check the topic before sending again." });
+  return reply.delivery === "sent" ? { delivery: "submitted", note: sendNote(reply.mode) ?? "" }
+   : { delivery: "unconfirmed", note: reply.problem || "Couldn't confirm delivery. Check the topic before sending again." };
  }
  async answer(askID: string, option: string) {
   if (this.answering || this.localAnswers.has(askID)) return;
