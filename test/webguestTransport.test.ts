@@ -126,21 +126,37 @@ test("closing the transport ends its open streams", async () => {
  expect(await kindOf(next)).toBe("closed");
 });
 
-test("API errors, closes and refusals read as the Go client words them", async () => {
- let script: (host: HostSession) => void = () => {};
- let admission: unknown = { ok: true, guest_id: "grant-1" };
+/** A test of up to five fresh connects: 3 s each, on a machine so loaded a handshake takes 1 s. */
+const CONNECTS_LIMIT_MS = 15_000;
+
+/** A host that admits each connect with fixture.admission and answers its one request with
+ *  fixture.script(host). Each case of the error tests below is a fresh connect, a Noise handshake
+ *  each (about 1 s on a loaded machine, #428): they are split by kind, and one with several
+ *  connects has a time limit of its own, CONNECTS_LIMIT_MS. */
+function scriptedHost() {
+ const fixture = { script: (_host: HostSession) => {}, admission: { ok: true, guest_id: "grant-1" } as unknown };
  const relay = track(startRelay({
   async serve(_conn, handshake) {
-   const host = (await handshake()).reply(admission);
+   const host = (await handshake()).reply(fixture.admission);
    await host.readLine();
-   script(host);
+   fixture.script(host);
   },
  }));
+ return { fixture, relay };
+}
+
+test("an API error reads as the Go client words it", async () => {
+ const { fixture, relay } = scriptedHost();
  const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
- script = (host) => host.write(`{"id":"x","error":{"code":"not_found","message":"no such pane","current":7}}\n`);
+ fixture.script = (host) => host.write(`{"id":"x","error":{"code":"not_found","message":"no such pane","current":7}}\n`);
  const apiError = await transport.call("pane.get").catch((error) => error);
  expect(apiError).toBeInstanceOf(HerdrAPIError);
  expect([apiError.code, apiError.message, apiError.raw.current]).toEqual(["not_found", "herdr: not_found: no such pane", 7]);
+});
+
+test("closes and malformed replies read as the Go client words them", async () => {
+ const { fixture, relay } = scriptedHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  // Bun's server sends 1001 as 1000, so the relay's 1001 host_offline is checked with a scripted
  // socket below.
  const closes: [number, string, string][] = [
@@ -149,21 +165,31 @@ test("API errors, closes and refusals read as the Go client words them", async (
   [4000, "replaced", "The shared connection closed (code 4000)."],
  ];
  for (const [code, reason, message] of closes) {
-  script = (host) => host.conn.close(code, reason);
+  fixture.script = (host) => host.conn.close(code, reason);
   expect(await transport.call("ping").catch((error: Error) => error.message)).toBe(message);
  }
- script = (host) => host.conn.send("plain text");
+ fixture.script = (host) => host.conn.send("plain text");
  expect(await transport.call("ping").catch((error: Error) => error.message)).toBe("The relay sent an unencrypted message; the connection was refused.");
- script = (host) => { host.write(`{"result":"partial`); host.conn.close(1000); };
+ fixture.script = (host) => { host.write(`{"result":"partial`); host.conn.close(1000); };
  expect(await kindOf(transport.call("ping"))).toBe("other");
+}, CONNECTS_LIMIT_MS);
+
+test("the host's refusals of a guest read as the Go client words them", async () => {
+ const { fixture, relay } = scriptedHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
  for (const [code, message] of [["unknown", "This shared access is no longer available. Ask the owner for a new invitation."], ["invite_used", "This invitation was already used. Ask the owner for a new one."], ["invite_expired", "This invitation has expired. Ask the owner for a new invitation."], ["invite_invalid", "The owner did not accept this invitation. Ask for a new link."], ["other", "The shared machine refused this guest connection."]]) {
-  admission = { ok: false, error: code };
+  fixture.admission = { ok: false, error: code };
   expect(await transport.call("ping").catch((error: Error) => error.message)).toBe(message!);
  }
- for (admission of [{ guest_id: "grant-1" }, { ok: "yes" }, [], { ok: true, guest_id: 7 }]) {
+}, CONNECTS_LIMIT_MS);
+
+test("an admission that isn't one reads as an invalid secure reply", async () => {
+ const { fixture, relay } = scriptedHost();
+ const transport = new GuestTransport(guestLink(accessOn(relay)), await identity());
+ for (fixture.admission of [{ guest_id: "grant-1" }, { ok: "yes" }, [], { ok: true, guest_id: 7 }]) {
   expect(await transport.call("ping").catch((error: Error) => error.message)).toBe("The shared machine's secure reply is invalid.");
  }
-});
+}, CONNECTS_LIMIT_MS);
 
 // GuestRelay src/host.ts:178 closes a guest with 1001 host_offline when the host goes away.
 test("the relay's going-away close reads as the host offline", async () => {

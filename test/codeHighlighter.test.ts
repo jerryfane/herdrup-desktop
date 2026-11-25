@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type CodeSpan, type CodeTokenKind, codeLanguage, codeSpans } from "../src/codeHighlighter";
+import { type CodeLanguage, type CodeSpan, type CodeTokenKind, codeLanguage, codeSpans } from "../src/codeHighlighter";
 
 // CodeHighlighter.spans(code, language:): nil when the fence names no known language.
 function spansFor(code: string, fence: string | null): CodeSpan[] | null {
@@ -207,15 +207,32 @@ describe("CodeHighlighter", () => {
     expect(kind(mustSpans("let c = '😀';", "rust"), "'😀'")).toBe("string");
   });
 
-  test("a 2,000-line block tokenizes without quadratic blowup", () => {
+  // What a fixed wall-clock limit on a 2,000-line block guarded (no quadratic blowup), counted
+  // instead of timed (#428): the scanners read the block's characters a bounded number of times
+  // each, however long it is. codeSpans scans the array Array.from(code) makes; here that array
+  // counts its reads. A scan that went back over what it had read reads each character of a block
+  // ten times as long about ten times as often; a linear one, as often. Every read goes through
+  // the counting proxy, which is slow, so the blocks are short and the test has its own time
+  // limit; no assertion is about time.
+  test("a long block tokenizes without quadratic blowup: its characters are read no more often than a block a tenth as long's", () => {
     const line = 'func f(_ x: Int) -> String { return "v\\(x)" /* c */ } // 😀 note 0x1F';
-    const code = Array.from({ length: 2000 }, () => line).join("\n");
-    for (const language of ["swift", "rust", "javascript", "python", "bash", "json", "yaml", "go", "diff"] as const) {
-      const started = performance.now();
-      const spans = codeSpans(code, language);
-      const elapsed = performance.now() - started;
+    /** codeSpans over `lines` lines: how many times its scan read its array, per character. */
+    const readsPerChar = (lines: number, language: CodeLanguage) => {
+      const code = Array.from({ length: lines }, () => line).join("\n");
+      const from = Array.from;
+      let reads = 0, chars = 0;
+      Array.from = ((source: Iterable<unknown>) => {
+        const array = from(source);
+        chars = array.length;
+        return new Proxy(array, { get(target, key) { reads++; return target[key as keyof typeof target]; } });
+      }) as typeof Array.from;
+      let spans: CodeSpan[];
+      try { spans = codeSpans(code, language); } finally { Array.from = from; }
       expect(spans.map((span) => span.text).join("")).toBe(code);
-      expect(elapsed).toBeLessThan(500);
+      return reads / chars;
+    };
+    for (const language of ["swift", "rust", "javascript", "python", "bash", "json", "yaml", "go", "diff"] as const) {
+      expect(readsPerChar(100, language), language).toBeLessThan(readsPerChar(10, language) * 1.25);
     }
-  });
+  }, 20_000);
 });

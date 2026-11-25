@@ -98,7 +98,9 @@ test("a refused statement is dropped and the hello tried once more with a fresh 
 });
 
 // Real time on purpose: the refresh timer runs on a session over the local relay's socket, and
-// waits its 1 s floor; the test awaits the host receiving the message, not a guessed delay.
+// waits its 1 s floor; the test awaits the host receiving the message, not a guessed delay. Its
+// time limit is its own (#428): the 1 s floor, a handshake and the timer's wake-up, which a loaded
+// machine delays, with room.
 test("before the deadline the session sends a newer statement in-band, as one whole message", async () => {
  const refreshed = Promise.withResolvers<string | null>();
  const relay = relayWith(async (_conn, handshake) => {
@@ -114,9 +116,10 @@ test("before the deadline the session sends a newer statement in-band, as one wh
   expect(JSON.parse((await refreshed.promise)!)).toEqual({ t: "account.refresh", account: "jws-2" });
   t.close();
  } finally { relay.stop(); }
-});
+}, 15_000);
 
-// Real time on purpose: the refresh timer waits its 1 s floor on a live session.
+// Real time on purpose: the refresh timer waits its 1 s floor on a live session (its time limit
+// as the test above's).
 test("a refresh statement whose session ended at the handoff is never sent in-band", async () => {
  const next = Promise.withResolvers<string | null>();
  const relay = relayWith(async (_conn, handshake) => {
@@ -141,7 +144,7 @@ test("a refresh statement whose session ended at the handoff is never sent in-ba
   expect(message).toContain("ping");
   t.close();
  } finally { relay.stop(); }
-});
+}, 15_000);
 
 /** The account service's statements for the cache tests: who is signed in, and each issue. */
 function issuer(clock: () => number) {
