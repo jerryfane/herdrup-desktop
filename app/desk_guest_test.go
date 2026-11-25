@@ -183,3 +183,13 @@ func TestShortGuestInvitationReachesReview(t *testing.T) {
 		t.Errorf("unreachable relay: %v", err)
 	}
 }
+
+// Signed out, a bound share's hello has no statement to carry: the guest
+// reads it as ErrAccountRequired, asking to sign in to the share's account.
+func TestABoundShareSignedOutAsksToSignIn(t *testing.T) {
+	d := newDesk(t.TempDir())
+	_, err := d.guestStatements().Statement(context.Background(), "AAAAAAAAAAAAAAAAAAAAAA", time.Minute)
+	if !errors.Is(err, guest.ErrAccountRequired) || err.Error() != "Sign in to the HerdrUp account that holds this share." {
+		t.Fatalf("signed out: %v", err)
+	}
+}

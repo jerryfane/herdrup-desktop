@@ -218,14 +218,14 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	defer server.Close()
 	endpoint := Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}
 	invite := Invite{Endpoint: endpoint, inviteID: "invitation", secret: "one-use-bearer", Expires: time.Now().Add(time.Minute), MachineLabel: "Machine", OwnerName: "Owner", GuestName: "visitor", AgentName: "Worker"}
-	access, err := Accept(context.Background(), invite, identity, "Desktop", time.Now())
+	access, err := Accept(context.Background(), invite, identity, "Desktop", time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if access.AgentTarget != "%42" || access.GuestID != "grant-1" || access.OwnerName != "Owner" {
 		t.Fatalf("incomplete access: %+v", access)
 	}
-	transport := NewTransport(access, identity, SystemClock)
+	transport := NewTransport(access, identity, SystemClock, nil)
 	defer transport.Close()
 	longText := strings.Repeat("x", maxNoisePlaintext*2)
 	var result struct {
@@ -296,7 +296,7 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	}
 	wrong := access
 	wrong.Endpoint.HostPublicKey = bytes.Repeat([]byte{9}, 32)
-	untrusted := NewTransport(wrong, identity, SystemClock)
+	untrusted := NewTransport(wrong, identity, SystemClock, nil)
 	defer untrusted.Close()
 	if err := untrusted.Call(context.Background(), "ping", nil, &result); err == nil {
 		t.Fatal("wrong host identity accepted")
@@ -415,7 +415,7 @@ func TestAnAdmittedHandshakeBegunBeforeA429KeepsItsCooldown(t *testing.T) {
 	}))
 	defer server.Close()
 	access := Access{GuestID: "grant-1", Endpoint: Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}}
-	transport := NewTransport(access, identity, SystemClock)
+	transport := NewTransport(access, identity, SystemClock, nil)
 	defer transport.Close()
 	ctx := context.Background()
 
@@ -475,7 +475,7 @@ func TestRelayRefusalCloseCodes(t *testing.T) {
 	hostID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 16))
 	access := Access{GuestID: "grant-1", Endpoint: Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}}
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
-	transport := NewTransport(access, identity, clock)
+	transport := NewTransport(access, identity, clock, nil)
 	defer transport.Close()
 	ctx := context.Background()
 

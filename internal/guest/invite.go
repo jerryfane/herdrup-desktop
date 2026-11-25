@@ -52,6 +52,17 @@ type Endpoint struct {
 	HostPublicKey []byte `json:"hostPublicKey"`
 }
 
+// accountHost is the host id as account statements name it (their aud, and
+// the service's 22-character base64url host id): HostID, which an invite
+// may carry in either base64 alphabet, in unpadded base64url.
+func (e Endpoint) accountHost() string {
+	raw, err := decode64(e.HostID)
+	if err != nil {
+		return e.HostID
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
 func (e Endpoint) socketURL() (string, error) {
 	u, err := url.Parse(e.Relay)
 	if err != nil || !validRelay(u) {
@@ -78,8 +89,12 @@ type Invite struct {
 	AgentName    string
 	GuestName    string
 	Expires      time.Time
-	inviteID     string
-	secret       string
+	// Account is the host's "acct":1 (herdr src/guest/store.rs
+	// invite_payload): the guest may bind the share to its HerdrUp account
+	// (DESIGN #698 §4). Any other value is a plain invite.
+	Account  bool
+	inviteID string
+	secret   string
 }
 
 func (Invite) String() string     { return "guest invitation (bearer secret redacted)" }
@@ -150,6 +165,7 @@ func decodeInviteJSON(raw []byte) (Invite, error) {
 		AgentName     string `json:"agent_name"`
 		GuestName     string `json:"guest_name"`
 		Expires       int64  `json:"expires_unix"`
+		Acct          int    `json:"acct"`
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return Invite{}, ErrNotInvite
@@ -178,7 +194,7 @@ func decodeInviteJSON(raw []byte) (Invite, error) {
 	if !validGuestName(wire.GuestName) || !validLabel(wire.MachineLabel) || !validLabel(wire.OwnerName) || !validLabel(wire.AgentName) || wire.Expires <= 0 {
 		return Invite{}, ErrNotInvite
 	}
-	return Invite{Endpoint: Endpoint{Relay: relay.String(), HostID: wire.HostID, HostPublicKey: public}, MachineLabel: wire.MachineLabel, OwnerName: wire.OwnerName, AgentName: wire.AgentName, GuestName: wire.GuestName, Expires: time.Unix(wire.Expires, 0), inviteID: wire.InviteID, secret: wire.Secret}, nil
+	return Invite{Endpoint: Endpoint{Relay: relay.String(), HostID: wire.HostID, HostPublicKey: public}, MachineLabel: wire.MachineLabel, OwnerName: wire.OwnerName, AgentName: wire.AgentName, GuestName: wire.GuestName, Expires: time.Unix(wire.Expires, 0), Account: wire.Acct == 1, inviteID: wire.InviteID, secret: wire.Secret}, nil
 }
 
 const (

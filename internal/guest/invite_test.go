@@ -55,6 +55,39 @@ func TestInvitationOriginExpiryAndIdentityBoundaries(t *testing.T) {
 	}
 }
 
+// "acct":1 (herdr invite_payload with [guest] accounts) is an invite the
+// guest may bind to its account; an invite without it, or with another
+// number, is plain; a non-integer acct is not an invite.
+func TestInvitationReadsTheAccountCapability(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	encoded := func(size int) string { return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, size)) }
+	fields := map[string]any{"v": 1, "relay": "https://relay.example/base", "host_id": encoded(16), "host_pub": encoded(32), "invite_id": encoded(16), "secret": encoded(32), "machine_label": "Mac", "owner_name": "Owner", "agent_name": "Agent", "guest_name": "guest-1", "expires_unix": now.Unix() + 60}
+	decode := func(acct any) (Invite, error) {
+		delete(fields, "acct")
+		if acct != nil {
+			fields["acct"] = acct
+		}
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resolve(context.Background(), AppLinkPrefix+base64.RawURLEncoding.EncodeToString(raw), now, offline(t))
+	}
+	for _, c := range []struct {
+		acct    any
+		account bool
+	}{{nil, false}, {1, true}, {0, false}, {2, false}} {
+		if invite, err := decode(c.acct); err != nil || invite.Account != c.account {
+			t.Fatalf("acct %v: %+v, %v; want Account %v", c.acct, invite.Account, err, c.account)
+		}
+	}
+	for _, bad := range []any{"1", true, 1.5} {
+		if _, err := decode(bad); err == nil {
+			t.Fatalf("acct %#v decoded as an invite", bad)
+		}
+	}
+}
+
 func TestSavedGuestAccessSurvivesReloadWithoutInvitationSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shares.json")
 	store := NewStore(path)

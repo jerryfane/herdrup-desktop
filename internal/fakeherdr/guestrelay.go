@@ -75,6 +75,20 @@ type GuestRelay struct {
 	// DropReply makes the gate serve a request and then end the session
 	// without its reply, as a connection lost after herdr acted on it.
 	DropReply func(method string) bool
+	// Accounts is a herdr whose invitation says "acct":1 and which binds a
+	// redemption whose hello carries a statement, as herdr#440 does
+	// (src/guest/store.rs admit_in, admit_returning). CheckStatement
+	// checks one: the account it names (sub) and its exp, or herdr's
+	// refusal code. A bound share's hellos all need a statement for its
+	// account; its sessions take {"t":"account.refresh","account":<jws>}
+	// in band (src/guest/link/session.rs), a refused one ending the session
+	// with its code.
+	Accounts       bool
+	CheckStatement func(jws string) (sub string, exp time.Time, code string)
+	// AccountDeadline, when set, is a bound session's deadline for a
+	// statement expiring at exp (the hello reply's deadline_unix); herdr's
+	// is exp + 60 s (src/guest/mod.rs).
+	AccountDeadline func(exp time.Time) time.Time
 
 	hostID   string
 	host     noise.DHKey
@@ -85,10 +99,12 @@ type GuestRelay struct {
 	issues string
 	srv    *http.Server
 
-	mu       sync.Mutex
-	guestID  string
-	guestKey []byte
-	calls    []GuestCall
+	mu      sync.Mutex
+	guestID string
+	// guestKeys are the device keys the grant admits: the redeeming one,
+	// and each one a bound share took in by its account's statement.
+	guestKeys [][]byte
+	calls     []GuestCall
 	// connects are the guest's relay connects; past connectLimit in a minute
 	// the relay refuses one with 429 rate_limited (LimitConnects).
 	connects     []GuestConnect
@@ -102,6 +118,12 @@ type GuestRelay struct {
 	// committed a menu choice; committed says one has.
 	commit    uint64
 	committed bool
+	// account is the bound share's account (sub); empty for a plain share.
+	account string
+	// hellos and refreshes are the statements guests sent: each hello's
+	// (empty when it had none) and each in-band refresh's.
+	hellos    []string
+	refreshes []string
 }
 
 // GuestConnect is one guest connect to the relay: one WebSocket and Noise
@@ -168,14 +190,18 @@ func (r *GuestRelay) Close() error {
 // InviteLink is the invitation's app link (herdrup://guest-invite#…), v1 as
 // herdr's guest.invite.create writes it.
 func (r *GuestRelay) InviteLink(relay string, expires time.Time) string {
-	payload, _ := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"v": 1, "relay": relay, "host_id": r.hostID,
 		"host_pub":  base64.RawURLEncoding.EncodeToString(r.host.Public),
 		"invite_id": r.inviteID, "secret": r.secret,
 		"machine_label": r.MachineLabel, "owner_name": r.OwnerName,
 		"agent_name": r.AgentName, "guest_name": r.GuestName,
 		"expires_unix": expires.Unix(),
-	})
+	}
+	if r.Accounts {
+		fields["acct"] = 1
+	}
+	payload, _ := json.Marshal(fields)
 	return "herdrup://guest-invite#" + base64.RawURLEncoding.EncodeToString(payload)
 }
 
@@ -184,6 +210,38 @@ func (r *GuestRelay) Calls() []GuestCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.calls)
+}
+
+// HostID is the relay's host id, as statements name it (aud).
+func (r *GuestRelay) HostID() string { return r.hostID }
+
+// Hellos returns the statement each guest hello carried ("" for none), in
+// order.
+func (r *GuestRelay) Hellos() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.hellos)
+}
+
+// Refreshes returns the statements of the in-band refreshes, in order.
+func (r *GuestRelay) Refreshes() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.refreshes)
+}
+
+// Bound is the account the share is bound to, "" for a plain share.
+func (r *GuestRelay) Bound() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.account
+}
+
+// Devices counts the device keys the grant admits.
+func (r *GuestRelay) Devices() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.guestKeys)
 }
 
 // Connects returns every guest connect to the relay, refused ones included,
@@ -297,6 +355,8 @@ type guestHello struct {
 	InviteID string `json:"invite_id"`
 	Secret   string `json:"secret"`
 	GuestID  string `json:"guest_id"`
+	// Account is the hello's statement (herdr src/guest/mod.rs:523-527).
+	Account string `json:"account"`
 }
 
 // acceptGuest accepts a guest's WebSocket to the host hostID, keyed key, and
@@ -328,7 +388,7 @@ func acceptGuest(w http.ResponseWriter, req *http.Request, hostID string, key no
 // converse answers the guest's hello and then serves its session's requests
 // until it ends, and says why it ended (GuestConnect.End).
 func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, handshake *noise.HandshakeState, hello guestHello, served, overlapped func()) string {
-	reply, request := r.hello(hello.InviteID, hello.Secret, hello.GuestID, handshake.PeerStatic())
+	reply, request, bound := r.hello(hello, handshake.PeerStatic())
 	answer, receive, send, err := handshake.WriteMessage(nil, reply)
 	if err != nil || socket.Write(ctx, websocket.MessageBinary, answer) != nil {
 		return "guest"
@@ -338,7 +398,8 @@ func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, 
 		return "handshake"
 	}
 	why := "guest"
-	// The guest's frames, decrypted in order, until it leaves.
+	// The guest's frames, decrypted in order, until it leaves. A bound
+	// session's in-band refresh is herdr's, never the API's.
 	chunks := make(chan []byte)
 	go func() {
 		defer close(chunks)
@@ -350,6 +411,15 @@ func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, 
 			chunk, err := receive.Decrypt(nil, nil, message)
 			if err != nil {
 				return
+			}
+			if bound {
+				if jws, ok := refreshStatement(chunk); ok {
+					if code := r.refresh(jws); code != "" {
+						_ = socket.Close(websocket.StatusNormalClosure, code)
+						return
+					}
+					continue
+				}
 			}
 			select {
 			case chunks <- chunk:
@@ -440,39 +510,114 @@ func (r *GuestRelay) claims(hello guestHello) bool {
 	return hello.GuestID != "" && hello.GuestID == r.guestID
 }
 
-// hello answers the guest's handshake payload: an invitation redeemed once,
-// then the returning guest by its id and device key. request says a request
-// line follows (a returning guest's).
-func (r *GuestRelay) hello(inviteID, secret, guestID string, key []byte) ([]byte, bool) {
+// hello answers the guest's handshake payload as herdr does
+// (src/guest/store.rs admit_in, admit_returning): the invitation or grant
+// is selected first, then the account's refusals apply. An invitation is
+// redeemed once; a statement in its redemption binds the share to its
+// account, and one refused (CheckStatement's code) leaves the invitation
+// unused. A returning guest's grant is selected by its id and either a
+// device key the grant holds or, for a bound share, a verified statement
+// of its account, which takes the new device in; every hello for a bound
+// share then needs a statement for that account (account_required, the
+// statement's own refusal, account_mismatch). request says a request line
+// follows (a returning guest's), and bound that the session is an
+// account-bound one's. Without Accounts a statement is ignored, as by a
+// herdr older than accounts.
+func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request, bound bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	refuse := func(code string) ([]byte, bool) {
+	r.hellos = append(r.hellos, hello.Account)
+	refuse := func(code string) ([]byte, bool, bool) {
 		b, _ := json.Marshal(map[string]any{"ok": false, "error": code})
-		return b, false
+		return b, false, false
 	}
-	switch {
-	case inviteID != "":
-		if inviteID != r.inviteID || secret != r.secret {
+	var sub, refused string
+	var exp time.Time
+	if r.Accounts && hello.Account != "" {
+		sub, exp, refused = r.CheckStatement(hello.Account)
+		if refused != "" {
+			sub = ""
+		}
+	}
+	if hello.InviteID != "" {
+		switch {
+		case hello.InviteID != r.inviteID || hello.Secret != r.secret:
 			return refuse("invite_invalid")
-		}
-		if r.guestID != "" {
+		case r.guestID != "":
 			return refuse("invite_used")
+		case refused != "":
+			return refuse(refused)
 		}
-		r.guestID, r.guestKey = cmp.Or(r.issues, "fake-guest-1"), slices.Clone(key)
-	case guestID == "" || guestID != r.guestID || !bytes.Equal(key, r.guestKey):
-		return refuse("unknown")
+		r.guestID, r.guestKeys, r.account = cmp.Or(r.issues, "fake-guest-1"), [][]byte{slices.Clone(key)}, sub
+	} else {
+		held := slices.ContainsFunc(r.guestKeys, func(k []byte) bool { return bytes.Equal(k, key) })
+		if hello.GuestID == "" || hello.GuestID != r.guestID || !held && (r.account == "" || sub != r.account) {
+			return refuse("unknown")
+		}
+		if r.account != "" {
+			switch {
+			case hello.Account == "":
+				return refuse("account_required")
+			case refused != "":
+				return refuse(refused)
+			case sub != r.account:
+				return refuse("account_mismatch")
+			}
+			if !held {
+				r.guestKeys = append(r.guestKeys, slices.Clone(key))
+			}
+		}
 	}
 	// An older herdr says nothing of multi_request.
 	features := map[string]bool{"gram": r.Gram}
 	if r.MultiRequest {
 		features["multi_request"] = true
 	}
-	b, _ := json.Marshal(map[string]any{
+	answer := map[string]any{
 		"ok": true, "guest_id": r.guestID, "name": r.GuestName, "machine_label": r.MachineLabel,
 		"owner_name": r.OwnerName, "agent": map[string]string{"name": r.AgentName, "target": r.TerminalID},
 		"features": features,
-	})
-	return b, inviteID == ""
+	}
+	bound = r.account != ""
+	if bound {
+		deadline := exp.Add(60 * time.Second)
+		if r.AccountDeadline != nil {
+			deadline = r.AccountDeadline(exp)
+		}
+		answer["account"] = map[string]int64{"deadline_unix": deadline.Unix()}
+	}
+	b, _ := json.Marshal(answer)
+	return b, hello.InviteID == "", bound
+}
+
+// refreshStatement is the statement in a bound session's in-band refresh,
+// {"t":"account.refresh","account":"<jws>"} as one whole message (herdr
+// src/guest/link/session.rs:24-42).
+func refreshStatement(chunk []byte) (string, bool) {
+	if len(chunk) == 0 || chunk[0] != '{' {
+		return "", false
+	}
+	var refresh struct {
+		T       string `json:"t"`
+		Account string `json:"account"`
+	}
+	if json.Unmarshal(chunk, &refresh) != nil || refresh.T != "account.refresh" {
+		return "", false
+	}
+	return refresh.Account, true
+}
+
+// refresh records a bound session's in-band statement and checks it: the
+// code that ends the session, or "" when it holds.
+func (r *GuestRelay) refresh(jws string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshes = append(r.refreshes, jws)
+	sub, _, code := r.CheckStatement(jws)
+	if code == "" && sub != r.account {
+		code = "account_mismatch"
+	}
+	return code
 }
 
 // request answers one guest request as herdr's guest gate (serve_request,

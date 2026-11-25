@@ -202,6 +202,9 @@ type Desk struct {
 	accountStore *account.SecretsStore
 	accountSync  accountSync
 	accountEnrol accountEnrol
+	// statements are the account's statements for the guest shares bound
+	// to it (guestStatements).
+	statements *account.StatementCache
 	// webApproval is the browser approval this computer is running (web
 	// owner access, desk_web_access.go); guarded by mu.
 	webApproval *webApproval
@@ -348,6 +351,7 @@ func newDesk(dir string) *Desk {
 		accountSync:    accountSync{turn: make(chan struct{}, 1)},
 	}
 	d.account, d.accountStore = newAccountClient(runtime.GOOS)
+	d.statements = account.NewStatementCache(d.account)
 	d.openBrowser = mygo.Shell.OpenExternal
 	d.publishTopics = broadcastTopics
 	d.crash = newCrashReporter(filepath.Join(dir, "crash-reports"), d.usage, mygo.App.Version())

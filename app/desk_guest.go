@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/jerryfane/herdrup-desktop/internal/account"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/guest"
 	"github.com/jerryfane/herdrup-desktop/internal/herdr"
@@ -95,6 +96,34 @@ func (d *Desk) InspectGuestInvitation(ctx context.Context, text string) (GuestIn
 	}
 	return GuestInvitation{MachineLabel: invite.MachineLabel, OwnerName: invite.OwnerName, AgentName: invite.AgentName, GuestName: invite.GuestName, Expires: invite.Expires, Fingerprint: identity.Fingerprint()}, nil
 }
+
+// guestStatements gives a bound share's statements, from the signed-in
+// account's cache; nil on a desk without an account client.
+func (d *Desk) guestStatements() guest.StatementSource {
+	if d.statements == nil {
+		return nil
+	}
+	return guestStatementSource{d.statements}
+}
+
+// guestStatementSource is the account's StatementCache as a guest's
+// statements: each one live while the sign-in it was issued in is the
+// current one, and signed out is guest.ErrAccountRequired.
+type guestStatementSource struct{ cache *account.StatementCache }
+
+func (g guestStatementSource) Statement(ctx context.Context, host string, minLeft time.Duration) (guest.Statement, error) {
+	got, err := g.cache.Get(ctx, host, minLeft)
+	if errors.Is(err, account.ErrSignedOut) {
+		return guest.Statement{}, guest.ErrAccountRequired
+	}
+	if err != nil {
+		return guest.Statement{}, err
+	}
+	return guest.Statement{JWS: got.JWS, Exp: got.Exp, Live: func() bool { return g.cache.Live(got) }}, nil
+}
+
+func (g guestStatementSource) Drop(host, jws string) { g.cache.Drop(host, jws) }
+
 func (d *Desk) SharedConnections() ([]guest.Access, error) { return d.guestStore.List() }
 func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Access, error) {
 	d.guestAcceptMu.Lock()
@@ -111,7 +140,9 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Ac
 	if err != nil || device == "" {
 		device = "Desktop"
 	}
-	access, err := guest.Accept(ctx, invite, identity, device, time.Now())
+	// Binding to the HerdrUp account waits for its choice (Add to my
+	// account / Only this device, herdrup#700): plain for now.
+	access, err := guest.Accept(ctx, invite, identity, device, time.Now(), nil)
 	if err != nil {
 		return guest.Access{}, err
 	}
@@ -143,7 +174,7 @@ func (d *Desk) ConnectGuest(id string) error {
 	if err != nil {
 		return err
 	}
-	transport := guest.NewTransport(*access, identity, d.guestClock)
+	transport := guest.NewTransport(*access, identity, d.guestClock, d.guestStatements())
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &link{id: "guest:" + id, shareLabel: access.MachineLabel, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
 	d.mu.Lock()
