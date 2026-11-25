@@ -21,36 +21,37 @@ type Listing = { guests?: Guest[]; invites?: Invite[]; link?: { state: string; l
 type Result = { machine: Machine; listing?: Listing; entries?: Entry[]; error?: string; auditError?: string; missingFeature?: boolean };
 
 /** One device of a person on one machine: the devices their shares there admit now. */
-export interface PersonDevice { fingerprint: string; name: string; addedMs: number; lastSeenMs: number | null; guests: string[] }
+export interface PersonDevice { fingerprint: string; name: string; addedMs: number; lastSeenMs: number | null }
 /** Everyone one person shares on one machine (herdr's `person`: their HerdrUp account on that
  *  host when account-bound, else the one device's fingerprint). Never grouped across machines. */
 export interface Person { id: string; name: string; accountBound: boolean; guests: Guest[]; devices: PersonDevice[]; lastSeenMs: number | null }
 
 const latest = (a: number | null, b: number | null | undefined) => b == null ? a : a === null ? b : Math.max(a, b);
 
-/** The devices guest admits now: the one that accepted, then the ones added, less those removed (a
- *  removed entry may name the accepting device). The accepting device has no activity of its own on
- *  the wire: the share's last_seen_ms is any of its devices', so it stays the person's. */
-function admitted(guest: Guest): Map<string, Omit<PersonDevice, "guests">> {
-  const out = new Map<string, Omit<PersonDevice, "guests">>();
-  if (guest.fingerprint) out.set(guest.fingerprint, { fingerprint: guest.fingerprint, name: guest.device || "A device", addedMs: guest.created_ms ?? 0, lastSeenMs: null });
-  for (const d of guest.devices ?? []) {
-    if (d.removed) out.delete(d.fingerprint);
-    else out.set(d.fingerprint, { fingerprint: d.fingerprint, name: d.device || "A device", addedMs: d.added_ms ?? 0, lastSeenMs: d.last_seen_ms ?? null });
-  }
-  return out;
-}
-
 /** herdr's admission rule (store.rs admits_fingerprint): the device with this fingerprint may use
- *  the share, the accepting one or an added one, and no removed entry names it. */
+ *  the share, the accepting one or an added one, and no removed entry names it. The page's devices
+ *  and a removal's targets both follow it. */
 function admits(guest: Guest, fingerprint: string): boolean {
   const devices = guest.devices ?? [];
   return !devices.some(d => d.fingerprint === fingerprint && d.removed) && (guest.fingerprint === fingerprint || devices.some(d => d.fingerprint === fingerprint));
 }
 
-/** A device removal's targets: person's live shares on one machine that admit the device. */
-export type RemovalTarget = { guestID: string; agent: string };
-export function removalTargets(guests: readonly Guest[], person: string, fingerprint: string): RemovalTarget[] {
+/** The devices guest admits now (admits), as the page shows them: the one that accepted, then the
+ *  ones added. The accepting device has no activity of its own on the wire: the share's
+ *  last_seen_ms is any of its devices', so it stays the person's. */
+function admitted(guest: Guest): Map<string, PersonDevice> {
+  const out = new Map<string, PersonDevice>();
+  if (guest.fingerprint && admits(guest, guest.fingerprint)) out.set(guest.fingerprint, { fingerprint: guest.fingerprint, name: guest.device || "A device", addedMs: guest.created_ms ?? 0, lastSeenMs: null });
+  for (const d of guest.devices ?? []) {
+    if (!d.removed && admits(guest, d.fingerprint)) out.set(d.fingerprint, { fingerprint: d.fingerprint, name: d.device || "A device", addedMs: d.added_ms ?? 0, lastSeenMs: d.last_seen_ms ?? null });
+  }
+  return out;
+}
+
+/** A device removal's targets: person's live shares on one machine that admit the device, in the
+ *  order listed. */
+type RemovalTarget = { guestID: string; agent: string };
+function removalTargets(guests: readonly Guest[], person: string, fingerprint: string): RemovalTarget[] {
   return guests.filter(guest => !guest.revoked && guest.person === person && admits(guest, fingerprint)).map(guest => ({ guestID: guest.guest_id, agent: agentName(guest) }));
 }
 const sameTargets = (a: readonly RemovalTarget[], b: readonly RemovalTarget[]) =>
@@ -70,8 +71,7 @@ export function sharePeople(guests: readonly Guest[]): { people: Person[]; ungro
     person.lastSeenMs = latest(person.lastSeenMs, guest.last_seen_ms);
     for (const device of admitted(guest).values()) {
       const known = person.devices.find(d => d.fingerprint === device.fingerprint);
-      if (!known) { person.devices.push({ ...device, guests: [guest.guest_id] }); continue; }
-      known.guests.push(guest.guest_id);
+      if (!known) { person.devices.push(device); continue; }
       known.addedMs = Math.min(known.addedMs, device.addedMs);
       known.lastSeenMs = latest(known.lastSeenMs, device.lastSeenMs);
     }
@@ -143,6 +143,9 @@ export class GuestSettings {
   private shown: string | null = null;
   /** Closes the device menu this view opened (and its listeners); null while none is open. */
   private closeMenu: (() => void) | null = null;
+  /** Moves on whenever this view's dialogs close for another page or dialog (closeDialogs): a
+   *  device removal's recheck asks again only while it hasn't. */
+  private attempt = 0;
   /** paged names the page shown: a person's name on their page, null on the list (settings.ts
    *  titles the page with it). */
   constructor(private report: (message: unknown) => void, private summarize: (value: string, header: string) => void,
@@ -172,7 +175,7 @@ export class GuestSettings {
     if (JSON.stringify(machines) === JSON.stringify(this.machines)) return;
     this.machines = machines; if (this.token) void this.refresh();
   }
-  closeDialogs() { this.modal?.close(); this.closeMenu?.(); }
+  closeDialogs() { this.attempt++; this.modal?.close(); this.closeMenu?.(); }
   /** Back to the list from a person's page; false when the list shows already. */
   back(): boolean { if (!this.open) return false; this.open = null; this.closeDialogs(); this.render(); return true; }
   /** Tells settings.ts the page shown when it changes. */
@@ -298,9 +301,8 @@ export class GuestSettings {
     const remove = el("button", "", "Remove"); remove.type = "button"; remove.setAttribute("role", "menuitem");
     remove.onclick = () => {
       close();
-      // The confirmation names the shares the shown listing has the device on; Confirm checks them again.
-      const shown = this.results.find(result => result.machine.alias === machine.alias)?.listing?.guests ?? [];
-      this.confirmRemoveDevice(machine, person, device, removalTargets(shown, person.id, device.fingerprint), false);
+      // The confirmation names the shares the page shows the device on; Confirm checks them again.
+      this.confirmRemoveDevice(machine, person, device, removalTargets(person.guests, person.id, device.fingerprint), false);
     };
     menu.append(remove); menu.onkeydown = e => { if (e.key === "Escape") { close(); anchor.focus(); } };
     document.body.append(menu);
@@ -331,26 +333,30 @@ export class GuestSettings {
     this.confirm(`Remove ${person.name}?`, `${person.name} loses access on ${person.accountBound ? "every device" : "their device"} right away, and open sessions close. To come back, ${person.name} needs a new invite.`,
       `Remove ${person.name}`, [agents, devices], () => { void this.act(machine, "person:" + person.id, token => Desk.revokeGuestPerson(token, machine.alias, person.id)); });
   }
-  /** Removing a device asks to confirm exactly the shares named (targets), then reads the machine's
-   *  shares afresh on the same Settings scope: only if the device is on exactly those shares still
-   *  are the removals sent (each tried; failures said after). A listing that can't be read sends
-   *  nothing and says so; a changed set asks again with the new shares, or says the device has no
-   *  access left. */
+  /** Removing a device asks to confirm exactly the shares named (targets), then lists the machine's
+   *  shares afresh (guest.list alone) on the same Settings scope: only if the device is on exactly
+   *  those shares still are the removals sent (each tried; failures said after). A listing that
+   *  can't be read sends nothing and says so; a changed set asks again with the new shares while
+   *  the person's page and this confirmation are still the current ones (else nothing more), or
+   *  says the device has no access left. */
   private confirmRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[], changed: boolean) {
     const agents = targets.map(target => target.agent).join(", ");
     this.confirm(`Remove ${device.name}?`, `${changed ? `${person.name}'s ${device.name} now has access to: ${agents}.` : `${person.name} can no longer open ${agents} on ${device.name}.`} Its open sessions close; ${person.name}'s other devices keep access.`,
       "Remove device", [], () => {
+        const attempt = this.attempt;
         void this.act(machine, "device:" + device.fingerprint, async token => {
           let fresh: Guest[] | null = null;
-          try {
-            const result = JSON.parse(await Desk.settingsGuestMachine(token, machine.alias)) as Partial<Result>;
-            fresh = result.listing?.guests ?? null;
-          } catch { /* not read: as a listing that failed */ }
+          try { fresh = (JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as Listing).guests ?? []; }
+          catch { /* not read: nothing is known of the device's access */ }
           if (token !== this.token) return;
           if (fresh === null) throw new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`);
           const now = removalTargets(fresh, person.id, device.fingerprint);
           if (!now.length) throw new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`);
-          if (!sameTargets(now, targets)) { this.confirmRemoveDevice(machine, person, device, now, true); return; }
+          if (!sameTargets(now, targets)) {
+            // Another page or dialog since (Back, another person, another confirmation): not asked over it.
+            if (attempt === this.attempt && this.open?.alias === machine.alias && this.open.person === person.id) this.confirmRemoveDevice(machine, person, device, now, true);
+            return;
+          }
           const failed: string[] = [];
           for (const target of now) {
             if (token !== this.token) return;

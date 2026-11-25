@@ -2281,6 +2281,14 @@ export const Desk = {
     return call("Desk.SettingsAccounts", token);
   },
   /**
+   * SettingsGuestList is the machine's guest.list alone, for a check before a
+   * change (a device removal's confirmation): no activity log, and a listing that
+   * can't be read is an error, never an empty one.
+   */
+  settingsGuestList(token: string, machine: string): Promise<string> {
+    return call("Desk.SettingsGuestList", token, machine);
+  },
+  /**
    * SettingsGuestMachine keeps listing and audit failures distinct: an unreadable
    * activity log is not evidence that a guest has done nothing.
    */

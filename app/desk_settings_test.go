@@ -171,6 +171,61 @@ func TestSharedAccessKeepsSameIDsOnDifferentMachinesSeparate(t *testing.T) {
 	}
 }
 
+// A device removal's confirmation checks the shares with guest.list alone: no
+// guest.audit waits on it, and a listing that can't be read is an error, not an
+// empty listing.
+func TestSharedAccessListsTheSharesAloneForAConfirmation(t *testing.T) {
+	fixture := fakeherdr.NewGuests()
+	var mu sync.Mutex
+	var methods []string
+	var failing atomic.Bool
+	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
+		previous := s.Handle
+		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if strings.HasPrefix(method, "guest.") {
+				mu.Lock()
+				methods = append(methods, method)
+				mu.Unlock()
+			}
+			if method == "guest.list" && failing.Load() {
+				return nil, &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
+			}
+			if result, err, handled := fixture.Handle(method, raw); handled {
+				return result, err
+			}
+			return previous(method, raw)
+		}
+	})
+	board := d.Board()
+	if err := d.OpenSettings(board.MachineID, board.Session, "guests"); err != nil {
+		t.Fatal(err)
+	}
+	defer d.CloseSettings("guests")
+	ctx := context.Background()
+	raw, err := d.SettingsGuestList(ctx, "guests", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing herdrapi.ResponseResultGuestList
+	if err := json.Unmarshal([]byte(raw), &listing); err != nil || len(listing.Guests) == 0 {
+		t.Fatalf("guest list %s, %v", raw, err)
+	}
+	mu.Lock()
+	if strings.Join(methods, ",") != "guest.list" {
+		t.Fatalf("a confirmation's check sent %v, want guest.list alone", methods)
+	}
+	mu.Unlock()
+	failing.Store(true)
+	if raw, err := d.SettingsGuestList(ctx, "guests", ""); err == nil || !strings.Contains(err.Error(), "guest_store_unavailable") {
+		t.Fatalf("an unreadable guest list answered %q, %v", raw, err)
+	}
+	failing.Store(false)
+	d.CloseSettings("guests")
+	if _, err := d.SettingsGuestList(ctx, "guests", ""); err == nil {
+		t.Fatal("a closed Settings page listed the shares")
+	}
+}
+
 // Removing a person revokes every share of theirs on that machine in one
 // guest.revoke {person}; removing a device sends its share and fingerprint
 // (guest.remove_device), and the person's other devices keep the share.

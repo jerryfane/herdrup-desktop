@@ -344,6 +344,19 @@ test("a host without guests says so; one refusing the browser says that", async 
  expect(host.of("guest.audit")).toEqual([]);
 });
 
+test("a device removal's check lists the shares alone: no activity log, and a listing that can't be read throws", async () => {
+ let failing = false;
+ const host = ownerLink((method) => {
+  if (method === "guest.list") { if (failing) throw new HerdrAPIError("guest_store_unavailable", "try again", {}); return { type: "guest_list", guests: [{ guest_id: "g1", name: "ana" }], invites: [] }; }
+  if (method === "guest.audit") return { type: "guest_audit", entries: [] };
+ });
+ expect(JSON.parse(await guestsDesk.settingsGuestList("tok", ""))).toEqual({ guests: [{ guest_id: "g1", name: "ana" }], invites: [] });
+ failing = true;
+ await expect(guestsDesk.settingsGuestList("tok", "")).rejects.toThrow("guest_store_unavailable");
+ await expect(guestsDesk.settingsGuestList("tok", "box2")).rejects.toThrow("other machines");
+ expect(host.calls.filter((c) => c.method.startsWith("guest.")).map((c) => [c.method, c.params])).toEqual([["guest.list", {}], ["guest.list", {}]]);
+});
+
 test("guest changes go to this machine only: never a machine param, and another machine's are refused unsent", async () => {
  const host = ownerLink((method) => {
   if (method === "guest.update") return { type: "guest_updated" };

@@ -45,6 +45,16 @@ export const guestsDesk = {
   return JSON.stringify(result);
  },
 
+ /** SettingsGuestList: guest.list alone, for a check before a change (a device removal's
+  *  confirmation): no activity log, and a listing that can't be read throws. */
+ async settingsGuestList(token: string, machine: string): Promise<string> {
+  const scope = settingsScope(token);
+  thisMachineOnly(machine);
+  const listing = await settingsCall(scope, "guest.list", {}, "guest_list");
+  settingsLink(token);
+  return JSON.stringify(listing);
+ },
+
  async setGuestGramSharing(token: string, machine: string, guestID: string, share: boolean): Promise<void> {
   const scope = settingsScope(token);
   thisMachineOnly(machine);
