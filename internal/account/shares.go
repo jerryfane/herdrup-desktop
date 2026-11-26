@@ -9,9 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// SharesCap is the most shares an account holds (§5.1, COLLECTION_CAPS).
-const SharesCap = 500
-
 // ShareBody is a shares item (§5.1, AccountService src/sync.ts SCHEMAS.shares):
 // a guest grant bound to the account, by item id "<host_id>/<guest_id>".
 // Nothing secret travels: the relay's base URL, the host's id and public
