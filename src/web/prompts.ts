@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { AccountSyncStatus, SavedPrompt } from "../mygo";
 import { untilAborted } from "../webguest/abort";
-import { AccountServiceError, pullSince, SignedOutError, type Pull, type SyncChange, type SyncItem, type SyncPushBody, type WebAccount } from "./account";
+import { AccountServiceError, batches, pullSince, SignedOutError, type Pull, type SyncChange, type SyncItem, type SyncPushBody, type WebAccount } from "./account";
 import { emit } from "./events";
 import { withStorageLock, type AbortableLocks } from "./locks";
 
@@ -547,11 +547,6 @@ function tombstonesFor(m: Mirror, ids: () => Iterable<string>): Mirror {
 // ---- The service's limits (AccountService sync.ts; account/prompts.go, account/sync.go) ----
 
 const MAX_PROMPT_TITLE = 128, MAX_PROMPT_TEXT = 8192, MAX_PROMPT_ORDER = 2 ** 53 - 1, MAX_ITEM_BYTES = 16 * 1024;
-const MAX_PUSH_CHANGES = 100, MAX_PUSH_BYTES = 256 * 1024;
-/** The request around a push's changes: `{"changes":[`, `]` and its deadline (the largest
- *  not_after a push can carry, PromptAttempt Expiry) and `}`. */
-const PUSH_OVERHEAD = `{"changes":[],"not_after":${Number.MAX_SAFE_INTEGER}}`.length;
-
 const utf8 = (text: string) => new TextEncoder().encode(text).byteLength;
 /** An unpaired surrogate: text that isn't valid UTF-8. */
 const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
@@ -565,24 +560,6 @@ export function validPrompt(b: PromptBody): boolean {
  if (/\p{Cc}/u.test(title) || /[^\P{Cc}\t\n\r]/u.test(b.text)) return false;
  if (b.order !== undefined && (Number.isNaN(b.order) || Math.abs(b.order) > MAX_PROMPT_ORDER)) return false;
  return utf8(JSON.stringify(b)) <= MAX_ITEM_BYTES;
-}
-
-/** changes split into pushes the service takes (account.Batches): at most 100 each, and each
- *  request body at most 256 KiB. Order is kept. */
-export function batches(changes: SyncChange[]): SyncChange[][] {
- const out: SyncChange[][] = [];
- let start = 0, size = PUSH_OVERHEAD;
- changes.forEach((c, i) => {
-  const raw = utf8(JSON.stringify(c));
-  let n = raw + (i > start ? 1 : 0); // the comma
-  if (i > start && (i - start === MAX_PUSH_CHANGES || size + n > MAX_PUSH_BYTES)) {
-   out.push(changes.slice(start, i));
-   start = i; size = PUSH_OVERHEAD; n = raw;
-  }
-  size += n;
- });
- if (start < changes.length) out.push(changes.slice(start));
- return out;
 }
 
 // ---- The merge (desk_account_sync.go mergePrompts, AccountLocalSync.swift) ----

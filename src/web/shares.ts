@@ -11,7 +11,7 @@
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, pullSince, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
+import { AccountServiceError, batches, pullSince, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
 import { withStorageLock, type AbortableLocks } from "./locks";
 
 /** One account's record: SHARES_KEY_PREFIX + the account id. */
@@ -149,12 +149,10 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      else settled.add(c.id);
     }
    };
-   let failed: { error: unknown } | null = null;
-   try { await push(sent); } catch (error) { failed = { error }; }
    // Only the writes sent leave: one made meanwhile for the same share goes next round. What was
    // settled before a push failed (sent alone after a 400) leaves too.
    const sentAs = new Set(record.pending.map(p => JSON.stringify(p)));
-   await update(acct, r => {
+   const settle = () => update(acct, r => {
     r.pending = r.pending.filter(p => !(settled.has(p.id) && sentAs.has(JSON.stringify(p))));
     for (const row of rebased) {
      if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
@@ -162,6 +160,16 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      delete r.gone[row.id];
     }
    });
+   // In pushes the service takes (at most 100 changes and 256 KiB each, account.ts batches), each
+   // settled as it is answered: one that fails leaves its writes for the next round, and the
+   // others still go.
+   let failed: { error: unknown } | null = null;
+   for (const part of batches(sent)) {
+    try { await push(part); } catch (error) { failed ??= { error }; }
+    await settle();
+    // Cancelled, or another sign-in now: nothing more goes for this one.
+    if (signal?.aborted || account.generation !== generation) break;
+   }
    if (failed !== null) throw failed.error;
   }
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);

@@ -257,6 +257,25 @@ test("a label the service can't store is left out of the share, and a refused pu
  expect([w.sharesIn("acct"), after.pending]).toEqual([[], []]);
 }, CONNECTS_LIMIT_MS);
 
+test("a backlog of more share writes than one push takes goes in pushes the service takes, each settled as it is answered", async () => {
+ const w = worker();
+ const mac = await browser(w);
+ const key = SHARES_KEY_PREFIX + "acct";
+ const guest = (n: number) => toB64url(new Uint8Array(16).fill(n));
+ // 101 bound shares kept while the service was out: one past the most a push may hold (sync.ts MAX_CHANGES).
+ const pending = Array.from({ length: 101 }, (_, n) => ({ id: `host/${guest(n)}`, body: { relay: "wss://relay.example", host_id: "host", node_pub: toB64url(new Uint8Array(32).fill(1)), guest_id: guest(n), agent_name: "docs", owner_name: "Ana", machine_label: "Mac Studio" } }));
+ mac.storage.setItem(key, JSON.stringify({ rev: 0, shares: [], gone: {}, pending }));
+ // The first push is applied and its answer lost: it stays for the next round, and the second still goes and settles.
+ w.losePush = true;
+ await expect(mac.shares.sync()).rejects.toThrow();
+ expect([w.tooLarge, w.pushed.map(p => p.length), w.sharesIn("acct").length]).toEqual([0, [100, 1], 101]);
+ const kept: { pending: { id: string }[] } = JSON.parse(mac.storage.getItem(key)!);
+ expect(kept.pending.map(p => p.id)).toEqual(pending.slice(0, 100).map(p => p.id));
+ await mac.shares.sync();
+ const after: { pending: object[] } = JSON.parse(mac.storage.getItem(key)!);
+ expect([w.tooLarge, w.pushed.slice(2).map(p => p.length), after.pending, mac.shares.list().length]).toEqual([0, [100], [], 101]);
+});
+
 test("a plain accept (Only this device, or an invite without acct) writes nothing to the account", async () => {
  const w = worker(), h = host();
  const mac = await browser(w);

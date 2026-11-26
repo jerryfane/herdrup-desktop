@@ -609,6 +609,31 @@ export async function pullSince(account: WebAccount, acct: string, since: number
  }
 }
 
+// AccountService sync.ts: a push holds at most MAX_CHANGES (100) changes, and its body at most
+// MAX_SYNC_BODY_BYTES (256 KiB); one past either is refused whole (413 too_large).
+const MAX_PUSH_CHANGES = 100, MAX_PUSH_BYTES = 256 * 1024;
+/** The request around a push's changes: `{"changes":[`, `]` and its deadline (the largest
+ *  not_after a push can carry, prompts.ts PromptAttempt Expiry) and `}`. */
+const PUSH_OVERHEAD = `{"changes":[],"not_after":${Number.MAX_SAFE_INTEGER}}`.length;
+
+/** changes split into pushes the service takes (account.Batches): at most 100 each, and each
+ *  request body at most 256 KiB. Order is kept. */
+export function batches(changes: SyncChange[]): SyncChange[][] {
+ const out: SyncChange[][] = [];
+ let start = 0, size = PUSH_OVERHEAD;
+ changes.forEach((c, i) => {
+  const raw = new TextEncoder().encode(JSON.stringify(c)).byteLength;
+  let n = raw + (i > start ? 1 : 0); // the comma
+  if (i > start && (i - start === MAX_PUSH_CHANGES || size + n > MAX_PUSH_BYTES)) {
+   out.push(changes.slice(start, i));
+   start = i; size = PUSH_OVERHEAD; n = raw;
+  }
+  size += n;
+ });
+ if (start < changes.length) out.push(changes.slice(start));
+ return out;
+}
+
 async function errorCode(response: Response): Promise<string> {
  try { const body = await response.json() as { error?: unknown }; return typeof body.error === "string" ? body.error : ""; } catch { return ""; }
 }

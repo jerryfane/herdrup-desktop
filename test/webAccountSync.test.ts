@@ -5,11 +5,11 @@
 import { expect, setSystemTime, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
 import type { SavedPrompt } from "../src/mygo";
-import { WebAccount, type AccountDevice, type SyncChange } from "../src/web/account";
+import { batches, WebAccount, type AccountDevice, type SyncChange } from "../src/web/account";
 import { accountDevicesOf, createAccountDesk } from "../src/web/accountDesk";
 import { events } from "../src/web/events";
 import type { AbortableLocks } from "../src/web/locks";
-import { ACCOUNT_SYNC_KEY, batches, createAccountSync, deadlineOf, matchLanding, SAVED_PROMPTS_KEY, sentHash, settleSends, validPrompt, type PromptAttempt } from "../src/web/prompts";
+import { ACCOUNT_SYNC_KEY, createAccountSync, deadlineOf, matchLanding, SAVED_PROMPTS_KEY, sentHash, settleSends, validPrompt, type PromptAttempt } from "../src/web/prompts";
 import { staticKey } from "../src/webguest/identity";
 import { memory, PROMPTS_CAP, worker, type Worker } from "./webAccountService";
 
