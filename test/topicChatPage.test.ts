@@ -357,7 +357,7 @@ async function startSend() {
   await settle();
   return () => chatNote("topic-send-note");
  };
- return { input: input!, reopen };
+ return { input: input!, token, reopen };
 }
 
 /** The open conversation's line of that exact class: "topic-send-note" (the composer's) or
@@ -366,17 +366,25 @@ function chatNote(className: string) {
  return doc.body.all().find(n => n.className === "topic-chat")!.all().find(n => n.className === className)!;
 }
 
-/** Close from the open topic's ••• menu; herdr answers when `answer` settles. */
-async function askClose(answer: Promise<void>) {
+/** Close or Reopen (item) of Board pack, from the open topic's ••• menu (chat) or its row's menu in
+ *  the list (row); herdr answers when `answer` settles. */
+async function askLifecycle(item: "Close" | "Reopen", answer: Promise<void>, from: "chat" | "row" = "chat") {
  answers["Desk.GramMenu"] = () => true;
- answers["Desk.TopicsClose"] = () => answer;
- doc.body.all().find(n => n.tagName === "button" && n.className === "topic-actions")!.click();
+ answers[`Desk.Topics${item}`] = () => answer;
+ if (from === "chat") doc.body.all().find(n => n.tagName === "button" && n.className === "topic-actions")!.click();
+ else {
+  // The narrow page brings the list back first (the header's Topics).
+  doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-list-open"))?.click();
+  await settle();
+  const row = doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-row") && n.text().includes(TOPIC.title))!;
+  row.dispatchEvent(new Event("contextmenu"));
+ }
  await settle();
  const menu = calls.filter(c => c.method === "Desk.GramMenu").at(-1)!;
- expect(menu.args[1]).toEqual(["Close"]);
- emit("gram:menu", { id: menu.args[0], item: "Close" });
+ expect(menu.args[1]).toEqual(from === "chat" ? [item] : ["Rename…", item]);
+ emit("gram:menu", { id: menu.args[0], item });
  await settle();
- expect(calls.filter(c => c.method === "Desk.TopicsClose").at(-1)?.args[1]).toBe(TOPIC.topicID);
+ expect(calls.filter(c => c.method === `Desk.Topics${item}`).at(-1)?.args[1]).toBe(TOPIC.topicID);
 }
 
 // #539 review (P2): a send that settled after its topic was left and opened again wrote its notice
@@ -404,7 +412,7 @@ test("an unconfirmed send's warning shows in its topic opened again before the r
 test("a Close answered late leaves the send's warning in the topic opened again", async () => {
  const close = Promise.withResolvers<void>();
  const { reopen } = await startSend();
- await askClose(close.promise);
+ await askLifecycle("Close", close.promise);
  const note = await reopen({ delivery: "unconfirmed" });
  const warning = "Couldn't confirm delivery. Check the topic before sending again.";
  expect([note().hidden, note().text()]).toEqual([false, warning]);
@@ -419,7 +427,7 @@ test("a Close answered late leaves the send's warning in the topic opened again"
 test("a Close refused after the topic opened again shows its reason there, the send's warning kept", async () => {
  const close = Promise.withResolvers<void>();
  const { reopen } = await startSend();
- await askClose(close.promise);
+ await askLifecycle("Close", close.promise);
  const note = await reopen({ delivery: "unconfirmed" });
  close.reject(new Error("The topic has a turn running."));
  await settle();
@@ -431,7 +439,42 @@ test("a Close refused after the topic opened again shows its reason there, the s
  await openRow(TOPIC.title);
  expect(chatNote("topic-send-note topic-action-note").text()).toBe("The topic has a turn running.");
  // A Close that goes through clears its refusal and nothing else.
- await askClose(Promise.resolve());
+ await askLifecycle("Close", Promise.resolve());
+ expect([chatNote("topic-send-note topic-action-note").hidden, note().hidden, note().text()])
+  .toEqual([true, false, "Couldn't confirm delivery. Check the topic before sending again."]);
+});
+
+// #546 review (P3): an older Close's refusal that came back after a newer Close went through wrote
+// itself under the closed topic. The newest Close or Reopen per topic owns the topic's notice.
+test("an older Close refused after a newer one went through writes nothing", async () => {
+ const { token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ const first = Promise.withResolvers<void>();
+ await askLifecycle("Close", first.promise);
+ await openRow("Beta");
+ await openRow(TOPIC.title);
+ await askLifecycle("Close", Promise.resolve());
+ first.reject(new Error("The topic has a turn running."));
+ await settle();
+ expect(chatNote("topic-send-note topic-action-note").hidden).toBe(true);
+});
+
+// #546 review (P3): a Reopen that went through from the topic's row menu left the conversation's
+// older refusal on screen. Both menus go through one Close/Reopen per topic: either one's success
+// clears the topic's lifecycle notice, and the send's warning stays.
+test("a Reopen from the row menu clears the conversation's refusal, the send's warning kept", async () => {
+ const { token, reopen } = await startSend();
+ const note = await reopen({ delivery: "unconfirmed" });
+ listed(token, "closed", false);
+ await settle();
+ const refused = Promise.withResolvers<void>();
+ await askLifecycle("Reopen", refused.promise);
+ refused.reject(new Error("herdr couldn't reopen the topic."));
+ await settle();
+ expect(chatNote("topic-send-note topic-action-note").text()).toBe("herdr couldn't reopen the topic.");
+ await askLifecycle("Reopen", Promise.resolve(), "row");
+ await openRow(TOPIC.title);
  expect([chatNote("topic-send-note topic-action-note").hidden, note().hidden, note().text()])
   .toEqual([true, false, "Couldn't confirm delivery. Check the topic before sending again."]);
 });
