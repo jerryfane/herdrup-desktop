@@ -318,16 +318,26 @@ func (d *Desk) followTopics(ctx context.Context, v *interaction) {
 		}
 		d.topicsRead(v)
 	})
-	if err == nil || ctx.Err() != nil {
+	if err == nil {
 		return
 	}
+	d.topicsFollowerFailed(ctx, v)
+}
+
+// topicsFollowerFailed puts the follower whose subscription failed (ctx is
+// its own) on the guest's poll. Only the current follower does: one hidden
+// and replaced meanwhile had its ctx cancelled under t.mu (topicsWatch)
+// before its replacement started, so its failure, checked under t.mu, leaves
+// the replacement's pace alone.
+func (d *Desk) topicsFollowerFailed(ctx context.Context, v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.cancel != nil {
-		t.poll = topicsGuestPoll
-		d.topicsScheduleLocked(v)
+	if ctx.Err() != nil {
+		return
 	}
+	t.poll = topicsGuestPoll
+	d.topicsScheduleLocked(v)
 }
 
 // topicsChangedTopic tells the page one topic's conversation changed.

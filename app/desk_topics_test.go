@@ -498,6 +498,48 @@ func TestTopicsFailedReadsScheduleOneReadAtTheEarlierDeadline(t *testing.T) {
 	}
 }
 
+// #564 review (P3): a follower's subscription failure checked its cancellation
+// before taking the Topics lock, so a follower hidden and replaced in that gap
+// put its replacement on the guest's poll. The failure is the current
+// follower's only: a retired one's (its ctx cancelled) leaves the pace alone.
+func TestTopicsRetiredFollowerLeavesItsReplacementsPace(t *testing.T) {
+	d, _, _, subscribed := topicsDesk(t, true)
+	if err := d.TopicsFollow("view", true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-subscribed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Topics subscription never registered")
+	}
+	// Hidden and shown again: the first follower is retired, a second follows.
+	if err := d.TopicsFollow("view", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.TopicsFollow("view", true); err != nil {
+		t.Fatal(err)
+	}
+	v, err := d.agentView("view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pace := func() time.Duration {
+		v.topics.mu.Lock()
+		defer v.topics.mu.Unlock()
+		return v.topics.poll
+	}
+	retired, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.topicsFollowerFailed(retired, v)
+	if got := pace(); got != topicsBackstop {
+		t.Fatalf("a retired follower's failure set the pace to %v; want the replacement's %v", got, topicsBackstop)
+	}
+	d.topicsFollowerFailed(context.Background(), v)
+	if got := pace(); got != topicsGuestPoll {
+		t.Fatalf("the current follower's failure left the pace at %v; want the guest's %v", got, topicsGuestPoll)
+	}
+}
+
 // The page lists the topics the agent's session file holds (topic_sessions)
 // until the agent's first list answers: the view carries them, one without
 // an id left out, never null.
