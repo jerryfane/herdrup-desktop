@@ -1150,29 +1150,35 @@ test("a topic herdr read from the session file (state unknown) claims neither Id
 });
 
 // herdr-app #559405: the chat's up arrow (Jump to my previous message) on the web. An owner's browser
-// (an owner link) opens its agents as the gate's guest views; herdr's owner gate stamps the
-// browser's prompts as the owner's (turn origin "mine", herdr-app 559688). The owner's view has the
-// arrow and lands on them; a guest's never shows it; the desktop's is as before.
+// (an owner link) opens its agents as the gate's guest views; a herdr whose owner gate stamps the
+// browser's prompts as the owner's (turn origin "mine", herdr-app 559688) says so in its ping, and
+// only then is the view an ownerLink one (web/desk.ts openAgentView, #575). That view has the arrow
+// and lands on them; an owner link to an older herdr and a guest's never show it; the desktop's is
+// as before.
 const ownerPrompt = (id: string, text: string, extra: Record<string, unknown> = {}) => ({ kind: "user", id, ts_ms: Date.now() - 500, text, author: "owner", ...extra });
 const GITMOOT = ownerPrompt("u0", "gitmoot: review PR 12", { origin: "other" });
 
-/** Opens the agent's chat as `view` (an AgentView's fields over a desktop owner's) with the Inbox
- *  answering live reads from `live` (all of it for the first read, what follows `after` later). */
-async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }) {
+/** Opens the agent's chat once, as `view` (an AgentView's fields over a desktop owner's) on a
+ *  connection with `ownerScope` (an owner link's; none for a guest or the desktop), with the
+ *  Inbox answering live reads from `live` (all of it for the first read, what follows later). */
+async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }, ownerScope?: string) {
  // A page of its own: no chat remembered from before.
  emit("state:changed", { phase: "idle" });
- await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
-  const from = after === "" ? 0 : Number(String(after).slice("live".length));
-  return topicPage({ session_id: "s-live", after: `live${live.entries.length}`, entries: live.entries.slice(from) });
- });
- page.closeInteraction();
- const opened = answers["Desk.OpenAgentView"]!;
- answers["Desk.OpenAgentView"] = (...args: unknown[]) => ({ ...(opened(...args) as object), topicSessions: [], ...view });
- answers["Desk.GuestChatAvailable"] = () => true;
- answers["Desk.State"] = () => ({ phase: "connected", guest: { features: { gram: false }, ...(view.ownerLink ? { ownerScope: "chat" } : {}) } });
- answers["Desk.TopicsAvailable"] = () => false;
+ stored.set("chat.ompOpensIn", "chat");
+ answers = {
+  "Desk.OpenAgentView": (_target: unknown, token: unknown) => ({ token, paneID: "p1", name: "herdr-app", harness: "omp", heading: "herdr-app", group: "idle", status: "idle", guest: false, guestGram: false, plainTerminal: false, askForm: false, topicSessions: [], ...view }),
+  "Desk.PaneMuted": () => false,
+  "Desk.TopicsAvailable": () => false,
+  "Desk.GuestChatAvailable": () => true,
+  "Desk.State": () => ({ phase: "connected", guest: { features: { gram: false }, ...(ownerScope ? { ownerScope } : {}) } }),
+  "Desk.ChatTranscript": (_token: unknown, after: unknown) => {
+   const from = after === "" ? 0 : Number(String(after).slice("live".length));
+   return topicPage({ session_id: "s-live", after: `live${live.entries.length}`, entries: live.entries.slice(from) });
+  },
+ };
  await page.selectInteraction(target);
  await settle();
+ expect(calls.filter(c => c.method === "Desk.OpenAgentView")).toHaveLength(1);
  const scroll = doc.body.all().find(n => n.className === "chat-scroll")!;
  const jump = doc.body.all().find(n => n.className === "chat-jump-previous-mine")!;
  return { scroll, jump };
@@ -1192,7 +1198,7 @@ const TOPS = { u0: 200, u1: 1200 };
 
 test("an owner's browser has the up arrow, which lands on the prompt the owner sent from it", async () => {
  const live = { entries: [GITMOOT, reply("r0", "Reviewed")] };
- const { scroll, jump } = await openChat({ guest: true, ownerLink: true }, live);
+ const { scroll, jump } = await openChat({ guest: true, ownerLink: true }, live, "chat");
  answers["Desk.ChatPrompt"] = () => { live.entries.push(ownerPrompt("u1", "Fix the build", { origin: "mine" }), reply("r1", "Fixed")); return JSON.stringify({ delivery: "submitted" }); };
  const input = doc.body.all().find(n => n.tagName === "textarea")!;
  type(input, "Fix the build");
@@ -1208,6 +1214,14 @@ test("an owner's browser has the up arrow, which lands on the prompt the owner s
  jump.click();
  await settle();
  expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
+});
+
+// An older herdr records the browser's prompts as other: the arrow would skip them (#575).
+test("an owner link to a herdr without owner-browser origins has no up arrow", async () => {
+ const live = { entries: [GITMOOT, ownerPrompt("u1", "Fix the build"), reply("r1", "Fixed")] };
+ const { scroll, jump } = await openChat({ guest: true }, live, "chat");
+ layOut(scroll, TOPS);
+ expect(jump.hidden).toBe(true);
 });
 
 test("a guest's view never has the up arrow, even with the owner's prompts above", async () => {

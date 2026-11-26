@@ -7,7 +7,7 @@ import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } 
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/accountStatement";
-import { createGuestDesk, avatarDataURL, AvatarBytesError } from "../src/web/desk";
+import { createGuestDesk, avatarDataURL, AvatarBytesError, OWNER_BROWSER_ORIGIN } from "../src/web/desk";
 import { knownPhoto, loadPhoto, trackPhotoConnections } from "../src/avatars";
 import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
@@ -793,6 +793,25 @@ test("the Inbox's and a topic's transcript ask for relay entries only where the 
    // herdr's relay_entries flag reaches the page too (#555): true on a page showing relays,
    // absent on one without.
    expect([inbox.relay_entries, topic.relay_entries]).toEqual(served ? [true, true] : [undefined, undefined]);
+  } finally { desk.disconnectOwner(); relay.stop(); }
+ }
+});
+
+// #575: an owner link's agent view has the owner's up arrow (ownerLink) only where the host's ping
+// says its owner gate records the browser's prompts as the owner's; an older herdr marks them other.
+test("an owner link's agent view is an ownerLink one only where the host attributes the browser's prompts", async () => {
+ for (const attributed of [true, false, undefined]) {
+  const relay = host({ other: (session, req) => {
+   if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.9", capabilities: attributed === undefined ? {} : { [OWNER_BROWSER_ORIGIN]: attributed } } });
+   else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+  } });
+  const desk = await deskWithKey();
+  try {
+   const listed = boardOf(relay);
+   await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
+   await listed;
+   const view = await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "view-1");
+   expect([view.guest, view.ownerLink]).toEqual([true, attributed === true ? true : undefined]);
   } finally { desk.disconnectOwner(); relay.stop(); }
  }
 });

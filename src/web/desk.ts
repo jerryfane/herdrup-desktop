@@ -46,6 +46,9 @@ const GUEST_FORBIDDEN = "guest_forbidden"; // desk_guest_answers.go guestForbidd
 const OWNER_PAUSED = "owner_paused";
 /** herdr owner_gate.rs: a method the owner browser's scope doesn't take; the session stays open. */
 const OWNER_FORBIDDEN = "owner_forbidden";
+/** herdr's ping capability: its owner gate records an owner browser's writes as the owner's
+ *  (input_source app, turn origin mine), so the chat's up arrow finds them (#575). */
+export const OWNER_BROWSER_ORIGIN = "owner_browser_origin";
 const refusedHere = (code: string) => code === GUEST_FORBIDDEN || code === OWNER_FORBIDDEN;
 // desk_guest_answers.go guestMenuKeys
 const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab", "Enter"];
@@ -744,6 +747,11 @@ export function createGuestDesk(env: DeskEnv) {
    if (token === "" || token.length > 128) throw new Error("invalid view token");
    const l = active;
    if (!l || l.id !== target.machineID || (target.session !== "" && target.session !== "default")) throw new Error("agent belongs to another connection or session");
+   // The owner's up arrow on an owner link: only where herdr records the browser's prompts as the
+   // owner's (turn origin mine); an older owner gate marks them other, and the arrow would skip
+   // them for an older prompt sent from the app (#575). From the link's cached pong.
+   const ownerOrigin = !!l.owner && await l.client.supports(OWNER_BROWSER_ORIGIN, l.life.signal);
+   if (active !== l) throw new Error("agent belongs to another connection or session");
    // An agent a start acknowledged opens before a list has it (OwnerLink.started).
    const agent = l.agents.find((a) => a.pane_id === target.paneID) ?? l.started?.get(target.paneID);
    if (!agent) throw new Error("agent is no longer on this board");
@@ -764,8 +772,7 @@ export function createGuestDesk(env: DeskEnv) {
     // desk_interaction.go topicSessions: the topics its session file holds, one without an id left out.
     topicSessions: (agent.topic_sessions ?? []).filter(t => !!t.topic_id).map(t => ({ topicID: t.topic_id!, title: t.title ?? "", createdMs: t.created_unix_ms ?? 0 })),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
-    // The owner's own browser (an owner link): the gate's guest view, with the owner's up arrow.
-    ...(l.owner ? { ownerLink: true } : {}),
+    ...(ownerOrigin ? { ownerLink: true } : {}),
    };
    mountView(l, view, shareDetails(agent, name, linkShareLabel(l)), ownerAvailability([agent], view.paneID));
    return view;
@@ -783,7 +790,7 @@ export function createGuestDesk(env: DeskEnv) {
    if (l.transport.scope !== "terminal") throw new OwnerRefusedError("pane.stream");
    const saved = findTerminal(l.owner.hostID, target.paneID);
    const view: AgentView = { token, paneID: saved.paneID, name: saved.label, harness: "", heading: saved.label, group: "terminal", status: "Terminal",
-    guest: true, guestGram: false, askForm: false, topicSessions: [], plainTerminal: true, ownerLink: true };
+    guest: true, guestGram: false, askForm: false, topicSessions: [], plainTerminal: true };
    mountView(l, view, { agentName: saved.label, machineLabel: linkShareLabel(l) }, "");
    return view;
   },
