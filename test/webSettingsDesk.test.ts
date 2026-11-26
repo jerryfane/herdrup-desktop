@@ -27,6 +27,7 @@ import type { AgentInfo } from "../src/web/board";
 import { ACCOUNTS_POLL_MS, accountCommand, accountLabels, accountMenuEntries, createSettingsAccountsDesk, loginRejected, loginURL, LOGOUT_TIMEOUT_MS, logoutStatus, startAccountLabels, type AccountInfo } from "../src/web/settingsAccountsDesk";
 import { CLOSING_WAIT_MS, ownerSplit } from "../src/web/ownerLink";
 import { guestsDesk } from "../src/web/guestsDesk";
+import { decodeGuestList } from "../src/guestList";
 import { createServerUpdateDesk } from "../src/web/serverUpdateDesk";
 import { updateOffer, type UpdateAttempt, type UpdateState } from "../src/serverUpdatePolicy";
 import { updateSuggestion } from "../src/settingsUpdates";
@@ -357,19 +358,20 @@ test("a device removal's check lists the shares alone: no activity log, and a li
  expect(host.calls.filter((c) => c.method.startsWith("guest.")).map((c) => [c.method, c.params])).toEqual([["guest.list", {}], ["guest.list", {}]]);
 });
 
-test("a device removal's check refuses a listing that isn't a list of shares: it throws, never an empty or partial list", async () => {
- const shapes: unknown[] = [
-  undefined, null, { guest_id: "g1" }, "g1", [null], [{ name: "ana" }],
-  [{ guest_id: "g1", devices: { fingerprint: "f" } }], [{ guest_id: "g1", devices: [{ device: "iPad" }] }],
- ];
- const outcomes: string[] = [];
- for (const guests of shapes) {
+test("a device removal's check forwards guest.list's reply as herdr sent it, as Go's does: the confirmation's one decoder takes it or refuses it", async () => {
+ const share = { guest_id: "g1", person: "acct-ana", fingerprint: "SHA256:ipad", devices: [{ fingerprint: "SHA256:mac", device: "MacBook", removed: false }] };
+ const replies = [[share], [{ ...share, devices: [{ ...share.devices[0], removed: "false" }] }], { guest_id: "g1" }];
+ const outcomes: unknown[] = [];
+ for (const guests of replies) {
   ownerLink((method) => { if (method === "guest.list") return { type: "guest_list", guests, invites: [] }; });
-  try { await guestsDesk.settingsGuestList("tok", ""); outcomes.push("listed"); } catch (error) { outcomes.push((error as Error).message); }
+  const raw = await guestsDesk.settingsGuestList("tok", "");
+  outcomes.push([JSON.parse(raw), decodeGuestList(raw)]);
  }
- expect(outcomes).toEqual(shapes.map(() => "herdr answered guest.list without a list of shares"));
- ownerLink((method) => { if (method === "guest.list") return { type: "guest_list", guests: [{ guest_id: "g1", devices: null }, { guest_id: "g2", devices: [{ fingerprint: "f" }] }], invites: [] }; });
- expect(JSON.parse(await guestsDesk.settingsGuestList("tok", "")).guests).toHaveLength(2);
+ expect(outcomes).toEqual([
+  [{ guests: replies[0], invites: [] }, replies[0]],
+  [{ guests: replies[1], invites: [] }, null],
+  [{ guests: replies[2], invites: [] }, null],
+ ]);
 });
 
 test("guest changes go to this machine only: never a machine param, and another machine's are refused unsent", async () => {
