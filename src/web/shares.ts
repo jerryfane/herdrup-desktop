@@ -210,14 +210,16 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   return running;
  }
 
- /** Keeps change for acct, the account the share is bound to, and sends it while acct is signed in
-  *  here: never to another account. Under another sign-in (or none) it waits for acct's next
-  *  round on this browser. */
- const write = async (acct: string, change: PendingWrite): Promise<void> => {
-  const shown = await update(acct, r => { r.pending = r.pending.filter(p => p.id !== change.id).concat(change); return visible(r); });
+ /** Keeps change for acct, the account the share is bound to, in this browser's record: one
+  *  storage refuses rejects, and nothing is kept. */
+ const keep = (acct: string, change: PendingWrite): Promise<void> =>
+  update(acct, r => { r.pending = r.pending.filter(p => p.id !== change.id).concat(change); });
+ /** Sends acct's kept writes while acct is signed in here: never to another account. Under
+  *  another sign-in (or none) they wait for acct's next round on this browser; a round that fails
+  *  sends them with the next one. */
+ const send = async (acct: string): Promise<void> => {
   if (account.current?.accountID !== acct) return;
-  tell({ account: acct, shares: shown, removed: [] });
-  // The write is kept: a round that fails sends it with the next one.
+  tell({ account: acct, shares: visible(read(acct)), removed: [] });
   await sync().catch(() => {});
  };
 
@@ -246,12 +248,15 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   },
   sync,
   /** Writes a bound grant's share to the account it is bound to (Access.account). */
-  put: (access: Access) => {
-   if (access.account === undefined) return Promise.reject(new Error("This shared access isn't bound to a HerdrUp account."));
-   return write(access.account, { id: shareID(access), body: shareBody(access) });
+  put: async (access: Access) => {
+   if (access.account === undefined) throw new Error("This shared access isn't bound to a HerdrUp account.");
+   await keep(access.account, { id: shareID(access), body: shareBody(access) });
+   await send(access.account);
   },
-  /** Deletes a share from acct, the account it is bound to: it leaves every device. */
-  remove: (id: string, acct: string) => write(acct, { id, deleted: true }),
+  /** Keeps the delete of share id from acct, the account it is bound to (it leaves every device
+   *  once sent): resolved, it is kept, and send(acct) sends it; rejected, storage refused it. */
+  remove: (id: string, acct: string) => keep(acct, { id, deleted: true }),
+  send,
   /** Binds this sign-in's session to key as an account device (the statements a bound share
    *  needs are issued only to a session with a device); a session bound already is fine. */
   async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {

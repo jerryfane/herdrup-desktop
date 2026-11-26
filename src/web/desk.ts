@@ -778,11 +778,14 @@ export function createGuestDesk(env: DeskEnv) {
 
   /** Leaves share id: its grant goes (the others held stay). One bound to the account is also
    *  deleted from the account it is bound to, so it leaves every device (with another sign-in
-   *  now, at that account's next sync here); a plain one is this browser's alone, as before. */
+   *  now, at that account's next sync here); a plain one is this browser's alone, as before.
+   *  The delete is kept before the grant goes: storage refusing it fails the Leave with the grant
+   *  still held, so Leave can be tried again (a grant gone first leaves nothing to retry from). */
   async forgetGuestConnection(id: string): Promise<void> {
    const grant = await env.grants.get(id);
-   const held = grant !== undefined;
-   if (held) {
+   const bound = env.shares && grant?.accountBound && grant.account !== undefined ? { shares: env.shares, acct: grant.account } : null;
+   if (bound) await bound.shares.remove(id, bound.acct);
+   if (grant !== undefined) {
     env.owner.set(grant.ownerName);
     await env.grants.remove(id);
    }
@@ -790,7 +793,7 @@ export function createGuestDesk(env: DeskEnv) {
     disconnect();
     publishIdle();
    }
-   if (held && grant.accountBound && grant.account !== undefined && env.shares) await env.shares.remove(id, grant.account);
+   if (bound) await bound.shares.send(bound.acct);
   },
 
   async takeGuestInvitation(): Promise<string> { return ""; },

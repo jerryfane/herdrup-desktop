@@ -139,6 +139,21 @@ test("leaving a bound share deletes it from the account, and every browser holdi
  expect(await linux.desk.syncedShares()).toEqual([]);
 }, CONNECTS_LIMIT_MS);
 
+test("a Leave whose delete storage refuses keeps the grant, and the Leave tried again deletes the share from the account", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const key = SHARES_KEY_PREFIX + "acct";
+ mac.storage.refuses = k => k === key;
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow("quota");
+ expect([(await mac.grants.get(id))?.guestID, w.sharesIn("acct")]).toEqual([access.guestID, [id]]);
+ mac.storage.refuses = null;
+ await mac.desk.forgetGuestConnection(id);
+ await mac.shares.sync();
+ expect([await mac.grants.list(), w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual([[], [], { collection: "shares", id, base_rev: 1, deleted: true }]);
+}, CONNECTS_LIMIT_MS);
+
 test("a browser whose put was taken but whose readback failed still drops its bound grant when the share's tombstone comes", async () => {
  const w = worker(), h = host();
  const mac = await browser(w), linux = await browser(w);
