@@ -401,6 +401,10 @@ class Detail {
  oldestCursor: string | undefined;
  chatEpoch = 0;
  chatPoll = 0;
+ /** The poll whose newest-page read is in flight (it started, or started over, from the newest
+  *  page), until it settles; null with none. chatRestart says the next read must be the newest
+  *  page; this says one is being read now (#582). */
+ private newestPoll: number | null = null;
  // A guest's last send that has not shown up in the transcript: until when it keeps the poll fast
  // (ChatModel.hasPendingSend and fastPollUntil, chatPoll.ts).
  sendFollow: { until: number } | null = null;
@@ -1573,6 +1577,7 @@ class Detail {
  // `refusal`: the question's refusal a Refresh was pressed over, dropped once this poll's page lands.
  async refreshChat(generation: number, refusal: AnswerProblem | null = null) {
   const epoch = this.chatEpoch, poll = ++this.chatPoll;
+  if (this.chatRestart) this.newestPoll = poll;
   clearTimeout(this.refreshTimer);
   try {
    // held_from: the oldest page held, "" once nothing is older (herdr #430). A server without
@@ -1584,7 +1589,7 @@ class Detail {
    }, () => {
     // A poll Refresh or a later poll superseded reads nothing more.
     if (stale()) return false;
-    this.setPaging(this.oldestCursor, true);
+    this.setPaging(this.oldestCursor, true); this.newestPoll = poll;
     return true;
    });
    if (!live || stale()) return;
@@ -1631,6 +1636,7 @@ class Detail {
    }
   }
   finally {
+   if (this.newestPoll === poll) this.newestPoll = null;
    if (!this.disposed && !this.guestPaused && this.mode === "chat" && generation === this.generation && epoch === this.chatEpoch && poll === this.chatPoll) {
     const delay = chatPollDelay({ guest: !!this.view?.guest, working: !!this.chat?.working, sendPending: !!this.sendFollow, followUntil: this.sendFollow?.until ?? 0, now: Date.now() });
     this.refreshTimer = window.setTimeout(() => { void this.refreshChat(generation); }, delay);
@@ -1728,11 +1734,12 @@ class Detail {
  /** An older page can be read: a cursor is held and no restart has made it unusable. */
  private get paging(): boolean { return !!this.oldestCursor && !this.chatRestart; }
  /** An older page showed the history can't be paged on (its cursor expired, or it shows
-  *  handovers otherwise): paging stops and the chat starts over from its newest page, unless a
-  *  newest-page read is already owed (Refresh, or a live read that started over). A second poll
-  *  would supersede that one, and Refresh's refusal reset with it (#581). */
+  *  handovers otherwise): paging stops and the chat starts over from its newest page, unless the
+  *  poll that owns the chat is reading the newest page now (Refresh, or a live read that started
+  *  over). A second poll would supersede that one, and Refresh's refusal reset with it (#581);
+  *  once that read failed, the chat starts over at once (#582). */
  private olderPageInvalid(generation: number) {
-  const owed = this.chatRestart;
+  const owed = this.newestPoll === this.chatPoll;
   this.olderLoad = "idle"; this.setPaging(this.oldestCursor, true);
   if (!owed) void this.refreshChat(generation);
  }
