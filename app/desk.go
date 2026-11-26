@@ -47,9 +47,9 @@ type Machine struct {
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
 	// LocalID is this device's own id for the saved profile (32 hex digits),
-	// made when first needed (a guest relabel queued for it) and never
-	// reused: a profile saved later at the same user@host:port gets another.
-	// "" until then.
+	// made when first needed (a connection to it, a guest relabel queued for
+	// it) and never reused: a profile saved later at the same user@host:port
+	// gets another. "" until then.
 	LocalID string `json:"localId,omitempty"`
 	// LabelRev is the revision of the machine's invite label (inviteLabel)
 	// for its guests: the unix ms of the rename that set it, never below
@@ -213,6 +213,9 @@ type Desk struct {
 	// it is done (desk_guest_relabel.go). Under relabelMu.
 	relabelMu  sync.Mutex
 	relabeling map[string]bool
+	// relabelSent, when set, runs after each relabel a sender made, before
+	// it decides what comes next; set in tests, to hold a sender there.
+	relabelSent atomic.Pointer[func(*link)]
 
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
@@ -324,6 +327,10 @@ type Desk struct {
 // Desk.mu, but work, which has its own lock.
 type link struct {
 	id string // machineID of the machine
+	// profile is the saved profile connected (Machine.LocalID), the link's
+	// identity among the saved machines: an address can come to name
+	// another profile (account sync) while the link stays.
+	profile string
 	// session is the herdr session the board shows. Switching it keeps the
 	// SSH connection.
 	session string
@@ -715,7 +722,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	// open keeps the name it opened with.
 	d.mu.Lock()
 	d.followSavedLabel(st)
-	if l := d.link; relabel && l != nil && l.guest == nil && l.id == id {
+	if l := d.link; relabel && l != nil && l.guest == nil && l.profile == m.LocalID {
 		l.work.Go(func() { d.relabelGuests(l) })
 	}
 	d.mu.Unlock()
@@ -746,6 +753,10 @@ func (d *Desk) SelectMachine(id, password string) error {
 	if i < 0 {
 		d.storeMu.Unlock()
 		return fmt.Errorf("no saved machine %q", id)
+	}
+	if st.Machines[i].LocalID == "" {
+		// The connection's identity among the saved profiles (link.profile).
+		st.Machines[i].LocalID = newLocalID()
 	}
 	m := st.Machines[i]
 	if m.KeyPath == "" && password == "" {
@@ -1049,6 +1060,11 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 		m.LocalID, m.LabelRev, m.LabelSent = "", 0, 0
 		st.Machines = append(st.Machines, m)
 	}
+	if i := st.find(id); st.Machines[i].LocalID == "" {
+		// The connection's identity among the saved profiles (link.profile).
+		st.Machines[i].LocalID = newLocalID()
+		m.LocalID = st.Machines[i].LocalID
+	}
 	st.Active = id
 	if err := d.store(st); err != nil {
 		return m, err
@@ -1063,7 +1079,7 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
+	l := &link{id: machineID(m), profile: m.LocalID, session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()

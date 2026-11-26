@@ -818,9 +818,9 @@ export interface Machine {
   syncId?: string;
   /**
    * LocalID is this device's own id for the saved profile (32 hex digits),
-   * made when first needed (a guest relabel queued for it) and never
-   * reused: a profile saved later at the same user@host:port gets another.
-   * "" until then.
+   * made when first needed (a connection to it, a guest relabel queued for
+   * it) and never reused: a profile saved later at the same user@host:port
+   * gets another. "" until then.
    */
   localId?: string;
   /**
@@ -1119,9 +1119,9 @@ export interface SavedMachine {
   syncId?: string;
   /**
    * LocalID is this device's own id for the saved profile (32 hex digits),
-   * made when first needed (a guest relabel queued for it) and never
-   * reused: a profile saved later at the same user@host:port gets another.
-   * "" until then.
+   * made when first needed (a connection to it, a guest relabel queued for
+   * it) and never reused: a profile saved later at the same user@host:port
+   * gets another. "" until then.
    */
   localId?: string;
   /**
