@@ -408,6 +408,13 @@ func TestACancelledRequestEndsForTheApprover(t *testing.T) {
 	if err := b.newDev.RevealPair(ctx, acct, ask.ID(), bytes.Repeat([]byte{1}, 32)); !apiError(err, http.StatusGone, "cancelled") {
 		t.Fatalf("reveal after the cancel: %v", err)
 	}
+	sealed, err := account.SealPairEnvelope(b.macKey, b.newKey.PublicKey(), b.ssh.Public, ask.ID(), 1, []byte(`{"v":1,"machines":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.mac.PutPairEnvelope(ctx, acct, ask.ID(), 1, sealed); !apiError(err, http.StatusGone, "cancelled") {
+		t.Fatalf("envelope after the cancel: %v", err)
+	}
 	if reqs, err := b.mac.PairRequests(ctx, acct); err != nil || len(reqs) != 0 {
 		t.Fatalf("listed after the cancel: %+v, %v", reqs, err)
 	}
@@ -693,5 +700,145 @@ func TestABrowserCantCancel(t *testing.T) {
 	ask := b.ask(t)
 	if err := b.web.CancelPair(context.Background(), acct, ask.ID()); !apiError(err, http.StatusForbidden, account.PairErrNotNative) {
 		t.Fatalf("browser cancel: %v", err)
+	}
+}
+
+// An approval's writes run one at a time: an Approve beside one in flight
+// sends nothing until that one settles, then finds the request approved.
+// (Two finishes at once could each count the other's list as its own.)
+func TestOverlappingApprovesRunOneAtATime(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask := b.ask(t)
+	a, code := b.claimed(t, ask)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	path := "/v1/approvals/" + ask.ID()
+	var finishes, puts atomic.Int32
+	entered, held := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	t.Cleanup(release)
+	f := func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == path+"/finish":
+			if finishes.Add(1) == 1 {
+				close(entered)
+				<-held
+			}
+		case r.Method == http.MethodPut && r.URL.Path == path+"/envelope":
+			puts.Add(1)
+		}
+		return false
+	}
+	b.intercept.Store(&f)
+
+	first := make(chan error, 1)
+	go func() { first <- a.Approve(ctx, 1, machines("studio")) }()
+	<-entered
+	others := make(chan error, 2)
+	go func() { others <- a.Approve(ctx, 1, machines("studio", "nas")) }()
+	go func() { others <- a.Approve(ctx, 2, machines("studio", "nas")) }()
+	select {
+	case err := <-others:
+		t.Fatalf("an Approve ran beside the one in flight: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if n := finishes.Load(); n != 1 {
+		t.Fatalf("%d finishes in flight", n)
+	}
+	release()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-others; !errors.Is(err, account.ErrPairApproved) {
+			t.Fatalf("an Approve after the approval: %v", err)
+		}
+	}
+	if finishes.Load() != 1 || puts.Load() != 0 || a.Seq() != 1 || a.NextSeq() != 2 {
+		t.Fatalf("finishes %d, puts %d, seq %d, next %d", finishes.Load(), puts.Load(), a.Seq(), a.NextSeq())
+	}
+	if got, ok, err := ask.Machines(ctx); err != nil || !ok || got.Seq != 1 || len(got.Envelope.Machines) != 1 {
+		t.Fatalf("machines = %+v, %v, %v", got, ok, err)
+	}
+}
+
+// An Abandon while the reveal waits for a fresh access token stops it: the
+// reveal is marked sent only once it has its token and is about to go.
+func TestAnAbandonDuringTheRevealsRefreshSendsNothing(t *testing.T) {
+	b := newBench(t)
+	b.svc.AccessExpiresIn = 60 // every request takes a fresh token
+	ctx := context.Background()
+	ask := b.ask(t)
+	if _, err := b.mac.StartPairApproval(ctx, acct, b.macKey, b.listed(t)); err != nil {
+		t.Fatal(err)
+	}
+	var refreshes, reveals atomic.Int32
+	entered, held := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	t.Cleanup(release)
+	f := func(w http.ResponseWriter, r *http.Request) bool {
+		switch r.URL.Path {
+		case "/v1/auth/refresh":
+			// The first is the status read's, the second the reveal's.
+			if refreshes.Add(1) == 2 {
+				close(entered)
+				<-held
+			}
+		case "/v1/approvals/" + ask.ID() + "/reveal":
+			reveals.Add(1)
+		}
+		return false
+	}
+	b.intercept.Store(&f)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ask.Poll(ctx)
+		done <- err
+	}()
+	<-entered
+	ask.Abandon()
+	if ask.RevealSent() {
+		t.Fatal("RevealSent while the reveal waits for its token")
+	}
+	release()
+	if err := <-done; !errors.Is(err, account.ErrApprovalEnded) {
+		t.Fatalf("poll = %v", err)
+	}
+	if reveals.Load() != 0 || b.svc.Requests()[0].NonceB != "" || ask.RevealSent() {
+		t.Fatalf("an abandoned request revealed: %d reveals", reveals.Load())
+	}
+}
+
+// The new device's stored cancel settles a finish whose answer was lost:
+// the service takes no finish after it, so Approve is NotApprovedError.
+func TestAStoredCancelSettlesAFinishWithALostAnswer(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask := b.ask(t)
+	a, code := b.claimed(t, ask)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	path := "/v1/approvals/" + ask.ID() + "/finish"
+	var lost atomic.Bool
+	f := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPost || r.URL.Path != path || !lost.CompareAndSwap(false, true) {
+			return false
+		}
+		if err := ask.Cancel(context.Background()); err != nil {
+			t.Errorf("cancel: %v", err)
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		return true
+	}
+	b.intercept.Store(&f)
+	var not *account.NotApprovedError
+	if err := a.Approve(ctx, 1, machines("studio")); !errors.As(err, &not) {
+		t.Fatalf("approve, cancelled meanwhile: %v", err)
+	}
+	if state, final, err := a.Outcome(ctx); err != nil || state != account.ApprovalCancelled || !final {
+		t.Fatalf("outcome = %s, %v, %v", state, final, err)
 	}
 }

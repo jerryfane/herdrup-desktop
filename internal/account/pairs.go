@@ -205,8 +205,17 @@ func (c *Client) RequestPair(ctx context.Context, acct string, commit, sshPub []
 // RevealPair reveals nonce_b for request id, once it is claimed and this
 // device holds nonce_t.
 func (c *Client) RevealPair(ctx context.Context, acct, id string, nonceB []byte) error {
-	return c.authed(ctx, acct, http.MethodPost, approvalPath(id, "reveal"),
-		map[string]string{"nonce_b": base64.RawURLEncoding.EncodeToString(nonceB)}, nil)
+	return c.revealPair(ctx, acct, id, nonceB, func() error { return nil })
+}
+
+// revealPair is RevealPair with sending called at each dispatch once its
+// access token is in hand, the last point before the request is written:
+// an error from it ends the reveal unsent.
+func (c *Client) revealPair(ctx context.Context, acct, id string, nonceB []byte, sending func() error) error {
+	body := map[string]string{"nonce_b": base64.RawURLEncoding.EncodeToString(nonceB)}
+	return c.authedEach(ctx, Round{Account: acct}, http.MethodPost, approvalPath(id, "reveal"), func() (any, error) {
+		return body, sending()
+	}, nil, nil)
 }
 
 // CancelPair cancels this device's request id while it is open: its outcome

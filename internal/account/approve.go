@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"unicode/utf8"
 )
 
@@ -162,36 +161,40 @@ func (p protocol) aead(key DeviceKey, peerPub, requesterPub, approverPub []byte)
 	return cipher.NewGCM(block)
 }
 
-// binding is what the envelope's AAD takes after T: S and the request id
-// (22 ASCII characters) for pair-v1; nothing for approve-v1, which must be
-// given neither.
-func (p protocol) binding(sshPub []byte, requestID string) ([]byte, error) {
-	s, err := p.bound(sshPub)
-	if err != nil {
-		return nil, err
-	}
-	if !p.ssh {
-		if requestID != "" {
-			return nil, fmt.Errorf("%s: binds no request id", p.name)
-		}
-		return nil, nil
-	}
-	if len(requestID) != pairRequestIDSize {
-		return nil, fmt.Errorf("%s: request id is %d characters, want %d", p.name, len(requestID), pairRequestIDSize)
+// checkBinding checks what the envelope's AAD binds after T: S (32 bytes)
+// and the request id (22 ASCII characters) for pair-v1; nothing for
+// approve-v1, which must be given neither.
+func (p protocol) checkBinding(sshPub []byte, requestID string) error {
+	switch {
+	case !p.ssh && sshPub != nil:
+		return fmt.Errorf("%s: binds no SSH key", p.name)
+	case !p.ssh && requestID != "":
+		return fmt.Errorf("%s: binds no request id", p.name)
+	case !p.ssh:
+		return nil
+	case len(sshPub) != approveKeySize:
+		return fmt.Errorf("%s: SSH key is %d bytes, want %d", p.name, len(sshPub), approveKeySize)
+	case len(requestID) != pairRequestIDSize:
+		return fmt.Errorf("%s: request id is %d characters, want %d", p.name, len(requestID), pairRequestIDSize)
 	}
 	for i := range len(requestID) {
 		if requestID[i] >= utf8.RuneSelf {
-			return nil, fmt.Errorf("%s: request id isn't ASCII", p.name)
+			return fmt.Errorf("%s: request id isn't ASCII", p.name)
 		}
 	}
-	return append(slices.Clone(s[0]), requestID...), nil
+	return nil
 }
 
-func (p protocol) aad(requesterPub, approverPub, binding []byte, seq uint64) []byte {
-	aad := append([]byte(p.envelope), 0)
+// aad is label ‖ 0 ‖ B ‖ T ‖ (S ‖ request id, pair-v1) ‖ uint64_be(seq),
+// for a binding checkBinding took.
+func (p protocol) aad(requesterPub, approverPub, sshPub []byte, requestID string, seq uint64) []byte {
+	aad := make([]byte, 0, len(p.envelope)+1+len(requesterPub)+len(approverPub)+len(sshPub)+len(requestID)+8)
+	aad = append(aad, p.envelope...)
+	aad = append(aad, 0)
 	aad = append(aad, requesterPub...)
 	aad = append(aad, approverPub...)
-	aad = append(aad, binding...)
+	aad = append(aad, sshPub...)
+	aad = append(aad, requestID...)
 	return binary.BigEndian.AppendUint64(aad, seq)
 }
 
@@ -199,8 +202,7 @@ func (p protocol) aad(requesterPub, approverPub, binding []byte, seq uint64) []b
 // sshPub and requestID for pair-v1.
 func (p protocol) seal(approver DeviceKey, requesterPub, sshPub []byte, requestID string, seq uint64, plaintext []byte) (string, error) {
 	approverPub := approver.PublicKey()
-	binding, err := p.binding(sshPub, requestID)
-	if err != nil {
+	if err := p.checkBinding(sshPub, requestID); err != nil {
 		return "", err
 	}
 	aead, err := p.aead(approver, requesterPub, requesterPub, approverPub)
@@ -211,7 +213,7 @@ func (p protocol) seal(approver DeviceKey, requesterPub, sshPub []byte, requestI
 	if _, err := io.ReadFull(approveRand, iv); err != nil {
 		return "", err
 	}
-	out := aead.Seal(iv, iv, plaintext, p.aad(requesterPub, approverPub, binding, seq))
+	out := aead.Seal(iv, iv, plaintext, p.aad(requesterPub, approverPub, sshPub, requestID, seq))
 	return base64.RawURLEncoding.EncodeToString(out), nil
 }
 
@@ -219,8 +221,7 @@ func (p protocol) seal(approver DeviceKey, requesterPub, sshPub []byte, requestI
 // sshPub and requestID for pair-v1.
 func (p protocol) openSealed(requester DeviceKey, approverPub, sshPub []byte, requestID string, seq uint64, sealed string) ([]byte, error) {
 	requesterPub := requester.PublicKey()
-	binding, err := p.binding(sshPub, requestID)
-	if err != nil {
+	if err := p.checkBinding(sshPub, requestID); err != nil {
 		return nil, err
 	}
 	aead, err := p.aead(requester, approverPub, requesterPub, approverPub)
@@ -232,7 +233,7 @@ func (p protocol) openSealed(requester DeviceKey, approverPub, sshPub []byte, re
 		return nil, fmt.Errorf("%s: malformed envelope", p.name)
 	}
 	iv, ct := raw[:aead.NonceSize()], raw[aead.NonceSize():]
-	return aead.Open(nil, iv, ct, p.aad(requesterPub, approverPub, binding, seq))
+	return aead.Open(nil, iv, ct, p.aad(requesterPub, approverPub, sshPub, requestID, seq))
 }
 
 // approveRand supplies nonces and IVs; tests make it deterministic.

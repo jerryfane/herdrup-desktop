@@ -18,6 +18,7 @@ package fakeaccount
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -77,6 +78,10 @@ type Service struct {
 	// Intercept, when set, sees each request first and answers it by
 	// returning true (a fault, a lost answer).
 	Intercept func(w http.ResponseWriter, r *http.Request) bool
+	// AccessExpiresIn is the access_expires_in (seconds) a refresh
+	// answers; 0 is 3600. 60 or less makes a client refresh before each
+	// request.
+	AccessExpiresIn int64
 
 	mu       sync.Mutex
 	n        int
@@ -179,7 +184,8 @@ func (s *Service) Serve(w http.ResponseWriter, r *http.Request) bool {
 		delete(s.refresh, str("refresh_token"))
 		access, next := s.token("a1"), s.token("r1")
 		s.access[access], s.refresh[next] = id, id
-		reply(w, 200, map[string]any{"account_id": s.Account, "access_token": access, "access_expires_in": 3600,
+		expiresIn := cmp.Or(s.AccessExpiresIn, 3600)
+		reply(w, 200, map[string]any{"account_id": s.Account, "access_token": access, "access_expires_in": expiresIn,
 			"refresh_token": next, "refresh_expires_in": 7776000})
 		return true
 	}
@@ -504,7 +510,11 @@ func (s *Service) putEnvelope(w http.ResponseWriter, c Device, id string, body m
 	switch {
 	case r.Approver != c.ID:
 		refuse(w, http.StatusNotFound, "not_found")
-	case r.Outcome == account.ApprovalExpired || r.Outcome == account.ApprovalCancelled || !s.now().Before(r.Expires):
+	case r.Outcome == account.ApprovalCancelled || r.Outcome == account.ApprovalExpired:
+		notLive(w, r)
+	case !s.now().Before(r.Expires):
+		// An approved request takes resends until its outcome's 10 minutes
+		// are up.
 		refuse(w, http.StatusGone, "expired")
 	case r.Outcome != account.ApprovalApproved:
 		refuse(w, http.StatusConflict, account.PairErrNotApproved)

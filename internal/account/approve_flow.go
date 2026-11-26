@@ -353,9 +353,10 @@ func (a *approvalRun) finish(ctx context.Context, seq uint64, envelope []byte, s
 
 // settle decides what the finishes this device sent did, from the
 // request's state: approved means one went through (only the claimant
-// finishes); denied means none can be; expired means none can be only when
-// none had an unknown outcome. Still revealed proves nothing, since a sent
-// finish may yet be applied; anything else stays unknown.
+// finishes); denied, or a stored cancellation, means none can be; expired
+// means none can be only when none had an unknown outcome. Still revealed
+// proves nothing, since a sent finish may yet be applied; anything else
+// stays unknown.
 func (a *approvalRun) settle(ctx context.Context, finishErr error) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
@@ -376,8 +377,11 @@ func (a *approvalRun) settle(ctx context.Context, finishErr error) error {
 // it is the request's outcome for this device: approved, denied, or expired
 // when no finish of this device has an unknown outcome or this very read
 // says the expiry is stored (outcome_stored: a Worker version that doesn't
-// store it never says so, whatever /v1/health lists). A request the service
-// no longer knows is an error (its outcome can't be told).
+// store it never says so, whatever /v1/health lists); cancelled (a pair
+// request its new device cancelled) when stored, as the service stores a
+// cancel only on a request no finish landed on, and takes none after it.
+// A request the service no longer knows is an error (its outcome can't be
+// told).
 func (a *approvalRun) Outcome(ctx context.Context) (string, bool, error) {
 	st, err := a.c.ApprovalState(ctx, a.acct, a.id)
 	if err != nil {
@@ -390,6 +394,8 @@ func (a *approvalRun) Outcome(ctx context.Context) (string, bool, error) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		return st.State, !a.unsure || st.OutcomeStored, nil
+	case ApprovalCancelled:
+		return st.State, st.OutcomeStored, nil
 	}
 	return st.State, false, nil
 }

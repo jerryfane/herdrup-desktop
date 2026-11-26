@@ -79,7 +79,7 @@ func (c *Client) AskToPair(ctx context.Context, acct string, key DeviceKey, sshP
 	if err != nil {
 		return nil, err
 	}
-	if _, err := pairV1.binding(sshPub, created.ID); err != nil {
+	if err := pairV1.checkBinding(sshPub, created.ID); err != nil {
 		// No envelope for it could ever be opened.
 		return nil, err
 	}
@@ -190,10 +190,19 @@ func (p *PairAsk) reveal(ctx context.Context, st ApprovalStatus) error {
 		p.mu.Unlock()
 		return nil
 	}
-	// Past this point Abandon can't stop the reveal: RevealSent says so.
-	p.revealSent = true
 	p.mu.Unlock()
-	err := p.c.RevealPair(ctx, p.acct, p.id, p.nonceB)
+	err := p.c.revealPair(ctx, p.acct, p.id, p.nonceB, func() error {
+		// The access token is in hand (a refresh may have taken a while):
+		// past this point Abandon can't stop the reveal, and RevealSent
+		// says so.
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.abandoned {
+			return ErrApprovalEnded
+		}
+		p.revealSent = true
+		return nil
+	})
 	var api *APIError
 	if errors.As(err, &api) && api.Status == http.StatusConflict && api.Code == "already_revealed" {
 		// An earlier reveal of this device went through; its answer was lost.
@@ -322,6 +331,12 @@ type PairApproval struct {
 	*approvalRun
 	request PairRequest
 
+	// writeMu is held across each of Approve's and Resend's writes, from
+	// reserving its seq to settling what the service did with it: one
+	// envelope of this approval is in flight at a time, so while a write
+	// runs its seq is the highest this device ever sent.
+	writeMu sync.Mutex
+
 	sentMu sync.Mutex
 	// approved: the service holds this device's approval. attempted is
 	// the highest seq this device sent for the request (in a finish or an
@@ -342,7 +357,7 @@ func (c *Client) StartPairApproval(ctx context.Context, acct string, key DeviceK
 	if err != nil {
 		return nil, err
 	}
-	if _, err := pairV1.binding(sshPub, req.ID); err != nil {
+	if err := pairV1.checkBinding(sshPub, req.ID); err != nil {
 		// Its envelope couldn't be sealed: don't claim what can't be approved.
 		return nil, err
 	}
@@ -357,19 +372,25 @@ func (c *Client) StartPairApproval(ctx context.Context, acct string, key DeviceK
 // Request is the pair request this approval answers.
 func (a *PairApproval) Request() PairRequest { return a.request }
 
-// usable reports whether seq is in range and above every seq sent.
+// usable checks seq for a write, under writeMu: in range and above every
+// seq sent before (the service may hold any of them). The write marks it
+// sent (sending) just before it sends it, still under writeMu, so no other
+// write can take seq in between, and one that never went out (refused here)
+// leaves it free.
 func (a *PairApproval) usable(seq uint64) error {
+	a.sentMu.Lock()
+	defer a.sentMu.Unlock()
 	if seq == 0 || seq > MaxPairSeq || seq <= a.attempted {
 		return ErrPairSeq
 	}
 	return nil
 }
 
-// sending notes that seq is about to be sent: the service may hold it from
-// now on.
+// sending marks seq sent, under writeMu: the service may hold it from now
+// on.
 func (a *PairApproval) sending(seq uint64) {
 	a.sentMu.Lock()
-	a.attempted = max(a.attempted, seq)
+	a.attempted = seq
 	a.sentMu.Unlock()
 }
 
@@ -379,20 +400,23 @@ func (a *PairApproval) sending(seq uint64) {
 // service turns out to hold an approval this finish didn't get an answer
 // for (an earlier one's, perhaps, with another list), Approve sends this
 // list over it with the envelope route, and if that fails too returns
-// ErrPairListUnknown with the approval held (Resend at NextSeq).
+// ErrPairListUnknown with the approval held (Resend at NextSeq). Approve
+// and Resend run one at a time: a call waits for the one in flight to
+// settle (so a second Approve then answers ErrPairApproved).
 func (a *PairApproval) Approve(ctx context.Context, seq uint64, env PairEnvelope) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	a.sentMu.Lock()
-	if a.approved {
-		a.sentMu.Unlock()
+	approved := a.approved
+	a.sentMu.Unlock()
+	if approved {
 		return ErrPairApproved
 	}
-	if err := a.usable(seq); err != nil {
-		a.sentMu.Unlock()
-		return &NotApprovedError{err}
-	}
-	a.sentMu.Unlock()
 	plain, err := env.Marshal()
 	if err != nil {
+		return &NotApprovedError{err}
+	}
+	if err := a.usable(seq); err != nil {
 		return &NotApprovedError{err}
 	}
 	acknowledged := false
@@ -424,26 +448,31 @@ func (a *PairApproval) Approve(ctx context.Context, seq uint64, env PairEnvelope
 // seq (NextSeq or above): a retry's results, up to 10 minutes after the
 // approval (then 410 expired).
 func (a *PairApproval) Resend(ctx context.Context, seq uint64, env PairEnvelope) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	a.sentMu.Lock()
-	if !a.approved {
-		a.sentMu.Unlock()
+	approved := a.approved
+	a.sentMu.Unlock()
+	if !approved {
 		return ErrPairNotApproved
 	}
-	if err := a.usable(seq); err != nil {
-		a.sentMu.Unlock()
-		return err
-	}
-	a.sentMu.Unlock()
 	plain, err := env.Marshal()
 	if err != nil {
+		return err
+	}
+	if err := a.usable(seq); err != nil {
 		return err
 	}
 	return a.put(ctx, seq, plain, false)
 }
 
-// put sends plain sealed at seq over the envelope route. recovering: seq is
-// also the seq of a finish whose answer was lost, so a stale_seq refusal
-// means the service took that finish, list and all.
+// put sends plain sealed at seq over the envelope route, under writeMu.
+// recovering: seq is also the seq of this write's finish, whose answer was
+// lost though the service holds an approval. A stale_seq refusal then says
+// the service holds a seq at least this one; it holds none above the
+// highest this device sent, which under writeMu is seq (checked), and only
+// the claimant writes: so it holds exactly seq, this write's finish, list
+// and all.
 func (a *PairApproval) put(ctx context.Context, seq uint64, plain []byte, recovering bool) error {
 	sealed, err := a.seal(seq, plain)
 	if err != nil {
@@ -453,7 +482,12 @@ func (a *PairApproval) put(ctx context.Context, seq uint64, plain []byte, recove
 	err = a.c.PutPairEnvelope(ctx, a.acct, a.id, seq, sealed)
 	var api *APIError
 	if recovering && errors.As(err, &api) && api.Status == http.StatusConflict && api.Code == PairErrStaleSeq {
-		err = nil
+		a.sentMu.Lock()
+		highest := seq == a.attempted
+		a.sentMu.Unlock()
+		if highest {
+			err = nil
+		}
 	}
 	if err != nil {
 		return err

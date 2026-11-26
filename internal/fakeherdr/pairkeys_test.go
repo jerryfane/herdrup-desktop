@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// herdr#529's fixtures (src/pairing.rs, src/api/server/owner_gate/tests.rs).
+// herdr#529's fixtures (81135aaf: src/pairing.rs, src/api/server/owner_gate/tests.rs).
 const (
 	pairFixtureKey         = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDYBEgq6QqJ3tTOxBY+efdRE3BnChf8Bpq2SozDhVhUF"
 	pairFixtureFingerprint = "SHA256:vL7GMFHkifrUqP8D1g/8YJGKWxWjkvRaHfKjeLXytuc"
@@ -32,11 +32,18 @@ func TestPairKeysAddsOnceWithTheStoredLabel(t *testing.T) {
 		out["fingerprint"] != pairFixtureFingerprint || out["label"] != "Jerry's iPhone" {
 		t.Fatalf("add = %v, %v", out, e)
 	}
-	// A second add of the same material writes nothing; the reply's label is
-	// the new one, stored-form.
-	out, e = addKey(p, PairOwner, pairFixtureKey, "Another <name>")
-	if e != nil || out["added"] != false || out["already"] != true || out["label"] != "Another name" {
+	// A second add of the same material writes nothing and answers the label
+	// stored for it (a_repeated_add_replies_with_the_stored_label).
+	out, e = addKey(p, PairOwner, pairFixtureKey, "Another name")
+	if e != nil || out["added"] != false || out["already"] != true || out["fingerprint"] != pairFixtureFingerprint || out["label"] != "Jerry's iPhone" {
 		t.Fatalf("again = %v, %v", out, e)
+	}
+	retried := &PairKeys{}
+	if out, e := addKey(retried, PairOwner, pairFixtureKey, "Old Name"); e != nil || out["added"] != true || out["label"] != "Old Name" {
+		t.Fatalf("old name = %v, %v", out, e)
+	}
+	if out, e := addKey(retried, PairOwner, pairFixtureKey, "New Name"); e != nil || out["added"] != false || out["label"] != "Old Name" {
+		t.Fatalf("a changed-label retry = %v, %v", out, e)
 	}
 	if keys := p.Keys(); len(keys) != 1 || keys[0].PublicKey != pairFixtureKey || keys[0].Label != "Jerry's iPhone" {
 		t.Fatalf("keys %+v (the client's comment is dropped)", keys)

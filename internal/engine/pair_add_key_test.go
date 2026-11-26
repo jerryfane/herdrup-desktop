@@ -37,9 +37,9 @@ func TestPairAddKeyAddsTheKeyOnceAndIsIdempotent(t *testing.T) {
 	if err != nil || !first.Added || first.Already || !strings.HasPrefix(first.Fingerprint, "SHA256:") || first.Label != "Studio PC via Jerry's Mac" {
 		t.Fatalf("first add = %+v, %v", first, err)
 	}
-	again, err := c.PairAddKey(ctx(t), p)
-	if err != nil || again.Added || !again.Already || again.Fingerprint != first.Fingerprint {
-		t.Fatalf("second add = %+v, %v", again, err)
+	again, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: p.PublicKey, Label: engine.PairKeyLabel("Studio PC", "iPhone")})
+	if err != nil || again.Added || !again.Already || again.Fingerprint != first.Fingerprint || again.Label != first.Label {
+		t.Fatalf("second add, under another name = %+v, %v (want the stored label %q)", again, err, first.Label)
 	}
 	if got := keys.Keys(); len(got) != 1 || got[0].Fingerprint != first.Fingerprint || got[0].Label != p.Label {
 		t.Fatalf("keys %+v", got)
@@ -108,7 +108,7 @@ func TestPairAddKeyRefusals(t *testing.T) {
 		}
 	})
 	t.Run("herdr's other refusals", func(t *testing.T) {
-		for _, want := range []*engine.PairKeyError{engine.ErrPairWriteFailed, engine.ErrPairUnsupportedOS} {
+		for _, want := range []*engine.PairKeyError{engine.ErrPairWriteFailed, engine.ErrPairUnsupportedOS, engine.ErrPairReadFailed} {
 			_, c := start(t, nil, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
 				return nil, &fakeherdr.APIError{Code: want.Code, Message: "no"}
 			}, nil)

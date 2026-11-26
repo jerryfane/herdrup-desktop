@@ -61,10 +61,13 @@ var (
 	ErrPairWriteFailed = &PairKeyError{Code: "pair_write_failed"}
 	// ErrPairUnsupportedOS: the machine isn't macOS or Linux.
 	ErrPairUnsupportedOS = &PairKeyError{Code: "pair_unsupported"}
+	// ErrPairReadFailed: the key was there already, and herdr couldn't
+	// read authorized_keys back for its stored label (pair_io_failed).
+	ErrPairReadFailed = &PairKeyError{Code: "pair_io_failed"}
 )
 
 var pairKeyErrors = []*PairKeyError{ErrPairKeyInvalid, ErrPairLabelInvalid, ErrPairGuestForbidden,
-	ErrPairOwnerForbidden, ErrPairWriteFailed, ErrPairUnsupportedOS}
+	ErrPairOwnerForbidden, ErrPairWriteFailed, ErrPairUnsupportedOS, ErrPairReadFailed}
 
 func (e *PairKeyError) Error() string {
 	switch e.Code {
@@ -78,6 +81,8 @@ func (e *PairKeyError) Error() string {
 		return "herdr couldn't write authorized_keys"
 	case ErrPairUnsupportedOS.Code:
 		return "device keys need a macOS or Linux machine"
+	case ErrPairReadFailed.Code:
+		return "herdr couldn't read authorized_keys"
 	}
 	return "herdr refused the key: " + e.Code
 }
@@ -103,7 +108,9 @@ type PairAddKeyParams struct {
 // PairKeyAdded is pair.add_key's reply. Added is false, and Already true,
 // when the key was there before (the call is idempotent). Fingerprint is
 // OpenSSH's "SHA256:…". Label is the one herdr stored (MaxStoredPairKeyLabel),
-// which is the one to show.
+// which is the one to show: when the key was there before, the label it
+// was stored with then (empty for a line that isn't herdr's and has no
+// comment), not the one this call asked for.
 type PairKeyAdded struct {
 	Added       bool   `json:"added"`
 	Already     bool   `json:"already"`
