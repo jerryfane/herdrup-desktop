@@ -147,6 +147,27 @@ test("a browser whose put was taken but whose readback failed still drops its bo
  expect(await mac.desk.syncedShares()).toEqual([]);
 }, CONNECTS_LIMIT_MS);
 
+test("a leave based on a revision the share has moved past stays pending, and the next sync deletes it", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w), linux = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ // Another device of the account rewrites the share (revision 2) before this browser pulls it.
+ w.seedShare(id, { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs (renamed)" });
+ await mac.desk.forgetGuestConnection(id);
+ expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
+ expect(await mac.desk.syncedShares()).toEqual([]);
+ await mac.shares.sync();
+ expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 2, deleted: true });
+ expect(await mac.desk.syncedShares()).toEqual([]);
+ await linux.shares.sync();
+ expect(linux.shares.list()).toEqual([]);
+ // Settled: the round after it sends nothing.
+ const pushes = w.pushed.length;
+ await mac.shares.sync();
+ expect(w.pushed.length).toBe(pushes);
+}, CONNECTS_LIMIT_MS);
+
 test("a plain accept (Only this device, or an invite without acct) writes nothing to the account", async () => {
  const w = worker(), h = host();
  const mac = await browser(w);

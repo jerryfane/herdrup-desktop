@@ -4,8 +4,9 @@
 // leaves it on every device. One record per account in localStorage: the shares as last pulled
 // (with the revisions of those seen deleted), the revision to pull from next, and this browser's
 // writes not yet taken by the service. As every sync write, each carries base_rev: the revision
-// last seen for its id (0: none). A conflict leaves the service's item standing: the write goes,
-// and the pull that follows shows what the account holds.
+// last seen for its id (0: none). A put's conflict leaves the service's item standing: the write
+// goes, and the pull that follows shows what the account holds. A delete's conflict with a live
+// item keeps the delete, based next on that item's revision: it goes only once the share is gone.
 
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
@@ -112,10 +113,17 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
     ? { collection: "shares", id: p.id, base_rev: seen(p.id), deleted: true }
     : { collection: "shares", id: p.id, base_rev: seen(p.id), body: p.body });
    let settled: Set<string>;
+   // Deletes refused for their base while the share is still live: the service's rows they go on from.
+   let rebased: RemoteShare[] = [];
    try {
     const answer = await account.syncPush({ prepare: async () => ({ changes: sent }), sending() {}, async refused() {} }, acct, signal, generation);
-    // Applied, or refused for its base: the service's item stands either way.
-    settled = new Set([...(answer?.applied ?? []), ...(answer?.conflicts ?? [])].filter(c => c.collection === "shares").map(c => c.id));
+    const deletes = new Set(record.pending.filter(p => p.deleted).map(p => p.id));
+    const conflicts = (answer?.conflicts ?? []).filter(c => c.collection === "shares");
+    rebased = conflicts.flatMap(c => deletes.has(c.id) && c.server !== null && !c.server.deleted && validBody(c.server.body) ? [{ id: c.id, rev: c.server.rev, body: c.server.body }] : []);
+    // Applied, or a put refused for its base (the service's item stands), or a delete of a share
+    // already gone.
+    const kept = new Set(rebased.map(s => s.id));
+    settled = new Set([...(answer?.applied ?? []).filter(c => c.collection === "shares"), ...conflicts.filter(c => !kept.has(c.id))].map(c => c.id));
    } catch (error) {
     // A write the service refuses as malformed is never taken: it goes. Anything else (offline, a
     // rate limit, the quota) stays for the next round.
@@ -124,7 +132,14 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    }
    // Only the writes sent leave: one made meanwhile for the same share goes next round.
    const sentAs = new Set(record.pending.map(p => JSON.stringify(p)));
-   await update(acct, r => { r.pending = r.pending.filter(p => !(settled.has(p.id) && sentAs.has(JSON.stringify(p)))); });
+   await update(acct, r => {
+    r.pending = r.pending.filter(p => !(settled.has(p.id) && sentAs.has(JSON.stringify(p))));
+    for (const row of rebased) {
+     if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
+     r.shares = r.shares.filter(s => s.id !== row.id).concat(row).sort((a, b) => a.rev - b.rev);
+     delete r.gone[row.id];
+    }
+   });
   }
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
   return update(acct, r => {
