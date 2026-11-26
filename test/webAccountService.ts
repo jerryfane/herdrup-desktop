@@ -86,7 +86,8 @@ export function worker() {
   stallErrorBody: false, truncateErrorBody: false,
   /** Runs once, as the next refusal (401, 403 or 413) is answered. */
   onRefusal: null as (() => void) | null,
-  /** Runs once, as the next GET /v1/sync comes in; holdPull then keeps that GET until it resolves. */
+  /** Runs once, as the next GET /v1/sync comes in; holdPull then keeps that GET until it resolves
+   *  (or, as fetch, until its request is aborted: it rejects then). */
   onPull: null as (() => void) | null, holdPull: null as Promise<void> | null,
   /** The next refresh is answered 503 (the service unavailable). */
   refreshUnavailable: false,
@@ -160,7 +161,12 @@ export function worker() {
     if (s.ended) return Response.json({ error: "invalid_token" }, { status: 401 });
     if (url.pathname === "/v1/sync" && method === "GET") {
      const pulled = w.onPull; w.onPull = null; pulled?.();
-     if (w.holdPull) { const gate = w.holdPull; w.holdPull = null; await gate; }
+     if (w.holdPull) {
+      const gate = w.holdPull, aborted = Promise.withResolvers<never>();
+      w.holdPull = null;
+      init.signal?.addEventListener("abort", () => aborted.reject(init.signal!.reason), { once: true });
+      await Promise.race([gate, aborted.promise]);
+     }
      if (w.failPull) { w.failPull = false; return Response.json({ error: "unavailable" }, { status: 503 }); }
      if (w.stallPull) {
       const stalled = Promise.withResolvers<Response>();

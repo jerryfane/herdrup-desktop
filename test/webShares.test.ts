@@ -84,14 +84,15 @@ const statements = (): StatementSource => ({ get: async () => ({ jws: "statement
 let sessions = 0;
 /** One browser of the account: its own session, storage, guest key, grant and Web Locks. Signed
  *  out, the service refuses its cookie. Another tab of a browser holds its grants, storage, guest
- *  key and Web Locks (null: a browser without them). */
-async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore(), locks: AbortableLocks | null = tabLocks()) {
+ *  key and Web Locks (null: a browser without them). roundMs: how long its rounds may hold the
+ *  sync turn (shares.ts ROUND_MS unless given). */
+async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore(), locks: AbortableLocks | null = tabLocks(), roundMs?: number) {
  const fetcher = w.fetcher(`s${++sessions}`);
  const signedOut = ((input: string | URL | Request, init?: RequestInit) => String(input).includes("/v1/auth/refresh")
   ? Promise.resolve(Response.json({ error: "session_revoked" }, { status: 401 })) : fetcher(input, init)) as typeof fetch;
  const account = new WebAccount(signedIn ? fetcher : signedOut, undefined, undefined, null);
  if (signedIn) await account.check();
- const shares = createShareSync(account, { storage: () => storage, locks, name: "Chrome on macOS", background: false });
+ const shares = createShareSync(account, { storage: () => storage, locks, name: "Chrome on macOS", background: false, ...(roundMs === undefined ? {} : { roundMs }) });
  const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
  return { desk, grants, shares, account, storage, identities };
 }
@@ -120,8 +121,9 @@ function tabLocks() {
 }
 
 /** Two tabs of one browser (sharing locks) with 100 share puts kept while the service was out,
- *  then a bound share accepted, its put the 101st: the second push's. Tab a's sync has sent its
- *  first push, applied and its answer held until release. */
+ *  then a bound share accepted while the service refused pushes (429: nothing of it written), its
+ *  put the 101st: the second push's. Tab a's sync has sent its first push, applied and its answer
+ *  held until release. */
 async function leaveDuringBatch() {
  const w = worker(), h = host(), locks = tabLocks();
  const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore();
@@ -129,9 +131,9 @@ async function leaveDuringBatch() {
  const guest = (n: number) => toB64url(new Uint8Array(16).fill(100 + n));
  const queued = Array.from({ length: 100 }, (_, n) => ({ id: `host/${guest(n)}`, body: { relay: "wss://relay.example", host_id: "host", node_pub: toB64url(new Uint8Array(32).fill(1)), guest_id: guest(n) } }));
  storage.setItem(SHARES_KEY_PREFIX + "acct", JSON.stringify({ rev: 0, shares: [], gone: {}, pending: queued }));
- w.failPush = true;
+ w.rateLimit = 1; w.windowPosts = 1;
  const access = await b.desk.acceptGuestInvitation(inviteText(h.relay), "account");
- w.failPush = false;
+ w.rateLimit = 0;
  const answer = Promise.withResolvers<void>();
  w.holdAnswer = answer.promise;
  const before = w.pushed.length;
@@ -177,6 +179,53 @@ test("with Web Locks, a tab's Leave syncs once another tab's round is done: the 
  await t.a.shares.sync();
  await t.b.shares.sync();
  expect([await t.grants.list(), t.w.sharesIn("acct").includes(t.id), t.w.sharesIn("acct").length, t.sentSince()]).toEqual([[], false, 100, ["delete"]]);
+}, CONNECTS_LIMIT_MS);
+
+/** Two tabs of one browser, tab a's rounds given up 300 ms after they get the turn. */
+async function twoTabs(w: Worker) {
+ const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore(), locks = tabLocks();
+ const a = await browser(w, true, grants, storage, identities, locks, 300), b = await browser(w, true, grants, storage, identities, locks);
+ return { a, b, grants, storage };
+}
+
+// A request that stalls can't hold the account's sync turn: tab a's round gives its pull up at its
+// deadline, and the Leave in tab b, waiting for the turn, sends its delete meanwhile.
+test("a tab whose pull stalls gives the sync turn up at its deadline: a Leave in another tab sends its delete meanwhile", async () => {
+ const w = worker(), h = host();
+ const { a, b, grants } = await twoTabs(w);
+ const access = await b.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const stalled = Promise.withResolvers<void>(), pulling = Promise.withResolvers<void>();
+ w.onPull = () => pulling.resolve();
+ w.holdPull = stalled.promise;
+ const synced = a.shares.sync();
+ await pulling.promise;
+ try {
+  const left = b.desk.forgetGuestConnection(id).then(() => "left");
+  const outcome = await Promise.race([left, Bun.sleep(3_000).then(() => "still waiting")]);
+  expect([outcome, await grants.list(), w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual(["left", [], [], { collection: "shares", id, base_rev: 1, deleted: true }]);
+  await expect(synced).rejects.toThrow();
+ } finally { stalled.resolve(); }
+}, CONNECTS_LIMIT_MS);
+
+// A push given up at its deadline may still land, however late: its writes stay journaled, and the
+// next round (any tab's) sends them again as they were, before anything else of their share. The
+// late request then can't write: the share has moved off the base it was sent on.
+test("a push given up at its deadline is sent again as it was before a Leave of its share: landing late, it brings nothing back", async () => {
+ const w = worker(), h = host();
+ const { a, b, grants, storage } = await twoTabs(w);
+ w.holdNextPush = true;
+ const access = await a.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ // a's put went unanswered, given up: not on the account (yet).
+ expect(w.sharesIn("acct")).toEqual([]);
+ await b.desk.forgetGuestConnection(id);
+ w.landHeld();
+ await a.shares.sync();
+ await b.shares.sync();
+ const record = JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct")!) as { pending: unknown[]; sent: unknown[] };
+ const writes = sharesOn(w).map(c => `${c.deleted ? "delete" : "put"} ${c.base_rev}`);
+ expect([w.sharesIn("acct"), await grants.list(), b.shares.list(), record.pending, record.sent, writes]).toEqual([[], [], [], [], [], ["put 0", "put 0", "delete 1"]]);
 }, CONNECTS_LIMIT_MS);
 
 test("a bound accept writes the share to the account; another browser of the account opens it with no invite", async () => {
@@ -425,10 +474,11 @@ test("a label the service can't store is left out of the share, and a refused pu
  expect(linux.shares.list()).toEqual([{ id, rev: 1, body }]);
 
  // This browser's record holds a put the service refuses (an earlier version wrote it) ahead of a
- // leave not yet sent: the leave still goes, and the refused put alone is dropped.
- w.failPush = true;
+ // leave not yet taken (refused, 429: nothing of it written): the leave still goes, and the
+ // refused put alone is dropped.
+ w.rateLimit = 1; w.windowPosts = 1;
  await mac.desk.forgetGuestConnection(id);
- w.failPush = false;
+ w.rateLimit = 0;
  const key = SHARES_KEY_PREFIX + "acct";
  const record: { pending: object[] } = JSON.parse(mac.storage.getItem(key)!);
  const other = toB64url(new Uint8Array(16).fill(9));
