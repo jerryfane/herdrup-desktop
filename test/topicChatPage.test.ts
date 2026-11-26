@@ -295,11 +295,12 @@ test("a saved terminal opens though its view carries no topic sessions", async (
  expect(withClass(doc.body, "terminal-key-scroll").length).toBe(1);
 });
 
-/** Two topics listed for the open page: Board pack (t1) and Beta (t2), both idle. */
-function twoTopics(token: string) {
+/** Two topics listed for the open page: Board pack (t1) and Beta (t2), both idle; Organise shows
+ *  where `served` (the agent serves suggestions). */
+function twoTopics(token: string, served = false) {
  const ms = Date.now() - 60_000;
  const info = (topic_id: string, title: string) => ({ topic_id, title, state: "idle", turns: 1, queued: 0, created_unix_ms: ms, last_activity_unix_ms: ms });
- emit("topics:changed", { token, topics: [info("t1", TOPIC.title), info("t2", "Beta")], offered: true, loaded: true, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+ emit("topics:changed", { token, topics: [info("t1", TOPIC.title), info("t2", "Beta")], offered: true, loaded: true, suggestions: [], suggestionsServed: served, requestedMs: Date.now() });
 }
 /** Opens a topic from the list; the narrow page brings the list back first (the header's Topics). */
 async function openRow(title: string) {
@@ -477,6 +478,55 @@ test("a Reopen from the row menu clears the conversation's refusal, the send's w
  await openRow(TOPIC.title);
  expect([chatNote("topic-send-note topic-action-note").hidden, note().hidden, note().text()])
   .toEqual([true, false, "Couldn't confirm delivery. Check the topic before sending again."]);
+});
+
+/** The notice over the topic list (TopicsPane.drawNotice). */
+const listNotice = () => doc.body.all().find(n => n.className === "topics-problem")!;
+
+// #549 review (P3): Shift+F10 → Close on a focused row redrew the whole list while the Close was
+// out, so the row lost the keyboard focus. Only the notice over the list changes.
+test("a Close from a focused row's keyboard menu keeps the row and its focus", async () => {
+ const { token } = await openTopic();
+ twoTopics(token);
+ await settle();
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-list-open"))?.click();
+ await settle();
+ const row = doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-row") && n.text().includes(TOPIC.title))!;
+ row.focus();
+ const close = Promise.withResolvers<void>();
+ answers["Desk.GramMenu"] = () => true;
+ answers["Desk.TopicsClose"] = () => close.promise;
+ row.dispatchEvent(Object.assign(new Event("keydown"), { key: "F10", shiftKey: true }));
+ await settle();
+ const menu = calls.filter(c => c.method === "Desk.GramMenu").at(-1)!;
+ expect(menu.args[1]).toEqual(["Rename…", "Close"]);
+ emit("gram:menu", { id: menu.args[0], item: "Close" });
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicsClose").map(c => c.args[1])).toEqual([TOPIC.topicID]);
+ expect([row.isConnected, doc.activeElement === row]).toEqual([true, true]);
+ close.reject(new Error("The topic has a turn running."));
+ await settle();
+ expect([row.isConnected, doc.activeElement === row, listNotice().hidden, listNotice().text()]).toEqual([true, true, false, "The topic has a turn running."]);
+});
+
+// #549 review (P3): after a row's Close was refused, Organise that went through still showed the
+// refusal over the list instead of when Organise starts. The newest list action owns the list's
+// notice; the refusal stays in the topic's conversation.
+test("Organise replaces a row's Close refusal over the list; the topic still shows it", async () => {
+ const { token } = await openTopic();
+ twoTopics(token, true);
+ await settle();
+ const close = Promise.withResolvers<void>();
+ await askLifecycle("Close", close.promise, "row");
+ close.reject(new Error("The topic has a turn running."));
+ await settle();
+ expect(listNotice().text()).toBe("The topic has a turn running.");
+ answers["Desk.TopicsOrganise"] = () => true;
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topics-organise"))!.click();
+ await settle();
+ expect([listNotice().hidden, listNotice().text()]).toEqual([false, "Organise starts when the agent's current turn ends."]);
+ await openRow(TOPIC.title);
+ expect(chatNote("topic-send-note topic-action-note").text()).toBe("The topic has a turn running.");
 });
 
 // #539 review (P3): a kept row's day header was matched on the prompt's time alone, so after
