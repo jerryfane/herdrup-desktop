@@ -859,6 +859,7 @@ func TestALinkBindsOnlyAStoredLocalID(t *testing.T) {
 	if p := h.liveProfile(); p != id {
 		t.Fatalf("the next link's profile %q, want %s", p, id)
 	}
+	h.answered(t, 1) // the connect's: Unbound
 	h.rename(t, "Bound")
 	rev := h.labelRev(t)
 	if p := h.answered(t, 2)[1]; *p.MachineLabel != "Bound" || *p.MachineLabelRev != rev || !h.holds(t, "Bound", rev) {
