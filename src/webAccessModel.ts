@@ -2,12 +2,13 @@
 // tests it: when the approval sheet opens on its own, what the typed code may be, and what an
 // approval's result says.
 
-/** One browser waiting for approval (Desk.webAccessRequests). */
-export interface WebAccessRequestView { id: string; browserName: string; claimed: string; expiresIn: number }
+/** One browser waiting for approval (Desk.approvalRequests). */
+export interface WebAccessRequestView { id: string; browserName: string; claimed: string; expiresIn: number; createdMs: number }
 
 /** The request the sheet should open for, or null: the oldest one nobody is approving that the user
- *  hasn't closed on this computer. "you" is this computer's own claim (the sheet is already open). */
-export function nextRequest(requests: readonly WebAccessRequestView[], closed: ReadonlySet<string>): WebAccessRequestView | null {
+ *  hasn't closed on this computer. "you" is this computer's own claim (the sheet is already open).
+ *  Browser and pair requests alike. */
+export function nextRequest<R extends { id: string; claimed: string; expiresIn: number }>(requests: readonly R[], closed: ReadonlySet<string>): R | null {
  return requests.find(r => r.claimed === "no" && r.expiresIn > 0 && !closed.has(r.id)) ?? null;
 }
 
@@ -135,10 +136,11 @@ export function resultLines(r: WebAccessResultView): { done: boolean; unsure: bo
  return { done: r.granted.length > 0, unsure: false, lines };
 }
 
-/** A wrong code as the computer counted it (Desk.webAccessCheckCode): left more may be typed; at 0
- *  this computer won't approve, and denied says the browser was told (else problem says why not). */
-export function wrongCode(c: { left: number; denied: boolean; problem?: string }): string {
- if (c.left > 0) return `That code doesn't match the browser's. ${c.left} ${c.left === 1 ? "try" : "tries"} left.`;
+/** A wrong code as the computer counted it (Desk.webAccessCheckCode, Desk.pairApproveCheckCode):
+ *  left more may be typed; at 0 this computer won't approve, and denied says the requester (party,
+ *  "the browser" or the new device's name) was told (else problem says why not). */
+export function wrongCode(c: { left: number; denied: boolean; problem?: string }, party = "the browser"): string {
+ if (c.left > 0) return `That code doesn't match ${party}'s. ${c.left} ${c.left === 1 ? "try" : "tries"} left.`;
  if (c.denied) return "Too many wrong codes. The request was denied.";
- return `Too many wrong codes, so this computer won't approve it. Telling the browser failed${c.problem ? ` (${c.problem})` : ""}: Deny to try again.`;
+ return `Too many wrong codes, so this computer won't approve it. Telling ${party} failed${c.problem ? ` (${c.problem})` : ""}: Deny to try again.`;
 }

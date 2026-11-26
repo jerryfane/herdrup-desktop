@@ -227,6 +227,9 @@ type Desk struct {
 	// webApproval is the browser approval this computer is running (web
 	// owner access, desk_web_access.go); guarded by mu.
 	webApproval *webApproval
+	// pairApproval is the pair request from another device this computer
+	// is approving (desk_pair_approve.go); guarded by mu.
+	pairApproval *pairApproval
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 	// publishTopics sends a Topics update to the page (broadcastTopics); a

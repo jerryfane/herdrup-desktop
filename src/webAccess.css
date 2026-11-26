@@ -71,3 +71,24 @@ button.web-access-row-head:focus-visible { outline: 2px solid var(--color-text-f
 /* Deny and Approve share the footer, under a hairline. */
 dialog.folder-naming.web-access .buttons { margin: 20px calc(-1 * var(--space-stack-large)) 0; padding: 16px var(--space-stack-large) 0; border-top: 1px solid var(--color-hairline); }
 dialog.folder-naming.web-access .buttons button { flex: 1; }
+
+/* "Pair ‹device›?" (pairApproval.ts): the same sheet in steps. The status line carries the time
+   left in the machine font, and on step 2 a neutral check before "The code matches". The machines
+   are one neutral card (a surface and a hairline); each row says on its right where its key
+   stands, muted, with the app's ring spinner while it is added and one small dot when it failed.
+   A machine that can't take the key is dimmed, its reason under its name. */
+.pair-approve-status { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.pair-approve-status[hidden], .pair-approve-mark[hidden], .pair-approve-expiry[hidden], .pair-approve .web-access-field[hidden] { display: none; }
+.pair-approve-mark { display: flex; color: var(--color-text-dim); }
+.pair-approve-expiry { color: var(--color-text-faint); font: 400 12.5px var(--font-machine); }
+.pair-approve-machines { margin-top: 16px; background: var(--color-surface); }
+.pair-approve-machines[hidden], .web-access-note[hidden] { display: none; }
+.pair-approve-machine { min-height: 44px; padding-top: 6px; padding-bottom: 6px; box-sizing: border-box; }
+.pair-approve-machine input { flex: none; accent-color: var(--color-text); }
+.pair-approve-machine .web-access-dim { margin-top: 2px; }
+.pair-approve-machine .web-access-dim[hidden] { display: none; }
+.pair-approve-machine.unusable .pair-approve-name { color: var(--color-text-dim); }
+.pair-approve-machine .web-access-machine-text { flex: 1; min-width: 0; }
+.pair-approve-state { flex: none; display: flex; align-items: center; gap: 6px; color: var(--color-text-dim); font: 400 12.5px var(--font-app); }
+.pair-approve-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--status-died); }
+dialog.folder-naming.web-access .buttons button.pair-approve-busy:disabled { opacity: .6; }

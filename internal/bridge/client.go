@@ -125,6 +125,9 @@ type conn struct {
 	seq  atomic.Uint64
 	done chan struct{}
 	pool pool
+	// hostKey is the key the server proved it holds during the handshake,
+	// after it matched the pin (or was pinned).
+	hostKey ssh.PublicKey
 }
 
 // Dial connects and authenticates. The host key is pinned on first contact
@@ -158,10 +161,20 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	deadline, _ := dctx.Deadline()
 	_ = tcp.SetDeadline(deadline)
+	// The key that passed the pin check is the one the server then proved
+	// it holds: the handshake fails after the callback otherwise.
+	pinned := pinningCallback(cfg.Pins)
+	var hostKey ssh.PublicKey
 	sc, chans, reqs, err := ssh.NewClientConn(tcp, addr, &ssh.ClientConfig{
-		User:              cfg.User,
-		Auth:              auth,
-		HostKeyCallback:   pinningCallback(cfg.Pins),
+		User: cfg.User,
+		Auth: auth,
+		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			if err := pinned(hostname, remote, key); err != nil {
+				return err
+			}
+			hostKey = key
+			return nil
+		},
 		HostKeyAlgorithms: cfg.HostKeyAlgorithms,
 	})
 	if err != nil {
@@ -170,9 +183,10 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	_ = tcp.SetDeadline(time.Time{})
 	c := &Client{cfg: cfg, conn: &conn{
-		ssh:  ssh.NewClient(sc, chans, reqs),
-		done: make(chan struct{}),
-		pool: pool{openRetryAfter: defaultOpenRetryAfter},
+		ssh:     ssh.NewClient(sc, chans, reqs),
+		hostKey: hostKey,
+		done:    make(chan struct{}),
+		pool:    pool{openRetryAfter: defaultOpenRetryAfter},
 	}}
 	go func() {
 		_ = c.ssh.Wait()
@@ -253,6 +267,21 @@ func (c *Client) Close() error { return c.ssh.Close() }
 // Session returns the herdr session this client addresses; "" is the
 // default session.
 func (c *Client) Session() string { return c.cfg.Session }
+
+// HostKey is the machine's host key as this connection verified it: the
+// key that matched its pin (or was pinned on first contact) and that the
+// server proved it holds. It is the same for every session view.
+func (c *Client) HostKey() ssh.PublicKey { return c.hostKey }
+
+// PinAddress is the "host:port" the connection's pin is kept under
+// (PinStore).
+func (c *Client) PinAddress() string {
+	port := c.cfg.Port
+	if port == 0 {
+		port = 22
+	}
+	return net.JoinHostPort(c.cfg.Host, strconv.Itoa(port))
+}
 
 // ForSession returns a client for another herdr session on the same
 // machine. It shares this client's SSH connection, so switching costs no

@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, test } from "bun:test";
-import { choiceRows, followPresses, initWebAccess, takesTyping, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
+import { choiceRows, initWebAccess, takesTyping, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
+import { followPresses } from "../src/codeField";
 import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 import { FakeDocument, FakeElement, Listened } from "./fakeDom";
@@ -307,7 +308,8 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
     case "Desk.WebAccessOffered": return true;
-    case "Desk.WebAccessRequests": return [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
+    case "Desk.PairApproveOffered": return false;
+    case "Desk.ApprovalRequests": return { browsers: [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }], pairs: [] };
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }];
     case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
     case "Desk.WebAccessStart": queueMicrotask(() => on.get("web-access:update")?.({ id: "r1", state: "ready" })); return undefined;
@@ -402,7 +404,8 @@ function askingWindow({ holdMachines = false, requests = [{ id: "r1", browserNam
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
     case "Desk.WebAccessOffered": return true;
-    case "Desk.WebAccessRequests": return asking.requests;
+    case "Desk.PairApproveOffered": return false;
+    case "Desk.ApprovalRequests": return { browsers: asking.requests, pairs: [] };
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
     case "Desk.WebAccessMachines": {
      if (!holdMachines) return machines;
@@ -606,7 +609,7 @@ test("looks that overlap, the poll's and coming back to the window, put up one n
   w.doc.dispatchEvent(new Event("visibilitychange"));
   // The second look found the first in flight and asked nothing.
   expect(w.calls("Desk.AccountState")).toBe(1);
-  await until("the look's end", () => w.calls("Desk.WebAccessRequests") === 1 && jest.getTimerCount() === 1);
+  await until("the look's end", () => w.calls("Desk.ApprovalRequests") === 1 && jest.getTimerCount() === 1);
   // Once a look ends the next one runs: the request it finds gets one notice.
   w.asking.requests = [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }];
   jest.runOnlyPendingTimers();
