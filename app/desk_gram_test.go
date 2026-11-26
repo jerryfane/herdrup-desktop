@@ -208,6 +208,15 @@ func TestGramAttachmentUploadsPostsAndOpensFromTheCache(t *testing.T) {
 	if err := d.GramOpenFile(ctx, "x1"); err == nil || opened != "" {
 		t.Fatalf("opened a program: %v %q", err, opened)
 	}
+	// The downloads go with the connection, moved aside and then deleted.
+	d.Disconnect()
+	if left, _ := os.ReadDir(d.gramCacheBase()); len(left) != 0 {
+		var names []string
+		for _, e := range left {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("left in the download cache after Disconnect: %v", names)
+	}
 }
 
 // A Chat attachment names its file by Gram message id only: it opens even when Gram has not
@@ -280,6 +289,8 @@ func TestGramSavedCopies(t *testing.T) {
 // expires a saved copy's file), before it writes it, until release.
 type heldRefresh struct {
 	release func()
+	// serve stops the server holding head lists.
+	serve func()
 	// disconnected is set once Disconnect returned; late reports a head load
 	// after that.
 	disconnected, late *atomic.Bool
@@ -340,7 +351,9 @@ func gramDeskWithHeldRefresh(t *testing.T) (*Desk, heldRefresh) {
 	}
 	var once sync.Once
 	held.release = func() { once.Do(func() { close(expire) }) }
-	t.Cleanup(func() { held.release(); close(ended) })
+	var served sync.Once
+	held.serve = func() { served.Do(func() { close(ended) }) }
+	t.Cleanup(func() { held.release(); held.serve() })
 	ctx := context.Background()
 	if err := d.GramRefresh(ctx); err != nil {
 		t.Fatal(err)
@@ -408,9 +421,10 @@ func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
 }
 
 // #547 review: a connection made while Disconnect waits for the old one's
-// work keeps what it claimed: its download cache (the owner marker) and its
-// connected state, which an idle published after the wait would clear.
-func TestDisconnectWaitingKeepsAReconnectsCacheAndState(t *testing.T) {
+// work keeps what it claimed: its Gram, its download cache (the owner marker)
+// and its connected state, which an idle published after the wait would
+// clear.
+func TestDisconnectWaitingKeepsAReconnectsGramCacheAndState(t *testing.T) {
 	d, held := gramDeskWithHeldRefresh(t)
 	st, err := d.load()
 	if err != nil {
@@ -442,6 +456,13 @@ func TestDisconnectWaitingKeepsAReconnectsCacheAndState(t *testing.T) {
 	}
 	if d.Board() == nil {
 		t.Fatal("the reconnected desk lost its board")
+	}
+	held.serve()
+	if err := d.GramRefresh(context.Background()); err != nil {
+		t.Fatalf("the reconnected desk's Gram: %v", err)
+	}
+	if s := d.GramState(); s.Phase != "loaded" || !slices.Equal(snapIDs(s), []string{"a1"}) {
+		t.Fatalf("the reconnected desk's Gram after a refresh: phase %q, %v", s.Phase, snapIDs(s))
 	}
 }
 

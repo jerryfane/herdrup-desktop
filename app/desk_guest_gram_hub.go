@@ -110,13 +110,26 @@ func (d *Desk) startGuestGram() {
 }
 
 // stopGuestGram ends the combined guest Gram (the owner connected, or nothing
-// is shared any more). It returns the links it closed, whose work may still
-// be ending (Disconnect waits for it).
-func (d *Desk) stopGuestGram() []*link {
-	h := d.guestGram.Swap(nil)
-	if h == nil {
-		return nil
+// is shared any more).
+func (d *Desk) stopGuestGram() {
+	if h := d.detachGuestGram(); h != nil {
+		h.stop()
 	}
+}
+
+// detachGuestGram takes the combined guest Gram out of use and tells the page
+// it is gone; nil when none ran. Its reads run on until stop.
+func (d *Desk) detachGuestGram() *guestGramHub {
+	h := d.guestGram.Swap(nil)
+	if h != nil {
+		GuestGramChanged.Broadcast(GuestGramSnapshot{Grants: []GuestGramState{}})
+	}
+	return h
+}
+
+// stop ends a detached hub's reads. It returns its links, closed, whose work
+// may still be ending (Disconnect waits for it).
+func (h *guestGramHub) stop() []*link {
 	h.cancel()
 	h.mu.Lock()
 	links := make([]*link, 0, len(h.links))
@@ -128,7 +141,6 @@ func (d *Desk) stopGuestGram() []*link {
 	for _, l := range links {
 		closeLink(l)
 	}
-	GuestGramChanged.Broadcast(GuestGramSnapshot{Grants: []GuestGramState{}})
 	return links
 }
 

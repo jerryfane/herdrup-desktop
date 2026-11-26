@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
@@ -64,6 +67,26 @@ func (d *Desk) gramWipeCacheUnlessOwner(owner string) {
 		}
 	}
 }
+
+// gramDetachCache takes every downloaded file out of use for good, as
+// gramWipeCacheUnlessOwner("") does, but cheaply enough for d.mu
+// (Disconnect): the owner marker goes and the files move aside, renamed
+// gram-discarded-*. It returns every such directory (one an earlier run left
+// too) for the caller to delete outside d.mu. Files a move fails to take go
+// with the next connection's wipe, the marker being gone.
+func (d *Desk) gramDetachCache() []string {
+	base := d.gramCacheBase()
+	_ = os.Remove(d.gramOwnerPath())
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(gramDetaches.Add(1), 36)
+	for _, p := range []string{d.gramCache().Root, d.gramPartialDir()} {
+		_ = os.Rename(p, filepath.Join(base, "gram-discarded-"+stamp+"-"+filepath.Base(p)))
+	}
+	discarded, _ := filepath.Glob(filepath.Join(base, "gram-discarded-*"))
+	return discarded
+}
+
+// gramDetaches tells apart the directories gramDetachCache moves aside.
+var gramDetaches atomic.Uint64
 
 // gramFileMeta is what a download needs of a message's file: from l's held
 // messages (id there), else a saved copy (key, the id the page knows, which

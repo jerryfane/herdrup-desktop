@@ -345,10 +345,11 @@ const disconnectWait = 5 * time.Second
 
 // linkWork is a link's background work: its watch, Gram polls, refreshes and
 // downloads, each of which can write to the desk's directory. Disconnect
-// waits for it, so none of it writes after (a test's TempDir cleanup met
-// such writes, #540). Work can start while that wait runs (a refresh queued
-// behind a load that just ended), so this is a guarded count, not a
-// WaitGroup: once sealed, Go starts nothing.
+// waits for it (a test's TempDir cleanup met such writes, #540), but only so
+// long: work still running at the bound (a stalled network call) may write
+// after. Work can start while that wait runs (a refresh queued behind a load
+// that just ended), so this is a guarded count, not a WaitGroup: once sealed,
+// Go starts nothing.
 type linkWork struct {
 	mu      sync.Mutex
 	running int
@@ -892,7 +893,7 @@ func (d *Desk) Connect(m Machine, password string) error {
 // connection's background work to end, at most 5 s, so none of it writes to
 // this device's files afterwards; work still running then (a stalled
 // network call) may yet write later. A connection made while it waits keeps
-// its download cache and its state.
+// its Gram, its download cache and its state.
 func (d *Desk) Disconnect() {
 	d.mu.Lock()
 	l := d.link
@@ -907,22 +908,28 @@ func (d *Desk) Disconnect() {
 	// publishes its own state after it.
 	d.state = ConnState{Phase: "idle"}
 	StateChanged.Broadcast(d.state)
+	// Everything else of the connection is detached here too, its Gram, the
+	// combined guest Gram and the download cache's claim, so a connection
+	// made once d.mu is free installs its own, which nothing below touches.
+	composer := d.gramSwap(nil, "")
+	hub := d.detachGuestGram()
+	discarded := d.gramDetachCache()
 	d.mu.Unlock()
-	d.gramReset(nil, "")
-	closed := d.stopGuestGram()
+	if composer != nil {
+		composer.Close()
+	}
+	var closed []*link
+	if hub != nil {
+		closed = hub.stop()
+	}
 	if l != nil {
 		closed = append(closed, l)
 	}
 	if !closeLinks(closed, disconnectWait) {
 		log.Printf("disconnect: the connection's background work still runs after %s", disconnectWait)
 	}
-	// Under d.mu, which a new connection takes before it claims the cache:
-	// unless one was made meanwhile, the cache is still the disconnected
-	// desk's.
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.link == nil {
-		d.gramWipeCacheUnlessOwner("")
+	for _, dir := range discarded {
+		_ = os.RemoveAll(dir)
 	}
 }
 

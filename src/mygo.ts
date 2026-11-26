@@ -1688,7 +1688,7 @@ export const Desk = {
    * connection's background work to end, at most 5 s, so none of it writes to
    * this device's files afterwards; work still running then (a stalled
    * network call) may yet write later. A connection made while it waits keeps
-   * its download cache and its state.
+   * its Gram, its download cache and its state.
    */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");

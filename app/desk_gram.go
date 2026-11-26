@@ -300,8 +300,18 @@ func (g *gramDesk) init() {
 // The held list, the composer and the downloads in flight belong to the
 // previous connection and are dropped.
 func (d *Desk) gramReset(l *link, machine string) {
+	if old := d.gramSwap(l, machine); old != nil {
+		old.Close()
+	}
+}
+
+// gramSwap is gramReset but for closing the previous composer, which it
+// returns (nil when there was none). Disconnect runs it under d.mu: d.mu
+// comes before a gramDesk's mu, never under it.
+func (d *Desk) gramSwap(l *link, machine string) *gramstore.Composer {
 	g := d.gramFor(l)
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.init()
 	if g.cancel != nil {
 		g.cancel()
@@ -328,10 +338,7 @@ func (d *Desk) gramReset(l *link, machine string) {
 		g.phase = "idle"
 	}
 	d.publishGramLocked(g)
-	g.mu.Unlock()
-	if old != nil {
-		old.Close()
-	}
+	return old
 }
 
 // gramRoster gives Gram l's latest agent list and its herdr's capabilities,
