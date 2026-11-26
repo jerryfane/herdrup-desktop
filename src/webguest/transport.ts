@@ -61,9 +61,11 @@ export interface Access {
  agentTarget: string;
  endpoint: Endpoint;
  acceptedAt: Date;
- /** When a hello's reply last named the machine machineLabel (its owner may rename it, herdr
-  *  #519); absent: acceptedAt, when the accept's (or open's) hello named it. */
- labeledAt?: Date;
+ /** Which observation of the machine's name machineLabel is (its owner may rename it, herdr
+  *  #519): the grant store's number for the hello that named it (the accept's, the open's, or a
+  *  later one), counted up in the store's own write, so a higher one is a later hello whatever the
+  *  clocks say. Absent: a grant saved before they were numbered. */
+ labelSeq?: number;
  /** The share is bound to the HerdrUp account it was accepted with ("Add to my account"): every
   *  hello carries that account's statement for the host, and the session keeps it fresh. Absent
   *  (older grants) or false: a plain share, this browser's key alone. */
