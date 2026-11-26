@@ -34,10 +34,10 @@ import (
 
 const pairAcct = "acct-1"
 
-// pairWorld is fakeaccount with this desk as the new device and an iPhone
+// askWorld is fakeaccount with this desk as the new device and an iPhone
 // approving, plus the machines the iPhone ticks (fakeherdr), each started
 // once the new device's key S is known and accepting only it.
-type pairWorld struct {
+type askWorld struct {
 	svc       *fakeaccount.Service
 	elapsed   atomic.Int64
 	intercept atomic.Pointer[func(w http.ResponseWriter, r *http.Request) bool]
@@ -46,10 +46,10 @@ type pairWorld struct {
 	phoneKey  x25519Browser
 }
 
-func newPairWorld(t *testing.T) *pairWorld {
+func newAskWorld(t *testing.T) *askWorld {
 	t.Helper()
 	quietSync(t)
-	w := &pairWorld{svc: fakeaccount.New()}
+	w := &askWorld{svc: fakeaccount.New()}
 	start := time.Unix(1_800_000_000, 0)
 	w.svc.Now = func() time.Time { return start.Add(time.Duration(w.elapsed.Load())) }
 	w.svc.Intercept = func(rw http.ResponseWriter, r *http.Request) bool {
@@ -75,7 +75,7 @@ func newPairWorld(t *testing.T) *pairWorld {
 }
 
 // start asks to pair and checks the waiting view.
-func (w *pairWorld) start(t *testing.T) PairRequestView {
+func (w *askWorld) start(t *testing.T) PairRequestView {
 	t.Helper()
 	ctx := context.Background()
 	if ok, err := w.d.PairRequestOffered(ctx); !ok || err != nil {
@@ -91,7 +91,7 @@ func (w *pairWorld) start(t *testing.T) PairRequestView {
 	return v
 }
 
-func (w *pairWorld) read(t *testing.T, id string) PairRequestView {
+func (w *askWorld) read(t *testing.T, id string) PairRequestView {
 	t.Helper()
 	v, err := w.d.PairRequestRead(context.Background(), id)
 	if err != nil {
@@ -102,7 +102,7 @@ func (w *pairWorld) read(t *testing.T, id string) PairRequestView {
 
 // claim is the iPhone opening the request: the desk shows the code, which
 // the iPhone's user types.
-func (w *pairWorld) claim(t *testing.T, id string) (*account.PairApproval, ssh.PublicKey, string) {
+func (w *askWorld) claim(t *testing.T, id string) (*account.PairApproval, ssh.PublicKey, string) {
 	t.Helper()
 	ctx := context.Background()
 	reqs, err := w.phone.PairRequests(ctx, pairAcct)
@@ -204,7 +204,7 @@ func pairEnvelope(ms ...account.PairMachine) account.PairEnvelope {
 	return account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: ms}
 }
 
-func (w *pairWorld) machines(t *testing.T) []Machine {
+func (w *askWorld) machines(t *testing.T) []Machine {
 	t.Helper()
 	w.d.storeMu.Lock()
 	defer w.d.storeMu.Unlock()
@@ -215,7 +215,7 @@ func (w *pairWorld) machines(t *testing.T) []Machine {
 	return st.Machines
 }
 
-func (w *pairWorld) identities(t *testing.T) []string {
+func (w *askWorld) identities(t *testing.T) []string {
 	t.Helper()
 	return entriesNamed(filepath.Join(w.d.dir, "identities"), "herdr-pair-", ".key")
 }
@@ -234,7 +234,7 @@ func resultOf(v PairRequestView, label string) PairRequestMachine {
 // record; the one it couldn't add is reported; the one off this network is
 // saved but unreachable; and S opens a session on the reachable one.
 func TestPairRequestSavesTheApprovedMachinesWithItsKeyAndPins(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)
@@ -331,7 +331,7 @@ func TestPairRequestSavesTheApprovedMachinesWithItsKeyAndPins(t *testing.T) {
 // A retry's list at a higher seq saves what the first couldn't, with the
 // same key; once the retry window closed, a later one isn't read.
 func TestPairRequestTakesARetrysHigherSeqWithinTheWindow(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	now := time.Unix(1_800_000_000, 0)
 	pairNow = func() time.Time { return now }
@@ -384,7 +384,7 @@ func TestPairRequestTakesARetrysHigherSeqWithinTheWindow(t *testing.T) {
 // not saved: nothing is overwritten. With nothing to save, S is never
 // written.
 func TestPairRequestNeverOverwritesASavedMachineOrPin(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)
@@ -440,7 +440,7 @@ func TestPairRequestSavesNothingFromATamperedList(t *testing.T) {
 		{"ssh key", func(e map[string]any) { e["ssh_pub"] = b64u(bytes.Repeat([]byte{9}, 32)) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := newPairWorld(t)
+			w := newAskWorld(t)
 			ctx := context.Background()
 			v := w.start(t)
 			a, s, code := w.claim(t, v.ID)
@@ -489,7 +489,7 @@ func TestPairRequestSavesNothingFromATamperedList(t *testing.T) {
 // nothing saved.
 func TestPairRequestEndsDeniedOrExpired(t *testing.T) {
 	t.Run("denied", func(t *testing.T) {
-		w := newPairWorld(t)
+		w := newAskWorld(t)
 		ctx := context.Background()
 		v := w.start(t)
 		a, _, code := w.claim(t, v.ID)
@@ -507,7 +507,7 @@ func TestPairRequestEndsDeniedOrExpired(t *testing.T) {
 		}
 	})
 	t.Run("expired", func(t *testing.T) {
-		w := newPairWorld(t)
+		w := newAskWorld(t)
 		v := w.start(t)
 		w.elapsed.Add(int64(fakeaccount.RequestTTL))
 		if v = w.read(t, v.ID); v.Phase != PairExpired || v.ExpiresIn != 0 {
@@ -521,7 +521,7 @@ func TestPairRequestEndsDeniedOrExpired(t *testing.T) {
 
 // Cancel ends the request at the service: the iPhone can't approve it.
 func TestPairRequestCancelEndsItForTheApprover(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)
@@ -548,7 +548,7 @@ func TestPairRequestCancelEndsItForTheApprover(t *testing.T) {
 // A cancel the service doesn't take still stops the request here, and says
 // a device with the code could approve it until it expires.
 func TestPairRequestCancelFallsBackToStoppingHere(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	unavailable := func(rw http.ResponseWriter, r *http.Request) bool {
@@ -593,7 +593,7 @@ func mustAtoi(s string) int { n, _ := strconv.Atoi(s); return n }
 // checked against the approver's pin. A key type this device doesn't pin
 // (DSA) is not saved.
 func TestPairRequestConnectsWithTheKeyTypeTheApproverPinned(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)
@@ -694,7 +694,7 @@ func TestPairRequestRemovesItsKeyAndNewPinsWhenSavingFails(t *testing.T) {
 		pinned  bool // the machine's host key was pinned here already
 	}{{"host-keys.json.tmp", false}, {"machines.json.tmp", false}, {"machines.json.tmp", true}} {
 		t.Run(fmt.Sprintf("%s pinned=%v", c.blocked, c.pinned), func(t *testing.T) {
-			w := newPairWorld(t)
+			w := newAskWorld(t)
 			ctx := context.Background()
 			v := w.start(t)
 			a, s, code := w.claim(t, v.ID)
@@ -745,7 +745,7 @@ func TestPairRequestRemovesItsKeyAndNewPinsWhenSavingFails(t *testing.T) {
 // sync) keeps them, their key and their pins: nothing a saved machine uses
 // is removed.
 func TestPairRequestKeepsItsKeyOnceTheMachinesAreWritten(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)
@@ -775,7 +775,7 @@ func TestPairRequestKeepsItsKeyOnceTheMachinesAreWritten(t *testing.T) {
 // A pin another writer set while the save went on is not the save's to
 // take back: a failed save leaves it, and removes only its own key.
 func TestPairRequestLeavesAPinSetSinceWhenSavingFails(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	id, studio := w.approved(t)
 	at := net.JoinHostPort(studio.host, strconv.Itoa(studio.port))
 	other, _ := newHostKey(t)
@@ -801,7 +801,7 @@ func TestPairRequestLeavesAPinSetSinceWhenSavingFails(t *testing.T) {
 // A list that can't be saved is saved again on later reads, but only while
 // the approver could still send it again: then the problem is final.
 func TestPairRequestStopsRetryingASaveAfterTheWindow(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	now := time.Unix(1_800_000_000, 0)
 	pairNow = func() time.Time { return now }
 	t.Cleanup(func() { pairNow = time.Now })
@@ -811,7 +811,7 @@ func TestPairRequestStopsRetryingASaveAfterTheWindow(t *testing.T) {
 		if v := w.read(t, id); v.Phase != PairApproved || !v.SaveFailed || !strings.Contains(v.Problem, "no space left") || !strings.Contains(v.Problem, "Trying again") {
 			t.Fatalf("retrying %+v", v)
 		}
-		now = now.Add(pairRetryWindow / 2)
+		now = now.Add(pairResendWindow / 2)
 	}
 	v := w.read(t, id)
 	if v.Phase != PairFailed || v.SaveFailed || v.RetryOpen || !strings.Contains(v.Problem, "no space left") || !strings.Contains(v.Problem, "stopped trying") {
@@ -822,7 +822,7 @@ func TestPairRequestStopsRetryingASaveAfterTheWindow(t *testing.T) {
 
 // holdMachinesWrite holds the desk's next write of machines.json until
 // release, before anything is written: arrived closes once it is held.
-func (w *pairWorld) holdMachinesWrite() (arrived <-chan struct{}, release func()) {
+func (w *askWorld) holdMachinesWrite() (arrived <-chan struct{}, release func()) {
 	arrive, rel := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	w.d.writeMachines = func(path string, data []byte) (bool, error) {
@@ -836,7 +836,7 @@ func (w *pairWorld) holdMachinesWrite() (arrived <-chan struct{}, release func()
 // request fenced, then the write goes on): what the save wrote is taken
 // back before Cancel returns.
 func TestPairRequestCancelDuringTheWriteSavesNothing(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	id, read, release := w.approvedAndHeld(t, w.holdMachinesWrite)
 	p := w.d.pairRequest
 	cancelled := make(chan error, 1)
@@ -856,7 +856,7 @@ func TestPairRequestCancelDuringTheWriteSavesNothing(t *testing.T) {
 // the session dropped, then the write goes on): the sign-out returns only
 // once what the save wrote is taken back.
 func TestPairRequestSignOutDuringTheWriteSavesNothing(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	published := publishAccount
 	publishAccount = func(AccountState) {}
 	t.Cleanup(func() { publishAccount = published })
@@ -881,7 +881,7 @@ func TestPairRequestSignOutDuringTheWriteSavesNothing(t *testing.T) {
 }
 
 // approved is a request approved with studio's list, not read yet.
-func (w *pairWorld) approved(t *testing.T) (id string, studio pairMachine) {
+func (w *askWorld) approved(t *testing.T) (id string, studio pairMachine) {
 	t.Helper()
 	ctx := context.Background()
 	v := w.start(t)
@@ -898,7 +898,7 @@ func (w *pairWorld) approved(t *testing.T) (id string, studio pairMachine) {
 
 // holdMachinesRead holds the new device's next GET /v1/pairs/self until
 // release: arrived closes once it is held.
-func (w *pairWorld) holdMachinesRead() (arrived <-chan struct{}, release func()) {
+func (w *askWorld) holdMachinesRead() (arrived <-chan struct{}, release func()) {
 	arrive, rel := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	hold := func(_ http.ResponseWriter, r *http.Request) bool {
@@ -913,7 +913,7 @@ func (w *pairWorld) holdMachinesRead() (arrived <-chan struct{}, release func())
 
 // approvedAndHeld is a request approved with studio's list, its read of
 // that list in flight and held by hold.
-func (w *pairWorld) approvedAndHeld(t *testing.T, hold func() (<-chan struct{}, func())) (id string, read <-chan PairRequestView, release func()) {
+func (w *askWorld) approvedAndHeld(t *testing.T, hold func() (<-chan struct{}, func())) (id string, read <-chan PairRequestView, release func()) {
 	t.Helper()
 	ctx := context.Background()
 	id, _ = w.approved(t)
@@ -930,7 +930,7 @@ func (w *pairWorld) approvedAndHeld(t *testing.T, hold func() (<-chan struct{}, 
 	return id, done, release
 }
 
-func (w *pairWorld) savedNothing(t *testing.T) {
+func (w *askWorld) savedNothing(t *testing.T) {
 	t.Helper()
 	if keys, saved := w.identities(t), w.machines(t); len(keys) != 0 || len(saved) != 0 {
 		t.Fatalf("keys %v, saved %+v", keys, saved)
@@ -944,7 +944,7 @@ func (w *pairWorld) savedNothing(t *testing.T) {
 // first, so that read saves nothing, and the service is still told (it
 // answers that the request was approved already, which Cancel says).
 func TestPairRequestCancelFencesAReadInFlight(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	id, read, release := w.approvedAndHeld(t, w.holdMachinesRead)
 	p := w.d.pairRequest
 	cancelled := make(chan error, 1)
@@ -968,7 +968,7 @@ func TestPairRequestCancelFencesAReadInFlight(t *testing.T) {
 // asked isn't the current one at the save, so nothing is saved and the
 // request ends.
 func TestPairRequestSavesNothingAfterSignOut(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	id, read, release := w.approvedAndHeld(t, w.holdMachinesRead)
 	// The fake service has no sign-out route: the session is dropped here
 	// whatever it answers.
@@ -990,7 +990,7 @@ func TestPairRequestSavesNothingAfterSignOut(t *testing.T) {
 // Cancel once the list is saved still tells the service; its answer that
 // the request finished already is no error then, and what was saved stays.
 func TestPairRequestCancelAfterTheSaveStillTellsTheService(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)
@@ -1024,7 +1024,7 @@ func TestPairRequestCancelAfterTheSaveStillTellsTheService(t *testing.T) {
 // not tried again and again, even once another profile is saved at the
 // same address: that one is not the list's (its profile id differs).
 func TestPairRequestSettlesARemovedMachine(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	id, _ := w.approved(t)
 	v := w.read(t, id)
@@ -1051,7 +1051,7 @@ func TestPairRequestSettlesARemovedMachine(t *testing.T) {
 // is pinned as the plain key it certifies, so the machine saves with that
 // key's type and connects.
 func TestPairRequestPinsTheKeyACertificateCertifies(t *testing.T) {
-	w := newPairWorld(t)
+	w := newAskWorld(t)
 	ctx := context.Background()
 	v := w.start(t)
 	a, s, code := w.claim(t, v.ID)

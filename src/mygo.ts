@@ -293,6 +293,28 @@ export interface AppUpdateState {
   checkedAt: number;
 }
 
+/**
+ * ApprovalOffers says which approval requests the account service
+ * carries: browsers' (web_approve) and new devices' (pair_v1).
+ */
+export interface ApprovalOffers {
+  browsers: boolean;
+  pairs: boolean;
+}
+
+/**
+ * ApprovalRequest is one request waiting for approval on the account, in
+ * the list ApprovalRequests reads (GET /v1/approvals?kind=any) in the
+ * service's order: Kind "browser" (Browser) or "pair" (Pair). The page
+ * polls this one list, not a list per kind, so pair requests cost the
+ * account's approval rate nothing over browser ones.
+ */
+export interface ApprovalRequest {
+  kind: string;
+  browser?: WebAccessRequest;
+  pair?: PairApproveRequest;
+}
+
 /** One answered field, copied from the ask result's `details.answers`. */
 export interface AskFormAnswer {
   /** The chosen label, `Other: <text>`, comma-joined labels, or the text. */
@@ -869,6 +891,88 @@ export interface NotificationSettings {
    * Without it "Only my requests" alerts every finished turn.
    */
   turnOrigin: boolean | null;
+}
+
+/**
+ * PairApproveProgress is one machine's step while keys are added:
+ * "adding", then "added", "already" or "failed" (Reason says why).
+ * KeyLabel is the label herdr stored the key under.
+ */
+export interface PairApproveProgress {
+  id: string;
+  machineId: string;
+  status: string;
+  reason?: string;
+  keyLabel?: string;
+}
+
+/**
+ * PairApproveRequest is one new device waiting for a pair approval, for
+ * the sheet.
+ */
+export interface PairApproveRequest {
+  id: string;
+  deviceName: string;
+  /** Platform is the new device's (macos, windows, linux, ios, ipados). */
+  platform: string;
+  /** Claimed is "no", "you" or "other" (another device is approving it). */
+  claimed: string;
+  expiresIn: number;
+}
+
+/**
+ * PairApproveResult is what an approval, or a retry, did. Sent: the new
+ * device has a list from here. Unsure: the service's answer was lost
+ * (Problem says how); Approve sends the same list again. Ended: the request
+ * ended, or retries did (Problem says so). Unsent: a retry's list didn't
+ * reach the service; Try again sends it.
+ */
+export interface PairApproveResult {
+  machines: PairApproveRow[];
+  sent: boolean;
+  unsure?: boolean;
+  ended?: boolean;
+  unsent?: boolean;
+  problem?: string;
+}
+
+/**
+ * PairApproveRow is one ticked machine's outcome: "added", "already" or
+ * "failed" (Reason). KeyLabel is the label herdr stored the key under.
+ * Retryable: a failed machine Try again may mend (PairApproveRetry tries
+ * no other).
+ */
+export interface PairApproveRow {
+  id: string;
+  label: string;
+  status: string;
+  reason?: string;
+  keyLabel?: string;
+  retryable?: boolean;
+}
+
+/**
+ * PairApproveUpdate tells the page where a pair approval stands: "ready"
+ * (the new device shows its code; type it), "tampered" (denied) or "ended".
+ */
+export interface PairApproveUpdate {
+  id: string;
+  state: string;
+  problem?: string;
+}
+
+/**
+ * PairProbe is what the sheet learns of one machine before the user ticks
+ * it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
+ * "needs_update" (Version is its herdr's, when it said), "needs_key" (a
+ * password machine not connected now), "needs_pin" (never opened from
+ * this computer, so no host key is kept for it) or "unsendable" (the list
+ * the new device gets can't carry it; Reason says why).
+ */
+export interface PairProbe {
+  state: string;
+  version?: string;
+  reason?: string;
 }
 
 /**
@@ -1484,7 +1588,6 @@ export interface WebAccessMachine {
 export interface WebAccessRequest {
   id: string;
   browserName: string;
-  createdMs: number;
   /** Claimed is "no", "you" or "other" (another device is approving it). */
   claimed: string;
   expiresIn: number;
@@ -1679,6 +1782,20 @@ export const Desk = {
    */
   applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
     return call("Desk.ApplySettingsServerUpdate", token, buildID, restartLater);
+  },
+  /**
+   * ApprovalRequests lists the browsers and new devices waiting for
+   * approval, in the service's order, which the page opens them in.
+   */
+  approvalRequests(): Promise<ApprovalRequest[]> {
+    return call("Desk.ApprovalRequests");
+  },
+  /**
+   * ApprovalsOffered reads both from one /v1/health answer. An error means
+   * the service couldn't be asked; the page asks again on its next look.
+   */
+  approvalsOffered(): Promise<ApprovalOffers> {
+    return call("Desk.ApprovalsOffered");
   },
   /**
    * ArchiveAgent archives the agent, attributed to herdrup
@@ -2138,6 +2255,60 @@ export const Desk = {
   },
   openTerminalView(target: AgentTarget, token: string): Promise<AgentView> {
     return call("Desk.OpenTerminalView", target, token);
+  },
+  /**
+   * PairApproveAdd adds the new device's key on each chosen machine, one at a
+   * time (progress goes to the page as each starts and ends), then sends it
+   * the sealed list of those machines. A machine that fails is in the list as
+   * failed, for Try again. After a lost answer it sends the same list again,
+   * whatever was chosen.
+   */
+  pairApproveAdd(id: string, machineIDs: string[]): Promise<PairApproveResult> {
+    return call("Desk.PairApproveAdd", id, machineIDs);
+  },
+  /**
+   * PairApproveCheckCode compares the code the user typed with the new
+   * device's (3 tries; the last wrong one denies the request).
+   */
+  pairApproveCheckCode(id: string, typed: string): Promise<WebAccessCheck> {
+    return call("Desk.PairApproveCheckCode", id, typed);
+  },
+  /**
+   * PairApproveDeny denies request id. On an error the page keeps the
+   * request open so Deny can be tried again. Once the new device has a
+   * machine list from here there is nothing to deny.
+   */
+  pairApproveDeny(id: string): Promise<void> {
+    return call("Desk.PairApproveDeny", id);
+  },
+  /**
+   * PairApproveProbe connects to saved machine machineID for pair request
+   * id, briefly and at most a few machines at a time, and says whether a key
+   * can be added there. Only once the typed code matched: before, no
+   * machine is reached at all. It adds nothing, and pins nothing. The host
+   * key it verified is kept for sizing the list (PairApproveAdd); a machine
+   * whose entry alone can't fit is "unsendable".
+   */
+  pairApproveProbe(id: string, machineID: string): Promise<PairProbe> {
+    return call("Desk.PairApproveProbe", id, machineID);
+  },
+  /**
+   * PairApproveRetry adds the key again on machines that failed in a way a
+   * retry may mend (Retryable), then sends the new device the whole list
+   * again at the next seq. The service takes it for 10 minutes after the
+   * approval; a list the service didn't take goes again until then, a key is
+   * added only with time left to add it and report.
+   */
+  pairApproveRetry(id: string, machineIDs: string[]): Promise<PairApproveResult> {
+    return call("Desk.PairApproveRetry", id, machineIDs);
+  },
+  /**
+   * PairApproveStart claims pair request id for this computer and waits (in
+   * the background, until the request expires) for the new device to show
+   * its code. One pair approval at a time: a new one replaces the last.
+   */
+  pairApproveStart(id: string): Promise<void> {
+    return call("Desk.PairApproveStart", id);
   },
   /**
    * PairMachine pins before redemption, then persists the private key and host.
@@ -2716,18 +2887,6 @@ export const Desk = {
     return call("Desk.WebAccessMachines");
   },
   /**
-   * WebAccessOffered reports whether the account service carries browser
-   * approvals. An error means the service couldn't be asked; the page asks
-   * again on its next look.
-   */
-  webAccessOffered(): Promise<boolean> {
-    return call("Desk.WebAccessOffered");
-  },
-  /** WebAccessRequests lists browsers waiting for approval on the account. */
-  webAccessRequests(): Promise<WebAccessRequest[]> {
-    return call("Desk.WebAccessRequests");
-  },
-  /**
    * WebAccessStart claims request id for this computer and waits (in the
    * background, until the request expires) for the browser to show its code.
    * One approval at a time: a new one replaces the last.
@@ -2822,6 +2981,8 @@ export const events = {
   terminalChanged: event<TerminalEvent>("terminal:changed"),
   chatMenu: event<ChatMenuChoice>("chat:menu"),
   paneAttachments: event<PaneAttachments>("pane:attachments"),
+  pairApproveUpdate: event<PairApproveUpdate>("pair-approve:update"),
+  pairApproveProgress: event<PairApproveProgress>("pair-approve:progress"),
   /**
    * PairingLinkOpened is sent when the system opens a herdrup://pair# link with
    * the app; the page takes it with TakePairingLink and asks before pairing.

@@ -10,8 +10,8 @@ package main
 //
 // The page drives it: PairRequestRead reads the request once, and the page
 // calls it again on its own cadence, so nothing is read once the page is
-// gone. After the approval the page keeps reading for pairRetryWindow, the
-// time the approver may send a retry's list at a higher seq.
+// gone. After the approval the page keeps reading for pairResendWindow, the
+// time the approver may send a retry's list at a higher seq (pairNow).
 //
 // What is saved, and what never is:
 //   - Only a list that opened and verified (PairAsk.Machines checks the
@@ -55,13 +55,6 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
 	"golang.org/x/crypto/ssh"
 )
-
-// pairRetryWindow is how long after the approval a retry's list may still
-// come (the service takes a higher seq for 10 minutes after the finish).
-const pairRetryWindow = 10 * time.Minute
-
-// pairNow is the clock for the retry window; tests replace it.
-var pairNow = time.Now
 
 // pairConnectTimeout bounds each machine's connection try.
 var pairConnectTimeout = 10 * time.Second
@@ -358,7 +351,7 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 	if p.view.Phase != PairApproved && p.view.Phase != PairDone {
 		return p.copyView(), nil
 	}
-	if !p.deliveredAt.IsZero() && pairNow().Sub(p.deliveredAt) >= pairRetryWindow {
+	if !p.deliveredAt.IsZero() && pairNow().Sub(p.deliveredAt) >= pairResendWindow {
 		if p.view.SaveFailed {
 			// The approver can't send it again any more.
 			p.view.SaveFailed = false
