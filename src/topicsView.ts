@@ -660,14 +660,16 @@ class TopicChat {
  /** The next live read starts over from the newest page (readLive with no held page), dropping
   *  the topic's history and cursors: Refresh, an older page whose cursor herdr expired, or one
   *  that showed handovers otherwise than the held history (mergeOlder), and a live read that
-  *  started over itself (readLive's restart). Cleared only when a newest page lands. */
+  *  started over itself (readLive's restart). Cleared only when a newest page lands. Written
+  *  only through setPaging, with `before`. */
  private restart = false;
  /** An older page can be read: a cursor is held and no restart has made it unusable. Earlier
   *  messages shows, and its action runs, only then. */
  private get paging(): boolean { return !!this.before && !this.restart; }
- /** Paging stops (a restart) or resumes (a newest page landed with its cursor): Earlier messages
-  *  follows at once, not at the next draw, which a held newest-page read puts off. */
- private setRestart(restart: boolean) { this.restart = restart; this.earlier.hidden = !this.paging; }
+ /** The topic's paging state: the older page's cursor and whether a restart made it unusable.
+  *  Both change only here, and Earlier messages follows at once, not at a draw that a held
+  *  newest-page read puts off. */
+ private setPaging(before: string | undefined, restart: boolean) { this.before = before; this.restart = restart; this.earlier.hidden = !this.paging; }
  private active = false;
  private disposed = false;
  private timer: number | undefined;
@@ -766,7 +768,7 @@ class TopicChat {
  /** The open topic changed (an owner's agent.topics.changed): read its tail now; startOver
   *  (Refresh) reads its newest page instead, dropping the history held. */
  refresh(startOver = false) {
-  if (startOver) this.setRestart(true);
+  if (startOver) this.setPaging(this.before, true);
   if (this.active) void this.load(false);
  }
 
@@ -806,10 +808,10 @@ class TopicChat {
     const newest = this.page;
     if (this.disposed || !newest || next.session_id !== session || newest.session_id !== session) return;
     const merged = mergeOlder(newest, this.entries, next);
-    if (!merged) { this.setRestart(true); this.again = true; return; }
+    if (!merged) { this.setPaging(this.before, true); this.again = true; return; }
     measure();
     this.entries = merged;
-    this.before = next.before;
+    this.setPaging(next.before, this.restart);
    } else {
     // The chat's own live read (readLive): an after page that may re-send unloaded history is
     // replaced by the newest page, as the agent's chat does (#749 review F2).
@@ -818,12 +820,12 @@ class TopicChat {
      return this.disposed ? null : read;
     }, () => {
      if (this.disposed) return false;
-     this.setRestart(true);
+     this.setPaging(this.before, true);
      return true;
     });
     if (!live) return;
     measure();
-    if (live.reset) { this.before = live.page.before; this.setRestart(false); }
+    if (live.reset) this.setPaging(live.page.before, false);
     this.entries = live.entries; this.page = live.page;
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    }
@@ -833,10 +835,10 @@ class TopicChat {
   } catch (error) {
    // herdr expired the older page's cursor: paging stops, and the topic starts over from its
    // newest page.
-   if (older && cursorExpired(error)) { this.setRestart(true); this.again = true; }
+   if (older && cursorExpired(error)) { this.setPaging(this.before, true); this.again = true; }
    else if (!this.disposed) this.notice.textContent = errorText(error);
   } finally {
-   this.busy = false; this.earlier.disabled = false; this.earlier.hidden = !this.paging;
+   this.busy = false; this.earlier.disabled = false;
    if (!this.disposed && this.active) {
     if (this.again) { this.again = false; void this.load(false); }
     else {
@@ -876,7 +878,6 @@ class TopicChat {
   const working = topicWorking(this.topic, page);
   const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model)];
   for (const node of tail) if (node) nodes.push(node);
-  this.earlier.hidden = !this.paging;
   // The tail's rows stay attached, so the dots' animation runs on across polls.
   placeRows(this.messages, [this.earlier, ...nodes]);
   if (follow) this.messages.scrollTop = this.messages.scrollHeight;

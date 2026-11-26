@@ -351,7 +351,8 @@ class Detail {
  /** The chat's next live read starts over from its newest page (readLive with no held page),
   *  dropping its history and cursors: Refresh, an older page whose cursor herdr expired, or one
   *  that showed handovers otherwise than the held history (mergeOlder), and a live read that
-  *  started over itself (readLive's restart). Cleared only when a newest page lands. */
+  *  started over itself (readLive's restart). Cleared only when a newest page lands. Written
+  *  only through setPaging, with oldestCursor. */
  private chatRestart = false;
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
@@ -1468,7 +1469,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.unfoldedRelays.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false; this.chatRestart = false;
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.unfoldedRelays.clear(); this.chat = null; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false; this.setPaging(undefined, false);
   this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
   this.input.disabled = this.fieldDisabled(); this.send.disabled = this.sending || !!this.guestPaused;
   const composer = this.composerCard = el("div", "chat-composer");
@@ -1552,7 +1553,7 @@ class Detail {
   // The chat as last read draws at once; the first read asks only for what came after it.
   const remembered = recallChat(JSON.stringify(this.target));
   if (remembered) {
-   this.chat = remembered.page; this.entries = remembered.entries; this.oldestCursor = remembered.oldestCursor;
+   this.chat = remembered.page; this.entries = remembered.entries; this.setPaging(remembered.oldestCursor, false);
    if (this.mode === "chat") this.drawChat();
   }
   if (this.mode === "chat") void this.refreshChat(generation);
@@ -1566,7 +1567,7 @@ class Detail {
  refresh() {
   if (this.mode === "terminal") void this.reconnectTerminal();
   else if (this.mode === "topics") this.topics?.refresh();
-  else { this.chatRestart = true; void this.refreshChat(this.generation, this.answerProblem); }
+  else { this.setPaging(this.oldestCursor, true); void this.refreshChat(this.generation, this.answerProblem); }
  }
  // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
  // `refusal`: the question's refusal a Refresh was pressed over, dropped once this poll's page lands.
@@ -1583,7 +1584,7 @@ class Detail {
    }, () => {
     // A poll Refresh or a later poll superseded reads nothing more.
     if (stale()) return false;
-    this.chatRestart = true;
+    this.setPaging(this.oldestCursor, true);
     return true;
    });
    if (!live || stale()) return;
@@ -1599,7 +1600,7 @@ class Detail {
     const kept = pending !== undefined && this.chat?.session_id === page.session_id && page.pending_ask?.id === pending ? pending : null;
     if (this.answerProblem?.askID !== kept) this.answerProblem = null;
     for (const drafts of [this.localAnswers, this.formStates, this.localFormAnswers, this.localDismissed]) for (const id of drafts.keys()) if (id !== kept) drafts.delete(id);
-    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++; this.chatRestart = false;
+    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.historyEpoch++; this.setPaging(page.before, false);
    }
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
@@ -1653,7 +1654,7 @@ class Detail {
   const reached = topAction({ ...at, drawnStart: 0, olderPage: true, load: "idle", fetches: true }) === "fetch";
   const arrived = reached && (force || !this.topReached);
   this.topReached = reached;
-  const action = topAction({ ...at, drawnStart: this.drawnIndex, olderPage: !!this.oldestCursor, load: this.olderLoad, fetches: arrived });
+  const action = topAction({ ...at, drawnStart: this.drawnIndex, olderPage: this.paging, load: this.olderLoad, fetches: arrived });
   this.earlierOffered = action === "offer";
   this.renderEarlier();
   if (action === "reveal") this.revealEarlier();
@@ -1686,7 +1687,7 @@ class Detail {
   *  lands after the chat started its history over (historyEpoch) belongs to history it no longer
   *  holds, and is dropped (#241). */
  async loadEarlier(generation: number): Promise<boolean> {
-  if (!this.chat || !this.oldestCursor || this.olderLoad === "loading" || this.chatRestart) return false;
+  if (!this.chat || !this.paging || this.olderLoad === "loading") return false;
   const session = this.chat.session_id;
   const epoch = this.chatEpoch, history = this.historyEpoch;
   const current = () => !this.disposed && generation === this.generation && epoch === this.chatEpoch && history === this.historyEpoch && this.chat?.session_id === session;
@@ -1696,12 +1697,13 @@ class Detail {
    if (!current() || page.session_id !== session) { if (epoch === this.chatEpoch) { this.olderLoad = "idle"; this.renderEarlier(); } return false; }
    this.olderLoad = "idle";
    const merged = mergeOlder(this.chat!, this.entries, page);
-   if (!merged) { this.chatRestart = true; this.renderEarlier(); void this.refreshChat(generation); return false; }
+   if (!merged) { this.olderPageInvalid(generation); return false; }
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
    const before = this.chatRows();
    const top = windowStarting(before, drawnStart(before, this.drawFrom));
-   this.entries = merged; this.oldestCursor = page.before;
+   // A Refresh pressed meanwhile still owes its newest page: the cursor goes on unusable.
+   this.entries = merged; this.setPaging(page.before, this.chatRestart);
    rememberChat(JSON.stringify(this.target), { page: this.chat!, entries: this.entries, oldestCursor: this.oldestCursor });
    this.drawFrom = revealedAbove(this.chatRows(), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;
@@ -1712,16 +1714,33 @@ class Detail {
    if (epoch !== this.chatEpoch) return false;
    // herdr expired the older page's cursor: paging stops, and the chat starts over from its
    // newest page.
-   if (cursorExpired(error) && current()) { this.olderLoad = "idle"; this.chatRestart = true; this.renderEarlier(); void this.refreshChat(generation); return false; }
+   if (cursorExpired(error) && current()) { this.olderPageInvalid(generation); return false; }
    this.olderLoad = current() ? "failed" : "idle"; this.renderEarlier();
    return false;
   }
+ }
+ /** The chat's paging state: the oldest page's cursor and whether a restart made it unusable
+  *  (chatRestart). Both change only here, and the top's Earlier messages follows at once. */
+ private setPaging(cursor: string | undefined, restart: boolean) {
+  this.oldestCursor = cursor; this.chatRestart = restart;
+  this.renderEarlier();
+ }
+ /** An older page can be read: a cursor is held and no restart has made it unusable. */
+ private get paging(): boolean { return !!this.oldestCursor && !this.chatRestart; }
+ /** An older page showed the history can't be paged on (its cursor expired, or it shows
+  *  handovers otherwise): paging stops and the chat starts over from its newest page, unless a
+  *  newest-page read is already owed (Refresh, or a live read that started over). A second poll
+  *  would supersede that one, and Refresh's refusal reset with it (#581). */
+ private olderPageInvalid(generation: number) {
+  const owed = this.chatRestart;
+  this.olderLoad = "idle"; this.setPaging(this.oldestCursor, true);
+  if (!owed) void this.refreshChat(generation);
  }
  /** The top of the chat as olderLoad says: nothing while idle, the loading line, or the Retry;
   *  idle at the top with older pages left that no scroll will reach, "Earlier messages". */
  renderEarlier() {
   const e = this.earlier;
-  const state = this.olderLoad === "idle" && this.earlierOffered && this.oldestCursor ? "offer" : this.olderLoad;
+  const state = !this.paging ? "idle" : this.olderLoad === "idle" && this.earlierOffered ? "offer" : this.olderLoad;
   e.hidden = state === "idle";
   if (e.dataset.state === state) return;
   e.dataset.state = state;
