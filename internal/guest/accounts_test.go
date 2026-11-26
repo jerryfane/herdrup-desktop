@@ -223,7 +223,7 @@ func (h *accountHost) accept(t *testing.T, bind StatementSource) Access {
 
 func (h *accountHost) transport(t *testing.T, access Access, statements StatementSource) *Transport {
 	t.Helper()
-	transport := NewTransport(access, h.identity, h.clock, statements)
+	transport := NewTransport(access, h.identity, h.clock, statements, nil)
 	t.Cleanup(func() { _ = transport.Close() })
 	return transport
 }
@@ -647,7 +647,7 @@ func TestTheRelaySelectsTheGrantBeforeTheAccountRefusals(t *testing.T) {
 		}
 		return identity
 	}
-	second := NewTransport(access, device("second"), h.clock, h.statements)
+	second := NewTransport(access, device("second"), h.clock, h.statements, nil)
 	t.Cleanup(func() { _ = second.Close() })
 	if err := list(second); err != nil || h.relay.Devices() != 2 {
 		t.Fatalf("a new device of the account: %v, devices %d", err, h.relay.Devices())
@@ -655,7 +655,7 @@ func TestTheRelaySelectsTheGrantBeforeTheAccountRefusals(t *testing.T) {
 	h.mu.Lock()
 	h.refuseOnce = "statement_invalid"
 	h.mu.Unlock()
-	third := NewTransport(access, device("third"), h.clock, h.statements)
+	third := NewTransport(access, device("third"), h.clock, h.statements, nil)
 	t.Cleanup(func() { _ = third.Close() })
 	if err := list(third); !errors.Is(err, ErrRevoked) || h.relay.Devices() != 2 {
 		t.Fatalf("a new device with a refused statement: %v, devices %d; want an unknown guest", err, h.relay.Devices())

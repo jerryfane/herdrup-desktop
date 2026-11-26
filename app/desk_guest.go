@@ -175,8 +175,7 @@ func (d *Desk) ConnectGuest(id string) error {
 	if err != nil {
 		return err
 	}
-	transport := guest.NewTransport(*access, identity, d.guestClock, d.guestStatements())
-	transport.OnMachineLabel(func(label string) { d.guestRelabeled(id, label) })
+	transport := guest.NewTransport(*access, identity, d.guestClock, d.guestStatements(), func(label string) { d.guestRelabeled(id, label) })
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &link{id: "guest:" + id, shareLabel: access.MachineLabel, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
 	d.mu.Lock()

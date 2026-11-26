@@ -130,7 +130,7 @@ func TestAStatementTheHostRefusedIsAskedForAgain(t *testing.T) {
 	mu.Lock()
 	validFrom = 3
 	mu.Unlock()
-	transport := guest.NewTransport(access, identity, guest.SystemClock, d.guestStatements())
+	transport := guest.NewTransport(access, identity, guest.SystemClock, d.guestStatements(), nil)
 	t.Cleanup(func() { _ = transport.Close() })
 	var reply map[string]any
 	if err := transport.Call(ctx, "agent.list", nil, &reply); err != nil {

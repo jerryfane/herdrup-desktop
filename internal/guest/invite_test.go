@@ -131,3 +131,35 @@ func TestSavedGuestAccessSurvivesReloadWithoutInvitationSecret(t *testing.T) {
 		t.Fatal("corrupt store overwritten")
 	}
 }
+
+// Relabel names the machine on the saved share it names, and only there:
+// a share forgotten meanwhile stays forgotten (#558), another is untouched.
+func TestRelabelNamesOnlyTheSavedShare(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "shares.json"))
+	host := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
+	share := func(id string) Access {
+		return Access{GuestID: id, GuestName: "guest", MachineLabel: "Mac", OwnerName: "Owner", AgentName: "Agent", AgentTarget: "%2", Endpoint: Endpoint{Relay: "https://relay.example", HostID: host, HostPublicKey: make([]byte, 32)}, AcceptedAt: time.Now()}
+	}
+	one, two := share("one"), share("two")
+	for _, a := range []Access{one, two} {
+		if err := store.Save(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Relabel(one.ID(), "Studio Mac"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Remove(two.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Relabel(two.ID(), "Studio Mac"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := store.List()
+	if err != nil || len(list) != 1 || list[0].ID() != one.ID() || list[0].MachineLabel != "Studio Mac" || list[0].AgentName != "Agent" {
+		t.Fatalf("after relabels: %+v, %v", list, err)
+	}
+	if err := store.Relabel(one.ID(), "\x07"); err == nil {
+		t.Fatal("an invalid label was saved")
+	}
+}

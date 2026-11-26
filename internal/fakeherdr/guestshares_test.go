@@ -50,7 +50,7 @@ func redeem(t *testing.T, base string, grant *fakeherdr.GuestGrant, identity gue
 	if err != nil {
 		t.Fatalf("%s: %v", grant.Agent, err)
 	}
-	transport := guest.NewTransport(access, identity, guest.SystemClock, nil)
+	transport := guest.NewTransport(access, identity, guest.SystemClock, nil, nil)
 	t.Cleanup(func() { _ = transport.Close() })
 	return transport, access
 }
