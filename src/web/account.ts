@@ -148,6 +148,13 @@ export interface PushDispatch { prepare(): Promise<SyncPushBody | null>; sending
 /** One page of GET /v1/sync: a page that isn't the last carries the cursor for the next. now_ms
  *  as SyncPushAnswer's. */
 export interface SyncPage { rev: number; changes: SyncItem[]; more: boolean; cursor?: string; now_ms?: number }
+/** Reading the service's changes (account.Pull): full means items are the whole account (a pull
+ *  since 0); restarted that it is so because the service answered 410 (a reset: the account's
+ *  history started over, SyncState.history), not because it was asked from 0. nowMs is the
+ *  service's clock when the pull began (its earliest page's now_ms), null when a page had none
+ *  (a service without now_ms: themartianapp/herdrup#826); newestMs the latest now_ms of its pages
+ *  (null: none had one), which the next push's not_after counts from. */
+export interface Pull { rev: number; items: SyncItem[]; full: boolean; restarted: boolean; nowMs: number | null; newestMs: number | null }
 
 /** GET /v1/approvals/<id> (approve-v1). The approver and nonce_t appear once a trusted device
  *  claimed the request; outcome_stored once the service holds its outcome. */
@@ -555,6 +562,50 @@ export class WebAccount {
   const had = this.session !== null;
   this.epoch++; this.sessionGeneration++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null;
   if (had || change !== "session") this.notify(change);
+ }
+}
+
+const MAX_PULL_PAGES = 64; // 64 × 500 items, past the 2,000-item account cap
+
+/** One pull, page by page; generation is the session the pages must be read in
+ *  (WebAccount.syncPage), and reset is told of a 410 on any page as its status line comes in
+ *  (the page then ends with SyncResetRequired, the same outcome).
+ *  Its items keep the order they came in: prompts.ts landItems matches them that way, once the
+ *  pull completed (a reset's restart brings only the full pull's). */
+async function pull(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
+ const out: Pull = { rev: 0, items: [], full: since === 0, restarted: false, nowMs: null, newestMs: null };
+ let query = `since=${since}`, told = true;
+ for (let page = 0; page < MAX_PULL_PAGES; page++) {
+  const answer = await account.syncPage(query, acct, signal, generation, reset);
+  out.items.push(...answer.changes);
+  out.rev = answer.rev;
+  if (typeof answer.now_ms !== "number") told = false;
+  else {
+   if (out.nowMs === null || answer.now_ms < out.nowMs) out.nowMs = answer.now_ms;
+   out.newestMs = Math.max(out.newestMs ?? answer.now_ms, answer.now_ms);
+  }
+  if (!told) out.nowMs = null;
+  if (!answer.more) return out;
+  if (!answer.cursor) throw new Error("account service: a page with more and no cursor");
+  query = `cursor=${encodeURIComponent(answer.cursor)}`;
+ }
+ throw new Error(`account service: more than ${MAX_PULL_PAGES} sync pages`);
+}
+
+/** Every change after since, following the cursor (PullSince). A 410, on any page, even of a pull
+ *  from 0, is a reset: reset is told at once, on the status line, before anything waits or its
+ *  body is read (resetKey), then the pull starts over from 0, once. The result is full and
+ *  restarted, and what the pages before it held is dropped with them. */
+export async function pullSince(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
+ let restarted = false;
+ for (;;) {
+  try {
+   const out = await pull(account, acct, restarted ? 0 : since, signal, generation, reset);
+   return restarted ? { ...out, restarted } : out;
+  } catch (error) {
+   if (!(error instanceof SyncResetRequired) || restarted) throw error;
+   restarted = true;
+  }
  }
 }
 

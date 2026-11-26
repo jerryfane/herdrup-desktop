@@ -11,9 +11,8 @@
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
+import { AccountServiceError, pullSince, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
 import { withStorageLock, type AbortableLocks } from "./locks";
-import { pullSince } from "./prompts";
 
 /** One account's record: SHARES_KEY_PREFIX + the account id. */
 export const SHARES_KEY_PREFIX = "herdrup.web.shares.";
