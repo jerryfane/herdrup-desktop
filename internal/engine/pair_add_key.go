@@ -1,18 +1,14 @@
 package engine
 
-// pair.add_key (jerryfane/herdr#529): the owner's own connection adds a new
-// device's SSH key to the server user's ~/.ssh/authorized_keys, marked
+// pair.add_key, pair.keys.list and pair.keys.remove (jerryfane/herdr#529,
+// pinned at 35b59399): the owner's own connection adds a new device's SSH
+// key to the server user's ~/.ssh/authorized_keys, marked
 // herdr-pair:<label>, so a device approved through the account (pair-v1)
-// can sign in directly. The pinned schema (third_party/herdr) has neither
-// the method nor the pair_add_key capability yet, so this file types them
-// by hand, outside herdrapi.Methods and the generated ServerCapabilities.
-// When #529 lands and the pin moves past it, they move to the generated
-// types (a herdrapi.Methods entry and a Capability) and this file goes.
+// can sign in directly, and lists or removes the keys it added that way.
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,8 +20,12 @@ import (
 // PairAddKeyMethod is the wire method.
 const PairAddKeyMethod = "pair.add_key"
 
-// CapabilityPairAddKey is the ping capability of a herdr with pair.add_key.
-const CapabilityPairAddKey = "pair_add_key"
+// PairKeyAddedType is pair.add_key's reply type.
+const PairKeyAddedType = "pair_key_added"
+
+// CapabilityPairAddKey is the ping capability of a herdr with pair.add_key,
+// pair.keys.list and pair.keys.remove (herdrapi.CapabilityPairAddKey).
+const CapabilityPairAddKey = string(herdrapi.CapabilityPairAddKey)
 
 // MaxPairKeyLabel is herdr's limit on the label pair.add_key takes, in
 // characters; a longer one, an empty one, or one with a control character
@@ -37,15 +37,16 @@ const MaxPairKeyLabel = 80
 // cuts it to this many characters (as for herdr pair).
 const MaxStoredPairKeyLabel = 48
 
-// PairKeyError is a refusal of pair.add_key, compared by Code with
-// errors.Is against the Err* values below; it wraps herdr's
-// *bridge.APIError.
+// PairKeyError is a refusal of pair.add_key, pair.keys.list or
+// pair.keys.remove, compared by Code with errors.Is against the Err* values
+// below; it wraps herdr's *bridge.APIError.
 type PairKeyError struct {
 	Code string
 	api  error
 }
 
-// The refusals pair.add_key can answer (herdr#529).
+// The refusals pair.* can answer (herdr#529); list and remove answer only
+// the forbidden ones, ErrPairUnsupportedOS and ErrPairReadFailed.
 var (
 	// ErrPairKeyInvalid: the key isn't one ssh-ed25519 public key line.
 	ErrPairKeyInvalid = &PairKeyError{Code: "pair_key_invalid"}
@@ -61,8 +62,9 @@ var (
 	ErrPairWriteFailed = &PairKeyError{Code: "pair_write_failed"}
 	// ErrPairUnsupportedOS: the machine isn't macOS or Linux.
 	ErrPairUnsupportedOS = &PairKeyError{Code: "pair_unsupported"}
-	// ErrPairReadFailed: the key was there already, and herdr couldn't
-	// read authorized_keys back for its stored label (pair_io_failed).
+	// ErrPairReadFailed (pair_io_failed): herdr couldn't read
+	// authorized_keys (a key there already, for its stored label; a list),
+	// or rewrite it (a remove).
 	ErrPairReadFailed = &PairKeyError{Code: "pair_io_failed"}
 )
 
@@ -76,13 +78,13 @@ func (e *PairKeyError) Error() string {
 	case ErrPairLabelInvalid.Code:
 		return "herdr refused the key's name"
 	case ErrPairGuestForbidden.Code, ErrPairOwnerForbidden.Code:
-		return "only the owner's own connection can add a device key"
+		return "only the owner's own connection can manage device keys"
 	case ErrPairWriteFailed.Code:
 		return "herdr couldn't write authorized_keys"
 	case ErrPairUnsupportedOS.Code:
 		return "device keys need a macOS or Linux machine"
 	case ErrPairReadFailed.Code:
-		return "herdr couldn't read authorized_keys"
+		return "herdr couldn't read or rewrite authorized_keys"
 	}
 	return "herdr refused the key: " + e.Code
 }
@@ -94,16 +96,10 @@ func (e *PairKeyError) Is(target error) bool {
 	return ok && t.Code == e.Code
 }
 
-// PairKeyAddedType is pair.add_key's reply type.
-const PairKeyAddedType = "pair_key_added"
-
 // PairAddKeyParams is pair.add_key's params: PublicKey an "ssh-ed25519
 // AAAA…" line, Label 1–80 characters with no control characters
 // (PairKeyLabel).
-type PairAddKeyParams struct {
-	PublicKey string `json:"public_key"`
-	Label     string `json:"label"`
-}
+type PairAddKeyParams = herdrapi.PairAddKeyParams
 
 // PairKeyAdded is pair.add_key's reply. Added is false, and Already true,
 // when the key was there before (the call is idempotent). Fingerprint is
@@ -111,54 +107,67 @@ type PairAddKeyParams struct {
 // which is the one to show: when the key was there before, the label it
 // was stored with then (empty for a line that isn't herdr's and has no
 // comment), not the one this call asked for.
-type PairKeyAdded struct {
-	Added       bool   `json:"added"`
-	Already     bool   `json:"already"`
-	Fingerprint string `json:"fingerprint"`
-	Label       string `json:"label"`
-}
+type PairKeyAdded = herdrapi.ResponseResultPairKeyAdded
 
-// PairAddKeySupported reports whether this herdr advertises pair_add_key.
-// It pings each time: the cached ping (Supports) decodes the pinned
-// schema's capabilities, which don't have the flag.
+// PairAddKeySupported reports whether this herdr advertises pair_add_key,
+// from the cached ping (probing once).
 func (c *Client) PairAddKeySupported(ctx context.Context) (bool, error) {
-	var pong struct {
-		Capabilities map[string]any `json:"capabilities"`
-	}
-	if err := c.t.Call(ctx, "ping", herdrapi.PingParams{}, &pong); err != nil {
+	pong, err := c.probe(ctx)
+	if err != nil {
 		return false, err
 	}
-	ok, _ := pong.Capabilities[CapabilityPairAddKey].(bool)
-	return ok, nil
+	return herdrapi.CapabilityPairAddKey.Supported(pong.Capabilities), nil
 }
 
-// PairAddKey is pair.add_key. A herdr without the method answers
-// *ErrUnsupported; its refusals are *PairKeyError (ErrPairKeyInvalid …),
-// any other error as the transport gave it. A reply of another type, or
-// without a fingerprint, is a *DecodeError.
+// PairAddKey is pair.add_key. A herdr without it answers *ErrUnsupported;
+// its refusals are *PairKeyError (ErrPairKeyInvalid …), any other error as
+// the transport gave it. A reply of another type is a *ResultTagError, one
+// without a fingerprint a *DecodeError.
 func (c *Client) PairAddKey(ctx context.Context, p PairAddKeyParams) (PairKeyAdded, error) {
-	var out struct {
-		Type string `json:"type"`
-		PairKeyAdded
+	added, err := call[herdrapi.ResponseResultPairKeyAdded](ctx, c, "pair.add_key", p)
+	if err != nil {
+		return PairKeyAdded{}, pairKeyError(err)
 	}
-	if err := c.t.Call(ctx, PairAddKeyMethod, p, &out); err != nil {
-		var api *bridge.APIError
-		if errors.As(err, &api) {
-			for _, known := range pairKeyErrors {
-				if api.Code == known.Code {
-					return PairKeyAdded{}, &PairKeyError{Code: api.Code, api: err}
-				}
-			}
-		}
-		return PairKeyAdded{}, c.mapError(PairAddKeyMethod, err)
-	}
-	switch {
-	case out.Type != PairKeyAddedType:
-		return PairKeyAdded{}, &DecodeError{Method: PairAddKeyMethod, Err: fmt.Errorf("reply type %q, want %q", out.Type, PairKeyAddedType)}
-	case out.Fingerprint == "":
+	if added.Fingerprint == "" {
 		return PairKeyAdded{}, &DecodeError{Method: PairAddKeyMethod, Err: errors.New("no fingerprint")}
 	}
-	return out.PairKeyAdded, nil
+	return added, nil
+}
+
+// PairKeysList is pair.keys.list: the herdr-pair keys in authorized_keys,
+// in file order (never the user's own lines). Errors as PairAddKey's.
+func (c *Client) PairKeysList(ctx context.Context) ([]herdrapi.PairKeyInfo, error) {
+	list, err := call[herdrapi.ResponseResultPairKeysList](ctx, c, "pair.keys.list", herdrapi.PairKeysListParams{})
+	if err != nil {
+		return nil, pairKeyError(err)
+	}
+	return list.Keys, nil
+}
+
+// PairKeysRemove is pair.keys.remove: it removes the herdr-pair lines with
+// fingerprint (OpenSSH "SHA256:…") and returns them, none when no
+// herdr-pair line has it (a user's own line is never removed). Errors as
+// PairAddKey's.
+func (c *Client) PairKeysRemove(ctx context.Context, fingerprint string) ([]herdrapi.PairKeyInfo, error) {
+	removed, err := call[herdrapi.ResponseResultPairKeysRemoved](ctx, c, "pair.keys.remove", herdrapi.PairKeysRemoveParams{Fingerprint: fingerprint})
+	if err != nil {
+		return nil, pairKeyError(err)
+	}
+	return removed.Removed, nil
+}
+
+// pairKeyError is err as a *PairKeyError when herdr refused with one of
+// pairKeyErrors' codes.
+func pairKeyError(err error) error {
+	var api *bridge.APIError
+	if errors.As(err, &api) {
+		for _, known := range pairKeyErrors {
+			if api.Code == known.Code {
+				return &PairKeyError{Code: api.Code, api: err}
+			}
+		}
+	}
+	return err
 }
 
 // PairKeyLabel is the label to mark the key with: "<device> via

@@ -3,16 +3,22 @@ package engine_test
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
+	"golang.org/x/crypto/ssh"
 )
 
-// keysHandler serves pair.add_key from keys to caller.
+// pairCaps is the ping capabilities of a herdr with pair.*.
+var pairCaps = map[string]bool{engine.CapabilityPairAddKey: true}
+
+// keysHandler serves pair.* from keys to caller.
 func keysHandler(keys *fakeherdr.PairKeys, caller fakeherdr.PairCaller) func(string, json.RawMessage) (any, *fakeherdr.APIError) {
 	return func(method string, params json.RawMessage) (any, *fakeherdr.APIError) {
 		if out, e, ok := keys.HandleFrom(caller, method, params); ok {
@@ -24,7 +30,7 @@ func keysHandler(keys *fakeherdr.PairKeys, caller fakeherdr.PairCaller) func(str
 
 func TestPairAddKeyAddsTheKeyOnceAndIsIdempotent(t *testing.T) {
 	keys := &fakeherdr.PairKeys{}
-	_, c := start(t, map[string]bool{engine.CapabilityPairAddKey: true}, keysHandler(keys, fakeherdr.PairOwner), nil)
+	_, c := start(t, pairCaps, keysHandler(keys, fakeherdr.PairOwner), nil)
 	if ok, err := c.PairAddKeySupported(ctx(t)); !ok || err != nil {
 		t.Fatalf("supported = %v, %v", ok, err)
 	}
@@ -49,7 +55,7 @@ func TestPairAddKeyAddsTheKeyOnceAndIsIdempotent(t *testing.T) {
 // The reply's label is the one herdr stored, which a label PairKeyLabel
 // didn't make can differ from.
 func TestPairAddKeyAnswersTheStoredLabel(t *testing.T) {
-	_, c := start(t, nil, keysHandler(&fakeherdr.PairKeys{}, fakeherdr.PairOwner), nil)
+	_, c := start(t, pairCaps, keysHandler(&fakeherdr.PairKeys{}, fakeherdr.PairOwner), nil)
 	k, err := pairing.NewPairKey("Studio PC")
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +115,7 @@ func TestPairAddKeyRefusals(t *testing.T) {
 	})
 	t.Run("herdr's other refusals", func(t *testing.T) {
 		for _, want := range []*engine.PairKeyError{engine.ErrPairWriteFailed, engine.ErrPairUnsupportedOS, engine.ErrPairReadFailed} {
-			_, c := start(t, nil, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
+			_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
 				return nil, &fakeherdr.APIError{Code: want.Code, Message: "no"}
 			}, nil)
 			_, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"})
@@ -126,15 +132,118 @@ func TestPairAddKeyRefusals(t *testing.T) {
 			t.Fatalf("old herdr: %v", err)
 		}
 	})
-	for name, reply := range map[string]map[string]any{
-		"reply without a fingerprint": {"type": engine.PairKeyAddedType, "added": true, "already": false},
-		"reply of another type":       {"type": "ok", "added": true, "already": false, "fingerprint": "SHA256:x"},
-	} {
+	t.Run("older herdr whose ping failed", func(t *testing.T) {
+		h, c := start(t, nil, nil, nil)
+		h.pingErr.Store(true)
+		if _, err := c.PairAddKeySupported(ctx(t)); err == nil {
+			t.Fatal("supported without a ping")
+		}
+		var unsupported *engine.ErrUnsupported
+		if _, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); !errors.As(err, &unsupported) {
+			t.Fatalf("old herdr: %v", err)
+		}
+	})
+	t.Run("reply without a fingerprint", func(t *testing.T) {
+		_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
+			return map[string]any{"type": engine.PairKeyAddedType, "added": true, "already": false}, nil
+		}, nil)
+		var decode *engine.DecodeError
+		if _, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); !errors.As(err, &decode) {
+			t.Fatalf("%v", err)
+		}
+	})
+	t.Run("reply of another type", func(t *testing.T) {
+		_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
+			return map[string]any{"type": "ok"}, nil
+		}, nil)
+		var tag *engine.ResultTagError
+		if _, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); !errors.As(err, &tag) {
+			t.Fatalf("%v", err)
+		}
+	})
+}
+
+// pair.keys.list and pair.keys.remove see only the herdr-pair lines: a
+// user's own line for the same server is never listed or removed.
+func TestPairKeysListAndRemove(t *testing.T) {
+	keys := &fakeherdr.PairKeys{}
+	own, err := pairing.NewPairKey("laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownLine := "ssh-ed25519 " + strings.Fields(own.PublicLine)[1] + " jerry@laptop"
+	keys.AddLine(ownLine)
+	ownKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(ownLine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, c := start(t, pairCaps, keysHandler(keys, fakeherdr.PairOwner), nil)
+	if got, err := c.PairKeysList(ctx(t)); err != nil || len(got) != 0 {
+		t.Fatalf("list before any add = %+v, %v", got, err)
+	}
+	var added []engine.PairKeyAdded
+	for _, label := range []string{"Jerry's iPhone", "Tablet  "} {
+		k, err := pairing.NewPairKey(label)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: label})
+		if err != nil {
+			t.Fatal(err)
+		}
+		added = append(added, a)
+	}
+	phone := herdrapi.PairKeyInfo{Fingerprint: added[0].Fingerprint, Label: "Jerry's iPhone", Comment: "herdr-pair:Jerry's iPhone"}
+	tablet := herdrapi.PairKeyInfo{Fingerprint: added[1].Fingerprint, Label: "Tablet", Comment: "herdr-pair:Tablet"}
+	if got, err := c.PairKeysList(ctx(t)); err != nil || !slices.Equal(got, []herdrapi.PairKeyInfo{phone, tablet}) {
+		t.Fatalf("list = %+v, %v", got, err)
+	}
+	if got, err := c.PairKeysRemove(ctx(t), ssh.FingerprintSHA256(ownKey)); err != nil || len(got) != 0 {
+		t.Fatalf("removing the user's own key = %+v, %v", got, err)
+	}
+	if again, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: ownLine, Label: "x"}); err != nil || !again.Already || again.Label != "jerry@laptop" {
+		t.Fatalf("the user's own key after a remove = %+v, %v", again, err)
+	}
+	if got, err := c.PairKeysRemove(ctx(t), phone.Fingerprint); err != nil || !slices.Equal(got, []herdrapi.PairKeyInfo{phone}) {
+		t.Fatalf("remove phone = %+v, %v", got, err)
+	}
+	if got, err := c.PairKeysRemove(ctx(t), phone.Fingerprint); err != nil || len(got) != 0 {
+		t.Fatalf("remove phone again = %+v, %v", got, err)
+	}
+	if got, err := c.PairKeysList(ctx(t)); err != nil || !slices.Equal(got, []herdrapi.PairKeyInfo{tablet}) {
+		t.Fatalf("list after remove = %+v, %v", got, err)
+	}
+}
+
+func TestPairKeysListAndRemoveRefusals(t *testing.T) {
+	calls := map[string]func(*engine.Client) error{
+		"list":   func(c *engine.Client) error { _, err := c.PairKeysList(ctx(t)); return err },
+		"remove": func(c *engine.Client) error { _, err := c.PairKeysRemove(ctx(t), "SHA256:x"); return err },
+	}
+	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {
-			_, c := start(t, nil, func(string, json.RawMessage) (any, *fakeherdr.APIError) { return reply, nil }, nil)
-			var decode *engine.DecodeError
-			if _, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); !errors.As(err, &decode) {
-				t.Fatalf("%v", err)
+			for caller, want := range map[fakeherdr.PairCaller]error{
+				fakeherdr.PairGuest:        engine.ErrPairGuestForbidden,
+				fakeherdr.PairOwnerBrowser: engine.ErrPairOwnerForbidden,
+			} {
+				_, c := start(t, pairCaps, keysHandler(&fakeherdr.PairKeys{}, caller), nil)
+				var api *bridge.APIError
+				if err := call(c); !errors.Is(err, want) || !errors.As(err, &api) {
+					t.Fatalf("err = %v, want %v", err, want)
+				}
+			}
+			for _, want := range []*engine.PairKeyError{engine.ErrPairReadFailed, engine.ErrPairUnsupportedOS} {
+				_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
+					return nil, &fakeherdr.APIError{Code: want.Code, Message: "no"}
+				}, nil)
+				if err := call(c); !errors.Is(err, want) {
+					t.Fatalf("err = %v, want %v", err, want)
+				}
+			}
+			_, c := start(t, map[string]bool{"agent_groups": true}, nil, nil)
+			var unsupported *engine.ErrUnsupported
+			if err := call(c); !errors.As(err, &unsupported) {
+				t.Fatalf("old herdr: %v", err)
 			}
 		})
 	}
@@ -162,7 +271,7 @@ func TestPairKeyLabel(t *testing.T) {
 
 // PairKeyLabel's labels are stored as they are.
 func TestPairKeyLabelIsStoredAsIs(t *testing.T) {
-	_, c := start(t, nil, keysHandler(&fakeherdr.PairKeys{}, fakeherdr.PairOwner), nil)
+	_, c := start(t, pairCaps, keysHandler(&fakeherdr.PairKeys{}, fakeherdr.PairOwner), nil)
 	for _, devices := range [][2]string{{"Studio PC", "Jerry's Mac"}, {"Café <PC>", "Mac"}, {strings.Repeat("a", 60), "Mac"}, {"", "iPhone"}} {
 		k, err := pairing.NewPairKey(devices[0])
 		if err != nil {
