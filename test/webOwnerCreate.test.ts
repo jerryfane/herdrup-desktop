@@ -339,8 +339,6 @@ test("a new terminal splits a pane, is saved for its machine, opens as a plain t
   expect(savedOn(h.relay.hostID)).toEqual([result.terminal!]);
   const view = await desk.openTerminalView(target, "term-1");
   expect(view).toMatchObject({ paneID: "p7", heading: "Terminal 1", plainTerminal: true, group: "terminal" });
-  // A plain terminal is no agent: it has no chat, so no owner's up arrow (#575).
-  expect(view.ownerLink).toBeUndefined();
   await terminalsDesk.renameTerminal(target, "  build  ");
   expect(h.called("pane.rename")[0]!.params).toEqual({ pane_id: "p7", label: "build" });
   expect((await terminalsDesk.savedTerminals(machineID, ""))[0]!.label).toBe("build");

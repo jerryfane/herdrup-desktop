@@ -3,7 +3,6 @@
 // as not the owner's own request (origin "other": gitmoot, a script, another agent). A host
 // without turn origins marks nothing, so the arrow then stops at every owner-authored prompt.
 import type { Entry } from "./interactionModel";
-import type { AgentView } from "./mygo";
 
 /** A prompt the owner sent: a user turn that is neither a guest's nor marked `origin: "other"`. */
 export function isMine(entry: Entry): boolean {
@@ -11,10 +10,10 @@ export function isMine(entry: Entry): boolean {
 }
 
 /** Whose view has the arrow: the owner's, on the desktop (not a guest) or in the owner's browser
- *  over an owner link to a host that records its prompts as the owner's (AgentView.ownerLink,
- *  web/desk.ts openAgentView); a guest's never. */
-export function showsJumpMine(view: Pick<AgentView, "guest" | "ownerLink"> | null | undefined): boolean {
-  return !view?.guest || !!view.ownerLink;
+ *  over an owner link to a host that records its prompts as the owner's (`ownerOrigin`, from the
+ *  pong that opened Chat: GuestChat, web/desk.ts guestChatAvailable); a guest's never. */
+export function showsJumpMine(guest: boolean, ownerOrigin: boolean): boolean {
+  return !guest || ownerOrigin;
 }
 
 /** The owner's prompt closest above the view's top edge: the last of `rows` (in transcript

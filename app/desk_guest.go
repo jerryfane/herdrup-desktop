@@ -342,19 +342,29 @@ func (d *Desk) guestRelabeled(id, label string) {
 	}
 }
 
+// GuestChat is what one fresh pong says about a shared agent's page: whether
+// it offers Chat (the host's transcript capability) and whether the chat has
+// the owner's up arrow. The arrow is the browser's owner link's alone, where
+// the same pong says herdr records the browser's prompts as the owner's
+// (src/web/desk.ts guestChatAvailable); a desktop guest's never has it.
+type GuestChat struct {
+	Available   bool `json:"available"`
+	OwnerOrigin bool `json:"ownerOrigin"`
+}
+
 // GuestChatAvailable follows the authenticated host's transcript capability.
-func (d *Desk) GuestChatAvailable(ctx context.Context, token string) (bool, error) {
+func (d *Desk) GuestChatAvailable(ctx context.Context, token string) (GuestChat, error) {
 	v, err := d.agentView(token)
 	if err != nil {
-		return false, err
+		return GuestChat{}, err
 	}
 	if !v.Guest {
-		return false, errors.New("This is not a shared agent")
+		return GuestChat{}, errors.New("This is not a shared agent")
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
 	pong, err := v.client.Ping(ctx)
-	return err == nil && pong.Capabilities != nil && pong.Capabilities.AgentTranscript, err
+	return GuestChat{Available: err == nil && pong.Capabilities != nil && pong.Capabilities.AgentTranscript}, err
 }
 
 func (d *Desk) paneRecipient(v *interaction) (string, error) {

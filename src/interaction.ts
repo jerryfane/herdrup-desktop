@@ -281,6 +281,9 @@ class Detail {
   *  resolves to on this agent (topicsModel.ts resolvedMode). */
  asked: ChatMode = "terminal";
  chatAvailable = false;
+ /** A web owner's chat has the owner's up arrow: the pong that opened Chat says herdr records the
+  *  browser's prompts as the owner's (GuestChat.ownerOrigin). */
+ ownerOrigin = false;
  /** An omp agent on a server with agent_topics; the page offers Topics once the agent answers
   *  its list (offered) or its session file holds topics (herdrup #745 topicsAvailable). */
  topicsCapable = false;
@@ -771,9 +774,10 @@ class Detail {
    this.terminalTyping = !view.guest;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
-   const chatAvailable = ompHarness(view.harness) && (!view.guest || await Desk.guestChatAvailable(this.token).catch(() => false));
+   const guestChat = ompHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : null;
+   const chatAvailable = ompHarness(view.harness) && (!view.guest || !!guestChat?.available);
    if (this.disposed) return;
-   this.chatAvailable = chatAvailable;
+   this.chatAvailable = chatAvailable; this.ownerOrigin = !!guestChat?.ownerOrigin;
    this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
    if (this.disposed) return;
    if (this.topicsCapable) this.mountTopics(view);
@@ -1021,7 +1025,7 @@ class Detail {
   this.chatJump.hidden = !away || this.findOpen;
   const first = this.mineNodes(1)[0];
   const above = !!first && this.chatTop(first) < this.chatScroll.scrollTop - 1;
-  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || !showsJumpMine(this.view) || !(above || this.hasEarlier() || this.mineBusy);
+  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || !showsJumpMine(!!this.view?.guest, this.ownerOrigin) || !(above || this.hasEarlier() || this.mineBusy);
   this.chatJumpMine.disabled = this.mineBusy;
   this.chatJumpMine.classList.toggle("busy", this.mineBusy);
   this.chatJumpMine.setAttribute("aria-busy", String(this.mineBusy));

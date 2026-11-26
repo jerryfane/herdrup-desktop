@@ -244,14 +244,6 @@ export interface AgentView {
   guestSelf?: string;
   plainTerminal: boolean;
   /**
-   * OwnerLink: an agent's Guest view the owner opened in a browser over an
-   * owner link, on a host whose owner gate records the browser's prompts as
-   * the owner's (the ping capability OWNER_BROWSER_ORIGIN, src/web/desk.ts
-   * openAgentView). It has the owner's up arrow to their previous prompt
-   * (src/chatJumpMine.ts). The desktop never sets it.
-   */
-  ownerLink?: boolean;
-  /**
    * AskForm: the host answers omp's HTML-form asks (capabilities.ask_form).
    * A guest's gate advertises no capabilities, so for a guest herdr's
    * form_answerable on the pending ask decides alone.
@@ -686,6 +678,18 @@ export interface GramUploadProgress {
    */
   state: string;
   label: string;
+}
+
+/**
+ * GuestChat is what one fresh pong says about a shared agent's page: whether
+ * it offers Chat (the host's transcript capability) and whether the chat has
+ * the owner's up arrow. The arrow is the browser's owner link's alone, where
+ * the same pong says herdr records the browser's prompts as the owner's
+ * (src/web/desk.ts guestChatAvailable); a desktop guest's never has it.
+ */
+export interface GuestChat {
+  available: boolean;
+  ownerOrigin: boolean;
 }
 
 export interface GuestConnection {
@@ -1903,7 +1907,7 @@ export const Desk = {
     return call("Desk.GramState");
   },
   /** GuestChatAvailable follows the authenticated host's transcript capability. */
-  guestChatAvailable(token: string): Promise<boolean> {
+  guestChatAvailable(token: string): Promise<GuestChat> {
     return call("Desk.GuestChatAvailable", token);
   },
   /**

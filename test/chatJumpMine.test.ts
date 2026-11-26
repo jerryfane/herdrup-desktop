@@ -23,8 +23,8 @@ test("each tap goes to the next prompt above the view and stops at the first", (
   expect(previousMine([], 5000)).toBeNull();
 });
 
-test("the arrow is the owner's: the desktop's view and an owner link's, never a guest's", () => {
-  expect(showsJumpMine({ guest: false })).toBe(true);
-  expect(showsJumpMine({ guest: true, ownerLink: true })).toBe(true);
-  expect(showsJumpMine({ guest: true })).toBe(false);
+test("the arrow is the owner's: the desktop's view and an attributed owner link's, never a guest's", () => {
+  expect(showsJumpMine(false, false)).toBe(true);
+  expect(showsJumpMine(true, true)).toBe(true);
+  expect(showsJumpMine(true, false)).toBe(false);
 });
