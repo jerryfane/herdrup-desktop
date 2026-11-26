@@ -196,6 +196,7 @@ test("a short link fetches only the id from its own relay (short_invite_test.go:
  expect(hit.headers.cookie).toBeUndefined();
 });
 
+// Seven seals and fetches over a local server: past 5 s at load 85 (#540). Its limit is its own.
 test("a short link opens only on the relay it names (short_invite_test.go:225-248)", async () => {
  let blob = new Uint8Array(0);
  const relay = serve(() => new Response(blob));
@@ -215,7 +216,7 @@ test("a short link opens only on the relay it names (short_invite_test.go:225-24
  expect(await kindOf(resolveInvite(shortLinkOn(relayOrigin), { now, fetchSealed }))).toBe("expired");
  blob = await seal(invitePayload(relayOrigin), "k7Qp2xRmA1bD", testKey);
  expect(await kindOf(resolveInvite(shortLinkOn(relayOrigin), { now, fetchSealed }))).toBe("not_invite");
-});
+}, 30_000);
 
 test("short link fetch failures (short_invite_test.go:250-280)", async () => {
  let status = 404;
@@ -284,4 +285,12 @@ test("the deadline covers the whole exchange (short_invite_test.go:340-370)", as
   expect(Date.now() - started).toBeLessThan(3_000);
  }
  expect(SEALED_INVITE_DEADLINE_MS).toBe(15_000);
+});
+
+// What the real-time test above met under load (#540): the deadline's abort ended the body as done,
+// not with an error. A body that ends that way is cut short, never the sealed invite.
+test("a body that ends cleanly as the deadline aborts its fetch is unreachable, not an empty invite", async () => {
+ const endsOnAbort: typeof fetch = Object.assign(async (_input: string | URL | Request, init?: RequestInit) =>
+  new Response(new ReadableStream({ start(c) { init!.signal!.addEventListener("abort", () => c.close()); } }), { status: 200 }), { preconnect: fetch.preconnect });
+ expect(await kindOf(httpSealedInviteFetch(endsOnAbort, 20)(relayOrigin + "/v1/invite/" + testID))).toBe("invite_unreachable");
 });

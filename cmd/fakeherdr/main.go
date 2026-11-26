@@ -58,6 +58,7 @@ func main() {
 	topicsOff := flag.String("topics-off", "", "with -topic-suggestions, comma-separated pane ids whose topics start switched off")
 	topicsListFail := flag.String("topics-list-fail-file", "", "with -topics, agent.topics.list answers topics_unreachable while this file exists")
 	topicsPlain := flag.String("topics-no-suggestions", "", "with -topic-suggestions, comma-separated pane ids of omp agents without suggestions (topics_unsupported)")
+	topicsTurn := flag.Duration("topics-turn", 2*time.Second, "with -topics, how long a topic's turn runs before its reply")
 	transcriptGrow := flag.Duration("transcript-grow", 0, "with -interactions, append an agent turn (prompt, tool step, reply) to the sample transcript at this interval, as a long session grows (0: never)")
 	accounts := flag.Bool("accounts", false, "serve isolated account registration and sign-in fixture; accepts native-smoke-code, never runs auth commands")
 	guests := flag.Bool("guests", false, "serve isolated shared-access stores and activity; never creates real relay credentials or grants")
@@ -278,6 +279,7 @@ func main() {
 	if *topics {
 		fixture := fakeherdr.NewTopics()
 		fixture.Suggestions = *topicSuggestions
+		fixture.Turn = *topicsTurn
 		comma := func(r rune) bool { return r == ',' }
 		fixture.TurnOff(strings.FieldsFunc(*topicsOff, comma)...)
 		fixture.WithoutSuggestions(strings.FieldsFunc(*topicsPlain, comma)...)

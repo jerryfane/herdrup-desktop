@@ -30,7 +30,9 @@ beforeAll(async () => {
  const binary = join(dir, "fakeherdr");
  const build = Bun.spawnSync([go, "build", "-o", binary, "./cmd/fakeherdr"], { cwd: repo, env: { ...process.env, CGO_ENABLED: "0" }, stderr: "pipe" });
  if (build.exitCode !== 0) throw new Error("go build ./cmd/fakeherdr: " + build.stderr.toString());
- fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-guest-relay", "127.0.0.1:0", "-guest-gram", "-guest-pause-file", join(dir, "paused"), "-topics-list-fail-file", join(dir, "topics-fail")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+ // A topic's turn runs past the test (-topics-turn): a message to the topic it just started is
+ // queued however long the machine takes to get there (#540: at 2 s, a loaded run found it idle).
+ fakeherdr = Bun.spawn([binary, "-listen", "127.0.0.1:0", "-client-key", join(dir, "client.key"), "-interactions", "-topics", "-topics-turn", "10m", "-guest-relay", "127.0.0.1:0", "-guest-gram", "-guest-pause-file", join(dir, "paused"), "-topics-list-fail-file", join(dir, "topics-fail")], { cwd: dir, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
  const found = Promise.withResolvers<string>();
  void (async () => {
   let log = "";
