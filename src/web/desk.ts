@@ -31,7 +31,8 @@ import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { findTerminal } from "./terminalsDesk";
 import { StartedAgents } from "./startedAgents";
 import { boundShareStatements } from "./statements";
-import { shareID, type RemoteShare, type SharesChange, type ShareSync } from "./shares";
+import type { RemoteShare, SharesChange, ShareSync } from "./shares";
+import { grantKey } from "../grantKey";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, PEER_NOT_SHARED, setSharedAgents, setView, type GuestView } from "./view";
@@ -241,7 +242,7 @@ export function pageAccess(a: Access): PageAccess {
 /** The account's shares as the Desk gives them (SyncedShare): the item's fields, "" or false for
  *  one it hasn't, and local when this browser holds a grant for that share (held). */
 export function syncedSharesOf(shares: RemoteShare[], held: Access[]): SyncedShare[] {
- const ids = new Set(held.map(shareID));
+ const ids = new Set(held.map(grantKey));
  return shares.map(s => ({
   id: s.id, relay: s.body.relay, hostID: s.body.host_id, nodePub: s.body.node_pub, guestID: s.body.guest_id,
   agentName: s.body.agent_name ?? "", ownerName: s.body.owner_name ?? "", machineLabel: s.body.machine_label ?? "", shareGram: s.body.share_gram ?? false,
@@ -391,7 +392,7 @@ export function createGuestDesk(env: DeskEnv) {
   const acct = change.account, removed = new Set(change.removed);
   if (acct !== null) {
    for (const grant of await env.grants.list()) {
-    const id = shareID(grant);
+    const id = grantKey(grant);
     if (!grant.accountBound || grant.account !== acct || !(removed.has(id) || shares.deleted(acct, id))) continue;
     await env.grants.remove(id);
     if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }

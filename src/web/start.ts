@@ -2,6 +2,7 @@
 // /web/#<payload>, which no server sees; it leaves the address bar at once, is redeemed as the app
 // redeems an invitation, and the grant is kept. Later visits resume the kept grant.
 
+import { grantKey } from "../grantKey";
 import type { Access, Desk } from "../mygo";
 import type { WebAccount } from "./account";
 import { APP_LINK_PREFIX, shortSegment } from "../webguest/invite";
@@ -36,8 +37,6 @@ export function inviteText(payload: string, origin: string): string {
  if (shortSegment(payload)) return `${origin}/i/${payload}`;
  return APP_LINK_PREFIX + payload;
 }
-
-export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${access.endpoint.hostID}/${access.guestID}`;
 
 /** The plain screen without a grant: first visit, or a share left or wiped. owner is who shared
  *  the last grant this browser held, when it remembers; error is why an invite just failed. */
@@ -128,8 +127,8 @@ export const CHECK_FAILED = "HerdrUp couldn't check your sign-in. Sign in, or ch
 /** Redeems payload, keeping it as keep says, and opens it. */
 export async function acceptInvite(desk: StartDesk, payload: string, origin: string, keep: "account" | "device"): Promise<Started> {
  const access = await desk.acceptGuestInvitation(inviteText(payload, origin), keep);
- await desk.connectGuest(shareID(access));
- return { kind: "connected", id: shareID(access), ...(keep === "account" && access.accountBound ? { inAccount: access.agentName } : {}) };
+ await desk.connectGuest(grantKey(access));
+ return { kind: "connected", id: grantKey(access), ...(keep === "account" && access.accountBound ? { inAccount: access.agentName } : {}) };
 }
 
 /** Redeems the fragment's invitation, or resumes the kept grant. A failed redemption with a grant
@@ -167,6 +166,6 @@ export async function start(desk: StartDesk, fragment: string, origin: string, o
   }
  }
  if (kept === undefined) return { kind: "welcome", welcome: { owner: owner() } };
- await desk.connectGuest(shareID(kept));
- return { kind: "connected", id: shareID(kept) };
+ await desk.connectGuest(grantKey(kept));
+ return { kind: "connected", id: grantKey(kept) };
 }

@@ -5,6 +5,7 @@ import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
 import { ACCOUNT_TITLE } from "./herdrupAccount";
 import { guestRowLine, rowStatus } from "./rowStatus";
+import { grantKey } from "./grantKey";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
@@ -111,7 +112,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   navigation.hidden = !visible || selected !== "agents"; settings.hidden = !options.settings || !visible || selected !== "settings";
   if (!visible || !state.guest) { last = ""; return; }
   const guest = state.guest, access = guest.access;
-  const id = `${access.endpoint.hostID}/${access.guestID}`;
+  const id = grantKey(access);
   // Only this share's board (desk_guest.go publishes it as "guest:<id>"): an owner
   // board still held from before the switch must never show here.
   const board = latest?.machineID === `guest:${id}` ? latest : null;
@@ -195,7 +196,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
  /** The share's own settings (GuestSettingsView.swift 30-89): who shared what, this device's
   *  key to compare, and Leave share. */
  function shareDetails(guest: GuestState): HTMLElement[] {
-  const access = guest.access, id = `${access.endpoint.hostID}/${access.guestID}`;
+  const access = guest.access, id = grantKey(access);
   const keyValue = (key: string, value: string, mono = false) => {
    const item = node("div", "guest-key-value"); item.append(node("dt", "", key), node("dd", mono ? "mono" : "", value)); return item;
   };

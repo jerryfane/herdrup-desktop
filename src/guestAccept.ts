@@ -1,6 +1,7 @@
 import { Desk, events } from "./mygo";
 import type { GuestInvitation } from "./mygo";
 import { errorText } from "./errors";
+import { grantKey } from "./grantKey";
 import { providerButtons } from "./herdrupAccount";
 import { showAccountShareNotice } from "./notices";
 import "./guest.css";
@@ -149,7 +150,7 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
      if (disposed) return;
      const inAccount = keep === "account" && access.accountBound === true;
      content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", inAccount ? `${access.agentName} is in your HerdrUp account.` : `${access.agentName} is saved on this device.`), action("Open shared agent", () => {
-      void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(() => { sheet.close(); opened(); }).catch(report);
+      void Desk.connectGuest(grantKey(access)).then(() => { sheet.close(); opened(); }).catch(report);
      }));
      if (inAccount) showAccountShareNotice(access.agentName);
     } catch (failure) {

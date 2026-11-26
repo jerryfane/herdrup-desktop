@@ -8,6 +8,7 @@
 // goes, and the pull that follows shows what the account holds. A delete's conflict with a live
 // item keeps the delete, based next on that item's revision: it goes only once the share is gone.
 
+import { grantKey } from "../grantKey";
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
@@ -28,7 +29,7 @@ export interface ShareBody {
  machine_label?: string;
  share_gram?: boolean;
 }
-/** An account share as pulled; id is "<host_id>/<guest_id>". */
+/** An account share as pulled; id is its grant's key, "<host_id>/<guest_id>" (§5.1; grantKey). */
 export interface RemoteShare { id: string; rev: number; body: ShareBody }
 /** A write not yet taken: the body to put, or a delete. */
 interface PendingWrite { id: string; deleted?: true; body?: ShareBody }
@@ -44,9 +45,6 @@ export interface SharesPlace { storage(): KeyValue; locks: AbortableLocks | null
 
 /** How often a signed-in page pulls the account's shares while open (as its prompts). */
 const SYNC_EVERY_MS = 15 * 60_000;
-
-/** A grant's id on the account and on this page: "<host_id>/<guest_id>". */
-export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${access.endpoint.hostID}/${access.guestID}`;
 
 /** The most code points of each label the service keeps (sync.ts SCHEMAS.shares). */
 const MAX_AGENT_NAME = 128, MAX_OWNER_NAME = 64, MAX_MACHINE_LABEL = 128;
@@ -251,10 +249,11 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    return !visible(r).some(s => s.id === id) && (r.gone[id] !== undefined || r.pending.some(p => p.id === id && p.deleted));
   },
   sync,
-  /** Writes a bound grant's share to the account it is bound to (Access.account). */
+  /** Writes a bound grant's share to the account it is bound to (Access.account), its id the
+   *  grant's key. */
   put: async (access: Access) => {
    if (access.account === undefined) throw new Error("This shared access isn't bound to a HerdrUp account.");
-   await keep(access.account, { id: shareID(access), body: shareBody(access) });
+   await keep(access.account, { id: grantKey(access), body: shareBody(access) });
    await send(access.account);
   },
   /** Keeps the delete of share id from acct, the account it is bound to (it leaves every device

@@ -4,6 +4,7 @@
 // invitation's bearer secret is spent on redemption and never kept. The owner's name stays in
 // localStorage after a share is left, so the page can say whom to ask for a new invite.
 
+import { grantKey } from "../grantKey";
 import type { Access } from "../webguest/transport";
 import { browserLocks, withStorageLock, type Locks } from "./locks";
 
@@ -27,25 +28,22 @@ export interface GrantStore {
  relabel(hostID: string, guestID: string, machineLabel: string): Promise<void>;
 }
 
-/** A grant's share: "<host_id>/<guest_id>". */
-const grantID = (a: Pick<Access, "endpoint" | "guestID">) => `${a.endpoint.hostID}/${a.guestID}`;
-
 /** The grants as stored: active is the share opened last, null when none is (or it was left). */
 interface GrantsRecord { grants: Access[]; active: string | null }
 
 const emptyRecord = (): GrantsRecord => ({ grants: [], active: null });
 /** The record's grants, its active one first. */
-const heldFirst = (r: GrantsRecord): Access[] => [...r.grants].sort((a, b) => Number(grantID(b) === r.active) - Number(grantID(a) === r.active));
+const heldFirst = (r: GrantsRecord): Access[] => [...r.grants].sort((a, b) => Number(grantKey(b) === r.active) - Number(grantKey(a) === r.active));
 function putIn(r: GrantsRecord, access: Access) {
- const id = grantID(access), at = r.grants.findIndex(g => grantID(g) === id);
+ const id = grantKey(access), at = r.grants.findIndex(g => grantKey(g) === id);
  if (at < 0) r.grants.push(access); else r.grants[at] = access;
 }
 function removeFrom(r: GrantsRecord, id: string) {
- r.grants = r.grants.filter(g => grantID(g) !== id);
+ r.grants = r.grants.filter(g => grantKey(g) !== id);
  if (r.active === id) r.active = null;
 }
 function activateIn(r: GrantsRecord, id: string): Access | undefined {
- const grant = r.grants.find(g => grantID(g) === id);
+ const grant = r.grants.find(g => grantKey(g) === id);
  if (grant !== undefined) r.active = id;
  return grant;
 }
@@ -83,7 +81,7 @@ function withRecord(store: IDBObjectStore, then: (record: GrantsRecord) => void,
   old.onerror = () => fail(old.error);
   old.onsuccess = () => {
    const grant = old.result as Access | null | undefined;
-   then(grant ? { grants: [grant], active: grantID(grant) } : emptyRecord());
+   then(grant ? { grants: [grant], active: grantKey(grant) } : emptyRecord());
   };
  };
 }
@@ -133,7 +131,7 @@ export class IndexedDBGrantStore implements GrantStore {
  }
 
  async list(): Promise<Access[]> { return heldFirst(await this.#read()); }
- async get(id: string): Promise<Access | undefined> { return (await this.#read()).grants.find(g => grantID(g) === id); }
+ async get(id: string): Promise<Access | undefined> { return (await this.#read()).grants.find(g => grantKey(g) === id); }
  put(access: Access): Promise<void> { return this.#change(r => putIn(r, access)); }
  remove(id: string): Promise<void> { return this.#change(r => removeFrom(r, id)); }
  /** One read-write transaction (#change): the grant is read and marked with no write between. */
@@ -145,7 +143,7 @@ export class IndexedDBGrantStore implements GrantStore {
 export class MemoryGrantStore implements GrantStore {
  record = emptyRecord();
  async list() { return heldFirst(this.record); }
- async get(id: string) { return this.record.grants.find(g => grantID(g) === id); }
+ async get(id: string) { return this.record.grants.find(g => grantKey(g) === id); }
  async put(access: Access) { putIn(this.record, access); }
  async remove(id: string) { removeFrom(this.record, id); }
  async activate(id: string) { return activateIn(this.record, id); }

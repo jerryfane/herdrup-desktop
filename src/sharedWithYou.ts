@@ -4,6 +4,7 @@
 // synced shares it doesn't, "<machine>" over "<agents> · shared by <owner>". A machine this device
 // holds a grant for opens as today (connectGuest); one known only from the account opens with
 // openSyncedShare, with nothing to accept.
+import { grantKey } from "./grantKey";
 import { Desk } from "./mygo";
 import type { Access, ConnState, SyncedShare } from "./mygo";
 import { connectionChanged } from "./shellModel";
@@ -24,8 +25,6 @@ export interface SharedMachine { hostID: string; machine: string; owner: string;
  *  sees each device), whatever grants the machine's other rows hold. */
 export const addsDevice = (m: Pick<SharedMachine, "grants">) => m.grants.some(g => g.open.kind === "synced");
 
-const grantID = (a: Pick<Access, "endpoint" | "guestID">) => `${a.endpoint.hostID}/${a.guestID}`;
-
 /** The grants this device holds and the account's synced shares, one entry per machine (host id),
  *  in the order they first come: the grants, then the shares only the account has. A synced share
  *  this device holds (local) is its grant's. */
@@ -38,7 +37,7 @@ export function sharedMachines(grants: readonly Access[], synced: readonly Synce
   had.grants.push({ agent, open });
  };
  const held = new Set<string>();
- for (const g of grants) { held.add(grantID(g)); add(g.endpoint.hostID, g.machineLabel || g.agentName, g.ownerName, g.agentName, { kind: "grant", id: grantID(g) }); }
+ for (const g of grants) { held.add(grantKey(g)); add(g.endpoint.hostID, g.machineLabel || g.agentName, g.ownerName, g.agentName, { kind: "grant", id: grantKey(g) }); }
  for (const s of synced) {
   if (held.has(s.id)) continue;
   // A synced share this device holds but didn't list: its grant opens it.
