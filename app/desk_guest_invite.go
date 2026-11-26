@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -25,7 +26,15 @@ type guestShareRoute struct {
 	// this machine's agents: the invite carries it (machine_label_rev), so a
 	// relabel older than its label never overwrites it. 0 sends none.
 	labelRev uint64
+	// unbound refuses the invite (errShareUnbound): an agent of the link's
+	// own machine, its link bound to no stored profile.
+	unbound bool
 }
+
+// errShareUnbound is why a link bound to no stored profile
+// (desk_guest_relabel.go) opens no invite of its machine: its label may be
+// stale, and no rename would reach the share.
+var errShareUnbound = errors.New("Couldn't save this machine's settings. Reconnect to share it.")
 
 // shareRoute routes an invite to agent and names its machine to the guests:
 // hostLabel (inviteLabel, already a shareLabel) at hostRev for this
@@ -45,6 +54,15 @@ func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string, hostRev uint64
 			}
 		}
 	}
+	return route
+}
+
+// linkShareRoute is shareRoute for agent on l, by l's label for its own
+// machine, which l refuses to share while bound to no stored profile.
+// d.mu must be held.
+func linkShareRoute(l *link, agent herdrapi.AgentInfo, name string) guestShareRoute {
+	route := shareRoute(agent, name, l.shareLabel, l.shareLabelRev)
+	route.unbound = l.guest == nil && l.profile == "" && route.machine == nil
 	return route
 }
 
@@ -96,6 +114,9 @@ func (d *Desk) CreateGuestInvite(ctx context.Context, token, name, ownerName str
 	v, err := d.agentView(token)
 	if err != nil {
 		return "", err
+	}
+	if v.guestShare.unbound {
+		return "", errShareUnbound
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()

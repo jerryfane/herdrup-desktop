@@ -325,8 +325,9 @@ type link struct {
 	// it, which an invite of this machine carries; 0 for a guest's link.
 	shareLabelRev uint64
 	// profile is the local id (Machine.LocalID) of the saved profile the
-	// link was started with; "" when that id was not yet stored (load):
-	// the link then relabels nothing (desk_guest_relabel.go).
+	// link was started with; "" while that id is not stored (load), until
+	// a first list stores and binds it: the link then relabels nothing
+	// and opens no invite of its machine (desk_guest_relabel.go).
 	profile string
 	// relabelVia is the route a machine-wide relabel takes now: the SSH
 	// connection's view whose list reported its capabilities, and that
@@ -500,9 +501,8 @@ func (d *Desk) legacyMachinePath() string { return filepath.Join(d.dir, "machine
 // left is finished first (replayCommit). Every profile read without a local
 // id is given one, and an older build's relabel queue is folded in
 // (tagProfiles, desk_guest_relabel.go), both stored at once. When that
-// store fails, the machines go as read: a local id or label revision is
-// only ever one that is stored, and the next load tries again. d.storeMu
-// must be held.
+// store fails, the machines go as read: a local id is only ever one that
+// is stored, and the next load tries again. d.storeMu must be held.
 func (d *Desk) load() (machineStore, error) {
 	st, err := d.readMachines()
 	if err != nil {
@@ -510,28 +510,30 @@ func (d *Desk) load() (machineStore, error) {
 	}
 	tagged := st
 	tagged.Machines = slices.Clone(st.Machines)
-	changed, queued := d.tagProfiles(&tagged)
-	// A queue goes only after a store that fully succeeded, its folder's
-	// sync included, even with nothing to change: a fold an earlier load
-	// wrote but could not sync is made durable before its queue goes.
-	if changed || queued {
-		if err := d.store(tagged); err != nil {
-			log.Printf("saved machines: storing their local ids and label revisions: %v", err)
-			// Accepted limit: a link started with these machines has no
-			// local id for its run and follows no rename until its next
-			// connect. Only after a failed write, and safe: it relabels
-			// nothing, never another profile.
-			//
-			// The file may already hold what failed (only its folder's
-			// sync did): the next load reads and sends those revisions.
-			// Should a crash then lose them, the queue still here folds
-			// again at a later now, so a revision sent is never undercut.
-			return st, nil
+	changed, queue := d.tagProfiles(&tagged)
+	if queue == nil {
+		if changed {
+			if err := d.store(tagged); err != nil {
+				log.Printf("saved machines: storing their local ids: %v", err)
+				return st, nil
+			}
 		}
+		return tagged, nil
 	}
-	if queued {
-		d.retireRelabelQueue()
+	// The older queue is still here: its fold, this load's or one an
+	// earlier load wrote, is durable once a store or, with nothing to
+	// change, a sync of the folder fully succeeds. Only then does the queue
+	// go and the folded revisions with it reach anyone.
+	if changed {
+		err = d.store(tagged)
+	} else {
+		err = syncDir(d.dir)
 	}
+	if err != nil {
+		log.Printf("saved machines: storing the older relabel queue's fold: %v", err)
+		return withoutQueuedRevs(st, queue), nil
+	}
+	d.retireRelabelQueue()
 	return tagged, nil
 }
 
@@ -622,8 +624,9 @@ func writeFileAtomic(path string, data []byte) error {
 
 // syncDir makes the names written in dir durable (an fsync of the folder).
 // A system that doesn't sync folders is not an error (dirSyncUnsupported);
-// any other failure, to open the folder or to sync it, is.
-func syncDir(dir string) error {
+// any other failure, to open the folder or to sync it, is. A var, so a
+// test can fail it.
+var syncDir = func(dir string) error {
 	if runtime.GOOS == "windows" {
 		return nil // a folder can't be opened for a sync there
 	}

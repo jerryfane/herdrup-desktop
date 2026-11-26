@@ -177,7 +177,7 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 		at: at, ctx: ctx, cancel: cancel, client: client,
 		// The machine as its guests see it (link.shareLabel), not the
 		// connection's user@host that ConnState.Machine shows.
-		guestShare: shareRoute(agent, name, l.shareLabel, l.shareLabelRev),
+		guestShare: linkShareRoute(l, agent, name),
 		pageBudget: l.guest == nil && herdrapi.CapabilityTranscriptMaxBytes.Supported(l.caps),
 	}
 	if agent.Name != nil {

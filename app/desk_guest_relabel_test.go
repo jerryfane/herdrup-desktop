@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -245,16 +247,43 @@ func (h *relabelHerdr) answered(t *testing.T, n int) []herdrapi.GuestUpdateParam
 // invite: the params it was sent. The invite is the fixture's too.
 func (h *relabelHerdr) invite(t *testing.T) herdrapi.GuestInviteCreateParams {
 	t.Helper()
+	p, err := h.tryInvite(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// tryInvite is invite, the desk's refusal returned.
+func (h *relabelHerdr) tryInvite(t *testing.T) (herdrapi.GuestInviteCreateParams, error) {
+	t.Helper()
 	b := h.d.Board()
 	if _, err := h.d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: "w1:p1"}, "v"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.d.CreateGuestInvite(context.Background(), "v", "Taylor", "Owner", false); err != nil {
-		t.Fatal(err)
+		return herdrapi.GuestInviteCreateParams{}, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.invites[len(h.invites)-1]
+	return h.invites[len(h.invites)-1], nil
+}
+
+// failDirSync makes every sync of the desk's folder fail with EIO until
+// the returned func lifts it.
+func (h *relabelHerdr) failDirSync(t *testing.T) (lift func()) {
+	t.Helper()
+	real := syncDir
+	var failing atomic.Bool
+	failing.Store(true)
+	syncDir = func(dir string) error {
+		if failing.Load() && filepath.Clean(dir) == filepath.Clean(h.d.dir) {
+			return syscall.EIO
+		}
+		return real(dir)
+	}
+	t.Cleanup(func() { syncDir = real })
+	return func() { failing.Store(false) }
 }
 
 // store rewrites the saved machines with change.
@@ -820,11 +849,14 @@ func (h *relabelHerdr) liveProfile() string {
 	return h.d.link.profile
 }
 
-// #594 round 6: a local id given where the profile is read, its store
-// failing, is not used. A link started with that profile has none for its
-// run (a rename relabels nothing, and no address stands in), the next load
-// that stores one keeps it from then on, and a connect after binds to it:
-// a rename then reaches its herdr and the live invite.
+// #594 rounds 6 and 8: a local id given where the profile is read, its
+// store failing, is not used. A link started with that profile, its first
+// list unable to store one either, has none for its run: a rename relabels
+// nothing, no address stands in, and it opens no invite of its machine (the
+// reviewer's sequence: writes back, a rename saved; an invite never names
+// it Old). The next load that stores an id keeps it from then on, and a
+// connect after binds to it: a rename then reaches its herdr and the live
+// invite.
 func TestALinkBindsOnlyAStoredLocalID(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
@@ -852,6 +884,12 @@ func TestALinkBindsOnlyAStoredLocalID(t *testing.T) {
 	h.drain(t)
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("a link with no stored local id sent %+v", got)
+	}
+	switch p, err := h.tryInvite(t); {
+	case err != nil && err.Error() != "Couldn't save this machine's settings. Reconnect to share it.":
+		t.Fatalf("an invite of the unbound link: %v; want it refused for its settings", err)
+	case err == nil && (p.MachineLabel != "Unbound" || p.MachineLabelRev == nil || *p.MachineLabelRev != h.labelRev(t)):
+		t.Fatalf("an invite of the unbound link: %+v (rev %v); want Unbound at its revision, or none", p, p.MachineLabelRev)
 	}
 	h.reconnect(t)
 	if p := h.liveProfile(); p != id {
@@ -1031,33 +1069,33 @@ func TestADisconnectEndsAFirstListWaitingForTheStore(t *testing.T) {
 	}
 }
 
-// #594 round 7: a relabel takes its connection's route when scheduled; one
-// whose send comes late, after a redial, sends nothing on the new
-// connection.
-func TestADelayedRelabelSendsNothingAfterARedial(t *testing.T) {
+// #594 rounds 7 and 8: a relabel takes its link's route when scheduled
+// (relabelLocked), and a later board or redial that replaces the route
+// before the send goes is not used: here the route scheduled on has ended
+// and the replacement is live, and nothing is sent.
+func TestARelabelGoesByTheRouteItWasScheduledOn(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
-	l := h.live()
-	h.d.mu.Lock()
-	route := l.relabelVia
-	h.d.mu.Unlock()
-	h.srv.DropConns()
-	waitFor(t, "the redial's first list", func() bool {
-		h.d.mu.Lock()
-		defer h.d.mu.Unlock()
-		return h.d.link == l && l.relabelVia.view != nil && l.relabelVia.view != route.view
-	})
 	h.drain(t)
-	before := len(h.updates())
-	h.d.relabelGuests(l.id, route, "Late", nextLabelRev(h.labelRev(t)))
-	if got := h.updates(); len(got) != before {
-		t.Fatalf("a relabel scheduled on the dropped connection sent %+v on the new one", got[before:])
+	l := h.live()
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.d.mu.Lock()
+	replacement := l.relabelVia
+	l.relabelVia = relabelRoute{view: replacement.view, caps: replacement.caps, ctx: ended}
+	h.d.relabelLocked(l, "Late", nextLabelRev(0))
+	l.relabelVia = replacement
+	h.d.mu.Unlock()
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a relabel scheduled on an ended route sent %+v by its replacement", got)
 	}
 }
 
-// #594 round 7: the older queue goes only after a store that fully
-// succeeded, even one with nothing to change (the fold already in the file,
-// maybe not yet durable): while machines.json can't be written, it stays.
-func TestTheOlderQueueOutlivesAFailedStore(t *testing.T) {
+// #594 rounds 7 and 8: the older queue goes only once the fold is durable.
+// With nothing to change (the fold already in the file, maybe not yet
+// durable) that takes a sync of the folder alone, no rewrite: while it
+// fails, the queue stays.
+func TestTheOlderQueueOutlivesAFailedFolderSync(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
 	h.rename(t, "Renamed")
@@ -1066,7 +1104,16 @@ func TestTheOlderQueueOutlivesAFailedStore(t *testing.T) {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
 	h.writeQueue(t, saved[0].LocalID, "Renamed")
-	lift := h.blockStore(t)
+	// A second name keeps the file's inode from being reused by a rewrite.
+	pinned := filepath.Join(t.TempDir(), "machines.json")
+	if err := os.Link(h.d.machinesPath(), pinned); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lift := h.failDirSync(t)
 	if _, err := h.d.Machines(); err != nil {
 		t.Fatal(err)
 	}
@@ -1077,13 +1124,83 @@ func TestTheOlderQueueOutlivesAFailedStore(t *testing.T) {
 		return err
 	}
 	if err := queue(); err != nil {
-		t.Fatalf("the older queue after a failed store: %v; want it kept", err)
+		t.Fatalf("the older queue after a failed sync: %v; want it kept", err)
 	}
 	lift()
 	if rev := h.labelRev(t); rev != saved[0].LabelRev {
 		t.Fatalf("revision %d after the fold; want %d kept", rev, saved[0].LabelRev)
 	}
 	if err := queue(); !os.IsNotExist(err) {
-		t.Fatalf("the older queue after a store: %v; want it deleted", err)
+		t.Fatalf("the older queue after a sync: %v; want it deleted", err)
+	}
+	if after, err := os.Stat(h.d.machinesPath()); err != nil || !os.SameFile(before, after) {
+		t.Fatalf("machines.json rewritten (%v) with nothing to change", err)
+	}
+}
+
+// #594 round 8: a fold whose folder sync fails (EIO, at its store and at
+// the next load's retry) reaches nobody: the profile reads with no
+// revision and its connect sends nothing. Once a sync succeeds, the next
+// connect sends the folded revision.
+func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.store(t, func(st *machineStore) { st.Machines[0].Nickname, st.Machines[0].LabelRev = "Renamed", 0 })
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	h.writeQueue(t, saved[0].LocalID, "Renamed")
+	lift := h.failDirSync(t)
+	m, err := h.d.Machine() // the fold's store: written, its sync failing
+	if err != nil || m == nil || m.LabelRev != 0 {
+		t.Fatalf("the saved machine %+v, %v; want no revision", m, err)
+	}
+	h.d.start(*m, "") // its first list's load: the sync failing again
+	h.listed(t)
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a fold not durable sent %+v", got)
+	}
+	if rev := h.labelRev(t); rev != 0 {
+		t.Fatalf("revision %d of a fold not durable; want none", rev)
+	}
+	lift()
+	rev := h.labelRev(t)
+	h.reconnect(t)
+	if p := h.answered(t, 1)[0]; rev == 0 || *p.MachineLabel != "Renamed" || *p.MachineLabelRev != rev {
+		t.Fatalf("sent %+v, saved revision %d; want Renamed at it", p, rev)
+	}
+}
+
+// #594 round 8: a link started with a profile whose local id could not be
+// stored, writes back by its first list, stores the id there and is bound
+// to it: a rename then reaches its herdr and its next invite.
+func TestAFirstListBindsTheLocalIDItStores(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.store(t, func(st *machineStore) { st.Machines[0].LocalID = "" })
+	lift := h.blockStore(t)
+	m, err := h.d.Machine()
+	if err != nil || m == nil || m.LocalID != "" {
+		t.Fatalf("the saved machine %+v, %v; want no local id", m, err)
+	}
+	lift()
+	h.d.start(*m, "")
+	h.listed(t)
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	if p := h.liveProfile(); p != saved[0].LocalID {
+		t.Fatalf("the link's profile %q, want the stored %s", p, saved[0].LocalID)
+	}
+	h.rename(t, "New")
+	rev := h.labelRev(t)
+	if p := h.answered(t, 1)[0]; *p.MachineLabel != "New" || *p.MachineLabelRev != rev || !h.holds(t, "New", rev) {
+		t.Fatalf("sent %+v, shares %+v; want New at %d", p, h.list(t), rev)
+	}
+	if p := h.invite(t); p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite after the rename: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
 	}
 }
