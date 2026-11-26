@@ -23,12 +23,16 @@ package main
 // reporting neither is asked nothing.
 //
 // A link knows its profile by its local id (link.profile: every saved
-// profile has one, given at load to those without), never by its address.
-// It names its machine by the profile snapshot it was started with until
-// its connection's first list reads the profile as saved then (a change
-// saved while it was starting included); a label change of that profile
-// while connected, its destination unchanged, moves it on. A profile moved
-// to another destination is relabeled there on its next connect.
+// profile has one, given at load to those without and used once stored),
+// never by its address; a link started with a profile whose id could not be
+// stored yet relabels nothing. It names its machine by the profile snapshot
+// it was started with until its SSH connection's first list reads the
+// profile as saved then (a change saved while it was starting included),
+// before that list's board offers an invite; a label change of that
+// profile while connected, its destination unchanged, moves it on. Whether
+// and how long a relabel goes is the SSH connection's (link.connCaps,
+// link.connCtx), which a session switch keeps. A profile moved to another
+// destination is relabeled there on its next connect.
 
 import (
 	"context"
@@ -64,12 +68,14 @@ func nextLabelRev(prev uint64) uint64 {
 func (d *Desk) guestRelabelsPath() string { return filepath.Join(d.dir, "guest-relabels.json") }
 
 // tagProfiles gives every profile in st without a local id one, and folds
-// in an older build's relabel queue: each saved profile it names takes a
-// revision of now at least, so its label goes on its next connect. changed
-// reports st to store; queued, the queue to delete once st is stored (an
-// entry of no saved profile is dropped with it). A queue that can't be read
-// is left for the next load; folding it again only raises revisions.
-// d.storeMu must be held.
+// in an older build's relabel queue: each saved profile it names that has
+// no label revision yet takes now, so its label goes on its next connect.
+// preview.28 kept no revisions, so a profile with one was folded already
+// or renamed since (its label as saved is the newest): folding the queue
+// again, after a store its deletion did not follow, changes nothing.
+// changed reports st to store; queued, the queue to delete once st is
+// stored (an entry of no saved profile is dropped with it). A queue that
+// can't be read is left for the next load. d.storeMu must be held.
 func (d *Desk) tagProfiles(st *machineStore) (changed, queued bool) {
 	for i := range st.Machines {
 		if st.Machines[i].LocalID == "" {
@@ -91,7 +97,7 @@ func (d *Desk) tagProfiles(st *machineStore) (changed, queued bool) {
 	}
 	now := uint64(time.Now().UnixMilli())
 	for i := range st.Machines {
-		if m := &st.Machines[i]; entries[m.LocalID] != nil && m.LabelRev < now {
+		if m := &st.Machines[i]; entries[m.LocalID] != nil && m.LabelRev == 0 {
 			m.LabelRev, changed = now, true
 		}
 	}
@@ -112,38 +118,28 @@ func sameProfile(l *link, old Machine) bool {
 	return l != nil && l.guest == nil && l.profile != "" && old.LocalID == l.profile
 }
 
-// relabelOnConnect renews l's label from its profile as saved now and sends
-// it, on its SSH connection's first list. d.mu must be held.
-func (d *Desk) relabelOnConnect(l *link) {
-	l.work.Go(func() { d.relabelConnected(l) })
-}
-
-// relabelConnected reads l's profile as saved now: unless it is gone or
-// names another destination, the link names the machine by it (what an
-// invite opened from now on carries) and, to a herdr reporting
-// guest_relabel_rev, its label goes at its revision.
-func (d *Desk) relabelConnected(l *link) {
+// renewLabel reads l's profile as saved now: unless the link has no stored
+// profile, or it is gone or names another destination (false), the link
+// names the machine by it (what an invite opened from now on carries), a
+// rename saved since aside.
+func (d *Desk) renewLabel(l *link) bool {
 	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
 	st, err := d.load()
-	d.storeMu.Unlock()
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
-		return
+		return false
 	}
 	i := st.findProfile(l.profile)
 	if i < 0 || machineID(st.Machines[i]) != l.id {
-		return
+		return false
 	}
-	label, rev := inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
 	d.mu.Lock()
-	if rev >= l.shareLabelRev { // a rename saved since is already newer
-		l.shareLabel, l.shareLabelRev = label, rev
+	defer d.mu.Unlock()
+	if rev := st.Machines[i].LabelRev; rev >= l.shareLabelRev {
+		l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), rev
 	}
-	caps := l.caps
-	d.mu.Unlock()
-	if rev > 0 && herdrapi.CapabilityGuestRelabelRev.Supported(caps) {
-		d.relabelGuests(l, label, rev)
-	}
+	return true
 }
 
 // findProfile is the index of the saved profile localID, -1 if none.
@@ -161,7 +157,7 @@ func (s *machineStore) findProfile(localID string) int {
 // Failures are logged; nothing is kept to send again.
 func (d *Desk) relabelGuests(l *link, label string, rev uint64) {
 	d.mu.Lock()
-	c, session, caps, ctx := l.client, l.session, l.caps, l.ctx
+	c, session, caps, ctx := l.client, l.session, l.connCaps, l.connCtx
 	d.mu.Unlock()
 	if c == nil || ctx == nil || !herdrapi.CapabilityGuestRelabel.Supported(caps) {
 		return

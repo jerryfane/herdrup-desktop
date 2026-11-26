@@ -35,6 +35,9 @@ type relabelHerdr struct {
 	mu      sync.Mutex
 	sent    []herdrapi.GuestUpdateParams
 	invites []herdrapi.GuestInviteCreateParams
+	// workList, while set, holds the work session's agent.list until it
+	// is closed.
+	workList atomic.Pointer[chan struct{}]
 }
 
 func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr {
@@ -99,6 +102,12 @@ func newRelabelHerdrWith(t *testing.T, nickname string, capabilities ...string) 
 				return value, err
 			}
 			return original(method, raw)
+		}
+		s.HandleSession = func(session, method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
+			if gate := h.workList.Load(); gate != nil && session == "work" && method == "agent.list" {
+				<-*gate
+			}
+			return s.Handle(method, raw)
 		}
 	})
 	return h
@@ -261,6 +270,57 @@ func (h *relabelHerdr) store(t *testing.T, change func(*machineStore)) {
 	}
 }
 
+// drain waits, still connected, until the live link runs its connection's
+// own work alone (run, watchSessions, watchGram): a relabel it started has
+// ended, sent or not, while its connection could carry it. Disconnect
+// cancels before it waits, which can end a wrong send before it is made.
+func (h *relabelHerdr) drain(t *testing.T) {
+	t.Helper()
+	l := h.live()
+	waitFor(t, "the link's relabels ended", func() bool {
+		l.work.mu.Lock()
+		defer l.work.mu.Unlock()
+		return l.work.running == 3
+	})
+	h.d.mu.Lock()
+	live := h.d.link == l && l.client != nil
+	h.d.mu.Unlock()
+	if !live {
+		t.Fatal("the connection ended while its work drained")
+	}
+}
+
+// blockStore makes every write of machines.json fail (a folder where its
+// temp file goes) until the returned func lifts it.
+func (h *relabelHerdr) blockStore(t *testing.T) (lift func()) {
+	t.Helper()
+	tmp := h.d.machinesPath() + ".tmp"
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	lift = func() {
+		once.Do(func() {
+			if err := os.Remove(tmp); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(lift)
+	return lift
+}
+
+// writeQueue writes a preview.28 relabel queue naming the saved profile.
+func (h *relabelHerdr) writeQueue(t *testing.T, localID, label string) {
+	t.Helper()
+	h.d.storeMu.Lock()
+	err := writeFileAtomic(h.d.guestRelabelsPath(), []byte(fmt.Sprintf(`{%q:%q}`, localID, label)))
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A herdr with guest_relabel alone (no revisions) is sent a rename once,
 // while connected, without a revision, the invite label bounded as herdr
 // takes it (64 runes), best effort: nothing is sent again, not on a
@@ -288,7 +348,7 @@ func TestAnOldHerdrIsSentARenameOnceWhileConnected(t *testing.T) {
 	h.d.Disconnect()
 	h.rename(t, "Offline")
 	h.reconnect(t)
-	h.d.Disconnect() // its work (the connect's) ended
+	h.drain(t) // the connect's work ended, connected
 	if n := len(h.updates()); n != 2 {
 		t.Fatalf("%d guest.update calls; want the two renames made while connected", n)
 	}
@@ -305,13 +365,14 @@ func TestAnOldHerdrIsSentARenameOnceWhileConnected(t *testing.T) {
 
 // A herdr without guest_relabel is asked nothing, connected or on its next
 // connect: its shares keep their label, as before. The link's work ends
-// (Disconnect waits for it) before nothing sent is checked.
+// while it is still connected (drain) before nothing sent is checked.
 func TestARenameIsNotSentToAHerdrWithoutGuestRelabel(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", false)
 	h.rename(t, "New")
+	h.drain(t)
 	h.reconnect(t)
 	h.rename(t, "Newer")
-	h.d.Disconnect()
+	h.drain(t)
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("guest.update sent to a herdr without guest_relabel: %+v", got)
 	}
@@ -324,10 +385,11 @@ func TestARenameIsNotSentToAHerdrWithoutGuestRelabel(t *testing.T) {
 func TestEveryConnectSendsTheLabelAtItsRevision(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.reconnect(t)
-	h.d.Disconnect() // its work (the connect's) ended
+	h.drain(t) // the connect's work ended, connected
 	if n := len(h.updates()); n != 0 {
 		t.Fatalf("%d guest.update calls for a machine never renamed", n)
 	}
+	h.d.Disconnect()
 	h.rename(t, "New")
 	if n := len(h.updates()); n != 0 {
 		t.Fatalf("%d guest.update calls while not connected", n)
@@ -366,7 +428,7 @@ func TestASessionSwitchSendsTheLabelNoMore(t *testing.T) {
 		defer h.d.mu.Unlock()
 		return listed && h.d.link != nil && h.d.link.session == "work" && h.d.link.caps != nil
 	})
-	h.d.Disconnect() // its work ended
+	h.drain(t) // its work ended, connected
 	if n := len(h.updates()); n != 1 {
 		t.Fatalf("%d guest.update calls after a session switch; want the connection's one", n)
 	}
@@ -541,7 +603,7 @@ func TestARenameSavedAsAConnectionStartsIsSent(t *testing.T) {
 	}
 	h.d.start(m, "")
 	h.listed(t)
-	h.d.Disconnect() // its work ended
+	h.drain(t) // its work ended, connected
 	if n := len(h.updates()); n != 1 {
 		t.Fatalf("%d guest.update calls; want nothing sent to the moved profile's former destination", n)
 	}
@@ -630,7 +692,7 @@ func TestAProfileSavedAgainInheritsNoLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.reconnect(t)
-	h.d.Disconnect() // its work (the connect's) ended
+	h.drain(t) // the connect's work ended, connected
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("the fresh profile's connect sent %+v", got)
 	}
@@ -750,5 +812,188 @@ func TestAGuestReconnectTakesTheMachinesNewName(t *testing.T) {
 	reconnect("")
 	if got, want := names(), [3]string{"Studio Mac", "Studio Mac", "Studio Mac"}; got != want {
 		t.Fatalf("after a hello naming no machine: saved, state, header %q, want %q", got, want)
+	}
+}
+
+// liveProfile is the live link's profile (local id).
+func (h *relabelHerdr) liveProfile() string {
+	h.d.mu.Lock()
+	defer h.d.mu.Unlock()
+	return h.d.link.profile
+}
+
+// #594 round 6: a local id given where the profile is read, its store
+// failing, is not used. A link started with that profile has none for its
+// run (a rename relabels nothing, and no address stands in), the next load
+// that stores one keeps it from then on, and a connect after binds to it:
+// a rename then reaches its herdr and the live invite.
+func TestALinkBindsOnlyAStoredLocalID(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.store(t, func(st *machineStore) { st.Machines[0].LocalID = "" })
+	lift := h.blockStore(t)
+	m, err := h.d.Machine()
+	if err != nil || m == nil {
+		t.Fatalf("the saved machine %+v, %v", m, err)
+	}
+	h.d.start(*m, "")
+	h.listed(t)
+	lift()
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	id := saved[0].LocalID
+	if again, err := h.d.Machines(); err != nil || again[0].LocalID != id {
+		t.Fatalf("saved again %+v, %v; want local id %s kept", again, err, id)
+	}
+	if p := h.liveProfile(); p != "" && p != id {
+		t.Fatalf("the link started with local id %q, never stored (stored: %s)", p, id)
+	}
+	h.rename(t, "Unbound")
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a link with no stored local id sent %+v", got)
+	}
+	h.reconnect(t)
+	if p := h.liveProfile(); p != id {
+		t.Fatalf("the next link's profile %q, want %s", p, id)
+	}
+	h.rename(t, "Bound")
+	rev := h.labelRev(t)
+	if p := h.answered(t, 2)[1]; *p.MachineLabel != "Bound" || *p.MachineLabelRev != rev || !h.holds(t, "Bound", rev) {
+		t.Fatalf("sent %+v, shares %+v; want Bound at %d", p, h.list(t), rev)
+	}
+	if p := h.invite(t); p.MachineLabel != "Bound" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite after the rename: %+v (rev %v); want Bound at %d", p, p.MachineLabelRev, rev)
+	}
+}
+
+// #594 round 6, the reviewer's probe: a rename saved after a connect took
+// its snapshot, the store busy while the connection lists. Its first board
+// already names the machine as saved: an invite opened from it carries the
+// rename and its revision.
+func TestTheFirstBoardNamesTheMachineAsSaved(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	m, err := h.d.Machine()
+	if err != nil || m == nil {
+		t.Fatalf("the saved machine %+v, %v", m, err)
+	}
+	h.rename(t, "Saved")
+	rev := h.labelRev(t)
+	h.d.storeMu.Lock()
+	var once sync.Once
+	release := func() { once.Do(h.d.storeMu.Unlock) }
+	t.Cleanup(release)
+	h.d.start(*m, "")
+	// The board may not come while the store is busy; one that does must
+	// name the machine as saved.
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if l := h.live(); l != nil && func() bool { h.d.mu.Lock(); defer h.d.mu.Unlock(); return l.caps != nil }() {
+			break
+		}
+	}
+	h.d.mu.Lock()
+	listed := h.d.link != nil && h.d.link.caps != nil
+	h.d.mu.Unlock()
+	if !listed {
+		release()
+		h.listed(t)
+	}
+	p := h.invite(t)
+	release()
+	if p.MachineLabel != "Saved" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite from the first board: %+v (rev %v); want Saved at %d", p, p.MachineLabelRev, rev)
+	}
+}
+
+// #594 round 6: a rename while a session switch's first list is still on
+// its way goes on the SSH connection, which the switch keeps: herdr is sent
+// it then, not on a list of that connection.
+func TestARenameDuringASessionSwitchIsSent(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	gate := make(chan struct{})
+	h.workList.Store(&gate)
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+	h.srv.SetSessionList(`{"sessions":[{"name":"default","default":true,"running":true},{"name":"work","running":true}]}`)
+	if err := h.d.SelectSession("work"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the work session's first list, held", func() bool {
+		return slices.ContainsFunc(h.srv.Requests(), func(r fakeherdr.Request) bool {
+			return r.Method == "agent.list" && r.Session == "work"
+		})
+	})
+	h.rename(t, "New")
+	rev := h.labelRev(t)
+	if p := h.answered(t, 1)[0]; *p.MachineLabel != "New" || *p.MachineLabelRev != rev || !h.holds(t, "New", rev) {
+		t.Fatalf("sent %+v, shares %+v; want New at %d", p, h.list(t), rev)
+	}
+	open()
+}
+
+// #594 round 6: the preview.28 queue folded in, its store failing, gives
+// no revision: the profile reads as saved (none), and a connect sends
+// nothing. The next load stores the fold, and the connect after sends it.
+func TestAFoldNotStoredGivesNoRevision(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.store(t, func(st *machineStore) { st.Machines[0].Nickname, st.Machines[0].LabelRev = "Renamed", 0 })
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	id := saved[0].LocalID
+	h.writeQueue(t, id, "Renamed")
+	lift := h.blockStore(t)
+	if again, err := h.d.Machines(); err != nil || again[0].LabelRev != 0 || again[0].LocalID != id {
+		t.Fatalf("saved %+v, %v while the fold can't be stored; want no revision, local id %s", again, err, id)
+	}
+	m, err := h.d.Machine()
+	if err != nil || m == nil {
+		t.Fatalf("the saved machine %+v, %v", m, err)
+	}
+	h.d.start(*m, "")
+	h.listed(t)
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a fold not stored sent %+v", got)
+	}
+	lift()
+	rev := h.labelRev(t)
+	h.reconnect(t)
+	if p := h.answered(t, 1)[0]; rev == 0 || *p.MachineLabel != "Renamed" || *p.MachineLabelRev != rev {
+		t.Fatalf("sent %+v, saved revision %d; want Renamed at it", p, rev)
+	}
+}
+
+// #594 round 6: a fold stored but its queue not deleted (interrupted
+// between the two) is folded again at the next load, which changes no
+// revision: preview.28 kept none, so a profile with one was folded or
+// renamed since. The queue goes then.
+func TestAnInterruptedFoldRaisesNoRevision(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.store(t, func(st *machineStore) { st.Machines[0].Nickname, st.Machines[0].LabelRev = "Renamed", 0 })
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	h.writeQueue(t, saved[0].LocalID, "Renamed")
+	folded := h.labelRev(t)
+	h.writeQueue(t, saved[0].LocalID, "Renamed")
+	waitFor(t, "the clock past the fold", func() bool { return uint64(time.Now().UnixMilli()) > folded })
+	if rev := h.labelRev(t); folded == 0 || rev != folded {
+		t.Fatalf("revision %d after the fold again; want %d", rev, folded)
+	}
+	h.d.storeMu.Lock()
+	_, err = os.Stat(h.d.guestRelabelsPath())
+	h.d.storeMu.Unlock()
+	if !os.IsNotExist(err) {
+		t.Fatalf("the older queue: %v; want it deleted", err)
 	}
 }

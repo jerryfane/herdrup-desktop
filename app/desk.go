@@ -325,11 +325,15 @@ type link struct {
 	// it, which an invite of this machine carries; 0 for a guest's link.
 	shareLabelRev uint64
 	// profile is the local id (Machine.LocalID) of the saved profile the
-	// link was started with.
+	// link was started with; "" when that id was not yet stored (load):
+	// the link then relabels nothing (desk_guest_relabel.go).
 	profile string
-	// relabeledOn is the SSH connection (client) whose first list renewed
-	// the link's label from the profile and sent it (desk_guest_relabel.go).
-	relabeledOn *bridge.Client
+	// connCaps is the SSH connection's herdr capabilities, as its lists
+	// report them, and connCtx its lifetime: a session switch keeps both
+	// (unlike caps and ctx, the board watch's), so a machine-wide relabel
+	// is decided and sent by them. nil while not connected.
+	connCaps *herdrapi.ServerCapabilities
+	connCtx  context.Context
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
 	sessionGen  uint64
@@ -493,24 +497,28 @@ func (d *Desk) legacyMachinePath() string { return filepath.Join(d.dir, "machine
 // single machine.json as the active machine. A merge's commit a failure
 // left is finished first (replayCommit). Every profile read without a local
 // id is given one, and an older build's relabel queue is folded in
-// (tagProfiles, desk_guest_relabel.go), both stored at once. d.storeMu must
-// be held.
+// (tagProfiles, desk_guest_relabel.go), both stored at once. When that
+// store fails, the machines go as read: a local id or label revision is
+// only ever one that is stored, and the next load tries again. d.storeMu
+// must be held.
 func (d *Desk) load() (machineStore, error) {
 	st, err := d.readMachines()
 	if err != nil {
 		return st, err
 	}
-	changed, queued := d.tagProfiles(&st)
+	tagged := st
+	tagged.Machines = slices.Clone(st.Machines)
+	changed, queued := d.tagProfiles(&tagged)
 	if changed {
-		if err := d.store(st); err != nil {
-			log.Printf("saved machines: storing their local ids: %v", err)
+		if err := d.store(tagged); err != nil {
+			log.Printf("saved machines: storing their local ids and label revisions: %v", err)
 			return st, nil
 		}
 	}
 	if queued {
 		d.retireRelabelQueue()
 	}
-	return st, nil
+	return tagged, nil
 }
 
 // readMachines is load's read, as the file holds them.
@@ -722,7 +730,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	d.mu.Lock()
 	if l := d.link; index >= 0 && sameProfile(l, old) && l.id == id {
 		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
-		if relabel && herdrapi.CapabilityGuestRelabel.Supported(l.caps) {
+		if relabel && herdrapi.CapabilityGuestRelabel.Supported(l.connCaps) {
 			label, rev := l.shareLabel, l.shareLabelRev
 			l.work.Go(func() { d.relabelGuests(l, label, rev) })
 		}
@@ -1151,13 +1159,16 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	d.mu.Lock()
 	l.client = c
 	d.mu.Unlock()
+	// relabeled: this SSH connection's first list renewed the link's label
+	// and sent it (desk_guest_relabel.go); a session switch keeps it.
+	relabeled := false
 	sctx, stopSessions := context.WithCancel(ctx)
 	defer stopSessions()
 	l.work.Go(func() { d.watchSessions(sctx, l, c) })
 	l.work.Go(func() { d.watchGram(sctx, l) })
 	defer func() {
 		d.mu.Lock()
-		l.client, l.restart = nil, nil
+		l.client, l.restart, l.connCaps, l.connCtx = nil, nil, nil, nil
 		d.mu.Unlock()
 	}()
 	for {
@@ -1194,6 +1205,9 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				d.mu.Unlock()
 				return
 			}
+			// The connection's first list, before any board offers an
+			// invite: the profile as saved now names the machine.
+			renewed := !relabeled && d.renewLabel(l)
 			if !shown {
 				shown, listed = true, true
 				groups.attach(ec, u.Pong)
@@ -1212,12 +1226,14 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
-			if l.relabeledOn != c {
-				// The SSH connection's first list (a session switch keeps
-				// it): the profile as saved now names the machine, and its
-				// label goes at its revision (desk_guest_relabel.go).
-				l.relabeledOn = c
-				d.relabelOnConnect(l)
+			l.connCaps, l.connCtx = u.Pong.Capabilities, sctx
+			if !relabeled {
+				// Its label goes at its revision, on the connection's
+				// capability and lifetime (desk_guest_relabel.go).
+				relabeled = true
+				if label, rev := l.shareLabel, l.shareLabelRev; renewed && rev > 0 && herdrapi.CapabilityGuestRelabelRev.Supported(l.connCaps) {
+					l.work.Go(func() { d.relabelGuests(l, label, rev) })
+				}
 			}
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
