@@ -276,6 +276,7 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 		if err := d.noteShare(list[i], true); err != nil {
 			return err
 		}
+		d.syncMachinesSoon()
 	}
 	if err := d.guestStore.Remove(id); err != nil {
 		return err

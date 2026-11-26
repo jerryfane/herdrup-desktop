@@ -195,8 +195,10 @@ func (d *Desk) withAccountShares(list []guest.Access) ([]guest.Access, error) {
 	return list, nil
 }
 
-// confirmShare runs one sync round, within acceptShareWait, so a bound
-// grant just accepted can say whether its account took its item.
+// confirmShare runs the one sync round a bound accept owns, within
+// acceptShareWait, so the grant just accepted can say whether its account
+// took its item; a round that can't leaves the owed write to the next
+// sync (startMachineSync's, or any other).
 func (d *Desk) confirmShare() {
 	ctx, cancel := context.WithTimeout(context.Background(), acceptShareWait)
 	defer cancel()
@@ -330,7 +332,8 @@ func shareBodyOf(a guest.Access) (account.ShareBody, error) {
 // of it reaches the account signed in. A grant saved before its account
 // was kept takes the account an unsent write of it was owed to, else the
 // account whose synced shares hold it; with neither, nothing is owed.
-// Either replaces any owed before. Then it syncs soon and tells the page.
+// Either replaces any owed before. Then it tells the page; the caller
+// owns the sync that sends it (a Leave's round soon, an accept's own one).
 func (d *Desk) noteShare(a guest.Access, leave bool) error {
 	op := shareOp{ID: a.ShareID(), Account: a.Account}
 	if !leave {
@@ -366,7 +369,6 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 	if err != nil {
 		return err
 	}
-	d.syncMachinesSoon()
 	d.announceShares()
 	return nil
 }

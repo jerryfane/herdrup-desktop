@@ -768,3 +768,38 @@ func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
 		t.Fatalf("the left share's grant is still held: %+v", grants)
 	}
 }
+
+// A bound accept owns one sync round: with background syncs on (as in the
+// app) and the account full, it sends its write once; the owed write is
+// left for the next sync, no second round started for it.
+func TestABoundAcceptSendsItsWriteOnce(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	backgroundMachineSync = true // quietSync's cleanup puts it back
+	w, srv := newWorker(t, "")
+	w.seedPrompt("prompt-1", `{"text":"held"}`)
+	w.mu.Lock()
+	w.maxItems = 1 // full
+	w.mu.Unlock()
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	posts := func() int {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.posts
+	}
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || access.AccountShare != shareRefused {
+		t.Fatalf("bound accept: %+v, %v; want refused", access, err)
+	}
+	// A round the accept left behind would be waiting for the sync's turn:
+	// let it have the turn a few times before counting.
+	for range 20 {
+		d.accountSync.turn <- struct{}{}
+		<-d.accountSync.turn
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := posts(); n != 1 {
+		t.Fatalf("the accept sent %d pushes, want 1", n)
+	}
+}
