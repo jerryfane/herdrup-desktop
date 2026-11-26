@@ -8,7 +8,7 @@
 // test/fakeDom.ts stands in for the DOM.
 import { afterEach, expect, test } from "bun:test";
 import { acceptChoices, type Keep } from "../src/guestAccept";
-import { accountNote, addsDevice, sharedLine, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
+import { accountNote, addsDevice, sharedLine, sharedListStale, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
 import { accountShareNotice, showAccountShareNotice } from "../src/notices";
 import { initGuestHome, leaveWords } from "../src/guestHome";
 import { errorText } from "../src/errors";
@@ -169,6 +169,23 @@ test("SHARED WITH YOU: one entry per machine from the grants held here and the a
  expect(sharedMachines([], [])).toEqual([]);
  expect(accountNote(sharedMachines(grants, []))).toBeNull();
  expect(sharedLine({ agents: ["enyo"], owner: "" })).toBe("enyo");
+});
+
+// A machine renamed by its owner (herdr #519) relabels only the grant held here (guest store
+// Relabel, web GrantStore.relabel); the account's item keeps the name it was written with. The
+// row names the machine as the grant does, and the browser guest's list is drawn again when the
+// open share's machine is named anew.
+test("a machine renamed by its owner: the row names it as the grant held here does; the list redraws on the new name", () => {
+ const relabeled = grant("H1", "g1", "enyo", "jerry", "Studio Mac", true);
+ const rows = sharedMachines([relabeled], [share("H1", "g1", "enyo", "jerry", "hetzner", true), share("H1", "g2", "orgstudio", "jerry", "hetzner", false)]);
+ expect(rows.map(r => [r.machine, r.grants.map(g => g.open.id)])).toEqual([["Studio Mac", ["H1/g1", "H1/g2"]]]);
+ const on = (a: Access | null) => ({ guest: a === null ? undefined : { access: a, features: {} as Features, fingerprint: "" } });
+ const before = grant("H1", "g1", "enyo", "jerry", "hetzner", true);
+ expect(sharedListStale(on(before), on(relabeled))).toBe(true);
+ expect(sharedListStale(on(before), on(grant("H1", "g2", "orgstudio", "jerry", "hetzner")))).toBe(true);
+ expect(sharedListStale(on(null), on(before))).toBe(true);
+ expect(sharedListStale(on(before), on({ ...before, agentName: "enyo 2" }))).toBe(false);
+ expect(sharedListStale(on(before), on(before))).toBe(false);
 });
 
 test("the account's note shows while any row adds this device, even on a machine with a grant held here", () => {

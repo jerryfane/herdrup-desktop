@@ -5,7 +5,8 @@
 // holds a grant for opens as today (connectGuest); one known only from the account opens with
 // openSyncedShare, with nothing to accept.
 import { Desk } from "./mygo";
-import type { Access, SyncedShare } from "./mygo";
+import type { Access, ConnState, SyncedShare } from "./mygo";
+import { connectionChanged } from "./shellModel";
 import { element, hostGlyph, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type SymbolRenderer } from "./hostHome";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
 
@@ -71,6 +72,14 @@ export function openShared(open: ShareOpen): Promise<void> {
 /** The account's synced shares while someone is signed in; [] otherwise, or when they can't be read. */
 export function syncedSharesNow(signedIn: boolean): Promise<SyncedShare[]> {
  return signedIn ? Desk.syncedShares().catch(() => []) : Promise.resolve([]);
+}
+
+/** Whether the list drawn while previous was the connection names something next changed: another
+ *  share opened (connectionChanged), or the open share's machine named anew by its owner (its
+ *  saved grant relabeled from the hello, herdr #519: desk_guest.go guestRelabeled, web/desk.ts
+ *  connectGuest). */
+export function sharedListStale(previous: Pick<ConnState, "guest">, next: Pick<ConnState, "guest">): boolean {
+ return connectionChanged(previous, next) || (next.guest !== undefined && next.guest.access.machineLabel !== previous.guest?.access.machineLabel);
 }
 
 /** The section, drawn again with draw(): the native sharedSection rows (person.2, the machine over

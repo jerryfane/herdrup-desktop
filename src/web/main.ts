@@ -26,7 +26,7 @@ import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAc
 import { ownerAccess, pageExit, signInEnded, signInReturned } from "./mygo";
 import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst } from "./bootChoice";
 import { boardAfter, connectionChanged } from "../shellModel";
-import { sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
+import { sharedListStale, sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -211,7 +211,9 @@ window.addEventListener("guest-gram", event => {
 trackPhotoConnections(events);
 events.stateChanged.on((s) => {
  // Another share (shellModel.ts, the shell's rule too): its own tab, and not the last one's board.
- if (connectionChanged(state, s)) { guestTab = "agents"; void refreshShared(); }
+ if (connectionChanged(state, s)) guestTab = "agents";
+ // The shares list names the share open now, and its machine as its owner names it now.
+ if (sharedListStale(state, s)) void refreshShared();
  board = boardAfter(state, s, board);
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
