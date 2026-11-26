@@ -18,8 +18,10 @@ export interface GrantStore {
  put(access: Access): Promise<void>;
  /** Forgets the grant of share id (left, or deleted from its account). */
  remove(id: string): Promise<void>;
- /** Marks share id as the one opened last. */
- activate(id: string): Promise<void>;
+ /** Marks share id as the one opened last, when its grant is still held: the grant as saved
+  *  then, in the same step (a grant forgotten meanwhile, in this tab or another, is undefined
+  *  and nothing changes), so a connect uses only a grant still held as it starts. */
+ activate(id: string): Promise<Access | undefined>;
  /** Names the machine machineLabel on the saved grant guestID of hostID, and nothing else: a
   *  grant forgotten or replaced meanwhile is left as it is (a late hello never brings one back). */
  relabel(hostID: string, guestID: string, machineLabel: string): Promise<void>;
@@ -41,6 +43,11 @@ function putIn(r: GrantsRecord, access: Access) {
 function removeFrom(r: GrantsRecord, id: string) {
  r.grants = r.grants.filter(g => grantID(g) !== id);
  if (r.active === id) r.active = null;
+}
+function activateIn(r: GrantsRecord, id: string): Access | undefined {
+ const grant = r.grants.find(g => grantID(g) === id);
+ if (grant !== undefined) r.active = id;
+ return grant;
 }
 /** Renames the machine on the record's grant guestID of hostID, the one share it is, when that
  *  grant is still held; the others, and a grant removed meanwhile, stay as they are. */
@@ -99,20 +106,23 @@ export class IndexedDBGrantStore implements GrantStore {
   return this.#db;
  }
 
- /** Changes the record in one readwrite transaction, storing it in the current form. */
- async #change(change: (record: GrantsRecord) => void): Promise<void> {
+ /** Changes the record in one readwrite transaction, storing it in the current form; what change
+  *  returns once that is committed. */
+ async #change<T>(change: (record: GrantsRecord) => T): Promise<T> {
   const tx = (await this.#open()).transaction(this.storeName, "readwrite");
   const done = Promise.withResolvers<void>();
   tx.oncomplete = () => done.resolve();
   tx.onerror = () => done.reject(tx.error);
   tx.onabort = () => done.reject(tx.error ?? new Error("Saving the shared access was aborted."));
   const store = tx.objectStore(this.storeName);
+  let out: { value: T } | null = null;
   withRecord(store, record => {
-   change(record);
+   out = { value: change(record) };
    store.put(record, GRANTS_KEY);
    store.delete(OLD_GRANT_KEY);
   }, error => done.reject(error));
   await done.promise;
+  return (out as { value: T } | null)!.value;
  }
 
  async #read(): Promise<GrantsRecord> {
@@ -126,7 +136,8 @@ export class IndexedDBGrantStore implements GrantStore {
  async get(id: string): Promise<Access | undefined> { return (await this.#read()).grants.find(g => grantID(g) === id); }
  put(access: Access): Promise<void> { return this.#change(r => putIn(r, access)); }
  remove(id: string): Promise<void> { return this.#change(r => removeFrom(r, id)); }
- activate(id: string): Promise<void> { return this.#change(r => { r.active = id; }); }
+ /** One read-write transaction (#change): the grant is read and marked with no write between. */
+ activate(id: string): Promise<Access | undefined> { return this.#change(r => activateIn(r, id)); }
  /** One read-write transaction (#change): no other write comes between the read and the write. */
  relabel(hostID: string, guestID: string, machineLabel: string): Promise<void> { return this.#change(r => relabelIn(r, hostID, guestID, machineLabel)); }
 }
@@ -137,7 +148,7 @@ export class MemoryGrantStore implements GrantStore {
  async get(id: string) { return this.record.grants.find(g => grantID(g) === id); }
  async put(access: Access) { putIn(this.record, access); }
  async remove(id: string) { removeFrom(this.record, id); }
- async activate(id: string) { this.record.active = id; }
+ async activate(id: string) { return activateIn(this.record, id); }
  async relabel(hostID: string, guestID: string, machineLabel: string) { relabelIn(this.record, hostID, guestID, machineLabel); }
 }
 

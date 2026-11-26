@@ -82,17 +82,16 @@ const statements = (): StatementSource => ({ get: async () => ({ jws: "statement
 
 let sessions = 0;
 /** One browser of the account: its own session, storage, guest key and grant. Signed out, the
- *  service refuses its cookie. */
-async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore()) {
+ *  service refuses its cookie. Another tab of a browser holds its grants, storage and guest key. */
+async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore()) {
  const fetcher = w.fetcher(`s${++sessions}`);
  const signedOut = ((input: string | URL | Request, init?: RequestInit) => String(input).includes("/v1/auth/refresh")
   ? Promise.resolve(Response.json({ error: "session_revoked" }, { status: 401 })) : fetcher(input, init)) as typeof fetch;
  const account = new WebAccount(signedIn ? fetcher : signedOut, undefined, undefined, null);
  if (signedIn) await account.check();
- const storage = memory();
  const shares = createShareSync(account, { storage: () => storage, locks: null, name: "Chrome on macOS", background: false });
- const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
- return { desk, grants, shares, account, storage };
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
+ return { desk, grants, shares, account, storage, identities };
 }
 
 const sharesOn = (w: Worker) => w.pushed.flat().filter(c => c.collection === "shares");
@@ -170,6 +169,58 @@ test("a browser whose put was taken but whose readback failed still drops its bo
  await mac.shares.sync();
  expect(await mac.grants.list()).toEqual([]);
  expect(await mac.desk.syncedShares()).toEqual([]);
+}, CONNECTS_LIMIT_MS);
+
+test("an Open overtaken by its share's tombstone while it starts connects nothing", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ /** Runs onActivate (once) as the grant is about to be made the one opened. */
+ class Overtaken extends MemoryGrantStore {
+  onActivate: (() => Promise<void>) | null = null;
+  override async activate(id: string) { const run = this.onActivate; this.onActivate = null; await run?.(); return super.activate(id); }
+ }
+ const linux = await browser(w, true, new Overtaken());
+ await linux.shares.sync();
+ await linux.desk.openSyncedShare(id);
+ // Opened again: meanwhile the share is left on another device, and this tab's sync pulls its tombstone.
+ (linux.grants as Overtaken).onActivate = async () => { await mac.desk.forgetGuestConnection(id); await linux.shares.sync(); };
+ await expect(linux.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+ expect([await linux.grants.list(), (await linux.desk.state()).phase]).toEqual([[], "idle"]);
+}, CONNECTS_LIMIT_MS);
+
+test("a tab with the share open closes it once another tab of the browser took the share's tombstone and dropped its grant", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w), linux = await browser(w);
+ const idleTab = await browser(w, true, linux.grants, linux.storage, linux.identities);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ await linux.shares.sync();
+ await linux.desk.openSyncedShare(id);
+ expect((await linux.desk.state()).phase).not.toBe("idle");
+ await mac.desk.forgetGuestConnection(id);
+ // The idle tab pulls first: it drops the grant both tabs hold, and the pull leaves the open tab nothing new.
+ await idleTab.shares.sync();
+ expect(await linux.grants.list()).toEqual([]);
+ await linux.shares.sync();
+ expect((await linux.desk.state()).phase).toBe("idle");
+}, CONNECTS_LIMIT_MS);
+
+test("a bound grant still held once another tab took its share's tombstone goes at this tab's next sync", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w), linux = await browser(w);
+ // A tab of the browser that pulls the tombstone without dropping this grant (its own store here: a removal that failed).
+ const otherTab = await browser(w, true, new MemoryGrantStore(), linux.storage, linux.identities);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ await linux.shares.sync();
+ await linux.desk.openSyncedShare(id);
+ await mac.desk.forgetGuestConnection(id);
+ await otherTab.shares.sync();
+ expect((await linux.grants.list()).length).toBe(1);
+ await linux.shares.sync();
+ expect([await linux.grants.list(), (await linux.desk.state()).phase]).toEqual([[], "idle"]);
 }, CONNECTS_LIMIT_MS);
 
 test("an open whose share is deleted while the host answers keeps nothing and says the share was removed", async () => {

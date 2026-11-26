@@ -31,7 +31,7 @@ import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { findTerminal } from "./terminalsDesk";
 import { StartedAgents } from "./startedAgents";
 import { boundShareStatements } from "./statements";
-import { shareID, type RemoteShare, type ShareSync } from "./shares";
+import { shareID, type RemoteShare, type SharesChange, type ShareSync } from "./shares";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, PEER_NOT_SHARED, setSharedAgents, setView, type GuestView } from "./view";
@@ -381,16 +381,29 @@ export function createGuestDesk(env: DeskEnv) {
   emit("syncedSharesChanged", syncedSharesOf(shares, await env.grants.list()));
  }
  // A share deleted on the account it is bound to (left on any device) leaves this browser too,
- // when it holds it bound; a plain grant is never dropped by the sync.
- env.shares?.onChange(change => void (async () => {
-  for (const id of change.removed) {
-   const grant = await env.grants.get(id);
-   if (!grant?.accountBound || grant.account !== change.account) continue;
-   await env.grants.remove(id);
-   if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }
+ // when it holds it bound; a plain grant is never dropped by the sync. Each pass reconciles with
+ // what lasts, the grants as stored and the shares record (both shared by this browser's tabs),
+ // not with what its own pull saw alone: another tab may have taken the tombstone, and dropped
+ // the grant, before this one pulls. A link open on a grant no longer held closes.
+ const shares = env.shares;
+ shares?.onChange(change => reconcile(shares, change).catch(error => console.error(error)));
+ async function reconcile(shares: ShareSync, change: SharesChange) {
+  const acct = change.account, removed = new Set(change.removed);
+  if (acct !== null) {
+   for (const grant of await env.grants.list()) {
+    const id = shareID(grant);
+    if (!grant.accountBound || grant.account !== acct || !(removed.has(id) || shares.deleted(acct, id))) continue;
+    await env.grants.remove(id);
+    if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }
+   }
+  }
+  const open = active;
+  if (open?.id.startsWith("guest:") && await env.grants.get(open.id.slice("guest:".length)) === undefined && active === open) {
+   disconnect();
+   publishIdle();
   }
   await publishShares(change.shares);
- })().catch(error => console.error(error)));
+ }
 
  /** The board of l's last list, laid out with an owner link's folders (BuildBoard's view). */
  function publishBoard(l: Active) {
@@ -751,13 +764,17 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   /** Connects share id's grant, in place of the share connected now (which stays saved), and
-   *  makes it the one the page resumes. */
+   *  makes it the one the page resumes. The grant connected is the one held as it is made the
+   *  one opened last (GrantStore.activate), and from there to the link being open nothing waits:
+   *  a grant forgotten before (left, or its share deleted from the account, in this tab or
+   *  another) connects nothing, and one forgotten after closes the link open (reconcile). */
   async connectGuest(id: string): Promise<void> {
-   const grant = await env.grants.get(id);
-   if (grant === undefined) throw new Error("This shared connection is no longer saved");
-   await env.grants.activate(id);
+   const missing = () => new Error("This shared connection is no longer saved");
+   if (await env.grants.get(id) === undefined) throw missing();
    const identity = await requireIdentity();
    const print = await identityFingerprint();
+   const grant = await env.grants.activate(id);
+   if (grant === undefined) throw missing();
    disconnect();
    // The machine as a hello names it now (its owner renamed it, herdr #519): on the grant still
    // saved (SHARED WITH YOU; one forgotten or replaced meanwhile, in this tab or another, stays

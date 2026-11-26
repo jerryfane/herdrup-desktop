@@ -73,14 +73,16 @@ function validBody(body: unknown): body is ShareBody {
  return typeof b.relay === "string" && typeof b.host_id === "string" && typeof b.node_pub === "string" && typeof b.guest_id === "string";
 }
 
-/** What listeners hear: whose shares they are (null: signed out), the account's shares now, and
- *  those a pull saw deleted (by this device or another): every share the pull shows a tombstone
- *  of, seen live here or not (a put whose readback failed never was), and, after a full pull,
- *  those seen live that it no longer holds. */
+/** What listeners hear after every round, sign-in change and write here: whose shares they are
+ *  (null: signed out), the account's shares now, and those a pull saw deleted (by this device or
+ *  another): every share the pull shows a tombstone of, seen live here or not (a put whose
+ *  readback failed never was), and, after a full pull, those seen live that it no longer holds.
+ *  A pull in another tab of this browser takes the tombstones it sees: a listener reconciles with
+ *  the record (deleted), not with removed alone. */
 export interface SharesChange { account: string | null; shares: RemoteShare[]; removed: string[] }
 
 export function createShareSync(account: WebAccount, place: SharesPlace) {
- const listeners = new Set<(change: SharesChange) => void>();
+ const listeners = new Set<(change: SharesChange) => void | Promise<void>>();
  const keyOf = (acct: string) => SHARES_KEY_PREFIX + acct;
  const read = (acct: string): SharesRecord => {
   const raw = place.storage().getItem(keyOf(acct));
@@ -103,13 +105,9 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   const shown = record.shares.filter(s => !pending.has(s.id)).concat(record.pending.flatMap(p => p.body ? [{ id: p.id, rev: 0, body: p.body }] : []));
   return shown.sort((a, b) => a.id.localeCompare(b.id));
  };
- /** Tells the listeners when the shares differ from the last told, or some left. */
- let told = "";
- const tell = (change: SharesChange) => {
-  const now = JSON.stringify(change.shares);
-  if (now === told && change.removed.length === 0) return;
-  told = now;
-  for (const f of [...listeners]) f(change);
+ /** Tells the listeners, and waits for them: a sync is done once what it pulled is reconciled. */
+ const tell = async (change: SharesChange): Promise<void> => {
+  await Promise.allSettled([...listeners].map(async f => f(change)));
  };
 
  /** One round for acct: this browser's writes, then what the account holds since the last pull. */
@@ -203,7 +201,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      again = false;
      const acct = account.current?.accountID;
      if (acct === undefined) return;
-     tell(await round(acct, signal));
+     await tell(await round(acct, signal));
     } while (again);
    } finally { running = null; }
   })();
@@ -219,14 +217,14 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  sends them with the next one. */
  const send = async (acct: string): Promise<void> => {
   if (account.current?.accountID !== acct) return;
-  tell({ account: acct, shares: visible(read(acct)), removed: [] });
+  await tell({ account: acct, shares: visible(read(acct)), removed: [] });
   await sync().catch(() => {});
  };
 
  // Another sign-in shows its own account's shares (and pulls them); signed out, none.
  account.onSessionChange(() => {
   const acct = account.current?.accountID;
-  tell({ account: acct ?? null, shares: acct === undefined ? [] : visible(read(acct)), removed: [] });
+  void tell({ account: acct ?? null, shares: acct === undefined ? [] : visible(read(acct)), removed: [] });
   if (acct !== undefined && place.background) void sync().catch(() => {});
  });
  if (place.background) setInterval(() => { if (account.current) void sync().catch(() => {}); }, SYNC_EVERY_MS);
@@ -246,6 +244,12 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    if (!ran) throw new Error("This browser's storage is locked by another tab. Try again.");
    return listed;
   },
+  /** Whether this browser's record shows share id deleted from acct: seen deleted by a pull (in
+   *  any tab of it) or left here, and not put here since. */
+  deleted(acct: string, id: string): boolean {
+   const r = read(acct);
+   return !visible(r).some(s => s.id === id) && (r.gone[id] !== undefined || r.pending.some(p => p.id === id && p.deleted));
+  },
   sync,
   /** Writes a bound grant's share to the account it is bound to (Access.account). */
   put: async (access: Access) => {
@@ -263,8 +267,9 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    try { await account.enrol(key, place.name, undefined, signal); }
    catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
   },
-  /** Hears every change: after each round, each local write, and each session change. */
-  onChange(f: (change: SharesChange) => void): () => void { listeners.add(f); return () => { listeners.delete(f); }; },
+  /** Hears every change: after each round (which waits for it), each local write, and each
+   *  session change. */
+  onChange(f: (change: SharesChange) => void | Promise<void>): () => void { listeners.add(f); return () => { listeners.delete(f); }; },
  };
 }
 
