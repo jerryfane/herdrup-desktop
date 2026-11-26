@@ -18,19 +18,17 @@ import (
 // relabelHerdr is a desk connected to the guest fixture as nickname, its
 // herdr reporting guest_relabel when relabel is set. updates are the
 // guest.update params sent, in order, and done counts those herdr has
-// answered; while failing is set herdr refuses them. A channel in held holds
-// the next guest.update until it is closed; refuseHeld has herdr refuse that
-// one then.
+// answered; while failing is set herdr refuses them. A gate in held (hold)
+// holds the next guest.update until it carries that reply's outcome.
 type relabelHerdr struct {
-	d          *Desk
-	srv        *fakeherdr.Server
-	guests     *fakeherdr.Guests
-	failing    atomic.Bool
-	held       atomic.Pointer[chan struct{}]
-	refuseHeld atomic.Bool
-	done       atomic.Int32
-	mu         sync.Mutex
-	sent       []herdrapi.GuestUpdateParams
+	d       *Desk
+	srv     *fakeherdr.Server
+	guests  *fakeherdr.Guests
+	failing atomic.Bool
+	held    atomic.Pointer[chan *fakeherdr.APIError]
+	done    atomic.Int32
+	mu      sync.Mutex
+	sent    []herdrapi.GuestUpdateParams
 }
 
 func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr {
@@ -57,10 +55,9 @@ func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr 
 					return nil, &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
 				}
 				if gate := h.held.Swap(nil); gate != nil {
-					<-*gate
-					if h.refuseHeld.Swap(false) {
+					if refused := <-*gate; refused != nil {
 						h.done.Add(1)
-						return nil, &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
+						return nil, refused
 					}
 				}
 				value, err, _ := h.guests.Handle(method, raw)
@@ -131,16 +128,42 @@ func (h *relabelHerdr) pending(t *testing.T) string {
 	return h.relabels(t)[saved[0].LocalID]
 }
 
-// relabels are every relabel the desk still has to send, by profile.
+// relabels are every relabel the desk still has to send, by profile, as the
+// file holds them.
 func (h *relabelHerdr) relabels(t *testing.T) map[string]string {
 	t.Helper()
 	h.d.storeMu.Lock()
 	defer h.d.storeMu.Unlock()
-	pending, err := h.d.loadRelabels()
+	pending := map[string]string{}
+	data, err := os.ReadFile(h.d.guestRelabelsPath())
+	if os.IsNotExist(err) {
+		return pending
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &pending)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	return pending
+}
+
+// hold holds the next guest.update until release gives its outcome: nil,
+// taken; an API error, refused. The cleanup releases it whatever happened.
+func (h *relabelHerdr) hold(t *testing.T) (release func(*fakeherdr.APIError)) {
+	gate := make(chan *fakeherdr.APIError, 1)
+	h.held.Store(&gate)
+	var once sync.Once
+	release = func(outcome *fakeherdr.APIError) { once.Do(func() { gate <- outcome }) }
+	t.Cleanup(func() { release(nil) })
+	return release
+}
+
+// live is the desk's open connection.
+func (h *relabelHerdr) live() *link {
+	h.d.mu.Lock()
+	defer h.d.mu.Unlock()
+	return h.d.link
 }
 
 // labels are the machine labels of the fixture's active guests and pending
@@ -249,26 +272,55 @@ func TestAFailedRelabelIsSentAgainOnTheNextConnect(t *testing.T) {
 	}
 }
 
-// #556: a rename while the previous one's relabel is out goes after it, never
-// before: one relabel of a machine is out at a time, and the newest name is
-// the last one herdr takes. First is held on a channel until Second is either
-// sent beside it (two out at once: the bug) or queued behind it; no timing.
-func TestANewerRenameIsTheLastRelabelHerdrTakes(t *testing.T) {
-	h := newRelabelHerdr(t, "Old", true)
-	release := make(chan struct{})
-	h.held.Store(&release)
-	h.rename(t, "First")
-	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) == 1 })
-	h.rename(t, "Second")
-	h.queuedBehind(t)
-	close(release)
-	waitFor(t, "both relabels answered", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
-	var sent []string
-	for _, p := range h.updates() {
-		sent = append(sent, *p.MachineLabel)
-	}
-	if got := h.labels(t); !slices.Equal(sent, []string{"First", "Second"}) || !slices.Equal(got, everywhere("Second")) {
-		t.Fatalf("sent %q, shares named %q; want First then Second, and Second everywhere", sent, got)
+// #556, #561, #563: a rename while the previous one's relabel is out is
+// queued behind it, never sent beside it, and goes once that one is done.
+// Taken or refused (an answer), it goes at once on the live connection, so
+// the newest name is the last one herdr takes and nothing waits. Unanswered
+// (the client's deadline passed; herdr may still apply it, and does here,
+// late), it doesn't go on that connection: it waits for the next one, which
+// sends it. First is held on a gate that carries its outcome; no timing.
+func TestARenameQueuedBehindARelabelOut(t *testing.T) {
+	refusal := &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
+	for _, c := range []struct {
+		name       string
+		outcome    *fakeherdr.APIError
+		unanswered bool
+	}{
+		{name: "taken"},
+		{name: "refused", outcome: refusal},
+		{name: "unanswered", unanswered: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelabelHerdr(t, "Old", true)
+			if c.unanswered {
+				h.d.relabelTimeout = 300 * time.Millisecond
+			}
+			release := h.hold(t)
+			h.rename(t, "First")
+			waitFor(t, "the first relabel out", func() bool { return len(h.updates()) >= 1 })
+			h.rename(t, "Second")
+			h.queuedBehind(t)
+			if c.unanswered {
+				h.idle(t, "the sender to give up on the unanswered relabel")
+				release(nil)
+				waitFor(t, "the late relabel applied", func() bool { return h.done.Load() == 1 })
+				if n, pending, got := len(h.updates()), h.pending(t), h.labels(t); n != 1 || pending != "Second" || !slices.Equal(got, everywhere("First")) {
+					t.Fatalf("after an unanswered relabel: %d sent, pending %q, shares %q; want Second kept for the next connection", n, pending, got)
+				}
+				h.d.relabelTimeout = 0 // the next connection's relabel waits for its answer
+				h.reconnect(t)
+			} else {
+				release(c.outcome)
+			}
+			waitFor(t, "Second taken", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
+			var sent []string
+			for _, p := range h.updates() {
+				sent = append(sent, *p.MachineLabel)
+			}
+			if got := h.labels(t); !slices.Equal(sent, []string{"First", "Second"}) || !slices.Equal(got, everywhere("Second")) {
+				t.Fatalf("sent %q, shares named %q; want First then Second, and Second everywhere", sent, got)
+			}
+		})
 	}
 }
 
@@ -292,32 +344,20 @@ func (h *relabelHerdr) queuedBehind(t *testing.T) {
 	}
 }
 
-// #561: a refused relabel doesn't strand a newer rename queued behind it: the
-// newer one goes on the live connection at once, and is the name herdr
-// keeps; nothing is left for the next connect.
-func TestARenameQueuedBehindARefusedRelabelGoesAtOnce(t *testing.T) {
-	h := newRelabelHerdr(t, "Old", true)
-	release := make(chan struct{})
-	h.held.Store(&release)
-	h.refuseHeld.Store(true)
-	h.rename(t, "First")
-	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) == 1 })
-	h.rename(t, "Second")
-	h.queuedBehind(t)
-	close(release)
-	waitFor(t, "the newer rename sent and taken", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
-	var sent []string
-	for _, p := range h.updates() {
-		sent = append(sent, *p.MachineLabel)
-	}
-	if got := h.labels(t); !slices.Equal(sent, []string{"First", "Second"}) || !slices.Equal(got, everywhere("Second")) {
-		t.Fatalf("sent %q, shares named %q; want First refused, then Second taken", sent, got)
-	}
+// idle waits for the desk's relabel senders to end.
+func (h *relabelHerdr) idle(t *testing.T, what string) {
+	t.Helper()
+	waitFor(t, what, func() bool {
+		h.d.relabelMu.Lock()
+		defer h.d.relabelMu.Unlock()
+		return len(h.d.relabeling) == 0
+	})
 }
 
-// Entries of the address-keyed format (#554, before #557) are bound to no
-// profile: the next load retires them and writes them out of the file; they
-// are never matched to the profile at that address, so nothing is sent.
+// Entries of no saved profile, such as the address-keyed format (#554,
+// before #557), are retired by the read: written out of the file, never
+// matched to the profile at that address, so nothing is sent. The sender
+// runs here, synchronously, on the live connection.
 func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", true)
 	h.rename(t, "Named")
@@ -332,16 +372,41 @@ func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.reconnect(t)
-	waitFor(t, "the address-keyed entry retired", func() bool {
-		h.d.storeMu.Lock()
-		defer h.d.storeMu.Unlock()
-		raw, err := os.ReadFile(h.d.guestRelabelsPath())
-		return err == nil && string(raw) == "{}"
-	})
-	time.Sleep(300 * time.Millisecond)
-	if n := len(h.updates()); n != 1 {
-		t.Fatalf("%d guest.update calls; the retired entry must send none", n)
+	h.idle(t, "the rename's sender to end")
+	h.d.relabelGuests(h.live())
+	if p, n := h.relabels(t), len(h.updates()); len(p) != 0 || n != 1 {
+		t.Fatalf("relabels %v, %d guest.update calls; want the address-keyed entry retired and none sent", p, n)
+	}
+}
+
+// #563: a retired entry whose removal can't be written (the atomic write's
+// temp file can't be opened) doesn't hold back the current profile's relabel
+// beside it: it is sent all the same, and the failure is only logged.
+func TestARelabelBesideALegacyEntryGoesWhenTheCleanupCantBeWritten(t *testing.T) {
+	h := newRelabelHerdr(t, "Old", true)
+	h.failing.Store(true)
+	h.rename(t, "Named")
+	waitFor(t, "the rename refused", func() bool { return h.done.Load() == 1 })
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || h.pending(t) != "Named" {
+		t.Fatalf("saved %+v, %v, pending %v", saved, err, h.relabels(t))
+	}
+	h.d.storeMu.Lock()
+	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(`{"`+saved[0].LocalID+`":"Named","`+saved[0].ID+`":"Old name"}`))
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := h.d.guestRelabelsPath() + ".tmp"
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(blocked) })
+	h.failing.Store(false)
+	h.idle(t, "the rename's sender to end")
+	h.d.relabelGuests(h.live())
+	if n, got := len(h.updates()), h.labels(t); n != 2 || *h.updates()[1].MachineLabel != "Named" || !slices.Equal(got, everywhere("Named")) {
+		t.Fatalf("%d guest.update calls, shares named %q; want Named sent despite the cleanup", n, got)
 	}
 }
 
@@ -399,7 +464,11 @@ func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 		t.Helper()
 		d.storeMu.Lock()
 		defer d.storeMu.Unlock()
-		p, err := d.loadRelabels()
+		st, err := d.load()
+		var p map[string]string
+		if err == nil {
+			p, err = d.loadRelabels(st)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -196,9 +196,12 @@ type Desk struct {
 
 	// relabeling is the guest relabels being sent, by profile (LocalID): at
 	// most one at a time each; true asks the one sending to send again once
-	// it is done (desk_guest_relabel.go). Under relabelMu.
-	relabelMu  sync.Mutex
-	relabeling map[string]bool
+	// it is done (desk_guest_relabel.go). Under relabelMu. relabelTimeout,
+	// when set, bounds how long a relabel waits for herdr's answer (the
+	// bridge's own call limit otherwise); replaced in tests.
+	relabelMu      sync.Mutex
+	relabeling     map[string]bool
+	relabelTimeout time.Duration
 
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
@@ -349,6 +352,9 @@ type link struct {
 	// the first list: the agent menus' agent_avatar and
 	// agent_session_transfer (desk_agent_actions.go).
 	caps *herdrapi.ServerCapabilities
+	// relabelUnsure is the connection (l.client) a guest relabel went
+	// unanswered on, which takes no more (desk_guest_relabel.go).
+	relabelUnsure *bridge.Client
 	// gram is the Gram state of a shared agent in the combined guest Gram
 	// (guestGramHub); nil for the connection Desk.gram follows. cancelGram
 	// ends that shared agent's reads.
@@ -785,9 +791,10 @@ func (d *Desk) RemoveMachine(id string) error {
 		// Within storeMu, as the save paths' allow: the cache's eligibility ends as the saved
 		// machines do, whatever order a concurrent save and this removal run in.
 		d.boards.forget(id)
-		// A relabel not yet sent goes with its profile (desk_guest_relabel.go).
+		// A relabel not yet sent goes with its profile (desk_guest_relabel.go):
+		// reading the relabels with the profile gone retires it.
 		if localID != "" {
-			if err := d.dropRelabel(localID); err != nil {
+			if _, err := d.loadRelabels(st); err != nil {
 				log.Printf("guest relabel: %s: %v", id, err)
 			}
 		}
