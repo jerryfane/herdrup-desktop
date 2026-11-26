@@ -87,6 +87,9 @@ func machineID(m Machine) string {
 type machineStore struct {
 	Active   string    `json:"active"`
 	Machines []Machine `json:"machines"`
+	// RelabelsFolded records an older build's relabel queue folded into
+	// Machines (foldRelabels, desk_guest_relabel.go), in the same write.
+	RelabelsFolded bool `json:"relabelsFolded,omitempty"`
 }
 
 func (s *machineStore) find(id string) int {
@@ -665,7 +668,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	}
 	// The relabel queue of an older build becomes the profiles' (their floor
 	// for the revision below), and goes with this write.
-	migrated := d.migrateRelabels(&st)
+	folded := d.foldRelabels(&st)
 	id := machineID(m)
 	index := st.find(replacing)
 	if replacing != "" && index < 0 {
@@ -703,19 +706,17 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
-	if migrated {
+	if folded {
 		d.retireRelabelQueue()
 	}
-	// The live link to this machine names it to its guests as saved now: a
-	// share view opened after a rename sends the new name (#523), and the
-	// shares it has already are relabeled. A view already open keeps the name
-	// it opened with.
+	// The live link names its machine to its guests as saved now: a share
+	// view opened after a rename (or a fold) sends the new name and revision
+	// (#523), and the shares it has already are relabeled. A view already
+	// open keeps the name it opened with.
 	d.mu.Lock()
-	if l := d.link; l != nil && l.guest == nil && l.id == id {
-		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
-		if relabel {
-			l.work.Go(func() { d.relabelGuests(l) })
-		}
+	d.followSavedLabel(st)
+	if l := d.link; relabel && l != nil && l.guest == nil && l.id == id {
+		l.work.Go(func() { d.relabelGuests(l) })
 	}
 	d.mu.Unlock()
 	if replacing != "" && replacing != id {
@@ -738,6 +739,9 @@ func (d *Desk) SelectMachine(id, password string) error {
 		d.storeMu.Unlock()
 		return err
 	}
+	// The connection starts with the profiles as an older build's relabel
+	// queue leaves them (its invite revision above every one sent).
+	folded := d.foldRelabels(&st)
 	i := st.find(id)
 	if i < 0 {
 		d.storeMu.Unlock()
@@ -756,6 +760,9 @@ func (d *Desk) SelectMachine(id, password string) error {
 	d.mu.Unlock()
 	st.Active = id
 	err = d.store(st)
+	if err == nil && folded {
+		d.retireRelabelQueue()
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
@@ -1030,6 +1037,7 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	if err != nil {
 		return m, err
 	}
+	folded := d.foldRelabels(&st)
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
 		// The page doesn't hold the sync id: a reconnect keeps the machine's,
@@ -1044,6 +1052,9 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	st.Active = id
 	if err := d.store(st); err != nil {
 		return m, err
+	}
+	if folded {
+		d.retireRelabelQueue()
 	}
 	d.boards.allow(id)
 	d.syncMachinesSoon()

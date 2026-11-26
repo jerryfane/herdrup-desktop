@@ -22,15 +22,16 @@ package main
 // timeout, a lost reply; herdr may still apply it, even after a reconnect,
 // in any order) can never overwrite a newer one: the newest goes at once, on
 // the same connection. It is settled when the reply shows every share and
-// invite either at its revision with its label, or above its revision (the
-// rule, #593): a revision above this profile's own is never this desk's
+// invite either at its revision with its label, or holding a label from
+// elsewhere (the rule, #593): one above its revision is never this desk's
 // (each rename's is above all before it, a queue of an older build's
 // included, and none is past the clock), so it is a newer label from
-// elsewhere (another of the owner's devices, herdr's CLI), which stands and
-// is not taken for this one's. One below it leaves the label to send again
-// on the next connect; another label at its very revision (a rename
-// elsewhere in the same ms, or one this desk sent before account sync
-// renamed the machine) has it sent again at once, at a new revision.
+// another of the owner's devices or herdr's CLI; another label at its very
+// revision is one written elsewhere in the same ms (or by this desk before
+// account sync renamed the machine), which herdr, taking a label only above
+// a revision, already kept. Either stands: the relabel is settled, not
+// taken, and not sent again. One below its revision leaves it to send again
+// on the next connect.
 // Without guest_relabel_rev, "done" is an answer (taken or refused)
 // or a request never written: after one left unanswered nothing more goes on
 // that connection and the newest waits for the next one (#563), which a
@@ -71,26 +72,35 @@ func relabelPending(m Machine) bool { return m.LocalID != "" && m.LabelRev > m.L
 
 // guestRelabelsPath is guest-relabels.json, the relabel queue of the builds
 // before #592: by profile (Machine.LocalID), the label alone or {label, rev}.
-// It is read only to fold it into the profiles (migrateRelabels).
+// It is read only to fold it into the profiles (foldRelabels).
 func (d *Desk) guestRelabelsPath() string { return filepath.Join(d.dir, "guest-relabels.json") }
 
-// migrateRelabels folds an older build's relabel queue into st: each saved
-// profile it names is to be sent again, its LabelRev raised to the entry's
-// revision (the file's time for an entry without one) if that is higher, but
-// never past now, so the next rename's revision is above everything this
-// desk ever sent (#593). The profile's label, not the entry's, is what goes
-// (#592: the queue only ever marked it unsent). Entries of no saved profile
-// (removed, replaced, #554's user@host:port keys) are dropped. migrated
-// reports a queue to retire once st is stored (retireRelabelQueue). d.storeMu
+// foldRelabels folds an older build's relabel queue into st, once: each
+// saved profile it names is to be sent again, its LabelRev raised to the
+// entry's revision (the file's time for an entry without one) if that is
+// higher, but never past now, so the next rename's revision is above
+// everything this desk ever sent (#593). The profile's label, not the
+// entry's, is what goes (#592: the queue only ever marked it unsent).
+// Entries of no saved profile (removed, replaced, #554's user@host:port
+// keys) are dropped. st.RelabelsFolded records the fold in the same write
+// as the profiles, so it never runs again (an older build's write drops the
+// mark, and its queue is folded on the next upgrade); deleting the queue
+// after (retireRelabelQueue) is only cleanup. folded reports st changed, to
+// store; a queue that can't be read is left for the next load. d.storeMu
 // must be held.
-func (d *Desk) migrateRelabels(st *machineStore) (migrated bool) {
+func (d *Desk) foldRelabels(st *machineStore) (folded bool) {
+	if st.RelabelsFolded {
+		return false
+	}
 	path := d.guestRelabelsPath()
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("guest relabel: reading the older relabel queue: %v", err)
-		}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("guest relabel: reading the older relabel queue: %v", err)
 		return false
+	}
+	st.RelabelsFolded = true
+	if err != nil {
+		return true
 	}
 	var entries map[string]json.RawMessage
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -121,35 +131,25 @@ func (d *Desk) migrateRelabels(st *machineStore) (migrated bool) {
 	return true
 }
 
-// retireRelabelQueue deletes the older build's relabel queue, its profiles
-// stored. A failure is logged: folding it in again is harmless. d.storeMu
-// must be held.
+// retireRelabelQueue deletes the older build's relabel queue once st's fold
+// of it is stored. A failure is logged and harmless: the fold is recorded.
+// d.storeMu must be held.
 func (d *Desk) retireRelabelQueue() {
 	if err := os.Remove(d.guestRelabelsPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("guest relabel: removing the older relabel queue: %v", err)
 	}
 }
 
-// loadRelabeling is d.load with an older build's relabel queue folded in and
-// stored (migrateRelabels), the live link's invite revision following it.
-// d.storeMu must be held.
-func (d *Desk) loadRelabeling() (machineStore, error) {
-	st, err := d.load()
-	if err != nil || !d.migrateRelabels(&st) {
-		return st, err
-	}
-	if err := d.store(st); err != nil {
-		return st, err
-	}
-	d.retireRelabelQueue()
-	d.mu.Lock()
+// followSavedLabel has the live connection name its machine to guests as
+// st saves it: the invite label and its revision a share view opened from
+// now on sends. Called with every stored change of a LabelRev not made
+// before the connection started (a rename, a fold). d.mu must be held.
+func (d *Desk) followSavedLabel(st machineStore) {
 	if l := d.link; l != nil && l.guest == nil {
 		if i := st.find(l.id); i >= 0 {
-			l.shareLabelRev = st.Machines[i].LabelRev
+			l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
 		}
 	}
-	d.mu.Unlock()
-	return st, nil
 }
 
 // relabelOutcome is what one relabel came to, for the sender (relabelGuests).
@@ -178,7 +178,7 @@ const (
 // machine replaced l, it hands the rest to that connection's work.
 func (d *Desk) relabelGuests(l *link) {
 	d.storeMu.Lock()
-	st, err := d.loadRelabeling()
+	st, err := d.load()
 	d.storeMu.Unlock()
 	i := -1
 	if err == nil {
@@ -202,6 +202,7 @@ func (d *Desk) relabelGuests(l *link) {
 	resent := false
 	for {
 		outcome := d.relabelOnce(l, profile)
+		relabelSent(l)
 		d.relabelMu.Lock()
 		next := d.relabeling[profile] || outcome == relabelUnsure && !resent
 		if outcome == relabelUnsure {
@@ -217,6 +218,10 @@ func (d *Desk) relabelGuests(l *link) {
 		d.relabelMu.Unlock()
 	}
 }
+
+// relabelSent runs after each relabel a sender for l made, before it decides
+// what comes next: a seam for tests, which hold a sender there.
+var relabelSent = func(*link) {}
 
 // replaced reports whether l is no longer the live connection.
 func (d *Desk) replaced(l *link) bool {
@@ -254,7 +259,7 @@ func (d *Desk) relabelOnce(l *link, profile string) relabelOutcome {
 	}
 	ordered := herdrapi.CapabilityGuestRelabelRev.Supported(caps)
 	d.storeMu.Lock()
-	st, err := d.loadRelabeling()
+	st, err := d.load()
 	d.storeMu.Unlock()
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
@@ -294,28 +299,8 @@ func (d *Desk) relabelOnce(l *link, profile string) relabelOutcome {
 		case relabelBelow:
 			log.Printf("guest relabel: %s: a share or invite is below %q's revision %d (sent again on the next connect)", l.id, label, sent)
 			return relabelDone
-		case relabelTied:
-			// Another label at this very revision (a rename elsewhere in the
-			// same ms, or one this desk sent before account sync renamed the
-			// machine): this label goes again at a new revision, at once.
-			d.storeMu.Lock()
-			if st, err = d.load(); err == nil {
-				if i := st.find(l.id); i >= 0 && st.Machines[i].LocalID == profile && st.Machines[i].LabelRev == sent {
-					st.Machines[i].LabelRev = nextLabelRev(sent)
-					err = d.store(st)
-				}
-			}
-			d.storeMu.Unlock()
-			if err != nil {
-				log.Printf("guest relabel: %s: %v", l.id, err)
-				return relabelDone
-			}
-			d.relabelMu.Lock()
-			d.relabeling[profile] = true
-			d.relabelMu.Unlock()
-			return relabelDone
 		case relabelSuperseded:
-			log.Printf("guest relabel: %s: a newer label than %q (revision %d) stands", l.id, label, sent)
+			log.Printf("guest relabel: %s: another label than %q stands at or above its revision %d", l.id, label, sent)
 		}
 	}
 	d.storeMu.Lock()
@@ -338,12 +323,10 @@ type relabelReach int
 const (
 	// relabelTaken: every share and invite holds the label at its revision.
 	relabelTaken relabelReach = iota
-	// relabelSuperseded: every one holds it, or a newer label (above its
-	// revision), which stands.
+	// relabelSuperseded: none is below its revision, and one holds a label
+	// from elsewhere (above its revision, or another label at it), which
+	// stands.
 	relabelSuperseded
-	// relabelTied: one holds another label at its very revision; none is
-	// below it.
-	relabelTied
 	// relabelBelow: one is below its revision.
 	relabelBelow
 )
@@ -354,12 +337,10 @@ func relabelReached(reply herdrapi.ResponseResultGuestRelabeled, label string, r
 	reach := relabelTaken
 	record := func(recLabel string, recRev uint64) {
 		switch {
-		case recRev > rev:
-			reach = max(reach, relabelSuperseded)
 		case recRev < rev:
 			reach = relabelBelow
-		case recLabel != label:
-			reach = max(reach, relabelTied)
+		case recRev > rev || recLabel != label:
+			reach = max(reach, relabelSuperseded)
 		}
 	}
 	for _, g := range reply.Guests {

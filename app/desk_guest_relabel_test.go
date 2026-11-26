@@ -186,12 +186,21 @@ func pendingRelabels(t *testing.T, d *Desk) map[string]string {
 	return labels
 }
 
-// legacyQueue writes guest-relabels.json as a build before #592 left it.
+// legacyQueue writes guest-relabels.json as a build before #592 left it,
+// with the saved profiles as that build wrote them (no fold recorded).
 func (h *relabelHerdr) legacyQueue(t *testing.T, body string) {
 	t.Helper()
 	h.d.storeMu.Lock()
 	defer h.d.storeMu.Unlock()
-	if err := writeFileAtomic(h.d.guestRelabelsPath(), []byte(body)); err != nil {
+	st, err := h.d.load()
+	if err == nil {
+		st.RelabelsFolded = false
+		err = h.d.store(st)
+	}
+	if err == nil {
+		err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(body))
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -579,7 +588,14 @@ func TestARelabelQueuedBeforeRevisionsGoesAtTheFilesTime(t *testing.T) {
 	if want <= renamed {
 		t.Fatalf("the file's time %d is not above the rename's %d", want, renamed)
 	}
-	h.reconnect(t)
+	// Connected as the page connects a machine (Connect): the queue is
+	// folded then too.
+	h.d.Disconnect()
+	lists := h.count("agent.list")
+	if err := h.d.Connect(saved[0].Machine, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the connection's first list", func() bool { return h.count("agent.list") > lists })
 	waitFor(t, "the profile's label sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
 	h.answered(t)
 	h.idle(t, "the sender to end")
@@ -622,8 +638,7 @@ func TestAnInviteCarriesItsLabelsRevision(t *testing.T) {
 
 // Entries of no saved profile in an older build's queue, such as the
 // address-keyed format (#554, before #557), are retired with it: never
-// matched to the profile at that address, so nothing is sent. The sender
-// runs here, synchronously, on the live connection.
+// matched to the profile at that address, so the next connect sends nothing.
 func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", true)
 	h.rename(t, "Named")
@@ -632,11 +647,90 @@ func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
-	h.legacyQueue(t, `{"`+saved[0].ID+`":"Old name"}`)
 	h.idle(t, "the rename's sender to end")
-	h.d.relabelGuests(h.live())
+	h.legacyQueue(t, `{"`+saved[0].ID+`":"Old name"}`)
+	h.reconnect(t)
+	time.Sleep(300 * time.Millisecond)
 	if n := len(h.updates()); n != 1 || !h.legacyQueueGone() || h.pending(t) != "" {
 		t.Fatalf("%d guest.update calls, queue gone %v, pending %q; the address-keyed entry must send none and go", n, h.legacyQueueGone(), h.pending(t))
+	}
+}
+
+// #594: an older build's queue is folded in once, recorded with the
+// profiles it changed. A queue whose deletion failed (here: written back
+// after the fold, its time ahead of the clock) changes nothing on a later
+// load: no profile is marked unsent again, no revision raised, nothing sent.
+func TestARelabelQueueIsFoldedInOnce(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "Named")
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	queue := `{"` + saved[0].LocalID + `":"Legacy"}`
+	h.legacyQueue(t, queue)
+	h.reconnect(t)
+	waitFor(t, "Named sent and taken", func() bool { return len(h.updates()) == 1 && h.pending(t) == "" })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	h.d.storeMu.Lock()
+	folded, err := os.ReadFile(h.d.machinesPath())
+	if err == nil {
+		err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(queue))
+	}
+	if err == nil {
+		ahead := time.Now().Add(time.Hour)
+		err = os.Chtimes(h.d.guestRelabelsPath(), ahead, ahead)
+	}
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond) // a fold now would stamp a later now
+	h.reconnect(t)
+	time.Sleep(300 * time.Millisecond)
+	h.d.storeMu.Lock()
+	again, err := os.ReadFile(h.d.machinesPath())
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, pending := len(h.updates()), h.pending(t); n != 1 || pending != "" || string(again) != string(folded) {
+		t.Fatalf("%d guest.update calls, pending %q, profiles\n%s\nthen\n%s\nwant the fold once, nothing changed", n, pending, folded, again)
+	}
+}
+
+// #594: the live connection's invite label and revision follow the saved
+// profile whenever its LabelRev changes, a fold made by another save
+// included, so a share view opened then carries the folded revision.
+func TestAnInviteFollowsAFoldedRevision(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.rename(t, "Named")
+	waitFor(t, "Named taken", func() bool { return h.done.Load() == 1 && h.pending(t) == "" })
+	h.idle(t, "the sender to end")
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	floor := uint64(time.Now().UnixMilli())
+	h.legacyQueue(t, fmt.Sprintf(`{%q:{"label":"Legacy","rev":%d}}`, saved[0].LocalID, floor))
+	if err := h.d.SaveMachine(Machine{Nickname: "Other", Host: "other", User: "root", Port: 22, KeyPath: "/k"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	b := h.d.Board()
+	if _, err := h.d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: "w1:p1"}, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.CreateGuestInvite(context.Background(), "v", "Taylor", "Owner", false); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	p := h.invites[len(h.invites)-1]
+	h.mu.Unlock()
+	if p.MachineLabel != "Named" || p.MachineLabelRev == nil || *p.MachineLabelRev != floor {
+		t.Fatalf("an invite after the fold: %+v (rev %v); want Named at the folded %d", p, p.MachineLabelRev, floor)
 	}
 }
 
@@ -744,10 +838,11 @@ func TestARenameGoesAboveItsProfilesRevision(t *testing.T) {
 	}
 }
 
-// #593, the rule: a share at this label's very revision holding another
-// label hasn't taken it, so it isn't settled; it goes again at once, at a
-// new revision, and is taken.
-func TestARelabelTiedWithAnotherLabelGoesAgainAbove(t *testing.T) {
+// #593, #594, the rule: another label at this label's very revision is one
+// written elsewhere that herdr kept (it takes a label only above a
+// revision). It stands: the relabel is settled, not taken, and not sent
+// again.
+func TestARelabelTiedWithAnotherLabelStands(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
 	h.rename(t, "Mine")
@@ -756,24 +851,42 @@ func TestARelabelTiedWithAnotherLabelGoesAgainAbove(t *testing.T) {
 		t.Fatal(apiErr)
 	}
 	h.reconnect(t)
-	waitFor(t, "Mine sent again", func() bool { return len(h.updates()) >= 2 && h.pending(t) == "" })
+	waitFor(t, "Mine sent and settled", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
 	h.answered(t)
 	h.idle(t, "the sender to end")
 	got := h.updates()
-	if len(got) != 2 || *got[0].MachineLabelRev != rev || *got[1].MachineLabel != "Mine" || *got[1].MachineLabelRev <= rev {
-		t.Fatalf("sent %+v; want Mine at %d, then above it", got, rev)
+	if len(got) != 1 || *got[0].MachineLabel != "Mine" || *got[0].MachineLabelRev != rev || h.labelRev(t) != rev {
+		t.Fatalf("sent %+v, revision %d; want Mine once, at %d", got, h.labelRev(t), rev)
 	}
-	if labels := h.labels(t); !slices.Equal(labels, everywhere("Mine")) {
-		t.Fatalf("shares %q; want Mine everywhere", labels)
+	if labels := h.labels(t); !slices.Equal(labels, everywhere("Other")) {
+		t.Fatalf("shares %q; want Other kept everywhere", labels)
 	}
 }
 
-// P3 (#591 review): a sender left on a link that another connection to the
-// machine replaced (no Disconnect) hands the relabel to the replacement
-// link's work: it goes out there while the old link's work ends.
+// P3 (#591 review): a sender still on a link another connection to the
+// machine replaced (no Disconnect) hands what is left to the replacement
+// link's work: the next request goes out as that link's work while the old
+// link's work ends. The old link's request is held at herdr until the
+// replacement starts, and its sender (relabelSent) until the replacement's
+// own first-list sender queued behind it.
 func TestARelabelOfAReplacedLinkGoesOnWithTheNewLinksWork(t *testing.T) {
+	var paused atomic.Pointer[link]
+	proceed := make(chan struct{})
+	var once sync.Once
+	resume := func() { once.Do(func() { close(proceed) }) }
+	relabelSent = func(l *link) {
+		if paused.Load() == l {
+			<-proceed
+		}
+	}
+	t.Cleanup(func() { relabelSent = func(*link) {} })
 	h := newOrderedRelabelHerdr(t, "Old")
+	t.Cleanup(resume)
 	old := h.live()
+	h.hold(t)
+	h.rename(t, "First")
+	waitFor(t, "First out on the old link", func() bool { return len(h.updates()) == 1 })
+	paused.Store(old) // its sender, out with First, holds once it returns
 	saved, err := h.d.Machines()
 	if err != nil || len(saved) != 1 {
 		t.Fatalf("saved %+v, %v", saved, err)
@@ -781,39 +894,24 @@ func TestARelabelOfAReplacedLinkGoesOnWithTheNewLinksWork(t *testing.T) {
 	if err := h.d.SelectMachine(saved[0].ID, ""); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the replacement's first list", func() bool {
+	// The replacement listed: its first list's sender found the old one
+	// out and queued behind it.
+	h.queuedBehind(t)
+	waitFor(t, "the replacement listed", func() bool {
 		h.d.mu.Lock()
 		defer h.d.mu.Unlock()
-		return h.d.link != nil && h.d.link != old && h.d.link.caps != nil
+		return h.d.link != old && h.d.link.caps != nil
 	})
-	// The sender that first list starts finds nothing to send.
-	time.Sleep(300 * time.Millisecond)
-	h.idle(t, "the replacement's own sender to end")
-	// A rename stored without a sender of its own: the one left on old is
-	// what carries it.
-	h.d.storeMu.Lock()
-	st, err := h.d.load()
-	if err == nil {
-		m := &st.Machines[0]
-		m.Nickname, m.LocalID, m.LabelRev = "Handed", newLocalID(), nextLabelRev(m.LabelRev)
-		err = h.d.store(st)
-	}
-	h.d.storeMu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
 	h.hold(t)
-	if !old.work.Go(func() { h.d.relabelGuests(old) }) {
-		t.Fatal("the old link's work took nothing")
-	}
-	waitFor(t, "Handed out on the replacement", func() bool { return len(h.updates()) == 1 })
-	waitFor(t, "the old link's work to end", func() bool {
+	resume()
+	waitFor(t, "First again, on the replacement", func() bool { return len(h.updates()) == 2 })
+	waitFor(t, "the old link's work to end, the request still out", func() bool {
 		old.work.mu.Lock()
 		defer old.work.mu.Unlock()
 		return old.work.running == 0
 	})
-	if p := h.updates()[0]; *p.MachineLabel != "Handed" {
-		t.Fatalf("sent %+v; want Handed", p)
+	if p := h.updates()[1]; *p.MachineLabel != "First" || h.live() == old {
+		t.Fatalf("sent %+v; want First on the replacement", p)
 	}
 }
 
