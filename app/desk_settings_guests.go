@@ -87,7 +87,7 @@ func (d *Desk) SetGuestGramSharing(ctx context.Context, token, machine, guestID 
 	}
 	ctx, cancel := viewRequest(ctx, view.ctx)
 	defer cancel()
-	_, err = view.client.GuestUpdate(ctx, herdrapi.GuestUpdateParams{Machine: guestMachineAlias(machine), GuestID: &guestID, ShareGram: &share})
+	_, err = view.client.GuestShareGram(ctx, engine.GuestShareGramParams{Machine: guestMachineAlias(machine), GuestID: guestID, ShareGram: share})
 	return err
 }
 
