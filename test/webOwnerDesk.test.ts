@@ -2,6 +2,7 @@
 // whose host admits owner hellos as herdr's guest/owner.rs does and serves agent.list.
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { isGuestPaused } from "../src/guestPaused";
+import { cursorExpired, readLive } from "../src/interactionModel";
 import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
@@ -791,6 +792,39 @@ test("the Inbox's and a topic's transcript ask for relay entries only where the 
     : { kind: "note", id: "r1", ts_ms: 1, from: "Board pack", text: "<irc>\nThe intro is drafted." });
   } finally { desk.disconnectOwner(); relay.stop(); }
  }
+});
+
+// herdr 31bd88e6 answers cursor_expired for a cursor read before its update. On the web the
+// desk's rejection is the same "herdr: cursor_expired: …" as the desktop's, so the page's live
+// read (readLive) starts the Inbox and a topic over from their newest page; an older page's
+// rejection is one the page stops paging on (cursorExpired).
+test("the web desk's cursor_expired starts the Inbox and a topic over from their newest page", async () => {
+ const asked: Record<string, unknown>[] = [];
+ const relay = host({ other: (session, req) => {
+  const params = (req as Request & { params?: Record<string, unknown> }).params ?? {};
+  if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.6", capabilities: { agent_transcript: true, agent_transcript_topic: true } } });
+  else if (req.method === "agent.transcript") {
+   asked.push(params);
+   if (params.after !== undefined || params.before !== undefined) answer(session, req, { error: { code: "cursor_expired", message: "the transcript changed under this cursor; reload the newest page" } });
+   else answer(session, req, { result: { type: "agent_transcript", agent: "omp", pane_id: "p1", session_id: "s", after: "2", entries: [{ kind: "reply", id: "n1", ts_ms: 2, text: "The newest page" }] } });
+  } else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+ } });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  const held = { after: "1", session_id: "s", entries: [{ kind: "reply", id: "old", ts_ms: 1, text: "Projected before the update" }] };
+  for (const read of [
+   (after: string) => desk.chatTranscript("view-1", after, "", "", after ? "b0" : ""),
+   (after: string) => desk.topicTranscript("view-1", "t1", after, "", after ? "b0" : ""),
+  ]) {
+   const live = await readLive(held, () => ({ entries: held.entries, hasOlder: true }), async after => JSON.parse(await read(after)));
+   expect([live!.reset, live!.entries.map(e => e.id)]).toEqual([true, ["n1"]]);
+  }
+  expect(asked.map(p => [p.after ?? "", p.topic ?? ""])).toEqual([["1", ""], ["", ""], ["1", "t1"], ["", "t1"]]);
+  for (const older of [desk.chatTranscript("view-1", "", "b0", "", ""), desk.topicTranscript("view-1", "t1", "", "b0", "")]) {
+   expect(cursorExpired(await older.then(() => null, (error: unknown) => error))).toBe(true);
+  }
+ } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
 // #369 review, on the web: the desk decides at agent.avatar.get, by type, and says it as its

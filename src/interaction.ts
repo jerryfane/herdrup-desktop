@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, cursorExpired, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
@@ -207,6 +207,12 @@ events.stateChanged.on(state => {
  }, true);
 }
 export function interactionVisible() { return current !== null; }
+/** ⌘R (Ctrl+R off the Mac) on the desktop: the shown agent page's Refresh. False without one. */
+export function refreshInteraction(): boolean {
+ if (!current || root.hidden) return false;
+ current.refresh();
+ return true;
+}
 // A page still leaving (closing) stays drawn until its animation ends.
 export function showInteraction(show: boolean) { if (root) root.hidden = !show || (!current && !closing); if (!show) { current?.dictation.stop(); current?.dismissChatSheets(); } }
 let closing: Animation | null = null;
@@ -334,6 +340,9 @@ class Detail {
  private readonly tail = new ChatTail();
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
  private chatFailed = false;
+ /** The chat's next live read starts over from its newest page (readLive with no held page),
+  *  dropping its history and cursors: Refresh, or an older page whose cursor herdr expired. */
+ private chatRestart = false;
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
  chatSurface = el("div", "chat-surface");
@@ -713,11 +722,7 @@ class Detail {
   back.className = "pane-back"; back.setAttribute("aria-label", "Back");
   back.append(await symbol("chevron.left", 16, "semibold"));
   const capsule = el("div", "pane-header-capsule");
-  const refresh = button("", () => {
-   if (this.mode === "terminal") void this.reconnectTerminal();
-   else if (this.mode === "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
-   else void this.refreshChat(this.generation);
-  });
+  const refresh = button("", () => this.refresh());
   refresh.setAttribute("aria-label", "Refresh");
   refresh.append(await symbol("arrow.clockwise", 15, "medium"));
   // InlineSearchToggle (InlineSearchField.swift): 15 pt semibold, textDim while closed and text
@@ -1452,7 +1457,7 @@ class Detail {
   finally { this.picking = false; this.attach.disabled = this.sending || !!this.guestPaused; }
  }
  openChat(generation: number) {
-  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.unfoldedRelays.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false;
+  this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.unfoldedRelays.clear(); this.chat = null; this.oldestCursor = undefined; this.chatEpoch++; this.historyEpoch++; this.sendFollow = null; this.outgoing = []; this.olderLoad = "idle"; this.topReached = false; this.chatRestart = false;
   this.answerProblem = null; this.localAnswers.clear(); this.localDismissed.clear();
   this.input.disabled = this.fieldDisabled(); this.send.disabled = this.sending || !!this.guestPaused;
   const composer = this.composerCard = el("div", "chat-composer");
@@ -1541,6 +1546,14 @@ class Detail {
   }
   if (this.mode === "chat") void this.refreshChat(generation);
  }
+ /** Refresh (the header's button, ⌘R): the terminal reconnects, Topics reads its list again and
+  *  its open topic starts over, and the chat starts over from its newest page (chatRestart):
+  *  never from the held cursors, which herdr may have expired. */
+ refresh() {
+  if (this.mode === "terminal") void this.reconnectTerminal();
+  else if (this.mode === "topics") this.topics?.refresh();
+  else { this.chatRestart = true; void this.refreshChat(this.generation); }
+ }
  // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
  async refreshChat(generation: number) {
   const epoch = this.chatEpoch, poll = ++this.chatPoll;
@@ -1549,7 +1562,7 @@ class Detail {
    // held_from: the oldest page held, "" once nothing is older (herdr #430). A server without
    // `resent` may re-send a prompt the chat has not loaded: readLive reads the newest page then.
    const stale = () => this.disposed || generation !== this.generation || epoch !== this.chatEpoch || poll !== this.chatPoll;
-   const live = await readLive(this.chat, () => ({ entries: this.entries, hasOlder: !!this.oldestCursor }), async after => {
+   const live = await readLive(this.chatRestart ? null : this.chat, () => ({ entries: this.entries, hasOlder: !!this.oldestCursor }), async after => {
     const read: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, after, "", "", after ? this.oldestCursor ?? "" : ""));
     return stale() ? null : read;
    });
@@ -1560,7 +1573,7 @@ class Detail {
    const held = new Set(this.entries.map(entry => entry.id));
    if (live.reset) {
     if (this.chat && this.chat.session_id !== page.session_id) this.outgoing = [];
-    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++;
+    this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++; this.chatRestart = false;
     this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear(); this.localDismissed.clear();
    }
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
@@ -1645,7 +1658,7 @@ class Detail {
   *  lands after the chat started its history over (historyEpoch) belongs to history it no longer
   *  holds, and is dropped (#241). */
  async loadEarlier(generation: number): Promise<boolean> {
-  if (!this.chat || !this.oldestCursor || this.olderLoad === "loading") return false;
+  if (!this.chat || !this.oldestCursor || this.olderLoad === "loading" || this.chatRestart) return false;
   const session = this.chat.session_id;
   const epoch = this.chatEpoch, history = this.historyEpoch;
   const current = () => !this.disposed && generation === this.generation && epoch === this.chatEpoch && history === this.historyEpoch && this.chat?.session_id === session;
@@ -1665,8 +1678,12 @@ class Detail {
    // A page that leaves the top in view offers the next one (checkTop never fetches it itself).
    requestAnimationFrame(() => this.checkTop());
    return true;
-  } catch {
-   if (epoch === this.chatEpoch) { this.olderLoad = current() ? "failed" : "idle"; this.renderEarlier(); }
+  } catch (error) {
+   if (epoch !== this.chatEpoch) return false;
+   // herdr expired the older page's cursor: paging stops, and the chat starts over from its
+   // newest page.
+   if (cursorExpired(error) && current()) { this.olderLoad = "idle"; this.chatRestart = true; this.renderEarlier(); void this.refreshChat(generation); return false; }
+   this.olderLoad = current() ? "failed" : "idle"; this.renderEarlier();
    return false;
   }
  }
@@ -2085,7 +2102,11 @@ class Detail {
     if (older) messages.scrollTop += messages.scrollHeight - height;
     else if (follow) messages.scrollTop = messages.scrollHeight;
     notice.textContent = "";
-   } catch(error) { if (open) notice.textContent = errorText(error); }
+   } catch(error) {
+    // herdr expired a cursor: the sheet starts over from its newest page at the next read.
+    if (cursorExpired(error)) { page = null; entries = []; before = undefined; }
+    else if (open) notice.textContent = errorText(error);
+   }
    finally { busy = false; earlier.disabled = false; if (open && !this.disposed) timer = window.setTimeout(() => { void load(false); }, 1500); }
   };
   dialog.addEventListener("close", () => { open = false; clearTimeout(timer); dialog.remove(); if (this.subagentSheet === dialog) this.subagentSheet = null; }, { once: true });

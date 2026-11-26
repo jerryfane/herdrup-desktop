@@ -87,15 +87,15 @@ afterAll(() => { page.closeInteraction(); for (const [k, v] of Object.entries(sa
 beforeEach(() => { page.closeInteraction(); calls = []; stored.clear(); });
 
 /** Opens the agent's page on its saved choice (Topics or the Inbox's chat); topic is a topic's
- *  page, inbox the Inbox's. */
-async function openPage(mode: "topics" | "chat", topic: string, inbox = topicPage()) {
+ *  page, inbox the Inbox's, or how the Inbox answers its reads (token, after, before, …). */
+async function openPage(mode: "topics" | "chat", topic: string, inbox: string | ((...args: unknown[]) => string) = topicPage()) {
  stored.set("chat.ompOpensIn", mode);
  answers = {
   "Desk.OpenAgentView": (_target: unknown, token: unknown) => ({ token, paneID: "p1", name: "herdr-app", harness: "omp", heading: "herdr-app", group: "idle", status: "idle", guest: false, guestGram: false, plainTerminal: false, askForm: false, topicSessions: [TOPIC] }),
   "Desk.TopicsAvailable": () => true,
   "Desk.PaneMuted": () => false,
   "Desk.TopicTranscript": () => topic,
-  "Desk.ChatTranscript": () => inbox,
+  "Desk.ChatTranscript": typeof inbox === "function" ? inbox : () => inbox,
   "Desk.SavedPrompts": () => [{ id: "p1", nickname: "Standup", text: "Post the daily standup" }],
   "Desk.TopicsSend": () => ({ mode: "", delivery: "sent" }),
  };
@@ -284,6 +284,101 @@ test("an unfolded handover keeps its row and its focus when the topic reads agai
  expect(withClass(transcript, "relay")[0]).toBe(row);
  expect(doc.activeElement).toBe(toggle);
  expect(toggle.textContent).toBe("Show less");
+});
+
+// herdr 31bd88e6 projects held entries otherwise, so a cursor read before the update fails its
+// hash check for good (cursor_expired, "reload the newest page"): the chat stayed on the old view
+// and said so, and Refresh read the same cursor again. Now the Inbox and a topic start over from
+// their newest page, as Refresh and ⌘R always do; an older page's expired cursor stops paging.
+const EXPIRED = "herdr: cursor_expired: the transcript changed under this cursor; reload the newest page";
+const reply = (id: string, text: string) => ({ kind: "reply", id, ts_ms: Date.now() - 500, text });
+function refreshButton() { return doc.body.all().find(n => n.getAttribute("aria-label") === "Refresh")!; }
+function startedOver(node: FakeElement) {
+ const text = node.text();
+ return [text.includes("The newest page"), text.includes("Projected before the update"), doc.body.text().includes("cursor_expired")];
+}
+
+test("a topic whose cursor herdr expired starts over from its newest page", async () => {
+ const { transcript, token } = await openTopic(topicPage({ entries: [reply("old", "Projected before the update")] }));
+ const reads: unknown[] = [];
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown) => {
+  reads.push(after);
+  if (after) throw new Error(EXPIRED);
+  return topicPage({ after: "a2", entries: [reply("n1", "The newest page")] });
+ };
+ emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+  offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+ await settle();
+ expect(reads).toEqual(["a1", ""]);
+ expect(startedOver(transcript)).toEqual([true, false, false]);
+});
+
+test("the Inbox whose cursor herdr expired starts over from its newest page", async () => {
+ // A session of its own: the Inbox remembers the agent's chat across openings.
+ const session = { session_id: "s-expired" };
+ await openPage("chat", topicPage(), topicPage({ ...session, entries: [reply("old", "Projected before the update")] }));
+ page.closeInteraction();
+ // Reopened, the Inbox draws the chat it remembers and reads on from its after cursor.
+ const reads: unknown[] = [];
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
+  reads.push(after);
+  if (after) throw new Error(EXPIRED);
+  return topicPage({ ...session, after: "a2", entries: [reply("n1", "The newest page")] });
+ });
+ expect(reads).toEqual(["a1", ""]);
+ expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
+});
+
+test("Refresh and ⌘R start the Inbox and an open topic over from their newest page, never from the held cursor", async () => {
+ const session = { session_id: "s-refresh" };
+ await openPage("chat", topicPage(), topicPage({ ...session, entries: [reply("old", "Projected before the update")] }));
+ const reads: unknown[] = [];
+ answers["Desk.ChatTranscript"] = (_token: unknown, after: unknown) => { reads.push(after); return topicPage({ ...session, after: "a2", entries: [reply("n1", "The newest page")] }); };
+ refreshButton().click();
+ await settle();
+ expect(reads).toEqual([""]);
+ expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
+
+ page.closeInteraction();
+ const { transcript } = await openTopic(topicPage({ entries: [reply("old", "Projected before the update")] }));
+ const topicReads: unknown[] = [];
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown) => { topicReads.push(after); return topicPage({ after: "a2", entries: [reply("n1", "The newest page")] }); };
+ const listed = calls.filter(c => c.method === "Desk.TopicsRefresh").length;
+ expect(page.refreshInteraction()).toBe(true);
+ await settle();
+ expect(topicReads).toEqual([""]);
+ expect(calls.filter(c => c.method === "Desk.TopicsRefresh").length).toBe(listed + 1);
+ expect(startedOver(transcript)).toEqual([true, false, false]);
+});
+
+test("an older page whose cursor herdr expired stops paging; the topic starts over from its newest page", async () => {
+ const { chat, transcript } = await openTopic(topicPage({ before: "b1", entries: [reply("old", "Projected before the update")] }));
+ const reads: string[] = [];
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown, before: unknown) => {
+  reads.push(`${after}|${before}`);
+  if (before) throw new Error(EXPIRED);
+  return topicPage({ after: "a2", entries: [reply("n1", "The newest page")] });
+ };
+ withClass(chat, "chat-earlier")[0]!.click();
+ await settle();
+ expect(reads).toEqual(["|b1", "|"]);
+ expect(startedOver(transcript)).toEqual([true, false, false]);
+ expect(withClass(chat, "chat-earlier")[0]!.hidden).toBe(true);
+});
+
+test("an older Inbox page whose cursor herdr expired stops paging; the Inbox starts over from its newest page", async () => {
+ const session = { session_id: "s-older" };
+ const reads: string[] = [];
+ let expired = false;
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown, before: unknown) => {
+  reads.push(`${after}|${before}`);
+  if (before) { expired = true; throw new Error(EXPIRED); }
+  return expired ? topicPage({ ...session, after: "a2", entries: [reply("n1", "The newest page")] }) : topicPage({ ...session, before: "b1", entries: [reply("old", "Projected before the update")] });
+ });
+ // Rows that don't fill the view leave the top in view as the chat lands: it asks for the older
+ // page at once (checkTop), whose cursor herdr expired.
+ expect(reads.slice(-2)).toEqual(["|b1", "|"]);
+ expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
 });
 
 // #531: a saved desktop terminal's view (Desk.OpenTerminalView) carried topicSessions null, and the

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { reconcileOutgoing, sendShown, type Outgoing } from "../src/chatPoll";
-import { groupTranscript, liveEntries, mergeNewest, mergeTranscript, readLive, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
+import { cursorExpired, groupTranscript, liveEntries, mergeNewest, mergeTranscript, readLive, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
+import { HerdrAPIError } from "../src/webguest/errors";
 
 // Captured 2026-11-15 from a live host (herdr 0.9.5) for enyo, shared with a guest; ids and
 // timestamps are real, text replaced (herdrup #684's fixture). When the pane's remembered
@@ -175,4 +176,27 @@ test("a live read merges into the entries held when its reply arrives, keeping h
   return { after: "a2", session_id: "s", entries: fresh, resent: [] };
  });
  expect(live!.entries.map(e => e.id)).toEqual(["h1", "t1", "n1"]);
+});
+
+// herdr 31bd88e6 projects held entries otherwise, so a cursor read before the update fails its
+// hash check: cursor_expired ("reload the newest page"). The chat read held.after forever and
+// showed the error. Now the read starts over from the newest page, the held history dropped.
+const EXPIRED = "herdr: cursor_expired: the transcript changed under this cursor; reload the newest page";
+test("a live read whose cursor herdr expired starts over from the newest page", async () => {
+ for (const expired of [new Error(EXPIRED), new HerdrAPIError("cursor_expired", "the transcript changed under this cursor; reload the newest page", {})]) {
+  const reads: string[] = [];
+  const held: Entry[] = [{ kind: "reply", id: "old", ts_ms: 1, text: "projected before the update" }];
+  const fresh: Entry[] = [{ kind: "reply", id: "n1", ts_ms: 2, text: "newest" }];
+  const live = await readLive({ after: "a1", session_id: "s", entries: held }, () => ({ entries: held, hasOlder: true }), async after => {
+   reads.push(after);
+   if (after) throw expired;
+   return { after: "a2", before: "b2", session_id: "s", entries: fresh };
+  });
+  expect(reads).toEqual(["a1", ""]);
+  expect([live!.reset, live!.page.after, live!.page.before, live!.entries]).toEqual([true, "a2", "b2", fresh]);
+ }
+ // Another failure is the read's, and a newest page's read has no cursor to expire.
+ await expect(readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: [], hasOlder: false }), async () => { throw new Error("herdr: owner_forbidden: no"); })).rejects.toThrow("owner_forbidden");
+ await expect(readLive(null, () => ({ entries: [], hasOlder: false }), async () => { throw new Error(EXPIRED); })).rejects.toThrow("cursor_expired");
+ expect([cursorExpired(new Error(`Chat: ${EXPIRED}`)), cursorExpired(new Error("herdr: owner_forbidden: cursor_expired")), cursorExpired("cursor_expired")]).toEqual([true, false, false]);
 });
