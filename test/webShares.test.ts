@@ -93,7 +93,7 @@ test("a bound accept writes the share to the account; another browser of the acc
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
  expect(h.hellos[0]!.account).toBe("statement-of-acct");
- expect(mac.grants.access?.accountBound).toBe(true);
+ expect((await mac.grants.get(id))?.accountBound).toBe(true);
  expect(sharesOn(w)).toEqual([{ collection: "shares", id, base_rev: 0, body: { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs", owner_name: "Ana", machine_label: "Mac Studio" } }]);
  expect((await mac.desk.syncedShares()).map(s => [s.id, s.local])).toEqual([[id, true]]);
 
@@ -106,7 +106,7 @@ test("a bound accept writes the share to the account; another browser of the acc
  off();
  expect(heard.at(-1)).toEqual([{ id, local: true }]);
  expect(h.hellos.at(-1)).toEqual({ v: 1, guest_id: access.guestID, account: "statement-of-acct" });
- expect(linux.grants.access).toMatchObject({ guestID: access.guestID, agentTarget: "%7", machineLabel: "Mac Studio", accountBound: true });
+ expect(await linux.grants.get(id)).toMatchObject({ guestID: access.guestID, agentTarget: "%7", machineLabel: "Mac Studio", accountBound: true });
  expect((await linux.desk.syncedShares()).map(s => s.local)).toEqual([true]);
  // One write: opening a share on another browser writes nothing to the account.
  expect(sharesOn(w).length).toBe(1);
@@ -121,11 +121,11 @@ test("leaving a bound share deletes it from the account, and every browser holdi
  await linux.shares.sync();
  await linux.desk.openSyncedShare(id);
  await mac.desk.forgetGuestConnection(id);
- expect(mac.grants.access).toBeUndefined();
+ expect(await mac.grants.list()).toEqual([]);
  expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
  expect(await mac.desk.syncedShares()).toEqual([]);
  await linux.shares.sync();
- expect(linux.grants.access).toBeUndefined();
+ expect(await linux.grants.list()).toEqual([]);
  expect(await linux.desk.syncedShares()).toEqual([]);
 }, CONNECTS_LIMIT_MS);
 
@@ -136,14 +136,14 @@ test("a browser whose put was taken but whose readback failed still drops its bo
  w.failPull = true;
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- expect([sharesOn(w).length, w.failPull, mac.grants.access?.accountBound]).toEqual([1, false, true]);
+ expect([sharesOn(w).length, w.failPull, (await mac.grants.get(id))?.accountBound]).toEqual([1, false, true]);
  // Another browser of the account opens the synced list and leaves the share.
  await linux.shares.sync();
  await linux.desk.openSyncedShare(id);
  await linux.desk.forgetGuestConnection(id);
  expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
  await mac.shares.sync();
- expect(mac.grants.access).toBeUndefined();
+ expect(await mac.grants.list()).toEqual([]);
  expect(await mac.desk.syncedShares()).toEqual([]);
 }, CONNECTS_LIMIT_MS);
 
@@ -181,7 +181,7 @@ test("a share is written to and deleted from the account that bound it, never an
  grants.onPut = () => switchTo("acct-b");
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- expect([mac.account.current?.accountID, access.accountBound, mac.grants.access?.account]).toEqual(["acct-b", true, "acct"]);
+ expect([mac.account.current?.accountID, access.accountBound, (await mac.grants.get(id))?.account]).toEqual(["acct-b", true, "acct"]);
  await mac.shares.sync();
  expect([w.sharesIn("acct"), w.sharesIn("acct-b"), sharesOn(w), await mac.desk.syncedShares()]).toEqual([[], [], [], []]);
  // Back on A: its next sync here writes the share there, and only there.
@@ -206,7 +206,7 @@ test("a label the service can't store is left out of the share, and a refused pu
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, long), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
  const body = { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, owner_name: "Ana", machine_label: "Mac Studio" };
- expect([[...long].length, mac.grants.access?.agentName]).toEqual([140, long]);
+ expect([[...long].length, (await mac.grants.get(id))?.agentName]).toEqual([140, long]);
  expect(sharesOn(w)).toEqual([{ collection: "shares", id, base_rev: 0, body }]);
  await linux.shares.sync();
  expect(linux.shares.list()).toEqual([{ id, rev: 1, body }]);
@@ -234,9 +234,9 @@ test("a plain accept (Only this device, or an invite without acct) writes nothin
  const mac = await browser(w);
  // The invitation says whether it may be added to the account (the choice is offered only then).
  expect([(await mac.desk.inspectGuestInvitation(inviteText(h.relay))).account, (await mac.desk.inspectGuestInvitation(inviteText(h.relay, false))).account]).toEqual([true, false]);
- await mac.desk.acceptGuestInvitation(inviteText(h.relay), "device");
+ const device = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "device");
  expect(h.hellos[0]!.account).toBeUndefined();
- expect(mac.grants.access?.accountBound).toBeUndefined();
+ expect((await mac.grants.get(`${h.relay.hostID}/${device.guestID}`))?.accountBound).toBeUndefined();
  const plain = await mac.desk.acceptGuestInvitation(inviteText(h.relay, false), "account");
  expect(h.hellos[1]!.account).toBeUndefined();
  await mac.shares.sync();
@@ -248,9 +248,29 @@ test("a plain accept (Only this device, or an invite without acct) writes nothin
  await mac.shares.sync();
  w.seedTombstone(id, "shares");
  await mac.shares.sync();
- expect(mac.grants.access?.guestID).toBe(plain.guestID);
+ expect((await mac.grants.get(id))?.guestID).toBe(plain.guestID);
  await mac.desk.forgetGuestConnection(id);
  expect(w.pushed.length).toBe(0);
+}, CONNECTS_LIMIT_MS);
+
+test("opening a synced share keeps the grant held on this device alone: either opens again, and only Leave forgets one", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w), linux = await browser(w);
+ const synced = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const syncedID = `${h.relay.hostID}/${synced.guestID}`;
+ const device = await linux.desk.acceptGuestInvitation(inviteText(h.relay), "device");
+ const deviceID = `${h.relay.hostID}/${device.guestID}`;
+ const held = async () => (await linux.desk.sharedConnections()).map(a => a.guestID);
+ await linux.desk.connectGuest(deviceID);
+ await linux.shares.sync();
+ await linux.desk.openSyncedShare(syncedID);
+ // Both kept, the one opened last first (the page resumes it).
+ expect(await held()).toEqual([synced.guestID, device.guestID]);
+ await linux.desk.connectGuest(deviceID);
+ expect(await held()).toEqual([device.guestID, synced.guestID]);
+ // Leaving the device's own share forgets it alone, and deletes nothing on the account.
+ await linux.desk.forgetGuestConnection(deviceID);
+ expect([await held(), sharesOn(w).length]).toEqual([[synced.guestID], 1]);
 }, CONNECTS_LIMIT_MS);
 
 test("an unknown choice, or Add to my account signed out, redeems nothing", async () => {
@@ -258,5 +278,5 @@ test("an unknown choice, or Add to my account signed out, redeems nothing", asyn
  const mac = await browser(w, false);
  await expect(mac.desk.acceptGuestInvitation(inviteText(h.relay), "both")).rejects.toThrow("Unknown choice");
  await expect(mac.desk.acceptGuestInvitation(inviteText(h.relay), "account")).rejects.toThrow("Signed out");
- expect([h.hellos.length, mac.grants.access]).toEqual([0, undefined]);
+ expect([h.hellos.length, await mac.grants.list()]).toEqual([0, []]);
 }, CONNECTS_LIMIT_MS);

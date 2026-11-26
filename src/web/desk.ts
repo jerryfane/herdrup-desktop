@@ -1,7 +1,8 @@
 // The browser's guest Desk: the guest paths of the Go Desk the guest screens call (desk_guest.go,
 // desk_guest_invite.go, desk_guest_answers.go, desk_interaction.go, desk_interaction_compose.go),
-// on webguest's GuestTransport. One browser holds one grant (storage.ts). Method names, arguments,
-// results and error texts are Go's; events go out through events.ts as Go broadcasts them.
+// on webguest's GuestTransport. A browser holds a grant per share (storage.ts) and connects one
+// at a time: opening another never leaves the one it held. Method names, arguments, results and
+// error texts are Go's; events go out through events.ts as Go broadcasts them.
 
 import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -238,13 +239,13 @@ export function pageAccess(a: Access): PageAccess {
 }
 
 /** The account's shares as the Desk gives them (SyncedShare): the item's fields, "" or false for
- *  one it hasn't, and local when grant (the one this browser holds) is that share. */
-export function syncedSharesOf(shares: RemoteShare[], grant: Access | undefined): SyncedShare[] {
- const held = grant === undefined ? "" : shareID(grant);
+ *  one it hasn't, and local when this browser holds a grant for that share (held). */
+export function syncedSharesOf(shares: RemoteShare[], held: Access[]): SyncedShare[] {
+ const ids = new Set(held.map(shareID));
  return shares.map(s => ({
   id: s.id, relay: s.body.relay, hostID: s.body.host_id, nodePub: s.body.node_pub, guestID: s.body.guest_id,
   agentName: s.body.agent_name ?? "", ownerName: s.body.owner_name ?? "", machineLabel: s.body.machine_label ?? "", shareGram: s.body.share_gram ?? false,
-  local: s.id === held,
+  local: ids.has(s.id),
  }));
 }
 
@@ -375,17 +376,18 @@ export function createGuestDesk(env: DeskEnv) {
   if (env.shares === undefined || env.statements === undefined) throw new Error("This browser can't add shared access to an account.");
   return { shares: env.shares, statements: boundShareStatements(env.statements) };
  }
- /** syncedShares:changed with the shares now, each marked local when it is the grant held here. */
+ /** syncedShares:changed with the shares now, each marked local when this browser holds its grant. */
  async function publishShares(shares: RemoteShare[]) {
-  emit("syncedSharesChanged", syncedSharesOf(shares, await env.grants.get()));
+  emit("syncedSharesChanged", syncedSharesOf(shares, await env.grants.list()));
  }
  // A share deleted on the account it is bound to (left on any device) leaves this browser too,
  // when it holds it bound; a plain grant is never dropped by the sync.
  env.shares?.onChange(change => void (async () => {
-  const grant = await env.grants.get();
-  if (grant?.accountBound && grant.account === change.account && change.removed.includes(shareID(grant))) {
-   await env.grants.remove();
-   if (active?.id === "guest:" + shareID(grant)) { disconnect(); publishIdle(); }
+  for (const id of change.removed) {
+   const grant = await env.grants.get(id);
+   if (!grant?.accountBound || grant.account !== change.account) continue;
+   await env.grants.remove(id);
+   if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }
   }
   await publishShares(change.shares);
  })().catch(error => console.error(error)));
@@ -417,7 +419,7 @@ export function createGuestDesk(env: DeskEnv) {
 
  /** desk_guest.go guestIdentity: the saved key once a grant exists, else one made now. */
  async function guestIdentity(): Promise<StaticKey> {
-  if (await env.grants.get() !== undefined) return requireIdentity();
+  if ((await env.grants.list()).length > 0) return requireIdentity();
   return loadIdentity(env.identities);
  }
  async function requireIdentity(): Promise<StaticKey> {
@@ -675,14 +677,15 @@ export function createGuestDesk(env: DeskEnv) {
    return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint(), account: invite.accounts };
   },
 
+  /** Every grant this browser holds, the one opened last first (the page resumes it). */
   async sharedConnections(): Promise<PageAccess[]> {
-   const grant = await env.grants.get();
-   return grant === undefined ? [] : [pageAccess(grant)];
+   return (await env.grants.list()).map(pageAccess);
   },
 
   /** keep: "account" binds the share to the signed-in HerdrUp account when the invite offers it
    *  (its statement in the hello), and writes it to the account's shares once herdr bound it;
-   *  "device" (or an invite without acct) is this browser's alone, as before, and syncs nothing. */
+   *  "device" (or an invite without acct) is this browser's alone, as before, and syncs nothing.
+   *  The grant is saved beside those held (one of the same share is updated). */
   acceptGuestInvitation(text: string, keep: string): Promise<PageAccess> {
    // guestAcceptMu: one redemption at a time.
    const run = accepting.then(async () => {
@@ -712,12 +715,12 @@ export function createGuestDesk(env: DeskEnv) {
 
   /** The account's shares (every live item, held here or not); none signed out. */
   async syncedShares(): Promise<SyncedShare[]> {
-   return syncedSharesOf(env.shares?.list() ?? [], await env.grants.get());
+   return syncedSharesOf(env.shares?.list() ?? [], await env.grants.list());
   },
 
   /** The first connect on this browser of a share another device of the account accepted: a
    *  returning hello with its grant id and the account's statement (herdr adds this browser to
-   *  the share), its grant saved as bound in place of the one held, then connected. */
+   *  the share), its grant saved as bound beside those held, then connected. */
   async openSyncedShare(id: string): Promise<void> {
    const { shares, statements } = accountShares();
    const share = shares.list().find(s => s.id === id);
@@ -735,9 +738,12 @@ export function createGuestDesk(env: DeskEnv) {
    await desk.connectGuest(id);
   },
 
+  /** Connects share id's grant, in place of the share connected now (which stays saved), and
+   *  makes it the one the page resumes. */
   async connectGuest(id: string): Promise<void> {
-   const grant = await env.grants.get();
-   if (grant === undefined || `${grant.endpoint.hostID}/${grant.guestID}` !== id) throw new Error("This shared connection is no longer saved");
+   const grant = await env.grants.get(id);
+   if (grant === undefined) throw new Error("This shared connection is no longer saved");
+   await env.grants.activate(id);
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
@@ -758,15 +764,15 @@ export function createGuestDesk(env: DeskEnv) {
    void runGuest(l, print).finally(() => shutdown(l));
   },
 
-  /** Leaving a share bound to the account also deletes it from the account it is bound to, so it
-   *  leaves every device (with another sign-in now, at that account's next sync here); a plain
-   *  one is this browser's alone, as before. */
+  /** Leaves share id: its grant goes (the others held stay). One bound to the account is also
+   *  deleted from the account it is bound to, so it leaves every device (with another sign-in
+   *  now, at that account's next sync here); a plain one is this browser's alone, as before. */
   async forgetGuestConnection(id: string): Promise<void> {
-   const grant = await env.grants.get();
-   const held = grant !== undefined && `${grant.endpoint.hostID}/${grant.guestID}` === id;
+   const grant = await env.grants.get(id);
+   const held = grant !== undefined;
    if (held) {
     env.owner.set(grant.ownerName);
-    await env.grants.remove();
+    await env.grants.remove(id);
    }
    if (active?.id === "guest:" + id) {
     disconnect();

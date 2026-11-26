@@ -51,9 +51,10 @@ let ready = false;
 const account = new HerdrUpAccountPanel(() => { void refreshShared(); if (shownWelcome) showWelcome(shownWelcome); else render(); });
 const accountRoot = () => account.available ? account.root : null;
 
-// The account's shares, in the guest's Settings under the account (#543): the owner host home's
-// list (sharedWithYou.ts), while signed in. Any of them opens in place of this share, which is
-// this browser's one grant; the agents' tab then shows it.
+// The shares in the guest's Settings (#543): the owner host home's list (sharedWithYou.ts) of
+// every grant this browser holds and, while signed in, the account's shares. Any of them opens in
+// place of the share open now, which stays saved (Leave alone forgets it); the agents' tab then
+// shows it.
 const sharedProblem = el("p", "host-home-message"); sharedProblem.setAttribute("role", "alert"); sharedProblem.hidden = true;
 const sharedList = sharedSection(symbol, () => guestActions.agents(), error => { sharedProblem.textContent = errorText(error); sharedProblem.hidden = false; }, () => false, "YOUR SHARED AGENTS");
 sharedList.root.append(sharedProblem);
@@ -62,11 +63,11 @@ let sharedVersion = 0;
 async function refreshShared() {
  const at = ++sharedVersion, signedIn = account.signedIn;
  const [grants, synced] = await Promise.all([Desk.sharedConnections().catch(() => []), syncedSharesNow(signedIn)]);
- if (at === sharedVersion) { sharedProblem.hidden = true; await sharedList.draw(signedIn ? sharedMachines(grants, synced) : []); }
+ if (at === sharedVersion) { sharedProblem.hidden = true; await sharedList.draw(sharedMachines(grants, synced)); }
 }
 events.syncedSharesChanged.on(() => { void refreshShared(); });
 
-// main.ts guestActions; "hosts" is Leave share or Remove share: this browser holds no other.
+// main.ts guestActions; "hosts" is Leave share or Remove share.
 const guestActions = {
  agents: () => { guestTab = "agents"; render(); },
  settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },

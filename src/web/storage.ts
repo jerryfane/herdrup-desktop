@@ -1,18 +1,51 @@
-// One browser = one guest: the grant this browser accepted (Go's guest store, internal/guest
-// store.go, one share) in IndexedDB beside the identity (webguest/identity.ts). The grant holds no
-// secret: the invitation's bearer secret is spent on redemption and never kept. The owner's name
-// stays in localStorage after a share is left, so the page can say whom to ask for a new invite.
+// One browser = one guest: the grants this browser holds (Go's guest store, internal/guest
+// store.go: one per share, keyed "<host_id>/<guest_id>") in IndexedDB beside the identity
+// (webguest/identity.ts), and which share it opened last. A grant holds no secret: the
+// invitation's bearer secret is spent on redemption and never kept. The owner's name stays in
+// localStorage after a share is left, so the page can say whom to ask for a new invite.
 
 import type { Access } from "../webguest/transport";
 import { browserLocks, withStorageLock, type Locks } from "./locks";
 
+/** The grants this browser holds, one per share, and the share the page opened last (it resumes
+ *  that one). Saving a grant adds it, or updates the one of its share: no grant replaces another,
+ *  so opening another share never loses one held (a grant kept on this device alone can't be had
+ *  again). */
 export interface GrantStore {
- get(): Promise<Access | undefined>;
+ /** Every grant held, the one opened last first. */
+ list(): Promise<Access[]>;
+ get(id: string): Promise<Access | undefined>;
  put(access: Access): Promise<void>;
- remove(): Promise<void>;
+ /** Forgets the grant of share id (left, or deleted from its account). */
+ remove(id: string): Promise<void>;
+ /** Marks share id as the one opened last. */
+ activate(id: string): Promise<void>;
  /** Names the machine machineLabel on the saved grant guestID of hostID, and nothing else: a
   *  grant forgotten or replaced meanwhile is left as it is (a late hello never brings one back). */
  relabel(hostID: string, guestID: string, machineLabel: string): Promise<void>;
+}
+
+/** A grant's share: "<host_id>/<guest_id>". */
+const grantID = (a: Pick<Access, "endpoint" | "guestID">) => `${a.endpoint.hostID}/${a.guestID}`;
+
+/** The grants as stored: active is the share opened last, null when none is (or it was left). */
+interface GrantsRecord { grants: Access[]; active: string | null }
+
+const emptyRecord = (): GrantsRecord => ({ grants: [], active: null });
+/** The record's grants, its active one first. */
+const heldFirst = (r: GrantsRecord): Access[] => [...r.grants].sort((a, b) => Number(grantID(b) === r.active) - Number(grantID(a) === r.active));
+function putIn(r: GrantsRecord, access: Access) {
+ const id = grantID(access), at = r.grants.findIndex(g => grantID(g) === id);
+ if (at < 0) r.grants.push(access); else r.grants[at] = access;
+}
+function removeFrom(r: GrantsRecord, id: string) {
+ r.grants = r.grants.filter(g => grantID(g) !== id);
+ if (r.active === id) r.active = null;
+}
+/** Renames the machine on the record's grant guestID of hostID, the one share it is, when that
+ *  grant is still held; the others, and a grant removed meanwhile, stay as they are. */
+function relabelIn(r: GrantsRecord, hostID: string, guestID: string, machineLabel: string) {
+ r.grants = r.grants.map(g => relabels(g, hostID, guestID, machineLabel) ? { ...g, machineLabel } : g);
 }
 
 /** Whether grant is the one guestID of hostID, saved under another machine name than machineLabel. */
@@ -25,17 +58,30 @@ export interface OwnerHint {
  set(owner: string): void;
 }
 
-const GRANT_KEY = "grant";
+const GRANTS_KEY = "grants";
+/** Where an earlier version kept its one grant: read as a record holding it (active), and gone
+ *  once a write stores the record. */
+const OLD_GRANT_KEY = "grant";
 const OWNER_KEY = "herdrup.guest.owner";
 
-function request<T>(req: IDBRequest<T>): Promise<T> {
- const { promise, resolve, reject } = Promise.withResolvers<T>();
- req.onsuccess = () => resolve(req.result);
- req.onerror = () => reject(req.error);
- return promise;
+/** Reads the record in store, an earlier version's one grant as a record of it, and runs then
+ *  within the request's own callback, so a readwrite transaction is still open for its writes. */
+function withRecord(store: IDBObjectStore, then: (record: GrantsRecord) => void, fail: (error: unknown) => void) {
+ const got = store.get(GRANTS_KEY);
+ got.onerror = () => fail(got.error);
+ got.onsuccess = () => {
+  const record = got.result as GrantsRecord | null | undefined;
+  if (record) { then(record); return; }
+  const old = store.get(OLD_GRANT_KEY);
+  old.onerror = () => fail(old.error);
+  old.onsuccess = () => {
+   const grant = old.result as Access | null | undefined;
+   then(grant ? { grants: [grant], active: grantID(grant) } : emptyRecord());
+  };
+ };
 }
 
-/** The grant as one record; Date and Uint8Array are structured-cloned as themselves. */
+/** The grants as one record; Date and Uint8Array are structured-cloned as themselves. */
 export class IndexedDBGrantStore implements GrantStore {
  #db: Promise<IDBDatabase> | undefined;
  constructor(private readonly factory: IDBFactory = globalThis.indexedDB, private readonly name = "herdrup-guest-grant", private readonly storeName = "grant") {}
@@ -53,43 +99,46 @@ export class IndexedDBGrantStore implements GrantStore {
   return this.#db;
  }
 
- async #write(run: (store: IDBObjectStore) => void): Promise<void> {
+ /** Changes the record in one readwrite transaction, storing it in the current form. */
+ async #change(change: (record: GrantsRecord) => void): Promise<void> {
   const tx = (await this.#open()).transaction(this.storeName, "readwrite");
   const done = Promise.withResolvers<void>();
   tx.oncomplete = () => done.resolve();
   tx.onerror = () => done.reject(tx.error);
   tx.onabort = () => done.reject(tx.error ?? new Error("Saving the shared access was aborted."));
-  run(tx.objectStore(this.storeName));
+  const store = tx.objectStore(this.storeName);
+  withRecord(store, record => {
+   change(record);
+   store.put(record, GRANTS_KEY);
+   store.delete(OLD_GRANT_KEY);
+  }, error => done.reject(error));
   await done.promise;
  }
 
- async get(): Promise<Access | undefined> {
-  const db = await this.#open();
-  return await request(db.transaction(this.storeName, "readonly").objectStore(this.storeName).get(GRANT_KEY)) as Access | undefined;
+ async #read(): Promise<GrantsRecord> {
+  const store = (await this.#open()).transaction(this.storeName, "readonly").objectStore(this.storeName);
+  const read = Promise.withResolvers<GrantsRecord>();
+  withRecord(store, read.resolve, read.reject);
+  return read.promise;
  }
 
- put(access: Access): Promise<void> { return this.#write((store) => store.put(access, GRANT_KEY)); }
- remove(): Promise<void> { return this.#write((store) => store.delete(GRANT_KEY)); }
- /** One read-write transaction: no other write comes between the read and the write. */
- relabel(hostID: string, guestID: string, machineLabel: string): Promise<void> {
-  return this.#write((store) => {
-   const read = store.get(GRANT_KEY);
-   read.onsuccess = () => {
-    const grant = read.result as Access | undefined;
-    if (relabels(grant, hostID, guestID, machineLabel)) store.put({ ...grant, machineLabel }, GRANT_KEY);
-   };
-  });
- }
+ async list(): Promise<Access[]> { return heldFirst(await this.#read()); }
+ async get(id: string): Promise<Access | undefined> { return (await this.#read()).grants.find(g => grantID(g) === id); }
+ put(access: Access): Promise<void> { return this.#change(r => putIn(r, access)); }
+ remove(id: string): Promise<void> { return this.#change(r => removeFrom(r, id)); }
+ activate(id: string): Promise<void> { return this.#change(r => { r.active = id; }); }
+ /** One read-write transaction (#change): no other write comes between the read and the write. */
+ relabel(hostID: string, guestID: string, machineLabel: string): Promise<void> { return this.#change(r => relabelIn(r, hostID, guestID, machineLabel)); }
 }
 
 export class MemoryGrantStore implements GrantStore {
- access: Access | undefined;
- async get() { return this.access; }
- async put(access: Access) { this.access = access; }
- async remove() { this.access = undefined; }
- async relabel(hostID: string, guestID: string, machineLabel: string) {
-  if (relabels(this.access, hostID, guestID, machineLabel)) this.access = { ...this.access, machineLabel };
- }
+ record = emptyRecord();
+ async list() { return heldFirst(this.record); }
+ async get(id: string) { return this.record.grants.find(g => grantID(g) === id); }
+ async put(access: Access) { putIn(this.record, access); }
+ async remove(id: string) { removeFrom(this.record, id); }
+ async activate(id: string) { this.record.active = id; }
+ async relabel(hostID: string, guestID: string, machineLabel: string) { relabelIn(this.record, hostID, guestID, machineLabel); }
 }
 
 export const localOwnerHint: OwnerHint = {

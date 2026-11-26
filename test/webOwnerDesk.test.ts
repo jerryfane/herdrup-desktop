@@ -391,14 +391,15 @@ test("a late hello naming the machine anew doesn't bring back a grant forgotten 
   await other.forgetGuestConnection(id);
   reply.resolve();
   await replied.promise; await listed.promise; off();
-  expect([await grants.get(), (await late.state()).machine]).toEqual([undefined, "Studio Mac"]);
+  expect([await grants.list(), (await late.state()).machine]).toEqual([[], "Studio Mac"]);
  } finally { await late.forgetGuestConnection(id); relay.stop(); }
 }, CONNECTS_LIMIT_MS);
 
-// The IndexedDB grant store's relabel (#558): one read-write transaction that reads the grant and
-// writes only its machine name, and only when it is still the grant named; a grant missing or
-// replaced is left as it is. Bun has no IndexedDB: this fake keeps one object store whose
-// transactions complete once their requests and the callbacks they started are done.
+// The IndexedDB grant store's relabel (#558): one read-write transaction that reads the grants and
+// writes only the machine name of the one named, and only while it is still saved; another grant
+// held (a grant per share, #543), even on the same machine, and a grant removed, are left as they
+// are. Bun has no IndexedDB: this fake keeps one object store whose transactions complete once
+// their requests and the callbacks they started are done.
 test("the IndexedDB grant store relabels only the saved grant named, in one read-write transaction", async () => {
  const data = new Map<string, unknown>();
  const modes: string[] = [];
@@ -426,17 +427,35 @@ test("the IndexedDB grant store relabels only the saved grant named, in one read
  const store = new IndexedDBGrantStore(factory);
  const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
   endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ // Another share on the same machine, held too (a grant per share).
+ const sibling = { ...grant, guestID: "grant-2", agentName: "Other worker" };
  await store.put(grant);
+ await store.put(sibling);
  modes.length = 0;
  await store.relabel("host-1", "grant-1", "Studio Mac");
  const used = [...modes];
- expect([used, await store.get()]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac" }]);
- await store.relabel("host-1", "grant-2", "Other");
+ expect([used, await store.get("host-1/grant-1"), await store.get("host-1/grant-2")]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac" }, sibling]);
+ await store.relabel("host-1", "grant-3", "Other");
  await store.relabel("host-2", "grant-1", "Other");
- expect((await store.get())?.machineLabel).toBe("Studio Mac");
- await store.remove();
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-1", "Studio Mac"], ["grant-2", "Machine"]]);
+ await store.remove("host-1/grant-1");
  await store.relabel("host-1", "grant-1", "Again");
- expect(await store.get()).toBeUndefined();
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-2", "Machine"]]);
+});
+
+// The page's grant store (MemoryGrantStore, the same record rules): the grant named, no other.
+test("the memory grant store relabels the one share named; a share removed stays removed", async () => {
+ const store = new MemoryGrantStore();
+ const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ await store.put(grant);
+ await store.put({ ...grant, guestID: "grant-2" });
+ await store.activate("host-1/grant-2");
+ await store.relabel("host-1", "grant-2", "Studio Mac");
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-2", "Studio Mac"], ["grant-1", "Machine"]]);
+ await store.remove("host-1/grant-2");
+ await store.relabel("host-1", "grant-2", "Again");
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-1", "Machine"]]);
 });
 
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
