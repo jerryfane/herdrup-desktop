@@ -20,17 +20,20 @@ package main
 //   - Only machines whose status is added or already. A failed one is
 //     reported with the approver's reason.
 //   - A machine already saved here at the same host and port (any user) is
-//     kept as it is: its key, password and pin stay, and the result says so.
+//     kept as it is: its key, password and pin stay, and the result says so
+//     (it only gets a profile id, Machine.LocalID, if it had none).
 //   - A host and port this computer pinned to another host key is not
 //     saved: its pin stays, and the result says so.
 //   - S is written to identities/ only when a machine uses it, once per
 //     request. S, the new pins and the machines are one save: when the
-//     machines aren't written, the pins new for them and S are removed
-//     again; once they are (even if the folder's sync then fails), all stay.
+//     machines aren't written, S and the pins this save added (while
+//     still its own) are removed again; once they are (even if the
+//     folder's sync then fails), all stay.
 //   - Nothing is saved once the request was cancelled or replaced here, or
 //     the account session that asked signed out: Cancel fences the request
-//     before it waits for a read in flight, and the save checks both at its
-//     commit.
+//     before it waits for a read in flight, and the save checks both before
+//     it writes machines.json and again after, taking back what it wrote
+//     when one came meanwhile. A sign-out waits for a save in progress.
 
 import (
 	"context"
@@ -119,19 +122,26 @@ type PairRequestView struct {
 	Machines []PairRequestMachine `json:"machines"`
 	// RetryOpen: the approver may still send a retry's list, so the page
 	// keeps reading.
-	RetryOpen bool   `json:"retryOpen"`
-	Problem   string `json:"problem,omitempty"`
+	RetryOpen bool `json:"retryOpen"`
+	// SaveFailed: the last list couldn't be saved here (Problem says why);
+	// it is read and saved again until the retry window ends. The page
+	// backs off as for a failed read.
+	SaveFailed bool   `json:"saveFailed,omitempty"`
+	Problem    string `json:"problem,omitempty"`
 }
 
 // PairRequestMachine is one machine of the approver's list and what became
 // of it here.
 type PairRequestMachine struct {
 	// ID is the saved machine's id (user@host:port) when saved or kept.
-	ID    string `json:"id,omitempty"`
-	Label string `json:"label"`
-	Host  string `json:"host"`
-	Port  int    `json:"port"`
-	User  string `json:"user"`
+	ID string `json:"id,omitempty"`
+	// ProfileID is that saved profile's own id (Machine.LocalID, never
+	// reused): a profile saved later at the same address is another one.
+	ProfileID string `json:"profileId,omitempty"`
+	Label     string `json:"label"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	User      string `json:"user"`
 	// SyncedID is the account's record of the machine (SyncedMachine.ID)
 	// when the account lists it.
 	SyncedID string `json:"syncedId,omitempty"`
@@ -163,9 +173,11 @@ type pairRequest struct {
 	// keyPath is S's file once a machine uses it.
 	keyPath string
 	// applied is the highest seq of a list saved; deliveredAt the time the
-	// first list came.
+	// first list came, saved or not (the retry window's start).
 	applied     uint64
 	deliveredAt time.Time
+	// saveProblem is why the last list couldn't be saved (SaveFailed).
+	saveProblem string
 	// ended: denied, expired, failed or cancelled; nothing more is read.
 	ended bool
 }
@@ -286,8 +298,9 @@ func (d *Desk) PairRequestCancel(ctx context.Context, id string) error {
 // device opened it, and, once approved, the approver's machine list, saved
 // here (the save rules in app/desk_pair_request.go). A list sent again at a
 // higher seq is saved too, while RetryOpen. A list that couldn't be saved
-// is the view's Problem, and is read again. An error is a read that failed
-// (no answer); the page reads again.
+// is the view's Problem (SaveFailed), and is read and saved again until
+// the retry window ends; then the problem is final. An error is a read
+// that failed (no answer); the page reads again.
 func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView, error) {
 	p, err := d.currentPairRequest(id)
 	if err != nil {
@@ -345,6 +358,15 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 		return p.copyView(), nil
 	}
 	if !p.deliveredAt.IsZero() && pairNow().Sub(p.deliveredAt) >= pairRetryWindow {
+		if p.view.SaveFailed {
+			// The approver can't send it again any more.
+			p.view.SaveFailed = false
+			if p.applied == 0 {
+				p.fail(p.saveProblem + " This device stopped trying, so it saved none of those machines.")
+				return p.copyView(), nil
+			}
+			p.view.Problem = p.saveProblem + " This device stopped trying, so it saved nothing more from the later list."
+		}
 		p.end()
 		return p.copyView(), nil
 	}
@@ -363,6 +385,9 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 	case !ok || got.Seq <= p.applied:
 		return p.copyView(), nil
 	}
+	if p.deliveredAt.IsZero() {
+		p.deliveredAt = pairNow()
+	}
 	switch err := d.savePairDelivery(p, got); {
 	case errors.Is(err, errPairStopped):
 		if !p.fenced.Load() {
@@ -370,8 +395,9 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 		}
 		return p.copyView(), nil
 	case err != nil:
-		// The page shows it while the list is read again.
-		p.view.Problem = err.Error()
+		// The page shows it, and reads and saves the list again.
+		p.saveProblem = err.Error()
+		p.view.SaveFailed, p.view.Problem = true, p.saveProblem+" Trying again."
 		return p.copyView(), nil
 	}
 	p.view.Phase = PairDone
@@ -399,9 +425,10 @@ func (d *Desk) PairRequestConnect(ctx context.Context, id string) (PairRequestVi
 		if pm.Result != PairSaved || pm.Reach != "" {
 			continue
 		}
-		at := st.find(pm.ID)
+		at := slices.IndexFunc(st.Machines, func(m Machine) bool { return m.LocalID == pm.ProfileID })
 		if at < 0 {
-			// Removed or edited since it was saved: nothing to try.
+			// Removed since it was saved (a profile saved at its address
+			// since is another one): nothing to try.
 			pm.Reach = PairRemoved
 			continue
 		}
@@ -457,7 +484,10 @@ func (d *Desk) pairCommitHolds(p *pairRequest) bool {
 
 // savePairDelivery saves the machines of got, a list above any applied:
 // each added or already machine not decided by an earlier list, by the
-// rules at the top of this file. p.op is held.
+// rules at the top of this file. p.op is held, and d.storeMu all through
+// the save: a Cancel waits for p.op and a sign-out for d.storeMu, and the
+// save asks pairCommitHolds again once machines.json is written, so one
+// that came meanwhile has what it wrote taken back before either returns.
 func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error {
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
@@ -468,6 +498,7 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 	if err != nil {
 		return err
 	}
+	before := slices.Clone(st.Machines)
 	// The account's record of a machine, to save it as that record (its
 	// fields and sync id), so it isn't listed to pair any more and doesn't
 	// sync as a second one.
@@ -484,10 +515,10 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 	type planned struct {
 		m   Machine
 		pin string
-		// fresh: no pin was there before; a failed save removes it again.
-		fresh bool
 	}
 	var adds []planned
+	// profiled: a kept machine got its profile id (Machine.LocalID).
+	profiled := false
 	set := func(r PairRequestMachine) {
 		identity := account.IdentityOf(account.HostBody{Host: r.Host, Port: r.Port, Username: r.User})
 		if i, ok := decided[identity]; ok {
@@ -542,7 +573,10 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 		}
 		r.Label = machineLabel(m)
 		if i := savedAtHostPort(st.Machines, m.Host, m.Port); i >= 0 {
-			r.Result, r.ID = PairKept, machineID(st.Machines[i])
+			if st.Machines[i].LocalID == "" {
+				st.Machines[i].LocalID, profiled = newLocalID(), true
+			}
+			r.Result, r.ID, r.ProfileID = PairKept, machineID(st.Machines[i]), st.Machines[i].LocalID
 			set(r)
 			continue
 		}
@@ -550,29 +584,31 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 			continue // the list names it twice: the first stands
 		}
 		pin := bridge.Fingerprint(hostKey)
-		hostPort := net.JoinHostPort(m.Host, strconv.Itoa(m.Port))
-		pinned, ok, err := d.pins.Pin(hostPort)
+		pinned, ok, err := d.pins.Pin(net.JoinHostPort(m.Host, strconv.Itoa(m.Port)))
 		if err != nil {
-			return fmt.Errorf("Couldn't read this device's host keys: %w", err)
+			return fmt.Errorf("This device couldn't read its host keys (%w).", err)
 		} else if ok && pinned != pin {
 			r.Result = PairPinDiffers
 			set(r)
 			continue
 		}
-		r.Result, r.ID = PairSaved, machineID(m)
+		m.LocalID = newLocalID()
+		r.Result, r.ID, r.ProfileID = PairSaved, machineID(m), m.LocalID
 		set(r)
-		adds = append(adds, planned{m: m, pin: pin, fresh: !ok})
+		adds = append(adds, planned{m: m, pin: pin})
 	}
-	if len(adds) > 0 {
+	if len(adds) > 0 || profiled {
 		// S, the pins and the machines are one save. Until the machines are
-		// written, a failure takes back the pins new for them and S (when
-		// written for them); once they are, all of it is theirs.
+		// written, a failure takes back S (when written for them) and the
+		// pins this save added that are still its own; once they are, all
+		// of it is theirs.
 		wrote := false
-		var fresh []string
+		type pinAt struct{ hostPort, pin string }
+		var added []pinAt
 		undo := func() {
-			for _, hostPort := range fresh {
-				if err := d.pins.RemovePin(hostPort); err != nil {
-					log.Printf("pair request: host key of %s: %v", hostPort, err)
+			for _, a := range added {
+				if err := d.pins.RemovePinIf(a.hostPort, a.pin); err != nil {
+					log.Printf("pair request: host key of %s: %v", a.hostPort, err)
 				}
 			}
 			if wrote {
@@ -580,48 +616,59 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 				p.keyPath = ""
 			}
 		}
-		if p.keyPath == "" {
+		if len(adds) > 0 && p.keyPath == "" {
 			path, err := pairing.SaveIdentity(d.dir, p.key.PrivatePEM)
 			if err != nil {
-				return errors.New("This device couldn't save its key for those machines. Nothing was saved; the list is read again.")
+				return errors.New("This device couldn't save its key for those machines.")
 			}
 			p.keyPath, wrote = path, true
 		}
 		for _, a := range adds {
 			hostPort := net.JoinHostPort(a.m.Host, strconv.Itoa(a.m.Port))
-			if err := d.pins.SetPin(hostPort, a.pin); err != nil {
+			// Only where no other key is pinned, as checked above: one
+			// pinned since fails the save, and the next read says so.
+			fresh, err := d.pins.AddPin(hostPort, a.pin)
+			if err != nil {
 				undo()
-				return errors.New("This device couldn't save those machines' host keys. Nothing was saved; the list is read again.")
+				return errors.New("This device couldn't save those machines' host keys.")
 			}
-			if a.fresh {
-				fresh = append(fresh, hostPort)
+			if fresh {
+				added = append(added, pinAt{hostPort, a.pin})
 			}
 			a.m.KeyPath = p.keyPath
 			st.Machines = append(st.Machines, a.m)
 		}
-		// The commit: a request stopped meanwhile publishes nothing.
+		// A request stopped meanwhile publishes nothing.
 		if !d.pairCommitHolds(p) {
 			undo()
 			return errPairStopped
 		}
-		if err := d.store(st); err != nil {
-			// The machines may be written already (the folder's sync failed
-			// after the rename): then S and their pins stay with them.
-			after, loadErr := d.load()
-			at := after.find(machineID(adds[0].m))
-			if loadErr != nil || at < 0 || after.Machines[at].KeyPath != p.keyPath {
-				undo()
-				return fmt.Errorf("This device couldn't save those machines (%w); the list is read again.", err)
-			}
+		published, err := d.publishMachines(st)
+		if !published {
+			undo()
+			return fmt.Errorf("This device couldn't save those machines (%w).", err)
+		}
+		if err != nil {
+			// Written, but the folder's sync failed: S and the pins stay
+			// with them.
 			log.Printf("pair request: the machines are saved, but: %v", err)
+		}
+		// A Cancel or sign-out that came while it was written: what this
+		// save wrote is taken back, as if it came first.
+		if !d.pairCommitHolds(p) {
+			st.Machines = before
+			if published, err := d.publishMachines(st); !published {
+				// Still written: S and the pins stay with them.
+				log.Printf("pair request: stopped, but the machines it saved couldn't be removed: %v", err)
+				return errPairStopped
+			}
+			undo()
+			return errPairStopped
 		}
 	}
 	p.view.Machines = results
-	p.view.Problem = ""
+	p.view.SaveFailed, p.view.Problem, p.saveProblem = false, "", ""
 	p.applied = got.Seq
-	if p.deliveredAt.IsZero() {
-		p.deliveredAt = pairNow()
-	}
 	p.view.RetryOpen = true
 	for _, a := range adds {
 		d.boards.allow(machineID(a.m))

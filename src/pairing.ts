@@ -1,4 +1,4 @@
-import { Desk, type PairedMachine, type PairingOffer, type PairingPreview, type PairRequestMachine, type PairRequestView, type SyncedMachine } from "./mygo";
+import { Desk, type PairedMachine, type PairingOffer, type PairingPreview, type PairRequestMachine, type PairRequestView, type SavedMachine, type SyncedMachine } from "./mygo";
 import { hostRowChevron, hostRowIcon, hostRowLines, hostRowValue, hostSection } from "./hostHome";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
@@ -155,6 +155,12 @@ export function pairNextStep(view: PairRequestView, sinceStartMs: number, failur
   return wait === null ? null : { connect: false, wait };
 }
 
+/** The page's failure count after a read that answered: a list that couldn't be saved yet
+ *  (saveFailed) counts as a failed read, so the next one backs off; anything else resets it. */
+export function pairFailuresAfter(view: PairRequestView, failures: number): number {
+  return view.saveFailed ? failures + 1 : 0;
+}
+
 /** What the host home draws for a request: the card (n3 waiting/claimed, n3b approved while its
  *  machines are saved and tried, n5 ended), the result section (n4), or both. */
 export function pairLayout(view: PairRequestView): { card: "waiting" | "claimed" | "approved" | "ended" | null; results: boolean } {
@@ -300,17 +306,30 @@ export function notAddedLine(view: PairRequestView, m: PairRequestMachine): stri
   return `${view.approver || "Your other device"} couldn't add the key${m.reason ? `: ${m.reason}` : ""}`;
 }
 
+/** The saved profile a result row opens (its id now), joined by the profile id the save gave it,
+ *  so a profile saved since at the same address is not the result's; null when the result saved
+ *  none or its profile is gone. Before the saved list is known (null), the result's own id. */
+export function pairResultTarget(m: PairRequestMachine, saved: readonly SavedMachine[] | null): string | null {
+  if ((m.result !== "saved" && m.result !== "kept") || m.reach === "removed" || !m.profileId) return null;
+  if (saved === null) return m.id ?? null;
+  return saved.find(s => s.localId === m.profileId)?.id ?? null;
+}
+
 /** n4: "PAIRED BY ‹APPROVER›", one row per machine of the list: saved ones open, with the saved
  *  host's menu (Edit, Delete); one this computer can't reach is dimmed with "Join its network to
  *  connect" and Use herdr pair; one it kept, couldn't save or no longer has says why. A machine
  *  the approver couldn't add shows here only when the account doesn't list it (`synced`): the
- *  account's row says it then. `saved`: the ids saved here now; null before they are known. */
-export function pairResultSection(view: PairRequestView, here: string, synced: readonly SyncedMachine[], saved: ReadonlySet<string> | null, glyphs: { machine(): HTMLElement; chevron(): HTMLElement }, spinner: string, actions: PairResultActions): HTMLElement[] {
+ *  account's row says it then. `saved`: the machines saved here now; null before they are known. */
+export function pairResultSection(view: PairRequestView, here: string, synced: readonly SyncedMachine[], saved: readonly SavedMachine[] | null, glyphs: { machine(): HTMLElement; chevron(): HTMLElement }, spinner: string, actions: PairResultActions): HTMLElement[] {
   const { root, rows } = hostSection(`PAIRED BY ${(view.approver || "your other device").toUpperCase()}`, "host-home-paired");
   const away: string[] = [];
   for (const m of view.machines) {
     if (m.result === "failed" && synced.some(s => s.id === m.syncedId)) continue;
-    const gone = (m.result === "saved" || m.result === "kept") && (m.reach === "removed" || !m.id || (saved !== null && !saved.has(m.id)));
+    // A machine saved here opens from its row (a dimmed one too, once its network is joined) and
+    // has the saved host's menu; the rest only say why. Use herdr pair sits beside the row's
+    // button, not in it.
+    const id = pairResultTarget(m, saved);
+    const gone = (m.result === "saved" || m.result === "kept") && id === null;
     let second: string, value: HTMLElement | null = null, off = false, pair = false;
     switch (gone ? "gone" : m.result) {
       case "gone": second = `No longer saved on ${here}`; off = true; break;
@@ -324,10 +343,6 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
       case "pin_differs": second = `Not saved: ${here} knows another host key for it`; off = true; break;
       default: second = notAddedLine(view, m); off = true;
     }
-    // A machine saved here opens from its row (a dimmed one too, once its network is joined) and
-    // has the saved host's menu; the rest only say why. Use herdr pair sits beside the row's
-    // button, not in it.
-    const id = gone ? null : m.id ?? null;
     const row = el("div", "host-home-row host-home-paired-row");
     const body = id ? button("", () => actions.open(id)) : el("span", "");
     if (id) {

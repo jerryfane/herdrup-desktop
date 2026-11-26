@@ -130,9 +130,13 @@ func (d *Desk) AccountSignIn(provider string) error {
 	return d.openBrowser(link)
 }
 
-// AccountSignOut ends the session.
+// AccountSignOut ends the session. It returns once a pair request's save
+// that was writing meanwhile has taken back what it wrote
+// (savePairDelivery), so nothing the session asked for is saved after.
 func (d *Desk) AccountSignOut(ctx context.Context) AccountState {
 	err := d.account.SignOut(ctx)
+	d.storeMu.Lock()
+	d.storeMu.Unlock()
 	s := d.accountState("")
 	if err != nil {
 		// Signed out here either way; the note says the service may not know.

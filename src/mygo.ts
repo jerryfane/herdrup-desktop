@@ -878,6 +878,11 @@ export interface NotificationSettings {
 export interface PairRequestMachine {
   /** ID is the saved machine's id (user@host:port) when saved or kept. */
   id?: string;
+  /**
+   * ProfileID is that saved profile's own id (Machine.LocalID, never
+   * reused): a profile saved later at the same address is another one.
+   */
+  profileId?: string;
   label: string;
   host: string;
   port: number;
@@ -917,6 +922,12 @@ export interface PairRequestView {
    * keeps reading.
    */
   retryOpen: boolean;
+  /**
+   * SaveFailed: the last list couldn't be saved here (Problem says why);
+   * it is read and saved again until the retry window ends. The page
+   * backs off as for a failed read.
+   */
+  saveFailed?: boolean;
   problem?: string;
 }
 
@@ -1590,7 +1601,11 @@ export const Desk = {
   accountSignIn(provider: string): Promise<void> {
     return call("Desk.AccountSignIn", provider);
   },
-  /** AccountSignOut ends the session. */
+  /**
+   * AccountSignOut ends the session. It returns once a pair request's save
+   * that was writing meanwhile has taken back what it wrote
+   * (savePairDelivery), so nothing the session asked for is saved after.
+   */
   accountSignOut(): Promise<AccountState> {
     return call("Desk.AccountSignOut");
   },
@@ -2171,8 +2186,9 @@ export const Desk = {
    * device opened it, and, once approved, the approver's machine list, saved
    * here (the save rules in app/desk_pair_request.go). A list sent again at a
    * higher seq is saved too, while RetryOpen. A list that couldn't be saved
-   * is the view's Problem, and is read again. An error is a read that failed
-   * (no answer); the page reads again.
+   * is the view's Problem (SaveFailed), and is read and saved again until
+   * the retry window ends; then the problem is final. An error is a read
+   * that failed (no answer); the page reads again.
    */
   pairRequestRead(id: string): Promise<PairRequestView> {
     return call("Desk.PairRequestRead", id);

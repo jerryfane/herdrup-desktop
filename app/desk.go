@@ -201,7 +201,10 @@ func (l *storeLock) LockBestEffort(ctx context.Context) bool {
 type Desk struct {
 	dir string // per-user data directory
 
-	storeMu       storeLock // serialises reads and writes of the desk's files
+	storeMu storeLock // serialises reads and writes of the desk's files
+	// writeMachines writes machines.json (publishMachines); nil is
+	// publishFile. Replaced in tests.
+	writeMachines func(path string, data []byte) (published bool, err error)
 	notifications notificationSettings
 	pairingMu     sync.Mutex
 
@@ -539,18 +542,27 @@ func (d *Desk) load() (machineStore, error) {
 // left). d.storeMu must be held. machine.json is left as it was, so an
 // older build still finds its machine.
 func (d *Desk) store(st machineStore) error {
+	_, err := d.publishMachines(st)
+	return err
+}
+
+// publishMachines is store, and whether machines.json is st now: an error
+// with published true came after the rename (the folder's sync), so st is
+// what readers find.
+func (d *Desk) publishMachines(st machineStore) (published bool, err error) {
 	if err := d.replayCommit(); err != nil {
-		return err
+		return false, err
 	}
 	data, err := encodeMachines(st)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return writeMachines(d.machinesPath(), data)
+	write := d.writeMachines
+	if write == nil {
+		write = publishFile
+	}
+	return write(d.machinesPath(), data)
 }
-
-// writeMachines writes machines.json; tests fail it.
-var writeMachines = writeFileAtomic
 
 // encodeMachines is machines.json's content for st.
 func encodeMachines(st machineStore) ([]byte, error) {
@@ -560,20 +572,27 @@ func encodeMachines(st machineStore) ([]byte, error) {
 	return json.MarshalIndent(st, "", "  ")
 }
 
-// writeFileAtomic replaces path with data: a temp file beside it, synced,
-// renamed over it, and the folder synced (syncDir). A reader finds the old
-// file or the new one, never a torn one; a failure before the rename
-// leaves the old one. An error after it (the folder's sync) means the new
-// file is in place but may not outlive a crash.
+// writeFileAtomic replaces path with data (publishFile).
 func writeFileAtomic(path string, data []byte) error {
+	_, err := publishFile(path, data)
+	return err
+}
+
+// publishFile replaces path with data: a temp file beside it, synced,
+// renamed over it, and the folder synced (syncDir). A reader finds the old
+// file or the new one, never a torn one. published is whether the rename
+// was done: a failure before it leaves the old file, and an error after it
+// (the folder's sync) means the new file is in place but may not outlive a
+// crash.
+func publishFile(path string, data []byte) (published bool, err error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return false, err
 	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	_, err = f.Write(data)
 	if err == nil {
@@ -587,9 +606,9 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
-		return err
+		return false, err
 	}
-	return syncDir(dir)
+	return true, syncDir(dir)
 }
 
 // syncDir makes the names written in dir durable (an fsync of the folder).

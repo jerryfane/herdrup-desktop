@@ -4,8 +4,8 @@
 // document (Bun has no DOM); the host home (src/hosts.ts) places them.
 import { afterEach, expect, test } from "bun:test";
 import { FakeDocument, type FakeElement } from "./fakeDom";
-import type { PairRequestMachine, PairRequestView, SyncedMachine } from "../src/mygo";
-import { minutesLeft, nameList, notAddedLine, pairChoiceParts, pairLayout, pairNextStep, pairReadDelay, pairRequestCard, pairResultSection, showPairChoice, thisDevice, untried } from "../src/pairing";
+import type { PairRequestMachine, PairRequestView, SavedMachine, SyncedMachine } from "../src/mygo";
+import { minutesLeft, nameList, notAddedLine, pairChoiceParts, pairFailuresAfter, pairLayout, pairNextStep, pairReadDelay, pairRequestCard, pairResultSection, pairResultTarget, showPairChoice, thisDevice, untried } from "../src/pairing";
 
 const G = globalThis as { document?: unknown };
 const saved = G.document;
@@ -18,6 +18,7 @@ const holder = (doc: FakeDocument, parts: HTMLElement[]) => { const box = doc.cr
 
 const view = (over: Partial<PairRequestView> = {}): PairRequestView => ({ id: "r1", phase: "waiting", expiresIn: 600, device: "Jerry's MacBook Pro", machines: [], retryOpen: false, ...over });
 const machine = (over: Partial<PairRequestMachine> = {}): PairRequestMachine => ({ label: "studio", host: "studio.lan", port: 22, user: "jerry", result: "saved", ...over });
+const savedAs = (id: string, localId: string): SavedMachine => ({ id, nickname: "", host: "", port: 22, user: "", keyPath: "", session: "", localId, active: false });
 const glyphs = { machine: () => document.createElement("span"), chevron: () => document.createElement("span") };
 
 test("this computer names itself by its platform", () => {
@@ -134,19 +135,24 @@ test("n4: the saved machines open with their menu; one off this network says so 
  const opened: string[] = [], qr: string[] = [], menus: string[] = [];
  const synced: SyncedMachine[] = [{ id: "s1", host: "pi.lan", port: 22, user: "pi", key: true }];
  const list = view({ phase: "done", approver: "Jerry's iPhone", machines: [
-  machine({ id: "jerry@studio.lan:22", reach: "online" }),
-  machine({ id: "jerry@mini.lan:22", label: "mini", host: "mini.lan", reach: "unreachable" }),
-  machine({ id: "jerry@old.lan:22", label: "old", host: "old.lan", reach: "refused", problem: "It didn't accept this device's key." }),
-  machine({ id: "jerry@kept.lan:22", label: "kept", host: "kept.lan", result: "kept" }),
-  machine({ id: "jerry@gone.lan:22", label: "gone", host: "gone.lan", reach: "removed" }),
-  machine({ id: "jerry@deleted.lan:22", label: "deleted", host: "deleted.lan", reach: "online" }),
+  machine({ id: "jerry@studio.lan:22", profileId: "p-studio", reach: "online" }),
+  machine({ id: "jerry@mini.lan:22", profileId: "p-mini", label: "mini", host: "mini.lan", reach: "unreachable" }),
+  machine({ id: "jerry@old.lan:22", profileId: "p-old", label: "old", host: "old.lan", reach: "refused", problem: "It didn't accept this device's key." }),
+  machine({ id: "jerry@kept.lan:22", profileId: "p-kept", label: "kept", host: "kept.lan", result: "kept" }),
+  machine({ id: "jerry@gone.lan:22", profileId: "p-gone", label: "gone", host: "gone.lan", reach: "removed" }),
+  machine({ id: "jerry@deleted.lan:22", profileId: "p-deleted", label: "deleted", host: "deleted.lan", reach: "online" }),
   machine({ label: "moved", host: "moved.lan", result: "pin_differs" }),
   machine({ label: "pi", host: "pi.lan", user: "pi", result: "failed", reason: "herdr is too old", syncedId: "s1" }),
   machine({ label: "nas", host: "nas.lan", result: "failed", reason: "unreachable" }),
  ] });
- const saved = new Set(["jerry@studio.lan:22", "jerry@mini.lan:22", "jerry@old.lan:22", "jerry@kept.lan:22"]);
+ // studio was edited since (its id is its new port); gone and deleted were removed, and deleted's
+ // address saved again as another profile.
+ const saved = [savedAs("jerry@studio.lan:2222", "p-studio"), savedAs("jerry@mini.lan:22", "p-mini"), savedAs("jerry@old.lan:22", "p-old"),
+  savedAs("jerry@kept.lan:22", "p-kept"), savedAs("jerry@gone.lan:22", "p-gone-again"), savedAs("jerry@deleted.lan:22", "")];
  const actions = { open: (id: string) => opened.push(id), qr: () => qr.push("qr"), menu: (id: string, x: number, y: number) => menus.push(`${id} ${x},${y}`) };
  expect(pairLayout(list)).toEqual({ card: null, results: true });
+ // The SAVED rows that step aside (hosts.ts): only the profiles a result row opens.
+ expect(list.machines.flatMap(m => pairResultTarget(m, saved) ?? [])).toEqual(["jerry@studio.lan:2222", "jerry@mini.lan:22", "jerry@old.lan:22", "jerry@kept.lan:22"]);
  const box = holder(doc, pairResultSection(list, "this Mac", synced, saved, glyphs, "<svg/>", actions));
  expect(box.querySelector("h2")!.text()).toBe("PAIRED BY JERRY'S IPHONE");
  const rows = box.all().filter(n => n.className.includes("host-home-paired-row"));
@@ -156,11 +162,11 @@ test("n4: the saved machines open with their menu; one off this network says so 
  expect(rowOf("studio").querySelector(".host-home-value")!.text()).toBe("Online");
  const studio = rowOf("studio").querySelector("button")!;
  studio.click();
- expect(opened).toEqual(["jerry@studio.lan:22"]);
+ expect(opened).toEqual(["jerry@studio.lan:2222"]);
  // The saved host's menu (Edit, Delete), as its SAVED row has it: right click, or the menu key.
  (studio.oncontextmenu as unknown as (e: object) => void)({ preventDefault() {}, clientX: 5, clientY: 7 });
  (studio.onkeydown as unknown as (e: object) => void)({ key: "ContextMenu", shiftKey: false, preventDefault() {} });
- expect(menus).toEqual(["jerry@studio.lan:22 5,7", "jerry@studio.lan:22 20,0"]);
+ expect(menus).toEqual(["jerry@studio.lan:2222 5,7", "jerry@studio.lan:2222 20,0"]);
  const mini = rowOf("mini");
  expect(mini.querySelector(".host-home-address")!.text()).toBe("Join its network to connect");
  expect(mini.querySelector(".host-home-paired-body")!.className).toContain("host-home-row-off");
@@ -193,11 +199,18 @@ test("the page tries saved machines, then reads, never at once, and stops once s
  for (const v of [view(), view({ phase: "approved" }), tried]) expect(pairNextStep(v, 0, 0)!.wait).toBeGreaterThan(0);
 });
 
-test("a list that couldn't be saved yet shows on the card while it is read again", () => {
+test("a list that couldn't be saved yet shows on the card while it is read again, backing off", () => {
  const doc = page();
- const card = holder(doc, pairRequestCard(view({ phase: "approved", approver: "Jerry's iPhone", code: "4831", problem: "This device couldn't save those machines (disk full); the list is read again." }), "this Mac", "", "<svg/>", 0, { cancel() {}, again() {}, qr() {} }));
+ const failing = view({ phase: "approved", approver: "Jerry's iPhone", code: "4831", saveFailed: true, problem: "This device couldn't save those machines (disk full). Trying again." });
+ const card = holder(doc, pairRequestCard(failing, "this Mac", "", "<svg/>", 0, { cancel() {}, again() {}, qr() {} }));
  expect(card.querySelector("h3")!.text()).toBe("Approved on Jerry's iPhone");
- expect(card.all().find(n => n.getAttribute("role") === "alert")!.text()).toBe("This device couldn't save those machines (disk full); the list is read again.");
+ expect(card.all().find(n => n.getAttribute("role") === "alert")!.text()).toBe("This device couldn't save those machines (disk full). Trying again.");
+ // Each such read counts as a failed one: the reads back off to 30 s, and one that saved resets it.
+ let failures = 0;
+ const waits: number[] = [];
+ for (let i = 0; i < 6; i++) { failures = pairFailuresAfter(failing, failures); waits.push(pairNextStep(failing, 0, failures)!.wait); }
+ expect(waits).toEqual([4000, 8000, 16_000, 30_000, 30_000, 30_000]);
+ expect(pairFailuresAfter(view({ phase: "done", retryOpen: true }), failures)).toBe(0);
 });
 
 test("n5: denied, expired or failed, the card offers Ask again and herdr pair", () => {

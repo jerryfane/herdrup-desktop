@@ -110,16 +110,40 @@ func (s *FilePinStore) SetPin(hostPort, fingerprint string) error {
 	return s.write(pins)
 }
 
-// RemovePin forgets hostPort's pin, as a save that set it and then failed
-// takes it back; none there is no error.
-func (s *FilePinStore) RemovePin(hostPort string) error {
+// ErrPinTaken: AddPin found another host key pinned at that address.
+var ErrPinTaken = errors.New("bridge: another host key is pinned there")
+
+// AddPin pins fingerprint at hostPort unless a pin is there: the same one
+// is no change (added false), another is ErrPinTaken. The check and the
+// write are one step, so it never replaces a pin another writer set.
+func (s *FilePinStore) AddPin(hostPort, fingerprint string) (added bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pins, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	switch fp, ok := pins[hostPort]; {
+	case ok && fp == fingerprint:
+		return false, nil
+	case ok:
+		return false, ErrPinTaken
+	}
+	pins[hostPort] = fingerprint
+	return true, s.write(pins)
+}
+
+// RemovePinIf forgets hostPort's pin only while it is still fingerprint,
+// as a save that added it and then failed takes it back: a pin set there
+// since stays.
+func (s *FilePinStore) RemovePinIf(hostPort, fingerprint string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pins, err := s.load()
 	if err != nil {
 		return err
 	}
-	if _, ok := pins[hostPort]; !ok {
+	if fp, ok := pins[hostPort]; !ok || fp != fingerprint {
 		return nil
 	}
 	delete(pins, hostPort)

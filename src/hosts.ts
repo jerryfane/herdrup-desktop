@@ -2,7 +2,7 @@ import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
 import type { Machine, PairingOffer, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
-import { notAddedLine, pairLayout, pairNextStep, pairRequestCard, pairResultSection, showPairing, showPairChoice, thisDevice } from "./pairing";
+import { notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
@@ -117,8 +117,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (appleSymbols()) { const slot = element("span", "pairing-choice-glyph"); void symbol("qrcode.viewfinder", size, "semibold").then(icon => slot.append(icon)); return slot; }
   const icon = element("span", "host-action-glyph"); icon.style.width = icon.style.height = `${size}px`; icon.style.setProperty("--host-icon", `url("${qrIcon}")`); return icon;
  }
- /** The machines the results list shows: their SAVED rows step aside. */
- const pairShown = () => new Set(pairView && pairLayout(pairView).results ? pairView.machines.flatMap(m => m.id ? [m.id] : []) : []);
+ /** The saved machines the results list shows as rows to open (joined by profile, pairResultTarget):
+  *  their SAVED rows step aside. A profile saved since at a result's address keeps its row. */
+ const pairShown = () => new Set(pairView && pairLayout(pairView).results ? pairView.machines.flatMap(m => { const id = pairResultTarget(m, savedList); return id ? [id] : []; }) : []);
  function drawPair() {
   const view = pairView, layout = view ? pairLayout(view) : null;
   home.classList.toggle("host-home-pairing", !!layout?.card && layout.card !== "ended");
@@ -127,7 +128,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (layout.card) parts.push(...pairRequestCard(view, here, accountHint ?? "", spinner, pairExpiresAt, {
    cancel: () => void cancelRequest(), again: () => void startRequest(), qr: () => startPairing(),
   }));
-  if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, savedList && new Set(savedList.map(m => m.id)), glyphs, spinner, {
+  if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, savedList, glyphs, spinner, {
    open: id => void openPaired(id), qr: () => startPairing(),
    menu: (id, x, y) => { const machine = savedList?.find(m => m.id === id); if (machine) openMachineMenu(machine, x, y); },
   }));
@@ -139,8 +140,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (view && view.id !== before?.id) { pairStarted = Date.now(); pairFailures = 0; }
   if (view && (view.phase === "waiting" || view.phase === "claimed")) pairExpiresAt = Date.now() + view.expiresIn * 1000;
   drawSynced();
-  // A list saved machines, or the results took their rows: SAVED and the account's list redraw.
-  const shown = (v: PairRequestView | null) => `${v?.machines.filter(m => m.id).length ?? 0}:${!!v && pairLayout(v).results}`;
+  // A list saved machines, one is gone, or the results took their rows: SAVED and the account's list redraw.
+  const shown = (v: PairRequestView | null) => `${v?.machines.filter(m => m.profileId && m.reach !== "removed").length ?? 0}:${!!v && pairLayout(v).results}`;
   if (shown(view) !== shown(before)) void refresh();
   schedulePair();
  }
@@ -151,7 +152,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   pairTimer = setTimeout(() => void (next.connect ? connectPaired(view.id) : readRequest(view.id)), next.wait);
  }
  async function readRequest(id: string) {
-  try { const view = await Desk.pairRequestRead(id); if (pairView?.id === id) { pairFailures = 0; message.hidden = true; showRequest(view); } }
+  try { const view = await Desk.pairRequestRead(id); if (pairView?.id === id) { pairFailures = pairFailuresAfter(view, pairFailures); message.hidden = true; showRequest(view); } }
   catch (failure) {
    if (pairView?.id !== id) return;
    // Gone here (another window asked again): show what Go has now; else say why and read again
