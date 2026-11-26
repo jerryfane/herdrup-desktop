@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isMine, previousMine } from "../src/chatJumpMine";
+import { isMine, previousMine, showsJumpMine } from "../src/chatJumpMine";
 
 const user = (extra: Record<string, unknown> = {}) => ({ kind: "user", id: "u", ts_ms: 1, text: "hi", ...extra });
 
@@ -21,4 +21,10 @@ test("each tap goes to the next prompt above the view and stops at the first", (
   expect(previousMine(rows, 888)).toBe("a");
   expect(previousMine(rows, 100)).toBeNull();
   expect(previousMine([], 5000)).toBeNull();
+});
+
+test("the arrow is the owner's: the desktop's view and an owner link's, never a guest's", () => {
+  expect(showsJumpMine({ guest: false })).toBe(true);
+  expect(showsJumpMine({ guest: true, ownerLink: true })).toBe(true);
+  expect(showsJumpMine({ guest: true })).toBe(false);
 });

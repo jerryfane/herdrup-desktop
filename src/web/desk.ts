@@ -764,6 +764,8 @@ export function createGuestDesk(env: DeskEnv) {
     // desk_interaction.go topicSessions: the topics its session file holds, one without an id left out.
     topicSessions: (agent.topic_sessions ?? []).filter(t => !!t.topic_id).map(t => ({ topicID: t.topic_id!, title: t.title ?? "", createdMs: t.created_unix_ms ?? 0 })),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
+    // The owner's own browser (an owner link): the gate's guest view, with the owner's up arrow.
+    ...(l.owner ? { ownerLink: true } : {}),
    };
    mountView(l, view, shareDetails(agent, name, linkShareLabel(l)), ownerAvailability([agent], view.paneID));
    return view;
@@ -781,7 +783,7 @@ export function createGuestDesk(env: DeskEnv) {
    if (l.transport.scope !== "terminal") throw new OwnerRefusedError("pane.stream");
    const saved = findTerminal(l.owner.hostID, target.paneID);
    const view: AgentView = { token, paneID: saved.paneID, name: saved.label, harness: "", heading: saved.label, group: "terminal", status: "Terminal",
-    guest: true, guestGram: false, askForm: false, topicSessions: [], plainTerminal: true };
+    guest: true, guestGram: false, askForm: false, topicSessions: [], plainTerminal: true, ownerLink: true };
    mountView(l, view, { agentName: saved.label, machineLabel: linkShareLabel(l) }, "");
    return view;
   },

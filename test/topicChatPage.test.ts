@@ -2,7 +2,7 @@
 // shared fake document (fakeDom.ts) with Go answered here: the Inbox's rows under the topic's
 // conversation, its width handles, and the Inbox's own composer lent to the topic (the grow handle,
 // files pasted or dropped as chips, saved prompts and the mic); and a handover between the Inbox
-// and a topic (relay) as both chats draw it.
+// and a topic (relay) as both chats draw it; and the chat's up arrow to the owner's previous prompt.
 import { afterAll, beforeAll, beforeEach, expect, mock, setSystemTime, test } from "bun:test";
 import { FakeDocument, FakeElement } from "./fakeDom";
 import type { AgentTarget, GramAttachment } from "../src/mygo";
@@ -1088,4 +1088,85 @@ test("a topic herdr read from the session file (state unknown) claims neither Id
  listed(token, "running", false);
  await settle();
  expect([withClass(chat, "topic-status").map(n => n.text()), statuses().length]).toEqual([["Working"], 2]);
+});
+
+// herdr-app #559405: the chat's up arrow (Jump to my previous message) on the web. An owner's browser
+// (an owner link) opens its agents as the gate's guest views; herdr's owner gate stamps the
+// browser's prompts as the owner's (turn origin "mine", herdr-app 559688). The owner's view has the
+// arrow and lands on them; a guest's never shows it; the desktop's is as before.
+const ownerPrompt = (id: string, text: string, extra: Record<string, unknown> = {}) => ({ kind: "user", id, ts_ms: Date.now() - 500, text, author: "owner", ...extra });
+const GITMOOT = ownerPrompt("u0", "gitmoot: review PR 12", { origin: "other" });
+
+/** Opens the agent's chat as `view` (an AgentView's fields over a desktop owner's) with the Inbox
+ *  answering live reads from `live` (all of it for the first read, what follows `after` later). */
+async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }) {
+ // A page of its own: no chat remembered from before.
+ emit("state:changed", { phase: "idle" });
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
+  const from = after === "" ? 0 : Number(String(after).slice("live".length));
+  return topicPage({ session_id: "s-live", after: `live${live.entries.length}`, entries: live.entries.slice(from) });
+ });
+ page.closeInteraction();
+ const opened = answers["Desk.OpenAgentView"]!;
+ answers["Desk.OpenAgentView"] = (...args: unknown[]) => ({ ...(opened(...args) as object), topicSessions: [], ...view });
+ answers["Desk.GuestChatAvailable"] = () => true;
+ answers["Desk.State"] = () => ({ phase: "connected", guest: { features: { gram: false }, ...(view.ownerLink ? { ownerScope: "chat" } : {}) } });
+ answers["Desk.TopicsAvailable"] = () => false;
+ await page.selectInteraction(target);
+ await settle();
+ const scroll = doc.body.all().find(n => n.className === "chat-scroll")!;
+ const jump = doc.body.all().find(n => n.className === "chat-jump-previous-mine")!;
+ return { scroll, jump };
+}
+/** Lays the chat out: each row at its top in the scroller's content (rows `tops` names), the view
+ *  scrolled to the end of 3000 px of content in a 600 px window. */
+function layOut(scroll: FakeElement, tops: Record<string, number>) {
+ for (const [id, top] of Object.entries(tops)) {
+  const row = scroll.querySelector(`[data-id="${id}"]`);
+  if (!row) throw new Error(`no row ${id}`);
+  row.getBoundingClientRect = () => ({ left: 0, top: top - scroll.scrollTop, right: 100, bottom: top - scroll.scrollTop + 100, width: 100, height: 100 });
+ }
+ scroll.scrollHeight = 3000; scroll.clientHeight = 600; scroll.scrollTop = 2400;
+ (scroll as unknown as { onscroll: () => void }).onscroll();
+}
+const TOPS = { u0: 200, u1: 1200 };
+
+test("an owner's browser has the up arrow, which lands on the prompt the owner sent from it", async () => {
+ const live = { entries: [GITMOOT, reply("r0", "Reviewed")] };
+ const { scroll, jump } = await openChat({ guest: true, ownerLink: true }, live);
+ answers["Desk.ChatPrompt"] = () => { live.entries.push(ownerPrompt("u1", "Fix the build", { origin: "mine" }), reply("r1", "Fixed")); return JSON.stringify({ delivery: "submitted" }); };
+ const input = doc.body.all().find(n => n.tagName === "textarea")!;
+ type(input, "Fix the build");
+ input.dispatchEvent(Object.assign(new Event("keydown"), { key: "Enter" }));
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.ChatPrompt").map(c => c.args[1])).toEqual(["Fix the build"]);
+ layOut(scroll, TOPS);
+ expect(jump.hidden).toBe(false);
+ jump.click();
+ await settle();
+ expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
+ // gitmoot's prompt above is not the owner's: the next tap stays.
+ jump.click();
+ await settle();
+ expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
+});
+
+test("a guest's view never has the up arrow, even with the owner's prompts above", async () => {
+ const live = { entries: [GITMOOT, ownerPrompt("u1", "Fix the build"), reply("r1", "Fixed")] };
+ const { scroll, jump } = await openChat({ guest: true, guestSelf: "nike", guestOwner: "Jerry" }, live);
+ layOut(scroll, TOPS);
+ expect(jump.hidden).toBe(true);
+});
+
+test("the desktop's arrow lands on the owner's prompts herdr marks as theirs, never on one marked other", async () => {
+ const live = { entries: [GITMOOT, ownerPrompt("u1", "Fix the build"), reply("r1", "Fixed")] };
+ const { scroll, jump } = await openChat({}, live);
+ layOut(scroll, TOPS);
+ expect(jump.hidden).toBe(false);
+ jump.click();
+ await settle();
+ expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
+ jump.click();
+ await settle();
+ expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
 });
