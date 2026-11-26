@@ -300,17 +300,24 @@ func (c *Client) doRaw(ctx context.Context, name string, params any) (herdrapi.R
 
 // call is do for a method with one result type.
 func call[R herdrapi.ResponseResultVariant](ctx context.Context, c *Client, name string, params any) (R, error) {
+	r, _, err := callRaw[R](ctx, c, name, params)
+	return r, err
+}
+
+// callRaw is call that also returns the result as herdr sent it, for
+// fields the generated type can't tell missing from zero.
+func callRaw[R herdrapi.ResponseResultVariant](ctx context.Context, c *Client, name string, params any) (R, json.RawMessage, error) {
 	var zero R
-	v, err := c.do(ctx, name, params)
+	v, raw, err := c.doRaw(ctx, name, params)
 	if err != nil {
-		return zero, err
+		return zero, nil, err
 	}
 	r, ok := v.(R)
 	if !ok {
 		// The table lists the tag but this package expects another type.
-		return zero, fmt.Errorf("engine: %s result decoded as %T, want %T", name, v, zero)
+		return zero, nil, fmt.Errorf("engine: %s result decoded as %T, want %T", name, v, zero)
 	}
-	return r, nil
+	return r, raw, nil
 }
 
 // decodeAck reads the first line of a stream: m's acknowledgement, or the

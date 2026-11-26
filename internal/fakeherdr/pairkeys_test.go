@@ -112,6 +112,47 @@ func TestPairKeysListReadsAddedKeysBack(t *testing.T) {
 	}
 }
 
+// authorized_keys lines are read as sshd reads them (parse_key_line): after
+// options, quoted blanks included, with spaces or tabs between fields. A
+// user's comment is answered as written on a repeated add; only the list
+// and removal output normalise a marked comment's words.
+func TestPairKeysReadsLinesAsSshd(t *testing.T) {
+	mine, _ := keyWith(1)
+	phone, phoneFP := keyWith(2)
+	tablet, tabletFP := keyWith(4)
+	p := &PairKeys{}
+	p.AddLine(`restrict,command="echo \"hi there\"" ` + mine + "   Jerry's   laptop key  \r\n")
+	p.AddLine("from=\"10.0.0.1\"\t" + strings.Replace(phone, " ", "\t", 1) + " \therdr-pair:Old   Phone ")
+	p.AddLine("  " + tablet + "  herdr-pair")
+	for _, bad := range []string{"# " + mine + " herdr-pair", "", `command="unterminated ` + mine, "restrict ssh-ed25519"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("read a key from %q", bad)
+				}
+			}()
+			p.AddLine(bad)
+		}()
+	}
+	if out, e := addKey(p, PairOwner, mine, "x"); e != nil || out["already"] != true || out["label"] != "Jerry's   laptop key" {
+		t.Fatalf("the user's key again = %v, %v", out, e)
+	}
+	if out, e := addKey(p, PairOwner, phone, "x"); e != nil || out["already"] != true || out["label"] != "Old Phone" {
+		t.Fatalf("the phone again = %v, %v", out, e)
+	}
+	oldPhone := herdrapi.PairKeyInfo{Fingerprint: phoneFP, Label: "Old Phone", Comment: "herdr-pair:Old Phone"}
+	want := []herdrapi.PairKeyInfo{oldPhone, {Fingerprint: tabletFP, Label: "", Comment: "herdr-pair"}}
+	if r, e := pairCall(p, PairOwner, "pair.keys.list", `{}`); e != nil || !slices.Equal(r.Keys, want) {
+		t.Fatalf("list = %+v, %v", r, e)
+	}
+	if r, e := pairCall(p, PairOwner, "pair.keys.remove", `{"fingerprint":"`+phoneFP+`"}`); e != nil || !slices.Equal(r.Removed, want[:1]) {
+		t.Fatalf("remove = %+v, %v", r, e)
+	}
+	if keys := p.Keys(); len(keys) != 1 || keys[0].PublicKey != tablet {
+		t.Fatalf("keys %+v", keys)
+	}
+}
+
 func addKey(p *PairKeys, caller PairCaller, publicKey, label string) (map[string]any, *APIError) {
 	raw, _ := json.Marshal(map[string]string{"public_key": publicKey, "label": label})
 	out, e, ok := p.HandleFrom(caller, "pair.add_key", raw)

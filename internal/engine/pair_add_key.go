@@ -8,7 +8,9 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -17,15 +19,12 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
-// PairAddKeyMethod is the wire method.
-const PairAddKeyMethod = "pair.add_key"
-
-// PairKeyAddedType is pair.add_key's reply type.
-const PairKeyAddedType = "pair_key_added"
-
-// CapabilityPairAddKey is the ping capability of a herdr with pair.add_key,
-// pair.keys.list and pair.keys.remove (herdrapi.CapabilityPairAddKey).
-const CapabilityPairAddKey = string(herdrapi.CapabilityPairAddKey)
+// The wire methods.
+const (
+	PairAddKeyMethod     = "pair.add_key"
+	pairKeysListMethod   = "pair.keys.list"
+	pairKeysRemoveMethod = "pair.keys.remove"
+)
 
 // MaxPairKeyLabel is herdr's limit on the label pair.add_key takes, in
 // characters; a longer one, an empty one, or one with a control character
@@ -122,24 +121,31 @@ func (c *Client) PairAddKeySupported(ctx context.Context) (bool, error) {
 // PairAddKey is pair.add_key. A herdr without it answers *ErrUnsupported;
 // its refusals are *PairKeyError (ErrPairKeyInvalid …), any other error as
 // the transport gave it. A reply of another type is a *ResultTagError, one
-// without a fingerprint a *DecodeError.
+// missing a field (or with an empty fingerprint) a *DecodeError.
 func (c *Client) PairAddKey(ctx context.Context, p PairAddKeyParams) (PairKeyAdded, error) {
-	added, err := call[herdrapi.ResponseResultPairKeyAdded](ctx, c, "pair.add_key", p)
+	added, raw, err := callRaw[herdrapi.ResponseResultPairKeyAdded](ctx, c, PairAddKeyMethod, p)
 	if err != nil {
 		return PairKeyAdded{}, pairKeyError(err)
 	}
+	if _, err := requireFields(PairAddKeyMethod, raw, "added", "already", "fingerprint", "label"); err != nil {
+		return PairKeyAdded{}, err
+	}
 	if added.Fingerprint == "" {
-		return PairKeyAdded{}, &DecodeError{Method: PairAddKeyMethod, Err: errors.New("no fingerprint")}
+		return PairKeyAdded{}, &DecodeError{Method: PairAddKeyMethod, Err: errors.New("empty fingerprint")}
 	}
 	return added, nil
 }
 
 // PairKeysList is pair.keys.list: the herdr-pair keys in authorized_keys,
-// in file order (never the user's own lines). Errors as PairAddKey's.
+// in file order (never the user's own lines). Errors as PairAddKey's; a
+// reply without its keys array is a *DecodeError.
 func (c *Client) PairKeysList(ctx context.Context) ([]herdrapi.PairKeyInfo, error) {
-	list, err := call[herdrapi.ResponseResultPairKeysList](ctx, c, "pair.keys.list", herdrapi.PairKeysListParams{})
+	list, raw, err := callRaw[herdrapi.ResponseResultPairKeysList](ctx, c, pairKeysListMethod, herdrapi.PairKeysListParams{})
 	if err != nil {
 		return nil, pairKeyError(err)
+	}
+	if err := requireKeys(pairKeysListMethod, raw, "keys"); err != nil {
+		return nil, err
 	}
 	return list.Keys, nil
 }
@@ -147,13 +153,51 @@ func (c *Client) PairKeysList(ctx context.Context) ([]herdrapi.PairKeyInfo, erro
 // PairKeysRemove is pair.keys.remove: it removes the herdr-pair lines with
 // fingerprint (OpenSSH "SHA256:…") and returns them, none when no
 // herdr-pair line has it (a user's own line is never removed). Errors as
-// PairAddKey's.
+// PairAddKey's; a reply without its removed array is a *DecodeError.
 func (c *Client) PairKeysRemove(ctx context.Context, fingerprint string) ([]herdrapi.PairKeyInfo, error) {
-	removed, err := call[herdrapi.ResponseResultPairKeysRemoved](ctx, c, "pair.keys.remove", herdrapi.PairKeysRemoveParams{Fingerprint: fingerprint})
+	removed, raw, err := callRaw[herdrapi.ResponseResultPairKeysRemoved](ctx, c, pairKeysRemoveMethod, herdrapi.PairKeysRemoveParams{Fingerprint: fingerprint})
 	if err != nil {
 		return nil, pairKeyError(err)
 	}
+	if err := requireKeys(pairKeysRemoveMethod, raw, "removed"); err != nil {
+		return nil, err
+	}
 	return removed.Removed, nil
+}
+
+// requireFields is the object raw, or a *DecodeError unless it has each
+// field, and not null: the generated types decode a missing or null one as
+// its zero.
+func requireFields(method string, raw json.RawMessage, fields ...string) (map[string]json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, &DecodeError{Method: method, Err: err}
+	}
+	for _, field := range fields {
+		if v, ok := object[field]; !ok || string(v) == "null" {
+			return nil, &DecodeError{Method: method, Err: fmt.Errorf("no %s", field)}
+		}
+	}
+	return object, nil
+}
+
+// requireKeys is requireFields for a reply whose field is an array of
+// PairKeyInfo, each with every field.
+func requireKeys(method string, raw json.RawMessage, field string) error {
+	object, err := requireFields(method, raw, field)
+	if err != nil {
+		return err
+	}
+	var keys []json.RawMessage
+	if err := json.Unmarshal(object[field], &keys); err != nil {
+		return &DecodeError{Method: method, Err: err}
+	}
+	for _, key := range keys {
+		if _, err := requireFields(method, key, "fingerprint", "label", "comment"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pairKeyError is err as a *PairKeyError when herdr refused with one of

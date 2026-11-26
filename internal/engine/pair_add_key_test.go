@@ -16,7 +16,7 @@ import (
 )
 
 // pairCaps is the ping capabilities of a herdr with pair.*.
-var pairCaps = map[string]bool{engine.CapabilityPairAddKey: true}
+var pairCaps = map[string]bool{string(herdrapi.CapabilityPairAddKey): true}
 
 // keysHandler serves pair.* from keys to caller.
 func keysHandler(keys *fakeherdr.PairKeys, caller fakeherdr.PairCaller) func(string, json.RawMessage) (any, *fakeherdr.APIError) {
@@ -80,7 +80,7 @@ func TestPairAddKeyRefusals(t *testing.T) {
 		}
 	}
 	t.Run("bad params", func(t *testing.T) {
-		_, c := start(t, map[string]bool{engine.CapabilityPairAddKey: true}, keysHandler(&fakeherdr.PairKeys{}, fakeherdr.PairOwner), nil)
+		_, c := start(t, pairCaps, keysHandler(&fakeherdr.PairKeys{}, fakeherdr.PairOwner), nil)
 		for _, tc := range []struct {
 			p    engine.PairAddKeyParams
 			want error
@@ -105,7 +105,7 @@ func TestPairAddKeyRefusals(t *testing.T) {
 			fakeherdr.PairGuest:        engine.ErrPairGuestForbidden,
 			fakeherdr.PairOwnerBrowser: engine.ErrPairOwnerForbidden,
 		} {
-			_, c := start(t, map[string]bool{engine.CapabilityPairAddKey: true}, keysHandler(&fakeherdr.PairKeys{}, caller), nil)
+			_, c := start(t, pairCaps, keysHandler(&fakeherdr.PairKeys{}, caller), nil)
 			_, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"})
 			refused(t, err, want)
 			if errors.Is(err, engine.ErrPairKeyInvalid) {
@@ -143,13 +143,32 @@ func TestPairAddKeyRefusals(t *testing.T) {
 			t.Fatalf("old herdr: %v", err)
 		}
 	})
-	t.Run("reply without a fingerprint", func(t *testing.T) {
-		_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) {
-			return map[string]any{"type": engine.PairKeyAddedType, "added": true, "already": false}, nil
-		}, nil)
-		var decode *engine.DecodeError
-		if _, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); !errors.As(err, &decode) {
-			t.Fatalf("%v", err)
+	t.Run("reply missing a field", func(t *testing.T) {
+		reply := func(drop string, value any) map[string]any {
+			r := map[string]any{"type": "pair_key_added", "added": true, "already": false, "fingerprint": "SHA256:x", "label": "x"}
+			if value == "drop" {
+				delete(r, drop)
+			} else if drop != "" {
+				r[drop] = value
+			}
+			return r
+		}
+		for _, tc := range []struct {
+			field string
+			value any
+		}{
+			{"added", "drop"}, {"added", nil}, {"already", "drop"}, {"already", nil},
+			{"fingerprint", "drop"}, {"fingerprint", nil}, {"fingerprint", ""}, {"label", "drop"}, {"label", nil},
+		} {
+			_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) { return reply(tc.field, tc.value), nil }, nil)
+			var decode *engine.DecodeError
+			if _, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); !errors.As(err, &decode) {
+				t.Fatalf("%s %v: %v", tc.field, tc.value, err)
+			}
+		}
+		_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) { return reply("", nil), nil }, nil)
+		if got, err := c.PairAddKey(ctx(t), engine.PairAddKeyParams{PublicKey: k.PublicLine, Label: "x"}); err != nil || got != (engine.PairKeyAdded{Added: true, Fingerprint: "SHA256:x", Label: "x"}) {
+			t.Fatalf("complete reply = %+v, %v", got, err)
 		}
 	})
 	t.Run("reply of another type", func(t *testing.T) {
@@ -212,6 +231,43 @@ func TestPairKeysListAndRemove(t *testing.T) {
 	}
 	if got, err := c.PairKeysList(ctx(t)); err != nil || !slices.Equal(got, []herdrapi.PairKeyInfo{tablet}) {
 		t.Fatalf("list after remove = %+v, %v", got, err)
+	}
+}
+
+// A tagged reply without its array, or with null, is malformed; [] is none.
+func TestPairKeysListAndRemoveNeedTheirArray(t *testing.T) {
+	key := map[string]any{"fingerprint": "SHA256:x", "label": "Phone", "comment": "herdr-pair:Phone"}
+	for _, tc := range []struct {
+		name, tag, field string
+		call             func(*engine.Client) ([]herdrapi.PairKeyInfo, error)
+	}{
+		{"list", "pair_keys_list", "keys", func(c *engine.Client) ([]herdrapi.PairKeyInfo, error) { return c.PairKeysList(ctx(t)) }},
+		{"remove", "pair_keys_removed", "removed", func(c *engine.Client) ([]herdrapi.PairKeyInfo, error) { return c.PairKeysRemove(ctx(t), "SHA256:x") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := func(reply map[string]any) *engine.Client {
+				_, c := start(t, pairCaps, func(string, json.RawMessage) (any, *fakeherdr.APIError) { return reply, nil }, nil)
+				return c
+			}
+			for name, reply := range map[string]map[string]any{
+				"missing":               {"type": tc.tag},
+				"null":                  {"type": tc.tag, tc.field: nil},
+				"a key without comment": {"type": tc.tag, tc.field: []any{map[string]any{"fingerprint": "SHA256:x", "label": ""}}},
+				"a key with null label": {"type": tc.tag, tc.field: []any{map[string]any{"fingerprint": "SHA256:x", "label": nil, "comment": "herdr-pair"}}},
+			} {
+				var decode *engine.DecodeError
+				if got, err := tc.call(answer(reply)); !errors.As(err, &decode) || got != nil {
+					t.Fatalf("%s: %+v, %v", name, got, err)
+				}
+			}
+			if got, err := tc.call(answer(map[string]any{"type": tc.tag, tc.field: []any{}})); err != nil || len(got) != 0 {
+				t.Fatalf("[]: %+v, %v", got, err)
+			}
+			want := []herdrapi.PairKeyInfo{{Fingerprint: "SHA256:x", Label: "Phone", Comment: "herdr-pair:Phone"}}
+			if got, err := tc.call(answer(map[string]any{"type": tc.tag, tc.field: []any{key}})); err != nil || !slices.Equal(got, want) {
+				t.Fatalf("one key: %+v, %v", got, err)
+			}
+		})
 	}
 }
 

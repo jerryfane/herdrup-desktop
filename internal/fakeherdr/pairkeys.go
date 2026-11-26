@@ -1,6 +1,7 @@
 package fakeherdr
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"slices"
@@ -26,14 +27,14 @@ import (
 // in a space); the line written is marked_authorized_key's, the label
 // trimmed. A key whose material is there already, on any line, changes
 // nothing and answers added false, already true, with stored_label: a
-// herdr-pair line's label, else the first line's comment.
+// herdr-pair line's label, else the first line's comment as written.
 //
 // pair.keys.list answers the herdr-pair lines (paired_key: the label is the
-// marker's text and the words after it, trimmed; the comment its words),
-// in file order; pair.keys.remove {fingerprint} removes the herdr-pair
-// lines with that fingerprint and answers them ([] when none), never a
-// user's line, one with the same material included. Guests get
-// guest_forbidden and owner browsers owner_forbidden for each.
+// marker's text and the words after it, trimmed; the comment its words
+// joined by one space), in file order; pair.keys.remove {fingerprint}
+// removes the herdr-pair lines with that fingerprint and answers them ([]
+// when none), never a user's line, one with the same material included.
+// Guests get guest_forbidden and owner browsers owner_forbidden for each.
 type PairKeys struct {
 	mu    sync.Mutex
 	lines []keyLine
@@ -42,14 +43,15 @@ type PairKeys struct {
 // pairMarker is AUTHORIZED_KEYS_MARKER.
 const pairMarker = "herdr-pair"
 
-// keyLine is one authorized_keys line: its material, fingerprint, and the
-// words of its comment joined by one space.
+// keyLine is one authorized_keys line as parse_key_line reads it: key type,
+// material, its fingerprint (key_fingerprint; empty when the material isn't
+// base64), and the comment as written, blanks trimmed at its ends only.
 type keyLine struct {
-	material, fingerprint, comment string
+	kind, material, fingerprint, comment string
 }
 
-// PairKey is one herdr-pair key: its "ssh-ed25519 AAAA…" line (without
-// the comment), its label as herdr reads it back, and its OpenSSH SHA256
+// PairKey is one herdr-pair key: its "<type> AAAA…" key (without options
+// or comment), its label as herdr reads it back, and its OpenSSH SHA256
 // fingerprint.
 type PairKey struct {
 	PublicKey, Label, Fingerprint string
@@ -74,17 +76,17 @@ func PongPairAddKey(multi bool) map[string]any {
 	return p
 }
 
-// AddLine puts a line in authorized_keys as it would be on disk: an
-// ssh-ed25519 key line and its comment, a herdr-pair line when the comment
-// has the marker. It panics on a line that isn't one.
+// AddLine puts a line in authorized_keys as it would be on disk: options,
+// key type, material and comment, a herdr-pair line when the comment has
+// the marker. It panics on a line sshd would not read a key from.
 func (p *PairKeys) AddLine(line string) {
-	key, material, ok := ed25519Line(line)
+	l, ok := parseKeyLine(line)
 	if !ok {
-		panic("fakeherdr: not an ssh-ed25519 key line: " + line)
+		panic("fakeherdr: not an authorized_keys key line: " + line)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.lines = append(p.lines, keyLine{material: material, fingerprint: ssh.FingerprintSHA256(key), comment: strings.Join(strings.Fields(line)[2:], " ")})
+	p.lines = append(p.lines, l)
 }
 
 // Keys are the herdr-pair keys, in file order.
@@ -94,7 +96,7 @@ func (p *PairKeys) Keys() []PairKey {
 	var keys []PairKey
 	for _, l := range p.lines {
 		if info, ok := l.paired(); ok {
-			keys = append(keys, PairKey{PublicKey: "ssh-ed25519 " + l.material, Label: info.Label, Fingerprint: l.fingerprint})
+			keys = append(keys, PairKey{PublicKey: l.kind + " " + l.material, Label: info.Label, Fingerprint: l.fingerprint})
 		}
 	}
 	return keys
@@ -163,11 +165,11 @@ func (p *PairKeys) HandleFrom(caller PairCaller, method string, raw json.RawMess
 	if n := utf8.RuneCountInString(label); n == 0 || n > 80 || strings.IndexFunc(label, unicode.IsControl) >= 0 {
 		return nil, &APIError{Code: "pair_label_invalid", Message: "label must be 1 to 80 printable characters"}, true
 	}
-	key, material, ok := ed25519Line(line)
+	material, ok := ed25519Line(line)
 	if !ok {
 		return nil, &APIError{Code: "pair_key_invalid", Message: "expected an ssh-ed25519 key"}, true
 	}
-	fingerprint := ssh.FingerprintSHA256(key)
+	fingerprint := keyFingerprint(material)
 	stored := sanitizeDeviceLabel(label)
 	reply := map[string]any{"type": "pair_key_added", "added": true, "already": false, "fingerprint": fingerprint, "label": stored}
 	p.mu.Lock()
@@ -187,16 +189,17 @@ func (p *PairKeys) HandleFrom(caller PairCaller, method string, raw json.RawMess
 	if trimmed := strings.TrimSpace(stored); trimmed != "" {
 		comment += ":" + trimmed
 	}
-	p.lines = append(p.lines, keyLine{material: material, fingerprint: fingerprint, comment: comment})
+	p.lines = append(p.lines, keyLine{kind: ssh.KeyAlgoED25519, material: material, fingerprint: fingerprint, comment: comment})
 	return reply, nil, true
 }
 
-// paired is l as paired_key reads it: ok when its comment has the marker,
-// the label the marker's text and the words after it, trimmed.
+// paired is l as paired_key reads it: ok when its comment has the marker
+// (and its material a fingerprint), the label the marker's text and the
+// words after it, trimmed, the comment its words joined by one space.
 func (l keyLine) paired() (herdrapi.PairKeyInfo, bool) {
 	words := strings.Fields(l.comment)
 	i := slices.IndexFunc(words, func(w string) bool { return w == pairMarker || strings.HasPrefix(w, pairMarker+":") })
-	if i < 0 {
+	if i < 0 || l.fingerprint == "" {
 		return herdrapi.PairKeyInfo{}, false
 	}
 	first, _ := strings.CutPrefix(words[i], pairMarker+":")
@@ -207,27 +210,96 @@ func (l keyLine) paired() (herdrapi.PairKeyInfo, bool) {
 	return herdrapi.PairKeyInfo{Fingerprint: l.fingerprint, Label: label, Comment: strings.Join(words, " ")}, true
 }
 
+// keyFingerprint is key_fingerprint: OpenSSH's SHA256 fingerprint of the
+// base64 material, empty when it isn't base64.
+func keyFingerprint(material string) string {
+	blob, err := base64.StdEncoding.DecodeString(material)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(blob)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
+}
+
+// parseKeyLine is parse_key_line, as sshd reads authorized_keys: the key
+// at the start of the line, else after the options; fields are separated
+// by spaces and tabs. Blank lines, # comments and lines without a key
+// type and material are not key lines.
+func parseKeyLine(line string) (keyLine, bool) {
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	line = strings.TrimLeft(line, " \t")
+	if line == "" || line[0] == '#' {
+		return keyLine{}, false
+	}
+	key := line
+	if first, _ := splitToken(line); !isKeyType(first) {
+		var ok bool
+		if key, ok = afterOptions(line); !ok {
+			return keyLine{}, false
+		}
+	}
+	kind, rest := splitToken(key)
+	material, comment := splitToken(rest)
+	if !isKeyType(kind) || material == "" {
+		return keyLine{}, false
+	}
+	return keyLine{kind: kind, material: material, fingerprint: keyFingerprint(material),
+		comment: strings.TrimRight(strings.TrimLeft(comment, " \t"), " \t\n\f\r")}, true
+}
+
+func isKeyType(token string) bool {
+	return strings.HasPrefix(token, "ssh-") || strings.HasPrefix(token, "ecdsa-") || strings.HasPrefix(token, "sk-")
+}
+
+// splitToken is the first field of text (after leading blanks) and what
+// follows it.
+func splitToken(text string) (string, string) {
+	text = strings.TrimLeft(text, " \t")
+	if end := strings.IndexAny(text, " \t"); end >= 0 {
+		return text[:end], text[end:]
+	}
+	return text, ""
+}
+
+// afterOptions is sshkey_advance_past_options: the options end at the
+// first blank outside quotes; a backslash before a quote skips both. An
+// unterminated quote makes the line unusable.
+func afterOptions(line string) (string, bool) {
+	quoted, at := false, 0
+	for at < len(line) && (quoted || line[at] != ' ' && line[at] != '\t') {
+		if line[at] == '\\' && at+1 < len(line) && line[at+1] == '"' {
+			at++
+		} else if line[at] == '"' {
+			quoted = !quoted
+		}
+		at++
+	}
+	if at >= len(line) && quoted {
+		return "", false
+	}
+	return line[min(at, len(line)):], true
+}
+
 // ed25519Line is validate_public_key_line: one line, ssh-ed25519, its
 // material standard base64 of the 51-byte ed25519 wire key; a comment
 // after it is allowed.
-func ed25519Line(line string) (ssh.PublicKey, string, bool) {
+func ed25519Line(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
 	if strings.ContainsAny(trimmed, "\r\n") {
-		return nil, "", false
+		return "", false
 	}
 	fields := strings.Fields(trimmed)
 	if len(fields) < 2 || fields[0] != ssh.KeyAlgoED25519 {
-		return nil, "", false
+		return "", false
 	}
 	blob, err := base64.StdEncoding.DecodeString(fields[1])
 	if err != nil || len(blob) != 51 {
-		return nil, "", false
+		return "", false
 	}
-	key, err := ssh.ParsePublicKey(blob)
-	if err != nil || key.Type() != ssh.KeyAlgoED25519 {
-		return nil, "", false
+	if key, err := ssh.ParsePublicKey(blob); err != nil || key.Type() != ssh.KeyAlgoED25519 {
+		return "", false
 	}
-	return key, fields[1], true
+	return fields[1], true
 }
 
 // sanitizeDeviceLabel is herdr's sanitize_device_label: whitespace made
