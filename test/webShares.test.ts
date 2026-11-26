@@ -22,11 +22,13 @@ let relays: TestRelay[] = [];
 afterEach(() => { for (const relay of relays) relay.stop(); relays = []; });
 
 /** herdr sharing one agent (named agent): the grants it made, bound ones by the statement's
- *  account (here the statement text itself), and every hello it was sent. */
+ *  account (here the statement text itself), and every hello it was sent. holdReturning keeps
+ *  the reply to the next returning hello until released (arrived: that hello came). */
 function host(agent = "docs") {
  const grants = new Map<string, { account: string | null }>();
  const hellos: Record<string, unknown>[] = [];
  let next = 0;
+ let hold: { arrived: PromiseWithResolvers<void>; released: PromiseWithResolvers<void> } | null = null;
  const reply = (guestID: string, bound: boolean) => ({
   ok: true, guest_id: guestID, name: "visitor", machine_label: "Mac Studio", owner_name: "Ana", agent: { name: agent, target: "%7" },
   features: { gram: false, push: true, multi_request: true }, ...(bound ? { account: { deadline_unix: Math.floor(Date.now() / 1000) + 660 } } : {}),
@@ -44,6 +46,8 @@ function host(agent = "docs") {
     session = h.reply(reply(guestID, account !== null));
    } else {
     const grant = grants.get(String(h.hello.guest_id));
+    const held = hold; hold = null;
+    if (held) { held.arrived.resolve(); await held.released.promise; }
     if (grant === undefined) { h.reply({ ok: false, error: "unknown" }); return; }
     if (grant.account !== null && account !== grant.account) { h.reply({ ok: false, error: account === null ? "account_required" : "account_mismatch" }); return; }
     session = h.reply(reply(String(h.hello.guest_id), grant.account !== null));
@@ -57,7 +61,13 @@ function host(agent = "docs") {
   },
  });
  relays.push(relay);
- return { relay, grants, hellos };
+ return {
+  relay, grants, hellos,
+  holdReturning() {
+   const held = hold = { arrived: Promise.withResolvers<void>(), released: Promise.withResolvers<void>() };
+   return { arrived: held.arrived.promise, release: () => held.released.resolve() };
+  },
+ };
 }
 
 /** The invitation's app link for agent; acct: 1 unless plain. */
@@ -145,6 +155,24 @@ test("a browser whose put was taken but whose readback failed still drops its bo
  await mac.shares.sync();
  expect(await mac.grants.list()).toEqual([]);
  expect(await mac.desk.syncedShares()).toEqual([]);
+}, CONNECTS_LIMIT_MS);
+
+test("an open whose share is deleted while the host answers keeps nothing and says the share was removed", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w), linux = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ await linux.shares.sync();
+ // The host's answer to the open waits while mac leaves the share and linux pulls the tombstone.
+ const held = h.holdReturning();
+ const opening = linux.desk.openSyncedShare(id);
+ await held.arrived;
+ await mac.desk.forgetGuestConnection(id);
+ await linux.shares.sync();
+ held.release();
+ await expect(opening).rejects.toThrow("This share was removed.");
+ await linux.shares.sync();
+ expect([await linux.grants.list(), await linux.desk.syncedShares(), (await linux.desk.state()).phase]).toEqual([[], [], "idle"]);
 }, CONNECTS_LIMIT_MS);
 
 test("a leave based on a revision the share has moved past stays pending, and the next sync deletes it", async () => {

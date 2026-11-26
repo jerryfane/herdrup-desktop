@@ -720,7 +720,9 @@ export function createGuestDesk(env: DeskEnv) {
 
   /** The first connect on this browser of a share another device of the account accepted: a
    *  returning hello with its grant id and the account's statement (herdr adds this browser to
-   *  the share), its grant saved as bound beside those held, then connected. */
+   *  the share), its grant saved as bound beside those held, then connected. A share deleted
+   *  from its account while it opened (a sync here pulled that) is not kept: "This share was
+   *  removed." */
   async openSyncedShare(id: string): Promise<void> {
    const { shares, statements } = accountShares();
    const share = shares.list().find(s => s.id === id);
@@ -732,7 +734,17 @@ export function createGuestDesk(env: DeskEnv) {
     endpoint: { relay: share.body.relay, hostID: share.body.host_id, hostPublicKey }, guestID: share.body.guest_id,
     machineLabel: share.body.machine_label ?? "", ownerName: share.body.owner_name ?? "", agentName: share.body.agent_name ?? "",
    }, identity, statements, { now: now(), webSocket: env.webSocket });
+   // Its session is closed already. Saved only while the share is still on the account it is
+   // bound to, and checked again once saved: a round that pulls its deletion comes wholly before
+   // a check (which then refuses it) or after it (and its listener finds the grant and drops it).
+   const acct = access.account;
+   const removed = async () => acct === undefined || !await shares.listed(acct, id);
+   if (await removed()) throw new Error("This share was removed.");
    await env.grants.put(access);
+   if (await removed()) {
+    await env.grants.remove(id);
+    throw new Error("This share was removed.");
+   }
    env.owner.set(access.ownerName);
    await publishShares(shares.list());
    await desk.connectGuest(id);

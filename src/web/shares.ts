@@ -227,6 +227,15 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    const acct = account.current?.accountID;
    return acct === undefined ? [] : visible(read(acct));
   },
+  /** Whether share id is on acct as this browser knows it (pulled live or put here, and neither
+   *  seen deleted nor left here), read under acct's record lock: a round's update of the record
+   *  (what its pull showed) is wholly before or after it. */
+  async listed(acct: string, id: string): Promise<boolean> {
+   let listed = false;
+   const ran = await withStorageLock(keyOf(acct), () => { listed = visible(read(acct)).some(s => s.id === id); }, place.locks);
+   if (!ran) throw new Error("This browser's storage is locked by another tab. Try again.");
+   return listed;
+  },
   sync,
   /** Writes a bound grant's share to the account it is bound to (Access.account). */
   put: (access: Access) => {
