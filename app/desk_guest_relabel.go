@@ -29,10 +29,11 @@ package main
 // it was started with until its SSH connection's first list reads the
 // profile as saved then (a change saved while it was starting included),
 // before that list's board offers an invite; a label change of that
-// profile while connected, its destination unchanged, moves it on. Whether
-// and how long a relabel goes is the SSH connection's (link.connCaps,
-// link.connCtx), which a session switch keeps. A profile moved to another
-// destination is relabeled there on its next connect.
+// profile while connected, its destination unchanged, moves it on. A
+// relabel goes by the route of the SSH connection it was scheduled on
+// (link.relabelVia: its view, capabilities and lifetime, which a session
+// switch keeps), never a later one. A profile moved to another destination
+// is relabeled there on its next connect.
 
 import (
 	"context"
@@ -45,6 +46,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
@@ -119,11 +121,13 @@ func sameProfile(l *link, old Machine) bool {
 }
 
 // renewLabel reads l's profile as saved now: unless the link has no stored
-// profile, or it is gone or names another destination (false), the link
-// names the machine by it (what an invite opened from now on carries), a
-// rename saved since aside.
-func (d *Desk) renewLabel(l *link) bool {
-	d.storeMu.Lock()
+// profile, or it is gone or names another destination, or ctx (the watch)
+// ends while the store is busy (false), the link names the machine by it
+// (what an invite opened from now on carries), a rename saved since aside.
+func (d *Desk) renewLabel(ctx context.Context, l *link) bool {
+	if !d.storeMu.LockCtx(ctx) {
+		return false
+	}
 	defer d.storeMu.Unlock()
 	st, err := d.load()
 	if err != nil {
@@ -152,25 +156,42 @@ func (s *machineStore) findProfile(localID string) int {
 	return -1
 }
 
-// relabelGuests asks l's herdr to relabel its shares and pending invites
-// label: at rev where it reports guest_relabel_rev, else without one.
-// Failures are logged; nothing is kept to send again.
-func (d *Desk) relabelGuests(l *link, label string, rev uint64) {
-	d.mu.Lock()
-	c, session, caps, ctx := l.client, l.session, l.connCaps, l.connCtx
-	d.mu.Unlock()
-	if c == nil || ctx == nil || !herdrapi.CapabilityGuestRelabel.Supported(caps) {
+// relabelRoute is what a relabel goes by: the session view of the SSH
+// connection whose list reported caps, and that connection's lifetime
+// (ctx). The zero route goes nowhere.
+type relabelRoute struct {
+	view *bridge.Client
+	caps *herdrapi.ServerCapabilities
+	ctx  context.Context
+}
+
+// relabelLocked schedules label at rev by l's route as it is now, so the
+// send goes over that connection or not at all, whatever replaces it.
+// d.mu must be held.
+func (d *Desk) relabelLocked(l *link, label string, rev uint64) {
+	route := l.relabelVia
+	l.relabels.Add(1)
+	if !l.work.Go(func() {
+		defer l.relabels.Add(-1)
+		d.relabelGuests(l.id, route, label, rev)
+	}) {
+		l.relabels.Add(-1)
+	}
+}
+
+// relabelGuests asks the herdr of route to relabel its shares and pending
+// invites label: at rev where it reports guest_relabel_rev, else without
+// one. Failures are logged; nothing is kept to send again.
+func (d *Desk) relabelGuests(id string, route relabelRoute, label string, rev uint64) {
+	if route.view == nil || route.ctx == nil || route.ctx.Err() != nil || !herdrapi.CapabilityGuestRelabel.Supported(route.caps) {
 		return
 	}
 	var at *uint64
-	if herdrapi.CapabilityGuestRelabelRev.Supported(caps) {
+	if herdrapi.CapabilityGuestRelabelRev.Supported(route.caps) {
 		at = &rev
 	}
-	view, err := c.ForSession(session)
-	if err == nil {
-		_, err = engine.New(engine.Bridge(view)).GuestRelabel(ctx, label, at)
-	}
+	_, err := engine.New(engine.Bridge(route.view)).GuestRelabel(route.ctx, label, at)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("guest relabel: %s: %q at %d: %v", l.id, label, rev, err)
+		log.Printf("guest relabel: %s: %q at %d: %v", id, label, rev, err)
 	}
 }

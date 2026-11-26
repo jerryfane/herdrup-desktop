@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -270,18 +272,14 @@ func (h *relabelHerdr) store(t *testing.T, change func(*machineStore)) {
 	}
 }
 
-// drain waits, still connected, until the live link runs its connection's
-// own work alone (run, watchSessions, watchGram): a relabel it started has
-// ended, sent or not, while its connection could carry it. Disconnect
-// cancels before it waits, which can end a wrong send before it is made.
+// drain waits, still connected, until every relabel the live link
+// scheduled has ended, sent or not, while its connection could carry it.
+// Disconnect cancels before it waits, which can end a wrong send before it
+// is made.
 func (h *relabelHerdr) drain(t *testing.T) {
 	t.Helper()
 	l := h.live()
-	waitFor(t, "the link's relabels ended", func() bool {
-		l.work.mu.Lock()
-		defer l.work.mu.Unlock()
-		return l.work.running == 3
-	})
+	waitFor(t, "the link's relabels ended", func() bool { return l.relabels.Load() == 0 })
 	h.d.mu.Lock()
 	live := h.d.link == l && l.client != nil
 	h.d.mu.Unlock()
@@ -996,5 +994,96 @@ func TestAnInterruptedFoldRaisesNoRevision(t *testing.T) {
 	h.d.storeMu.Unlock()
 	if !os.IsNotExist(err) {
 		t.Fatalf("the older queue: %v; want it deleted", err)
+	}
+}
+
+// #594 round 7, the reviewer's order: the store is busy while a
+// connection's first list waits to read the profile. A Disconnect ends that
+// wait with the watch: it returns at once, and nothing is published or sent.
+func TestADisconnectEndsAFirstListWaitingForTheStore(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "New")
+	m, err := h.d.Machine()
+	if err != nil || m == nil {
+		t.Fatalf("the saved machine %+v, %v", m, err)
+	}
+	h.d.storeMu.Lock()
+	var once sync.Once
+	release := func() { once.Do(h.d.storeMu.Unlock) }
+	t.Cleanup(release)
+	h.d.start(*m, "")
+	waitFor(t, "the first list waiting for the store", func() bool {
+		buf := make([]byte, 1<<20)
+		return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("(*Desk).renewLabel("))
+	})
+	began := time.Now()
+	h.d.Disconnect()
+	if took := time.Since(began); took > time.Second {
+		t.Fatalf("Disconnect took %s with the first list waiting for the store", took)
+	}
+	release()
+	if b := h.d.Board(); b != nil {
+		t.Fatalf("a board published after the Disconnect: %+v", b)
+	}
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("sent %+v for a first list the Disconnect ended", got)
+	}
+}
+
+// #594 round 7: a relabel takes its connection's route when scheduled; one
+// whose send comes late, after a redial, sends nothing on the new
+// connection.
+func TestADelayedRelabelSendsNothingAfterARedial(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	l := h.live()
+	h.d.mu.Lock()
+	route := l.relabelVia
+	h.d.mu.Unlock()
+	h.srv.DropConns()
+	waitFor(t, "the redial's first list", func() bool {
+		h.d.mu.Lock()
+		defer h.d.mu.Unlock()
+		return h.d.link == l && l.relabelVia.view != nil && l.relabelVia.view != route.view
+	})
+	h.drain(t)
+	before := len(h.updates())
+	h.d.relabelGuests(l.id, route, "Late", nextLabelRev(h.labelRev(t)))
+	if got := h.updates(); len(got) != before {
+		t.Fatalf("a relabel scheduled on the dropped connection sent %+v on the new one", got[before:])
+	}
+}
+
+// #594 round 7: the older queue goes only after a store that fully
+// succeeded, even one with nothing to change (the fold already in the file,
+// maybe not yet durable): while machines.json can't be written, it stays.
+func TestTheOlderQueueOutlivesAFailedStore(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "Renamed")
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LabelRev == 0 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	h.writeQueue(t, saved[0].LocalID, "Renamed")
+	lift := h.blockStore(t)
+	if _, err := h.d.Machines(); err != nil {
+		t.Fatal(err)
+	}
+	queue := func() error {
+		h.d.storeMu.Lock()
+		defer h.d.storeMu.Unlock()
+		_, err := os.Stat(h.d.guestRelabelsPath())
+		return err
+	}
+	if err := queue(); err != nil {
+		t.Fatalf("the older queue after a failed store: %v; want it kept", err)
+	}
+	lift()
+	if rev := h.labelRev(t); rev != saved[0].LabelRev {
+		t.Fatalf("revision %d after the fold; want %d kept", rev, saved[0].LabelRev)
+	}
+	if err := queue(); !os.IsNotExist(err) {
+		t.Fatalf("the older queue after a store: %v; want it deleted", err)
 	}
 }

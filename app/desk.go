@@ -328,12 +328,14 @@ type link struct {
 	// link was started with; "" when that id was not yet stored (load):
 	// the link then relabels nothing (desk_guest_relabel.go).
 	profile string
-	// connCaps is the SSH connection's herdr capabilities, as its lists
-	// report them, and connCtx its lifetime: a session switch keeps both
-	// (unlike caps and ctx, the board watch's), so a machine-wide relabel
-	// is decided and sent by them. nil while not connected.
-	connCaps *herdrapi.ServerCapabilities
-	connCtx  context.Context
+	// relabelVia is the route a machine-wide relabel takes now: the SSH
+	// connection's view whose list reported its capabilities, and that
+	// connection's lifetime. A session switch keeps it (unlike caps and
+	// ctx, the board watch's); zero while not connected. A relabel takes
+	// it when scheduled (desk_guest_relabel.go).
+	relabelVia relabelRoute
+	// relabels counts the relabels scheduled and not yet ended.
+	relabels atomic.Int32
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
 	sessionGen  uint64
@@ -509,9 +511,21 @@ func (d *Desk) load() (machineStore, error) {
 	tagged := st
 	tagged.Machines = slices.Clone(st.Machines)
 	changed, queued := d.tagProfiles(&tagged)
-	if changed {
+	// A queue goes only after a store that fully succeeded, its folder's
+	// sync included, even with nothing to change: a fold an earlier load
+	// wrote but could not sync is made durable before its queue goes.
+	if changed || queued {
 		if err := d.store(tagged); err != nil {
 			log.Printf("saved machines: storing their local ids and label revisions: %v", err)
+			// Accepted limit: a link started with these machines has no
+			// local id for its run and follows no rename until its next
+			// connect. Only after a failed write, and safe: it relabels
+			// nothing, never another profile.
+			//
+			// The file may already hold what failed (only its folder's
+			// sync did): the next load reads and sends those revisions.
+			// Should a crash then lose them, the queue still here folds
+			// again at a later now, so a revision sent is never undercut.
 			return st, nil
 		}
 	}
@@ -730,9 +744,8 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	d.mu.Lock()
 	if l := d.link; index >= 0 && sameProfile(l, old) && l.id == id {
 		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
-		if relabel && herdrapi.CapabilityGuestRelabel.Supported(l.connCaps) {
-			label, rev := l.shareLabel, l.shareLabelRev
-			l.work.Go(func() { d.relabelGuests(l, label, rev) })
+		if relabel && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
+			d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
 		}
 	}
 	d.mu.Unlock()
@@ -1168,7 +1181,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	l.work.Go(func() { d.watchGram(sctx, l) })
 	defer func() {
 		d.mu.Lock()
-		l.client, l.restart, l.connCaps, l.connCtx = nil, nil, nil, nil
+		l.client, l.restart, l.relabelVia = nil, nil, relabelRoute{}
 		d.mu.Unlock()
 	}()
 	for {
@@ -1206,8 +1219,10 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			// The connection's first list, before any board offers an
-			// invite: the profile as saved now names the machine.
-			renewed := !relabeled && d.renewLabel(l)
+			// invite: the profile as saved now names the machine. The wait
+			// for the store ends with the watch, which then publishes
+			// nothing.
+			renewed := !relabeled && d.renewLabel(wctx, l)
 			if !shown {
 				shown, listed = true, true
 				groups.attach(ec, u.Pong)
@@ -1226,13 +1241,13 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
-			l.connCaps, l.connCtx = u.Pong.Capabilities, sctx
+			l.relabelVia = relabelRoute{view: view, caps: u.Pong.Capabilities, ctx: sctx}
 			if !relabeled {
 				// Its label goes at its revision, on the connection's
 				// capability and lifetime (desk_guest_relabel.go).
 				relabeled = true
-				if label, rev := l.shareLabel, l.shareLabelRev; renewed && rev > 0 && herdrapi.CapabilityGuestRelabelRev.Supported(l.connCaps) {
-					l.work.Go(func() { d.relabelGuests(l, label, rev) })
+				if renewed && l.shareLabelRev > 0 && herdrapi.CapabilityGuestRelabelRev.Supported(l.relabelVia.caps) {
+					d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
 				}
 			}
 			var started []herdrapi.AgentInfo
