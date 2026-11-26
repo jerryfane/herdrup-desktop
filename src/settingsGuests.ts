@@ -63,33 +63,32 @@ const sameTargets = (a: readonly RemovalTarget[], b: readonly RemovalTarget[]) =
 /** One machine's live guests by person (o1's PEOPLE), latest active first; `ungrouped` are the
  *  guests of an older herdr, which names no person: they keep a row each. */
 export function sharePeople(guests: readonly Guest[]): { people: Person[]; ungrouped: Guest[] } {
-  const people = new Map<string, Person>(), ungrouped: Guest[] = [];
-  // Each person's devices by fingerprint, so a device on several shares is found at once.
-  const devices = new Map<Person, Map<string, PersonDevice>>();
+  // Per person: their row, and their devices by fingerprint (a device on several shares is one).
+  const people = new Map<string, { person: Person; devices: Map<string, PersonDevice> }>(), ungrouped: Guest[] = [];
   for (const guest of guests) {
     if (guest.revoked) continue;
     if (!guest.person) { ungrouped.push(guest); continue; }
-    let person = people.get(guest.person);
-    if (!person) people.set(guest.person, person = { id: guest.person, name: guest.name, accountBound: false, guests: [], devices: [], lastSeenMs: null });
+    let entry = people.get(guest.person);
+    if (!entry) people.set(guest.person, entry = { person: { id: guest.person, name: guest.name, accountBound: false, guests: [], devices: [], lastSeenMs: null }, devices: new Map() });
+    const { person, devices } = entry;
     person.guests.push(guest);
     person.accountBound ||= !!guest.account_bound;
     person.lastSeenMs = latest(person.lastSeenMs, guest.last_seen_ms);
-    let known = devices.get(person);
-    if (!known) devices.set(person, known = new Map());
     for (const device of admitted(guest).values()) {
-      const same = known.get(device.fingerprint);
-      if (!same) { known.set(device.fingerprint, device); person.devices.push(device); continue; }
+      const same = devices.get(device.fingerprint);
+      if (!same) { devices.set(device.fingerprint, device); continue; }
       same.addedMs = Math.min(same.addedMs, device.addedMs);
       same.lastSeenMs = latest(same.lastSeenMs, device.lastSeenMs);
     }
   }
-  for (const person of people.values()) {
+  const grouped = [...people.values()].map(({ person, devices }) => {
     // Named as their latest share names them; devices in the order they were added.
     person.name = person.guests.reduce((a, b) => (b.created_ms ?? 0) > (a.created_ms ?? 0) ? b : a).name;
-    person.devices.sort((a, b) => a.addedMs - b.addedMs);
+    person.devices = [...devices.values()].sort((a, b) => a.addedMs - b.addedMs);
     for (const device of person.devices) person.lastSeenMs = latest(person.lastSeenMs, device.lastSeenMs);
-  }
-  return { people: [...people.values()].sort((a, b) => (b.lastSeenMs ?? 0) - (a.lastSeenMs ?? 0)), ungrouped };
+    return person;
+  });
+  return { people: grouped.sort((a, b) => (b.lastSeenMs ?? 0) - (a.lastSeenMs ?? 0)), ungrouped };
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] {
@@ -120,6 +119,9 @@ function presence(ms: number | null, suffix = "", text?: string) {
 }
 function initial(name: string) { const node = el("span", "settings-account-identity", Array.from(name)[0]?.toUpperCase() || "?"); node.setAttribute("aria-hidden", "true"); return node; }
 const agentName = (guest: Guest) => guest.grant?.agent_name || "An agent";
+/** What a device removal holds busy: one person's device (another person on the same device is
+ *  apart), with key's machine and scope. */
+const deviceID = (person: Person, device: PersonDevice) => "device:" + JSON.stringify([person.id, device.fingerprint]);
 /** A device's glyph, from the name herdr keeps for it ("iPhone", "Chrome on macOS", "MacBook"). */
 function deviceGlyph(name: string) {
   return /iphone/i.test(name) ? "iphone" : /ipad/i.test(name) ? "ipad" : /browser|chrome|safari|firefox|edge/i.test(name) ? "globe"
@@ -153,6 +155,9 @@ export class GuestSettings {
   /** Moves on whenever this view's dialogs close for another page or dialog (closeDialogs): a
    *  device removal's recheck asks again only while it hasn't. */
   private attempt = 0;
+  /** The device Manage buttons shown, by busy key (deviceID): a removal that sends nothing frees
+   *  its button without drawing the page anew. */
+  private deviceControls = new Map<string, HTMLButtonElement>();
   /** paged names the page shown: a person's name on their page, null on the list (settings.ts
    *  titles the page with it). */
   constructor(private report: (message: unknown) => void, private summarize: (value: string, header: string) => void,
@@ -203,7 +208,7 @@ export class GuestSettings {
   private render() {
     // Rendering replaces every row, the device menu's anchor among them: the menu it opened goes
     // with it (it would act on the shares it was opened for, not the ones now shown).
-    this.closeMenu?.();
+    this.closeMenu?.(); this.deviceControls.clear();
     const byMachine = this.results.map(result => ({ machine: result.machine, ...sharePeople(result.listing?.guests ?? []) }));
     const people = byMachine.flatMap(m => m.people.map(person => ({ machine: m.machine, person })))
       .sort((a, b) => (b.person.lastSeenMs ?? 0) - (a.person.lastSeenMs ?? 0));
@@ -291,7 +296,8 @@ export class GuestSettings {
     // A plain share is its one device: Remove the person instead (herdr: guest_not_account_bound).
     if (person.accountBound) {
       const manage = el("button", "settings-guest-more"); manage.type = "button"; manage.append(this.glyph("ellipsis.circle", 22));
-      manage.setAttribute("aria-label", `Manage ${device.name}`); manage.disabled = this.revoking.has(this.key(machine, "device:" + device.fingerprint));
+      const busy = this.key(machine, deviceID(person, device));
+      manage.setAttribute("aria-label", `Manage ${device.name}`); manage.disabled = this.revoking.has(busy); this.deviceControls.set(busy, manage);
       manage.onclick = event => { event.stopPropagation(); this.deviceMenu(machine, person, device, manage); };
       row.append(manage);
     }
@@ -345,25 +351,32 @@ export class GuestSettings {
   private confirmRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[], changed: boolean) {
     const agents = targets.map(target => target.agent).join(", ");
     this.confirm(`Remove ${device.name}?`, `${changed ? `${person.name}'s ${device.name} now has access to: ${agents}.` : `${person.name} can no longer open ${agents} on ${device.name}.`} Its open sessions close; ${person.name}'s other devices keep access.`,
-      "Remove device", [], () => { void this.recheckRemoveDevice(machine, person, device, targets); });
+      "Remove device", [], () => {
+        // The device's controls wait from here through the check and the removals: one removal of
+        // this person's device at a time, another person's on the same device apart.
+        const key = this.key(machine, deviceID(person, device));
+        if (this.revoking.has(key)) { this.report(new Error(`${person.name}'s ${device.name} is being removed already. Nothing more was sent.`)); return; }
+        this.revoking.add(key); this.render();
+        void this.recheckRemoveDevice(machine, person, device, targets, key);
+      });
   }
-  /** Confirm's check, read-only and outside act: the machine's shares listed afresh (guest.list
-   *  alone) on the same Settings scope. Only if the device is on exactly the shares confirmed are
-   *  the removals sent (act: each tried, failures said after, then the lists again). Otherwise
-   *  nothing is sent: a listing that can't be read says so; a changed set asks again with the new
-   *  shares, or says the device has no access left, and lists again, while the person's page and
-   *  this confirmation are still the current ones. Superseded (Back, another person, another
-   *  confirmation), it leaves the page as it is. */
-  private async recheckRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[]) {
+  /** Confirm's check, read-only, key held from Confirm: the machine's shares listed afresh
+   *  (guest.list alone) on the same Settings scope. Only if the device is on exactly the shares
+   *  confirmed are the removals sent (each tried, failures said after, then key let go and the
+   *  lists again). Otherwise nothing is sent and key is let go; while the person's page and this
+   *  confirmation are still the current ones, a listing that can't be read says so, and a changed
+   *  set asks again with the new shares or says the device has no access left, and lists again.
+   *  Superseded (Back, another person, another confirmation), it says nothing and leaves the page
+   *  as it is. */
+  private async recheckRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[], key: string) {
     const token = this.token, attempt = this.attempt;
     let fresh: Guest[] | null = null;
     try { fresh = (JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as Listing).guests ?? []; }
     catch { /* not read: nothing is known of the device's access */ }
     if (token !== this.token) return;
-    if (fresh === null) { this.report(new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`)); return; }
-    const now = removalTargets(fresh, person.id, device.fingerprint);
-    if (sameTargets(now, targets)) {
-      void this.act(machine, "device:" + device.fingerprint, async token => {
+    const now = fresh && removalTargets(fresh, person.id, device.fingerprint);
+    if (now && sameTargets(now, targets)) {
+      await this.holding(token, key, async () => {
         const failed: string[] = [];
         for (const target of now) {
           if (token !== this.token) return;
@@ -374,9 +387,13 @@ export class GuestSettings {
       });
       return;
     }
-    if (!now.length) this.report(new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`));
+    // Nothing to send: the controls are free again, shown or not, without drawing the page anew.
+    this.revoking.delete(key);
+    const control = this.deviceControls.get(key); if (control) control.disabled = false;
     if (attempt !== this.attempt || this.open?.alias !== machine.alias || this.open.person !== person.id) return;
+    if (!now) { this.report(new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`)); return; }
     if (now.length) this.confirmRemoveDevice(machine, person, device, now, true);
+    else this.report(new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`));
     void this.refresh();
   }
   /** A share of an older herdr (no person): today's row, Revoke and Share Gram on it. */
@@ -434,7 +451,12 @@ export class GuestSettings {
   private async act(machine: Machine, id: string, work: (token: string) => Promise<void>) {
     const token = this.token, key = this.key(machine, id); if (this.revoking.has(key)) return;
     this.revoking.add(key); this.render();
-    try { await work(token); } catch (error) { if (token === this.token) this.report(error); }
+    await this.holding(token, key, () => work(token));
+  }
+  /** work while key is held (its controls wait), its failure said; then key let go and the lists
+   *  again. */
+  private async holding(token: string, key: string, work: () => Promise<void>) {
+    try { await work(); } catch (error) { if (token === this.token) this.report(error); }
     finally { this.revoking.delete(key); if (token === this.token) await this.refresh(); }
   }
   private logRow(entry: Entry, guest?: Guest) {

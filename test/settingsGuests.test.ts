@@ -260,7 +260,7 @@ test("Remove names the device's shares, and Confirm checks them with the list al
   });
 });
 
-test("Confirm when the shares' listing can't be read sends nothing and says so", async () => {
+test("Confirm when the shares' listing can't be read sends nothing, says so, and frees the device's button", async () => {
   for (const fails of ["error", "throw"] as const) {
     const listing: { guests: Guest[]; error?: string } = { guests: [...current.guests] };
     let unreadable = false;
@@ -269,8 +269,8 @@ test("Confirm when the shares' listing can't be read sends nothing and says so",
       if (fails === "error") listing.error = "herdr: guest_store_unavailable: try again"; else unreadable = true;
       click(dialog.button("Remove device"));
       await settle();
-      expect([fails, removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message)])
-        .toEqual([fails, [], [], ["Couldn't check MacBook's access. Nothing was removed. Try again."]]);
+      expect([fails, removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message), root.button("Manage MacBook").disabled])
+        .toEqual([fails, [], [], ["Couldn't check MacBook's access. Nothing was removed. Try again."], false]);
     }, { settingsGuestList: async () => { if (unreadable) throw new Error("Settings changed: open it again"); } });
   }
 });
@@ -380,9 +380,10 @@ test("a recheck that comes back changed after the person's page has gone asks no
   }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
 });
 
-// #541 review: the recheck is read-only, apart from the removals' lifecycle (act): superseded, it
-// returns without listing again, so another person's page keeps its menu and no activity log is read.
-test("a superseded recheck leaves the page as it is: Ana's device menu stays open and nothing is listed again", async () => {
+// #541 review: the recheck is read-only, apart from the removals' lifecycle: superseded, it returns
+// without listing again, so another person's page keeps its menu and no activity log is read; #545
+// review: nor does it say anything there. Nike's device is free again afterwards.
+test("a superseded recheck leaves the page as it is: Ana's device menu stays open, nothing is said or listed again", async () => {
   const ana: Guest = { ...nike("ana-1", "zeta", 500_000), name: "Ana", person: "acct-ana", last_seen_ms: now - 60_000, fingerprint: "SHA256:ana", device: "iPad", devices: [] };
   const answers: [string, (listing: { guests: Guest[]; error?: string }) => void][] = [
     ["changed", listing => { listing.guests = [...withMac(current.guests, { "nike-2": false }), ana]; }],
@@ -391,7 +392,7 @@ test("a superseded recheck leaves the page as it is: Ana's device menu stays ope
   ];
   for (const [answer, change] of answers) {
     const hold = listingHold(), listing: { guests: Guest[]; error?: string } = { guests: [...current.guests, ana] };
-    await withPage(listing, async ({ root, body, calls, reads }) => {
+    await withPage(listing, async ({ root, body, calls, reads, reported }) => {
       const dialog = askRemoveMacBook(root, body);
       hold.arm();
       click(dialog.button("Remove device"));
@@ -404,9 +405,47 @@ test("a superseded recheck leaves the page as it is: Ana's device menu stays ope
       change(listing);
       hold.release();
       await settle();
-      expect([answer, removals(calls), body.having("account-device-menu").length, reads.slice(before)]).toEqual([answer, [], 1, []]);
+      expect([answer, removals(calls), body.having("account-device-menu").length, reads.slice(before), reported]).toEqual([answer, [], 1, [], []]);
+      click(root.button("Back to Shared access"));
+      click(root.having("settings-guest-open").find(row => row.getAttribute("aria-label")!.startsWith("Nike,"))!);
+      expect([answer, root.button("Manage MacBook").disabled]).toEqual([answer, false]);
     }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
   }
+});
+
+// #545 review P2: two people on one device. Nike's removal of the MacBook holds Nike's MacBook only,
+// from Confirm through the check and the removals; Ana's removal of the same device goes on apart.
+test("removals of one device from two people both go through: each holds that person's device only, from Confirm to the end", async () => {
+  const [mac] = nike("x", "y", 0).devices!;
+  const ana: Guest = { ...nike("ana-1", "zeta", 500_000), name: "Ana", person: "acct-ana", last_seen_ms: now - 60_000, fingerprint: "SHA256:ana", device: "iPad", devices: [mac!] };
+  const checks: PromiseWithResolvers<void>[] = [], checking = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const nikeRemoving = Promise.withResolvers<void>(), nikeRemoved = Promise.withResolvers<void>();
+  let gated = false;
+  await withPage({ guests: [...current.guests, ana] }, async ({ root, body, calls, reported }) => {
+    gated = true;
+    const dialog = askRemoveMacBook(root, body);
+    click(dialog.button("Remove device"));
+    await checking[0]!.promise;
+    expect(root.button("Manage MacBook").disabled).toBe(true); // Nike's, while its check is out
+    click(root.button("Back to Shared access"));
+    click(root.having("settings-guest-open").find(row => row.getAttribute("aria-label")!.startsWith("Ana,"))!);
+    expect(root.button("Manage MacBook").disabled).toBe(false); // Ana's: another person's
+    click(root.button("Manage MacBook"));
+    click(body.having("account-device-menu")[0]!.button("Remove"));
+    click(body.having("settings-guest-confirm")[0]!.button("Remove device"));
+    await checking[1]!.promise;
+    // Nike's check answers first, and Nike's removal is still out when Ana's check answers.
+    checks[0]!.resolve(); await nikeRemoving.promise;
+    checks[1]!.resolve(); await settle();
+    nikeRemoved.resolve(); await settle();
+    expect([[...removals(calls)].sort(), reported]).toEqual([["ana-1", "nike-1", "nike-2"], []]);
+  }, {
+    settingsGuestList: async () => {
+      if (!gated) return;
+      const gate = Promise.withResolvers<void>(); checks.push(gate); checking[checks.length - 1]?.resolve(); await gate.promise;
+    },
+    removeGuestDevice: async (...args) => { if (args[2] === "nike-1") { nikeRemoving.resolve(); await nikeRemoved.promise; } },
+  });
 });
 
 test("a device menu already open when a refresh starts closes then, before the listing lands", async () => {
