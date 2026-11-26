@@ -662,6 +662,9 @@ class TopicChat {
   *  that showed handovers otherwise than the held history (mergeOlder), and a live read that
   *  started over itself (readLive's restart). Cleared only when a newest page lands. */
  private restart = false;
+ /** An older page can be read: a cursor is held and no restart has made it unusable. Earlier
+  *  messages shows, and its action runs, only then. */
+ private get paging(): boolean { return !!this.before && !this.restart; }
  private active = false;
  private disposed = false;
  private timer: number | undefined;
@@ -785,7 +788,7 @@ class TopicChat {
   };
  }
  private async load(older: boolean) {
-  if (this.disposed || !this.active || (older && (!this.before || this.restart))) return;
+  if (this.disposed || !this.active || (older && !this.paging)) return;
   if (this.busy) { if (!older) this.again = true; return; }
   this.busy = true; this.earlier.disabled = true; clearTimeout(this.timer);
   const session = this.page?.session_id;
@@ -830,7 +833,7 @@ class TopicChat {
    if (older && cursorExpired(error)) this.restart = this.again = true;
    else if (!this.disposed) this.notice.textContent = errorText(error);
   } finally {
-   this.busy = false; this.earlier.disabled = false;
+   this.busy = false; this.earlier.disabled = false; this.earlier.hidden = !this.paging;
    if (!this.disposed && this.active) {
     if (this.again) { this.again = false; void this.load(false); }
     else {
@@ -870,7 +873,7 @@ class TopicChat {
   const working = topicWorking(this.topic, page);
   const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model)];
   for (const node of tail) if (node) nodes.push(node);
-  this.earlier.hidden = !this.before;
+  this.earlier.hidden = !this.paging;
   // The tail's rows stay attached, so the dots' animation runs on across polls.
   placeRows(this.messages, [this.earlier, ...nodes]);
   if (follow) this.messages.scrollTop = this.messages.scrollHeight;
