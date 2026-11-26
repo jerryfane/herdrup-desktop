@@ -6,12 +6,10 @@
 // this browser whatever the outcome. The account's shares are not synced here (#543's second
 // part): nothing reads them, retries the write or leaves a share on every device.
 import { afterEach, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { AccountServiceError, SignedOutError, WebAccount, type SyncChange } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
-import * as shares from "../src/web/shares";
 import { ADD_UNKNOWN, addRefused, boundNotice, createShareAdder, type ShareAdd } from "../src/web/shares";
+import { grantKey } from "../src/grantKey";
 import { acceptInvite } from "../src/web/start";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { accountShareNotice } from "../src/notices";
@@ -204,11 +202,16 @@ test("Add to my account keeps the grant on this browser, bound to the account, w
  expect([plain.added, plain.accountBound, s.pushes.length, grants.access?.guestID]).toEqual([undefined, false, 0, plain.guestID]);
 }, CONNECTS_LIMIT_MS);
 
-test("the account's shares aren't synced in the browser: its Desk offers no synced list or open, shares.ts only the one write, and nothing calls a shares sync", async () => {
- const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants: new MemoryGrantStore(), owner: new MemoryOwnerHint() });
+test("the account's shares aren't synced in the browser: an add asks the service once and reads nothing back; the grant stays here, and Leave forgets it here only", async () => {
+ const relay = host(), s = service(answers.applied), grants = new MemoryGrantStore();
+ const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url), statements, shares: createShareAdder(s.account, "Chrome on macOS") });
+ const accountCalls = () => s.requests.filter(r => r !== "POST /v1/auth/refresh");
+ const access = await desk.acceptGuestInvitation(inviteText(relay), "account");
+ // This browser joins the account's devices (bound already here), then the one write; no pull.
+ expect([access.added?.outcome, accountCalls()]).toEqual(["added", ["POST /v1/devices/challenge", "POST /v1/sync"]]);
+ expect((await desk.sharedConnections()).map(grantKey)).toEqual([grantKey(access)]);
  expect(["syncedShares", "openSyncedShare"].filter(m => m in desk)).toEqual([]);
- expect(Object.keys(shares).sort()).toEqual(["ADD_MS", "ADD_UNKNOWN", "addRefused", "boundNotice", "createShareAdder", "shareBody"]);
- const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? sources(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []);
- const mentions = sources(join(import.meta.dir, "../src/web")).filter(f => /createShareSync|ShareSync\b|syncedSharesChanged\.on|\b(syncedShares|openSyncedShare)\b/.test(readFileSync(f, "utf8")));
- expect(mentions).toEqual([]);
-});
+ // Leave: the grant goes from this browser; the account hears nothing (no delete pushed).
+ await desk.forgetGuestConnection(grantKey(access));
+ expect([grants.access, await desk.sharedConnections(), accountCalls().length]).toEqual([undefined, [], 2]);
+}, CONNECTS_LIMIT_MS);
