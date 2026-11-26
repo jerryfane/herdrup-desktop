@@ -925,13 +925,10 @@ func TestABoundAcceptSendsItsWriteOnce(t *testing.T) {
 	if err != nil || access.AccountShare != shareRefused {
 		t.Fatalf("bound accept: %+v, %v; want refused", access, err)
 	}
-	// A round the accept left behind would be waiting for the sync's turn:
-	// let it have the turn a few times before counting.
-	for range 20 {
-		d.accountSync.turn <- struct{}{}
-		<-d.accountSync.turn
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The accept's own round ran within it; any other it started runs in
+	// the background (syncMachinesSoon): wait for every one to end before
+	// counting.
+	d.accountSync.background.Wait()
 	if n := posts(); n != 1 {
 		t.Fatalf("the accept sent %d pushes, want 1", n)
 	}

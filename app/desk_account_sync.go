@@ -585,6 +585,10 @@ type accountSync struct {
 	// writeState writes account-sync.json for storeSyncState; nil is
 	// writeFileAtomic. Tests make it fail. Set before any sync.
 	writeState func(path string, raw []byte) error
+	// background are the syncs syncMachinesSoon started that haven't
+	// ended: a caller that must see everything a change of its sent (a
+	// test counting an accept's pushes) waits for them.
+	background sync.WaitGroup
 }
 
 // syncRoundTimeout bounds each sync round, its wait for the turn included:
@@ -2634,12 +2638,15 @@ func (d *Desk) startMachineSync() {
 var backgroundMachineSync = true
 
 // syncMachinesSoon runs a sync in the background after a local change
-// (SyncMachines bounds it by syncRoundTimeout).
+// (SyncMachines bounds it by syncRoundTimeout); accountSync.background
+// counts it until it ends.
 func (d *Desk) syncMachinesSoon() {
 	if !backgroundMachineSync {
 		return
 	}
+	d.accountSync.background.Add(1)
 	go func() {
+		defer d.accountSync.background.Done()
 		if err := d.SyncMachines(context.Background()); err != nil {
 			log.Printf("account sync: %v", err)
 		}
