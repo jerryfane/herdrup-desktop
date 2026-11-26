@@ -6,6 +6,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -131,6 +132,45 @@ func certHostKey(t *testing.T, principalBytes int) ssh.Signer {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// bigHostKey is one RSA 4096 host key the tests' machines share: the
+// longest plain key a test can make quickly, so a few of them fill the
+// list.
+var bigHostKey = sync.OnceValues(func() (ssh.Signer, error) {
+	k, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.NewSignerFromKey(k)
+})
+
+// bigMachines saves machines with bigHostKey ("big0", "big1", …) until
+// the list for studio and them, each at its longest, no longer fits: the
+// last one saved is the one with no room.
+func (w *pairWorld) bigMachines(t *testing.T) []string {
+	t.Helper()
+	key, err := bigHostKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	studio, err := w.d.savedMachine(w.ids["studio"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []pairRow{{m: studio, entry: pairEntry(studio), hostKey: hostKeyLine(w.machines["studio"].hostKey)}}
+	var names []string
+	for i := 0; pairFits(rows) == nil; i++ {
+		name := "big" + strconv.Itoa(i)
+		w.keyMachineWith(t, name, key, true, true)
+		m, err := w.d.savedMachine(w.ids[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, pairRow{m: m, entry: pairEntry(m), hostKey: hostKeyLine(key.PublicKey())})
+		names = append(names, name)
+	}
+	return names
 }
 
 // keyMachineWith is keyMachine with hostKey as the machine's host key.
@@ -750,7 +790,9 @@ func TestPairApproveTryAgainChecksTheRequestFirst(t *testing.T) {
 	}
 }
 
-// Try again reaches only machines still saved here.
+// Try again reaches only machines still saved here. One removed since is
+// answered with its new reason and no Try again (a result, not an error,
+// so the sheet shows it).
 func TestPairApproveTryAgainOnlyReachesMachinesStillSaved(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
@@ -765,11 +807,14 @@ func TestPairApproveTryAgainOnlyReachesMachinesStillSaved(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
-	if err == nil || rowsByLabel(res)["fleet"].Reason != "that machine is no longer saved here" {
+	if fleet := rowsByLabel(res)["fleet"]; err != nil || fleet.Reason != "that machine is no longer saved here" || fleet.Retryable {
 		t.Fatalf("retry %+v, %v", res, err)
 	}
 	if w.machines["fleet"].adds.Load() != adds {
 		t.Fatal("Try again reached a machine no longer saved")
+	}
+	if _, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]}); err == nil {
+		t.Fatal("a second Try again found something to try")
 	}
 }
 
@@ -810,72 +855,105 @@ func TestPairApproveHoldsOutAMachineTheListCantCarry(t *testing.T) {
 }
 
 // The list is sized with the host keys the probes verified before any
-// machine changes: two machines with long host certificates don't both
-// fit, so the second is left out, with why, before any key is added; the
-// first gets the key and is sent with its certificate as its host key.
-// One whose certificate alone can't fit is unsendable from its probe.
+// machine changes: the machine with long host keys that makes it too long
+// is left out, with why, before any key is added; the rest get the key.
 func TestPairApproveSizesTheListWithTheProbedHostKeys(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
-	w.keyMachineWith(t, "cert1", certHostKey(t, 5000), true, true)
-	w.keyMachineWith(t, "cert2", certHostKey(t, 5000), true, true)
-	w.keyMachineWith(t, "huge", certHostKey(t, 13000), true, true)
+	big := w.bigMachines(t)
+	last := big[len(big)-1]
 	id := w.start(t)
 	w.typeCode(t, id)
-	for _, name := range []string{"studio", "cert1", "cert2"} {
+	ticked := []string{w.ids["studio"]}
+	for _, name := range append([]string{"studio"}, big...) {
 		if p, err := w.d.PairApproveProbe(ctx, id, w.ids[name]); err != nil || p.State != "ready" {
 			t.Fatalf("probe %s %+v, %v", name, p, err)
 		}
+		if name != "studio" {
+			ticked = append(ticked, w.ids[name])
+		}
 	}
-	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["huge"]); err != nil || p.State != "unsendable" || p.Reason != "can't be sent to the new device: its host key is too long for the list" {
-		t.Fatalf("probe huge %+v, %v", p, err)
-	}
-	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["cert1"], w.ids["cert2"]})
+	res, err := w.d.PairApproveAdd(ctx, id, ticked)
 	rows := rowsByLabel(res)
-	if err != nil || !res.Sent || rows["studio"].Status != account.PairAdded || rows["cert1"].Status != account.PairAdded ||
-		rows["cert2"].Status != account.PairFailed || rows["cert2"].Reason != pairNoRoom || rows["cert2"].Retryable {
+	if err != nil || !res.Sent || rows[big[0]].Status != account.PairAdded || rows[last].Status != account.PairFailed || rows[last].Reason != pairNoRoom || rows[last].Retryable {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
-	if n := w.machines["cert2"].adds.Load(); n != 0 {
+	if n := w.machines[last].adds.Load(); n != 0 {
 		t.Fatalf("%d adds on the machine left out", n)
 	}
 	w.mu.Lock()
 	first := w.progress[0]
-	adding := slices.ContainsFunc(w.progress, func(p PairApproveProgress) bool { return p.MachineID == w.ids["cert2"] && p.Status == "adding" })
+	adding := slices.ContainsFunc(w.progress, func(p PairApproveProgress) bool { return p.MachineID == w.ids[last] && p.Status == "adding" })
 	w.mu.Unlock()
-	if first.MachineID != w.ids["cert2"] || first.Status != account.PairFailed || adding {
-		t.Fatalf("cert2 wasn't left out before any machine changed: first progress %+v, adding %v", first, adding)
+	if first.MachineID != w.ids[last] || first.Status != account.PairFailed || adding {
+		t.Fatalf("%s wasn't left out before any machine changed: first progress %+v, adding %v", last, first, adding)
 	}
-	env := w.delivered(t).Envelope
-	if len(env.Machines) != 2 || env.Machines[1].Nickname != "cert1" || !strings.HasPrefix(env.Machines[1].HostKey, ssh.CertAlgoED25519v01+" ") ||
-		env.Machines[1].HostKey != hostKeyLine(w.machines["cert1"].hostKey) {
+	if env := w.delivered(t).Envelope; len(env.Machines) != len(big) || slices.ContainsFunc(env.Machines, func(m account.PairMachine) bool { return m.Nickname == last }) {
 		t.Fatalf("envelope %+v", env)
-	}
-	if k, err := env.Machines[1].HostPublicKey(); err != nil || bridge.Fingerprint(k) != bridge.Fingerprint(w.machines["cert1"].hostKey) {
-		t.Fatalf("cert1's host key in the list: %v", err)
 	}
 }
 
 // With no probe to size it by, each connection's verified host key sizes
-// the list again before its key is added: the second long certificate
-// gets no key, and the list still fits.
+// the list again before its key is added: the one machine that would make
+// it too long (whichever gets there last) gets no key, and the list still
+// fits.
 func TestPairApproveSizesTheListAgainBeforeEachKey(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
-	w.keyMachineWith(t, "cert1", certHostKey(t, 5000), true, true)
-	w.keyMachineWith(t, "cert2", certHostKey(t, 5000), true, true)
+	big := w.bigMachines(t)
 	id := w.start(t)
 	w.typeCode(t, id)
-	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["cert1"], w.ids["cert2"]})
-	rows := rowsByLabel(res)
-	if err != nil || !res.Sent || rows["cert1"].Status != account.PairAdded || rows["cert2"].Status != account.PairFailed || rows["cert2"].Reason != pairNoRoom {
+	ticked := []string{w.ids["studio"]}
+	for _, name := range big {
+		ticked = append(ticked, w.ids[name])
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, ticked)
+	if err != nil || !res.Sent {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
-	if n := w.machines["cert2"].adds.Load(); n != 0 {
-		t.Fatalf("%d adds on the machine that doesn't fit", n)
+	var held []string
+	for _, r := range res.Machines {
+		switch {
+		case r.Status == account.PairFailed && r.Reason == pairNoRoom:
+			held = append(held, r.Label)
+		case r.Status != account.PairAdded:
+			t.Fatalf("%s: %+v", r.Label, r)
+		}
 	}
-	if env := w.delivered(t).Envelope; len(env.Machines) != 2 || env.Machines[1].Nickname != "cert1" {
+	if len(held) != 1 || w.machines[held[0]].adds.Load() != 0 {
+		t.Fatalf("held %v: want one machine left out with no key added", held)
+	}
+	if env := w.delivered(t).Envelope; len(env.Machines) != len(big) {
 		t.Fatalf("envelope %+v", env)
+	}
+}
+
+// The list carries plain host keys only (pair-v1 host_key): a machine
+// whose host presents a certificate is sent with the key it certifies,
+// whose fingerprint is what the new device pins; the certificate, however
+// long, costs the list nothing.
+func TestPairApproveSendsACertificateHostsPlainKey(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	cert := certHostKey(t, 13000)
+	w.keyMachineWith(t, "cert", cert, true, true)
+	plain := cert.PublicKey().(*ssh.Certificate).Key
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["cert"]); err != nil || p.State != "ready" {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["cert"]})
+	if err != nil || !res.Sent || res.Machines[0].Status != account.PairAdded {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	m := w.delivered(t).Envelope.Machines[0]
+	if m.HostKey != hostKeyLine(plain) || !strings.HasPrefix(m.HostKey, ssh.KeyAlgoED25519+" ") {
+		t.Fatalf("sent host key %q, want the certified key %q", m.HostKey, hostKeyLine(plain))
+	}
+	k, err := m.HostPublicKey()
+	if _, isCert := k.(*ssh.Certificate); err != nil || isCert || bridge.Fingerprint(k) != bridge.Fingerprint(plain) {
+		t.Fatalf("sent key %v, %v: want the plain key's fingerprint", k, err)
 	}
 }
 
@@ -933,9 +1011,11 @@ func TestPairApproveAddsNoKeyInTheLastMinute(t *testing.T) {
 	}
 }
 
-// A list pairFits takes still fits once every row failed with the longest
-// reason a row can get, with the most bytes JSON spells it in.
-func TestPairFitsHoldsTheLongestReason(t *testing.T) {
+// A list pairFits takes fits with every row at its longest status and
+// its host key. With every row failed for the longest reason it would be
+// too long, so the wire list leaves reasons out from the last row on
+// until it fits, keeping those that do; the sheet keeps every reason.
+func TestPairEnvelopeLeavesOutReasonsThatDontFit(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	k, _ := ssh.NewPublicKey(priv.Public())
 	hostKey := hostKeyLine(k)
@@ -948,14 +1028,35 @@ func TestPairFitsHoldsTheLongestReason(t *testing.T) {
 		}
 		rows = next
 	}
-	e := account.PairEnvelope{V: account.PairEnvelopeVersion}
+	already := account.PairEnvelope{V: account.PairEnvelopeVersion}
 	for _, r := range rows {
-		failed := pairRow{entry: r.entry}
-		failed.entry.HostKey = r.hostKey
-		failed.fail(strings.Repeat("<\u2028", pairReasonRunes), true)
-		e.Machines = append(e.Machines, failed.entry)
+		e := r.entry
+		e.HostKey, e.Status = r.hostKey, account.PairAlready
+		already.Machines = append(already.Machines, e)
 	}
+	if _, err := already.Marshal(); err != nil {
+		t.Fatalf("%d rows pairFits took don't fit as already there: %v", len(rows), err)
+	}
+	longest := strings.Repeat("<\u2028", pairReasonRunes)
+	for i := range rows {
+		rows[i].entry.HostKey = rows[i].hostKey
+		rows[i].fail(longest, true)
+	}
+	if _, err := (&pairApproval{rows: rows}).envelope().Marshal(); err != nil {
+		t.Fatalf("the list for %d failed rows: %v", len(rows), err)
+	}
+	p := &pairApproval{rows: rows[:len(rows)/2]}
+	e := p.envelope()
 	if _, err := e.Marshal(); err != nil {
-		t.Fatalf("%d rows pairFits took don't fit with the longest reasons: %v", len(rows), err)
+		t.Fatalf("the list for %d failed rows: %v", len(p.rows), err)
+	}
+	last := e.Machines[len(e.Machines)-1]
+	if e.Machines[0].Reason != rows[0].entry.Reason || last.Reason != "" || last.Status != account.PairFailed || last.HostKey != hostKey {
+		t.Fatalf("first reason %q, last %+v: want reasons kept from the first row, left out at the end", e.Machines[0].Reason, last)
+	}
+	for _, r := range p.result().Machines {
+		if r.Reason != truncate(longest, pairReasonRunes) {
+			t.Fatalf("the sheet's reason for %s: %q", r.Label, r.Reason)
+		}
 	}
 }

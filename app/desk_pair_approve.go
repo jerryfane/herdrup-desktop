@@ -154,8 +154,7 @@ type pairRow struct {
 	retry    bool
 }
 
-// fail marks r failed with reason (cut to pairReasonRunes, which the
-// list's size counts on).
+// fail marks r failed with reason (cut to pairReasonRunes).
 func (r *pairRow) fail(reason string, retry bool) {
 	r.entry.Status, r.entry.Reason, r.retry = account.PairFailed, truncate(reason, pairReasonRunes), retry
 }
@@ -311,19 +310,11 @@ func pairSendable(m Machine) error {
 // pairHeldReason is a row's reason for a machine pairSendable or pairFits
 // refused on its own.
 func pairHeldReason(err error) string {
-	why := strings.TrimPrefix(err.Error(), "pair-v1: ")
-	if errors.Is(err, account.ErrPairEnvelopeTooLong) {
-		why = "its host key is too long for the list"
-	}
-	return truncate("can't be sent to the new device: "+why, pairReasonRunes)
+	return truncate("can't be sent to the new device: "+strings.TrimPrefix(err.Error(), "pair-v1: "), pairReasonRunes)
 }
 
-// pairReasonRunes bounds every row's reason (truncate). pairLongestReason
-// is one that long, of a rune JSON spells with the most bytes ("<" is
-// \u003c), so a list sized with it holds whatever reason a row gets.
+// pairReasonRunes bounds every row's reason (truncate).
 const pairReasonRunes = 120
-
-var pairLongestReason = strings.Repeat("<", pairReasonRunes)
 
 // pairNoRoom is a machine left out because the list, with the machines
 // before it, would be too long for the service.
@@ -331,10 +322,12 @@ const pairNoRoom = "no room for it in the list with the others"
 
 // pairFits says why the list for rows might not fit the service, by the
 // envelope's own rules (PairEnvelope.Marshal), nil when it fits. Each row
-// not held out counts at its longest: failed, with its host key (the
-// probe's, or the one its connection verified) and the longest reason. A
-// row with no host key yet counts without one: before a connection adds a
-// key there it checks the list again with the key it verified.
+// not held out counts with its host key (the probe's, or the one its
+// connection verified) and its longest status, "already", but no reason:
+// a reason is optional on the wire, and the list leaves out what doesn't
+// fit (pairApproval.envelope). A row with no host key yet counts without
+// one, as failed: before a connection adds a key there it checks the
+// list again with the key it verified.
 func pairFits(rows []pairRow) error {
 	e := account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: make([]account.PairMachine, 0, len(rows))}
 	for _, r := range rows {
@@ -342,7 +335,10 @@ func pairFits(rows []pairRow) error {
 			continue
 		}
 		longest := r.entry
-		longest.HostKey, longest.Status, longest.Reason = r.hostKey, account.PairFailed, pairLongestReason
+		longest.HostKey, longest.Status, longest.Reason = r.hostKey, account.PairAlready, ""
+		if r.hostKey == "" {
+			longest.Status = account.PairFailed
+		}
 		e.Machines = append(e.Machines, longest)
 	}
 	_, err := e.Marshal()
@@ -587,12 +583,21 @@ func (r pairRow) retryable() bool {
 }
 
 // envelope is the list the new device gets: every row but those held out.
+// The list is sized without reasons (pairFits): when they make it too
+// long they are left out from the last row on until it fits. The sheet
+// keeps every reason (result).
 func (p *pairApproval) envelope() account.PairEnvelope {
 	e := account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: make([]account.PairMachine, 0, len(p.rows))}
 	for _, r := range p.rows {
 		if r.held == "" {
 			e.Machines = append(e.Machines, r.entry)
 		}
+	}
+	for i := len(e.Machines) - 1; i >= 0; i-- {
+		if _, err := e.Marshal(); !errors.Is(err, account.ErrPairEnvelopeTooLong) {
+			break
+		}
+		e.Machines[i].Reason = ""
 	}
 	return e
 }
@@ -782,7 +787,7 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 	addBy := pairNow().Add(left - pairReportTime)
 	addCtx, cancelAdds := context.WithTimeout(ctx, max(left-pairReportTime, 0))
 	defer cancelAdds()
-	tried, late := p.unsent, false
+	tried, late, settled := p.unsent, false, false
 	for i, r := range p.rows {
 		if !r.retryable() || !slices.Contains(machineIDs, machineID(r.m)) {
 			continue
@@ -799,6 +804,7 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 		if reason != "" {
 			p.rows[i].fail(reason, false)
 			publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(r.m), Status: account.PairFailed, Reason: p.rows[i].entry.Reason})
+			settled = true
 			continue
 		}
 		if addBy.Sub(pairNow()) < pairAddTime {
@@ -811,10 +817,15 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 		tried = true
 	}
 	if !tried {
-		if late {
+		switch {
+		case late:
 			res := p.result()
 			res.Ended, res.Problem = true, pairTooLate
 			return res, nil
+		case settled:
+			// Rows a retry can't mend any more: the sheet shows why, with
+			// no Try again for them.
+			return p.result(), nil
 		}
 		return p.result(), errors.New("nothing to try again")
 	}
@@ -879,6 +890,11 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 	}
 	defer done()
 	hostKey, err := d.verifiedHostKey(c)
+	if errors.Is(err, errNoPlainKey) {
+		row.hold(err.Error())
+		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.held})
+		return row
+	}
 	if err != nil {
 		return fail(err.Error(), false)
 	}
@@ -905,9 +921,10 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 
 // verifiedHostKey is the host key c's first handshake verified, as an
 // OpenSSH line with no comment, once it matches the pin kept here under
-// the address it dialled. A host certificate is carried as is: its line is
-// "<type> <base64>" too (ssh-ed25519-cert-v01@openssh.com, say), and the
-// new device pins its fingerprint as this computer did.
+// the address it dialled. The list carries plain keys only (pair-v1
+// host_key): for a host certificate it is the key the certificate
+// certifies, which is what the new device pins (it never negotiates
+// certificates), errNoPlainKey when there is none.
 func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
@@ -920,8 +937,17 @@ func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	case !ok || pin != bridge.Fingerprint(key):
 		return "", errors.New("its host key doesn't match the one pinned here")
 	}
+	if cert, isCert := key.(*ssh.Certificate); isCert {
+		if _, nested := cert.Key.(*ssh.Certificate); cert.Key == nil || nested {
+			return "", errNoPlainKey
+		}
+		key = cert.Key
+	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
 }
+
+// errNoPlainKey is a host certificate with no plain key to send.
+var errNoPlainKey = errors.New("can't share this machine: its host certificate has no plain key")
 
 // pairReason says why adding the key failed, and whether Try again may
 // mend it (a timeout, a connection, a write; not a herdr too old, nor one
