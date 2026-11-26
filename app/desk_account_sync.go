@@ -387,7 +387,11 @@ func (d *Desk) storeSyncState(s syncState) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(d.syncStatePath(), raw); err != nil {
+	write := d.accountSync.writeState
+	if write == nil {
+		write = writeFileAtomic
+	}
+	if err := write(d.syncStatePath(), raw); err != nil {
 		return err
 	}
 	d.dropShareAcks(s.acksFolded)
@@ -578,6 +582,9 @@ type accountSync struct {
 	acksMu  sync.Mutex
 	acks    []shareAck
 	lastAck uint64
+	// writeState writes account-sync.json for storeSyncState; nil is
+	// writeFileAtomic. Tests make it fail. Set before any sync.
+	writeState func(path string, raw []byte) error
 }
 
 // syncRoundTimeout bounds each sync round, its wait for the turn included:

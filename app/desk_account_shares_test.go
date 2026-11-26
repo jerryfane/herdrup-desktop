@@ -940,7 +940,9 @@ func TestABoundAcceptSendsItsWriteOnce(t *testing.T) {
 // A share write whose journal (Sent, journalShareWrites) can't be saved
 // before its push isn't sent: no request reaches the service, the write is
 // still owed and not marked sent. Once the state can be saved, the next
-// sync sends it once, and the share is confirmed.
+// sync sends it once, and the share is confirmed. The save fails at the
+// sync state's writer (accountSync.writeState): a write of a state that
+// marks a share write sent fails, any other goes through.
 func TestAShareWriteWhoseJournalCantBeSavedIsNotSent(t *testing.T) {
 	quietSync(t)
 	quietShares(t)
@@ -953,42 +955,25 @@ func TestAShareWriteWhoseJournalCantBeSavedIsNotSent(t *testing.T) {
 		defer w.mu.Unlock()
 		return w.posts
 	}
-	// The accept's round fails at its pull, so its write stays owed.
-	w.mu.Lock()
-	w.failPull = true
-	w.mu.Unlock()
-	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
-	if err != nil || !access.AccountBound {
-		t.Fatalf("bound accept: %+v, %v", access, err)
-	}
-	if n := posts(); n != 0 {
-		t.Fatalf("the accept's failed round sent %d pushes", n)
-	}
-	id := relay.HostID() + "/" + access.GuestID
-	// The next pull brings another device's prompt; once the merge is
-	// written (publishSavedPrompts, before the push's prepare), the sync
-	// state can't be: a folder where its temporary file goes.
-	blocker := filepath.Join(d.dir, "account-sync.json.tmp")
-	published := publishSavedPrompts
-	publishSavedPrompts = func([]SavedPrompt) {
-		publishSavedPrompts = published
-		if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o700); err != nil {
-			t.Error(err)
+	failJournal := true // syncs run on this goroutine
+	d.accountSync.writeState = func(path string, raw []byte) error {
+		var state syncState
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return err
 		}
+		if failJournal && slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.Sent != nil }) {
+			return errors.New("no space left on device")
+		}
+		return writeFileAtomic(path, raw)
 	}
-	t.Cleanup(func() { publishSavedPrompts = published })
-	w.mu.Lock()
-	w.otherDeviceWritesBodyLocked("00000000-0000-4000-8000-0000000000aa", `{"text":"q","order":1}`)
-	w.mu.Unlock()
-	if err := d.SyncMachines(ctx); err == nil {
-		t.Fatal("a round whose journal couldn't be saved reported success")
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.AccountShare != shareQueued {
+		t.Fatalf("bound accept: %+v, %v; want the share queued", access, err)
 	}
 	if n := posts(); n != 0 {
 		t.Fatalf("%d pushes reached the service with no journal saved, want none", n)
 	}
-	if err := os.RemoveAll(blocker); err != nil {
-		t.Fatal(err)
-	}
+	id := relay.HostID() + "/" + access.GuestID
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
 	d.storeMu.Unlock()
@@ -998,6 +983,7 @@ func TestAShareWriteWhoseJournalCantBeSavedIsNotSent(t *testing.T) {
 	if _, live := w.live()[id]; live {
 		t.Fatal("the share is on the account")
 	}
+	failJournal = false
 	if err := d.SyncMachines(ctx); err != nil {
 		t.Fatal(err)
 	}
