@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, cursorExpired, groupTranscript, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, cursorExpired, groupTranscript, mergeOlder, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
@@ -341,7 +341,8 @@ class Detail {
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
  private chatFailed = false;
  /** The chat's next live read starts over from its newest page (readLive with no held page),
-  *  dropping its history and cursors: Refresh, or an older page whose cursor herdr expired. */
+  *  dropping its history and cursors: Refresh, an older page whose cursor herdr expired, or one
+  *  that showed handovers otherwise than the held history (mergeOlder). */
  private chatRestart = false;
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
@@ -1667,11 +1668,13 @@ class Detail {
    const page: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, "", this.oldestCursor!, "", ""));
    if (!current() || page.session_id !== session) { if (epoch === this.chatEpoch) { this.olderLoad = "idle"; this.renderEarlier(); } return false; }
    this.olderLoad = "idle";
+   const merged = mergeOlder(this.chat!, this.entries, page);
+   if (!merged) { this.chatRestart = true; this.renderEarlier(); void this.refreshChat(generation); return false; }
    const oldHeight = this.chatScroll.scrollHeight;
    this.chatFollowing = false;
    const before = this.chatRows();
    const top = windowStarting(before, drawnStart(before, this.drawFrom));
-   this.entries = mergeTranscript(this.entries, page.entries, { older: true }); this.oldestCursor = page.before;
+   this.entries = merged; this.oldestCursor = page.before;
    rememberChat(JSON.stringify(this.target), { page: this.chat!, entries: this.entries, oldestCursor: this.oldestCursor });
    this.drawFrom = revealedAbove(this.chatRows(), top) ?? this.drawFrom;
    this.drawChat(false); this.chatScroll.scrollTop += this.chatScroll.scrollHeight - oldHeight;

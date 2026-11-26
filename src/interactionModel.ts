@@ -32,6 +32,11 @@ export interface TranscriptPage {
  model?: TranscriptModel | null;
  /** omp's recap of its last finished turn (herdr TranscriptRecap); the newest page's. */
  recap?: TranscriptRecap | null;
+ /** herdr #521: the page shows the handovers between the Inbox and its topics as `relay` entries
+  *  (asked with relay_entries, and the session's topics could be read); absent when it shows them
+  *  as the user entries or notes they were sent as. herdr may leave it off a fallback page and set
+  *  it on a later page of the same session (#555): sameHandovers. */
+ relay_entries?: boolean;
 }
 export interface TranscriptModel { id: string; provider: string; thinking_level?: string | null; thinking_auto?: boolean | null }
 export interface TranscriptRecap { turn_id: string; text: string }
@@ -135,13 +140,21 @@ export function mergeNewest(current: Entry[], page: Entry[]): Entry[] | null {
 export function cursorExpired(error: unknown): boolean {
  return herdrCode(errorText(error)) === "cursor_expired";
 }
+/** Whether two pages show the Inbox's and its topics' handovers alike: both as relay entries, or
+ *  both as the entries they were sent as (TranscriptPage.relay_entries). History built from one
+ *  is never merged with a page of the other (#555): the chat starts over from its newest page,
+ *  readLive(null, …). */
+export function sameHandovers(a: Pick<TranscriptPage, "relay_entries">, b: Pick<TranscriptPage, "relay_entries">): boolean {
+ return (a.relay_entries === true) === (b.relay_entries === true);
+}
 /** One live read of a chat's tail, the agent's or a topic's (herdrup #736 / #749 review F2).
  *  `read(after)` fetches a page after that cursor ("" for the newest page) and returns null once
  *  the reply is stale. An after page that may re-send unloaded history (replayUnknown) is replaced
  *  by the newest page, merged by position (rereadMerge). `reset`: the chat starts over from
  *  `page` (a new session, a first read, or a newest page sharing nothing with it).
  *  A null `held` is the one way a chat starts over from its newest page, dropping its history and
- *  cursors: a first read, Refresh, and a read whose cursor herdr expired (cursorExpired).
+ *  cursors: a first read, Refresh, a read whose cursor herdr expired (cursorExpired), and a page
+ *  that shows handovers otherwise than the held one (sameHandovers).
  *  `current()` is the chat's entries now and whether older history is left: it is read after each
  *  request, never before, so history loaded while a read is pending is kept (#253). */
 export interface LiveRead { page: TranscriptPage; entries: Entry[]; reset: boolean }
@@ -154,6 +167,7 @@ export async function readLive(held: TranscriptPage | null, current: () => { ent
   throw error;
  }
  if (!page) return null;
+ if (held && held.session_id === page.session_id && !sameHandovers(held, page)) return readLive(null, current, read);
  const now = current();
  const reread = !!held && held.session_id === page.session_id && replayUnknown(now.entries, page, now.hasOlder);
  const ambiguous = page.entries ?? [];
@@ -163,9 +177,17 @@ export async function readLive(held: TranscriptPage | null, current: () => { ent
   page = newest;
  }
  const entries = current().entries;
- const merged = reread && held?.session_id === page.session_id ? rereadMerge(entries, ambiguous, page.entries ?? []) : undefined;
- const reset = !held || held.session_id !== page.session_id || merged === null;
+ // The newest page that replaced the after page is merged only when it shows handovers alike.
+ const kept = !!held && held.session_id === page.session_id && sameHandovers(held, page);
+ const merged = reread && kept ? rereadMerge(entries, ambiguous, page.entries ?? []) : undefined;
+ const reset = !kept || merged === null;
  return { page, reset, entries: merged ?? mergeTranscript(reset ? [] : entries, page.entries ?? [], { resent: page.resent }) };
+}
+/** An older page merged above the chat's entries; null when it shows handovers otherwise than the
+ *  chat's newest page `held` (sameHandovers): it is not merged, and the chat starts over from its
+ *  newest page. */
+export function mergeOlder(held: TranscriptPage, entries: Entry[], older: TranscriptPage): Entry[] | null {
+ return sameHandovers(held, older) ? mergeTranscript(entries, older.entries ?? [], { older: true }) : null;
 }
 /** Merges a transcript page into the held entries: an older page before them, a live page after
  *  (liveEntries; resent is the page's list). */

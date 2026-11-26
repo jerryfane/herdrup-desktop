@@ -704,13 +704,16 @@ test("the Inbox's and a topic's transcript ask for relay entries only where the 
   try {
    await openP1(desk, relay);
    const inbox = JSON.parse(await desk.chatTranscript("view-1", "", "", "", ""));
-   await desk.topicTranscript("view-1", "t1", "", "", "");
+   const topic = JSON.parse(await desk.topicTranscript("view-1", "t1", "", "", ""));
    await desk.chatTranscript("view-1", "", "", "sub-1", "");
    expect(asked.map(p => p.relay_entries)).toEqual(served ? [true, true, undefined] : [undefined, undefined, undefined]);
    // The page reaches chatRelay.ts with herdr's own field names.
    expect(inbox.entries[0]).toEqual(served
     ? { kind: "relay", id: "r1", ts_ms: 1, from: "Board pack", topic_id: "t1", direction: "to_inbox", text: "The intro is drafted." }
     : { kind: "note", id: "r1", ts_ms: 1, from: "Board pack", text: "<irc>\nThe intro is drafted." });
+   // herdr's relay_entries flag reaches the page too (#555): true on a page showing relays,
+   // absent on one without.
+   expect([inbox.relay_entries, topic.relay_entries]).toEqual(served ? [true, true] : [undefined, undefined]);
   } finally { desk.disconnectOwner(); relay.stop(); }
  }
 });
