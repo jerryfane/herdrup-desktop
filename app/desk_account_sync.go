@@ -100,13 +100,14 @@ type syncState struct {
 	ShareRefusals map[string]string `json:"shareRefusals,omitempty"`
 	// SharesHeld are, by account, the shares that account was last seen
 	// to hold: its synced shares, those this device's writes put there
-	// (settled as the service took them, settleShareWrites), and those a
-	// readback saw deleted. Unlike the rest of this state it is kept for
-	// every account, not started over when another signs in, so a share
-	// left while another account was signed in still reads as left when
-	// its account comes back, by its tombstone or, once that is pruned, its
-	// absence (mergeShares' gone), and its grant here goes. Hosts and
-	// prompts start over on a switch as before.
+	// (settled as the service took them, settleShareWrites, or owed in
+	// memory until a save holds them, shareAck), and those a readback saw
+	// deleted. Unlike the rest of this state it is kept for every account,
+	// not started over when another signs in, so a share left while
+	// another account was signed in still reads as left when its account
+	// comes back, by its tombstone or, once that is pruned, its absence
+	// (mergeShares' gone), and its grant here goes. Hosts and prompts start
+	// over on a switch as before.
 	SharesHeld map[string][]string `json:"sharesHeld,omitempty"`
 	// PushFrom is the write ("collection/id") the next round's pushes
 	// start from: a round the service's rate limit stopped leaves it at the
@@ -129,6 +130,10 @@ type syncState struct {
 	// LastSync is the newest sync of AccountID that finished well: when,
 	// and the items the account held then.
 	LastSync *AccountSyncStatus `json:"lastSync,omitempty"`
+	// acksFolded is the newest share acknowledgement owed in memory
+	// (shareAck) that loading this state folded in (foldShareAcks): a save
+	// of this state lets go of it and every older one. Never saved.
+	acksFolded uint64
 }
 
 // promptAttempt is the journal's entry for the unanswered sends of one
@@ -317,14 +322,17 @@ func (d *Desk) syncStatePath() string { return filepath.Join(d.dir, "account-syn
 
 // loadSyncState reads account-sync.json; none yet is an empty state, and an
 // unreadable or damaged one is an error (never a silent restart, which
-// would drop pending deletes). d.storeMu must be held.
+// would drop pending deletes). The share acknowledgements owed in memory
+// are folded in (foldShareAcks). d.storeMu must be held.
 func (d *Desk) loadSyncState() (syncState, error) {
 	if err := d.replayCommit(); err != nil {
 		return syncState{}, err
 	}
 	raw, err := os.ReadFile(d.syncStatePath())
 	if errors.Is(err, os.ErrNotExist) {
-		return syncState{}, nil
+		var s syncState
+		d.foldShareAcks(&s)
+		return s, nil
 	}
 	if err != nil {
 		return syncState{}, err
@@ -364,11 +372,13 @@ func (d *Desk) loadSyncState() (syncState, error) {
 	for _, id := range file.Sending {
 		attempted(id, nil)
 	}
+	d.foldShareAcks(&s)
 	return s, nil
 }
 
 // storeSyncState writes account-sync.json alone (atomically), after any
-// commit a failure left. d.storeMu must be held.
+// commit a failure left; once written, the share acknowledgements s holds
+// are no longer owed in memory. d.storeMu must be held.
 func (d *Desk) storeSyncState(s syncState) error {
 	if err := d.replayCommit(); err != nil {
 		return err
@@ -377,7 +387,11 @@ func (d *Desk) storeSyncState(s syncState) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(d.syncStatePath(), raw)
+	if err := writeFileAtomic(d.syncStatePath(), raw); err != nil {
+		return err
+	}
+	d.dropShareAcks(s.acksFolded)
+	return nil
 }
 
 // syncCommit is sync-commit.json: one merge's new machines.json and
@@ -399,8 +413,9 @@ func (d *Desk) commitPath() string { return filepath.Join(d.dir, "sync-commit.js
 // then each file and the board cache, then the record goes. A failure
 // after the record leaves it, and the next load finishes it
 // (replayCommit). recorded is whether the record is in place: from then
-// on the commit holds what it applied (the owed answers a merge paid),
-// even when err says a file failed. d.storeMu must be held.
+// on the commit holds what it applied (the owed answers a merge paid, the
+// share acknowledgements s holds), even when err says a file failed.
+// d.storeMu must be held.
 func (d *Desk) commitMerge(machines []byte, ps *promptStore, renamed map[string]string, s syncState) (recorded bool, err error) {
 	c := syncCommit{Machines: machines, Renamed: renamed}
 	if ps != nil {
@@ -419,6 +434,7 @@ func (d *Desk) commitMerge(machines []byte, ps *promptStore, renamed map[string]
 	if err := writeFileAtomic(d.commitPath(), raw); err != nil {
 		return false, err
 	}
+	d.dropShareAcks(s.acksFolded)
 	if err := d.applyCommit(c); err != nil {
 		return true, err
 	}
@@ -554,6 +570,14 @@ type accountSync struct {
 	// them, so turn is their lock too.
 	owed   []owedAnswer
 	resets map[string]int64
+	// acks are the share writes the service took that no saved sync state
+	// holds yet (shareAck), oldest first, and lastAck the newest's number.
+	// Every state loaded holds them, and a save of one lets go of those it
+	// holds. acksMu is their lock: a load (under d.storeMu) reads them
+	// while a round notes one before it waits for d.storeMu.
+	acksMu  sync.Mutex
+	acks    []shareAck
+	lastAck uint64
 }
 
 // syncRoundTimeout bounds each sync round, its wait for the turn included:
@@ -729,11 +753,17 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		return ctx.Err()
 	}
 	state, err := d.loadSyncState()
+	switched := err == nil && state.AccountID != acct
+	if switched && state.acksFolded != 0 {
+		// A switch first tries to save the share writes the last account
+		// took that are owed in memory (shareAck); failed, they stay owed,
+		// and held all the same.
+		_ = d.storeSyncState(state)
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
 	}
-	switched := state.AccountID != acct
 	if switched {
 		// Another account (or the first sync): pull everything first and
 		// adopt its ids before this device pushes anything.
@@ -953,7 +983,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptBaselineHash: baselineHash, PromptAttempts: attempts, PromptLastSent: lastSent,
 		SharesPulled: true, ShareWrites: shareWrites, ShareDeletes: shareDeletes, ShareRefusals: noteShareRefusals(latest.ShareRefusals, shareWrites, nil, nil),
 		SharesHeld: sharesHeldBy(latest.SharesHeld, acct, mirror.Shares), Removed: removed, PushFrom: pushFrom, LastSync: lastSync,
-		History: latest.History, ResetsSeen: latest.ResetsSeen}
+		History: latest.History, ResetsSeen: latest.ResetsSeen, acksFolded: latest.acksFolded}
 	if switched {
 		// Another account's state starts its own count: its first pull
 		// was a whole one, so every 410 it saw is behind it.

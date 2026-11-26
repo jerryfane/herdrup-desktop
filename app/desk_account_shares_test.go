@@ -755,22 +755,27 @@ func TestAShareDeletedAndPrunedBeforeAFullReadbackIsLetGo(t *testing.T) {
 	}
 }
 
-// A share write the service took, whose settling couldn't be saved, is
-// still journaled as sent (saved before the push went), so it is settled
-// by what the account holds, never written afresh: left elsewhere while
-// another account was signed in, the share stays left once its account is
-// back, and its grant goes. (Its tombstone kept: a write that landed on no
-// item, deleted, its tombstone pruned before the settling pull, can't be
-// told from one that never landed; that case goes again, as on the web.)
-func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
-	quietSync(t)
-	quietShares(t)
-	w, srv := newWorker(t, "")
-	relay, base := shareRelay(t, true)
-	d := shareDevice(t, srv)
-	ctx := context.Background()
-	// The service takes the push; then the sync state can't be written:
-	// a folder where its temporary file goes (writeFileAtomic).
+// savedSyncState is d's sync state as saved: what a restart of the app
+// loads, with nothing owed in d's memory.
+func savedSyncState(t *testing.T, d *Desk) syncState {
+	t.Helper()
+	restarted := newDesk(d.dir)
+	restarted.storeMu.Lock()
+	defer restarted.storeMu.Unlock()
+	state, err := restarted.loadSyncState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+// acceptWithAckUnsaved accepts a bound share on d whose write the service
+// takes, and whose settling (the acknowledgement) can't be saved: past the
+// push, the sync state can't be written (a folder where its temporary
+// file goes, writeFileAtomic) until the accept returns. The saved state
+// still journals the write as sent.
+func acceptWithAckUnsaved(t *testing.T, w *syncWorker, relay *fakeherdr.GuestRelay, base string, d *Desk) (guest.Access, string) {
+	t.Helper()
 	blocker := filepath.Join(d.dir, "account-sync.json.tmp")
 	w.mu.Lock()
 	w.afterPush = func() {
@@ -779,7 +784,7 @@ func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
 		}
 	}
 	w.mu.Unlock()
-	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
 	if err != nil || !access.AccountBound {
 		t.Fatalf("bound accept: %+v, %v", access, err)
 	}
@@ -790,28 +795,110 @@ func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
 	if _, live := w.live()[id]; !live {
 		t.Fatal("the service never took the write")
 	}
-	d.storeMu.Lock()
-	state, err := d.loadSyncState()
-	d.storeMu.Unlock()
-	if i := slices.IndexFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id }); err != nil || i < 0 || state.ShareWrites[i].Sent == nil {
-		t.Fatalf("the write isn't journaled as sent: %+v, %v", state.ShareWrites, err)
+	saved := savedSyncState(t, d)
+	if i := slices.IndexFunc(saved.ShareWrites, func(op shareOp) bool { return op.ID == id }); i < 0 || saved.ShareWrites[i].Sent == nil {
+		t.Fatalf("the saved state doesn't journal the write as sent: %+v", saved.ShareWrites)
 	}
-	signInAs(t, w, d, "")
-	if err := d.SyncMachines(ctx); err != nil {
-		t.Fatal(err)
+	return access, id
+}
+
+// A share write the service took, whose acknowledgement couldn't be saved,
+// is settled by that acknowledgement, never written afresh: owed in memory
+// until a save holds it, it says the account holds the share, and once the
+// share is left elsewhere while another account was signed in, the share
+// stays left when its account is back, and its grant goes. That holds with
+// the share's tombstone pruned meanwhile too, where the account's history
+// alone can't tell the write (a create, on base 0) from one that never
+// landed.
+func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		prune bool
+	}{
+		{"its tombstone kept", false},
+		{"its tombstone pruned", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			relay, base := shareRelay(t, true)
+			d := shareDevice(t, srv)
+			ctx := context.Background()
+			access, id := acceptWithAckUnsaved(t, w, relay, base, d)
+			if access.AccountShare != shareConfirmed {
+				t.Errorf("the service took the write: the accept says %q, want confirmed", access.AccountShare)
+			}
+			signInAs(t, w, d, "")
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.mu.Lock()
+			w.tombstone(id) // another device leaves the share
+			if c.prune {
+				w.prune(id)
+			}
+			w.mu.Unlock()
+			signInAs(t, w, d, "acct")
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, live := w.live()[id]; live {
+				t.Fatal("the left share was written to the account again")
+			}
+			if grants, _ := d.SharedConnections(); len(grants) != 0 {
+				t.Fatalf("the left share's grant is still held: %+v", grants)
+			}
+		})
 	}
-	w.mu.Lock()
-	w.tombstone(id) // another device leaves the share
-	w.mu.Unlock()
-	signInAs(t, w, d, "acct")
-	if err := d.SyncMachines(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, live := w.live()[id]; live {
-		t.Fatal("the left share was written to the account again")
-	}
-	if grants, _ := d.SharedConnections(); len(grants) != 0 {
-		t.Fatalf("the left share's grant is still held: %+v", grants)
+}
+
+// A share write's acknowledgement whose save failed is written by the next
+// save of the sync state, with no restart in between: a local change's (a
+// prompt deleted here), or an account switch's, which saves it first, even
+// when the switch's own sync then fails. The saved state holds the share
+// as the account's, its write no longer owed, so a restart, which loses
+// what was owed in memory, still knows the write landed.
+func TestAShareAckWhoseSaveFailedIsSavedByTheNextSave(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		save func(t *testing.T, w *syncWorker, d *Desk)
+	}{
+		{"a prompt deleted here", func(t *testing.T, _ *syncWorker, d *Desk) {
+			if _, err := d.DeletePrompt("prompt-1"); err != nil {
+				t.Fatal(err)
+			}
+			if saved := savedSyncState(t, d); !slices.Contains(saved.PromptDeletes, "prompt-1") {
+				t.Fatalf("the save lost its own change: %+v", saved.PromptDeletes)
+			}
+		}},
+		{"another account signed in, its sync failed", func(t *testing.T, w *syncWorker, d *Desk) {
+			signInAs(t, w, d, "")
+			w.mu.Lock()
+			w.failPull = true
+			w.mu.Unlock()
+			if err := d.SyncMachines(context.Background()); err == nil {
+				t.Fatal("a sync whose pull failed reported success")
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			w.seedPrompt("prompt-1", `{"text":"held"}`)
+			relay, base := shareRelay(t, true)
+			d := shareDevice(t, srv)
+			_, id := acceptWithAckUnsaved(t, w, relay, base, d)
+			if grants, err := d.SharedConnections(); err != nil || len(grants) != 1 || grants[0].AccountShare != shareConfirmed {
+				t.Errorf("before the next save: %+v, %v; want the share confirmed", grants, err)
+			}
+			c.save(t, w, d)
+			saved := savedSyncState(t, d)
+			if slices.ContainsFunc(saved.ShareWrites, func(op shareOp) bool { return op.ID == id }) || !slices.Contains(saved.SharesHeld["acct"], id) {
+				t.Fatalf("the next save: writes %+v, held %v; want the share held, its write not owed", saved.ShareWrites, saved.SharesHeld)
+			}
+		})
 	}
 }
 

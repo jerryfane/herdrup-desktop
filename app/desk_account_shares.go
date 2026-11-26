@@ -208,9 +208,10 @@ func (d *Desk) confirmShare() {
 // journalShareWrites saves, before a push goes, that each share write it
 // carries (part, account acct's) was sent on its base_rev (shareOp.Sent):
 // from then on its outcome may be unknown, an answer lost, or an answer
-// whose settling couldn't be saved, and the merge settles it by what the
-// account holds instead of writing it afresh (mergeShares). If the
-// journal can't be saved, the push doesn't go.
+// whose settling was lost (shareAck: the app ended before a save held it),
+// and the merge settles it by what the account holds instead of writing
+// it afresh (mergeShares). If the journal can't be saved, the push doesn't
+// go.
 func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []account.Change) error {
 	sent := map[string]int64{}
 	for _, c := range part {
@@ -238,10 +239,16 @@ func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []accou
 }
 
 // settleShareWrites settles the share writes of applied (a push's answer
-// for account acct) the service took: none is owed any more, so none goes
-// again (on a tombstone it would bring the share back), and acct is known
-// to hold each (SharesHeld), before the round's readback, which may fail,
-// and whichever account signs in next.
+// for account acct, its entries checked, joinOutcomes) the service took:
+// none is owed any more, so none goes again (on a tombstone it would bring
+// the share back), and acct is known to hold each (SharesHeld), before the
+// round's readback, which may fail, and whichever account signs in next.
+// The settling is owed in memory first (shareAck), and let go only once a
+// saved sync state holds it: a wait for the store the round gave up, or a
+// save that failed, leaves it owed. Every state loaded meanwhile holds it
+// (foldShareAcks), so a write the service took is settled as held, never
+// written afresh, and the next save of the state, whatever makes it (an
+// account switch tries one first, syncPass), writes it down.
 func (d *Desk) settleShareWrites(ctx context.Context, acct string, applied []appliedChange) error {
 	var took []string
 	for _, a := range applied {
@@ -252,17 +259,59 @@ func (d *Desk) settleShareWrites(ctx context.Context, acct string, applied []app
 	if len(took) == 0 {
 		return nil
 	}
-	if !d.storeMu.LockCtx(ctx) {
+	d.accountSync.acksMu.Lock()
+	d.accountSync.lastAck++
+	d.accountSync.acks = append(d.accountSync.acks, shareAck{seq: d.accountSync.lastAck, acct: acct, ids: took})
+	d.accountSync.acksMu.Unlock()
+	if !d.storeMu.LockBestEffort(ctx) {
 		return ctx.Err()
 	}
 	defer d.storeMu.Unlock()
 	state, err := d.loadSyncState()
-	if err != nil || state.AccountID != acct {
+	if err != nil {
 		return err
 	}
-	state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool { return op.Account == acct && slices.Contains(took, op.ID) })
-	state.SharesHeld = sharesHeldBy(state.SharesHeld, acct, nil, state.SharesHeld[acct], took)
 	return d.storeSyncState(state)
+}
+
+// shareAck is share writes the service took for account acct (ids, their
+// items' ids), owed in memory until a saved sync state holds them
+// (settleShareWrites); seq numbers it among them. Kept in memory only, it
+// is lost if the app ends before such a save: the writes are still
+// journaled as sent (shareOp.Sent), and the merge settles them by what the
+// account holds, which can't tell one that landed on no item (base 0),
+// was deleted, and had its tombstone pruned before the next pull from one
+// that never landed (mergeShares): that write goes again. Of a failed
+// save, that is all that remains.
+type shareAck struct {
+	seq  uint64
+	acct string
+	ids  []string
+}
+
+// foldShareAcks applies the share acknowledgements owed in memory to state
+// (a sync state just loaded, whichever account's), as settleShareWrites
+// saves them, and notes the newest it holds (acksFolded). d.storeMu must
+// be held.
+func (d *Desk) foldShareAcks(state *syncState) {
+	d.accountSync.acksMu.Lock()
+	defer d.accountSync.acksMu.Unlock()
+	for _, a := range d.accountSync.acks {
+		state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool { return op.Account == a.acct && slices.Contains(a.ids, op.ID) })
+		state.SharesHeld = sharesHeldBy(state.SharesHeld, a.acct, nil, state.SharesHeld[a.acct], a.ids)
+		state.acksFolded = a.seq
+	}
+}
+
+// dropShareAcks lets go of the share acknowledgements owed in memory up to
+// seq: a saved sync state holds them.
+func (d *Desk) dropShareAcks(seq uint64) {
+	if seq == 0 {
+		return
+	}
+	d.accountSync.acksMu.Lock()
+	defer d.accountSync.acksMu.Unlock()
+	d.accountSync.acks = slices.DeleteFunc(d.accountSync.acks, func(a shareAck) bool { return a.seq <= seq })
 }
 
 // sharesHeldBy is held (SharesHeld) with account acct's set made the ids
@@ -387,10 +436,14 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 //     tombstone not passed, or none) means it never landed, and it goes
 //     again on that base; its item anywhere else (a tombstone or another
 //     write past that base, and not held) means someone else's change
-//     superseded it: it goes, and so does the grant (gone). The one case
-//     this can't tell (as the web's): a write that landed on no item (base
-//     0), then deleted, its tombstone pruned (90 days, or 2,000 deletes
-//     past it) before this pull, reads as never landed, and goes again;
+//     superseded it: it goes, and so does the grant (gone). A write the
+//     service was seen to take is no longer owed here: its acknowledgement
+//     (SharesHeld, or owed in memory, shareAck) makes its item known, so
+//     its absence is a leave. The one case this can't tell (as the web's):
+//     a write whose acknowledgement was lost (the app ended before any
+//     save held it), that landed on no item (base 0), then deleted, its
+//     tombstone pruned (90 days, or 2,000 deletes past it) before this
+//     pull, reads as never landed, and goes again;
 //   - any other is written, on the revision last seen of its item;
 //   - an owed delete of an item the account holds is sent, on its
 //     revision; one of an item it doesn't hold is done.
