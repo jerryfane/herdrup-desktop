@@ -18,7 +18,14 @@ import { withStorageLock, type AbortableLocks } from "./locks";
 /** One account's record: SHARES_KEY_PREFIX + the account id. */
 export const SHARES_KEY_PREFIX = "herdrup.web.shares.";
 /** The Web Lock a tab holds for an account's sync round: SYNC_LOCK_PREFIX + the account id. */
-const SYNC_LOCK_PREFIX = "herdrup.web.shares.sync.";
+export const SYNC_LOCK_PREFIX = "herdrup.web.shares.sync.";
+
+/** A browser without Web Locks (none the page supports: its build targets browsers that all have
+ *  them) can't take turns with its other tabs, so it syncs no share: it writes nothing to the
+ *  account rather than race another tab's writes. */
+export class SharesUnsupported extends Error {
+ constructor() { super("This browser can't sync shared access. Update it."); this.name = "SharesUnsupported"; }
+}
 
 /** The shares collection's allowlist (sync.ts SCHEMAS.shares). */
 export interface ShareBody {
@@ -214,19 +221,11 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  /** Runs f as acct's sync turn across this browser's tabs (Web Locks, SYNC_LOCK_PREFIX): one
   *  tab's round at a time, so no tab sends or settles writes while another does (a push of
   *  another tab's still answering can't come after a Leave this tab sent and settled). Without
-  *  Web Locks, or where the browser refuses the lock, f runs at once: each push is still made from
-  *  the queue as it is then (pushQueue). */
+  *  Web Locks nothing runs (SharesUnsupported); a lock the browser refuses fails the turn. */
  async function turn<T>(acct: string, f: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   const locks = place.locks;
-  if (locks === null) return f();
-  let ran = false;
-  const run = () => { ran = true; return f(); };
-  try {
-   return await (signal ? locks.request(SYNC_LOCK_PREFIX + acct, { signal }, run) : locks.request(SYNC_LOCK_PREFIX + acct, run));
-  } catch (error) {
-   if (ran || signal?.aborted) throw error;
-   return f();
-  }
+  if (locks === null) throw new SharesUnsupported();
+  return signal ? locks.request(SYNC_LOCK_PREFIX + acct, { signal }, f) : locks.request(SYNC_LOCK_PREFIX + acct, f);
  }
 
  let running: Promise<void> | null = null, again = false;
@@ -256,11 +255,12 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  });
  /** Sends acct's kept writes while acct is signed in here: never to another account. Under
   *  another sign-in (or none) they wait for acct's next round on this browser; a round that fails
-  *  sends them with the next one. */
+  *  sends them with the next one. Rejects only where this browser can't sync (SharesUnsupported):
+  *  they then wait for a browser that can. */
  const send = async (acct: string): Promise<void> => {
   if (account.current?.accountID !== acct) return;
   await tell({ account: acct, shares: visible(read(acct)) });
-  await sync().catch(() => {});
+  await sync().catch((error: unknown) => { if (error instanceof SharesUnsupported) throw error; });
  };
 
  // Another sign-in shows its own account's shares (and pulls them); signed out, none.
@@ -306,14 +306,21 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    *  (rejected: storage refused it, and nothing else ran, so the Leave can be tried again), runs
    *  forget (this browser's own part: its link, its grant), then sends the delete, whether forget
    *  succeeded or not: kept, it leaves every device either way, and a grant forget failed to
-   *  remove goes when the share's tombstone comes (dropping). Rejects as forget did. */
+   *  remove goes when the share's tombstone comes (dropping). Rejects as forget did, else where
+   *  this browser can't sync (SharesUnsupported: the delete waits, kept, for one that can). */
   async leave(id: string, acct: string, forget: () => Promise<void>): Promise<void> {
    await keep(acct, { id, deleted: true });
-   try { await forget(); } finally { await send(acct); }
+   let failed: { error: unknown } | null = null;
+   try { await forget(); } catch (error) { failed = { error }; }
+   await send(acct).catch((error: unknown) => { failed ??= { error }; });
+   if (failed !== null) throw (failed as { error: unknown }).error;
   },
   /** Binds this sign-in's session to key as an account device (the statements a bound share
-   *  needs are issued only to a session with a device); a session bound already is fine. */
+   *  needs are issued only to a session with a device); a session bound already is fine. Where
+   *  this browser can't sync shares (SharesUnsupported), nothing is bound: a share isn't taken
+   *  into the account (accepted, opened) only to never reach it. */
   async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {
+   if (place.locks === null) throw new SharesUnsupported();
    try { await account.enrol(key, place.name, undefined, signal); }
    catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
   },

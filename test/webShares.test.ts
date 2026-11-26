@@ -82,10 +82,10 @@ function inviteText(relay: TestRelay, acct = true, agent = "docs"): string {
 const statements = (): StatementSource => ({ get: async () => ({ jws: "statement-of-acct", expMs: Date.now() + 600_000, account: "acct", live: () => true }), drop() {} });
 
 let sessions = 0;
-/** One browser of the account: its own session, storage, guest key and grant. Signed out, the
- *  service refuses its cookie. Another tab of a browser holds its grants, storage, guest key and
- *  Web Locks (none: null). */
-async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore(), locks: AbortableLocks | null = null) {
+/** One browser of the account: its own session, storage, guest key, grant and Web Locks. Signed
+ *  out, the service refuses its cookie. Another tab of a browser holds its grants, storage, guest
+ *  key and Web Locks (null: a browser without them). */
+async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore(), locks: AbortableLocks | null = tabLocks()) {
  const fetcher = w.fetcher(`s${++sessions}`);
  const signedOut = ((input: string | URL | Request, init?: RequestInit) => String(input).includes("/v1/auth/refresh")
   ? Promise.resolve(Response.json({ error: "session_revoked" }, { status: 401 })) : fetcher(input, init)) as typeof fetch;
@@ -110,11 +110,11 @@ function tabLocks(): AbortableLocks {
  return { request } as AbortableLocks;
 }
 
-/** Two tabs of one browser (sharing locks, null: no Web Locks) with 100 share puts kept while the
- *  service was out, then a bound share accepted, its put the 101st: the second push's. Tab a's
- *  sync has sent its first push, applied and its answer held until release. */
-async function leaveDuringBatch(locks: AbortableLocks | null) {
- const w = worker(), h = host();
+/** Two tabs of one browser (sharing locks) with 100 share puts kept while the service was out,
+ *  then a bound share accepted, its put the 101st: the second push's. Tab a's sync has sent its
+ *  first push, applied and its answer held until release. */
+async function leaveDuringBatch() {
+ const w = worker(), h = host(), locks = tabLocks();
  const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore();
  const a = await browser(w, true, grants, storage, identities, locks), b = await browser(w, true, grants, storage, identities, locks);
  const guest = (n: number) => toB64url(new Uint8Array(16).fill(100 + n));
@@ -134,20 +134,28 @@ async function leaveDuringBatch(locks: AbortableLocks | null) {
  return { w, a, b, id, grants, synced, release: () => answer.resolve(), firstPush: before + 1, sentSince };
 }
 
-test("without Web Locks, a tab's push answered late sends no write a Leave in another tab replaced: the share left stays deleted", async () => {
- const t = await leaveDuringBatch(null);
- expect(t.w.pushed.at(-1)!.length).toBe(100);
- await t.b.desk.forgetGuestConnection(t.id);
- expect([await t.grants.list(), t.w.sharesIn("acct").includes(t.id)]).toEqual([[], false]);
- t.release();
- await t.synced;
- await t.a.shares.sync();
- await t.b.shares.sync();
- expect([t.w.sharesIn("acct").includes(t.id), t.w.sharesIn("acct").length, t.sentSince()]).toEqual([false, 100, ["delete"]]);
+// A browser without Web Locks can't take turns with its other tabs: a push of one could land after
+// a Leave another sent. It sends nothing, and says why.
+test("without Web Locks, a browser sends no share write: Add to my account says to update it, and a Leave goes here alone, its delete kept", async () => {
+ const w = worker(), h = host();
+ const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore();
+ const able = await browser(w, true, grants, storage, identities);
+ const access = await able.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const old = await browser(w, true, grants, storage, identities, null);
+ const pushes = w.pushed.length, hellos = h.hellos.length;
+ const update = "This browser can't sync shared access. Update it.";
+ await expect(old.desk.acceptGuestInvitation(inviteText(h.relay, true, "notes"), "account")).rejects.toThrow(update);
+ await expect(old.desk.forgetGuestConnection(id)).rejects.toThrow(update);
+ await expect(old.shares.sync()).rejects.toThrow(update);
+ expect([w.pushed.length, h.hellos.length, await grants.list(), w.sharesIn("acct")]).toEqual([pushes, hellos, [], [id]]);
+ // A browser that can sync sends the delete kept.
+ await able.shares.sync();
+ expect([w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual([[], { collection: "shares", id, base_rev: 1, deleted: true }]);
 }, CONNECTS_LIMIT_MS);
 
 test("with Web Locks, a tab's Leave syncs once another tab's round is done: the share left stays deleted", async () => {
- const t = await leaveDuringBatch(tabLocks());
+ const t = await leaveDuringBatch();
  const left = t.b.desk.forgetGuestConnection(t.id);
  while ((await t.grants.list()).length > 0) await Bun.sleep(1);
  await Bun.sleep(20);
