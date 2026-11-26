@@ -216,13 +216,15 @@ func (t *topicsState) stopRetry() {
 }
 
 // topicsWatch starts the follower when Topics shows or the Inbox is open on
-// served suggestions, and stops it when neither holds. Otherwise an open
-// Inbox whose newest read didn't settle asks again after a backoff.
+// served suggestions, and stops it when neither holds. Topics on screen or
+// an open Inbox whose newest read didn't settle (topics_unreachable on a
+// moment's miss, topics_timeout when omp didn't answer in time; herdr #520
+// retries both) asks again after a backoff, keeping the list.
 func (d *Desk) topicsWatch(v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
 	want := t.shown || (t.inbox && t.last.SuggestionsServed)
-	retry := !want && t.inbox && !t.settled && v.ctx.Err() == nil
+	retry := (t.shown || t.inbox) && !t.settled && v.ctx.Err() == nil
 	switch {
 	case retry && t.retry == nil:
 		wait := topicsRetry[min(t.retries, len(topicsRetry)-1)]
@@ -288,7 +290,11 @@ func (d *Desk) followTopics(ctx context.Context, v *interaction) {
 				if json.Unmarshal(e.Line.Data, &change) != nil || change.PaneID != v.PaneID {
 					return
 				}
-				d.topicsChangedTopic(v, change.TopicID)
+				// reason "listed" (herdr #520) names no topic: herdr's list
+				// changed, so the read below is all it asks for.
+				if change.TopicID != "" {
+					d.topicsChangedTopic(v, change.TopicID)
+				}
 				select {
 				case events <- struct{}{}:
 				default:
@@ -374,7 +380,7 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	ctx, cancel := context.WithTimeout(v.ctx, 20*time.Second)
 	defer cancel()
 	requested := time.Now()
-	list, fresh, err := v.client.AgentTopicsList(ctx, v.PaneID)
+	list, err := v.client.AgentTopicsList(ctx, v.PaneID)
 	served, known := false, true
 	if err == nil && list.Suggestions != nil {
 		served, known = v.client.Supports(ctx, herdrapi.CapabilityAgentTopicSuggestions)
@@ -387,14 +393,14 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	u := t.last
 	u.Token, u.Loaded, u.Changed = v.Token, true, ""
 	switch {
-	case err == nil && fresh.AsOfMs != 0 && fresh.AsOfMs < t.asOf:
+	case err == nil && list.AsOfUnixMs != 0 && list.AsOfUnixMs < t.asOf:
 		// An answer older than the list shown (a cache behind the
 		// refresh that brought it): the newer list stays.
 	case err == nil:
-		u.Topics, u.Offered, u.Problem, u.Stale = orderedTopics(list.Topics), true, "", fresh.Stale
+		u.Topics, u.Offered, u.Problem, u.Stale = orderedTopics(list.Topics), true, "", list.Stale
 		u.Suggestions, u.RequestedMs = openSuggestions(list.Suggestions), requested.UnixMilli()
-		if fresh.AsOfMs != 0 {
-			t.asOf = fresh.AsOfMs
+		if list.AsOfUnixMs != 0 {
+			t.asOf = list.AsOfUnixMs
 		}
 		// A capability that couldn't be read keeps the last answer and
 		// leaves the read unsettled.

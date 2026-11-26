@@ -97,6 +97,7 @@ export class FakeElement extends Listened {
  }
  get firstChild(): FakeElement | null { return this.children[0] ?? null; }
  get firstElementChild(): FakeElement | null { return this.children.find(c => c.tagName !== "#text") ?? null; }
+ get childElementCount(): number { return this.children.filter(c => c.tagName !== "#text").length; }
  get nextSibling(): FakeElement | null { const siblings = this.parent?.children; return siblings?.[siblings.indexOf(this) + 1] ?? null; }
  get parentElement(): FakeElement | null { return this.parent; }
  select() {}

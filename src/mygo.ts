@@ -177,7 +177,7 @@ export interface AgentTarget {
   paneID: string;
 }
 
-/** One topic as `agent.topics.list` reports it, live from the agent. */
+/** One topic as `agent.topics.list` reports it. */
 export interface AgentTopicInfo {
   created_unix_ms: number;
   /** The topic's newest step, in the agent's words. */

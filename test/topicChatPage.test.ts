@@ -211,8 +211,9 @@ test("the topic's composer has the mic and the saved prompts, and a saved prompt
 // ---- Handovers between the Inbox and a topic (herdr kind "relay", chatRelay.ts) ----
 
 const LONG = Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of the minutes.`).join("\n\n");
-function relay(id: string, from: string, direction: string, text: string) {
- return { kind: "relay", id, ts_ms: Date.now() - 1000, from, topic_id: "t1", direction, text };
+/** herdr #521's relay entry: topic_id only when a topic sent it (the Inbox's has none). */
+function relay(id: string, from: string, direction: string, text: string, topicID?: string) {
+ return { kind: "relay", id, ts_ms: Date.now() - 1000, from, ...(topicID ? { topic_id: topicID } : {}), direction, text };
 }
 /** The chat's rows: the topic's when open, else the Inbox's transcript. */
 function inboxTranscript() {
@@ -220,18 +221,22 @@ function inboxTranscript() {
 }
 
 test("a handover reads From Inbox in the topic and From topic <title> in the Inbox, left as the agent's text", async () => {
- const { transcript } = await openTopic(topicPage({ entries: [relay("r1", "Inbox", "to_topic", "Draft the **board pack** intro.")] }));
+ const { transcript } = await openTopic(topicPage({ entries: [
+  relay("r1", "Inbox", "to_topic", "Draft the **board pack** intro."),
+  // A sibling topic's handover (batched turns come split per sender: "<id>:<n>").
+  relay("r1:1", "Trip", "to_topic", "Dates are fixed.", "t2"),
+ ] }));
  const inTopic = withClass(transcript, "relay");
- expect(inTopic).toHaveLength(1);
+ expect(inTopic).toHaveLength(2);
  expect(inTopic[0]!.className).toBe("chat-message relay");
- expect(withClass(inTopic[0]!, "chat-relay-from").map(n => n.textContent)).toEqual(["From Inbox"]);
+ expect(inTopic.map(row => withClass(row, "chat-relay-from").map(n => n.textContent))).toEqual([["From Inbox"], ["From topic Trip"]]);
  expect(withClass(inTopic[0]!, "chat-markdown").map(n => n.textContent)).toEqual(["Draft the **board pack** intro."]);
  // Not the owner's bubble.
  expect(withClass(transcript, "user")).toEqual([]);
 
  page.closeInteraction();
  const older = { kind: "user", id: "u1", ts_ms: Date.now() - 500, text: "<irc>\nAsked by Inbox (`Main`):\n\nOld shape" };
- await openPage("chat", topicPage(), topicPage({ entries: [relay("r2", "Board pack", "to_inbox", "The intro is drafted."), older] }));
+ await openPage("chat", topicPage(), topicPage({ entries: [relay("r2", "Board pack", "to_inbox", "The intro is drafted.", "t1"), older] }));
  const inbox = inboxTranscript();
  const inInbox = withClass(inbox, "relay");
  expect(withClass(inInbox[0]!, "chat-relay-from").map(n => n.textContent)).toEqual(["From topic Board pack"]);
@@ -696,4 +701,29 @@ test("stopping dictation keeps a closed topic's field disabled", async () => {
  slot.all().find(n => n.tagName === "button" && n.className.includes("composer-microphone"))!.click();
  await settle();
  expect(input!.disabled).toBe(true);
+});
+
+test("a topic herdr read from the session file (state unknown) claims neither Idle nor Working, in its row or its header", async () => {
+ await openPage("topics", topicPage());
+ const token = String(calls.find(c => c.method === "Desk.OpenAgentView")!.args[1]);
+ const statuses = () => withClass(doc.body, "topic-status").map(n => n.text());
+ // herdr #520: before omp first answers, the list comes from disk, stale, every state unknown.
+ listed(token, "unknown", true);
+ await settle();
+ expect(statuses()).toEqual([]);
+ // omp answered: the row says so.
+ listed(token, "running", false);
+ await settle();
+ expect(statuses()).toEqual(["Working"]);
+ // The open topic's header too (the narrow page keeps the list's rows, hidden).
+ listed(token, "unknown", true);
+ await settle();
+ doc.body.all().find(n => n.tagName === "button" && n.text().includes(TOPIC.title))!.click();
+ await settle();
+ const chat = doc.body.all().find(n => n.className === "topic-chat")!;
+ expect(statuses()).toEqual([]);
+ expect(withClass(chat, "chat-working")).toEqual([]);
+ listed(token, "running", false);
+ await settle();
+ expect([withClass(chat, "topic-status").map(n => n.text()), statuses().length]).toEqual([["Working"], 2]);
 });

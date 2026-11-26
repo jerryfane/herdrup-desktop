@@ -110,11 +110,13 @@ test("a handover (relay) is a row of its own and starts a turn as a prompt does,
  expect(later.map(r => r.id)).toEqual(["p1", "r", "p2"]);
 });
 
-test("a handover's label names who sent it, as iOS TranscriptRelay.label", () => {
- expect(relayLabel({ from: "Inbox", direction: "to_topic" })).toBe("From Inbox");
- expect(relayLabel({ from: "Board pack", direction: "to_inbox" })).toBe("From topic Board pack");
- expect(relayLabel({ from: "", direction: "to_topic" })).toBe("From Inbox");
- expect(relayLabel({ from: "", direction: "to_inbox" })).toBe("From topic a topic");
- // A way this client doesn't know: who sent it, as given.
- expect(relayLabel({ from: "Board pack", direction: "sideways" })).toBe("From Board pack");
+test("a handover's label names who sent it: From topic <from> when a topic sent it (topic_id), else From <from>", () => {
+ // herdr #521: the Inbox's handover has from "Inbox" and no topic_id; a topic's has its title and id.
+ expect(relayLabel({ from: "Inbox" })).toBe("From Inbox");
+ expect(relayLabel({ from: "Board pack", topic_id: "t1" })).toBe("From topic Board pack");
+ // One topic handing to another arrives "to_topic" too: the topic_id, not the way, makes it a topic.
+ const sibling = { kind: "relay", id: "r", ts_ms: 1, from: "Trip", topic_id: "t2", direction: "to_topic" };
+ expect(relayLabel(sibling)).toBe("From topic Trip");
+ expect(relayLabel({ from: "", topic_id: "" })).toBe("From Inbox");
+ expect(relayLabel({ from: "", topic_id: "t1" })).toBe("From topic a topic");
 });

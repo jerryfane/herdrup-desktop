@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,10 +82,14 @@ func TestTopicsRefusalsSayWhetherTheAgentStillHasTopics(t *testing.T) {
 // apart from the board's stream: every topics event after that reaches the
 // follower.
 func topicsDesk(t *testing.T, withTopics bool) (d *Desk, updates func() []TopicsUpdate, answer chan<- struct{}, subscribed <-chan struct{}) {
+	return topicsDeskWith(t, withTopics, fakeherdr.NewTopics())
+}
+
+// topicsDeskWith is topicsDesk on the test's own topics fixture.
+func topicsDeskWith(t *testing.T, withTopics bool, fixture *fakeherdr.Topics) (d *Desk, updates func() []TopicsUpdate, answer chan<- struct{}, subscribed <-chan struct{}) {
 	t.Helper()
 	var mu sync.Mutex
 	var recorded []TopicsUpdate
-	fixture := fakeherdr.NewTopics()
 	answers := make(chan struct{}, 2)
 	fixture.Answer = answers
 	t.Cleanup(func() { close(answers) })
@@ -374,37 +379,80 @@ func TestTopicsListSurvivesAMissedAgentAndFollowsItsFreshness(t *testing.T) {
 	}
 }
 
-// A list whose freshness fields come in another shape (stale not a bool)
-// is kept but shown as stale, and its as_of_unix_ms is not taken: a later
-// answer with an older timestamp still replaces it.
-func TestTopicsListWithMalformedFreshnessIsStale(t *testing.T) {
-	topic := func(id string) map[string]any {
-		return map[string]any{"topic_id": id, "title": id, "state": "idle", "created_unix_ms": 1, "last_activity_unix_ms": 1, "queued": 0, "turns": 1}
+// herdr #520: a refresh behind agent.topics.list that finds a different list
+// says agent_topics_changed with reason "listed" and no topic. The follower
+// lists again (the backstop poll is a minute away), and no topic is named as
+// changed.
+func TestTopicsListedChangeListsAgain(t *testing.T) {
+	fixture := fakeherdr.NewTopics()
+	d, updates, _, subscribed := topicsDeskWith(t, true, fixture)
+	if err := d.TopicsFollow("view", true); err != nil {
+		t.Fatal(err)
 	}
-	var mu sync.Mutex
-	next := 0
-	d, updates := topicsListDesk(t, func() (any, *fakeherdr.APIError) {
-		mu.Lock()
-		defer mu.Unlock()
-		next++
-		if next == 1 {
-			return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("a")}, "stale": "no", "as_of_unix_ms": 5000}, nil
-		}
-		return map[string]any{"type": "agent_topics", "agent": "w1:p1", "pane_id": "w1:p1", "topics": []any{topic("b")}, "as_of_unix_ms": 4000}, nil
+	waitFor(t, "the first list", func() bool { u := updates(); return len(u) > 0 && u[len(u)-1].Loaded })
+	select {
+	case <-subscribed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Topics subscription never registered")
+	}
+	fixture.Relist("w1:p1", "t9", "Found on refresh")
+	waitFor(t, "the list with the topic herdr found", func() bool {
+		u := updates()
+		return slices.ContainsFunc(u[len(u)-1].Topics, func(x herdrapi.AgentTopicInfo) bool { return x.TopicID == "t9" })
 	})
-	read := func(n int) TopicsUpdate {
-		t.Helper()
-		if err := d.TopicsRefresh(context.Background(), "view"); err != nil {
-			t.Fatal(err)
+	for _, u := range updates() {
+		if u.Changed != "" {
+			t.Fatalf("a listed change named topic %q as changed", u.Changed)
 		}
-		waitFor(t, "a list answer", func() bool { return len(updates()) >= n })
-		return updates()[n-1]
 	}
-	if u := read(1); !u.Offered || !u.Stale || len(u.Topics) != 1 || u.Topics[0].TopicID != "a" {
-		t.Fatalf("malformed freshness must keep the list as stale: %+v", u)
-	}
-	if u := read(2); u.Stale || len(u.Topics) != 1 || u.Topics[0].TopicID != "b" {
-		t.Fatalf("a malformed timestamp must not hold back the next list: %+v", u)
+}
+
+// herdr #520: a pane where herdr misses omp for a moment answers
+// topics_unreachable (retry) where it said topics_unsupported, and an omp
+// that doesn't answer in time topics_timeout (retry). With Topics on screen
+// the list stays, says why, and is asked for again on topicsRetry's
+// schedule, not at the minute's backstop.
+func TestTopicsOnScreenKeepTheListAndAskAgainWhenUnreachable(t *testing.T) {
+	saved := topicsRetry
+	topicsRetry = []time.Duration{20 * time.Millisecond}
+	t.Cleanup(func() { topicsRetry = saved })
+	for _, c := range []struct{ code, problem string }{
+		{"topics_unreachable", "Agent not reachable"},
+		{"topics_timeout", "The agent didn't answer in time."},
+	} {
+		t.Run(c.code, func(t *testing.T) {
+			var failing atomic.Value
+			failing.Store("")
+			fixture := fakeherdr.NewTopics()
+			fixture.ListFail = func() string { return failing.Load().(string) }
+			d, updates, _, _ := topicsDeskWith(t, true, fixture)
+			if err := d.TopicsFollow("view", true); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "the first list", func() bool { u := updates(); return len(u) > 0 && len(u[len(u)-1].Topics) == 3 })
+			failing.Store(c.code)
+			if err := d.TopicsRefresh(context.Background(), "view"); err != nil {
+				t.Fatal(err)
+			}
+			failedAt := -1
+			waitFor(t, "the failed answer", func() bool {
+				for i, u := range updates() {
+					if u.Problem != "" {
+						failedAt = i
+						return true
+					}
+				}
+				return false
+			})
+			if u := updates()[failedAt]; !u.Offered || len(u.Topics) != 3 || u.Problem != c.problem {
+				t.Fatalf("%s must keep the list and say why: %+v", c.code, u)
+			}
+			failing.Store("")
+			waitFor(t, "the list asked for again", func() bool {
+				u := updates()
+				return len(u) > failedAt+1 && u[len(u)-1].Problem == "" && len(u[len(u)-1].Topics) == 3
+			})
+		})
 	}
 }
 

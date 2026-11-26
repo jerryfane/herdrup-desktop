@@ -1,18 +1,19 @@
-// A message the Inbox handed to a topic, or a topic to the Inbox (herdr agent.transcript kind
-// "relay": topics-gaps-20261125 HANDOVER-FORMAT.md; iOS ChatRelayView): drawn as the agent's text,
-// on the left with no card or colour, under a small muted "From Inbox" / "From topic <title>"
-// line, its body folded after about six lines with Show all. The Inbox's chat and a topic's draw
-// it alike (interaction.ts renderEntry, lent to topics as TopicsHost.renderRow). An older herdr
-// sends the same message as a "user" entry, drawn as the owner's bubble as before.
+// A message the Inbox handed to a topic, a topic to the Inbox, or one topic to another (herdr
+// agent.transcript kind "relay", herdr #521 { kind, id, ts_ms, from, topic_id?, direction, text },
+// asked for with relay_entries where ping advertises transcript_relay_entries; iOS ChatRelayView):
+// drawn as the agent's text, on the left with no card or colour, under a small muted "From Inbox" /
+// "From topic <title>" line, its body folded after about six lines with Show all. The Inbox's chat
+// and a topic's draw it alike (interaction.ts renderEntry, lent to topics as TopicsHost.renderRow).
+// An older herdr sends the same message as a "user" or "note" entry, drawn as before.
 import type { Entry } from "./interactionModel";
 
-/** "From Inbox", "From topic Trip": who handed the message over (iOS TranscriptRelay.label).
- *  `direction` is "to_topic" (the Inbox sent it, `from` "Inbox") or "to_inbox" (a topic sent it,
- *  `from` its title). */
-export function relayLabel(entry: Pick<Entry, "from" | "direction">): string {
+/** "From Inbox", "From topic Trip": who handed the message over. herdr names the sender in `from`
+ *  ("Inbox", or the sending topic's title) and gives `topic_id` only when a topic sent it, whichever
+ *  way it went (`direction` "to_topic" also covers one topic handing to another). */
+export function relayLabel(entry: Pick<Entry, "from" | "topic_id">): string {
  const from = typeof entry.from === "string" ? entry.from.trim() : "";
- const name = from || (entry.direction === "to_topic" ? "Inbox" : "a topic");
- return entry.direction === "to_inbox" ? `From topic ${name}` : `From ${name}`;
+ const topic = typeof entry.topic_id === "string" && entry.topic_id !== "";
+ return topic ? `From topic ${from || "a topic"}` : `From ${from || "Inbox"}`;
 }
 
 /** The relay's row: its label, then body (the caller's markdown of entry.text) folded to about six
