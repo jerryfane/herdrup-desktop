@@ -271,20 +271,44 @@ test("a tab with the share open closes it once another tab of the browser took t
  expect((await linux.desk.state()).phase).toBe("idle");
 }, CONNECTS_LIMIT_MS);
 
-test("a bound grant still held once another tab took its share's tombstone goes at this tab's next sync", async () => {
+/** A browser's grant store (IndexedDB) whose next removal fails, as a transaction may once. */
+class FlakyGrants extends MemoryGrantStore {
+ failNext = false;
+ override async remove(id: string) {
+  if (this.failNext) { this.failNext = false; throw new DOMException("The transaction was aborted.", "AbortError"); }
+  return super.remove(id);
+ }
+}
+
+/** A bound share open in one tab of a browser and left on another device; then (pruned: its
+ *  tombstone pruned, so the next pull is a full one after a 410) the browser's idle tab pulls, and
+ *  its removal of the grant fails once. Storage recovered, both tabs sync. */
+async function leftWhileOpen(pruned: boolean) {
  const w = worker(), h = host();
- const mac = await browser(w), linux = await browser(w);
- // A tab of the browser that pulls the tombstone without dropping this grant (its own store here: a removal that failed).
- const otherTab = await browser(w, true, new MemoryGrantStore(), linux.storage, linux.identities);
+ const mac = await browser(w);
+ const grants = new FlakyGrants(), storage = memory(), identities = new MemoryIdentityStore();
+ const open = await browser(w, true, grants, storage, identities), idle = await browser(w, true, grants, storage, identities);
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- await linux.shares.sync();
- await linux.desk.openSyncedShare(id);
+ await open.shares.sync();
+ await open.desk.openSyncedShare(id);
  await mac.desk.forgetGuestConnection(id);
- await otherTab.shares.sync();
- expect((await linux.grants.list()).length).toBe(1);
- await linux.shares.sync();
- expect([await linux.grants.list(), (await linux.desk.state()).phase]).toEqual([[], "idle"]);
+ if (pruned) w.prune(w.rev);
+ grants.failNext = true;
+ await idle.shares.sync();
+ const record: { gone: Record<string, number> } = JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct")!);
+ expect([(await grants.list()).length, idle.shares.list(), id in record.gone]).toEqual([1, [], !pruned]);
+ await open.shares.sync();
+ await idle.shares.sync();
+ expect([await grants.list(), (await open.desk.state()).phase]).toEqual([[], "idle"]);
+}
+
+test("a share left while open in one tab, its tombstone pruned, closes and goes once the idle tab's failed grant removal can be done", async () => {
+ await leftWhileOpen(true);
+}, CONNECTS_LIMIT_MS);
+
+test("a share left while open in one tab closes and goes once the idle tab that took its tombstone can remove its grant", async () => {
+ await leftWhileOpen(false);
 }, CONNECTS_LIMIT_MS);
 
 test("an open whose share is deleted while the host answers keeps nothing and says the share was removed", async () => {

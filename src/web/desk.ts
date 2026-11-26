@@ -398,19 +398,26 @@ export function createGuestDesk(env: DeskEnv) {
  // A share deleted on the account it is bound to (left on any device) leaves this browser too,
  // when it holds it bound; a plain grant is never dropped by the sync. Each pass reconciles with
  // what lasts, the grants as stored and the shares record (both shared by this browser's tabs),
- // not with what its own pull saw alone: another tab may have taken the tombstone, and dropped
- // the grant, before this one pulls. A link open on a grant no longer held closes.
+ // not with what its own pull saw: the record keeps each share a pull (in any tab) saw leave the
+ // account (dropping) until its grant is gone here, and a removal that fails leaves it there for
+ // the next pass. A link open on such a share, or on a grant no longer held, closes.
  const shares = env.shares;
  shares?.onChange(change => reconcile(shares, change).catch(error => console.error(error)));
  async function reconcile(shares: ShareSync, change: SharesChange) {
-  const acct = change.account, removed = new Set(change.removed);
+  const acct = change.account;
+  let failed: { error: unknown } | null = null;
   if (acct !== null) {
-   for (const grant of await env.grants.list()) {
-    const id = grantKey(grant);
-    if (!grant.accountBound || grant.account !== acct || !(removed.has(id) || shares.deleted(acct, id))) continue;
-    await env.grants.remove(id);
-    if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }
+   const cleared: string[] = [];
+   for (const id of shares.dropping(acct)) {
+    const grant = await env.grants.get(id);
+    const bound = grant?.accountBound === true && grant.account === acct;
+    if (bound && active?.id === "guest:" + id) { disconnect(); publishIdle(); }
+    try {
+     if (bound) await env.grants.remove(id);
+     cleared.push(id);
+    } catch (error) { failed ??= { error }; }
    }
+   if (cleared.length > 0) await shares.cleared(acct, cleared);
   }
   const open = active;
   if (open?.id.startsWith("guest:") && await env.grants.get(open.id.slice("guest:".length)) === undefined && active === open) {
@@ -418,6 +425,7 @@ export function createGuestDesk(env: DeskEnv) {
    publishIdle();
   }
   await publishShares(change.shares);
+  if (failed !== null) throw (failed as { error: unknown }).error;
  }
 
  /** The board of l's last list, laid out with an owner link's folders (BuildBoard's view). */

@@ -35,8 +35,12 @@ export interface ShareBody {
 export interface RemoteShare { id: string; rev: number; body: ShareBody }
 /** A write not yet taken: the body to put, or a delete. */
 interface PendingWrite { id: string; deleted?: true; body?: ShareBody }
-/** gone: the revisions of the shares seen deleted, which a write of the same id is based on. */
-interface SharesRecord { rev: number; shares: RemoteShare[]; gone: Record<string, number>; pending: PendingWrite[] }
+/** gone: the revisions of the shares seen deleted, which a write of the same id is based on.
+ *  drop: the shares a pull saw leave the account (a tombstone, or, in a full pull, a share seen
+ *  live that it no longer holds) whose grants this browser may still hold. They are stored in the
+ *  same write that moves rev past them, so a pull never forgets one before its grant is gone, and
+ *  stay until a listener has removed their grants (cleared), whichever tab pulled them. */
+interface SharesRecord { rev: number; shares: RemoteShare[]; gone: Record<string, number>; pending: PendingWrite[]; drop?: string[] }
 
 type KeyValue = Pick<Storage, "getItem" | "setItem">;
 
@@ -74,12 +78,9 @@ function validBody(body: unknown): body is ShareBody {
 }
 
 /** What listeners hear after every round, sign-in change and write here: whose shares they are
- *  (null: signed out), the account's shares now, and those a pull saw deleted (by this device or
- *  another): every share the pull shows a tombstone of, seen live here or not (a put whose
- *  readback failed never was), and, after a full pull, those seen live that it no longer holds.
- *  A pull in another tab of this browser takes the tombstones it sees: a listener reconciles with
- *  the record (deleted), not with removed alone. */
-export interface SharesChange { account: string | null; shares: RemoteShare[]; removed: string[] }
+ *  (null: signed out) and the account's shares now. What a pull saw leave the account is in the
+ *  record (dropping), whichever tab of this browser pulled it, until a listener clears it. */
+export interface SharesChange { account: string | null; shares: RemoteShare[] }
 
 export function createShareSync(account: WebAccount, place: SharesPlace) {
  const listeners = new Set<(change: SharesChange) => void | Promise<void>>();
@@ -205,8 +206,8 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    r.gone = gone;
    const puts = new Set(r.pending.filter(p => p.body).map(p => p.id));
    const tombstoned = pulled.items.filter(it => it.collection === "shares" && it.deleted).map(it => it.id);
-   const removed = new Set([...before, ...tombstoned].filter(id => !live.has(id) && !puts.has(id)));
-   return { account: acct, shares: visible(r), removed: [...removed] };
+   r.drop = [...new Set([...r.drop ?? [], ...before, ...tombstoned])].filter(id => !live.has(id) && !puts.has(id));
+   return { account: acct, shares: visible(r) };
   });
  }
 
@@ -248,21 +249,24 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
 
  /** Keeps change for acct, the account the share is bound to, in this browser's record: one
   *  storage refuses rejects, and nothing is kept. */
- const keep = (acct: string, change: PendingWrite): Promise<void> =>
-  update(acct, r => { r.pending = r.pending.filter(p => p.id !== change.id).concat(change); });
+ const keep = (acct: string, change: PendingWrite): Promise<void> => update(acct, r => {
+  r.pending = r.pending.filter(p => p.id !== change.id).concat(change);
+  // A share put here again is held again: its grant no longer goes.
+  if (change.body && r.drop) r.drop = r.drop.filter(id => id !== change.id);
+ });
  /** Sends acct's kept writes while acct is signed in here: never to another account. Under
   *  another sign-in (or none) they wait for acct's next round on this browser; a round that fails
   *  sends them with the next one. */
  const send = async (acct: string): Promise<void> => {
   if (account.current?.accountID !== acct) return;
-  await tell({ account: acct, shares: visible(read(acct)), removed: [] });
+  await tell({ account: acct, shares: visible(read(acct)) });
   await sync().catch(() => {});
  };
 
  // Another sign-in shows its own account's shares (and pulls them); signed out, none.
  account.onSessionChange(() => {
   const acct = account.current?.accountID;
-  void tell({ account: acct ?? null, shares: acct === undefined ? [] : visible(read(acct)), removed: [] });
+  void tell({ account: acct ?? null, shares: acct === undefined ? [] : visible(read(acct)) });
   if (acct !== undefined && place.background) void sync().catch(() => {});
  });
  if (place.background) setInterval(() => { if (account.current) void sync().catch(() => {}); }, SYNC_EVERY_MS);
@@ -282,12 +286,14 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    if (!ran) throw new Error("This browser's storage is locked by another tab. Try again.");
    return listed;
   },
-  /** Whether this browser's record shows share id deleted from acct: seen deleted by a pull (in
-   *  any tab of it) or left here, and not put here since. */
-  deleted(acct: string, id: string): boolean {
-   const r = read(acct);
-   return !visible(r).some(s => s.id === id) && (r.gone[id] !== undefined || r.pending.some(p => p.id === id && p.deleted));
+  /** The shares a pull saw leave acct (in any tab of this browser) whose grants may still be
+   *  held here: each until cleared, and none put here again or pulled live since. */
+  dropping(acct: string): string[] {
+   const r = read(acct), shown = new Set(visible(r).map(s => s.id));
+   return (r.drop ?? []).filter(id => !shown.has(id));
   },
+  /** The grants of ids are gone from this browser (removed, or never held): they leave dropping. */
+  cleared: (acct: string, ids: string[]) => update(acct, r => { r.drop = (r.drop ?? []).filter(id => !ids.includes(id)); }),
   sync,
   /** Writes a bound grant's share to the account it is bound to (Access.account), its id the
    *  grant's key. */
