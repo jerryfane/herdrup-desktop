@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,6 +176,7 @@ func (d *Desk) ConnectGuest(id string) error {
 		return err
 	}
 	transport := guest.NewTransport(*access, identity, d.guestClock, d.guestStatements())
+	transport.OnMachineLabel(func(label string) { d.guestRelabeled(id, label) })
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &link{id: "guest:" + id, shareLabel: access.MachineLabel, guest: transport, guestClient: engine.New(transport), access: access, guestPoll: make(chan struct{}, 1), ctx: ctx}
 	d.mu.Lock()
@@ -253,12 +255,11 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 	stop := context.AfterFunc(ctx, func() { _ = l.guest.Close() })
 	defer stop()
 	client := l.guestClient
-	label := l.access.MachineLabel
 	publishState := func(phase, message, availability string) {
 		d.mu.Lock()
 		access := *l.access
 		d.mu.Unlock()
-		d.setState(ctx, ConnState{Phase: phase, Machine: label, Message: message, Guest: &GuestConnection{Access: access, Features: l.guest.Features(), Fingerprint: fingerprint, Availability: availability}})
+		d.setState(ctx, ConnState{Phase: phase, Machine: access.MachineLabel, Message: message, Guest: &GuestConnection{Access: access, Features: l.guest.Features(), Fingerprint: fingerprint, Availability: availability}})
 	}
 	publishState("connecting", "", "")
 	listed := false
@@ -315,6 +316,30 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 		case <-l.guestPoll:
 		case <-d.guestClock.After(wait):
 		}
+	}
+}
+
+// guestRelabeled keeps the machine name a hello reply gave share id (its
+// owner renamed the machine, herdr #519): saved with the share, so SHARED
+// WITH YOU lists it, and on the share's open link, whose connection state
+// names it (published at once when connected, else by the state the link's
+// next list publishes), so the open page's header and the list show it.
+func (d *Desk) guestRelabeled(id, label string) {
+	if err := d.guestStore.Relabel(id, label); err != nil {
+		log.Printf("guest relabel: %s: %v", id, err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	l := d.link
+	if l == nil || l.guest == nil || l.access.ID() != id || l.ctx.Err() != nil || l.access.MachineLabel == label {
+		return
+	}
+	l.access.MachineLabel, l.shareLabel = label, label
+	if s := d.state; s.Phase == "connected" && s.Guest != nil && s.Guest.Access.ID() == id {
+		g := *s.Guest
+		g.Access.MachineLabel, s.Machine, s.Guest = label, label, &g
+		d.state = s
+		StateChanged.Broadcast(s)
 	}
 }
 

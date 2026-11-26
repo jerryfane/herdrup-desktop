@@ -363,6 +363,13 @@ func (c *Client) GuestUpdate(ctx context.Context, p herdrapi.GuestUpdateParams) 
 	return call[herdrapi.ResponseResultGuestUpdated](ctx, c, "guest.update", p)
 }
 
+// GuestRelabel is guest.update {machine_label} without a scope (herdr #519):
+// every active guest and pending invite on the server names it label. Only a
+// server whose ping reports guest_relabel takes it.
+func (c *Client) GuestRelabel(ctx context.Context, label string) (herdrapi.ResponseResultGuestRelabeled, error) {
+	return call[herdrapi.ResponseResultGuestRelabeled](ctx, c, "guest.update", herdrapi.GuestUpdateParams{MachineLabel: &label})
+}
+
 // GuestRemoveDevice is guest.remove_device.
 func (c *Client) GuestRemoveDevice(ctx context.Context, p herdrapi.GuestRemoveDeviceParams) (herdrapi.ResponseResultGuestDeviceRemoved, error) {
 	return call[herdrapi.ResponseResultGuestDeviceRemoved](ctx, c, "guest.remove_device", p)

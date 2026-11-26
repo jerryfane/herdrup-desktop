@@ -172,6 +172,7 @@ func (h *guestGramHub) sync() {
 		}
 		access := access
 		transport := guest.NewTransport(access, identity, d.guestClock, d.guestStatements())
+		transport.OnMachineLabel(func(label string) { d.guestRelabeled(id, label) })
 		ctx, cancel := context.WithCancel(h.ctx)
 		l := &link{id: "guest-gram:" + id, guest: transport, guestClient: engine.New(transport), access: &access, ctx: ctx, cancelGram: cancel}
 		l.gram = &gramDesk{hub: h, prefix: id + guestGramSep}

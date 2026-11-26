@@ -574,9 +574,13 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 		features["multi_request"] = true
 	}
 	answer := map[string]any{
-		"ok": true, "guest_id": r.guestID, "name": r.GuestName, "machine_label": r.MachineLabel,
+		"ok": true, "guest_id": r.guestID, "name": r.GuestName,
 		"owner_name": r.OwnerName, "agent": map[string]string{"name": r.AgentName, "target": r.TerminalID},
 		"features": features,
+	}
+	// An older herdr's reply may name no machine.
+	if r.MachineLabel != "" {
+		answer["machine_label"] = r.MachineLabel
 	}
 	bound = r.account != ""
 	if bound {
@@ -931,6 +935,15 @@ func (r *GuestRelay) Pause(paused bool) {
 func (r *GuestRelay) SetGram(on bool) {
 	r.mu.Lock()
 	r.Gram = on
+	r.mu.Unlock()
+}
+
+// SetMachineLabel renames the machine as herdr's guest.update {machine_label}
+// does (herdr #519): the next admission's hello names it so; "" is an older
+// herdr's hello, which names no machine.
+func (r *GuestRelay) SetMachineLabel(label string) {
+	r.mu.Lock()
+	r.MachineLabel = label
 	r.mu.Unlock()
 }
 

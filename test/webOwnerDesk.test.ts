@@ -320,6 +320,45 @@ test("a guest's shared agent renamed on the host is the connection's name from t
  } finally { offState(); await desk.forgetGuestConnection(id); relay.stop(); }
 });
 
+test("a guest's machine renamed by its owner is saved with the grant and named by the connection from the next connect; a hello naming no machine changes nothing", async () => {
+ // Each call is a connect of its own (no multi_request), whose hello names the machine as `label`
+ // says now (herdr #519); undefined is an older herdr's hello, which names none.
+ let label: string | undefined = "Machine";
+ const relay = startRelay({
+  async serve(_conn, handshake) {
+   const session = (await handshake()).reply({ ok: true, guest_id: "grant-1", ...(label === undefined ? {} : { machine_label: label }), features: { multi_request: false } });
+   const line = await session.readLine();
+   if (line === null) return;
+   const req = JSON.parse(line) as Request;
+   if (req.method === "agent.list") answer(session, req, { result: { type: "agent_list", agents: [{ pane_id: "p1", terminal_id: "t1", name: "Worker", agent: "claude" }] } });
+   else answer(session, req, { error: { code: "forbidden", message: "no" } });
+  },
+ });
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put({ guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date() });
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const id = `${relay.hostID}/grant-1`;
+ const nextBoard = () => { const got = Promise.withResolvers<void>(); const off = events.boardChanged.on(b => { if (b?.machineID === `guest:${id}`) { off(); got.resolve(); } }); return got.promise; };
+ // Saved (SHARED WITH YOU reads the grant), and as the connection names it (the header).
+ const names = async () => { const s = await desk.state(); return [(await desk.sharedConnections())[0]?.machineLabel, s.machine, s.guest?.access.machineLabel]; };
+ try {
+  let listed = nextBoard();
+  await desk.connectGuest(id);
+  await listed;
+  expect(await names()).toEqual(["Machine", "Machine", "Machine"]);
+  await desk.openAgentView({ machineID: `guest:${id}`, session: "", paneID: "p1" }, "view-1");
+  label = "Studio Mac";
+  listed = nextBoard(); await desk.chatAnswer("view-1", "a", "1").catch(() => undefined); await listed;
+  expect(await names()).toEqual(["Studio Mac", "Studio Mac", "Studio Mac"]);
+  label = undefined;
+  listed = nextBoard(); await desk.connectGuest(id); await listed;
+  expect(await names()).toEqual(["Studio Mac", "Studio Mac", "Studio Mac"]);
+ } finally { await desk.forgetGuestConnection(id); relay.stop(); }
+}, CONNECTS_LIMIT_MS);
+
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;
  const relay = host({ list: (session, req) => fail

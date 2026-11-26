@@ -72,6 +72,26 @@ func (s *Store) Save(access Access) error {
 	}
 	return s.save(list)
 }
+
+// Relabel saves label as the machine's name on the share id (a hello reply
+// named it anew); nothing for a share no longer saved, or already so named.
+func (s *Store) Relabel(id, label string) error {
+	if !validLabel(label) {
+		return errors.New("not a machine label")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.load()
+	if err != nil {
+		return err
+	}
+	index := slices.IndexFunc(list, func(item Access) bool { return item.ID() == id })
+	if index < 0 || list[index].MachineLabel == label {
+		return nil
+	}
+	list[index].MachineLabel = label
+	return s.save(list)
+}
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
