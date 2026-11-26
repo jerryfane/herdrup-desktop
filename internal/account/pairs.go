@@ -142,51 +142,47 @@ func (c *Client) PairRequests(ctx context.Context, acct string) ([]PairRequest, 
 	return out.Requests, nil
 }
 
-// ApprovalLists is GET /v1/approvals?kind=any: every request waiting for
-// this account's approval, browsers' and new devices', each in the
-// service's order, and Order, the request ids of both kinds in the
-// service's order. No slice is nil.
-type ApprovalLists struct {
-	Browser []ApprovalRequest
-	Pair    []PairRequest
-	Order   []string
+// AnyApproval is one request from GET /v1/approvals?kind=any: a browser's
+// (Browser) or a new device's (Pair); the other is nil.
+type AnyApproval struct {
+	Browser *ApprovalRequest
+	Pair    *PairRequest
 }
 
-// AnyApprovals lists both kinds of request in one read, so an approver
-// polls once: the browsers Approvals lists and the new devices
-// PairRequests lists (this device's own request left out).
-func (c *Client) AnyApprovals(ctx context.Context, acct string) (ApprovalLists, error) {
+// AnyApprovals lists both kinds of request in one read, in the service's
+// order, so an approver polls once: the browsers Approvals lists and the
+// new devices PairRequests lists (this device's own request left out).
+// The list is never nil.
+func (c *Client) AnyApprovals(ctx context.Context, acct string) ([]AnyApproval, error) {
 	var out struct {
 		Requests []json.RawMessage `json:"requests"`
 	}
 	if err := c.authed(ctx, acct, http.MethodGet, "/v1/approvals?kind=any", nil, &out); err != nil {
-		return ApprovalLists{}, err
+		return nil, err
 	}
-	lists := ApprovalLists{Browser: []ApprovalRequest{}, Pair: []PairRequest{}, Order: []string{}}
+	list := make([]AnyApproval, 0, len(out.Requests))
 	for _, raw := range out.Requests {
 		var kind struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal(raw, &kind); err != nil {
-			return ApprovalLists{}, err
+			return nil, err
 		}
 		if kind.Kind == PairKind {
 			var r PairRequest
 			if err := json.Unmarshal(raw, &r); err != nil {
-				return ApprovalLists{}, err
+				return nil, err
 			}
-			lists.Pair = append(lists.Pair, r)
-			lists.Order = append(lists.Order, r.ID)
+			list = append(list, AnyApproval{Pair: &r})
 			continue
 		}
 		var r ApprovalRequest
 		if err := json.Unmarshal(raw, &r); err != nil {
-			return ApprovalLists{}, err
+			return nil, err
 		}
-		lists.Browser = append(lists.Browser, r)
-		lists.Order = append(lists.Order, r.ID)
+		list = append(list, AnyApproval{Browser: &r})
 	}
-	return lists, nil
+	return list, nil
 }
 
 // RequestPair asks the account's other devices to pair this one, with

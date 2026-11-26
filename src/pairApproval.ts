@@ -43,6 +43,8 @@ interface Row {
  status?: RowStatus;
  reason?: string;
  keyLabel?: string;
+ /** A failure Try again may mend (Go's result says so). */
+ retryable?: boolean;
  box: HTMLInputElement;
  sub: HTMLElement;
  state: HTMLElement;
@@ -98,8 +100,9 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
  dialog.append(title, lead, field, status, list, note, problem, buttons);
 
  const say = (text: string) => { problem.textContent = text; problem.hidden = !text; };
- const failed = () => rows.filter(r => r.status === "failed");
- const views = (): PairRowView[] => rows.filter(r => r.status).map(r => ({ id: r.m.id, label: r.m.label, status: r.status!, reason: r.reason, keyLabel: r.keyLabel }));
+ // Try again is for the failed machines a retry may mend, and only those.
+ const failed = () => rows.filter(r => r.status === "failed" && r.retryable);
+ const views = (): PairRowView[] => rows.filter(r => r.status).map(r => ({ id: r.m.id, label: r.m.label, status: r.status!, reason: r.reason, keyLabel: r.keyLabel, retryable: r.retryable }));
 
  function paintRow(r: Row): void {
   const usable = r.probe === "ready";
@@ -180,7 +183,7 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
  function showResult(result: PairApproveResult): void {
   for (const m of result.machines) {
    const r = rows.find(x => x.m.id === m.id);
-   if (r) { r.status = m.status as RowStatus; r.reason = m.reason; r.keyLabel = m.keyLabel; }
+   if (r) { r.status = m.status as RowStatus; r.reason = m.reason; r.keyLabel = m.keyLabel; r.retryable = m.retryable === true; }
   }
   step = "result"; stopTick();
   if (result.ended) over = true;
@@ -273,14 +276,14 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
  retry.onclick = () => {
   const again = failed();
   // The rows stay as last confirmed until Go says otherwise (its progress, or the result).
-  const confirmed = rows.map(r => ({ r, status: r.status, reason: r.reason, keyLabel: r.keyLabel }));
+  const confirmed = rows.map(r => ({ r, status: r.status, reason: r.reason, keyLabel: r.keyLabel, retryable: r.retryable }));
   step = "adding";
   void run(async () => {
    try {
     const result = await Desk.pairApproveRetry(req.id, again.map(r => r.m.id));
     showResult(result);
    } catch (error) {
-    for (const c of confirmed) { c.r.status = c.status; c.r.reason = c.reason; c.r.keyLabel = c.keyLabel; }
+    for (const c of confirmed) { c.r.status = c.status; c.r.reason = c.reason; c.r.keyLabel = c.keyLabel; c.r.retryable = c.retryable; }
     step = "result";
     throw error;
    }

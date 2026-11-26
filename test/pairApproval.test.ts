@@ -3,6 +3,7 @@ import { initWebAccess, TYPING_PAUSE_MS, type SheetClock } from "../src/webAcces
 import {
  approveLabel, expiresText, failureLine, keyListedAs, keyNote, nameList, PAIR_ENDED, pairNotice, platformLine, probeReason, resultLead, retryLabel, rowStatusText,
 } from "../src/pairApprovalModel";
+import { OFFERED_RECHECK_MS } from "../src/webAccessModel";
 import { FakeDocument, type FakeElement } from "./fakeDom";
 
 test("the sheet's words: platform, time left, reasons, the approve count, results and retries", () => {
@@ -21,9 +22,13 @@ test("the sheet's words: platform, time left, reasons, the approve count, result
  expect([approveLabel(0), approveLabel(1), approveLabel(3)]).toEqual(["Approve", "Approve 1 machine", "Approve 3 machines"]);
  expect([rowStatusText("already"), rowStatusText("failed", "timed out")]).toEqual(["Already added", "Failed: timed out"]);
  expect(nameList(["a", "b", "c"])).toBe("a, b and c");
- const rows = [{ id: "1", label: "fleet-hel1", status: "added" }, { id: "2", label: "studio", status: "already" }, { id: "3", label: "build-box", status: "failed", reason: "timed out" }];
+ const rows = [{ id: "1", label: "fleet-hel1", status: "added" }, { id: "2", label: "studio", status: "already" }, { id: "3", label: "build-box", status: "failed", reason: "timed out", retryable: true }];
  expect(resultLead("MacBook Air", rows)).toBe("MacBook Air can open fleet-hel1 and studio with its own key.");
  expect(failureLine(rows)).toBe("build-box didn't answer. Try again from here later, or use herdr pair there.");
+ // A failure a retry can't mend is sent to herdr pair alone.
+ const stuck = { id: "4", label: "old-pi", status: "failed", reason: "needs a herdr update" };
+ expect(failureLine([...rows, stuck])).toBe("build-box didn't answer. Try again from here later, or use herdr pair there. old-pi: needs a herdr update. Use herdr pair there.");
+ expect(failureLine([stuck, { ...stuck, id: "5", label: "pi-2" }])).toBe("old-pi and pi-2 couldn't be added from here. Use herdr pair on each.");
  expect(retryLabel(["build-box"])).toBe("Try build-box again");
  expect(retryLabel(["a", "b"])).toBe("Try 2 machines again");
  // Each row says the label herdr stored (its reply's), not the one sent; the note says how to remove it.
@@ -73,8 +78,10 @@ const MACHINES = [
 ];
 
 /** A signed-in window with the composer where MacBook Air asks to pair. The bridge's calls are
- *  recorded; probes and adds wait for the test (probe(), add()); emit() sends a Go event. */
-function pairingWindow({ browsers = [] as { id: string }[], order = undefined as string[] | undefined } = {}) {
+ *  recorded; probes and adds wait for the test (probe(), add()); emit() sends a Go event. The
+ *  service lists MacBook Air's request (while listing.pair) and then browsers, or browsers first;
+ *  health holds its next answers to "which approvals do you offer?" (both, once they run out). */
+function pairingWindow({ browsers = [] as { id: string }[], browsersFirst = false } = {}) {
  jest.useFakeTimers(); fakeTimers = true;
  const doc = new FakeDocument();
  const on = new Map<string, (payload: unknown) => void>();
@@ -82,6 +89,8 @@ function pairingWindow({ browsers = [] as { id: string }[], order = undefined as
  const probes = new Map<string, (p: unknown) => void>();
  const adds: ((r: unknown) => void)[] = [];
  const checks: unknown[] = [];
+ const listing = { pair: true };
+ const health: unknown[] = [];
  // A Retry (or Add) the bridge rejects, with this message.
  const refusals: string[] = [];
  G.document = doc;
@@ -93,9 +102,16 @@ function pairingWindow({ browsers = [] as { id: string }[], order = undefined as
    calls.push([method, ...args]);
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
-    case "Desk.ApprovalsOffered": return { browsers: true, pairs: true };
-    case "Desk.ApprovalRequests": return { browsers, pairs: [{ id: "p1", deviceName: "MacBook Air", platform: "macos", claimed: "no", expiresIn: 600 }],
-     order: order ?? ["p1", ...browsers.map(b => b.id)] };
+    case "Desk.ApprovalsOffered": {
+     const answer = health.shift() ?? { browsers: true, pairs: true };
+     if (answer instanceof Error) throw answer;
+     return answer;
+    }
+    case "Desk.ApprovalRequests": {
+     const pair = listing.pair ? [{ kind: "pair", pair: { id: "p1", deviceName: "MacBook Air", platform: "macos", claimed: "no", expiresIn: 600 } }] : [];
+     const listed = browsers.map(b => ({ kind: "browser", browser: b }));
+     return browsersFirst ? [...listed, ...pair] : [...pair, ...listed];
+    }
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
     case "Desk.WebAccessMachines": return MACHINES;
     case "Desk.PairApproveProbe": { const { promise, resolve } = Promise.withResolvers(); probes.set(args[1] as string, resolve); return promise; }
@@ -120,7 +136,7 @@ function pairingWindow({ browsers = [] as { id: string }[], order = undefined as
  const row = (label: string) => nodes().find(n => n.tagName === "label" && n.className.includes("pair-approve-machine") && n.text().includes(label))!;
  const box = (label: string) => row(label).children[0]!;
  return {
-  doc, composer, clock, dialog, calls, probes, adds, checks, refusals, notices,
+  doc, composer, clock, dialog, calls, probes, adds, checks, refusals, notices, listing, health,
   sent: (method: string) => calls.filter(c => c[0] === method).map(c => c.slice(1)),
   start: () => { initWebAccess(clock); doc.dispatchEvent(new Event("visibilitychange")); },
   emit: (name: string, payload: unknown) => on.get(name)?.(payload),
@@ -157,7 +173,7 @@ test("a1: while the user types, a quiet notice says the device wants to pair; Re
 
 test("a1: with nothing taking typing the sheet opens at once, for the first request of either kind in the service's order", async () => {
  const chrome = { id: "r1", browserName: "Chrome", claimed: "no", expiresIn: 600 };
- const w = pairingWindow({ browsers: [chrome], order: ["p1", "r1"] });
+ const w = pairingWindow({ browsers: [chrome] });
  w.start();
  await until("an open sheet", () => w.dialog()?.open === true);
  expect(w.title()).toBe("Pair MacBook Air?");
@@ -165,11 +181,26 @@ test("a1: with nothing taking typing the sheet opens at once, for the first requ
 });
 
 test("a1: a browser the service lists before the new device opens first", async () => {
- const w = pairingWindow({ browsers: [{ id: "r1", browserName: "Chrome", claimed: "no", expiresIn: 600 }], order: ["r1", "p1"] });
+ const w = pairingWindow({ browsers: [{ id: "r1", browserName: "Chrome", claimed: "no", expiresIn: 600 }], browsersFirst: true });
  w.start();
  await until("an open sheet", () => w.dialog()?.open === true);
  expect(w.title()).not.toBe("Pair MacBook Air?");
  expect(w.sent("Desk.PairApproveStart")).toEqual([]);
+});
+
+test("a1: a failed refresh of what the service offers keeps its last answer: new devices are still looked for", async () => {
+ const w = pairingWindow();
+ w.listing.pair = false;
+ w.health.push({ browsers: false, pairs: true }, new Error("account service health: 502 Bad Gateway"));
+ w.start();
+ await until("the first look's end", () => w.sent("Desk.ApprovalRequests").length === 1 && jest.getTimerCount() === 1);
+ // Past the recheck the service is asked again; the ask fails, and the list is still read.
+ w.clock.to(OFFERED_RECHECK_MS);
+ w.listing.pair = true;
+ w.doc.dispatchEvent(new Event("visibilitychange"));
+ await until("an open sheet", () => w.dialog()?.open === true);
+ expect(w.title()).toBe("Pair MacBook Air?");
+ expect(w.sent("Desk.ApprovalsOffered")).toHaveLength(2);
 });
 
 test("a1: the sheet waits for a pause in typing", async () => {
@@ -280,7 +311,7 @@ test("a3 and a4: keys are added one machine at a time with a spinner per row; a 
  expect(w.rowText("laptop")).toBe("laptop | Can't reach it from this computer right now");
  w.adds.shift()!({ sent: true, machines: [
   { id: "s", label: "studio", status: "added", keyLabel: "MacBook Air approved on Mac Studio" },
-  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out", retryable: true },
   { id: "o", label: "old-pi", status: "already", keyLabel: "MacBook Air approved on Mac Studio" },
  ] });
  await until("the results", () => w.lead() === "MacBook Air can open studio and old-pi with its own key.");
@@ -315,7 +346,7 @@ async function failedOne() {
  await until("adding", () => w.adds.length === 1);
  w.adds.shift()!({ sent: true, machines: [
   { id: "s", label: "studio", status: "added", keyLabel: "MacBook Air approved on Mac Studio" },
-  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out", retryable: true },
  ] });
  await until("the results", () => w.button("Try fleet-hel1 again") !== undefined);
  return w;
@@ -349,11 +380,37 @@ test("a4: once retries are over, Try again stays off and only the reason is said
  const late = "Too late to try again: retries end 10 minutes after approving. Use herdr pair there.";
  w.adds.shift()!({ sent: false, ended: true, problem: late, machines: [
   { id: "s", label: "studio", status: "added", keyLabel: "MacBook Air approved on Mac Studio" },
-  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out", retryable: true },
  ] });
  await until("the reason", () => w.problem() === late);
  expect(w.button("Try fleet-hel1 again")!.disabled).toBe(true);
  expect(w.button("Done")!.disabled).toBe(false);
+});
+
+test("only failures a retry may mend get Try again; the rest are sent to herdr pair", async () => {
+ const w = await matched();
+ for (const id of ["s", "f", "o"]) w.probes.get(id)!({ state: "ready" });
+ await until("three ticked", () => w.button("Approve 3 machines") !== undefined);
+ w.button("Approve 3 machines")!.click();
+ await until("adding", () => w.adds.length === 1);
+ w.adds.shift()!({ sent: true, machines: [
+  { id: "s", label: "studio", status: "added" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out", retryable: true },
+  { id: "o", label: "old-pi", status: "failed", reason: "needs a herdr update" },
+ ] });
+ await until("the results", () => w.button("Try fleet-hel1 again") !== undefined);
+ expect(w.buttons()).toEqual(["Try fleet-hel1 again", "Done"]);
+ expect(w.problem()).toBe("fleet-hel1 didn't answer. Try again from here later, or use herdr pair there. old-pi: needs a herdr update. Use herdr pair there.");
+ w.button("Try fleet-hel1 again")!.click();
+ await until("retrying", () => w.adds.length === 1);
+ expect(w.sent("Desk.PairApproveRetry")).toEqual([["p1", ["f"]]]);
+ w.adds.shift()!({ sent: true, machines: [
+  { id: "s", label: "studio", status: "added" },
+  { id: "f", label: "fleet-hel1", status: "added" },
+  { id: "o", label: "old-pi", status: "failed", reason: "needs a herdr update" },
+ ] });
+ await until("no retry left", () => w.buttons().join() === "Done");
+ expect(w.problem()).toBe("old-pi: needs a herdr update. Use herdr pair there.");
 });
 
 test("while an earlier send's outcome is unknown the ticks are frozen: Try again sends the same list", async () => {

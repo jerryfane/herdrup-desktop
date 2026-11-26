@@ -440,30 +440,32 @@ func TestOnlyTheNewDeviceCancelsAnOpenRequest(t *testing.T) {
 	}
 }
 
-// GET ?kind=any splits by kind: the approver polls one list.
+// GET ?kind=any lists both kinds in the service's order: the approver
+// polls one list.
 func TestAnyApprovalsListsBothKinds(t *testing.T) {
 	b := newBench(t)
 	ctx := context.Background()
 	ask := b.ask(t)
-	lists, err := b.mac.AnyApprovals(ctx, acct)
-	if err != nil || len(lists.Pair) != 1 || lists.Pair[0].ID != ask.ID() || lists.Pair[0].Requester.Name != "Studio PC" || lists.Browser == nil || len(lists.Browser) != 0 {
-		t.Fatalf("lists %+v, %v", lists, err)
+	list, err := b.mac.AnyApprovals(ctx, acct)
+	if err != nil || len(list) != 1 || list[0].Browser != nil || list[0].Pair == nil || list[0].Pair.ID != ask.ID() || list[0].Pair.Requester.Name != "Studio PC" {
+		t.Fatalf("list %+v, %v", list, err)
 	}
-	// The service's browser entries (which the fake doesn't hold) go to Browser.
+	// The service's browser entries (which the fake doesn't hold) come as
+	// Browser, in the service's order.
 	intercept := func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Query().Get("kind") != "any" {
 			return false
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"requests":[
-			{"id":"web-1","kind":"browser","browser":{"device_id":"dev-web","name":"Chrome"},"commit":"c","claimed":"no","expires_in":300},
-			{"id":"` + ask.ID() + `","kind":"pair","device":{"device_id":"dev-new","name":"Studio PC"},"commit":"c","ssh_pub":"s","claimed":"other","expires_in":200}]}`))
+			{"id":"` + ask.ID() + `","kind":"pair","device":{"device_id":"dev-new","name":"Studio PC"},"commit":"c","ssh_pub":"s","claimed":"other","expires_in":200},
+			{"id":"web-1","kind":"browser","browser":{"device_id":"dev-web","name":"Chrome"},"commit":"c","claimed":"no","expires_in":300}]}`))
 		return true
 	}
 	b.intercept.Store(&intercept)
-	lists, err = b.mac.AnyApprovals(ctx, acct)
-	if err != nil || len(lists.Browser) != 1 || lists.Browser[0].Browser.Name != "Chrome" || len(lists.Pair) != 1 || lists.Pair[0].Claimed != "other" {
-		t.Fatalf("mixed lists %+v, %v", lists, err)
+	list, err = b.mac.AnyApprovals(ctx, acct)
+	if err != nil || len(list) != 2 || list[0].Pair == nil || list[0].Pair.Claimed != "other" || list[1].Browser == nil || list[1].Browser.Browser.Name != "Chrome" || list[1].Pair != nil {
+		t.Fatalf("mixed list %+v, %v", list, err)
 	}
 }
 

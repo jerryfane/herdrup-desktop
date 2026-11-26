@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,6 +111,31 @@ func (w *pairWorld) keyMachine(t *testing.T, name string, pairOK, pinned bool) {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostKey, _ := ssh.NewSignerFromKey(hostPriv)
+	w.keyMachineWith(t, name, hostKey, pairOK, pinned)
+}
+
+// certHostKey is a host key signer presenting an OpenSSH host certificate
+// some principalBytes long (a long principal), signed by a fresh CA.
+func certHostKey(t *testing.T, principalBytes int) ssh.Signer {
+	t.Helper()
+	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
+	host, _ := ssh.NewSignerFromKey(hostPriv)
+	_, caPriv, _ := ed25519.GenerateKey(rand.Reader)
+	ca, _ := ssh.NewSignerFromKey(caPriv)
+	cert := &ssh.Certificate{Key: host.PublicKey(), CertType: ssh.HostCert, ValidPrincipals: []string{strings.Repeat("h", principalBytes)}, ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, ca); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ssh.NewCertSigner(cert, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// keyMachineWith is keyMachine with hostKey as the machine's host key.
+func (w *pairWorld) keyMachineWith(t *testing.T, name string, hostKey ssh.Signer, pairOK, pinned bool) {
+	t.Helper()
 	_, clientPriv, _ := ed25519.GenerateKey(rand.Reader)
 	client, _ := ssh.NewSignerFromKey(clientPriv)
 	block, err := ssh.MarshalPrivateKey(clientPriv, "")
@@ -231,11 +257,11 @@ func (w *pairWorld) start(t *testing.T) string {
 		t.Fatal(err)
 	}
 	w.ask = ask
-	lists, err := w.d.ApprovalRequests(context.Background())
-	if err != nil || len(lists.Pairs) != 1 || len(lists.Browsers) != 0 {
-		t.Fatalf("requests %+v, %v", lists, err)
+	list, err := w.d.ApprovalRequests(context.Background())
+	if err != nil || len(list) != 1 || list[0].Kind != "pair" || list[0].Pair == nil || list[0].Browser != nil {
+		t.Fatalf("requests %+v, %v", list, err)
 	}
-	r := lists.Pairs[0]
+	r := *list[0].Pair
 	if r.ID != ask.ID() || r.DeviceName != "MacBook Air" || r.Platform != "macos" || r.Claimed != "no" {
 		t.Fatalf("request %+v", r)
 	}
@@ -402,6 +428,15 @@ func TestPairApproveListsUnusableMachinesAsFailed(t *testing.T) {
 	}
 	if !strings.HasPrefix(reasons["gone"], "failed: ") {
 		t.Fatalf("gone %q", reasons["gone"])
+	}
+	// Only a failure Try again may mend is offered for it: gone didn't
+	// answer; old's herdr is too old and box has no key file.
+	rows := rowsByLabel(res)
+	if !rows["gone"].Retryable || rows["old"].Retryable || rows["box"].Retryable || rows["fleet"].Retryable {
+		t.Fatalf("retryable rows %+v", res.Machines)
+	}
+	if _, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["old"], w.ids["box"]}); err == nil || w.machines["old"].adds.Load() != 0 {
+		t.Fatalf("Try again on machines a retry can't mend: %v", err)
 	}
 	if len(w.machines["old"].keys.Keys()) != 0 {
 		t.Fatal("a key on old")
@@ -771,5 +806,156 @@ func TestPairApproveHoldsOutAMachineTheListCantCarry(t *testing.T) {
 	}
 	if _, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["at"]}); err == nil || w.machines["fleet"].adds.Load() != 0 {
 		t.Fatalf("Try again on a held machine: %v", err)
+	}
+}
+
+// The list is sized with the host keys the probes verified before any
+// machine changes: two machines with long host certificates don't both
+// fit, so the second is left out, with why, before any key is added; the
+// first gets the key and is sent with its certificate as its host key.
+// One whose certificate alone can't fit is unsendable from its probe.
+func TestPairApproveSizesTheListWithTheProbedHostKeys(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	w.keyMachineWith(t, "cert1", certHostKey(t, 5000), true, true)
+	w.keyMachineWith(t, "cert2", certHostKey(t, 5000), true, true)
+	w.keyMachineWith(t, "huge", certHostKey(t, 13000), true, true)
+	id := w.start(t)
+	w.typeCode(t, id)
+	for _, name := range []string{"studio", "cert1", "cert2"} {
+		if p, err := w.d.PairApproveProbe(ctx, id, w.ids[name]); err != nil || p.State != "ready" {
+			t.Fatalf("probe %s %+v, %v", name, p, err)
+		}
+	}
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["huge"]); err != nil || p.State != "unsendable" || p.Reason != "can't be sent to the new device: its host key is too long for the list" {
+		t.Fatalf("probe huge %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["cert1"], w.ids["cert2"]})
+	rows := rowsByLabel(res)
+	if err != nil || !res.Sent || rows["studio"].Status != account.PairAdded || rows["cert1"].Status != account.PairAdded ||
+		rows["cert2"].Status != account.PairFailed || rows["cert2"].Reason != pairNoRoom || rows["cert2"].Retryable {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["cert2"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds on the machine left out", n)
+	}
+	w.mu.Lock()
+	first := w.progress[0]
+	adding := slices.ContainsFunc(w.progress, func(p PairApproveProgress) bool { return p.MachineID == w.ids["cert2"] && p.Status == "adding" })
+	w.mu.Unlock()
+	if first.MachineID != w.ids["cert2"] || first.Status != account.PairFailed || adding {
+		t.Fatalf("cert2 wasn't left out before any machine changed: first progress %+v, adding %v", first, adding)
+	}
+	env := w.delivered(t).Envelope
+	if len(env.Machines) != 2 || env.Machines[1].Nickname != "cert1" || !strings.HasPrefix(env.Machines[1].HostKey, ssh.CertAlgoED25519v01+" ") ||
+		env.Machines[1].HostKey != hostKeyLine(w.machines["cert1"].hostKey) {
+		t.Fatalf("envelope %+v", env)
+	}
+	if k, err := env.Machines[1].HostPublicKey(); err != nil || bridge.Fingerprint(k) != bridge.Fingerprint(w.machines["cert1"].hostKey) {
+		t.Fatalf("cert1's host key in the list: %v", err)
+	}
+}
+
+// With no probe to size it by, each connection's verified host key sizes
+// the list again before its key is added: the second long certificate
+// gets no key, and the list still fits.
+func TestPairApproveSizesTheListAgainBeforeEachKey(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	w.keyMachineWith(t, "cert1", certHostKey(t, 5000), true, true)
+	w.keyMachineWith(t, "cert2", certHostKey(t, 5000), true, true)
+	id := w.start(t)
+	w.typeCode(t, id)
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["cert1"], w.ids["cert2"]})
+	rows := rowsByLabel(res)
+	if err != nil || !res.Sent || rows["cert1"].Status != account.PairAdded || rows["cert2"].Status != account.PairFailed || rows["cert2"].Reason != pairNoRoom {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["cert2"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds on the machine that doesn't fit", n)
+	}
+	if env := w.delivered(t).Envelope; len(env.Machines) != 2 || env.Machines[1].Nickname != "cert1" {
+		t.Fatalf("envelope %+v", env)
+	}
+}
+
+// A list the service didn't take goes again in the last minute: only a
+// key still to add needs the time for an add and the report.
+func TestPairApproveSendsTheListAgainInTheLastMinute(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	id := w.start(t)
+	w.typeCode(t, id)
+	w.machines["fleet"].failing.Store(1)
+	if res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["fleet"]}); err != nil || !res.Sent || !rowsByLabel(res)["fleet"].Retryable {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	// Try again adds fleet's key; the answer to its list is lost.
+	w.lose.Store("envelope", true)
+	res, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
+	if err != nil || !res.Unsent || rowsByLabel(res)["fleet"].Status != account.PairAdded {
+		t.Fatalf("retry %+v, %v", res, err)
+	}
+	// 45 s before retries end: the list still goes.
+	pairNow = func() time.Time { return time.Now().Add(pairResendWindow - 45*time.Second) }
+	t.Cleanup(func() { pairNow = time.Now })
+	res, err = w.d.PairApproveRetry(ctx, id, nil)
+	if err != nil || !res.Sent || res.Unsent || res.Ended || res.Problem != "" {
+		t.Fatalf("last-minute resend %+v, %v", res, err)
+	}
+	if got := w.delivered(t); got.Seq != 3 || got.Envelope.Machines[1].Status != account.PairAdded {
+		t.Fatalf("list %+v", got)
+	}
+	if n := w.machines["fleet"].adds.Load(); n != 2 {
+		t.Fatalf("fleet got %d adds, want 2", n)
+	}
+}
+
+// In the last minute a failed machine gets no new key: Try again says
+// it's too late and reaches nothing.
+func TestPairApproveAddsNoKeyInTheLastMinute(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	id := w.start(t)
+	w.typeCode(t, id)
+	w.machines["fleet"].failing.Store(1)
+	if res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["fleet"]}); err != nil || !res.Sent {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	pairNow = func() time.Time { return time.Now().Add(pairResendWindow - 45*time.Second) }
+	t.Cleanup(func() { pairNow = time.Now })
+	res, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
+	if err != nil || !res.Ended || res.Problem != pairTooLate {
+		t.Fatalf("late retry %+v, %v", res, err)
+	}
+	if n := w.machines["fleet"].adds.Load(); n != 1 {
+		t.Fatalf("fleet got %d adds, want 1", n)
+	}
+}
+
+// A list pairFits takes still fits once every row failed with the longest
+// reason a row can get, with the most bytes JSON spells it in.
+func TestPairFitsHoldsTheLongestReason(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	k, _ := ssh.NewPublicKey(priv.Public())
+	hostKey := hostKeyLine(k)
+	var rows []pairRow
+	for i := 0; ; i++ {
+		m := Machine{Nickname: "machine-" + strconv.Itoa(i), Host: "127.0.0.1", Port: 22, User: "dev"}
+		next := append(slices.Clone(rows), pairRow{m: m, entry: pairEntry(m), hostKey: hostKey})
+		if pairFits(next) != nil {
+			break
+		}
+		rows = next
+	}
+	e := account.PairEnvelope{V: account.PairEnvelopeVersion}
+	for _, r := range rows {
+		failed := pairRow{entry: r.entry}
+		failed.entry.HostKey = r.hostKey
+		failed.fail(strings.Repeat("<\u2028", pairReasonRunes), true)
+		e.Machines = append(e.Machines, failed.entry)
+	}
+	if _, err := e.Marshal(); err != nil {
+		t.Fatalf("%d rows pairFits took don't fit with the longest reasons: %v", len(rows), err)
 	}
 }

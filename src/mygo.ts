@@ -303,16 +303,16 @@ export interface ApprovalOffers {
 }
 
 /**
- * ApprovalRequests is every request waiting for approval on the account,
- * both kinds, from one read of the service (GET /v1/approvals?kind=any):
- * the page polls this once, not a list per kind, so pair requests cost the
- * account's approval rate nothing over browser ones. Order is the request
- * ids of both kinds in the service's order, which the page opens them in.
+ * ApprovalRequest is one request waiting for approval on the account, in
+ * the list ApprovalRequests reads (GET /v1/approvals?kind=any) in the
+ * service's order: Kind "browser" (Browser) or "pair" (Pair). The page
+ * polls this one list, not a list per kind, so pair requests cost the
+ * account's approval rate nothing over browser ones.
  */
-export interface ApprovalRequests {
-  browsers: WebAccessRequest[];
-  pairs: PairApproveRequest[];
-  order: string[];
+export interface ApprovalRequest {
+  kind: string;
+  browser?: WebAccessRequest;
+  pair?: PairApproveRequest;
 }
 
 /** One answered field, copied from the ask result's `details.answers`. */
@@ -932,6 +932,8 @@ export interface PairApproveResult {
 /**
  * PairApproveRow is one ticked machine's outcome: "added", "already" or
  * "failed" (Reason). KeyLabel is the label herdr stored the key under.
+ * Retryable: a failed machine Try again may mend (PairApproveRetry tries
+ * no other).
  */
 export interface PairApproveRow {
   id: string;
@@ -939,6 +941,7 @@ export interface PairApproveRow {
   status: string;
   reason?: string;
   keyLabel?: string;
+  retryable?: boolean;
 }
 
 /**
@@ -1511,7 +1514,6 @@ export interface WebAccessMachine {
 export interface WebAccessRequest {
   id: string;
   browserName: string;
-  createdMs: number;
   /** Claimed is "no", "you" or "other" (another device is approving it). */
   claimed: string;
   expiresIn: number;
@@ -1703,8 +1705,11 @@ export const Desk = {
   applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
     return call("Desk.ApplySettingsServerUpdate", token, buildID, restartLater);
   },
-  /** ApprovalRequests lists the browsers and new devices waiting for approval. */
-  approvalRequests(): Promise<ApprovalRequests> {
+  /**
+   * ApprovalRequests lists the browsers and new devices waiting for
+   * approval, in the service's order, which the page opens them in.
+   */
+  approvalRequests(): Promise<ApprovalRequest[]> {
     return call("Desk.ApprovalRequests");
   },
   /**
@@ -2202,15 +2207,19 @@ export const Desk = {
    * PairApproveProbe connects to saved machine machineID for pair request
    * id, briefly and at most a few machines at a time, and says whether a key
    * can be added there. Only once the typed code matched: before, no
-   * machine is reached at all. It adds nothing, and pins nothing.
+   * machine is reached at all. It adds nothing, and pins nothing. The host
+   * key it verified is kept for sizing the list (PairApproveAdd); a machine
+   * whose entry alone can't fit is "unsendable".
    */
   pairApproveProbe(id: string, machineID: string): Promise<PairProbe> {
     return call("Desk.PairApproveProbe", id, machineID);
   },
   /**
-   * PairApproveRetry adds the key again on machines that failed, then sends
-   * the new device the whole list again at the next seq. The service takes
-   * it for 10 minutes after the approval.
+   * PairApproveRetry adds the key again on machines that failed in a way a
+   * retry may mend (Retryable), then sends the new device the whole list
+   * again at the next seq. The service takes it for 10 minutes after the
+   * approval; a list the service didn't take goes again until then, a key is
+   * added only with time left to add it and report.
    */
   pairApproveRetry(id: string, machineIDs: string[]): Promise<PairApproveResult> {
     return call("Desk.PairApproveRetry", id, machineIDs);

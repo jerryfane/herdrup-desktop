@@ -16,8 +16,8 @@ import { webGuest } from "./platform";
 import { noticeRegion } from "./notices";
 import { codeField } from "./codeField";
 import { showPairSheet } from "./pairApproval";
-import { pairNotice, type PairRequestView } from "./pairApprovalModel";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, lengthLabel, machinesNote, machinesSummary, nextInOrder, resultLines, skipReason,
+import { pairNotice } from "./pairApprovalModel";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
  timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
@@ -127,14 +127,15 @@ export function takesTyping(node: Element | null): boolean {
  return tag === "textarea" || (tag === "input" && !UNTYPED_INPUTS[(node as HTMLInputElement).type]);
 }
 
-/** clock is the For row's and the pair sheet's, and times the pause in typing (tests pass their own). */
+/** clock is the For row's and the pair sheet's, and times the pause in typing and the recheck of
+ *  what the service offers (tests pass their own). */
 export function initWebAccess(clock: SheetClock = systemClock): void {
  if (webGuest) return;
  const closed = new Set<string>();
  // The request whose sheet, or notice, is up: one at a time, of either kind.
  let open: string | null = null;
  // The service's last answer to "which approvals do you offer?" (one /v1/health read for both
- // kinds); an error isn't kept.
+ // kinds). A refresh that fails keeps it; with none yet, the look ends and the next asks again.
  let offers: { browsers: boolean; pairs: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
  // When the user last typed anywhere in the window.
@@ -157,25 +158,24 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
    if (document.visibilityState !== "visible" || open !== null) return;
    const state = await Desk.accountState();
    if (!state.signedIn) { offers = null; return; }
-   if (askOffered(offers, Date.now())) offers = { ...await Desk.approvalsOffered(), at: Date.now() };
+   if (askOffered(offers, clock.now())) {
+    try { offers = { ...await Desk.approvalsOffered(), at: clock.now() }; }
+    catch (error) { if (!offers) throw error; offers = { ...offers, at: clock.now() }; }
+   }
    if (!offers?.browsers && !offers?.pairs) return;
-   const lists = await Desk.approvalRequests();
-   const browsers: readonly WebAccessRequestView[] = offers.browsers ? lists.browsers : [];
-   const pairs: readonly PairRequestView[] = offers.pairs ? lists.pairs : [];
-   const next = nextInOrder<WebAccessRequestView | PairRequestView>(lists.order, [browsers, pairs], closed);
+   const next = nextRequest(await Desk.approvalRequests(), offers, closed);
    if (!next) return;
    let id: string, text: string, sheet: (machines: readonly WebAccessMachine[]) => Promise<void>;
    const done = () => { closed.add(id); open = null; };
-   const pair = pairs.find(p => p.id === next.id);
+   const { pair, browser } = next;
    if (pair) {
     id = pair.id; text = pairNotice(pair);
     sheet = machines => { open = pair.id; return showPairSheet(pair, machines, done, clock); };
-   } else {
-    const req = next as WebAccessRequestView;
+   } else if (browser) {
     const lengths = await Desk.webAccessLengths();
-    id = req.id; text = "A browser wants to reach your machines.";
-    sheet = machines => showSheet(req, lengths, machines, done);
-   }
+    id = browser.id; text = "A browser wants to reach your machines.";
+    sheet = machines => showSheet(browser, lengths, machines, done);
+   } else return;
    // Typing owns the focus: the notice at once; its sheet asks for the machines when it opens.
    if (takesTyping(document.activeElement)) { notify(id, text, sheet); return; }
    const machines = await machinesNow();

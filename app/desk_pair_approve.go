@@ -18,7 +18,6 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,15 +34,15 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// ApprovalRequests is every request waiting for approval on the account,
-// both kinds, from one read of the service (GET /v1/approvals?kind=any):
-// the page polls this once, not a list per kind, so pair requests cost the
-// account's approval rate nothing over browser ones. Order is the request
-// ids of both kinds in the service's order, which the page opens them in.
-type ApprovalRequests struct {
-	Browsers []WebAccessRequest   `json:"browsers"`
-	Pairs    []PairApproveRequest `json:"pairs"`
-	Order    []string             `json:"order"`
+// ApprovalRequest is one request waiting for approval on the account, in
+// the list ApprovalRequests reads (GET /v1/approvals?kind=any) in the
+// service's order: Kind "browser" (Browser) or "pair" (Pair). The page
+// polls this one list, not a list per kind, so pair requests cost the
+// account's approval rate nothing over browser ones.
+type ApprovalRequest struct {
+	Kind    string              `json:"kind"`
+	Browser *WebAccessRequest   `json:"browser,omitempty"`
+	Pair    *PairApproveRequest `json:"pair,omitempty"`
 }
 
 // PairApproveRequest is one new device waiting for a pair approval, for
@@ -78,29 +77,35 @@ func (d *Desk) ApprovalsOffered(ctx context.Context) (ApprovalOffers, error) {
 	return ApprovalOffers{Browsers: browsers, Pairs: pairs}, err
 }
 
-// ApprovalRequests lists the browsers and new devices waiting for approval.
-func (d *Desk) ApprovalRequests(ctx context.Context) (ApprovalRequests, error) {
-	out := ApprovalRequests{Browsers: []WebAccessRequest{}, Pairs: []PairApproveRequest{}, Order: []string{}}
+// ApprovalRequests lists the browsers and new devices waiting for
+// approval, in the service's order, which the page opens them in.
+func (d *Desk) ApprovalRequests(ctx context.Context) ([]ApprovalRequest, error) {
 	cur, err := d.account.Current()
 	if err != nil || cur == nil {
-		return out, errSignedOutHere(err)
+		return []ApprovalRequest{}, errSignedOutHere(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	lists, err := d.account.AnyApprovals(ctx, cur.AccountID)
+	list, err := d.account.AnyApprovals(ctx, cur.AccountID)
 	if err != nil {
-		return out, err
+		return []ApprovalRequest{}, err
 	}
-	out.Browsers, out.Order = webAccessRequests(lists.Browser), lists.Order
-	for _, r := range lists.Pair {
-		out.Pairs = append(out.Pairs, pairApproveRequest(r))
+	out := make([]ApprovalRequest, 0, len(list))
+	for _, r := range list {
+		switch {
+		case r.Pair != nil:
+			p := pairApproveRequest(*r.Pair)
+			out = append(out, ApprovalRequest{Kind: "pair", Pair: &p})
+		case r.Browser != nil:
+			b := webAccessRequest(*r.Browser)
+			out = append(out, ApprovalRequest{Kind: "browser", Browser: &b})
+		}
 	}
 	return out, nil
 }
 
 func pairApproveRequest(r account.PairRequest) PairApproveRequest {
-	return PairApproveRequest{ID: r.ID, DeviceName: r.Requester.Name, Platform: r.Requester.Platform,
-		Claimed: r.Claimed, ExpiresIn: r.ExpiresIn}
+	return PairApproveRequest{ID: r.ID, DeviceName: r.Requester.Name, Platform: r.Requester.Platform, Claimed: r.Claimed, ExpiresIn: r.ExpiresIn}
 }
 
 // pairApproval is the one pair approval in progress on this computer.
@@ -121,16 +126,44 @@ type pairApproval struct {
 	approved bool
 	sentAt   time.Time
 	unsent   bool
+
+	// probed is each machine's host key as its probe verified it (machine
+	// id to OpenSSH line), which sizes the list before any key is added.
+	probedMu sync.Mutex
+	probed   map[string]string
+}
+
+func (p *pairApproval) probedKey(machineID string) string {
+	p.probedMu.Lock()
+	defer p.probedMu.Unlock()
+	return p.probed[machineID]
 }
 
 // pairRow is one ticked machine: its saved entry, and its envelope entry.
-// held is why a machine the envelope can't carry was left out of it (it
-// is shown failed, never sealed, never tried again).
+// hostKey is the host key the list is sized with: the probe's, until a
+// connection to add the key verified one. held is why a machine the
+// envelope can't carry was left out of it (it is shown failed, never
+// sealed, never tried again). retry: a failure Try again may mend (a
+// timeout, say, not a herdr too old).
 type pairRow struct {
 	m        Machine
 	entry    account.PairMachine
+	hostKey  string
 	keyLabel string
 	held     string
+	retry    bool
+}
+
+// fail marks r failed with reason (cut to pairReasonRunes, which the
+// list's size counts on).
+func (r *pairRow) fail(reason string, retry bool) {
+	r.entry.Status, r.entry.Reason, r.retry = account.PairFailed, truncate(reason, pairReasonRunes), retry
+}
+
+// hold leaves r out of the list, failed, for reason.
+func (r *pairRow) hold(reason string) {
+	r.fail(reason, false)
+	r.held, r.entry.HostKey = r.entry.Reason, ""
 }
 
 // pairProbeSlots bounds the machines probed at once.
@@ -166,7 +199,9 @@ type PairProbe struct {
 // PairApproveProbe connects to saved machine machineID for pair request
 // id, briefly and at most a few machines at a time, and says whether a key
 // can be added there. Only once the typed code matched: before, no
-// machine is reached at all. It adds nothing, and pins nothing.
+// machine is reached at all. It adds nothing, and pins nothing. The host
+// key it verified is kept for sizing the list (PairApproveAdd); a machine
+// whose entry alone can't fit is "unsendable".
 func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (PairProbe, error) {
 	p, err := d.currentPair(id)
 	if err != nil {
@@ -209,6 +244,19 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 		pong, _ := client.Ping(ctx)
 		return PairProbe{State: "needs_update", Version: pong.Version}, nil
 	}
+	hostKey, err := d.verifiedHostKey(c)
+	if err != nil {
+		return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
+	}
+	if err := pairFits([]pairRow{{entry: pairEntry(m), hostKey: hostKey}}); err != nil {
+		return PairProbe{State: "unsendable", Reason: pairHeldReason(err)}, nil
+	}
+	p.probedMu.Lock()
+	if p.probed == nil {
+		p.probed = map[string]string{}
+	}
+	p.probed[machineID] = hostKey
+	p.probedMu.Unlock()
 	return PairProbe{State: "ready"}, nil
 }
 
@@ -260,9 +308,45 @@ func pairSendable(m Machine) error {
 	return err
 }
 
-// pairHeldReason is a row's reason for a machine pairSendable refused.
+// pairHeldReason is a row's reason for a machine pairSendable or pairFits
+// refused on its own.
 func pairHeldReason(err error) string {
-	return truncate("can't be sent to the new device: "+strings.TrimPrefix(err.Error(), "pair-v1: "), 120)
+	why := strings.TrimPrefix(err.Error(), "pair-v1: ")
+	if errors.Is(err, account.ErrPairEnvelopeTooLong) {
+		why = "its host key is too long for the list"
+	}
+	return truncate("can't be sent to the new device: "+why, pairReasonRunes)
+}
+
+// pairReasonRunes bounds every row's reason (truncate). pairLongestReason
+// is one that long, of a rune JSON spells with the most bytes ("<" is
+// \u003c), so a list sized with it holds whatever reason a row gets.
+const pairReasonRunes = 120
+
+var pairLongestReason = strings.Repeat("<", pairReasonRunes)
+
+// pairNoRoom is a machine left out because the list, with the machines
+// before it, would be too long for the service.
+const pairNoRoom = "no room for it in the list with the others"
+
+// pairFits says why the list for rows might not fit the service, by the
+// envelope's own rules (PairEnvelope.Marshal), nil when it fits. Each row
+// not held out counts at its longest: failed, with its host key (the
+// probe's, or the one its connection verified) and the longest reason. A
+// row with no host key yet counts without one: before a connection adds a
+// key there it checks the list again with the key it verified.
+func pairFits(rows []pairRow) error {
+	e := account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: make([]account.PairMachine, 0, len(rows))}
+	for _, r := range rows {
+		if r.held != "" {
+			continue
+		}
+		longest := r.entry
+		longest.HostKey, longest.Status, longest.Reason = r.hostKey, account.PairFailed, pairLongestReason
+		e.Machines = append(e.Machines, longest)
+	}
+	_, err := e.Marshal()
+	return err
 }
 
 func (d *Desk) savedMachine(id string) (Machine, error) {
@@ -464,12 +548,15 @@ func (d *Desk) PairApproveDeny(ctx context.Context, id string) error {
 
 // PairApproveRow is one ticked machine's outcome: "added", "already" or
 // "failed" (Reason). KeyLabel is the label herdr stored the key under.
+// Retryable: a failed machine Try again may mend (PairApproveRetry tries
+// no other).
 type PairApproveRow struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Status   string `json:"status"`
-	Reason   string `json:"reason,omitempty"`
-	KeyLabel string `json:"keyLabel,omitempty"`
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason,omitempty"`
+	KeyLabel  string `json:"keyLabel,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
 }
 
 // PairApproveResult is what an approval, or a retry, did. Sent: the new
@@ -489,9 +576,14 @@ type PairApproveResult struct {
 func (p *pairApproval) result() PairApproveResult {
 	res := PairApproveResult{Machines: make([]PairApproveRow, 0, len(p.rows)), Sent: p.approved && !p.unsent}
 	for _, r := range p.rows {
-		res.Machines = append(res.Machines, PairApproveRow{ID: machineID(r.m), Label: machineLabel(r.m), Status: r.entry.Status, Reason: r.entry.Reason, KeyLabel: r.keyLabel})
+		res.Machines = append(res.Machines, PairApproveRow{ID: machineID(r.m), Label: machineLabel(r.m), Status: r.entry.Status, Reason: r.entry.Reason, KeyLabel: r.keyLabel, Retryable: r.retryable()})
 	}
 	return res
+}
+
+// retryable: r failed in a way Try again may mend, and the list carries it.
+func (r pairRow) retryable() bool {
+	return r.held == "" && r.entry.Status == account.PairFailed && r.retry
 }
 
 // envelope is the list the new device gets: every row but those held out.
@@ -536,30 +628,27 @@ func (d *Desk) PairApproveAdd(ctx context.Context, id string, machineIDs []strin
 		return PairApproveResult{Machines: []PairApproveRow{}}, err
 	}
 	// Every chosen machine is checked by the envelope's own rules before
-	// any machine changes: one the list can't carry is held out, never
-	// given the key, never sealed.
-	var chosen []Machine
-	var held []pairRow
+	// any machine changes, with the host key its probe verified: one the
+	// list can't carry, alone or after the machines before it, is held
+	// out, never given the key, never sealed.
+	var rows []pairRow
 	for _, m := range st.Machines {
 		if !slices.Contains(machineIDs, machineID(m)) {
 			continue
 		}
-		if err := pairSendable(m); err != nil {
-			row := pairRow{m: m, entry: pairEntry(m), held: pairHeldReason(err)}
-			row.entry.Status, row.entry.Reason = account.PairFailed, row.held
-			held = append(held, row)
-			continue
+		row := pairRow{m: m, entry: pairEntry(m), hostKey: p.probedKey(machineID(m))}
+		if err := pairFits([]pairRow{row}); err != nil {
+			row.hold(pairHeldReason(err))
+		} else if pairFits(append(slices.Clone(rows), row)) != nil {
+			row.hold(pairNoRoom)
 		}
-		chosen = append(chosen, m)
+		rows = append(rows, row)
 	}
-	if len(chosen) == 0 {
-		if len(held) > 0 {
-			return PairApproveResult{Machines: []PairApproveRow{}}, errors.New("none of these machines can be sent to the new device: " + held[0].held)
-		}
+	if len(rows) == 0 {
 		return PairApproveResult{Machines: []PairApproveRow{}}, errNoMachines
 	}
-	if !pairEnvelopeFits(chosen) {
-		return PairApproveResult{Machines: []PairApproveRow{}}, errors.New("these machines don't fit in one approval: untick some and try again")
+	if !slices.ContainsFunc(rows, func(r pairRow) bool { return r.held == "" }) {
+		return PairApproveResult{Machines: []PairApproveRow{}}, errors.New("none of these machines can be sent to the new device: " + rows[0].held)
 	}
 	req := p.a.Request()
 	key, err := req.AuthorizedKey()
@@ -580,20 +669,20 @@ func (d *Desk) PairApproveAdd(ctx context.Context, id string, machineIDs []strin
 	reportBy := deadline.Add(-pairReportTime)
 	addCtx, cancelAdds := context.WithDeadline(ctx, reportBy)
 	defer cancelAdds()
-	p.rows = make([]pairRow, 0, len(chosen)+len(held))
-	for _, row := range held {
-		publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(row.m), Status: account.PairFailed, Reason: row.held})
-		p.rows = append(p.rows, row)
-	}
-	for _, m := range chosen {
-		var row pairRow
-		if time.Until(reportBy) < pairAddTime {
-			row = pairRow{m: m, entry: pairEntry(m)}
-			row.entry.Status, row.entry.Reason = account.PairFailed, errNoTimeLeft.Error()
-		} else {
-			row = d.addPairKey(addCtx, id, m, key, label)
+	p.rows = rows
+	for _, row := range rows {
+		if row.held != "" {
+			publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(row.m), Status: account.PairFailed, Reason: row.held})
 		}
-		p.rows = append(p.rows, row)
+	}
+	for i, row := range p.rows {
+		switch {
+		case row.held != "":
+		case time.Until(reportBy) < pairAddTime:
+			p.rows[i].fail(errNoTimeLeft.Error(), true)
+		default:
+			p.rows[i] = d.addPairKey(addCtx, id, p.rows, i, key, label)
+		}
 	}
 	return d.sendPair(ctx, p)
 }
@@ -645,9 +734,11 @@ func deviceOf(p *pairApproval) string {
 	return "the device"
 }
 
-// PairApproveRetry adds the key again on machines that failed, then sends
-// the new device the whole list again at the next seq. The service takes
-// it for 10 minutes after the approval.
+// PairApproveRetry adds the key again on machines that failed in a way a
+// retry may mend (Retryable), then sends the new device the whole list
+// again at the next seq. The service takes it for 10 minutes after the
+// approval; a list the service didn't take goes again until then, a key is
+// added only with time left to add it and report.
 func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []string) (PairApproveResult, error) {
 	p, err := d.currentPair(id)
 	if err != nil {
@@ -661,8 +752,7 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 		return p.result(), errors.New("approve first")
 	}
 	// Before any machine changes: the service still holds the approval,
-	// with time left (its own count, and the window from here) for an add
-	// and the report.
+	// with time left (its own count, and the window from here).
 	cur, err := d.account.Current()
 	if err != nil || cur == nil {
 		return p.result(), errSignedOutHere(err)
@@ -674,7 +764,7 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 	left := min(p.sentAt.Add(pairResendWindow).Sub(pairNow()), time.Duration(st.ExpiresIn)*time.Second)
 	switch {
 	case errors.As(err, &api) && (api.Status == http.StatusGone || api.Status == http.StatusNotFound),
-		err == nil && (st.State != account.ApprovalApproved || left < pairAddTime+pairReportTime):
+		err == nil && (st.State != account.ApprovalApproved || left <= 0):
 		res := p.result()
 		res.Ended, res.Problem = true, pairTooLate
 		return res, nil
@@ -687,11 +777,14 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 		return p.result(), err
 	}
 	label := engine.PairKeyLabel(req.Requester.Name, accountDeviceName())
-	addCtx, cancelAdds := context.WithTimeout(ctx, left-pairReportTime)
+	// A key written needs time for the add and the report; the list alone
+	// goes while the service takes it.
+	addBy := pairNow().Add(left - pairReportTime)
+	addCtx, cancelAdds := context.WithTimeout(ctx, max(left-pairReportTime, 0))
 	defer cancelAdds()
-	tried := p.unsent
+	tried, late := p.unsent, false
 	for i, r := range p.rows {
-		if r.held != "" || r.entry.Status != account.PairFailed || !slices.Contains(machineIDs, machineID(r.m)) {
+		if !r.retryable() || !slices.Contains(machineIDs, machineID(r.m)) {
 			continue
 		}
 		// Only a machine still saved here, as it is saved now: its key
@@ -704,23 +797,34 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 			reason = pairHeldReason(err)
 		}
 		if reason != "" {
-			p.rows[i].entry.Reason = reason
-			publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(r.m), Status: account.PairFailed, Reason: reason})
+			p.rows[i].fail(reason, false)
+			publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(r.m), Status: account.PairFailed, Reason: p.rows[i].entry.Reason})
 			continue
 		}
-		if dl, _ := addCtx.Deadline(); time.Until(dl) < pairAddTime {
+		if addBy.Sub(pairNow()) < pairAddTime {
+			late = true
 			continue
 		}
-		p.rows[i] = d.addPairKey(addCtx, id, m, key, label)
+		now := slices.Clone(p.rows)
+		now[i] = pairRow{m: m, entry: pairEntry(m), hostKey: r.hostKey}
+		p.rows[i] = d.addPairKey(addCtx, id, now, i, key, label)
 		tried = true
 	}
 	if !tried {
+		if late {
+			res := p.result()
+			res.Ended, res.Problem = true, pairTooLate
+			return res, nil
+		}
 		return p.result(), errors.New("nothing to try again")
 	}
 	err = p.a.Resend(ctx, p.a.NextSeq(), p.envelope())
 	p.unsent = err != nil
 	res := p.result()
 	switch {
+	case err == nil && late:
+		// Sent; the machines left out have no time for a key any more.
+		res.Ended, res.Problem = true, pairTooLate
 	case err == nil:
 	case errors.As(err, &api) && api.Status == http.StatusGone:
 		p.unsent = false
@@ -748,35 +852,44 @@ func pairEntry(m Machine) account.PairMachine {
 	return account.PairMachine{Nickname: string(nick), Host: m.Host, Port: port, User: m.User}
 }
 
-// addPairKey adds key on m over this computer's own SSH session and
-// records m's host key as that session verified it, checked against the
-// pin kept here.
-func (d *Desk) addPairKey(ctx context.Context, id string, m Machine, key, label string) pairRow {
-	mid := machineID(m)
+// addPairKey adds key on rows[i]'s machine over this computer's own SSH
+// session and records its host key as that session verified it, checked
+// against the pin kept here. Before the key is added, the list (rows) is
+// sized again with that host key: a machine that would make it too long
+// for the service gets no key and is held out.
+func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int, key, label string) pairRow {
+	row := rows[i]
+	mid := machineID(row.m)
 	publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: "adding"})
-	row := pairRow{m: m, entry: pairEntry(m)}
-	fail := func(reason string) pairRow {
-		row.entry.Status, row.entry.Reason = account.PairFailed, reason
-		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: reason})
+	fail := func(reason string, retry bool) pairRow {
+		row.fail(reason, retry)
+		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.entry.Reason})
 		return row
 	}
 	ctx, cancel := context.WithTimeout(ctx, pairAddTime)
 	defer cancel()
-	c, done, err := d.pairBridge(ctx, m)
+	c, done, err := d.pairBridge(ctx, row.m)
 	switch {
 	case errors.Is(err, errNeedsKey):
-		return fail("needs a key file")
+		return fail("needs a key file", false)
 	case errors.Is(err, errNoPin):
-		return fail(errNoPin.Error())
+		return fail(errNoPin.Error(), false)
 	case err != nil:
 		return fail(pairReason(ctx, err))
 	}
 	defer done()
 	hostKey, err := d.verifiedHostKey(c)
 	if err != nil {
-		return fail(err.Error())
+		return fail(err.Error(), false)
 	}
-	row.entry.HostKey = hostKey
+	sized := slices.Clone(rows)
+	sized[i].hostKey = hostKey
+	if pairFits(sized) != nil {
+		row.hold(pairNoRoom)
+		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.held})
+		return row
+	}
+	row.hostKey, row.entry.HostKey = hostKey, hostKey
 	added, err := engine.New(engine.Bridge(c)).PairAddKey(ctx, engine.PairAddKeyParams{PublicKey: key, Label: label})
 	if err != nil {
 		return fail(pairReason(ctx, err))
@@ -792,7 +905,9 @@ func (d *Desk) addPairKey(ctx context.Context, id string, m Machine, key, label 
 
 // verifiedHostKey is the host key c's first handshake verified, as an
 // OpenSSH line with no comment, once it matches the pin kept here under
-// the address it dialled.
+// the address it dialled. A host certificate is carried as is: its line is
+// "<type> <base64>" too (ssh-ed25519-cert-v01@openssh.com, say), and the
+// new device pins its fingerprint as this computer did.
 func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
@@ -808,47 +923,33 @@ func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
 }
 
-// pairReason says why adding the key failed, short enough for a row.
-func pairReason(ctx context.Context, err error) string {
+// pairReason says why adding the key failed, and whether Try again may
+// mend it (a timeout, a connection, a write; not a herdr too old, nor one
+// refusing the key). The row cuts it short (pairRow.fail).
+func pairReason(ctx context.Context, err error) (string, bool) {
 	var old *engine.ErrUnsupported
 	var api *bridge.APIError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil:
-		return "timed out"
+		return "timed out", true
 	case errors.As(err, &old):
-		return "needs a herdr update"
+		return "needs a herdr update", false
 	case errors.Is(err, engine.ErrPairKeyInvalid):
-		return "herdr refused the new device's key"
+		return "herdr refused the new device's key", false
 	case errors.Is(err, engine.ErrPairLabelInvalid):
-		return "herdr refused the key's name"
+		return "herdr refused the key's name", false
 	case errors.Is(err, engine.ErrPairGuestForbidden), errors.Is(err, engine.ErrPairOwnerForbidden):
-		return "herdr refused this connection"
+		return "herdr refused this connection", false
 	case errors.Is(err, engine.ErrPairWriteFailed):
-		return "herdr couldn't write authorized_keys"
+		return "herdr couldn't write authorized_keys", true
 	case errors.Is(err, engine.ErrPairUnsupportedOS):
-		return "pairing isn't supported on this machine's system"
+		return "pairing isn't supported on this machine's system", false
 	case errors.Is(err, engine.ErrPairReadFailed):
-		return "herdr couldn't read authorized_keys"
+		return "herdr couldn't read authorized_keys", true
 	case errors.As(err, &api) && api.Code == "forbidden":
-		return "herdr refused this connection"
+		return "herdr refused this connection", false
 	case errors.As(err, &api):
-		return truncate(api.Message, 120)
+		return api.Message, true
 	}
-	return truncate(err.Error(), 120)
-}
-
-// pairEnvelopeFits reports whether the sealed list for chosen fits what the
-// service takes, each machine counted with its longest entry: an RSA 8192
-// host key and a full reason.
-func pairEnvelopeFits(chosen []Machine) bool {
-	e := account.PairEnvelope{V: account.PairEnvelopeVersion}
-	for _, m := range chosen {
-		entry := pairEntry(m)
-		entry.HostKey = "ssh-rsa " + strings.Repeat("A", 1400)
-		entry.Status = account.PairFailed
-		entry.Reason = strings.Repeat("r", 120)
-		e.Machines = append(e.Machines, entry)
-	}
-	plain, err := json.Marshal(e)
-	return err == nil && account.SealedLength(len(plain)) <= account.MaxSealedLength
+	return err.Error(), true
 }

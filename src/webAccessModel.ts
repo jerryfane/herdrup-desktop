@@ -5,23 +5,24 @@
 /** One browser waiting for approval (Desk.approvalRequests). */
 export interface WebAccessRequestView { id: string; browserName: string; claimed: string; expiresIn: number }
 
-/** The request the sheet should open for, or null: the first, in the service's order, that nobody
- *  is approving and the user hasn't closed on this computer. "you" is this computer's own claim (the
- *  sheet is already open). lists are each kind's requests (browsers, new devices), and order every
- *  request id as the service listed them (Desk.approvalRequests). */
-export function nextInOrder<R extends { id: string; claimed: string; expiresIn: number }>(order: readonly string[], lists: readonly (readonly R[])[], closed: ReadonlySet<string>): R | null {
- const open = new Map<string, R>();
- for (const list of lists) for (const r of list) if (r.claimed === "no" && r.expiresIn > 0 && !closed.has(r.id)) open.set(r.id, r);
- for (const id of order) { const r = open.get(id); if (r) return r; }
- return null;
+/** A request waiting for approval, as each kind's sheet reads it. */
+interface Waiting { id: string; claimed: string; expiresIn: number }
+
+/** The request the sheet should open for, or null: the first, in the service's order
+ *  (Desk.approvalRequests), of a kind the service offers, that nobody is approving and the user
+ *  hasn't closed on this computer. "you" is this computer's own claim (the sheet is already open). */
+export function nextRequest<R extends { kind: string; browser?: Waiting; pair?: Waiting }>(requests: readonly R[], offers: { browsers: boolean; pairs: boolean }, closed: ReadonlySet<string>): R | null {
+ const waiting = (r: R): Waiting | undefined => r.kind === "pair" ? (offers.pairs ? r.pair : undefined) : r.kind === "browser" && offers.browsers ? r.browser : undefined;
+ return requests.find(r => { const w = waiting(r); return w !== undefined && w.claimed === "no" && w.expiresIn > 0 && !closed.has(w.id); }) ?? null;
 }
 
 /** How long a "not offered" answer from the account service holds before the page asks again, so a
  *  rollout is seen without signing in again. */
 export const OFFERED_RECHECK_MS = 10 * 60_000;
 
-/** Whether to ask the service which approvals it offers: never asked (or the answer was an error,
- *  which the page doesn't keep), or some kind "no", asked long enough ago. */
+/** Whether to ask the service which approvals it offers: never answered, or some kind "no", asked
+ *  long enough ago. A refresh that fails keeps the last answer (the page polls the kinds it knows
+ *  are offered) and is tried again OFFERED_RECHECK_MS later. */
 export function askOffered(last: { browsers: boolean; pairs: boolean; at: number } | null, now: number): boolean {
  return last === null || (!(last.browsers && last.pairs) && now - last.at >= OFFERED_RECHECK_MS);
 }

@@ -73,7 +73,8 @@ export function nameList(names: readonly string[]): string {
  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
-export interface PairRowView { id: string; label: string; status: string; reason?: string; keyLabel?: string }
+/** A ticked machine's outcome (Desk.pairApproveAdd); retryable: a failure Try again may mend. */
+export interface PairRowView { id: string; label: string; status: string; reason?: string; keyLabel?: string; retryable?: boolean }
 
 /** The line under the title once keys were added: which machines the new device can open now. */
 export function resultLead(name: string, rows: readonly PairRowView[]): string {
@@ -81,17 +82,23 @@ export function resultLead(name: string, rows: readonly PairRowView[]): string {
  return opened.length ? `${name} can open ${nameList(opened)} with its own key.` : `${name} couldn't be added to any machine.`;
 }
 
-/** What to do about the machines that failed, or "" when none did. */
+/** What to do about the machines that failed, or "" when none did: Try again only for those a retry
+ *  may mend (retryable), herdr pair there for the rest. */
 export function failureLine(rows: readonly PairRowView[]): string {
  const failed = rows.filter(r => r.status === "failed");
- if (!failed.length) return "";
- if (failed.length === 1) {
-  const [f] = failed;
-  return f!.reason === "timed out"
+ const again = failed.filter(r => r.retryable), stuck = failed.filter(r => !r.retryable);
+ const lines: string[] = [];
+ if (again.length === 1) {
+  const [f] = again;
+  lines.push(f!.reason === "timed out"
    ? `${f!.label} didn't answer. Try again from here later, or use herdr pair there.`
-   : `${f!.label}: ${f!.reason}. Try again from here, or use herdr pair there.`;
+   : `${f!.label}: ${f!.reason}. Try again from here, or use herdr pair there.`);
+ } else if (again.length) {
+  lines.push(`${nameList(again.map(f => f.label))} couldn't be added. Try again from here, or use herdr pair there.`);
  }
- return `${nameList(failed.map(f => f.label))} couldn't be added. Try again from here, or use herdr pair there.`;
+ if (stuck.length === 1) lines.push(`${stuck[0]!.label}: ${stuck[0]!.reason}. Use herdr pair there.`);
+ else if (stuck.length) lines.push(`${nameList(stuck.map(f => f.label))} couldn't be added from here. Use herdr pair on each.`);
+ return lines.join(" ");
 }
 
 /** The retry button for the failed machines. */

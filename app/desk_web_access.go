@@ -60,7 +60,6 @@ func (d *Desk) WebAccessLengths() []WebAccessLength {
 type WebAccessRequest struct {
 	ID          string `json:"id"`
 	BrowserName string `json:"browserName"`
-	CreatedMs   int64  `json:"createdMs"`
 	// Claimed is "no", "you" or "other" (another device is approving it).
 	Claimed   string `json:"claimed"`
 	ExpiresIn int64  `json:"expiresIn"`
@@ -192,14 +191,10 @@ func (d *Desk) nextWebSeq(approver []byte) (uint64, error) {
 	return next, nil
 }
 
-// webAccessRequests is the sheet's view of browsers waiting for approval
+// webAccessRequest is the sheet's view of a browser waiting for approval
 // (ApprovalRequests lists them).
-func webAccessRequests(list []account.ApprovalRequest) []WebAccessRequest {
-	out := make([]WebAccessRequest, 0, len(list))
-	for _, r := range list {
-		out = append(out, WebAccessRequest{ID: r.ID, BrowserName: r.Browser.Name, CreatedMs: r.Browser.CreatedMs, Claimed: r.Claimed, ExpiresIn: r.ExpiresIn})
-	}
-	return out
+func webAccessRequest(r account.ApprovalRequest) WebAccessRequest {
+	return WebAccessRequest{ID: r.ID, BrowserName: r.Browser.Name, Claimed: r.Claimed, ExpiresIn: r.ExpiresIn}
 }
 
 // WebAccessMachines lists the saved machines the sheet offers.

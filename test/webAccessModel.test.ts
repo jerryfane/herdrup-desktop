@@ -1,21 +1,26 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { choiceRows, initWebAccess, takesTyping, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
 import { followPresses } from "../src/codeField";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextInOrder, OFFERED_RECHECK_MS,
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 import { FakeDocument, FakeElement, Listened } from "./fakeDom";
 
 const req = (id: string, claimed = "no", expiresIn = 600) => ({ id, browserName: "Chrome on macOS", claimed, expiresIn });
 
-test("the sheet opens for the first request, in the service's order, nobody is approving and the user hasn't closed", () => {
- const ids = (rs: { id: string }[]) => rs.map(r => r.id);
- const first = (rs: ReturnType<typeof req>[], closed = new Set<string>()) => nextInOrder(ids(rs), [rs], closed);
- expect(first([req("a", "other"), req("b"), req("c")])?.id).toBe("b");
- expect(first([req("b"), req("c")], new Set(["b"]))?.id).toBe("c");
- expect(first([req("a", "you"), req("b", "no", 0)])).toBeNull();
+test("the sheet opens for the first request, in the service's order, of an offered kind nobody is approving and the user hasn't closed", () => {
+ const browser = (id: string, claimed = "no", expiresIn = 600) => ({ kind: "browser", browser: req(id, claimed, expiresIn) });
+ const pair = (id: string) => ({ kind: "pair", pair: { id, deviceName: "MacBook Air", platform: "macos", claimed: "no", expiresIn: 600 } });
+ const both = { browsers: true, pairs: true };
+ const first = (rs: ReturnType<typeof browser>[], closed = new Set<string>()) => nextRequest(rs, both, closed)?.browser?.id;
+ expect(first([browser("a", "other"), browser("b"), browser("c")])).toBe("b");
+ expect(first([browser("b"), browser("c")], new Set(["b"]))).toBe("c");
+ expect(first([browser("a", "you"), browser("b", "no", 0)])).toBeUndefined();
  // Across kinds, the service's order holds: a new device listed before a browser opens first.
- expect(nextInOrder(["p", "b"], [[req("b")], [req("p")]], new Set())?.id).toBe("p");
- expect(nextInOrder(["b", "p"], [[req("b")], [req("p")]], new Set())?.id).toBe("b");
+ expect(nextRequest([pair("p"), browser("b")], both, new Set())?.pair?.id).toBe("p");
+ expect(nextRequest([browser("b"), pair("p")], both, new Set())?.browser?.id).toBe("b");
+ // A kind the service doesn't offer is passed over.
+ expect(nextRequest([pair("p"), browser("b")], { browsers: true, pairs: false }, new Set())?.browser?.id).toBe("b");
+ expect(nextRequest([browser("b"), pair("p")], { browsers: false, pairs: true }, new Set())?.pair?.id).toBe("p");
 });
 
 test("the code is four digits and Approve needs a code and a machine", () => {
@@ -313,7 +318,7 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
     case "Desk.ApprovalsOffered": return { browsers: true, pairs: false };
-    case "Desk.ApprovalRequests": return { browsers: [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600 }], pairs: [], order: ["r1"] };
+    case "Desk.ApprovalRequests": return [{ kind: "browser", browser: { id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600 } }];
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }];
     case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
     case "Desk.WebAccessStart": queueMicrotask(() => on.get("web-access:update")?.({ id: "r1", state: "ready" })); return undefined;
@@ -408,7 +413,7 @@ function askingWindow({ holdMachines = false, requests = [{ id: "r1", browserNam
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
     case "Desk.ApprovalsOffered": return { browsers: true, pairs: false };
-    case "Desk.ApprovalRequests": return { browsers: asking.requests, pairs: [], order: asking.requests.map((r: { id: string }) => r.id) };
+    case "Desk.ApprovalRequests": return asking.requests.map(r => ({ kind: "browser", browser: r }));
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
     case "Desk.WebAccessMachines": {
      if (!holdMachines) return machines;
