@@ -48,11 +48,16 @@ var publishSyncedShares = func(s []SyncedShare) { SyncedSharesChanged.Broadcast(
 // this device owes the account the grant is bound to (Account): the
 // account signed in at its redemption, which need not be the one a sync
 // state holds yet, so a state of another account keeps it until that one
-// syncs.
+// syncs. Sent, on a write, is the base_rev a request carried it on, saved
+// before the request goes (journalShareWrites): from then on it may have
+// landed, however its answer went, and mergeShares settles it by what the
+// account holds rather than writing it afresh (as the web's journal of
+// writes sent, src/web/shares.ts SharesRecord sent).
 type shareOp struct {
 	ID      string             `json:"id"`
 	Account string             `json:"account"`
 	Body    *account.ShareBody `json:"body,omitempty"`
+	Sent    *int64             `json:"sent,omitempty"`
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -196,6 +201,38 @@ func (d *Desk) confirmShare() {
 	ctx, cancel := context.WithTimeout(context.Background(), acceptShareWait)
 	defer cancel()
 	_ = d.SyncMachines(ctx)
+}
+
+// journalShareWrites saves, before a push goes, that each share write it
+// carries (part, account acct's) was sent on its base_rev (shareOp.Sent):
+// from then on its outcome may be unknown, an answer lost, or an answer
+// whose settling couldn't be saved, and the merge settles it by what the
+// account holds instead of writing it afresh (mergeShares). If the
+// journal can't be saved, the push doesn't go.
+func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []account.Change) error {
+	sent := map[string]int64{}
+	for _, c := range part {
+		if c.Collection == "shares" && !c.Deleted {
+			sent[c.ID] = c.Base
+		}
+	}
+	if len(sent) == 0 {
+		return nil
+	}
+	if !d.storeMu.LockCtx(ctx) {
+		return ctx.Err()
+	}
+	defer d.storeMu.Unlock()
+	state, err := d.loadSyncState()
+	if err != nil {
+		return err
+	}
+	for i, op := range state.ShareWrites {
+		if base, ok := sent[op.ID]; ok && op.Account == acct {
+			state.ShareWrites[i].Sent = &base
+		}
+	}
+	return d.storeSyncState(state)
 }
 
 // settleShareWrites settles the share writes of applied (a push's answer
@@ -343,12 +380,21 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 //     of the grant from another): it goes;
 //   - one whose item the account held and no longer does was left
 //     elsewhere: it goes, and so does the grant (gone);
+//   - one a request already carried (Sent) is settled, never written
+//     afresh: its item where it was sent (the same base revision: a
+//     tombstone not passed, or none) means it never landed, and it goes
+//     again on that base; its item anywhere else (a tombstone or another
+//     write past that base, and not held) means someone else's change
+//     superseded it: it goes, and so does the grant (gone). The one case
+//     this can't tell (as the web's): a write that landed on no item (base
+//     0), then deleted, its tombstone pruned (90 days, or 2,000 deletes
+//     past it) before this pull, reads as never landed, and goes again;
 //   - any other is written, on the revision last seen of its item;
 //   - an owed delete of an item the account holds is sent, on its
 //     revision; one of an item it doesn't hold is done.
 //
-// gone are the known items the account no longer holds: this device's
-// bound grants for them go.
+// gone are the known items the account no longer holds, and the items of
+// superseded writes: this device's bound grants for them go.
 func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
 	held := map[string]int64{}
 	for _, s := range mirror {
@@ -368,7 +414,12 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 		if _, ok := held[op.ID]; ok || gone[op.ID] || op.Body == nil {
 			continue
 		}
-		changes = append(changes, account.Write("shares", op.ID, revs["shares/"+op.ID], *op.Body))
+		base := revs["shares/"+op.ID]
+		if op.Sent != nil && *op.Sent != base {
+			gone[op.ID] = true
+			continue
+		}
+		changes = append(changes, account.Write("shares", op.ID, base, *op.Body))
 		nextWrites = append(nextWrites, op)
 	}
 	for _, op := range deletes {

@@ -1041,6 +1041,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			if len(held) > 0 && unsent == nil {
 				unsent = errEditHeldBack
 			}
+			if err == nil {
+				// A share write is journaled as sent before it goes; one
+				// that can't be goes nowhere (journalShareWrites).
+				err = d.journalShareWrites(ctx, acct, part)
+			}
 			return part, err
 		}, func() error {
 			// The dispatch provably wrote nothing (refused, told by its

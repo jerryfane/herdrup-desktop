@@ -708,3 +708,63 @@ func TestAShareDeletedBeforeItsReadbackIsNotConfirmed(t *testing.T) {
 		t.Fatalf("after the next sync: grants %+v, rows %v; want neither", grants, w.live())
 	}
 }
+
+// A share write the service took, whose settling couldn't be saved, is
+// still journaled as sent (saved before the push went), so it is settled
+// by what the account holds, never written afresh: left elsewhere while
+// another account was signed in, the share stays left once its account is
+// back, and its grant goes. (Its tombstone kept: a write that landed on no
+// item, deleted, its tombstone pruned before the settling pull, can't be
+// told from one that never landed; that case goes again, as on the web.)
+func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	// The service takes the push; then the sync state can't be written:
+	// a folder where its temporary file goes (writeFileAtomic).
+	blocker := filepath.Join(d.dir, "account-sync.json.tmp")
+	w.mu.Lock()
+	w.afterPush = func() {
+		if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o700); err != nil {
+			t.Error(err)
+		}
+	}
+	w.mu.Unlock()
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound {
+		t.Fatalf("bound accept: %+v, %v", access, err)
+	}
+	if err := os.RemoveAll(blocker); err != nil {
+		t.Fatal(err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	if _, live := w.live()[id]; !live {
+		t.Fatal("the service never took the write")
+	}
+	d.storeMu.Lock()
+	state, err := d.loadSyncState()
+	d.storeMu.Unlock()
+	if i := slices.IndexFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id }); err != nil || i < 0 || state.ShareWrites[i].Sent == nil {
+		t.Fatalf("the write isn't journaled as sent: %+v, %v", state.ShareWrites, err)
+	}
+	signInAs(t, w, d, "")
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.tombstone(id) // another device leaves the share
+	w.mu.Unlock()
+	signInAs(t, w, d, "acct")
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, live := w.live()[id]; live {
+		t.Fatal("the left share was written to the account again")
+	}
+	if grants, _ := d.SharedConnections(); len(grants) != 0 {
+		t.Fatalf("the left share's grant is still held: %+v", grants)
+	}
+}
