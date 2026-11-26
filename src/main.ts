@@ -10,7 +10,7 @@ import { initAgentActions } from "./agentActions";
 import { avatarFace, boardShown, trackPhotoConnections } from "./avatars";
 import { accountLine, initListExtras, renderSessionPills, rowAge, rowMarkers, updateNeedsYou } from "./sessions";
 import { barActions, barCount, focusGramSearch, gramShowing, guestGramOffer, initGram, selectGuestGram, setGuestGram, showGram } from "./gram";
-import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard } from "./interaction";
+import { initInteraction, selectInteraction, interactionVisible, showInteraction, closeInteraction, interactionBoard, refreshInteraction } from "./interaction";
 import { initHosts } from "./hosts";
 import { initSettings } from "./settings";
 import { closeWriter } from "./composer";
@@ -719,6 +719,11 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     focusGramSearch();
   }
+});
+
+// ⌘R (Ctrl+R off the Mac) on an agent's page is its Refresh: the app's webview reloads nothing.
+window.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() === "r" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && refreshInteraction()) e.preventDefault();
 });
 
 async function init(rendered: () => void) {

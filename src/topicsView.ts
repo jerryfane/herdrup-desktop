@@ -9,7 +9,7 @@ import { errorText } from "./errors";
 import { ConversationColumn } from "./conversationColumn";
 import { ChatTail, placeRows } from "./chatTail";
 import { chatPollDelay, reconcileOutgoing, type Outgoing } from "./chatPoll";
-import { currentPlan, groupTranscript, mergeTranscript, readLive, rowShown, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
+import { currentPlan, cursorExpired, groupTranscript, mergeTranscript, readLive, rowShown, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, canFold, foldShortcutLabel, listedTopics, messageTooLong, searchTopics, seededTopics, statusDot, statusText, topicSections, topicsLayout, topicTitle, topicWorking, type TopicInfo } from "./topicsModel";
 import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
@@ -237,6 +237,12 @@ export class TopicsPane {
   void Desk.topicsRefresh(this.host.token).catch(() => undefined);
  }
  private pendingOpen: string | null = null;
+ /** Refresh (the page's button, ⌘R): the list is read again, and the open topic starts over from
+  *  its newest page. */
+ refresh() {
+  void Desk.topicsRefresh(this.host.token).catch(() => undefined);
+  this.chat?.refresh(true);
+ }
 
  private layout() {
   this.root.dataset.layout = this.wide ? "wide" : "narrow";
@@ -651,6 +657,9 @@ class TopicChat {
  private followUntil = 0;
  private busy = false;
  private again = false;
+ /** The next live read starts over from the newest page (readLive with no held page), dropping
+  *  the topic's history and cursors: Refresh, or an older page whose cursor herdr expired. */
+ private restart = false;
  private active = false;
  private disposed = false;
  private timer: number | undefined;
@@ -746,8 +755,12 @@ class TopicChat {
   if (this.page) this.draw(false);
  }
 
- /** The open topic changed (an owner's agent.topics.changed): read its tail now. */
- refresh() { if (this.active) void this.load(false); }
+ /** The open topic changed (an owner's agent.topics.changed): read its tail now; startOver
+  *  (Refresh) reads its newest page instead, dropping the history held. */
+ refresh(startOver = false) {
+  if (startOver) this.restart = true;
+  if (this.active) void this.load(false);
+ }
 
  get topicID(): string { return this.topic.topic_id; }
 
@@ -770,7 +783,7 @@ class TopicChat {
   };
  }
  private async load(older: boolean) {
-  if (this.disposed || !this.active || (older && !this.before)) return;
+  if (this.disposed || !this.active || (older && (!this.before || this.restart))) return;
   if (this.busy) { if (!older) this.again = true; return; }
   this.busy = true; this.earlier.disabled = true; clearTimeout(this.timer);
   const session = this.page?.session_id;
@@ -789,13 +802,13 @@ class TopicChat {
    } else {
     // The chat's own live read (readLive): an after page that may re-send unloaded history is
     // replaced by the newest page, as the agent's chat does (#749 review F2).
-    const live = await readLive(this.page, () => ({ entries: this.entries, hasOlder: !!this.before }), async after => {
+    const live = await readLive(this.restart ? null : this.page, () => ({ entries: this.entries, hasOlder: !!this.before }), async after => {
      const read: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, after, "", after ? this.before ?? "" : ""));
      return this.disposed ? null : read;
     });
     if (!live) return;
     measure();
-    if (live.reset) this.before = live.page.before;
+    if (live.reset) { this.before = live.page.before; this.restart = false; }
     this.entries = live.entries; this.page = live.page;
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    }
@@ -803,7 +816,10 @@ class TopicChat {
    this.draw(follow);
    if (older) this.messages.scrollTop += this.messages.scrollHeight - height;
   } catch (error) {
-   if (!this.disposed) this.notice.textContent = errorText(error);
+   // herdr expired the older page's cursor: paging stops, and the topic starts over from its
+   // newest page.
+   if (older && cursorExpired(error)) this.restart = this.again = true;
+   else if (!this.disposed) this.notice.textContent = errorText(error);
   } finally {
    this.busy = false; this.earlier.disabled = false;
    if (!this.disposed && this.active) {

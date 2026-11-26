@@ -1,4 +1,5 @@
 import type { AskForm, AskFormAnswer, AskFormStatus } from "./askFormModel";
+import { errorText, herdrCode } from "./errors";
 export interface Question { question: string; options: string[]; multi: boolean; recommended?: number }
 export interface PlanItem { text: string; status?: string; done?: boolean; phase?: string; blocker?: string }
 export interface Entry {
@@ -128,16 +129,30 @@ export function mergeNewest(current: Entry[], page: Entry[]): Entry[] | null {
  if (first < 0) return current.length ? null : page;
  return mergeTranscript(mergeTranscript(current, page.slice(0, first), { older: true }), page.slice(first), { resent: [] });
 }
+/** herdr's cursor_expired: the transcript changed under a cursor (an after or before cursor, or
+ *  held_from), e.g. a herdr update that projects held entries otherwise, so the history read with
+ *  it can't be continued. The chat starts over from its newest page: readLive(null, …). */
+export function cursorExpired(error: unknown): boolean {
+ return herdrCode(errorText(error)) === "cursor_expired";
+}
 /** One live read of a chat's tail, the agent's or a topic's (herdrup #736 / #749 review F2).
  *  `read(after)` fetches a page after that cursor ("" for the newest page) and returns null once
  *  the reply is stale. An after page that may re-send unloaded history (replayUnknown) is replaced
  *  by the newest page, merged by position (rereadMerge). `reset`: the chat starts over from
  *  `page` (a new session, a first read, or a newest page sharing nothing with it).
+ *  A null `held` is the one way a chat starts over from its newest page, dropping its history and
+ *  cursors: a first read, Refresh, and a read whose cursor herdr expired (cursorExpired).
  *  `current()` is the chat's entries now and whether older history is left: it is read after each
  *  request, never before, so history loaded while a read is pending is kept (#253). */
 export interface LiveRead { page: TranscriptPage; entries: Entry[]; reset: boolean }
 export async function readLive(held: TranscriptPage | null, current: () => { entries: Entry[]; hasOlder: boolean }, read: (after: string) => Promise<TranscriptPage | null>): Promise<LiveRead | null> {
- let page = await read(held?.after ?? "");
+ let page: TranscriptPage | null;
+ try {
+  page = await read(held?.after ?? "");
+ } catch (error) {
+  if (held && cursorExpired(error)) return readLive(null, current, read);
+  throw error;
+ }
  if (!page) return null;
  const now = current();
  const reread = !!held && held.session_id === page.session_id && replayUnknown(now.entries, page, now.hasOlder);

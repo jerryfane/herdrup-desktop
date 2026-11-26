@@ -2,6 +2,7 @@
 // App/GuestPaneView.swift:737-753): the host lists no shared agent, or lists it with
 // guest_running false (desk_guest.go runGuest publishes availability "paused"), or refused a
 // call with guest_paused (apply(error), :765-780).
+import { herdrCode } from "./errors";
 
 /** What a guest's agent page shows for the share's availability; null while the agent runs. */
 export interface GuestPausedPage {
@@ -32,15 +33,6 @@ export function isGuestPaused(message: string): boolean {
  const code = herdrCode(message);
  // owner_paused: a web owner's chat scope while the pane runs no local agent (herdr #497).
  return code === "guest_paused" || code === "owner_paused";
-}
-
-/** The code field of the first herdr error envelope in text, or null without one. */
-function herdrCode(text: string): string | null {
- const marker = /(?:^|[\s:])herdr: /.exec(text);
- if (marker === null) return null;
- const field = text.slice(marker.index + marker[0].length);
- const end = field.indexOf(": ");
- return end < 0 ? field : field.slice(0, end);
 }
 
 /** failureNote for a send the host refused while paused (GuestPaneView.swift:918-920). */
