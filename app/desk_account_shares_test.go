@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -526,5 +528,61 @@ func TestAnOpenWhoseShareWasLeftMeanwhileSavesNothing(t *testing.T) {
 	}
 	if grants, _ := d2.SharedConnections(); len(grants) != 0 || len(w.live()) != 0 || len(sharesOf(t, d2)) != 0 {
 		t.Fatalf("after a later sync: grants %+v, rows %v, synced shares %+v", grants, w.live(), sharesOf(t, d2))
+	}
+}
+
+// A share left elsewhere ends this device's open connection to it as its
+// grant goes, even when the sync's commit then fails: the retry finds no
+// grant to remove, so it couldn't end it then. Once the commit goes
+// through, nothing stays connected.
+func TestASharesConnectionEndsAsItsGrantGoesEvenIfTheCommitFails(t *testing.T) {
+	w, srv, relay, _, d1, access := acceptBound(t)
+	id := relay.HostID() + "/" + access.GuestID
+	d2 := shareDevice(t, srv)
+	ctx := context.Background()
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	connected := func() bool {
+		d2.mu.Lock()
+		defer d2.mu.Unlock()
+		return d2.link != nil && d2.link.guest != nil
+	}
+	waitFor(t, "the opened share connected", connected)
+	if err := d1.ForgetGuestConnection(access.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d1.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, live := w.live()[id]; live {
+		t.Fatal("the leave never reached the account")
+	}
+	// The commit's record can't be written: a folder where its temporary
+	// file goes (writeFileAtomic).
+	blocker := filepath.Join(d2.dir, "sync-commit.json.tmp")
+	if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := d2.SyncMachines(ctx); err == nil {
+		t.Fatal("a sync whose commit can't be written succeeded")
+	}
+	if grants, _ := d2.guestStore.List(); len(grants) != 0 {
+		t.Fatalf("the left share's grant is still saved: %+v", grants)
+	}
+	if connected() {
+		t.Fatal("the left share's grant went, its connection stayed")
+	}
+	if err := os.RemoveAll(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if grants, _ := d2.SharedConnections(); len(grants) != 0 || connected() || len(w.live()) != 0 {
+		t.Fatalf("after the retry: grants %+v, connected %v, rows %v", grants, connected(), w.live())
 	}
 }

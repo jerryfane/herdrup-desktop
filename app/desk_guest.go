@@ -287,17 +287,33 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 // closeGuest ends this device's use of a grant it let go: the connection,
 // when it is the open one, and its Gram.
 func (d *Desk) closeGuest(id string) {
+	d.finishGuests([]detached{d.detachGuest(id)})
+}
+
+// detachGuest ends grant id's connection when it is the open one, as
+// Disconnect ends it without waiting for its work: the half of closeGuest
+// under d.mu, which a caller holding d.storeMu may take. finishGuests ends
+// the rest once d.storeMu is free.
+func (d *Desk) detachGuest(id string) detached {
 	d.mu.Lock()
-	active := d.link != nil && d.link.guest != nil && d.link.access.ID() == id
-	var x detached
-	if active {
-		// Ended as Disconnect ends it, without waiting for its work.
-		x = d.endLocked()
+	defer d.mu.Unlock()
+	if d.link != nil && d.link.guest != nil && d.link.access.ID() == id {
+		return d.endLocked()
 	}
-	d.mu.Unlock()
+	return detached{}
+}
+
+// finishGuests ends what detachGuest took out of use (xs), and brings the
+// guest Gram to the grants still saved.
+func (d *Desk) finishGuests(xs []detached) {
+	if len(xs) == 0 {
+		return
+	}
 	d.syncGuestGram()
-	x.stop()
-	x.remove()
+	for _, x := range xs {
+		x.stop()
+		x.remove()
+	}
 }
 
 // guestAvailability is GuestConnection.Availability for a failed listing

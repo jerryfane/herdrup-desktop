@@ -319,10 +319,15 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 }
 
 // dropGoneShares lets go of this device's bound grants whose shares item
-// account acct deleted (gone, by item id), and returns their grant ids.
-// A plain grant is never dropped: sync knows nothing of it; nor is one
-// bound to another account, whose collection this is not.
-func (d *Desk) dropGoneShares(acct string, gone map[string]bool) ([]string, error) {
+// account acct deleted (gone, by item id). Each grant's open connection
+// ends as the grant is removed (detachGuest), before anything after it can
+// fail: a later removal's or the sync's commit's failure leaves no grant
+// for a retry to find, so nothing would end it then. It returns what it
+// ended, for the caller to finish (finishGuests) once d.storeMu is free,
+// whatever happened after. A plain grant is never dropped: sync knows
+// nothing of it; nor is one bound to another account, whose collection
+// this is not. d.storeMu must be held.
+func (d *Desk) dropGoneShares(acct string, gone map[string]bool) ([]detached, error) {
 	if len(gone) == 0 {
 		return nil, nil
 	}
@@ -330,16 +335,16 @@ func (d *Desk) dropGoneShares(acct string, gone map[string]bool) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	var dropped []string
+	var ended []detached
 	for _, g := range grants {
 		if g.AccountBound && (g.Account == "" || g.Account == acct) && gone[g.ShareID()] {
 			if err := d.guestStore.Remove(g.ID()); err != nil {
-				return dropped, err
+				return ended, err
 			}
-			dropped = append(dropped, g.ID())
+			ended = append(ended, d.detachGuest(g.ID()))
 		}
 	}
-	return dropped, nil
+	return ended, nil
 }
 
 // OpenSyncedShare opens one of the account's shares on this device (id,

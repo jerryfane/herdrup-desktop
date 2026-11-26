@@ -959,10 +959,12 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	// The bound grants whose share the account deleted go before the state
 	// that no longer knows the share is written: a failure leaves it known,
-	// and the next pass lets them go.
-	dropped, err := d.dropGoneShares(acct, goneShares)
+	// and the next pass lets them go. Their connections end as they go,
+	// whatever fails after (dropGoneShares).
+	ended, err := d.dropGoneShares(acct, goneShares)
 	if err != nil {
 		d.storeMu.Unlock()
+		d.finishGuests(ended)
 		return err
 	}
 	recorded, err := d.commitMerge(machines, changedPrompts, renamed, state)
@@ -973,12 +975,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	if err != nil {
 		d.storeMu.Unlock()
+		d.finishGuests(ended)
 		return err
 	}
 	d.storeMu.Unlock()
-	for _, id := range dropped {
-		d.closeGuest(id)
-	}
+	d.finishGuests(ended)
 	if promptsChanged {
 		publishSavedPrompts(listOf(prompts))
 	}
