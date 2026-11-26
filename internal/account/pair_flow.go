@@ -331,11 +331,12 @@ type PairApproval struct {
 	*approvalRun
 	request PairRequest
 
-	// writeMu is held across each of Approve's and Resend's writes, from
-	// reserving its seq to settling what the service did with it: one
-	// envelope of this approval is in flight at a time, so while a write
-	// runs its seq is the highest this device ever sent.
-	writeMu sync.Mutex
+	// writing holds one token while one of Approve's and Resend's writes
+	// runs, from checking its seq to settling what the service did with
+	// it: one envelope of this approval is in flight at a time, so while a
+	// write runs its seq is the highest this device ever sent. A channel,
+	// not a mutex, so a call waiting its turn can give up with its ctx.
+	writing chan struct{}
 
 	sentMu sync.Mutex
 	// approved: the service holds this device's approval. attempted is
@@ -366,17 +367,34 @@ func (c *Client) StartPairApproval(ctx context.Context, acct string, key DeviceK
 		return nil, err
 	}
 	run.party = "the device"
-	return &PairApproval{approvalRun: run, request: req}, nil
+	return &PairApproval{approvalRun: run, request: req, writing: make(chan struct{}, 1)}, nil
 }
 
 // Request is the pair request this approval answers.
 func (a *PairApproval) Request() PairRequest { return a.request }
 
-// usable checks seq for a write, under writeMu: in range and above every
+// write takes the turn to write, waiting for the write in flight: ctx's
+// error when ctx ends first, or has already ended once the turn is taken,
+// with nothing sent and no seq touched. release gives the turn back.
+func (a *PairApproval) write(ctx context.Context) (release func(), err error) {
+	select {
+	case a.writing <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	release = func() { <-a.writing }
+	if err := ctx.Err(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// usable checks seq for a write, during its turn: in range and above every
 // seq sent before (the service may hold any of them). The write marks it
-// sent (sending) just before it sends it, still under writeMu, so no other
-// write can take seq in between, and one that never went out (refused here)
-// leaves it free.
+// sent (sending) just before it sends it, still in its turn, so no other
+// write can take seq in between, and one that never went out (refused here
+// or given up) leaves it free.
 func (a *PairApproval) usable(seq uint64) error {
 	a.sentMu.Lock()
 	defer a.sentMu.Unlock()
@@ -386,8 +404,8 @@ func (a *PairApproval) usable(seq uint64) error {
 	return nil
 }
 
-// sending marks seq sent, under writeMu: the service may hold it from now
-// on.
+// sending marks seq sent, during the write's turn: the service may hold it
+// from now on.
 func (a *PairApproval) sending(seq uint64) {
 	a.sentMu.Lock()
 	a.attempted = seq
@@ -402,10 +420,16 @@ func (a *PairApproval) sending(seq uint64) {
 // list over it with the envelope route, and if that fails too returns
 // ErrPairListUnknown with the approval held (Resend at NextSeq). Approve
 // and Resend run one at a time: a call waits for the one in flight to
-// settle (so a second Approve then answers ErrPairApproved).
+// settle (so a second Approve then answers ErrPairApproved). A call whose
+// ctx ends while it waits, or has ended once its turn comes, returns ctx's
+// error having sent nothing: NextSeq is as it was, and as the one in
+// flight may yet approve, it is no NotApprovedError.
 func (a *PairApproval) Approve(ctx context.Context, seq uint64, env PairEnvelope) error {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
+	release, err := a.write(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	a.sentMu.Lock()
 	approved := a.approved
 	a.sentMu.Unlock()
@@ -446,10 +470,14 @@ func (a *PairApproval) Approve(ctx context.Context, seq uint64, env PairEnvelope
 
 // Resend replaces the machine list the new device gets with env sealed at
 // seq (NextSeq or above): a retry's results, up to 10 minutes after the
-// approval (then 410 expired).
+// approval (then 410 expired). It waits its turn as Approve does, and a ctx
+// that ends first sends nothing and leaves NextSeq as it was.
 func (a *PairApproval) Resend(ctx context.Context, seq uint64, env PairEnvelope) error {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
+	release, err := a.write(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	a.sentMu.Lock()
 	approved := a.approved
 	a.sentMu.Unlock()
@@ -466,13 +494,13 @@ func (a *PairApproval) Resend(ctx context.Context, seq uint64, env PairEnvelope)
 	return a.put(ctx, seq, plain, false)
 }
 
-// put sends plain sealed at seq over the envelope route, under writeMu.
-// recovering: seq is also the seq of this write's finish, whose answer was
-// lost though the service holds an approval. A stale_seq refusal then says
-// the service holds a seq at least this one; it holds none above the
-// highest this device sent, which under writeMu is seq (checked), and only
-// the claimant writes: so it holds exactly seq, this write's finish, list
-// and all.
+// put sends plain sealed at seq over the envelope route, in the write's
+// turn. recovering: seq is also the seq of this write's finish, whose
+// answer was lost though the service holds an approval. A stale_seq refusal
+// then says the service holds a seq at least this one; it holds none above
+// the highest this device sent, which in the write's turn is seq (checked),
+// and only the claimant writes: so it holds exactly seq, this write's
+// finish, list and all.
 func (a *PairApproval) put(ctx context.Context, seq uint64, plain []byte, recovering bool) error {
 	sealed, err := a.seal(seq, plain)
 	if err != nil {

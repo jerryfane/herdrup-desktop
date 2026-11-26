@@ -53,6 +53,16 @@ func TestPairKeysAddsOnceWithTheStoredLabel(t *testing.T) {
 	if out, e := addKey(p, PairOwner, other, long); e != nil || out["label"] != "Macb"+strings.Repeat("y", 44) {
 		t.Fatalf("80 characters stored as %v, %v", out, e)
 	}
+	// A label cut to 48 just after a space is stored, and first answered,
+	// with the space; read back on a repeated add, trimmed.
+	cut := strings.Repeat("a", 47) + " b"
+	trimmed := &PairKeys{}
+	if out, e := addKey(trimmed, PairOwner, pairFixtureKey, cut); e != nil || out["label"] != strings.Repeat("a", 47)+" " {
+		t.Fatalf("cut after a space = %v, %v", out, e)
+	}
+	if out, e := addKey(trimmed, PairOwner, pairFixtureKey, "Another name"); e != nil || out["added"] != false || out["label"] != strings.Repeat("a", 47) {
+		t.Fatalf("read back = %v, %v", out, e)
+	}
 }
 
 func TestPairKeysRefusals(t *testing.T) {

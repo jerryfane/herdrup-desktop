@@ -764,6 +764,73 @@ func TestOverlappingApprovesRunOneAtATime(t *testing.T) {
 	}
 }
 
+// A write waiting its turn gives up when its ctx ends, at once, having
+// sent nothing and touched no seq: the same seq is still free for a retry.
+// One whose ctx ended before its turn came sends nothing either.
+func TestAWriteWaitingItsTurnGivesUpWithItsCtx(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask, a := b.approved(t)
+	path := "/v1/approvals/" + ask.ID() + "/envelope"
+	var puts atomic.Int32
+	entered, held := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	t.Cleanup(release)
+	f := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPut && r.URL.Path == path && puts.Add(1) == 1 {
+			close(entered)
+			<-held
+		}
+		return false
+	}
+	b.intercept.Store(&f)
+	first := make(chan error, 1)
+	go func() { first <- a.Resend(ctx, 2, machines("studio", "nas")) }()
+	<-entered
+
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	queued := make(chan error, 1)
+	go func() { queued <- a.Resend(short, 3, machines("studio", "nas", "pi")) }()
+	select {
+	case err := <-queued:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued resend past its deadline: %v", err)
+		}
+	case <-time.After(time.Second):
+		release()
+		t.Fatalf("the queued resend still waits a second after its deadline (then: %v)", <-queued)
+	}
+	gone, cancelGone := context.WithCancel(ctx)
+	cancelGone()
+	if err := a.Approve(gone, 5, machines("studio")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("approve with its ctx ended: %v", err)
+	}
+	release()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if a.NextSeq() != 3 || a.Seq() != 2 {
+		t.Fatalf("after the given-up writes: next %d, seq %d", a.NextSeq(), a.Seq())
+	}
+	// Its turn free, a write whose ctx has ended still sends nothing,
+	// whichever ready case the turn's select picks (so, many times).
+	for range 32 {
+		if err := a.Resend(gone, 3, machines("studio")); !errors.Is(err, context.Canceled) || a.NextSeq() != 3 {
+			t.Fatalf("resend with its ctx ended: %v, next %d", err, a.NextSeq())
+		}
+	}
+	if err := a.Resend(ctx, 3, machines("studio", "nas", "pi")); err != nil {
+		t.Fatalf("the retry at seq 3: %v", err)
+	}
+	if n := puts.Load(); n != 2 {
+		t.Fatalf("%d envelope PUTs, want 2", n)
+	}
+	if got, ok, err := ask.Machines(ctx); err != nil || !ok || got.Seq != 3 || len(got.Envelope.Machines) != 3 {
+		t.Fatalf("machines = %+v, %v, %v", got, ok, err)
+	}
+}
+
 // An Abandon while the reveal waits for a fresh access token stops it: the
 // reveal is marked sent only once it has its token and is about to go.
 func TestAnAbandonDuringTheRevealsRefreshSendsNothing(t *testing.T) {

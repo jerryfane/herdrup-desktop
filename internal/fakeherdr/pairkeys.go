@@ -15,9 +15,11 @@ import (
 // 81135aaf, src/pairing.rs add_paired_key): a label of 1–80 characters
 // with no control character (else pair_label_invalid), then one
 // ssh-ed25519 key line (else pair_key_invalid); the label is stored reduced
-// by sanitize_device_label and the reply carries the stored one. A key
-// whose material is there already changes nothing and answers added false,
-// already true, with the label stored for it, not the one asked for.
+// by sanitize_device_label and the reply carries the stored one (cut to 48
+// characters, so it can end in a space). A key whose material is there
+// already changes nothing and answers added false, already true, with the
+// label stored for it as herdr reads it back (paired_key: trimmed), not the
+// one asked for.
 // Guests get guest_forbidden and owner browsers owner_forbidden. Keys
 // records what it added, in memory; nothing is written.
 type PairKeys struct {
@@ -95,7 +97,7 @@ func (p *PairKeys) HandleFrom(caller PairCaller, method string, raw json.RawMess
 	defer p.mu.Unlock()
 	for _, k := range p.keys {
 		if strings.Fields(k.PublicKey)[1] == material {
-			reply["added"], reply["already"], reply["label"] = false, true, k.Label
+			reply["added"], reply["already"], reply["label"] = false, true, strings.TrimSpace(k.Label)
 			return reply, nil, true
 		}
 	}
