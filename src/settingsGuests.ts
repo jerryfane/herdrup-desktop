@@ -2,6 +2,7 @@ import { Desk } from "./mygo";
 import type { PeerSummary, SavedMachineStatus } from "./mygo";
 import { guestOwnerName } from "./guestInviteModel";
 import { errorText } from "./errors";
+import { listedGuests } from "./guestList";
 import type { Glyph } from "./herdrupAccount";
 
 type Machine = { alias: string; label: string };
@@ -360,23 +361,26 @@ export class GuestSettings {
         void this.recheckRemoveDevice(machine, person, device, targets, key);
       });
   }
-  /** Confirm's check, read-only, key held from Confirm: the machine's shares listed afresh
-   *  (guest.list alone) on the same Settings scope. Only if the device is on exactly the shares
-   *  confirmed are the removals sent (each tried, failures said after, then key let go and the
-   *  lists again). Otherwise nothing is sent and key is let go; while the person's page and this
-   *  confirmation are still the current ones, a listing that can't be read says so, and a changed
-   *  set asks again with the new shares or says the device has no access left, and lists again.
-   *  Superseded (Back, another person, another confirmation), it says nothing and leaves the page
-   *  as it is. */
+  /** Confirm's check, read-only, then the removals, all within one hold of key (taken at Confirm,
+   *  let go in finally however it ends). The machine's shares are listed afresh (guest.list alone)
+   *  on the same Settings scope; a listing that can't be read or isn't a list of shares is
+   *  unreadable. Only if the device is on exactly the shares confirmed are the removals sent (each
+   *  tried, failures said after, then the lists again). Otherwise nothing is sent and the device's
+   *  button is freed in place; while the person's page and this confirmation are still the current
+   *  ones, an unreadable listing says so, and a changed set asks again with the new shares or says
+   *  the device has no access left, and lists again. Superseded (Back, another person, another
+   *  confirmation), it says nothing and leaves the page as it is. */
   private async recheckRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[], key: string) {
     const token = this.token, attempt = this.attempt;
-    let fresh: Guest[] | null = null;
-    try { fresh = (JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as Listing).guests ?? []; }
-    catch { /* not read: nothing is known of the device's access */ }
-    if (token !== this.token) return;
-    const now = fresh && removalTargets(fresh, person.id, device.fingerprint);
-    if (now && sameTargets(now, targets)) {
-      await this.holding(token, key, async () => {
+    let sent = false;
+    try {
+      let fresh: Guest[] | null = null;
+      try { fresh = listedGuests((JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as { guests?: unknown } | null)?.guests); }
+      catch { /* not read: nothing is known of the device's access */ }
+      if (token !== this.token) return;
+      const now = fresh && removalTargets(fresh, person.id, device.fingerprint);
+      if (now && sameTargets(now, targets)) {
+        sent = true;
         const failed: string[] = [];
         for (const target of now) {
           if (token !== this.token) return;
@@ -384,17 +388,24 @@ export class GuestSettings {
           catch (error) { failed.push(`Couldn't remove from ${target.agent}: ${errorText(error)}`); }
         }
         if (failed.length) throw new Error(failed.join("\n"));
-      });
-      return;
+        return;
+      }
+      if (attempt !== this.attempt || this.open?.alias !== machine.alias || this.open.person !== person.id) return;
+      if (!now) { this.report(new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`)); return; }
+      if (now.length) this.confirmRemoveDevice(machine, person, device, now, true);
+      else this.report(new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`));
+      void this.refresh();
+    } catch (error) {
+      if (token === this.token) this.report(error);
+    } finally {
+      // The device is free again: after removals the lists again; with nothing sent its button in
+      // place, shown or not, without drawing the page anew.
+      this.revoking.delete(key);
+      if (token === this.token) {
+        if (sent) await this.refresh();
+        else { const control = this.deviceControls.get(key); if (control) control.disabled = false; }
+      }
     }
-    // Nothing to send: the controls are free again, shown or not, without drawing the page anew.
-    this.revoking.delete(key);
-    const control = this.deviceControls.get(key); if (control) control.disabled = false;
-    if (attempt !== this.attempt || this.open?.alias !== machine.alias || this.open.person !== person.id) return;
-    if (!now) { this.report(new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`)); return; }
-    if (now.length) this.confirmRemoveDevice(machine, person, device, now, true);
-    else this.report(new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`));
-    void this.refresh();
   }
   /** A share of an older herdr (no person): today's row, Revoke and Share Gram on it. */
   private guestRow(machine: Machine, guest: Guest) {
@@ -451,12 +462,7 @@ export class GuestSettings {
   private async act(machine: Machine, id: string, work: (token: string) => Promise<void>) {
     const token = this.token, key = this.key(machine, id); if (this.revoking.has(key)) return;
     this.revoking.add(key); this.render();
-    await this.holding(token, key, () => work(token));
-  }
-  /** work while key is held (its controls wait), its failure said; then key let go and the lists
-   *  again. */
-  private async holding(token: string, key: string, work: () => Promise<void>) {
-    try { await work(); } catch (error) { if (token === this.token) this.report(error); }
+    try { await work(token); } catch (error) { if (token === this.token) this.report(error); }
     finally { this.revoking.delete(key); if (token === this.token) await this.refresh(); }
   }
   private logRow(entry: Entry, guest?: Guest) {

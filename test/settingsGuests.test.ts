@@ -57,7 +57,7 @@ type Calls = { method: string; args: unknown[] }[];
  *  answers.settingsGuestList (default: at once; reads names them in order); every write is
  *  recorded, then answered as answers says (default: done). Put back afterwards. */
 type Answer = (...args: unknown[]) => Promise<void>;
-async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?: string }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; reads: string[]; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
+async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?: string; listed?: unknown }, run: (page: { card: GuestSettings; root: FakeElement; body: FakeElement; calls: Calls; reads: string[]; titles: (string | null)[]; summary: string[]; reported: unknown[] }) => Promise<void>, answers: Record<string, Answer> = {}) {
   const names = ["settingsGuestMachine", "settingsGuestList", "revokeGuestPerson", "removeGuestDevice", "revokeGuestAccess", "setGuestGramSharing"] as const;
   const saved = { document: Reflect.get(globalThis, "document"), localStorage: Reflect.get(globalThis, "localStorage"), innerWidth: Reflect.get(globalThis, "innerWidth"), innerHeight: Reflect.get(globalThis, "innerHeight"),
     addEventListener: Reflect.get(globalThis, "addEventListener"), removeEventListener: Reflect.get(globalThis, "removeEventListener"), desk: Object.fromEntries(names.map(n => [n, Desk[n]])) };
@@ -76,12 +76,13 @@ async function withPage(listing: { guests: Guest[]; entries?: unknown[]; error?:
         if (machine === "" && listing.error) return JSON.stringify({ error: listing.error, entries: null });
         return JSON.stringify(machine === "" ? { listing: { guests: listing.guests, invites: [] }, entries: listing.entries ?? [] } : { listing: { guests: [], invites: [] }, entries: [] });
       },
-      // guest.list alone: one that failed throws.
+      // guest.list alone: one that failed throws; listed (when set) answers as its guests, whatever
+      // their shape.
       settingsGuestList: async (token: string, machine: string) => {
         reads.push("settingsGuestList");
         await answers.settingsGuestList?.(token, machine);
         if (machine === "" && listing.error) throw new Error(listing.error);
-        return JSON.stringify({ guests: machine === "" ? listing.guests : [], invites: [] });
+        return JSON.stringify({ guests: machine !== "" ? [] : "listed" in listing ? listing.listed : listing.guests, invites: [] });
       },
       revokeGuestPerson: record("revokeGuestPerson"), removeGuestDevice: record("removeGuestDevice"), revokeGuestAccess: record("revokeGuestAccess"), setGuestGramSharing: record("setGuestGramSharing"),
     });
@@ -272,6 +273,23 @@ test("Confirm when the shares' listing can't be read sends nothing, says so, and
       expect([fails, removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message), root.button("Manage MacBook").disabled])
         .toEqual([fails, [], [], ["Couldn't check MacBook's access. Nothing was removed. Try again."], false]);
     }, { settingsGuestList: async () => { if (unreadable) throw new Error("Settings changed: open it again"); } });
+  }
+});
+
+// #545 review P3: a listing whose shares aren't a list of shares is unreadable, and the device's
+// busy hold ends however the check ends: said, nothing sent, the button free.
+test("Confirm when the listing isn't a list of shares takes it as unreadable: says so, sends nothing, frees the device's button", async () => {
+  const shapes: unknown[] = [{ guest_id: "nike-1" }, null, [null], [{ name: "Nike" }], [{ guest_id: "nike-1", person: "acct-nike", devices: { fingerprint: "SHA256:mac" } }]];
+  for (const listed of shapes) {
+    const listing: { guests: Guest[]; listed?: unknown } = { guests: [...current.guests] };
+    await withPage(listing, async ({ root, body, calls, reported }) => {
+      const dialog = askRemoveMacBook(root, body);
+      listing.listed = listed;
+      click(dialog.button("Remove device"));
+      await settle();
+      expect([listed, removals(calls), reported.map(e => (e as Error).message), root.button("Manage MacBook").disabled])
+        .toEqual([listed, [], ["Couldn't check MacBook's access. Nothing was removed. Try again."], false]);
+    });
   }
 });
 

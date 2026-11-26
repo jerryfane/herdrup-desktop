@@ -5,6 +5,7 @@
 
 import type { Desk as GoDesk } from "../mygo";
 import { errorText } from "../errors";
+import { listedGuests } from "../guestList";
 import { HerdrAPIError } from "../webguest/errors";
 import { ErrUnsupported } from "./engine";
 import { currentOwnerLink, ownerCall, settingsCall, settingsLink, settingsScope } from "./ownerLink";
@@ -46,11 +47,13 @@ export const guestsDesk = {
  },
 
  /** SettingsGuestList: guest.list alone, for a check before a change (a device removal's
-  *  confirmation): no activity log, and a listing that can't be read throws. */
+  *  confirmation): no activity log, and a listing that can't be read, or isn't a list of shares
+  *  (listedGuests), throws. */
  async settingsGuestList(token: string, machine: string): Promise<string> {
   const scope = settingsScope(token);
   thisMachineOnly(machine);
-  const listing = await settingsCall(scope, "guest.list", {}, "guest_list");
+  const listing = await settingsCall<{ guests?: unknown }>(scope, "guest.list", {}, "guest_list");
+  if (listedGuests(listing?.guests) === null) throw new Error("herdr answered guest.list without a list of shares");
   settingsLink(token);
   return JSON.stringify(listing);
  },

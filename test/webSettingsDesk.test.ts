@@ -357,6 +357,21 @@ test("a device removal's check lists the shares alone: no activity log, and a li
  expect(host.calls.filter((c) => c.method.startsWith("guest.")).map((c) => [c.method, c.params])).toEqual([["guest.list", {}], ["guest.list", {}]]);
 });
 
+test("a device removal's check refuses a listing that isn't a list of shares: it throws, never an empty or partial list", async () => {
+ const shapes: unknown[] = [
+  undefined, null, { guest_id: "g1" }, "g1", [null], [{ name: "ana" }],
+  [{ guest_id: "g1", devices: { fingerprint: "f" } }], [{ guest_id: "g1", devices: [{ device: "iPad" }] }],
+ ];
+ const outcomes: string[] = [];
+ for (const guests of shapes) {
+  ownerLink((method) => { if (method === "guest.list") return { type: "guest_list", guests, invites: [] }; });
+  try { await guestsDesk.settingsGuestList("tok", ""); outcomes.push("listed"); } catch (error) { outcomes.push((error as Error).message); }
+ }
+ expect(outcomes).toEqual(shapes.map(() => "herdr answered guest.list without a list of shares"));
+ ownerLink((method) => { if (method === "guest.list") return { type: "guest_list", guests: [{ guest_id: "g1", devices: null }, { guest_id: "g2", devices: [{ fingerprint: "f" }] }], invites: [] }; });
+ expect(JSON.parse(await guestsDesk.settingsGuestList("tok", "")).guests).toHaveLength(2);
+});
+
 test("guest changes go to this machine only: never a machine param, and another machine's are refused unsent", async () => {
  const host = ownerLink((method) => {
   if (method === "guest.update") return { type: "guest_updated" };

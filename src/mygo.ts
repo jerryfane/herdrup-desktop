@@ -2283,7 +2283,9 @@ export const Desk = {
   /**
    * SettingsGuestList is the machine's guest.list alone, for a check before a
    * change (a device removal's confirmation): no activity log, and a listing that
-   * can't be read is an error, never an empty one.
+   * can't be read is an error, never an empty one. So is one without a list of
+   * shares: the typed parse refuses shares of another shape, and no guests at all
+   * (missing or null) is not an empty list.
    */
   settingsGuestList(token: string, machine: string): Promise<string> {
     return call("Desk.SettingsGuestList", token, machine);

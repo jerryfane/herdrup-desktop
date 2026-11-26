@@ -59,7 +59,9 @@ func (d *Desk) SettingsGuestMachine(ctx context.Context, token, machine string) 
 
 // SettingsGuestList is the machine's guest.list alone, for a check before a
 // change (a device removal's confirmation): no activity log, and a listing that
-// can't be read is an error, never an empty one.
+// can't be read is an error, never an empty one. So is one without a list of
+// shares: the typed parse refuses shares of another shape, and no guests at all
+// (missing or null) is not an empty list.
 func (d *Desk) SettingsGuestList(ctx context.Context, token, machine string) (string, error) {
 	view, err := d.settingsView(token)
 	if err != nil {
@@ -70,6 +72,9 @@ func (d *Desk) SettingsGuestList(ctx context.Context, token, machine string) (st
 	listing, err := view.client.GuestList(ctx, herdrapi.GuestListParams{Machine: guestMachineAlias(machine)})
 	if err != nil {
 		return "", err
+	}
+	if listing.Guests == nil {
+		return "", errors.New("herdr answered guest.list without a list of shares")
 	}
 	data, err := json.Marshal(listing)
 	return string(data), err
