@@ -317,3 +317,39 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// #540: Close waits for a link's running work, at most its bound, and once
+// closing, Go starts no more, though work that still runs may ask.
+func TestLinkWorkCloseWaitsAndRefusesLaterWork(t *testing.T) {
+	var w linkWork
+	release, ended := make(chan struct{}), make(chan struct{})
+	if !w.Go(func() { <-release; close(ended) }) {
+		t.Fatal("an open link refused work")
+	}
+	if w.Close(50 * time.Millisecond) {
+		t.Fatal("Close reported the link idle while its work ran")
+	}
+	ran := make(chan struct{}, 2)
+	if w.Go(func() { ran <- struct{}{} }) {
+		t.Fatal("Go started work on a closing link")
+	}
+	closed := make(chan bool, 1)
+	go func() { closed <- w.Close(10 * time.Second) }()
+	close(release)
+	if !<-closed {
+		t.Fatal("Close gave up before the work ended")
+	}
+	select {
+	case <-ended:
+	default:
+		t.Fatal("Close returned before the work ended")
+	}
+	if w.Go(func() { ran <- struct{}{} }) {
+		t.Fatal("Go started work after Close")
+	}
+	select {
+	case <-ran:
+		t.Fatal("refused work ran")
+	default:
+	}
+}

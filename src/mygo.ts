@@ -1683,7 +1683,11 @@ export const Desk = {
   discardPairingLink(id: string): Promise<void> {
     return call("Desk.DiscardPairingLink", id);
   },
-  /** Disconnect closes the connection and forgets its board. */
+  /**
+   * Disconnect closes the connection and forgets its board. It returns once
+   * the connection's background work has ended (at most 5 s), so none of it
+   * writes to this device's files afterwards.
+   */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");
   },

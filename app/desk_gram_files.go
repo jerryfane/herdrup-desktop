@@ -112,8 +112,12 @@ func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (
 	f := g.flights[key]
 	if f == nil {
 		f = &gramFlight{done: make(chan struct{})}
+		dctx, epoch := g.ctx, g.epoch
+		if !l.work.Go(func() { d.gramDownload(dctx, l, epoch, id, key, size, f) }) {
+			g.mu.Unlock()
+			return "", "", "", errNotConnected
+		}
 		g.flights[key] = f
-		go d.gramDownload(g.ctx, l, g.epoch, id, key, size, f)
 	}
 	g.mu.Unlock()
 	select {

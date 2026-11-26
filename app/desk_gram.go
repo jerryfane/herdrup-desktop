@@ -795,6 +795,9 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 	g.mu.Unlock()
 
 	answer, err := d.gramAnswer(ctx, l, params)
+	if d.gramListed != nil {
+		d.gramListed()
+	}
 	if err == nil {
 		if _, xerr := d.savedGrams().ExpireFiles(savedIDs(g.prefix, answer.Messages)); xerr != nil {
 			d.alertSaved(xerr)
@@ -805,8 +808,9 @@ func (d *Desk) gramLoadLocked(ctx context.Context, l *link) (outcome gramOutcome
 	queued := false
 	defer func() {
 		g.mu.Unlock()
+		// Refused once the link is closing: its Gram is gone.
 		if queued {
-			go d.gramRefresh(context.WithoutCancel(ctx), l)
+			l.work.Go(func() { d.gramRefresh(context.WithoutCancel(ctx), l) })
 		}
 	}()
 	if g.link != l {

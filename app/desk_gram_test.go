@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,6 +31,9 @@ func gramDeskFor(t *testing.T, g *fakeherdr.Gram) *Desk {
 		s.Duplex = g.Duplex
 	})
 	d.cacheDir = t.TempDir()
+	// Before cacheDir's cleanup, which runs first: nothing downloads into it
+	// once it goes.
+	t.Cleanup(d.Disconnect)
 	return d
 }
 
@@ -269,6 +273,113 @@ func TestGramSavedCopies(t *testing.T) {
 	}
 	if err := d.GramSetSaved("a1", false); err != nil || len(d.GramSaved()) != 0 {
 		t.Fatalf("unsave: %v %v", err, d.GramSaved())
+	}
+}
+
+// #540: a Gram refresh of the connection, still running as the desk
+// disconnects, holds Disconnect until it ends, so its write (a saved copy's
+// file expiring) never lands after Disconnect returns, where a test's TempDir
+// cleanup met it. The refresh is the one queued behind a load: it runs on
+// whatever its connection does.
+func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
+	const bound = 10 * time.Second
+	g := fakeherdr.NewGram("store-1")
+	report := agentMsg("a1", "the report", false)
+	report.File = &herdrapi.GramFileInfo{Name: "report.pdf", Mime: "application/pdf", Size: 3}
+	g.Add(report, []byte("pdf"))
+	// Every head list after the first waits at the server for its answer.
+	asked, answer, ended := make(chan struct{}, 4), make(chan struct{}, 4), make(chan struct{})
+	var heads atomic.Int32
+	g.Fail = func(method string, raw json.RawMessage) *fakeherdr.APIError {
+		var p herdrapi.GramListParams
+		if method != "gram.list" || json.Unmarshal(raw, &p) != nil || p.UnreadOnly || heads.Add(1) == 1 {
+			return nil
+		}
+		asked <- struct{}{}
+		select {
+		case <-answer:
+		case <-ended:
+		}
+		return nil
+	}
+	d := gramDeskFor(t, g)
+	// Once armed, a head load waits before expiring saved copies' files.
+	var armed, disconnected, late atomic.Bool
+	atExpiry, expire := make(chan struct{}, 1), make(chan struct{})
+	d.gramListed = func() {
+		if !armed.Load() {
+			return
+		}
+		if disconnected.Load() {
+			late.Store(true)
+			return
+		}
+		select {
+		case atExpiry <- struct{}{}:
+		default:
+		}
+		<-expire
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { close(expire) }) }
+	t.Cleanup(func() { release(); close(ended) })
+	within := func(what string, c <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-c:
+		case <-time.After(bound):
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+	ctx := context.Background()
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.GramSetSaved("a1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A refresh tapped while a load runs is queued, and runs once it ends.
+	loaded := make(chan struct{})
+	go func() {
+		defer close(loaded)
+		_ = d.GramRefresh(ctx)
+	}()
+	within("the load's list at the server", asked)
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.GramState(); s.Status != "Refreshing…" {
+		t.Fatalf("a refresh during a load: status %q, want it queued", s.Status)
+	}
+	answer <- struct{}{}
+	within("the load to end", loaded)
+	within("the queued refresh's list at the server", asked)
+	// Its answer expires the saved copy's file.
+	g.Update("a1", func(m *herdrapi.GramMessageInfo) { m.ExpiredFile, m.File = m.File, nil })
+	armed.Store(true)
+	answer <- struct{}{}
+	within("the queued refresh to reach the saved copies", atExpiry)
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		d.Disconnect()
+		disconnected.Store(true)
+	}()
+	select {
+	case <-returned:
+		t.Fatal("Disconnect returned while a refresh of its connection had yet to write the saved copies")
+	case <-time.After(500 * time.Millisecond):
+	}
+	release()
+	within("Disconnect to return once the refresh ended", returned)
+	saved := d.GramSaved()
+	if len(saved) != 1 || saved[0].File != nil || saved[0].ExpiredFile == nil {
+		t.Fatalf("the refresh's write did not land before Disconnect returned: %+v", saved)
+	}
+	if late.Load() {
+		t.Fatal("a head load ran after Disconnect returned")
 	}
 }
 

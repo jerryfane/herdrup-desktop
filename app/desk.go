@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -261,6 +262,10 @@ type Desk struct {
 	// shared agent found to share Gram is set up, before its Gram exists; tests
 	// hold that moment open. Never changed once a hub runs.
 	guestGramSettingUp func(grant string)
+	// gramListed, when set before the first head load, runs as each head
+	// load's list is answered (or fails), before saved copies' files expire
+	// by it; tests hold that moment open.
+	gramListed func()
 	// saved is this device's saved Gram messages, read on first use.
 	saved     *gramstore.Saved
 	savedOnce sync.Once
@@ -283,7 +288,7 @@ type Desk struct {
 }
 
 // link is the connection to the active machine. Its fields are guarded by
-// Desk.mu.
+// Desk.mu, but work, which has its own lock.
 type link struct {
 	id string // machineID of the machine
 	// session is the herdr session the board shows. Switching it keeps the
@@ -330,6 +335,88 @@ type link struct {
 	// ends that shared agent's reads.
 	gram       *gramDesk
 	cancelGram context.CancelFunc
+	// work is the link's background work, which Disconnect waits for.
+	work linkWork
+}
+
+// disconnectWait bounds how long Disconnect waits for a link's background
+// work to end.
+const disconnectWait = 5 * time.Second
+
+// linkWork is a link's background work: its watch, Gram polls, refreshes and
+// downloads, each of which can write to the desk's directory. Disconnect
+// waits for it, so none of it writes after (a test's TempDir cleanup met
+// such writes, #540). Work can start while that wait runs (a refresh queued
+// behind a load that just ended), so this is a guarded count, not a
+// WaitGroup: once closing, Go starts nothing.
+type linkWork struct {
+	mu      sync.Mutex
+	running int
+	closing bool
+	// idle is closed as the running work ends after Close; nil until a Close
+	// waits.
+	idle chan struct{}
+}
+
+// Go runs f on a goroutine of its own as the link's work, unless the link is
+// closing: false then, and f does not run.
+func (w *linkWork) Go(f func()) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closing {
+		return false
+	}
+	w.running++
+	go func() {
+		defer w.done()
+		f()
+	}()
+	return true
+}
+
+func (w *linkWork) done() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.running--
+	if w.running == 0 && w.idle != nil {
+		close(w.idle)
+		w.idle = nil
+	}
+}
+
+// Close refuses further work and waits for the running work to end, at most
+// bound; false when some still runs.
+func (w *linkWork) Close(bound time.Duration) bool {
+	w.mu.Lock()
+	w.closing = true
+	if w.running == 0 {
+		w.mu.Unlock()
+		return true
+	}
+	if w.idle == nil {
+		w.idle = make(chan struct{})
+	}
+	idle := w.idle
+	w.mu.Unlock()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-idle:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// closeLinks closes the work of every link and waits for it, all within
+// bound; false when some still runs.
+func closeLinks(links []*link, bound time.Duration) bool {
+	deadline := time.Now().Add(bound)
+	idle := true
+	for _, l := range links {
+		idle = l.work.Close(time.Until(deadline)) && idle
+	}
+	return idle
 }
 
 func newDesk(dir string) *Desk {
@@ -792,9 +879,12 @@ func (d *Desk) Connect(m Machine, password string) error {
 	return nil
 }
 
-// Disconnect closes the connection and forgets its board.
+// Disconnect closes the connection and forgets its board. It returns once
+// the connection's background work has ended (at most 5 s), so none of it
+// writes to this device's files afterwards.
 func (d *Desk) Disconnect() {
 	d.mu.Lock()
+	l := d.link
 	if d.cancel != nil {
 		d.cancel()
 		d.cancel = nil
@@ -804,7 +894,13 @@ func (d *Desk) Disconnect() {
 	d.presence.show(nil, "", "")
 	d.mu.Unlock()
 	d.gramReset(nil, "")
-	d.stopGuestGram()
+	closed := d.stopGuestGram()
+	if l != nil {
+		closed = append(closed, l)
+	}
+	if !closeLinks(closed, disconnectWait) {
+		log.Printf("disconnect: the connection's background work still runs after %s", disconnectWait)
+	}
 	d.gramWipeCacheUnlessOwner("")
 	d.setState(context.Background(), ConnState{Phase: "idle"})
 }
@@ -857,7 +953,7 @@ func (d *Desk) start(m Machine, password string) {
 	d.stopGuestGram()
 	d.gramReset(l, m.Host)
 	d.gramWipeCacheUnlessOwner(l.id)
-	go d.run(ctx, l, m, password)
+	l.work.Go(func() { d.run(ctx, l, m, password) })
 }
 
 // run connects and watches until ctx ends, reconnecting with backoff.
@@ -924,8 +1020,8 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	d.mu.Unlock()
 	sctx, stopSessions := context.WithCancel(ctx)
 	defer stopSessions()
-	go d.watchSessions(sctx, l, c)
-	go d.watchGram(sctx, l)
+	l.work.Go(func() { d.watchSessions(sctx, l, c) })
+	l.work.Go(func() { d.watchGram(sctx, l) })
 	defer func() {
 		d.mu.Lock()
 		l.client, l.restart = nil, nil

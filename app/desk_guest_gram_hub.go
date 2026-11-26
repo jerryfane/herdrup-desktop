@@ -110,11 +110,12 @@ func (d *Desk) startGuestGram() {
 }
 
 // stopGuestGram ends the combined guest Gram (the owner connected, or nothing
-// is shared any more).
-func (d *Desk) stopGuestGram() {
+// is shared any more). It returns the links it closed, whose work may still
+// be ending (Disconnect waits for it).
+func (d *Desk) stopGuestGram() []*link {
 	h := d.guestGram.Swap(nil)
 	if h == nil {
-		return
+		return nil
 	}
 	h.cancel()
 	h.mu.Lock()
@@ -128,6 +129,7 @@ func (d *Desk) stopGuestGram() {
 		closeLink(l)
 	}
 	GuestGramChanged.Broadcast(GuestGramSnapshot{Grants: []GuestGramState{}})
+	return links
 }
 
 // syncGuestGram brings a running combined guest Gram up to date with the
@@ -185,7 +187,10 @@ func (h *guestGramHub) sync() {
 		closeLink(l)
 	}
 	for _, l := range started {
-		go h.run(l)
+		// Refused once Disconnect closed it: nothing reads it.
+		if !l.work.Go(func() { h.run(l) }) {
+			_ = l.guest.Close()
+		}
 	}
 	h.publish()
 }
@@ -474,7 +479,7 @@ func (d *Desk) GuestGramLoadOlder(ctx context.Context, grants []string) (bool, e
 // GuestGramRefresh refreshes the named shared agents (every one when none).
 func (d *Desk) GuestGramRefresh(ctx context.Context, grants []string) {
 	for _, l := range d.guestGramLinks(grants) {
-		go d.gramRefresh(context.WithoutCancel(ctx), l)
+		l.work.Go(func() { d.gramRefresh(context.WithoutCancel(ctx), l) })
 	}
 }
 
