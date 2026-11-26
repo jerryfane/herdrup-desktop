@@ -586,3 +586,80 @@ func TestASharesConnectionEndsAsItsGrantGoesEvenIfTheCommitFails(t *testing.T) {
 		t.Fatalf("after the retry: grants %+v, connected %v, rows %v", grants, connected(), w.live())
 	}
 }
+
+// signInAs signs d in to acct anew through the worker's handoff ("" is
+// acct-2).
+func signInAs(t *testing.T, w *syncWorker, d *Desk, acct string) {
+	t.Helper()
+	w.mu.Lock()
+	w.handoffAccount = acct
+	w.mu.Unlock()
+	if _, err := d.account.StartSignIn("google"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.account.FinishSignIn(context.Background(), strings.Repeat("c", 43)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Another account signed in meanwhile doesn't make this device forget a
+// share its account held: left elsewhere while the other was signed in,
+// the share's grant goes once its account is back, whether its tombstone
+// is still there or pruned since, and its write is never sent again, even
+// when only the accept's own sync, whose readback was lost, had run.
+func TestAShareLeftWhileAnotherAccountWasSignedInStaysLeft(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		prune        bool
+		lostReadback bool
+	}{
+		{"its tombstone kept", false, false},
+		{"its tombstone pruned", true, false},
+		{"only the accept's sync run, its readback lost", false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			relay, base := shareRelay(t, true)
+			d := shareDevice(t, srv)
+			ctx := context.Background()
+			w.mu.Lock()
+			w.dropReadback = c.lostReadback
+			w.mu.Unlock()
+			access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+			if err != nil || !access.AccountBound {
+				t.Fatalf("bound accept: %+v, %v", access, err)
+			}
+			// The service took the write, even if its readback was lost.
+			if access.AccountShare != shareConfirmed {
+				t.Errorf("the accept says %q, want confirmed", access.AccountShare)
+			}
+			id := relay.HostID() + "/" + access.GuestID
+			signInAs(t, w, d, "")
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// Another device of the account leaves the share.
+			w.mu.Lock()
+			w.tombstone(id)
+			if c.prune {
+				w.prune(id)
+			}
+			w.mu.Unlock()
+			signInAs(t, w, d, "acct")
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, live := w.live()[id]; live {
+				t.Fatal("the left share was written to the account again")
+			}
+			if grants, _ := d.SharedConnections(); len(grants) != 0 {
+				t.Fatalf("the left share's grant is still held: %+v", grants)
+			}
+			if shares := sharesOf(t, d); len(shares) != 0 {
+				t.Fatalf("the left share is still listed: %+v", shares)
+			}
+		})
+	}
+}

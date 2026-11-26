@@ -98,6 +98,16 @@ type syncState struct {
 	// alone (its quota, say), by id: the refusal's code. Each goes once its
 	// write is taken, or no longer owed.
 	ShareRefusals map[string]string `json:"shareRefusals,omitempty"`
+	// SharesHeld are, by account, the shares that account was last seen
+	// to hold: its synced shares, those this device's writes put there
+	// (settled as the service took them, settleShareWrites), and those a
+	// readback saw deleted. Unlike the rest of this state it is kept for
+	// every account, not started over when another signs in, so a share
+	// left while another account was signed in still reads as left when
+	// its account comes back, by its tombstone or, once that is pruned, its
+	// absence (mergeShares' gone), and its grant here goes. Hosts and
+	// prompts start over on a switch as before.
+	SharesHeld map[string][]string `json:"sharesHeld,omitempty"`
 	// PushFrom is the write ("collection/id") the next round's pushes
 	// start from: a round the service's rate limit stopped leaves it at the
 	// first write it didn't settle, so the writes past a long run of
@@ -850,6 +860,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			knownShares[id] = true
 		}
 	}
+	// And whatever this account was last seen to hold, kept across a
+	// switch to another account and back (SharesHeld).
+	for _, id := range latest.SharesHeld[acct] {
+		knownShares[id] = true
+	}
 	for _, c := range confirmed {
 		if c.Server == nil || !c.Server.Deleted {
 			continue
@@ -937,7 +952,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline, PromptsPulled: true,
 		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptBaselineHash: baselineHash, PromptAttempts: attempts, PromptLastSent: lastSent,
 		SharesPulled: true, ShareWrites: shareWrites, ShareDeletes: shareDeletes, ShareRefusals: noteShareRefusals(latest.ShareRefusals, shareWrites, nil, nil),
-		Removed: removed, PushFrom: pushFrom, LastSync: lastSync, History: latest.History, ResetsSeen: latest.ResetsSeen}
+		SharesHeld: sharesHeldBy(latest.SharesHeld, acct, mirror.Shares), Removed: removed, PushFrom: pushFrom, LastSync: lastSync,
+		History: latest.History, ResetsSeen: latest.ResetsSeen}
 	if switched {
 		// Another account's state starts its own count: its first pull
 		// was a whole one, so every 410 it saw is behind it.
@@ -1050,6 +1066,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 		for _, a := range out.applied {
 			acked = append(acked, a.Change)
+		}
+		// The share writes it took are settled now: none goes again, and
+		// the account is known to hold them, whatever the rest of the round.
+		if err := d.settleShareWrites(ctx, acct, out.applied); err != nil {
+			return part, err
 		}
 		return part, d.settleSend(ctx, acct, history, sent, &out)
 	}
@@ -1277,6 +1298,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	state.PushFrom = pushFrom
 	state.ShareRefusals = noteShareRefusals(state.ShareRefusals, state.ShareWrites, acked, refusedShares)
+	state.SharesHeld = sharesHeldBy(state.SharesHeld, acct, state.Mirror.Shares, state.SharesGone, state.SharesHeld[acct])
 	// The merge pruned the tombstones; again only when the push or its
 	// readback changed what that saw: tombstones added, or pending deletes
 	// and open sends settled.

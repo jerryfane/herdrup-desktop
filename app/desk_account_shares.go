@@ -150,7 +150,8 @@ func accountShareOf(state syncState, a guest.Access) (string, string) {
 		return "", ""
 	}
 	id := a.ShareID()
-	if state.AccountID == a.Account && slices.ContainsFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }) {
+	if state.AccountID == a.Account && slices.ContainsFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }) ||
+		slices.Contains(state.SharesHeld[a.Account], id) && !slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id }) {
 		return shareConfirmed, ""
 	}
 	if slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id && op.Account == a.Account }) {
@@ -186,6 +187,62 @@ func (d *Desk) confirmShare() {
 	ctx, cancel := context.WithTimeout(context.Background(), acceptShareWait)
 	defer cancel()
 	_ = d.SyncMachines(ctx)
+}
+
+// settleShareWrites settles the share writes of applied (a push's answer
+// for account acct) the service took: none is owed any more, so none goes
+// again (on a tombstone it would bring the share back), and acct is known
+// to hold each (SharesHeld), before the round's readback, which may fail,
+// and whichever account signs in next.
+func (d *Desk) settleShareWrites(ctx context.Context, acct string, applied []appliedChange) error {
+	var took []string
+	for _, a := range applied {
+		if a.Collection == "shares" && !a.Deleted {
+			took = append(took, a.ID)
+		}
+	}
+	if len(took) == 0 {
+		return nil
+	}
+	if !d.storeMu.LockCtx(ctx) {
+		return ctx.Err()
+	}
+	defer d.storeMu.Unlock()
+	state, err := d.loadSyncState()
+	if err != nil || state.AccountID != acct {
+		return err
+	}
+	state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool { return op.Account == acct && slices.Contains(took, op.ID) })
+	state.SharesHeld = sharesHeldBy(state.SharesHeld, acct, nil, state.SharesHeld[acct], took)
+	return d.storeSyncState(state)
+}
+
+// sharesHeldBy is held (SharesHeld) with account acct's set made the ids
+// of live and those of each of more, once each and in order; the other
+// accounts' sets are as they were.
+func sharesHeldBy(held map[string][]string, acct string, live []account.RemoteShare, more ...[]string) map[string][]string {
+	var ids []string
+	for _, s := range live {
+		ids = append(ids, s.ID)
+	}
+	for _, m := range more {
+		ids = append(ids, m...)
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	out := maps.Clone(held)
+	if out == nil {
+		out = map[string][]string{}
+	}
+	if len(ids) == 0 {
+		delete(out, acct)
+	} else {
+		out[acct] = ids
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // noteShareRefusals is ShareRefusals after a round: prev, with the round's

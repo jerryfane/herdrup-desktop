@@ -47,6 +47,9 @@ type syncWorker struct {
 	// service refuses a batch with one change it won't store: none of it is
 	// written.
 	invalidNextPush bool
+	// dropReadback answers the first pull after the next push it applies
+	// 503: the push's readback lost; failPull is that pull owed.
+	dropReadback, failPull bool
 	// onPull, when set, runs once inside the next pull, before it answers.
 	onPull func()
 	// onPush, when set, runs once inside the next push, before it is applied.
@@ -404,6 +407,9 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			statements = append(statements, map[string]any{"host": h, "jws": "stmt." + acct + "." + h})
 		}
 		reply(200, map[string]any{"statements": statements, "exp": 600})
+	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet && w.failPull:
+		w.failPull = false
+		reply(503, map[string]string{"error": "unavailable"})
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet:
 		// sync.ts reads now_ms before the snapshot it pages.
 		now := w.nowMs()
@@ -542,6 +548,7 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			w.muteApplied = false
 			applied = nil
 		}
+		w.failPull, w.dropReadback = w.dropReadback, false
 		reply(200, w.withNow(map[string]any{"rev": w.rev, "applied": applied, "conflicts": conflicts}, w.nowMs()))
 	default:
 		reply(404, map[string]string{"error": "not_found"})
