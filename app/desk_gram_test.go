@@ -222,6 +222,20 @@ func TestGramAttachmentUploadsPostsAndOpensFromTheCache(t *testing.T) {
 	}
 }
 
+// activeMachine is d's active saved machine, read under d.storeMu as every
+// read of the desk's files is: a connected desk's work (the guest relabel
+// sender on a connection's first list, desk_guest_relabel.go) holds it too.
+func activeMachine(t *testing.T, d *Desk) Machine {
+	t.Helper()
+	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.Machines[st.find(st.Active)]
+}
+
 // #547 review: downloads that cannot move aside (a cache directory that
 // refuses renames) are deleted in place once the owner marker is gone, so a
 // reconnect of the same machine never finds the old attachment.
@@ -229,11 +243,7 @@ func TestDisconnectDropsDownloadsThatCannotMoveAside(t *testing.T) {
 	g := fakeherdr.NewGram("store-1")
 	g.Add(agentMsg("f1", "", false), []byte("the old bytes"))
 	d := gramDeskFor(t, g)
-	st, err := d.load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := st.Machines[st.find(st.Active)]
+	m := activeMachine(t, d)
 	// The machine owns the downloads, as its connection's claim records.
 	if err := os.MkdirAll(d.gramCacheBase(), 0o700); err != nil {
 		t.Fatal(err)
@@ -478,11 +488,7 @@ func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
 // clear.
 func TestDisconnectWaitingKeepsAReconnectsGramCacheAndState(t *testing.T) {
 	d, held := gramDeskWithHeldRefresh(t)
-	st, err := d.load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := st.Machines[st.find(st.Active)]
+	m := activeMachine(t, d)
 	returned := disconnectAsync(d, held)
 	waitFor(t, "Disconnect to take the connection", func() bool { return d.State().Phase == "idle" })
 	if err := d.Connect(m, ""); err != nil {
@@ -524,11 +530,7 @@ func TestDisconnectWaitingKeepsAReconnectsGramCacheAndState(t *testing.T) {
 // free) takes them out too: no Gram is left for the closed link.
 func TestDisconnectRacingConnectLeavesNoGramForTheClosedLink(t *testing.T) {
 	d := gramDeskFor(t, fakeherdr.NewGram("store-1"))
-	st, err := d.load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := st.Machines[st.find(st.Active)]
+	m := activeMachine(t, d)
 	waitFor(t, "the machine's board in the cache", func() bool { return d.boards.load(machineID(m), m.Session) != nil })
 	d.Disconnect()
 	var once sync.Once
