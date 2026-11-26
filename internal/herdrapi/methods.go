@@ -79,6 +79,10 @@ const (
 	// (herdr #519). Older servers refuse a guest.update without guest_id and
 	// share_gram.
 	CapabilityGuestRelabel Capability = "guest_relabel"
+	// guest.update and guest.invite.create take machine_label_rev: a label
+	// reaches only records holding a lower revision (herdr #526). Older
+	// servers ignore the field and overwrite unconditionally.
+	CapabilityGuestRelabelRev Capability = "guest_relabel_rev"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -122,6 +126,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentTopics
 	case CapabilityGuestRelabel:
 		return caps.GuestRelabel
+	case CapabilityGuestRelabelRev:
+		return caps.GuestRelabelRev
 	case CapabilityAgentTranscriptTopic:
 		return caps.AgentTranscriptTopic
 	case CapabilityAgentTopicsSwitch:

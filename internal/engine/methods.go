@@ -375,9 +375,12 @@ func (c *Client) GuestShareGram(ctx context.Context, p GuestShareGramParams) (he
 
 // GuestRelabel is guest.update {machine_label} without a scope (herdr #519):
 // every active guest and pending invite on the server names it label. Only a
-// server whose ping reports guest_relabel takes it.
-func (c *Client) GuestRelabel(ctx context.Context, label string) (herdrapi.ResponseResultGuestRelabeled, error) {
-	return call[herdrapi.ResponseResultGuestRelabeled](ctx, c, "guest.update", herdrapi.GuestUpdateParams{MachineLabel: &label})
+// server whose ping reports guest_relabel takes it. rev, when not nil, is the
+// label's revision (machine_label_rev, herdr #526): a record takes the label
+// only when rev is above its own; only a server whose ping reports
+// guest_relabel_rev honours it.
+func (c *Client) GuestRelabel(ctx context.Context, label string, rev *uint64) (herdrapi.ResponseResultGuestRelabeled, error) {
+	return call[herdrapi.ResponseResultGuestRelabeled](ctx, c, "guest.update", herdrapi.GuestUpdateParams{MachineLabel: &label, MachineLabelRev: rev})
 }
 
 // GuestRemoveDevice is guest.remove_device.
