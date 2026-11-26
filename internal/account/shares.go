@@ -27,7 +27,10 @@ type ShareBody struct {
 	ShareGram    *bool  `json:"share_gram,omitempty"`
 }
 
-// The shares collection's text limits, in code points.
+// The shares collection's text limits (AccountService src/sync.ts:219-235),
+// in code points as its text() counts them (Array.from, :90-97), not
+// graphemes as an invitation's labels are checked: a label within the
+// guest's limit can be over the service's.
 const (
 	maxShareAgent   = 128
 	maxShareOwner   = 64
@@ -85,7 +88,9 @@ func ValidShare(id string, b ShareBody) bool {
 }
 
 // shareText is a label as the service takes it (well-formed, no control
-// characters, at most max code points), or "" when it wouldn't.
+// characters, at most max code points), or "" when it wouldn't: the label
+// is then left out of the item (each is optional), which the service would
+// otherwise refuse with the whole push (400 invalid_item).
 func shareText(s string, max int) string {
 	if !utf8.ValidString(s) || utf8.RuneCountInString(s) > max || strings.ContainsFunc(s, unicode.IsControl) {
 		return ""

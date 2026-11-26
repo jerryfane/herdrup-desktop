@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -342,5 +343,73 @@ func TestABoundShareStaysWithTheAccountThatBoundIt(t *testing.T) {
 	syncAs("acct")
 	if held() {
 		t.Fatal("the leave never reached the share's account")
+	}
+}
+
+// A label the account can't store is left out of the share's item, so the
+// rest of it syncs: the service counts code points (sync.ts text()), and
+// this agent name has 70 graphemes, under the guest's own 128, but 140 code
+// points, over the service's 128.
+func TestALabelTheServiceWontStoreIsLeftOut(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	long := strings.Repeat("e\u0301", 70)
+	relay.AgentName = long
+	d := shareDevice(t, srv)
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.AgentName != long {
+		t.Fatalf("bound accept: %+v, %v", access, err)
+	}
+	if err := d.SyncMachines(context.Background()); err != nil {
+		t.Fatalf("a share with a long agent name: %v", err)
+	}
+	it, ok := w.live()[relay.HostID()+"/"+access.GuestID]
+	if !ok {
+		t.Fatal("the share was not written")
+	}
+	var body map[string]any
+	_ = json.Unmarshal(it.Body, &body)
+	if _, kept := body["agent_name"]; kept || body["owner_name"] != "Jerry" || body["machine_label"] != "studio" {
+		t.Fatalf("shares body %v; want the agent name left out, the rest kept", body)
+	}
+}
+
+// A push the service refuses whole (400) writes nothing, and acknowledges
+// none of its changes: the share's write and a prompt's in the same batch
+// both go again on the next sync.
+func TestARefusedBatchLeavesItsChangesPending(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound {
+		t.Fatalf("bound accept: %+v, %v", access, err)
+	}
+	savePrompt(t, d, "", "", "summarise the build")
+	w.mu.Lock()
+	w.invalidNextPush = true
+	w.mu.Unlock()
+	if err := d.SyncMachines(context.Background()); err == nil {
+		t.Fatal("a refused push synced")
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	if _, ok := w.live()[id]; ok || len(w.livePrompts()) != 0 {
+		t.Fatalf("a refused push wrote: %v", w.live())
+	}
+	d.storeMu.Lock()
+	state, err := d.loadSyncState()
+	d.storeMu.Unlock()
+	if err != nil || !slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id }) {
+		t.Fatalf("the share's write is no longer owed: %+v, %v", state.ShareWrites, err)
+	}
+	if err := d.SyncMachines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := w.live()[id]; !ok || len(w.livePrompts()) != 1 {
+		t.Fatalf("after the refusal, the next sync wrote %v", w.live())
 	}
 }

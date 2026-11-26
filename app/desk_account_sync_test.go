@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jerryfane/herdrup-desktop/internal/account"
 )
@@ -41,6 +43,10 @@ type syncWorker struct {
 	account string // "acct" when empty
 	// failPush answers the next pushes 503 (the service down mid-sync).
 	failPush bool
+	// invalidNextPush answers the next push 400 invalid_item, as the
+	// service refuses a batch with one change it won't store: none of it is
+	// written.
+	invalidNextPush bool
 	// onPull, when set, runs once inside the next pull, before it answers.
 	onPull func()
 	// onPush, when set, runs once inside the next push, before it is applied.
@@ -442,6 +448,11 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			cutAnswer(rw, r, status)
 			return
 		}
+		if w.invalidNextPush {
+			w.invalidNextPush = false
+			reply(400, map[string]any{"error": "invalid_item", "index": 0, "field": "body"})
+			return
+		}
 		if w.unauthorizeNextPush {
 			w.unauthorizeNextPush = false
 			reply(401, map[string]string{"error": "invalid_token"})
@@ -577,11 +588,19 @@ func validSyncBody(collection string, raw json.RawMessage) bool {
 		_, hasText := fields["text"]
 		return hasText
 	case "shares":
-		// sync.ts SCHEMAS.shares: the allowlist, and the four ids present.
+		// sync.ts SCHEMAS.shares (themartianapp/herdrup AccountService
+		// src/sync.ts:219-235): the allowlist, the four ids present, and
+		// the labels as text() takes them (:90-97): well formed, no control
+		// character, at most 128, 64 and 128 code points.
+		labels := map[string]int{"agent_name": 128, "owner_name": 64, "machine_label": 128}
 		for k, v := range fields {
 			switch k {
 			case "relay", "host_id", "node_pub", "guest_id", "agent_name", "owner_name", "machine_label":
-				if _, ok := v.(string); !ok {
+				s, ok := v.(string)
+				if !ok {
+					return false
+				}
+				if max, label := labels[k]; label && (!utf8.ValidString(s) || utf8.RuneCountInString(s) > max || strings.ContainsFunc(s, unicode.IsControl)) {
 					return false
 				}
 			case "share_gram":
