@@ -277,6 +277,14 @@ export function worker() {
    if (!b.text || new TextEncoder().encode(b.text).byteLength > 8192 || [...b.title ?? ""].length > 128) return Response.json({ error: "invalid_item" }, { status: 400 });
    if (new TextEncoder().encode(JSON.stringify(c.body)).byteLength > 16 * 1024) return Response.json({ error: "too_large" }, { status: 413 });
   }
+  // sync.ts SCHEMAS.shares: labels of at most 128 (agent_name, machine_label) and 64 (owner_name)
+  // code points; a push holding one longer is refused whole.
+  for (const c of changes) {
+   if (c.body === undefined || c.collection !== "shares") continue;
+   const b = c.body as Record<string, unknown>;
+   const over = (field: string, max: number) => typeof b[field] === "string" && [...b[field]].length > max;
+   if (over("agent_name", 128) || over("owner_name", 64) || over("machine_label", 128)) return Response.json({ error: "invalid_item" }, { status: 400 });
+  }
   if (w.holdNextPush) {
    w.holdNextPush = false; held.push({ changes, notAfter });
    const given = Promise.withResolvers<Response>();

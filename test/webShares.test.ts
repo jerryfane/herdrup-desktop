@@ -8,27 +8,27 @@ import { afterEach, expect, test } from "bun:test";
 import { WebAccount } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
-import { createShareSync } from "../src/web/shares";
+import { createShareSync, SHARES_KEY_PREFIX } from "../src/web/shares";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
-import type { Access } from "../src/webguest/transport";
 import { toB64url } from "../src/webguest/b64url";
 import { MemoryIdentityStore } from "../src/webguest/identity";
 import { APP_LINK_PREFIX } from "../src/webguest/invite";
 import type { StatementSource } from "../src/webguest/owner";
+import type { Access } from "../src/webguest/transport";
 import { memory, worker, type Worker } from "./webAccountService";
 import { CONNECTS_LIMIT_MS, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
 let relays: TestRelay[] = [];
 afterEach(() => { for (const relay of relays) relay.stop(); relays = []; });
 
-/** herdr sharing one agent: the grants it made, bound ones by the statement's account (here the
- *  statement text itself), and every hello it was sent. */
-function host() {
+/** herdr sharing one agent (named agent): the grants it made, bound ones by the statement's
+ *  account (here the statement text itself), and every hello it was sent. */
+function host(agent = "docs") {
  const grants = new Map<string, { account: string | null }>();
  const hellos: Record<string, unknown>[] = [];
  let next = 0;
  const reply = (guestID: string, bound: boolean) => ({
-  ok: true, guest_id: guestID, name: "visitor", machine_label: "Mac Studio", owner_name: "Ana", agent: { name: "docs", target: "%7" },
+  ok: true, guest_id: guestID, name: "visitor", machine_label: "Mac Studio", owner_name: "Ana", agent: { name: agent, target: "%7" },
   features: { gram: false, push: true, multi_request: true }, ...(bound ? { account: { deadline_unix: Math.floor(Date.now() / 1000) + 660 } } : {}),
  });
  const relay = startRelay({
@@ -60,10 +60,10 @@ function host() {
  return { relay, grants, hellos };
 }
 
-/** The invitation's app link; acct: 1 unless plain. */
-function inviteText(relay: TestRelay, acct = true): string {
+/** The invitation's app link for agent; acct: 1 unless plain. */
+function inviteText(relay: TestRelay, acct = true, agent = "docs"): string {
  const bytes = (n: number, fill: number) => toB64url(new Uint8Array(n).fill(fill));
- const payload = { v: 1, relay: relay.url, host_id: relay.hostID, host_pub: toB64url(relay.hostPublic), invite_id: bytes(16, 3), secret: bytes(32, 4), machine_label: "Mac Studio", owner_name: "Ana", agent_name: "docs", guest_name: "visitor", expires_unix: Math.floor(Date.now() / 1000) + 3600, ...(acct ? { acct: 1 } : {}) };
+ const payload = { v: 1, relay: relay.url, host_id: relay.hostID, host_pub: toB64url(relay.hostPublic), invite_id: bytes(16, 3), secret: bytes(32, 4), machine_label: "Mac Studio", owner_name: "Ana", agent_name: agent, guest_name: "visitor", expires_unix: Math.floor(Date.now() / 1000) + 3600, ...(acct ? { acct: 1 } : {}) };
  return APP_LINK_PREFIX + toB64url(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
@@ -82,7 +82,7 @@ async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore
  const storage = memory();
  const shares = createShareSync(account, { storage: () => storage, locks: null, name: "Chrome on macOS", background: false });
  const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
- return { desk, grants, shares, account };
+ return { desk, grants, shares, account, storage };
 }
 
 const sharesOn = (w: Worker) => w.pushed.flat().filter(c => c.collection === "shares");
@@ -196,6 +196,37 @@ test("a share is written to and deleted from the account that bound it, never an
  await switchTo("acct");
  await mac.shares.sync();
  expect([w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual([[], { collection: "shares", id, base_rev: 1, deleted: true }]);
+}, CONNECTS_LIMIT_MS);
+
+test("a label the service can't store is left out of the share, and a refused push loses no other write", async () => {
+ // 70 graphemes, 140 code points: an invite may name its agent so; the service keeps 128 code points.
+ const long = "👍🏽".repeat(70);
+ const w = worker(), h = host(long);
+ const mac = await browser(w), linux = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, long), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const body = { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, owner_name: "Ana", machine_label: "Mac Studio" };
+ expect([[...long].length, mac.grants.access?.agentName]).toEqual([140, long]);
+ expect(sharesOn(w)).toEqual([{ collection: "shares", id, base_rev: 0, body }]);
+ await linux.shares.sync();
+ expect(linux.shares.list()).toEqual([{ id, rev: 1, body }]);
+
+ // This browser's record holds a put the service refuses (an earlier version wrote it) ahead of a
+ // leave not yet sent: the leave still goes, and the refused put alone is dropped.
+ w.failPush = true;
+ await mac.desk.forgetGuestConnection(id);
+ w.failPush = false;
+ const key = SHARES_KEY_PREFIX + "acct";
+ const record: { pending: object[] } = JSON.parse(mac.storage.getItem(key)!);
+ const other = toB64url(new Uint8Array(16).fill(9));
+ record.pending.unshift({ id: `${h.relay.hostID}/${other}`, body: { ...body, guest_id: other, agent_name: long } });
+ mac.storage.setItem(key, JSON.stringify(record));
+ await mac.shares.sync();
+ // Refused whole, then each change alone: the leave is taken.
+ expect(w.pushed.slice(-3).map(p => p.map(c => c.id === id ? "leave" : "refused"))).toEqual([["refused", "leave"], ["refused"], ["leave"]]);
+ expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
+ const after: { pending: object[] } = JSON.parse(mac.storage.getItem(key)!);
+ expect([w.sharesIn("acct"), after.pending]).toEqual([[], []]);
 }, CONNECTS_LIMIT_MS);
 
 test("a plain accept (Only this device, or an invite without acct) writes nothing to the account", async () => {

@@ -11,7 +11,7 @@
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, type SyncChange, type WebAccount } from "./account";
+import { AccountServiceError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
 import { withStorageLock, type AbortableLocks } from "./locks";
 import { pullSince } from "./prompts";
 
@@ -49,13 +49,22 @@ const SYNC_EVERY_MS = 15 * 60_000;
 /** A grant's id on the account and on this page: "<host_id>/<guest_id>". */
 export const shareID = (access: Pick<Access, "endpoint" | "guestID">) => `${access.endpoint.hostID}/${access.guestID}`;
 
+/** The most code points of each label the service keeps (sync.ts SCHEMAS.shares). */
+const MAX_AGENT_NAME = 128, MAX_OWNER_NAME = 64, MAX_MACHINE_LABEL = 128;
+
+/** Whether the service stores text as a label of at most max code points (sync.ts text()):
+ *  well-formed, with no control character. An invite's labels are capped in graphemes, which
+ *  may hold more code points. */
+const storable = (text: string, max: number) => text.isWellFormed() && !/\p{Cc}/u.test(text) && Array.from(text).length <= max;
+
 /** The item a bound grant writes (§5.1: public fields only; no secret has a field). The relay is
- *  the invite's base URL without a trailing "/"; Gram sharing isn't written (share_gram). */
+ *  the invite's base URL without a trailing "/"; Gram sharing isn't written (share_gram). A label
+ *  the service wouldn't store is left out: it would refuse the whole item. */
 export function shareBody(access: Access): ShareBody {
  const body: ShareBody = { relay: access.endpoint.relay.replace(/\/+$/, ""), host_id: access.endpoint.hostID, node_pub: toB64url(access.endpoint.hostPublicKey), guest_id: access.guestID };
- if (access.agentName) body.agent_name = access.agentName;
- if (access.ownerName) body.owner_name = access.ownerName;
- if (access.machineLabel) body.machine_label = access.machineLabel;
+ if (access.agentName && storable(access.agentName, MAX_AGENT_NAME)) body.agent_name = access.agentName;
+ if (access.ownerName && storable(access.ownerName, MAX_OWNER_NAME)) body.owner_name = access.ownerName;
+ if (access.machineLabel && storable(access.machineLabel, MAX_MACHINE_LABEL)) body.machine_label = access.machineLabel;
  return body;
 }
 
@@ -113,25 +122,38 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    const sent = record.pending.map((p): SyncChange => p.deleted
     ? { collection: "shares", id: p.id, base_rev: seen(p.id), deleted: true }
     : { collection: "shares", id: p.id, base_rev: seen(p.id), body: p.body });
-   let settled: Set<string>;
+   const deletes = new Set(record.pending.filter(p => p.deleted).map(p => p.id));
+   const settled = new Set<string>();
    // Deletes refused for their base while the share is still live: the service's rows they go on from.
-   let rebased: RemoteShare[] = [];
-   try {
-    const answer = await account.syncPush({ prepare: async () => ({ changes: sent }), sending() {}, async refused() {} }, acct, signal, generation);
-    const deletes = new Set(record.pending.filter(p => p.deleted).map(p => p.id));
-    const conflicts = (answer?.conflicts ?? []).filter(c => c.collection === "shares");
-    rebased = conflicts.flatMap(c => deletes.has(c.id) && c.server !== null && !c.server.deleted && validBody(c.server.body) ? [{ id: c.id, rev: c.server.rev, body: c.server.body }] : []);
-    // Applied, or a put refused for its base (the service's item stands), or a delete of a share
-    // already gone.
-    const kept = new Set(rebased.map(s => s.id));
-    settled = new Set([...(answer?.applied ?? []).filter(c => c.collection === "shares"), ...conflicts.filter(c => !kept.has(c.id))].map(c => c.id));
-   } catch (error) {
-    // A write the service refuses as malformed is never taken: it goes. Anything else (offline, a
-    // rate limit, the quota) stays for the next round.
-    if (!(error instanceof AccountServiceError && error.status === 400)) throw error;
-    settled = new Set(sent.map(c => c.id));
-   }
-   // Only the writes sent leave: one made meanwhile for the same share goes next round.
+   const rebased: RemoteShare[] = [];
+   /** Sends changes and notes what each settles: applied, a put refused for its base (the
+    *  service's item stands), or a delete of a share already gone. */
+   const push = async (changes: SyncChange[]): Promise<void> => {
+    let answer: SyncPushAnswer | null;
+    try {
+     answer = await account.syncPush({ prepare: async () => ({ changes }), sending() {}, async refused() {} }, acct, signal, generation);
+    } catch (error) {
+     // Anything but a 400 (offline, a rate limit, the quota) leaves the writes for the next round.
+     if (!(error instanceof AccountServiceError && error.status === 400)) throw error;
+     // A 400 refuses the whole push for one change the service won't keep, and none of it is
+     // written: each change then goes alone, and only one refused alone (malformed, never to be
+     // taken) goes unwritten.
+     if (changes.length === 1) settled.add(changes[0]!.id);
+     else for (const change of changes) await push([change]);
+     return;
+    }
+    for (const c of answer?.applied ?? []) if (c.collection === "shares") settled.add(c.id);
+    for (const c of answer?.conflicts ?? []) {
+     if (c.collection !== "shares") continue;
+     const server = c.server;
+     if (deletes.has(c.id) && server !== null && !server.deleted && validBody(server.body)) rebased.push({ id: c.id, rev: server.rev, body: server.body });
+     else settled.add(c.id);
+    }
+   };
+   let failed: { error: unknown } | null = null;
+   try { await push(sent); } catch (error) { failed = { error }; }
+   // Only the writes sent leave: one made meanwhile for the same share goes next round. What was
+   // settled before a push failed (sent alone after a 400) leaves too.
    const sentAs = new Set(record.pending.map(p => JSON.stringify(p)));
    await update(acct, r => {
     r.pending = r.pending.filter(p => !(settled.has(p.id) && sentAs.has(JSON.stringify(p))));
@@ -141,6 +163,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      delete r.gone[row.id];
     }
    });
+   if (failed !== null) throw failed.error;
   }
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
   return update(acct, r => {
