@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/dsa"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -589,7 +590,8 @@ func mustAtoi(s string) int { n, _ := strconv.Atoi(s); return n }
 // A machine the approver pinned by its RSA or ECDSA host key is saved
 // Paired with that key type, and connects offering only it: an sshd that
 // also serves an ed25519 key (which herdr pair's order prefers) is still
-// checked against the approver's pin. A certificate is never pinned.
+// checked against the approver's pin. A key type this device doesn't pin
+// (DSA) is not saved.
 func TestPairRequestConnectsWithTheKeyTypeTheApproverPinned(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
@@ -606,21 +608,28 @@ func TestPairRequestConnectsWithTheKeyTypeTheApproverPinned(t *testing.T) {
 	ecSigner, _ := ssh.NewSignerFromKey(ecPriv)
 	rsaBox := servedMachineKeys(t, s, rsaSigner, ed)
 	ecBox := servedMachineKeys(t, s, ecSigner, ed)
-	cert := &ssh.Certificate{Key: ed.PublicKey(), CertType: ssh.HostCert, ValidBefore: ssh.CertTimeInfinity}
-	if err := cert.SignCert(rand.Reader, ed); err != nil {
+	var dsaKey dsa.PrivateKey
+	if err := dsa.GenerateParameters(&dsaKey.Parameters, rand.Reader, dsa.L1024N160); err != nil {
 		t.Fatal(err)
 	}
-	certEntry := offNetwork(t).entry("cert-box", account.PairAdded, "")
-	certEntry.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(cert)))
+	if err := dsa.GenerateKey(&dsaKey, rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	dsaPub, err := ssh.NewPublicKey(&dsaKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsaEntry := offNetwork(t).entry("dsa-box", account.PairAdded, "")
+	dsaEntry.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(dsaPub)))
 	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
 		t.Fatal(c, err)
 	}
-	if err := a.Approve(ctx, 1, pairEnvelope(rsaBox.entry("rsa-box", account.PairAdded, ""), ecBox.entry("ec-box", account.PairAdded, ""), certEntry)); err != nil {
+	if err := a.Approve(ctx, 1, pairEnvelope(rsaBox.entry("rsa-box", account.PairAdded, ""), ecBox.entry("ec-box", account.PairAdded, ""), dsaEntry)); err != nil {
 		t.Fatal(err)
 	}
 	v = w.read(t, v.ID)
-	if r := resultOf(v, "cert-box"); r.Result != PairNotAdded || !strings.Contains(r.Reason, "doesn't pin") {
-		t.Fatalf("certificate %+v", r)
+	if r := resultOf(v, "dsa-box"); r.Result != PairNotAdded || !strings.Contains(r.Reason, "doesn't pin") {
+		t.Fatalf("dsa %+v", r)
 	}
 	types := map[string]string{}
 	for _, m := range w.machines(t) {
@@ -1034,6 +1043,41 @@ func TestPairRequestSettlesARemovedMachine(t *testing.T) {
 	}
 	v, err := w.d.PairRequestConnect(ctx, id)
 	if err != nil || resultOf(v, "studio").Reach != PairRemoved {
+		t.Fatalf("connect %+v, %v", v, err)
+	}
+}
+
+// The envelope's host_key is a plain key; one sent as a certificate anyway
+// is pinned as the plain key it certifies, so the machine saves with that
+// key's type and connects.
+func TestPairRequestPinsTheKeyACertificateCertifies(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	studio := servedMachine(t, s)
+	ca, _ := newHostKey(t)
+	cert := &ssh.Certificate{Key: studio.hostKey, CertType: ssh.HostCert, ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, ca); err != nil {
+		t.Fatal(err)
+	}
+	entry := studio.entry("studio", account.PairAdded, "")
+	entry.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(cert)))
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(entry)); err != nil {
+		t.Fatal(err)
+	}
+	v = w.read(t, v.ID)
+	saved := w.machines(t)
+	if resultOf(v, "studio").Result != PairSaved || len(saved) != 1 || saved[0].HostKeyType != ssh.KeyAlgoED25519 {
+		t.Fatalf("view %+v, saved %+v", v, saved)
+	}
+	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port))); err != nil || !ok || pin != bridge.Fingerprint(studio.hostKey) {
+		t.Fatalf("pin %q %v %v, want the plain key's", pin, ok, err)
+	}
+	if v, err := w.d.PairRequestConnect(ctx, v.ID); err != nil || resultOf(v, "studio").Reach != PairOnline {
 		t.Fatalf("connect %+v, %v", v, err)
 	}
 }

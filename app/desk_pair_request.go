@@ -53,6 +53,7 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/account"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
+	"golang.org/x/crypto/ssh"
 )
 
 // pairRetryWindow is how long after the approval a retry's list may still
@@ -552,6 +553,12 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 			r.Result, r.Reason = PairNotAdded, "its host key couldn't be read"
 			set(r)
 			continue
+		}
+		// The contract sends the plain key; a certificate sent anyway is
+		// pinned as the key it certifies (bridge accepts a certificate of
+		// a pinned key).
+		if cert, ok := hostKey.(*ssh.Certificate); ok {
+			hostKey = cert.Key
 		}
 		if !slices.Contains(pairHostKeyTypes, hostKey.Type()) {
 			r.Result, r.Reason = PairNotAdded, "its host key is a "+hostKey.Type()+" key, which this device doesn't pin"
