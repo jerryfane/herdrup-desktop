@@ -306,8 +306,8 @@ func (d *Desk) gramReset(l *link, machine string) {
 }
 
 // gramSwap is gramReset but for closing the previous composer, which it
-// returns (nil when there was none). Disconnect runs it under d.mu: d.mu
-// comes before a gramDesk's mu, never under it.
+// returns (nil when there was none). A connection change runs it under d.mu,
+// with d.link (detached): d.mu comes before a gramDesk's mu, never under it.
 func (d *Desk) gramSwap(l *link, machine string) *gramstore.Composer {
 	g := d.gramFor(l)
 	g.mu.Lock()

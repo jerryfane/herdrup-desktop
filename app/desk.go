@@ -911,24 +911,42 @@ func (d *Desk) Disconnect() {
 	// Everything else of the connection is detached here too, its Gram, the
 	// combined guest Gram and the download cache's claim, so a connection
 	// made once d.mu is free installs its own, which nothing below touches.
-	composer := d.gramSwap(nil, "")
-	hub := d.detachGuestGram()
-	discarded := d.gramDetachCache()
+	x := detached{composer: d.gramSwap(nil, ""), hub: d.detachGuestGram(), discarded: d.gramDetachCache()}
 	d.mu.Unlock()
-	if composer != nil {
-		composer.Close()
-	}
-	var closed []*link
-	if hub != nil {
-		closed = hub.stop()
-	}
+	closed := x.stop()
 	if l != nil {
 		closed = append(closed, l)
 	}
 	if !closeLinks(closed, disconnectWait) {
 		log.Printf("disconnect: the connection's background work still runs after %s", disconnectWait)
 	}
-	for _, dir := range discarded {
+	x.remove()
+}
+
+// detached is what a connection change took out of use under d.mu, together
+// with d.link: Desk state a connection owns goes in and out only there. Its
+// caller ends it once d.mu is free.
+type detached struct {
+	composer  *gramstore.Composer
+	hub       *guestGramHub
+	discarded []string
+}
+
+// stop closes the old composer and stops the old combined guest Gram,
+// returning its links, whose work may still be ending.
+func (x detached) stop() []*link {
+	if x.composer != nil {
+		x.composer.Close()
+	}
+	if x.hub == nil {
+		return nil
+	}
+	return x.hub.stop()
+}
+
+// remove deletes the downloads moved aside.
+func (x detached) remove() {
+	for _, dir := range x.discarded {
 		_ = os.RemoveAll(dir)
 	}
 }
@@ -970,6 +988,10 @@ func (d *Desk) start(m Machine, password string) {
 	d.link = l
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
+	// Gram belongs to the connection, its downloads to the machine, and the
+	// combined guest Gram ends: all of it changes with d.link, so a
+	// Disconnect detaches either none of it or all of it.
+	x := detached{composer: d.gramSwap(l, m.Host), hub: d.detachGuestGram(), discarded: d.gramClaimCache(l.id)}
 	// The machine's last listed board shows until its first list arrives
 	// (slow-network fix 4); unlisted, so the page knows it is not current.
 	if cached := d.boards.load(l.id, l.session); cached != nil {
@@ -977,10 +999,8 @@ func (d *Desk) start(m Machine, password string) {
 	} else {
 		d.mu.Unlock()
 	}
-	// Gram belongs to the connection; its downloads to the machine.
-	d.stopGuestGram()
-	d.gramReset(l, m.Host)
-	d.gramWipeCacheUnlessOwner(l.id)
+	x.stop()
+	x.remove()
 	l.work.Go(func() { d.run(ctx, l, m, password) })
 }
 

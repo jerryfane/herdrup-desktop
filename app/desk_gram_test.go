@@ -466,6 +466,37 @@ func TestDisconnectWaitingKeepsAReconnectsGramCacheAndState(t *testing.T) {
 	}
 }
 
+// #547 review: a connection's Gram and download cache claim go in with its
+// link, in one d.mu section. A Disconnect right after the link went in (here
+// as Connect shows the machine's cached board, which it does once d.mu is
+// free) takes them out too: no Gram is left for the closed link.
+func TestDisconnectRacingConnectLeavesNoGramForTheClosedLink(t *testing.T) {
+	d := gramDeskFor(t, fakeherdr.NewGram("store-1"))
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := st.Machines[st.find(st.Active)]
+	waitFor(t, "the machine's board in the cache", func() bool { return d.boards.load(machineID(m), m.Session) != nil })
+	d.Disconnect()
+	var once sync.Once
+	d.mu.Lock()
+	d.onBoard = func(BoardUpdate) { once.Do(d.Disconnect) }
+	d.mu.Unlock()
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.State(); s.Phase != "idle" {
+		t.Fatalf("the desk shows %q after the Disconnect", s.Phase)
+	}
+	if l, err := d.gramLink(); err == nil {
+		t.Fatalf("Gram is left on the closed link %q (phase %q)", l.id, d.GramState().Phase)
+	}
+	if owner, err := os.ReadFile(d.gramOwnerPath()); err == nil {
+		t.Fatalf("the download cache is left claimed by the closed link's machine %q", owner)
+	}
+}
+
 // Owner bug 2026-11-12 (herdr-app 462142): Gram's agents were only the ones
 // that had written in the loaded page. Every agent herdr would deliver a
 // gram.post to is offered after them, once each, by its routing name.

@@ -49,31 +49,38 @@ func (d *Desk) gramPartialDir() string { return filepath.Join(d.gramCacheBase(),
 
 func (d *Desk) gramOwnerPath() string { return filepath.Join(d.gramCacheBase(), "gram-owner") }
 
-// gramWipeCacheUnlessOwner drops every downloaded file unless they were
-// downloaded from owner, then records owner: the bytes must not outlive the
-// machine that could read them. "" wipes them for good (a disconnect).
-func (d *Desk) gramWipeCacheUnlessOwner(owner string) {
-	if owner != "" {
-		if b, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(b) == owner {
-			return
+// gramClaimCache gives the downloads to owner, a connection's machine, under
+// d.mu (start, ConnectGuest): the bytes must not outlive the machine that
+// could read them. Unless they are owner's already, it detaches them
+// (gramDetachCache) and records owner. It returns what to delete once d.mu
+// is free; a download directory a move failed to take is in it, deleted in
+// place as before, and leaves owner unrecorded, so the next connection
+// detaches it again.
+func (d *Desk) gramClaimCache(owner string) []string {
+	if b, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(b) == owner {
+		return nil
+	}
+	discarded := d.gramDetachCache()
+	stuck := false
+	for _, p := range []string{d.gramCache().Root, d.gramPartialDir()} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			discarded, stuck = append(discarded, p), true
 		}
 	}
-	d.gramCache().RemoveAll()
-	_ = os.RemoveAll(d.gramPartialDir())
-	_ = os.Remove(d.gramOwnerPath())
-	if owner != "" {
+	if !stuck {
 		if err := os.MkdirAll(d.gramCacheBase(), 0o700); err == nil {
 			_ = os.WriteFile(d.gramOwnerPath(), []byte(owner), 0o600)
 		}
 	}
+	return discarded
 }
 
-// gramDetachCache takes every downloaded file out of use for good, as
-// gramWipeCacheUnlessOwner("") does, but cheaply enough for d.mu
-// (Disconnect): the owner marker goes and the files move aside, renamed
-// gram-discarded-*. It returns every such directory (one an earlier run left
-// too) for the caller to delete outside d.mu. Files a move fails to take go
-// with the next connection's wipe, the marker being gone.
+// gramDetachCache takes every downloaded file out of use for good, cheaply
+// enough for d.mu (Disconnect, ForgetGuestConnection): the owner marker goes
+// and the files move aside, renamed gram-discarded-*. It returns every such
+// directory (one an earlier run left too) for the caller to delete outside
+// d.mu. Files a move fails to take go with the next connection's claim, the
+// marker being gone.
 func (d *Desk) gramDetachCache() []string {
 	base := d.gramCacheBase()
 	_ = os.Remove(d.gramOwnerPath())

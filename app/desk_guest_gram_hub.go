@@ -94,27 +94,17 @@ func guestGramPolls(multi bool, singles int) (visible, badge, cost time.Duration
 // connect each time).
 var guestGramRediscover = 2 * time.Minute
 
-// startGuestGram starts the combined guest Gram, or brings a running one up
-// to date with the saved shared agents.
-func (d *Desk) startGuestGram() {
+// installGuestGram is the combined guest Gram, made now if none runs. d.mu
+// must be held: ConnectGuest installs it with its link, and syncs it with the
+// saved shared agents after; only a connection change detaches it.
+func (d *Desk) installGuestGram() *guestGramHub {
 	h := d.guestGram.Load()
 	if h == nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		h = &guestGramHub{d: d, ctx: ctx, cancel: cancel, links: map[string]*link{}, grants: map[string]GuestGramGrant{}, snaps: map[string]GramSnapshot{}}
-		if !d.guestGram.CompareAndSwap(nil, h) {
-			cancel()
-			h = d.guestGram.Load()
-		}
+		d.guestGram.Store(h)
 	}
-	h.sync()
-}
-
-// stopGuestGram ends the combined guest Gram (the owner connected, or nothing
-// is shared any more).
-func (d *Desk) stopGuestGram() {
-	if h := d.detachGuestGram(); h != nil {
-		h.stop()
-	}
+	return h
 }
 
 // detachGuestGram takes the combined guest Gram out of use and tells the page
@@ -166,6 +156,12 @@ func (h *guestGramHub) sync() {
 	saved := map[string]bool{}
 	var started, dropped []*link
 	h.mu.Lock()
+	// Stopped (a Disconnect between ConnectGuest's install and this sync):
+	// stop has its links, and it gets no more.
+	if h.ctx.Err() != nil {
+		h.mu.Unlock()
+		return
+	}
 	h.order = h.order[:0]
 	for _, access := range list {
 		id := access.ID()

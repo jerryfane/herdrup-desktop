@@ -185,11 +185,15 @@ func (d *Desk) ConnectGuest(id string) error {
 	d.link = l
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
+	// A guest's Gram is every shared agent's at once (desk_guest_gram_hub.go),
+	// installed with the link as start does the owner's: the owner's Gram
+	// ends and the downloads become this connection's.
+	x := detached{composer: d.gramSwap(nil, ""), discarded: d.gramClaimCache(l.id)}
+	hub := d.installGuestGram()
 	d.mu.Unlock()
-	// A guest's Gram is every shared agent's at once (desk_guest_gram_hub.go).
-	d.gramReset(nil, "")
-	d.startGuestGram()
-	d.gramWipeCacheUnlessOwner(l.id)
+	x.stop()
+	x.remove()
+	hub.sync()
 	go func() {
 		defer cancel()
 		d.runGuest(ctx, l, identity.Fingerprint())
@@ -202,6 +206,7 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 	}
 	d.mu.Lock()
 	active := d.link != nil && d.link.guest != nil && d.link.access.ID() == id
+	var x detached
 	if active {
 		if d.cancel != nil {
 			d.cancel()
@@ -210,15 +215,15 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 		d.link = nil
 		d.board, d.peers = nil, nil
 		d.presence.show(nil, "", "")
+		d.state = ConnState{Phase: "idle"}
+		StateChanged.Broadcast(d.state)
+		// The connection's Gram, guest Gram and downloads go with it (Disconnect).
+		x = detached{composer: d.gramSwap(nil, ""), hub: d.detachGuestGram(), discarded: d.gramDetachCache()}
 	}
 	d.mu.Unlock()
 	d.syncGuestGram()
-	if active {
-		d.gramReset(nil, "")
-		d.stopGuestGram()
-		d.gramWipeCacheUnlessOwner("")
-		d.setState(context.Background(), ConnState{Phase: "idle"})
-	}
+	x.stop()
+	x.remove()
 	return nil
 }
 
