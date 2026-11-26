@@ -230,6 +230,9 @@ type Desk struct {
 	// pairApproval is the pair request from another device this computer
 	// is approving (desk_pair_approve.go); guarded by mu.
 	pairApproval *pairApproval
+	// pairRequest is this computer's request to be paired from another
+	// device (desk_pair_request.go); guarded by mu.
+	pairRequest *pairRequest
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 	// publishTopics sends a Topics update to the page (broadcastTopics); a

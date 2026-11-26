@@ -1,8 +1,8 @@
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
-import type { Machine, PairingOffer, SavedMachine, SyncedMachine } from "./mygo";
+import type { Machine, PairingOffer, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
-import { showPairing } from "./pairing";
+import { notAddedLine, pairLayout, pairReadDelay, pairRequestCard, pairResultSection, sameMachine, showPairing, showPairChoice, thisDevice, untried } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
@@ -67,9 +67,15 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const { root: synced, rows: syncedRows } = hostSection("FROM YOUR ACCOUNT", "host-home-synced"); synced.hidden = true;
  let syncedMachines: SyncedMachine[] = [];
  let accountHint: string | null = null; // null: signed out
- const pairSynced = (m: SyncedMachine) => {
-  // A key machine pairs with `herdr pair` (its key is made here); a password one is added with
-  // its fields filled, and the password typed here.
+ const pairSynced = async (m: SyncedMachine) => {
+  // pair-v1 (option B): with the service offering it, the choice between another device's
+  // approval and herdr pair (n2); without it (or signed out), the way it always was: a key
+  // machine pairs with `herdr pair` (its key is made here); a password one is added with its
+  // fields filled, and the password typed here.
+  if (accountHint !== null && await Desk.pairRequestOffered().catch(() => false)) {
+   showPairChoice({ count: syncedMachines.length, password: syncedMachines.some(s => !s.key), here, approve: () => void startRequest(), qr: () => startPairing() }, qrGlyph(16));
+   return;
+  }
   if (m.key) startPairing();
   else edit(undefined, { nickname: m.nickname ?? "", host: m.host, port: m.port, user: m.user, keyPath: "", session: "" });
  };
@@ -77,13 +83,101 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   synced.hidden = accountHint === null || syncedMachines.length === 0;
   syncedRows.replaceChildren(...syncedMachines.map(m => {
    const row = element("div", "host-home-row host-home-synced-row");
-   const lines = hostRowLines(m.nickname?.trim() || m.host, `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`);
-   const pairButton = action("Pair this device", () => pairSynced(m)); pairButton.className = "host-home-pair-synced";
+   // A machine the other device couldn't add the key to says why, and keeps its button.
+   const failed = pairView?.phase === "done" ? pairView.machines.find(r => r.result === "failed" && sameMachine(m, r)) : undefined;
+   const lines = hostRowLines(m.nickname?.trim() || m.host, failed ? notAddedLine(pairView!, failed)
+    : `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`);
+   const pairButton = action("Pair this device", () => void pairSynced(m)); pairButton.className = "host-home-pair-synced";
    row.append(lines, pairButton);
    return row;
   }));
   drawIdentity(accountHint !== null && syncedMachines.length > 0);
+  // The results leave out a failed machine the account lists (its row here says why).
+  drawPair();
  };
+ // ---- Pair from another device (pair-v1), this computer asking ----
+ // The request lives in Go (Desk.pairRequest*); the page reads it on a timer while it shows
+ // (pairReadDelay), so the reads stop with the page. The card (n3/n5) sits under the header; the
+ // machines it saved (n4) list under "PAIRED BY …" in place of their SAVED rows.
+ const here = thisDevice(navigator.platform);
+ const pairBox = element("div", "host-home-pair-request");
+ let pairView: PairRequestView | null = null;
+ let pairStarted = 0, pairExpiresAt = 0, pairFailures = 0, pairTimer: ReturnType<typeof setTimeout> | undefined;
+ const rowGlyphs: { icon: Node | null; chevron: Node | null } = { icon: null, chevron: null };
+ void hostGlyph(symbol, "desktopcomputer", desktopIcon).then(icon => { rowGlyphs.icon = icon; drawPair(); });
+ void symbol("chevron.right", 13, "semibold").then(chevron => { rowGlyphs.chevron = chevron; drawPair(); });
+ const glyphs = {
+  icon: () => (rowGlyphs.icon?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
+  chevron: () => (rowGlyphs.chevron?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
+ };
+ function qrGlyph(size: number): HTMLElement {
+  if (appleSymbols()) { const slot = element("span", "pairing-choice-glyph"); void symbol("qrcode.viewfinder", size, "semibold").then(icon => slot.append(icon)); return slot; }
+  const icon = element("span", "host-action-glyph"); icon.style.width = icon.style.height = `${size}px`; icon.style.setProperty("--host-icon", `url("${qrIcon}")`); return icon;
+ }
+ /** The machines the results list shows: their SAVED rows step aside. */
+ const pairShown = () => new Set(pairView && pairLayout(pairView).results ? pairView.machines.flatMap(m => m.id ? [m.id] : []) : []);
+ function drawPair() {
+  const view = pairView, layout = view ? pairLayout(view) : null;
+  home.classList.toggle("host-home-pairing", !!layout?.card && layout.card !== "ended");
+  if (!view || !layout) { pairBox.replaceChildren(); return; }
+  const parts: HTMLElement[] = [];
+  if (layout.card) parts.push(...pairRequestCard(view, here, accountHint ?? "", spinner, pairExpiresAt, {
+   cancel: () => void cancelRequest(), again: () => void startRequest(), qr: () => startPairing(),
+  }));
+  if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, glyphs, spinner, { open: id => void openPaired(id), qr: () => startPairing() }));
+  pairBox.replaceChildren(...parts);
+ }
+ function showRequest(view: PairRequestView | null) {
+  const before = pairView;
+  pairView = view;
+  if (view && view.id !== before?.id) { pairStarted = Date.now(); pairFailures = 0; }
+  if (view && (view.phase === "waiting" || view.phase === "claimed")) pairExpiresAt = Date.now() + view.expiresIn * 1000;
+  drawSynced();
+  // A list saved machines, or the results took their rows: SAVED and the account's list redraw.
+  const shown = (v: PairRequestView | null) => `${v?.machines.filter(m => m.id).length ?? 0}:${!!v && pairLayout(v).results}`;
+  if (shown(view) !== shown(before)) void refresh();
+  schedulePair();
+ }
+ function schedulePair() {
+  clearTimeout(pairTimer);
+  const view = pairView; if (!view) return;
+  if (untried(view)) { pairTimer = setTimeout(() => void connectPaired(view.id), pairFailures ? 5000 : 0); return; }
+  const wait = pairReadDelay(view, Date.now() - pairStarted, pairFailures);
+  if (wait !== null) pairTimer = setTimeout(() => void readRequest(view.id), wait);
+ }
+ async function readRequest(id: string) {
+  try { const view = await Desk.pairRequestRead(id); if (pairView?.id === id) { pairFailures = 0; showRequest(view); } }
+  catch {
+   if (pairView?.id !== id) return;
+   // Gone here (another window asked again): show what Go has now; else read again later.
+   const now = await Desk.pairRequestCurrent().catch(() => undefined);
+   if (pairView?.id !== id) return;
+   if (now !== undefined && now?.id !== id) { showRequest(now); return; }
+   pairFailures++; schedulePair();
+  }
+ }
+ async function connectPaired(id: string) {
+  try { const view = await Desk.pairRequestConnect(id); if (pairView?.id === id) { pairFailures = 0; showRequest(view); } }
+  catch (failure) { if (pairView?.id === id) { pairFailures++; report(failure); schedulePair(); } }
+ }
+ async function startRequest() {
+  message.hidden = true;
+  try { showRequest(await Desk.pairRequestStart()); } catch (failure) { report(failure); }
+ }
+ async function cancelRequest() {
+  const view = pairView; if (!view) return;
+  clearTimeout(pairTimer); pairView = null; drawSynced();
+  try { await Desk.pairRequestCancel(view.id); } catch (failure) { report(failure); }
+ }
+ async function openPaired(id: string) {
+  message.hidden = true;
+  try {
+   const machine = (await Desk.machines()).find(m => m.id === id); if (!machine) return;
+   const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return;
+   beginAttempt(); await Desk.selectMachine(id, secret);
+  } catch (failure) { report(failure); }
+ }
+ void Desk.pairRequestCurrent().then(view => { if (view) showRequest(view); }, () => undefined);
  // accountVersion: an older refresh still waiting on the service never draws over a newer one.
  let accountVersion = 0;
  const refreshAccount = async () => {
@@ -177,7 +271,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
- home.append(header.root, section, synced, shared, empty, pair, add, inviteActions, message);
+ home.append(header.root, pairBox, section, synced, shared, empty, pair, add, inviteActions, message);
  // The first-launch sign-in (1B) stands in front of the host home until it is answered. (The
  // browser has its own host home, web/hosts.ts.)
  const welcome = new AccountWelcome(() => { home.hidden = false; });
@@ -312,9 +406,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    }
    if (generation !== version) return;
    sharedRows.replaceChildren(...sharedNodes);
-   section.hidden = machines.length === 0;
+   const paired = pairShown();
+   const listed = machines.filter(machine => !paired.has(machine.id));
+   section.hidden = listed.length === 0;
    const next: HTMLElement[] = [];
-   for (const machine of machines) {
+   for (const machine of listed) {
     const row = action("", () => { void (async () => {
      row.disabled = true; message.hidden = true;
      try { const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return; beginAttempt(); await Desk.selectMachine(machine.id, secret); }

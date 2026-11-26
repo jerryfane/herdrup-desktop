@@ -12,3 +12,11 @@
 .pairing-confirm-label { color:var(--color-text-dim); font:500 calc(12px * var(--ui-font-scale, 1)) var(--font-app); }
 .pairing-confirm-value { color:var(--color-text); font:500 calc(15px * var(--ui-font-scale, 1)) var(--font-app); overflow-wrap:anywhere; user-select:text; -webkit-user-select:text; }
 .pairing-confirm-value.pairing-fingerprint { font:400 calc(13px * var(--ui-font-scale, 1)) var(--font-machine); }
+/* Pair this device (pairing.ts showPairChoice, n2): the two ways as large capsules, each over a
+   faint note; the password footnote apart. */
+.pairing-choice-sheet .settings-sheet-header { min-height:56px; }
+.pairing-choice-sheet .pairing-content { gap:10px; padding-bottom:2px; }
+.pairing-content .pairing-choice { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; margin-top:6px; }
+.pairing-content .pairing-choice-lead { color:var(--color-text-dim); margin-bottom:6px; }
+.pairing-content .pairing-choice-note { color:var(--color-text-faint); font:400 calc(13px * var(--ui-font-scale, 1))/1.45 var(--font-app); }
+.pairing-content .pairing-choice-footnote { margin-top:8px; }
