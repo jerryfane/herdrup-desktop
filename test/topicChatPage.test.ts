@@ -5,7 +5,7 @@
 // and a topic (relay) as both chats draw it; and the chat's up arrow to the owner's previous prompt.
 import { afterAll, beforeAll, beforeEach, expect, mock, setSystemTime, test } from "bun:test";
 import { FakeDocument, FakeElement } from "./fakeDom";
-import type { AgentTarget, GramAttachment } from "../src/mygo";
+import type { AgentTarget, GramAttachment, GuestChat } from "../src/mygo";
 import type * as Interaction from "../src/interaction";
 import * as chatMarkdown from "../src/chatMarkdown";
 import { CHAT_POLL_OWNER_MS } from "../src/chatPoll";
@@ -1271,9 +1271,10 @@ const ownerPrompt = (id: string, text: string, extra: Record<string, unknown> = 
 const GITMOOT = ownerPrompt("u0", "gitmoot: review PR 12", { origin: "other" });
 
 /** Opens the agent's chat once, as `view` (an AgentView's fields over a desktop owner's), for a
- *  `web` reader (a guest's or a web owner's connection and the pong that opens Chat; none on the
- *  desktop), with the Inbox answering live reads from `live` (all of it first, what follows later). */
-async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }, web?: { ownerScope?: string; chat: { available: boolean; ownerOrigin: boolean } }) {
+ *  `web` reader (a guest's or a web owner's connection and the pong that opens Chat, or how each
+ *  Chat check answers; none on the desktop), with the Inbox answering live reads from `live` (all
+ *  of it first, what follows later). */
+async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }, web?: { ownerScope?: string; chat: GuestChat | Answer }) {
  // A page of its own: no chat remembered from before.
  emit("state:changed", { phase: "idle" });
  const read = (_token: unknown, after: unknown) => {
@@ -1283,7 +1284,7 @@ async function openChat(view: Record<string, unknown>, live: { entries: unknown[
  await openPage("chat", topicPage(), read, { topicSessions: [], ...view }, {
   "Desk.TopicsAvailable": () => false,
   ...(web ? {
-   "Desk.GuestChatAvailable": () => web.chat,
+   "Desk.GuestChatAvailable": typeof web.chat === "function" ? web.chat : () => web.chat,
    "Desk.State": () => ({ phase: "connected", guest: { features: { gram: false }, ...(web.ownerScope ? { ownerScope: web.ownerScope } : {}) } }),
   } : {}),
  });
@@ -1323,6 +1324,45 @@ test("an owner's browser has the up arrow, which lands on the prompt the owner s
  jump.click();
  await settle();
  expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
+});
+
+// #584: a Chat check whose ping failed is no answer. The page stays on Terminal as before and
+// the owner's Refresh asks again: Chat opens, reads the transcript, and has the up arrow the
+// same pong allows.
+test("an owner link whose Chat check failed opens Chat on Refresh, with the arrow from that pong", async () => {
+ const live = { entries: [GITMOOT, ownerPrompt("u1", "Fix the build", { origin: "mine" }), reply("r1", "Fixed")] };
+ let checks = 0;
+ const chat = () => { if (checks++ === 0) throw new Error("try again"); return { available: true, ownerOrigin: true }; };
+ const { scroll, jump } = await openChat({ guest: true }, live, { ownerScope: "chat", chat });
+ const reads = () => calls.filter(c => c.method === "Desk.ChatTranscript").length;
+ const modes = doc.body.all().find(n => n.className === "chat-terminal-switch")!;
+ expect([checks, reads(), modes.hidden, jump.hidden]).toEqual([1, 0, true, true]);
+ refreshButton().click();
+ await settle();
+ expect([checks, reads() > 0, modes.hidden]).toEqual([2, true, false]);
+ layOut(scroll, TOPS);
+ expect(jump.hidden).toBe(false);
+});
+
+test("two Refreshes over a failed Chat check take Chat once", async () => {
+ let checks = 0;
+ const answered = Promise.withResolvers<GuestChat>();
+ const chat = () => { if (checks++ === 0) throw new Error("try again"); return answered.promise; };
+ await openChat({ guest: true }, { entries: [] }, { ownerScope: "chat", chat });
+ refreshButton().click(); refreshButton().click();
+ await settle();
+ answered.resolve({ available: true, ownerOrigin: true });
+ await settle();
+ // Both checks answered; only the first taken asks for Topics (a page without Chat never does).
+ expect([checks, calls.filter(c => c.method === "Desk.TopicsAvailable").length]).toEqual([3, 1]);
+});
+
+test("a pong without Chat keeps the page on Terminal, and Refresh doesn't ask again", async () => {
+ let checks = 0;
+ await openChat({ guest: true }, { entries: [] }, { ownerScope: "chat", chat: () => { checks++; return { available: false, ownerOrigin: true }; } });
+ refreshButton().click();
+ await settle();
+ expect([checks, calls.filter(c => c.method === "Desk.ChatTranscript").length]).toEqual([1, 0]);
 });
 
 // An older herdr records the browser's prompts as other: the arrow would skip them (#575).

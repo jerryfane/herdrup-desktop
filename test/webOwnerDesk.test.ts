@@ -816,22 +816,23 @@ test("an owner link's Chat and its up arrow follow the same fresh pong: a host g
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
-test("an owner link's up arrow shows when the pong that opens Chat says so, after an earlier ping failed", async () => {
+// #584: in page order. The view's first Chat check meets a failed ping and throws (no pong said
+// Chat is unsupported); the owner's Refresh asks again, and that pong opens Chat with the arrow.
+test("an owner link whose first Chat check failed has Chat and the up arrow from Refresh's check", async () => {
  // Every ping fails until the host recovers; then every pong is capable.
- let recovered = false, failed = 0;
+ let recovered = false;
  const relay = host({ other: (session, req) => {
-  if (req.method === "ping") { if (!recovered) failed++; answer(session, req, recovered ? pong({ owner_browser_origin: true }) : { error: { code: "internal", message: "try again" } }); }
+  if (req.method === "ping") answer(session, req, recovered ? pong({ owner_browser_origin: true }) : { error: { code: "internal", message: "try again" } });
   else if (req.method === "agent.transcript") answer(session, req, { result: { type: "agent_transcript", agent: "omp", pane_id: "p1", session_id: "s", after: "1", entries: [] } });
   else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
  } });
  const desk = await deskWithKey();
  try {
   await openP1(desk, relay);
-  // A read's optional probe (transcript_relay_entries) meets a failed ping.
-  await desk.chatTranscript("view-1", "", "", "", "");
-  expect(failed).toBeGreaterThan(0);
+  await expect(desk.guestChatAvailable("view-1")).rejects.toThrow("try again");
   recovered = true;
   expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: true });
+  expect(JSON.parse(await desk.chatTranscript("view-1", "", "", "", ""))).toMatchObject({ session_id: "s", entries: [] });
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 

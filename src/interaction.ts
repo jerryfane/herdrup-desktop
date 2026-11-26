@@ -10,7 +10,7 @@ import { openAvatarSheet } from "./agentActions";
 import "@xterm/xterm/css/xterm.css";
 import "./interaction.css";
 import { Desk, events } from "./mygo";
-import type { AgentTarget, AgentTopicSuggestionInfo, AgentView, BoardUpdate, GramAttachment, PaneAction, TopicsUpdate } from "./mygo";
+import type { AgentTarget, AgentTopicSuggestionInfo, AgentView, BoardUpdate, GramAttachment, GuestChat, PaneAction, TopicsUpdate } from "./mygo";
 import { closeWriter, ComposerEditor, composerEnterSends, composerGlyph, composerLines, SavedPromptsMenu, composerAttachment, composerFileDrop, composerClipboardPaste } from "./composer";
 import { COMPOSER_LINE, COMPOSER_TEXT_PITCH } from "./composerMetrics";
 import { composerExpanded } from "./gramModel";
@@ -46,7 +46,7 @@ import bellIcon from "../third_party/phosphor/web/bell.svg?url";
 import bellSlashIcon from "../third_party/phosphor/web/bell-slash.svg?url";
 import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import arrowUpIcon from "../third_party/phosphor/regular/arrow-up.svg?url";
-import { isMine, previousMine, showsJumpMine } from "./chatJumpMine";
+import { isMine, previousMine } from "./chatJumpMine";
 import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
 import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
@@ -281,9 +281,11 @@ class Detail {
   *  resolves to on this agent (topicsModel.ts resolvedMode). */
  asked: ChatMode = "terminal";
  chatAvailable = false;
- /** A web owner's chat has the owner's up arrow: the pong that opened Chat says herdr records the
-  *  browser's prompts as the owner's (GuestChat.ownerOrigin). */
- ownerOrigin = false;
+ /** The chat has the owner's up arrow (acceptChat). */
+ jumpMine = false;
+ /** A web view's Chat check failed (a ping error, no pong to say Chat is unsupported): the page
+  *  stays on Terminal and Refresh asks again (#584). */
+ chatUnknown = false;
  /** An omp agent on a server with agent_topics; the page offers Topics once the agent answers
   *  its list (offered) or its session file holds topics (herdrup #745 topicsAvailable). */
  topicsCapable = false;
@@ -775,34 +777,25 @@ class Detail {
    this.terminalTyping = !view.guest;
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
-   const guestChat = ompHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : null;
-   const chatAvailable = ompHarness(view.harness) && (!view.guest || !!guestChat?.available);
+   // A failed check (null) is no answer: Refresh asks again (#584).
+   const chat = ompHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : undefined;
    if (this.disposed) return;
-   this.chatAvailable = chatAvailable; this.ownerOrigin = !!guestChat?.ownerOrigin;
-   this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
-   if (this.disposed) return;
-   if (this.topicsCapable) this.mountTopics(view);
+   this.chatUnknown = chat === null;
    this.attach.hidden = view.guest && !view.guestGram;
-   modes.hidden = !chatAvailable && !view.guestGram;
    if (view.guest) {
     const connection = (await Desk.state().catch(() => null))?.guest;
     this.guestPaused = guestPausedPage(connection?.availability, view.name);
     this.terminalTyping = typesInTerminal(view, connection);
     this.ownerScope = connection?.ownerScope;
     if (this.disposed) return;
-    this.guestChat = chatAvailable; this.guestModes = modes;
+    this.guestModes = modes;
     // The guest's one Gram with this shared agent selected (#697); the grant is Access.ID().
     const share = (await Desk.state().catch(() => null))?.guest?.access;
     const grant = share ? `${share.endpoint.hostID}/${share.guestID}` : null;
     const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram", { detail: grant })));
     gram.hidden = !view.guestGram; this.guestGramButton = gram;
-    modes.replaceChildren(...(chatAvailable ? [this.topicsButton, this.chatButton] : []), this.terminalButton, gram);
    }
-   this.asked = chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal";
-   this.topicsButton.hidden = !this.topicsAvailable();
-   await this.switchMode(this.resolvedMode());
-   // Ask the agent once whether it has topics (#745 .task): the answer may add the Topics button.
-   if (this.topicsCapable && this.mode !== "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
+   await this.acceptChat(view, chat, modes);
    if (view.guest) this.showGuestPaused();
   } catch (e) { if (!this.disposed) this.status.textContent = errorText(e); }
  }
@@ -1026,7 +1019,7 @@ class Detail {
   this.chatJump.hidden = !away || this.findOpen;
   const first = this.mineNodes(1)[0];
   const above = !!first && this.chatTop(first) < this.chatScroll.scrollTop - 1;
-  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || !showsJumpMine(!!this.view?.guest, this.ownerOrigin) || !(above || this.hasEarlier() || this.mineBusy);
+  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || !this.jumpMine || !(above || this.hasEarlier() || this.mineBusy);
   this.chatJumpMine.disabled = this.mineBusy;
   this.chatJumpMine.classList.toggle("busy", this.mineBusy);
   this.chatJumpMine.setAttribute("aria-busy", String(this.mineBusy));
@@ -1277,7 +1270,8 @@ class Detail {
   this.terminal?.dispose(); this.terminal = null;
  }
  async replaceTerminal() {
-  if (this.terminalStartup) await this.terminalStartup;
+  // A start that failed said so already (the status line): this reconnect opens a new one.
+  if (this.terminalStartup) await this.terminalStartup.catch(() => undefined);
   if (this.disposed) return;
   this.terminalReady = false;
   clearTimeout(this.resizeTimer);
@@ -1563,11 +1557,44 @@ class Detail {
   *  never from the held cursors, which herdr may have expired. The question's refusal shown at
   *  the press goes once that Refresh's page lands (#571): the form it reloads may be answerable
   *  again, as after ask_form_moved once the Terminal's form is back where it started; its unsent
-  *  draft and step stay. A Refresh that fails keeps it (#576), and a newer refusal stays. */
+ *  draft and step stay. A Refresh that fails keeps it (#576), and a newer refusal stays. Over a
+ *  failed Chat check it also asks for Chat again (#584). */
  refresh() {
+  if (this.chatUnknown) void this.recheckChat();
   if (this.mode === "terminal") void this.reconnectTerminal();
   else if (this.mode === "topics") this.topics?.refresh();
   else { this.setPaging(this.oldestCursor, true); void this.refreshChat(this.generation, this.answerProblem); }
+ }
+ /** Refresh over a failed Chat check asks again; the first answer to land is taken. */
+ async recheckChat() {
+  const chat = await Desk.guestChatAvailable(this.token).catch(() => null);
+  if (this.disposed || !chat || !this.chatUnknown || !this.view || !this.guestModes) return;
+  this.chatUnknown = false;
+  await this.acceptChat(this.view, chat, this.guestModes);
+ }
+ /** The Chat check's answer taken: GuestChat from a web view's one fresh pong, undefined where
+  *  there is none to ask (the desktop's own agents, an agent other than omp), null for a check
+  *  that failed. Chat, Topics and the owner's up arrow follow it. The arrow is the desktop's;
+  *  on the web only an owner link's to a herdr that records the browser's prompts as the
+  *  owner's (GuestChat.ownerOrigin): an older owner gate marks them other, and the arrow would
+  *  skip them for an older prompt sent from the app (#575). A failed check has neither. */
+ async acceptChat(view: AgentView, chat: GuestChat | null | undefined, modes: HTMLElement) {
+  const chatAvailable = ompHarness(view.harness) && (!view.guest || !!chat?.available);
+  this.chatAvailable = chatAvailable;
+  this.jumpMine = !view.guest || !!chat?.ownerOrigin;
+  this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
+  if (this.disposed) return;
+  if (this.topicsCapable) this.mountTopics(view);
+  modes.hidden = !chatAvailable && !view.guestGram;
+  if (view.guest) {
+   this.guestChat = chatAvailable;
+   modes.replaceChildren(...(chatAvailable ? [this.topicsButton, this.chatButton] : []), this.terminalButton, ...(this.guestGramButton ? [this.guestGramButton] : []));
+  }
+  this.asked = chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal";
+  this.topicsButton.hidden = !this.topicsAvailable();
+  await this.switchMode(this.resolvedMode());
+  // Ask the agent once whether it has topics (#745 .task): the answer may add the Topics button.
+  if (this.topicsCapable && this.mode !== "topics") void Desk.topicsRefresh(this.token).catch(() => undefined);
  }
  // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
  // `refusal`: the question's refusal a Refresh was pressed over, dropped once this poll's page lands.

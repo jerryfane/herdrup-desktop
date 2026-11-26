@@ -802,7 +802,8 @@ export function createGuestDesk(env: DeskEnv) {
   /** Chat and the owner's up arrow from the one fresh pong the page opens Chat with: the arrow
    *  only on an owner link to a host that records the browser's prompts as the owner's; an older
    *  owner gate marks them other, and the arrow would skip them for an older prompt sent from the
-   *  app (#575). */
+   *  app (#575). A failed ping throws: no pong says Chat is unsupported, and the page's Refresh
+   *  asks again (#584). */
   async guestChatAvailable(token: string): Promise<GuestChat> {
    const v = viewOf(token);
    const pong = await v.active.client.ping(within(v));
