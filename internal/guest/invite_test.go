@@ -132,13 +132,15 @@ func TestSavedGuestAccessSurvivesReloadWithoutInvitationSecret(t *testing.T) {
 	}
 }
 
-// Relabel names the machine on the saved share it names, and only there:
-// a share forgotten meanwhile stays forgotten (#558), another is untouched.
+// Relabel names the machine on the saved share it names, and only there,
+// with when a hello named it, an unchanged name too: a share forgotten
+// meanwhile stays forgotten (#558), another is untouched.
 func TestRelabelNamesOnlyTheSavedShare(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "shares.json"))
 	host := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
+	accepted := time.Now().Add(-time.Hour)
 	share := func(id string) Access {
-		return Access{GuestID: id, GuestName: "guest", MachineLabel: "Mac", OwnerName: "Owner", AgentName: "Agent", AgentTarget: "%2", Endpoint: Endpoint{Relay: "https://relay.example", HostID: host, HostPublicKey: make([]byte, 32)}, AcceptedAt: time.Now()}
+		return Access{GuestID: id, GuestName: "guest", MachineLabel: "Mac", OwnerName: "Owner", AgentName: "Agent", AgentTarget: "%2", Endpoint: Endpoint{Relay: "https://relay.example", HostID: host, HostPublicKey: make([]byte, 32)}, AcceptedAt: accepted}
 	}
 	one, two := share("one"), share("two")
 	for _, a := range []Access{one, two} {
@@ -146,20 +148,32 @@ func TestRelabelNamesOnlyTheSavedShare(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.Relabel(one.ID(), "Studio Mac"); err != nil {
+	if !one.NamedAt().Equal(accepted) {
+		t.Fatalf("a share no hello named since its accept: named at %v, want %v", one.NamedAt(), accepted)
+	}
+	renamed := accepted.Add(time.Minute)
+	if err := store.Relabel(one.ID(), "Studio Mac", renamed); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Remove(two.ID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Relabel(two.ID(), "Studio Mac"); err != nil {
+	if err := store.Relabel(two.ID(), "Studio Mac", renamed); err != nil {
 		t.Fatal(err)
 	}
 	list, err := store.List()
-	if err != nil || len(list) != 1 || list[0].ID() != one.ID() || list[0].MachineLabel != "Studio Mac" || list[0].AgentName != "Agent" {
+	if err != nil || len(list) != 1 || list[0].ID() != one.ID() || list[0].MachineLabel != "Studio Mac" || list[0].AgentName != "Agent" || !list[0].NamedAt().Equal(renamed) {
 		t.Fatalf("after relabels: %+v, %v", list, err)
 	}
-	if err := store.Relabel(one.ID(), "\x07"); err == nil {
+	// The same name heard again is saved with its time.
+	again := renamed.Add(time.Minute)
+	if err := store.Relabel(one.ID(), "Studio Mac", again); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := store.List(); err != nil || !list[0].NamedAt().Equal(again) {
+		t.Fatalf("an unchanged name heard again: %+v, %v", list, err)
+	}
+	if err := store.Relabel(one.ID(), "\x07", again); err == nil {
 		t.Fatal("an invalid label was saved")
 	}
 }

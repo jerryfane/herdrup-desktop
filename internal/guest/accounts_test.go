@@ -887,3 +887,31 @@ func TestAnOpenDropsEveryRefusedStatement(t *testing.T) {
 		t.Fatalf("hellos %q; want two refused, then a third statement", hellos)
 	}
 }
+
+// Every connect's hello reply that names the machine is heard, the same
+// name again too, so the share keeps when a hello last named it; a reply
+// naming no machine (an older herdr) is not.
+func TestEveryHellosMachineNameIsHeard(t *testing.T) {
+	h := newAccountHost(t, false)
+	h.relay.MultiRequest = false // every request connects
+	access := h.accept(t, nil)
+	var mu sync.Mutex
+	var heard []string
+	transport := NewTransport(access, h.identity, h.clock, nil, func(label string) {
+		mu.Lock()
+		defer mu.Unlock()
+		heard = append(heard, label)
+	})
+	t.Cleanup(func() { _ = transport.Close() })
+	for _, label := range []string{"Machine", "Machine", "", "Studio"} {
+		h.relay.SetMachineLabel(label)
+		if err := list(transport); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"Machine", "Machine", "Studio"}; !slices.Equal(heard, want) {
+		t.Fatalf("heard %q, want %q", heard, want)
+	}
+}

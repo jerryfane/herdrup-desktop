@@ -130,7 +130,33 @@ func (g guestStatementSource) Statement(ctx context.Context, host string, minLef
 
 func (g guestStatementSource) Drop(host, jws string) { g.cache.Drop(host, jws) }
 
-func (d *Desk) SharedConnections() ([]guest.Access, error) { return d.guestStore.List() }
+// SharedConnections is every grant this device holds, in their order, each
+// naming its machine as its host's latest hello did: the label on the
+// host's grant a hello named last (guest.Access.NamedAt), whichever grant
+// comes first, as a sibling opened since may hold an older name until its
+// own hello. Each grant keeps its own label saved; only the copies
+// returned are named so.
+func (d *Desk) SharedConnections() ([]guest.Access, error) {
+	list, err := d.guestStore.List()
+	if err != nil {
+		return nil, err
+	}
+	return sharedConnectionsOf(list), nil
+}
+
+// sharedConnectionsOf is SharedConnections' naming of held, in place.
+func sharedConnectionsOf(held []guest.Access) []guest.Access {
+	latest := map[string]guest.Access{}
+	for _, g := range held {
+		if had, ok := latest[g.Endpoint.HostID]; !ok || g.NamedAt().After(had.NamedAt()) {
+			latest[g.Endpoint.HostID] = g
+		}
+	}
+	for i, g := range held {
+		held[i].MachineLabel = latest[g.Endpoint.HostID].MachineLabel
+	}
+	return held
+}
 
 // AcceptGuestInvitation redeems an invitation, keeping the share as keep
 // says (herdrup#700): "account" binds an invitation whose host takes
@@ -364,12 +390,13 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 }
 
 // guestRelabeled keeps the machine name a hello reply gave share id (its
-// owner renamed the machine, herdr #519): saved with the share, so SHARED
-// WITH YOU lists it, and on the share's open link, whose connection state
-// names it (published at once when connected, else by the state the link's
-// next list publishes), so the open page's header and the list show it.
+// owner may have renamed the machine, herdr #519), and when: saved with the
+// share, so SHARED WITH YOU names the machine as its latest hello did, and
+// on the share's open link, whose connection state names it (published at
+// once when connected, else by the state the link's next list publishes),
+// so the open page's header and the list show it.
 func (d *Desk) guestRelabeled(id, label string) {
-	if err := d.guestStore.Relabel(id, label); err != nil {
+	if err := d.guestStore.Relabel(id, label, time.Now()); err != nil {
 		log.Printf("guest relabel: %s: %v", id, err)
 	}
 	d.mu.Lock()

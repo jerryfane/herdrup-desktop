@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"slices"
@@ -558,5 +559,52 @@ func TestAGuestReconnectTakesTheMachinesNewName(t *testing.T) {
 	reconnect("")
 	if got, want := names(), [3]string{"Studio Mac", "Studio Mac", "Studio Mac"}; got != want {
 		t.Fatalf("after a hello naming no machine: saved, state, header %q, want %q", got, want)
+	}
+}
+
+// SHARED WITH YOU names a machine as its latest hello did, whichever of its
+// grants comes first: two grants on one host both say "Old"; the second's
+// hello renames the machine "New", and both read "New", the first's saved
+// label untouched; the first's own hello, naming it "New" too, doesn't flip
+// the name back.
+func TestSharedWithYouNamesAMachineAsItsLatestHelloDid(t *testing.T) {
+	d := newDesk(t.TempDir())
+	host := base64.RawURLEncoding.EncodeToString(make([]byte, 16))
+	accepted := time.Now().Add(-time.Hour)
+	share := func(id string, at time.Time) guest.Access {
+		return guest.Access{GuestID: id, GuestName: "guest", MachineLabel: "Old", OwnerName: "Owner", AgentName: id, AgentTarget: "%2",
+			Endpoint: guest.Endpoint{Relay: "https://relay.example", HostID: host, HostPublicKey: make([]byte, 32)}, AcceptedAt: at}
+	}
+	first, second := share("first", accepted), share("second", accepted.Add(time.Minute))
+	for _, a := range []guest.Access{first, second} {
+		if err := d.guestStore.Save(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	labels := func() []string {
+		t.Helper()
+		list, err := d.SharedConnections()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, a := range list {
+			out = append(out, a.GuestID+"="+a.MachineLabel)
+		}
+		return out
+	}
+	if got := labels(); !slices.Equal(got, []string{"first=Old", "second=Old"}) {
+		t.Fatalf("before any hello: %q", got)
+	}
+	d.guestRelabeled(second.ID(), "New")
+	if got := labels(); !slices.Equal(got, []string{"first=New", "second=New"}) {
+		t.Fatalf("after the second's hello renamed the machine: %q", got)
+	}
+	if saved, _ := d.guestStore.List(); saved[0].MachineLabel != "Old" {
+		t.Fatalf("the first grant's saved label changed: %+v", saved[0])
+	}
+	d.guestRelabeled(first.ID(), "New")
+	if got := labels(); !slices.Equal(got, []string{"first=New", "second=New"}) {
+		t.Fatalf("after the first's hello named it the same: %q", got)
 	}
 }

@@ -14,6 +14,12 @@ export interface Access {
   endpoint: Endpoint;
   acceptedAt: string;
   /**
+   * LabeledAt is when a hello's reply last named the machine MachineLabel
+   * (its owner may rename it, herdr #519); absent, AcceptedAt, when the
+   * accept's (or open's) hello named it.
+   */
+  labeledAt?: string;
+  /**
    * AccountBound is a share bound to the guest's HerdrUp account at its
    * redemption: every hello for it carries a statement for that account
    * (herdr src/guest/store.rs:1121-1128), and its sessions refresh it.
@@ -2392,6 +2398,14 @@ export const Desk = {
   settingsServerUpdate(token: string, refresh: boolean): Promise<string> {
     return call("Desk.SettingsServerUpdate", token, refresh);
   },
+  /**
+   * SharedConnections is every grant this device holds, in their order, each
+   * naming its machine as its host's latest hello did: the label on the
+   * host's grant a hello named last (guest.Access.NamedAt), whichever grant
+   * comes first, as a sibling opened since may hold an older name until its
+   * own hello. Each grant keeps its own label saved; only the copies
+   * returned are named so.
+   */
   sharedConnections(): Promise<Access[]> {
     return call("Desk.SharedConnections");
   },

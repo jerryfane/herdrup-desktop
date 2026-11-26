@@ -82,6 +82,10 @@ type Access struct {
 	AgentTarget  string    `json:"agentTarget"`
 	Endpoint     Endpoint  `json:"endpoint"`
 	AcceptedAt   time.Time `json:"acceptedAt"`
+	// LabeledAt is when a hello's reply last named the machine MachineLabel
+	// (its owner may rename it, herdr #519); absent, AcceptedAt, when the
+	// accept's (or open's) hello named it.
+	LabeledAt *time.Time `json:"labeledAt,omitempty"`
 	// AccountBound is a share bound to the guest's HerdrUp account at its
 	// redemption: every hello for it carries a statement for that account
 	// (herdr src/guest/store.rs:1121-1128), and its sessions refresh it.
