@@ -179,6 +179,7 @@ func TestSharedAccessListsTheSharesAloneForAConfirmation(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string
 	var failing atomic.Bool
+	var answer atomic.Pointer[string]
 	d, _ := federatedDesk(t, func(s *fakeherdr.Server) {
 		previous := s.Handle
 		s.Handle = func(method string, raw json.RawMessage) (any, *fakeherdr.APIError) {
@@ -189,6 +190,9 @@ func TestSharedAccessListsTheSharesAloneForAConfirmation(t *testing.T) {
 			}
 			if method == "guest.list" && failing.Load() {
 				return nil, &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
+			}
+			if body := answer.Load(); method == "guest.list" && body != nil {
+				return json.RawMessage(*body), nil
 			}
 			if result, err, handled := fixture.Handle(method, raw); handled {
 				return result, err
@@ -220,6 +224,20 @@ func TestSharedAccessListsTheSharesAloneForAConfirmation(t *testing.T) {
 		t.Fatalf("an unreadable guest list answered %q, %v", raw, err)
 	}
 	failing.Store(false)
+	// A listing without a list of shares is no listing either: guests missing or null, not a list,
+	// or a share whose devices aren't a list.
+	for _, body := range []string{
+		`{"type":"guest_list","invites":[]}`,
+		`{"type":"guest_list","guests":null,"invites":[]}`,
+		`{"type":"guest_list","guests":{"guest_id":"g"},"invites":[]}`,
+		`{"type":"guest_list","guests":[{"guest_id":"g","devices":{"fingerprint":"f"}}],"invites":[]}`,
+	} {
+		answer.Store(&body)
+		if raw, err := d.SettingsGuestList(ctx, "guests", ""); err == nil {
+			t.Fatalf("guest.list answering %s listed %q", body, raw)
+		}
+	}
+	answer.Store(nil)
 	d.CloseSettings("guests")
 	if _, err := d.SettingsGuestList(ctx, "guests", ""); err == nil {
 		t.Fatal("a closed Settings page listed the shares")
