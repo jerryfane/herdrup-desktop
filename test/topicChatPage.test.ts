@@ -8,6 +8,7 @@ import { FakeDocument, FakeElement } from "./fakeDom";
 import type { AgentTarget, GramAttachment } from "../src/mygo";
 import type * as Interaction from "../src/interaction";
 import * as chatMarkdown from "../src/chatMarkdown";
+import { CHAT_POLL_OWNER_MS } from "../src/chatPoll";
 
 // DOMPurify needs a real DOM, which Bun lacks: a message's markdown is its text here.
 mock.module("../src/chatMarkdown", () => ({
@@ -47,8 +48,10 @@ function topicPage(over: Record<string, unknown> = {}) {
 
 beforeAll(async () => {
  const globals: Record<string, unknown> = {
-  document: doc, HTMLElement: FakeElement, HTMLDetailsElement: class {}, Node: FakeElement,
+  document: doc, HTMLElement: FakeElement, HTMLDetailsElement: class {}, HTMLInputElement: class {}, Node: FakeElement,
   window: Object.assign(doc.defaultView, { setTimeout, clearTimeout, setInterval, clearInterval, devicePixelRatio: 1 }),
+  // The ask form's chevrons (symbol.ts symbolNow) read the page's pixel ratio.
+  devicePixelRatio: 1,
   localStorage: { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => { stored.set(k, String(v)); }, removeItem: (k: string) => { stored.delete(k); } },
   getComputedStyle: () => ({ getPropertyValue: () => "" }),
   CSS: { escape: (text: string) => text },
@@ -87,11 +90,12 @@ afterAll(() => { page.closeInteraction(); for (const [k, v] of Object.entries(sa
 beforeEach(() => { page.closeInteraction(); calls = []; stored.clear(); });
 
 /** Opens the agent's page on its saved choice (Topics or the Inbox's chat); topic is a topic's
- *  page, inbox the Inbox's, or how the Inbox answers its reads (token, after, before, …). */
-async function openPage(mode: "topics" | "chat", topic: string, inbox: string | ((...args: unknown[]) => string) = topicPage()) {
+ *  page, inbox the Inbox's, or how the Inbox answers its reads (token, after, before, …); view
+ *  overrides fields of the agent's view (e.g. askForm). */
+async function openPage(mode: "topics" | "chat", topic: string, inbox: string | ((...args: unknown[]) => string | Promise<string>) = topicPage(), view: Record<string, unknown> = {}) {
  stored.set("chat.ompOpensIn", mode);
  answers = {
-  "Desk.OpenAgentView": (_target: unknown, token: unknown) => ({ token, paneID: "p1", name: "herdr-app", harness: "omp", heading: "herdr-app", group: "idle", status: "idle", guest: false, guestGram: false, plainTerminal: false, askForm: false, topicSessions: [TOPIC] }),
+  "Desk.OpenAgentView": (_target: unknown, token: unknown) => ({ token, paneID: "p1", name: "herdr-app", harness: "omp", heading: "herdr-app", group: "idle", status: "idle", guest: false, guestGram: false, plainTerminal: false, askForm: false, topicSessions: [TOPIC], ...view }),
   "Desk.TopicsAvailable": () => true,
   "Desk.PaneMuted": () => false,
   "Desk.TopicTranscript": () => topic,
@@ -351,6 +355,163 @@ test("Refresh and ⌘R start the Inbox and an open topic over from their newest 
  expect(startedOver(transcript)).toEqual([true, false, false]);
 });
 
+// #565: Refresh and an expired cursor start the Inbox over from its newest page; the question
+// still pending in the same session keeps the answer typed into it, not yet sent, and where its
+// form stands. Another pending question or session drops it.
+const ASK = { id: "q1", answerable: true, questions: [], form_answerable: true, form: { fields: [{ name: "name", kind: "text", title: "What should it be called?", value: "Default name" }] } };
+function askPage(over: Record<string, unknown> = {}) { return topicPage({ after: "a2", pending_ask: ASK, ...over }); }
+/** Types text into the pending question's field and goes on to its Review step. */
+function answerAsk(text: string) {
+ const box = withClass(inboxTranscript(), "ask-form-input")[0]!;
+ box.value = text; box.dispatchEvent(new Event("input"));
+ withClass(inboxTranscript(), "ask-form-next")[0]!.click();
+}
+/** The answer the question's Review step shows, or null off that step. */
+function reviewed() { return withClass(inboxTranscript(), "ask-form-review-answer")[0]?.text() ?? null; }
+
+test("Refresh keeps an unsent answer to the question still pending; another question or session drops it", async () => {
+ const session = { session_id: "s565" };
+ await openPage("chat", topicPage(), askPage(session), { askForm: true });
+ answerAsk("Ledger");
+ expect(reviewed()).toBe("Ledger");
+ refreshButton().click();
+ await settle();
+ expect(reviewed()).toBe("Ledger");
+ // Another question pending in between: the first one's draft went.
+ answers["Desk.ChatTranscript"] = () => askPage({ ...session, pending_ask: { ...ASK, id: "q2" } });
+ refreshButton().click();
+ await settle();
+ answers["Desk.ChatTranscript"] = () => askPage(session);
+ refreshButton().click();
+ await settle();
+ expect(reviewed()).toBeNull();
+ // A new session, the same question id.
+ answerAsk("Ledger");
+ answers["Desk.ChatTranscript"] = () => askPage({ session_id: "s565-next" });
+ refreshButton().click();
+ await settle();
+ expect(reviewed()).toBeNull();
+});
+
+test("the Inbox whose cursor herdr expired keeps an unsent answer to the question still pending", async () => {
+ const session = { session_id: "s565-expired" };
+ await openPage("chat", topicPage(), askPage(session), { askForm: true });
+ page.closeInteraction();
+ // Reopened, the Inbox draws the chat it remembers; the owner answers while its after read waits.
+ const reads: unknown[] = [];
+ const waiting = Promise.withResolvers<string>();
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
+  reads.push(after);
+  return after ? waiting.promise : askPage(session);
+ }, { askForm: true });
+ answerAsk("Ledger");
+ waiting.reject(new Error(EXPIRED));
+ await settle();
+ expect(reads).toEqual(["a2", ""]);
+ expect(reviewed()).toBe("Ledger");
+});
+
+// #560 review: the subagent sheet whose older cursor herdr expired starts over, and offers no
+// earlier page until a newest page brings a cursor.
+test("the subagent sheet whose older cursor herdr expired hides Earlier messages", async () => {
+ const reads: string[] = [];
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown, before: unknown, subagent: unknown) => {
+  if (!subagent) return topicPage({ session_id: "s-sub", subagents: [{ id: "Scout", status: "running", started_ms: Date.now(), has_transcript: true }] });
+  reads.push(`${after}|${before}`);
+  if (before) throw new Error(EXPIRED);
+  return topicPage({ session_id: "s-sub", before: "b1", entries: [reply("s1", "Looking")] });
+ });
+ withClass(inboxTranscript(), "chat-subagent-row")[0]!.click();
+ await settle();
+ const sheet = withClass(doc.body, "subagent-sheet")[0]!;
+ const earlier = withClass(sheet, "chat-earlier")[0]!;
+ expect(earlier.hidden).toBe(false);
+ earlier.click();
+ await settle();
+ expect(reads).toEqual(["|", "|b1"]);
+ expect(earlier.hidden).toBe(true);
+});
+
+// #560 review: the read that started over owns the restart. A newest page that failed leaves the
+// next read starting over too, never resending the expired cursor, and the error it showed goes
+// once a page lands. A poll Refresh took over reads nothing more when its cursor expires.
+function statusText() { return doc.body.all().find(n => n.className === "interaction-status")!.textContent; }
+/** Runs body with the page's owner poll timer (chatPollDelay) held, never run by the clock:
+ *  `poll()` runs the Inbox's next read now. */
+async function withHeldPoll(body: (poll: () => Promise<void>) => Promise<void>) {
+ const win = G.window as { setTimeout: (run: () => void, ms?: number) => unknown };
+ const real = win.setTimeout;
+ let held: (() => void) | null = null;
+ win.setTimeout = (run, ms) => { if (ms !== CHAT_POLL_OWNER_MS) return real(run, ms); held = run; return 0; };
+ try {
+  await body(async () => { const run = held!; held = null; run(); await settle(); });
+ } finally { win.setTimeout = real; }
+}
+
+test("the Inbox whose newest page failed after an expired cursor reads its newest page again, then clears the error", async () => {
+ const session = { session_id: "s-expired-failed" };
+ await openPage("chat", topicPage(), topicPage({ ...session, entries: [reply("old", "Projected before the update")] }));
+ page.closeInteraction();
+ const reads: unknown[] = [];
+ let down = true;
+ await withHeldPoll(async poll => {
+  await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
+   reads.push(after);
+   if (after) throw new Error(EXPIRED);
+   if (down) throw new Error("herdr: unavailable: herdr is restarting");
+   return topicPage({ ...session, after: "a2", entries: [reply("n1", "The newest page")] });
+  });
+  expect(reads).toEqual(["a1", ""]);
+  expect(statusText()).toStartWith("Chat: herdr: unavailable");
+  down = false;
+  await poll();
+ });
+ expect(reads).toEqual(["a1", "", ""]);
+ expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
+ expect(statusText()).toBe("");
+});
+
+test("a topic whose newest page failed after an expired cursor reads its newest page again", async () => {
+ const { transcript, token } = await openTopic(topicPage({ entries: [reply("old", "Projected before the update")] }));
+ const reads: unknown[] = [];
+ let down = true;
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown) => {
+  reads.push(after);
+  if (after) throw new Error(EXPIRED);
+  if (down) throw new Error("herdr: unavailable: herdr is restarting");
+  return topicPage({ after: "a2", entries: [reply("n1", "The newest page")] });
+ };
+ const changed = () => emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+  offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+ changed();
+ await settle();
+ expect(reads).toEqual(["a1", ""]);
+ down = false;
+ changed();
+ await settle();
+ expect(reads).toEqual(["a1", "", ""]);
+ expect(startedOver(transcript)).toEqual([true, false, false]);
+});
+
+test("a poll Refresh took over reads nothing more when herdr expires its cursor", async () => {
+ const session = { session_id: "s-superseded" };
+ await openPage("chat", topicPage(), topicPage({ ...session, entries: [reply("old", "Projected before the update")] }));
+ page.closeInteraction();
+ const reads: unknown[] = [];
+ const waiting = Promise.withResolvers<string>();
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
+  reads.push(after);
+  return after ? waiting.promise : topicPage({ ...session, after: "a2", entries: [reply("n1", "The newest page")] });
+ });
+ refreshButton().click();
+ await settle();
+ expect(reads).toEqual(["a1", ""]);
+ waiting.reject(new Error(EXPIRED));
+ await settle();
+ expect(reads).toEqual(["a1", ""]);
+ expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
+});
+
 test("an older page whose cursor herdr expired stops paging; the topic starts over from its newest page", async () => {
  const { chat, transcript } = await openTopic(topicPage({ before: "b1", entries: [reply("old", "Projected before the update")] }));
  const reads: string[] = [];
@@ -426,6 +587,50 @@ for (const [name, first, then] of [["plain to relay", false, true], ["relay to p
   expect(shown(inboxTranscript())).toEqual(then ? [1, 0] : [0, 1]);
  });
 }
+
+// #566: a poll whose handovers changed representation starts the Inbox over from its newest page,
+// as Refresh and an expired cursor do: the question still pending in the same session keeps its
+// unsent answer, and a newest page that failed leaves the next poll starting over too, never
+// resending the after cursor, its error gone once a page lands.
+test("the Inbox whose handovers changed representation keeps an unsent answer to the question still pending", async () => {
+ const session = { session_id: "s566", after: "a2", pending_ask: ASK };
+ const reads: unknown[] = [];
+ await withHeldPoll(async poll => {
+  await openPage("chat", topicPage(), handoverPage(false, "to_inbox", session), { askForm: true });
+  answerAsk("Ledger");
+  answers["Desk.ChatTranscript"] = (_token: unknown, after: unknown) => {
+   reads.push(after);
+   return after ? topicPage({ ...session, resent: [], relay_entries: true }) : handoverPage(true, "to_inbox", session);
+  };
+  await poll();
+ });
+ expect(reads).toEqual(["a2", ""]);
+ expect(withClass(inboxTranscript(), "relay").length).toBe(1);
+ expect(reviewed()).toBe("Ledger");
+});
+
+test("the Inbox whose newest page failed after its handovers changed reads its newest page again, then clears the error", async () => {
+ const session = { session_id: "s566-failed" };
+ const reads: unknown[] = [];
+ let down = true;
+ await withHeldPoll(async poll => {
+  await openPage("chat", topicPage(), handoverPage(false, "to_inbox", session));
+  answers["Desk.ChatTranscript"] = (_token: unknown, after: unknown) => {
+   reads.push(after);
+   if (after) return topicPage({ ...session, resent: [], relay_entries: true });
+   if (down) throw new Error("herdr: unavailable: herdr is restarting");
+   return handoverPage(true, "to_inbox", session);
+  };
+  await poll();
+  expect(reads).toEqual(["a1", ""]);
+  expect(statusText()).toStartWith("Chat: herdr: unavailable");
+  down = false;
+  await poll();
+ });
+ expect(reads).toEqual(["a1", "", ""]);
+ expect(withClass(inboxTranscript(), "relay").length).toBe(1);
+ expect(statusText()).toBe("");
+});
 
 // #555: an older page in the other representation than the topic's newest page is not merged
 // above it; the topic starts over from its newest page.

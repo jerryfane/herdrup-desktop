@@ -1,5 +1,5 @@
 import type { AskForm, AskFormAnswer, AskFormStatus } from "./askFormModel";
-import { errorText, herdrCode } from "./errors";
+import { herdrErrorCode } from "./errors";
 export interface Question { question: string; options: string[]; multi: boolean; recommended?: number }
 export interface PlanItem { text: string; status?: string; done?: boolean; phase?: string; blocker?: string }
 export interface Entry {
@@ -138,7 +138,7 @@ export function mergeNewest(current: Entry[], page: Entry[]): Entry[] | null {
  *  held_from), e.g. a herdr update that projects held entries otherwise, so the history read with
  *  it can't be continued. The chat starts over from its newest page: readLive(null, …). */
 export function cursorExpired(error: unknown): boolean {
- return herdrCode(errorText(error)) === "cursor_expired";
+ return herdrErrorCode(error) === "cursor_expired";
 }
 /** Whether two pages show the Inbox's and its topics' handovers alike: both as relay entries, or
  *  both as the entries they were sent as (TranscriptPage.relay_entries). History built from one
@@ -155,19 +155,24 @@ export function sameHandovers(a: Pick<TranscriptPage, "relay_entries">, b: Pick<
  *  A null `held` is the one way a chat starts over from its newest page, dropping its history and
  *  cursors: a first read, Refresh, a read whose cursor herdr expired (cursorExpired), and a page
  *  that shows handovers otherwise than the held one (sameHandovers).
+ *  `restart()` is called when readLive starts over itself (those last two): the chat marks its
+ *  next read to start over too (chatRestart, a topic's restart) until a newest page lands, so a
+ *  failed newest-page read never leaves the held cursor to be sent again. It returns false once
+ *  this read no longer owns the chat (a later poll or Refresh took over): no newest page is read
+ *  then, and readLive returns null.
  *  `current()` is the chat's entries now and whether older history is left: it is read after each
  *  request, never before, so history loaded while a read is pending is kept (#253). */
 export interface LiveRead { page: TranscriptPage; entries: Entry[]; reset: boolean }
-export async function readLive(held: TranscriptPage | null, current: () => { entries: Entry[]; hasOlder: boolean }, read: (after: string) => Promise<TranscriptPage | null>): Promise<LiveRead | null> {
+export async function readLive(held: TranscriptPage | null, current: () => { entries: Entry[]; hasOlder: boolean }, read: (after: string) => Promise<TranscriptPage | null>, restart: () => boolean): Promise<LiveRead | null> {
  let page: TranscriptPage | null;
  try {
   page = await read(held?.after ?? "");
  } catch (error) {
-  if (held && cursorExpired(error)) return readLive(null, current, read);
+  if (held && cursorExpired(error)) return restart() ? readLive(null, current, read, restart) : null;
   throw error;
  }
  if (!page) return null;
- if (held && held.session_id === page.session_id && !sameHandovers(held, page)) return readLive(null, current, read);
+ if (held && held.session_id === page.session_id && !sameHandovers(held, page)) return restart() ? readLive(null, current, read, restart) : null;
  const now = current();
  const reread = !!held && held.session_id === page.session_id && replayUnknown(now.entries, page, now.hasOlder);
  const ambiguous = page.entries ?? [];

@@ -659,7 +659,8 @@ class TopicChat {
  private again = false;
  /** The next live read starts over from the newest page (readLive with no held page), dropping
   *  the topic's history and cursors: Refresh, an older page whose cursor herdr expired, or one
-  *  that showed handovers otherwise than the held history (mergeOlder). */
+  *  that showed handovers otherwise than the held history (mergeOlder), and a live read that
+  *  started over itself (readLive's restart). Cleared only when a newest page lands. */
  private restart = false;
  private active = false;
  private disposed = false;
@@ -809,6 +810,10 @@ class TopicChat {
     const live = await readLive(this.restart ? null : this.page, () => ({ entries: this.entries, hasOlder: !!this.before }), async after => {
      const read: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, after, "", after ? this.before ?? "" : ""));
      return this.disposed ? null : read;
+    }, () => {
+     if (this.disposed) return false;
+     this.restart = true;
+     return true;
     });
     if (!live) return;
     measure();

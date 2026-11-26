@@ -340,9 +340,13 @@ class Detail {
  private readonly tail = new ChatTail();
  /** The last transcript load failed (ChatModel.failure): the working row waits for the next. */
  private chatFailed = false;
+ /** The "Chat: …" error the chat's poll last put in the status line: a page that lands later
+  *  clears that one, never a line something else wrote since. */
+ private chatError = "";
  /** The chat's next live read starts over from its newest page (readLive with no held page),
   *  dropping its history and cursors: Refresh, an older page whose cursor herdr expired, or one
-  *  that showed handovers otherwise than the held history (mergeOlder). */
+  *  that showed handovers otherwise than the held history (mergeOlder), and a live read that
+  *  started over itself (readLive's restart). Cleared only when a newest page lands. */
  private chatRestart = false;
  ctrlArmed = false;
  ctrlButton = button("Ctrl", () => this.setCtrl(!this.ctrlArmed));
@@ -1566,16 +1570,26 @@ class Detail {
    const live = await readLive(this.chatRestart ? null : this.chat, () => ({ entries: this.entries, hasOlder: !!this.oldestCursor }), async after => {
     const read: TranscriptPage = JSON.parse(await Desk.chatTranscript(this.token, after, "", "", after ? this.oldestCursor ?? "" : ""));
     return stale() ? null : read;
+   }, () => {
+    // A poll Refresh or a later poll superseded reads nothing more.
+    if (stale()) return false;
+    this.chatRestart = true;
+    return true;
    });
-   if (!live) return;
+   if (!live || stale()) return;
    const page = live.page;
    // What the page held before this read, older history included: only the live tail's new user
    // entries can be the send.
    const held = new Set(this.entries.map(entry => entry.id));
    if (live.reset) {
     if (this.chat && this.chat.session_id !== page.session_id) this.outgoing = [];
+    // The ask still pending in the same session keeps its unsent answer and where its form
+    // stands (#565): Refresh or an expired cursor drops history, not the owner's draft.
+    const pending = this.chat?.pending_ask?.id;
+    const kept = pending !== undefined && this.chat?.session_id === page.session_id && page.pending_ask?.id === pending ? pending : null;
+    if (this.answerProblem?.askID !== kept) this.answerProblem = null;
+    for (const drafts of [this.localAnswers, this.formStates, this.localFormAnswers, this.localDismissed]) for (const id of drafts.keys()) if (id !== kept) drafts.delete(id);
     this.entries = []; this.drawFrom = null; this.drawnIndex = 0; this.openRows.clear(); this.oldestCursor = page.before; this.historyEpoch++; this.chatRestart = false;
-    this.answerProblem = null; this.localAnswers.clear(); this.formStates.clear(); this.localFormAnswers.clear(); this.localDismissed.clear();
    }
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
@@ -1590,7 +1604,8 @@ class Detail {
    }
    if (this.sendFollow && sendShown(held, this.entries)) this.sendFollow = null;
    this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
-   if (this.status.textContent === RELAY_RECONNECTING) this.status.textContent = "";
+   if (this.status.textContent === RELAY_RECONNECTING || (this.chatError && this.status.textContent === this.chatError)) this.status.textContent = "";
+   this.chatError = "";
    this.drawChat();
    // A chat whose rows do not fill the view never scrolls: its top is in view as it lands.
    requestAnimationFrame(() => this.checkTop());
@@ -1598,7 +1613,8 @@ class Detail {
   } catch(e) {
    if (!this.disposed && generation === this.generation && poll === this.chatPoll) {
     const message = errorText(e);
-    this.status.textContent = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Chat: " + message + " You can switch to Terminal.";
+    this.chatError = this.view?.guest && isRelayRateLimited(message) ? RELAY_RECONNECTING : "Chat: " + message + " You can switch to Terminal.";
+    this.status.textContent = this.chatError;
     if (!this.chatFailed) { this.chatFailed = true; if (this.chat) this.drawChat(false); }
    }
   }
@@ -2100,7 +2116,6 @@ class Detail {
     });
     const plan = currentPlan(page, entries);
     if (plan.length) nodes.push(this.renderPlan(plan, messages, page?.session_id));
-    earlier.hidden = !before;
     messages.replaceChildren(earlier, ...nodes);
     if (older) messages.scrollTop += messages.scrollHeight - height;
     else if (follow) messages.scrollTop = messages.scrollHeight;
@@ -2110,7 +2125,9 @@ class Detail {
     if (cursorExpired(error)) { page = null; entries = []; before = undefined; }
     else if (open) notice.textContent = errorText(error);
    }
-   finally { busy = false; earlier.disabled = false; if (open && !this.disposed) timer = window.setTimeout(() => { void load(false); }, 1500); }
+   // Earlier shows only while a cursor is held, however the read ended: an expired cursor hides
+   // it until a newest page brings one, a failed newest-page read included.
+   finally { busy = false; earlier.disabled = false; earlier.hidden = !before; if (open && !this.disposed) timer = window.setTimeout(() => { void load(false); }, 1500); }
   };
   dialog.addEventListener("close", () => { open = false; clearTimeout(timer); dialog.remove(); if (this.subagentSheet === dialog) this.subagentSheet = null; }, { once: true });
   dialog.showModal(); void load(false);
