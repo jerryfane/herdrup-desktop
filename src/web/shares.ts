@@ -302,10 +302,15 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    await keep(access.account, { id: grantKey(access), body: shareBody(access) });
    await send(access.account);
   },
-  /** Keeps the delete of share id from acct, the account it is bound to (it leaves every device
-   *  once sent): resolved, it is kept, and send(acct) sends it; rejected, storage refused it. */
-  remove: (id: string, acct: string) => keep(acct, { id, deleted: true }),
-  send,
+  /** Leaves share id of acct, the account it is bound to, as one operation: keeps its delete
+   *  (rejected: storage refused it, and nothing else ran, so the Leave can be tried again), runs
+   *  forget (this browser's own part: its link, its grant), then sends the delete, whether forget
+   *  succeeded or not: kept, it leaves every device either way, and a grant forget failed to
+   *  remove goes when the share's tombstone comes (dropping). Rejects as forget did. */
+  async leave(id: string, acct: string, forget: () => Promise<void>): Promise<void> {
+   await keep(acct, { id, deleted: true });
+   try { await forget(); } finally { await send(acct); }
+  },
   /** Binds this sign-in's session to key as an account device (the statements a bound share
    *  needs are issued only to a session with a device); a session bound already is fine. */
   async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {

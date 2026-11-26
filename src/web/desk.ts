@@ -817,24 +817,24 @@ export function createGuestDesk(env: DeskEnv) {
    void runGuest(l, print).finally(() => shutdown(l));
   },
 
-  /** Leaves share id: its grant goes (the others held stay). One bound to the account is also
-   *  deleted from the account it is bound to, so it leaves every device (with another sign-in
-   *  now, at that account's next sync here); a plain one is this browser's alone, as before.
-   *  The delete is kept before the grant goes: storage refusing it fails the Leave with the grant
-   *  still held, so Leave can be tried again (a grant gone first leaves nothing to retry from). */
+  /** Leaves share id: its link closes and its grant goes (the others held stay). One bound to the
+   *  account is also deleted from the account it is bound to, so it leaves every device (with
+   *  another sign-in now, at that account's next sync here): the shares sync owns that Leave
+   *  (ShareSync.leave), keeping the delete before this browser's own part and sending it after,
+   *  whether that part failed or not. A plain one is this browser's alone, as before. */
   async forgetGuestConnection(id: string): Promise<void> {
    const grant = await env.grants.get(id);
-   const bound = env.shares && grant?.accountBound && grant.account !== undefined ? { shares: env.shares, acct: grant.account } : null;
-   if (bound) await bound.shares.remove(id, bound.acct);
-   if (grant !== undefined) {
+   const forget = async () => {
+    if (active?.id === "guest:" + id) {
+     disconnect();
+     publishIdle();
+    }
+    if (grant === undefined) return;
     env.owner.set(grant.ownerName);
     await env.grants.remove(id);
-   }
-   if (active?.id === "guest:" + id) {
-    disconnect();
-    publishIdle();
-   }
-   if (bound) await bound.shares.send(bound.acct);
+   };
+   if (env.shares && grant?.accountBound && grant.account !== undefined) await env.shares.leave(id, grant.account, forget);
+   else await forget();
   },
 
   async takeGuestInvitation(): Promise<string> { return ""; },

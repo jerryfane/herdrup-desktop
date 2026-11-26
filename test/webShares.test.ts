@@ -217,6 +217,18 @@ test("a Leave whose delete storage refuses keeps the grant, and the Leave tried 
  expect([await mac.grants.list(), w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual([[], [], { collection: "shares", id, base_rev: 1, deleted: true }]);
 }, CONNECTS_LIMIT_MS);
 
+test("a Leave whose grant removal fails still closes the link and sends its delete at once; the grant goes with the share's tombstone", async () => {
+ const w = worker(), h = host();
+ const grants = new FlakyGrants();
+ const mac = await browser(w, true, grants);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ await mac.desk.connectGuest(id);
+ grants.failNext = true;
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow("aborted");
+ expect([w.sharesIn("acct"), sharesOn(w).at(-1), await grants.list(), (await mac.desk.state()).phase]).toEqual([[], { collection: "shares", id, base_rev: 1, deleted: true }, [], "idle"]);
+}, CONNECTS_LIMIT_MS);
+
 test("a browser whose put was taken but whose readback failed still drops its bound grant when the share's tombstone comes", async () => {
  const w = worker(), h = host();
  const mac = await browser(w), linux = await browser(w);
