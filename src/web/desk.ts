@@ -401,9 +401,10 @@ export function createGuestDesk(env: DeskEnv) {
  // A share deleted on the account it is bound to (left on any device) leaves this browser too,
  // when it holds it bound; a plain grant is never dropped by the sync. Each pass reconciles with
  // what lasts, the grants as stored and the shares record (both shared by this browser's tabs),
- // not with what its own pull saw: the record keeps each share a pull (in any tab) saw leave the
- // account (dropping) until its grant is gone here, and a removal that fails leaves it there for
- // the next pass. A link open on such a share, or on a grant no longer held, closes.
+ // not with what its own pull saw: the record keeps each share left here, or a pull (in any tab)
+ // saw leave the account (dropping), until its grant is gone here, and a removal that fails
+ // leaves it there for the next pass. A link open on such a share, or on a grant no longer held,
+ // closes.
  const shares = env.shares;
  shares?.onChange(change => reconcile(shares, change).catch(error => console.error(error)));
  async function reconcile(shares: ShareSync, change: SharesChange) {
@@ -823,8 +824,9 @@ export function createGuestDesk(env: DeskEnv) {
   /** Leaves share id: its link closes and its grant goes (the others held stay). One bound to the
    *  account is also deleted from the account it is bound to, so it leaves every device (with
    *  another sign-in now, at that account's next sync here): the shares sync owns that Leave
-   *  (ShareSync.leave), keeping the delete before this browser's own part and sending it after,
-   *  whether that part failed or not. A plain one is this browser's alone, as before. */
+   *  (ShareSync.leave), keeping the delete and the grant's removal owed here before this browser's
+   *  own part and sending the delete after, whether that part failed or not (a removal that failed
+   *  is done by the reconcile that follows, or a later one). A plain one is this browser's alone. */
   async forgetGuestConnection(id: string): Promise<void> {
    const grant = await env.grants.get(id);
    const forget = async () => {

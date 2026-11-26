@@ -292,9 +292,50 @@ test("a Leave whose grant removal fails still closes the link and sends its dele
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
  await mac.desk.connectGuest(id);
- grants.failNext = true;
+ grants.failing = 1;
  await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow("aborted");
  expect([w.sharesIn("acct"), sharesOn(w).at(-1), await grants.list(), (await mac.desk.state()).phase]).toEqual([[], { collection: "shares", id, base_rev: 1, deleted: true }, [], "idle"]);
+}, CONNECTS_LIMIT_MS);
+
+/** A browser's record of the account's shares, as stored. */
+const recordOf = (storage: Pick<Storage, "getItem">) => JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct")!) as { pending: unknown[]; drop?: string[] };
+
+// A share the service never held (its put refused: 429, nothing written) leaves no tombstone when
+// left. The removal of its grant is owed here with the delete, and tried at every change heard
+// (each round's) until done, whatever the service holds.
+test("a Leave of a share the service never held removes its grant once a removal that failed can be done, with no tombstone to come", async () => {
+ const w = worker(), h = host();
+ const grants = new FlakyGrants();
+ const mac = await browser(w, true, grants);
+ w.rateLimit = 1; w.windowPosts = 1;
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ w.rateLimit = 0;
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ expect(w.sharesIn("acct")).toEqual([]);
+ // The Leave's removal fails, and so do the two its sync's changes try.
+ grants.failing = 3;
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow("aborted");
+ expect([sharesOn(w).at(-1), (await grants.get(id))?.guestID, recordOf(mac.storage).drop]).toEqual([{ collection: "shares", id, base_rev: 0, deleted: true }, access.guestID, [id]]);
+ // No tombstone comes (the service held nothing): the next round's removal is done.
+ await mac.shares.sync();
+ await expect(mac.desk.connectGuest(id)).rejects.toThrow();
+ expect([await grants.list(), w.sharesIn("acct"), recordOf(mac.storage).pending, recordOf(mac.storage).drop]).toEqual([[], [], [], []]);
+}, CONNECTS_LIMIT_MS);
+
+// A Leave whose delete the service hasn't taken (another device moved the share on) still owes its
+// grant's removal while a pull shows the share live.
+test("a Leave whose delete isn't taken yet still owes its grant's removal while the share is live on the account", async () => {
+ const w = worker(), h = host();
+ const grants = new FlakyGrants();
+ const mac = await browser(w, true, grants);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ w.seedShare(id, { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs (renamed)" });
+ grants.failing = 3;
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow("aborted");
+ expect([w.sharesIn("acct"), (await grants.get(id))?.guestID, recordOf(mac.storage).drop]).toEqual([[id], access.guestID, [id]]);
+ await mac.shares.sync();
+ expect([await grants.list(), w.sharesIn("acct"), recordOf(mac.storage).pending, recordOf(mac.storage).drop]).toEqual([[], [], [], []]);
 }, CONNECTS_LIMIT_MS);
 
 test("a browser whose put was taken but whose readback failed still drops its bound grant when the share's tombstone comes", async () => {
@@ -351,11 +392,11 @@ test("a tab with the share open closes it once another tab of the browser took t
  expect((await linux.desk.state()).phase).toBe("idle");
 }, CONNECTS_LIMIT_MS);
 
-/** A browser's grant store (IndexedDB) whose next removal fails, as a transaction may once. */
+/** A browser's grant store (IndexedDB) whose next removals (failing) fail, as a transaction may. */
 class FlakyGrants extends MemoryGrantStore {
- failNext = false;
+ failing = 0;
  override async remove(id: string) {
-  if (this.failNext) { this.failNext = false; throw new DOMException("The transaction was aborted.", "AbortError"); }
+  if (this.failing > 0) { this.failing--; throw new DOMException("The transaction was aborted.", "AbortError"); }
   return super.remove(id);
  }
 }
@@ -374,7 +415,7 @@ async function leftWhileOpen(pruned: boolean) {
  await open.desk.openSyncedShare(id);
  await mac.desk.forgetGuestConnection(id);
  if (pruned) w.prune(w.rev);
- grants.failNext = true;
+ grants.failing = 1;
  await idle.shares.sync();
  const record: { gone: Record<string, number> } = JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct")!);
  expect([(await grants.list()).length, idle.shares.list(), id in record.gone]).toEqual([1, [], !pruned]);

@@ -45,10 +45,11 @@ interface PendingWrite { id: string; deleted?: true; body?: ShareBody }
 /** A write as a push sent it: based on base_rev. */
 interface SentWrite extends PendingWrite { base_rev: number }
 /** gone: the revisions of the shares seen deleted, which a write of the same id is based on.
- *  drop: the shares a pull saw leave the account (a tombstone, or, in a full pull, a share seen
- *  live that it no longer holds) whose grants this browser may still hold. They are stored in the
- *  same write that moves rev past them, so a pull never forgets one before its grant is gone, and
- *  stay until a listener has removed their grants (cleared), whichever tab pulled them.
+ *  drop: the shares left here (kept in the same write as the delete) or a pull saw leave the
+ *  account (a tombstone, or, in a full pull, a share seen live that it no longer holds) whose
+ *  grants this browser may still hold. A pull's are stored in the same write that moves rev past
+ *  them, so a pull never forgets one before its grant is gone. Each stays until a listener has
+ *  removed its grant (cleared), whichever tab left or pulled it.
  *  sent: the writes handed to a request whose answer no tab heard (written before the request
  *  goes; one that request was refused, 4xx or never sent, goes again): each may still land, however
  *  late. Until one is answered, it is sent again, as it was, before any other write of its share,
@@ -258,9 +259,11 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    r.rev = pulled.rev;
    r.shares = [...live.values()].sort((a, b) => a.rev - b.rev);
    r.gone = gone;
-   const puts = new Set(r.pending.filter(p => p.body).map(p => p.id));
+   const puts = new Set(r.pending.filter(p => p.body).map(p => p.id)), deletes = new Set(r.pending.filter(p => p.deleted).map(p => p.id));
    const tombstoned = pulled.items.filter(it => it.collection === "shares" && it.deleted).map(it => it.id);
-   r.drop = [...new Set([...r.drop ?? [], ...before, ...tombstoned])].filter(id => !live.has(id) && !puts.has(id));
+   // A share left here stays until its grant is gone, live on the account or not (its delete
+   // not taken yet).
+   r.drop = [...new Set([...r.drop ?? [], ...before, ...tombstoned])].filter(id => !puts.has(id) && (deletes.has(id) || !live.has(id)));
    return { account: acct, shares: visible(r) };
   });
  }
@@ -304,8 +307,10 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  storage refuses rejects, and nothing is kept. */
  const keep = (acct: string, change: PendingWrite): Promise<void> => update(acct, r => {
   r.pending = r.pending.filter(p => p.id !== change.id).concat(change);
-  // A share put here again is held again: its grant no longer goes.
-  if (change.body && r.drop) r.drop = r.drop.filter(id => id !== change.id);
+  // A share put here again is held again: its grant no longer goes. One left here owes the removal
+  // of its grant here, kept with its delete (dropping) until it is done: whether or not the
+  // service ever held the share, so whether or not a tombstone of it comes.
+  r.drop = change.body ? (r.drop ?? []).filter(id => id !== change.id) : [...new Set([...r.drop ?? [], change.id])];
  });
  /** Sends acct's kept writes while acct is signed in here: never to another account. Under
   *  another sign-in (or none) they wait for acct's next round on this browser; a round that fails
@@ -340,8 +345,9 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    if (!ran) throw new Error("This browser's storage is locked by another tab. Try again.");
    return listed;
   },
-  /** The shares a pull saw leave acct (in any tab of this browser) whose grants may still be
-   *  held here: each until cleared, and none put here again or pulled live since. */
+  /** The shares left here, or a pull saw leave acct (in any tab of this browser), whose grants may
+   *  still be held here: each until cleared, and none put here again or pulled live since (but
+   *  for one left here, while its delete waits). */
   dropping(acct: string): string[] {
    const r = read(acct), shown = new Set(visible(r).map(s => s.id));
    return (r.drop ?? []).filter(id => !shown.has(id));
@@ -356,12 +362,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    await keep(access.account, { id: grantKey(access), body: shareBody(access) });
    await send(access.account);
   },
-  /** Leaves share id of acct, the account it is bound to, as one operation: keeps its delete
-   *  (rejected: storage refused it, and nothing else ran, so the Leave can be tried again), runs
-   *  forget (this browser's own part: its link, its grant), then sends the delete, whether forget
-   *  succeeded or not: kept, it leaves every device either way, and a grant forget failed to
-   *  remove goes when the share's tombstone comes (dropping). Rejects as forget did, else where
-   *  this browser can't sync (SharesUnsupported: the delete waits, kept, for one that can). */
+  /** Leaves share id of acct, the account it is bound to, as one operation: keeps its delete, and
+   *  with it the removal of its grant owed here (dropping; rejected: storage refused them, and
+   *  nothing else ran, so the Leave can be tried again), runs forget (this browser's own part: its
+   *  link, its grant), then sends the delete, whether forget succeeded or not: kept, it leaves
+   *  every device either way, and a grant forget failed to remove goes at the next change heard
+   *  (each round's), tombstone or not. Rejects as forget did, else where this browser can't sync
+   *  (SharesUnsupported: the delete waits, kept, for one that can). */
   async leave(id: string, acct: string, forget: () => Promise<void>): Promise<void> {
    await keep(acct, { id, deleted: true });
    let failed: { error: unknown } | null = null;
