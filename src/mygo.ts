@@ -812,6 +812,13 @@ export interface Machine {
    */
   paired?: boolean;
   /**
+   * HostKeyType is the type of a Paired machine's pinned host key when
+   * another device's approval pinned it (pair-v1): ed25519, RSA or ECDSA,
+   * whichever the approver saw. A connection offers only that type
+   * (hostKeyAlgorithms). "" is herdr pair's own key.
+   */
+  hostKeyType?: string;
+  /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
    */
@@ -1149,6 +1156,13 @@ export interface SavedMachine {
    * rather than an unrelated ECDSA key or certificate served by the same sshd.
    */
   paired?: boolean;
+  /**
+   * HostKeyType is the type of a Paired machine's pinned host key when
+   * another device's approval pinned it (pair-v1): ed25519, RSA or ECDSA,
+   * whichever the approver saw. A connection offers only that type
+   * (hostKeyAlgorithms). "" is herdr pair's own key.
+   */
+  hostKeyType?: string;
   /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
@@ -2149,7 +2163,7 @@ export const Desk = {
   /**
    * PairRequestRead reads request id once and moves it on: the code once a
    * device opened it, and, once approved, the approver's machine list, saved
-   * here (the rules at the top of this file). A list sent again at a higher
+   * here (the save rules in app/desk_pair_request.go). A list sent again at a higher
    * seq is saved too, while RetryOpen. An error is a read that failed (no
    * answer); the page reads again.
    */

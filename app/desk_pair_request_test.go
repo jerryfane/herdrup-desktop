@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,8 +152,16 @@ func newHostKey(t *testing.T) (ssh.Signer, string) {
 
 func servedMachine(t *testing.T, key ssh.PublicKey) pairMachine {
 	t.Helper()
-	signer, line := newHostKey(t)
-	srv := &fakeherdr.Server{HostKey: signer, Authorized: key,
+	signer, _ := newHostKey(t)
+	return servedMachineKeys(t, key, signer)
+}
+
+// servedMachineKeys is a machine serving signer's host key, which the
+// approver pins, and the extra ones beside it (an sshd's other key types).
+func servedMachineKeys(t *testing.T, key ssh.PublicKey, signer ssh.Signer, extra ...ssh.Signer) pairMachine {
+	t.Helper()
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	srv := &fakeherdr.Server{HostKey: signer, AdditionalHostKeys: extra, Authorized: key,
 		Handle: func(method string, _ json.RawMessage) (any, *fakeherdr.APIError) {
 			switch method {
 			case "ping":
@@ -573,3 +584,135 @@ func TestPairRequestIsNotOfferedSignedOut(t *testing.T) {
 }
 
 func mustAtoi(s string) int { n, _ := strconv.Atoi(s); return n }
+
+// A machine the approver pinned by its RSA or ECDSA host key is saved
+// Paired with that key type, and connects offering only it: an sshd that
+// also serves an ed25519 key (which herdr pair's order prefers) is still
+// checked against the approver's pin. A certificate is never pinned.
+func TestPairRequestConnectsWithTheKeyTypeTheApproverPinned(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	_, edPriv, _ := ed25519.GenerateKey(rand.Reader)
+	ed, _ := ssh.NewSignerFromKey(edPriv)
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaSigner, _ := ssh.NewSignerFromKey(rsaPriv)
+	ecPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ecSigner, _ := ssh.NewSignerFromKey(ecPriv)
+	rsaBox := servedMachineKeys(t, s, rsaSigner, ed)
+	ecBox := servedMachineKeys(t, s, ecSigner, ed)
+	cert := &ssh.Certificate{Key: ed.PublicKey(), CertType: ssh.HostCert, ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, ed); err != nil {
+		t.Fatal(err)
+	}
+	certEntry := offNetwork(t).entry("cert-box", account.PairAdded, "")
+	certEntry.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(cert)))
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(rsaBox.entry("rsa-box", account.PairAdded, ""), ecBox.entry("ec-box", account.PairAdded, ""), certEntry)); err != nil {
+		t.Fatal(err)
+	}
+	v = w.read(t, v.ID)
+	if r := resultOf(v, "cert-box"); r.Result != PairNotAdded || !strings.Contains(r.Reason, "doesn't pin") {
+		t.Fatalf("certificate %+v", r)
+	}
+	types := map[string]string{}
+	for _, m := range w.machines(t) {
+		if !m.Paired {
+			t.Fatalf("%s saved without Paired", m.Nickname)
+		}
+		types[m.Nickname] = m.HostKeyType
+	}
+	if types["rsa-box"] != ssh.KeyAlgoRSA || types["ec-box"] != ssh.KeyAlgoECDSA256 || len(types) != 2 {
+		t.Fatalf("saved key types %v", types)
+	}
+	v, err = w.d.PairRequestConnect(ctx, v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"rsa-box", "ec-box"} {
+		if r := resultOf(v, name); r.Reach != PairOnline {
+			t.Fatalf("%s %+v", name, r)
+		}
+	}
+	// An edit from the page (which doesn't hold the type) keeps it.
+	for _, m := range w.machines(t) {
+		if m.Nickname == "rsa-box" {
+			edited := m
+			edited.Nickname, edited.HostKeyType = "rsa box", ""
+			if err := w.d.SaveMachine(edited, machineID(m)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, m := range w.machines(t) {
+		if m.Nickname == "rsa box" && m.HostKeyType != ssh.KeyAlgoRSA {
+			t.Fatalf("edited %+v", m)
+		}
+	}
+}
+
+func TestHostKeyAlgorithmsFollowThePinnedType(t *testing.T) {
+	for _, c := range []struct {
+		m    Machine
+		want []string
+	}{
+		{Machine{}, nil},
+		{Machine{Paired: true}, pairingHostKeyAlgorithms},
+		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoED25519}, []string{ssh.KeyAlgoED25519}},
+		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoRSA}, []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}},
+		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoECDSA384}, []string{ssh.KeyAlgoECDSA384}},
+	} {
+		if got := hostKeyAlgorithms(c.m); fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("%+v: %v, want %v", c.m, got, c.want)
+		}
+	}
+}
+
+// When saving the machines fails (their pins or the machine list), nothing
+// is saved and the key file written for them is removed again; the next
+// read saves them with a new one.
+func TestPairRequestRemovesItsKeyWhenSavingFails(t *testing.T) {
+	for _, blocked := range []string{"host-keys.json.tmp", "machines.json.tmp"} {
+		t.Run(blocked, func(t *testing.T) {
+			w := newPairWorld(t)
+			ctx := context.Background()
+			v := w.start(t)
+			a, s, code := w.claim(t, v.ID)
+			studio := servedMachine(t, s)
+			if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+				t.Fatal(c, err)
+			}
+			if err := a.Approve(ctx, 1, pairEnvelope(studio.entry("studio", account.PairAdded, ""))); err != nil {
+				t.Fatal(err)
+			}
+			// A folder where the file's replacement is written: that write fails.
+			obstacle := filepath.Join(w.d.dir, blocked)
+			if err := os.MkdirAll(filepath.Join(obstacle, "x"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.d.PairRequestRead(ctx, v.ID); err == nil {
+				t.Fatal("saved past a failing write")
+			}
+			if keys := w.identities(t); len(keys) != 0 {
+				t.Fatalf("key files left %v", keys)
+			}
+			if len(w.machines(t)) != 0 {
+				t.Fatalf("saved %+v", w.machines(t))
+			}
+			if err := os.RemoveAll(obstacle); err != nil {
+				t.Fatal(err)
+			}
+			v = w.read(t, v.ID)
+			keys, saved := w.identities(t), w.machines(t)
+			if resultOf(v, "studio").Result != PairSaved || len(keys) != 1 || len(saved) != 1 || saved[0].KeyPath != keys[0] {
+				t.Fatalf("after %+v, keys %v, saved %+v", v, keys, saved)
+			}
+		})
+	}
+}

@@ -680,10 +680,7 @@ func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore)
 	if m.KeyPath == "" {
 		return nil, nil, errNeedsKey
 	}
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins}
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
-	}
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: hostKeyAlgorithms(m)}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
 		return nil, nil, err

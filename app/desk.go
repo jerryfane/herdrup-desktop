@@ -43,6 +43,11 @@ type Machine struct {
 	// Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
 	// rather than an unrelated ECDSA key or certificate served by the same sshd.
 	Paired bool `json:"paired,omitempty"`
+	// HostKeyType is the type of a Paired machine's pinned host key when
+	// another device's approval pinned it (pair-v1): ed25519, RSA or ECDSA,
+	// whichever the approver saw. A connection offers only that type
+	// (hostKeyAlgorithms). "" is herdr pair's own key.
+	HostKeyType string `json:"hostKeyType,omitempty"`
 	// SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
@@ -683,6 +688,11 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		// local id and its label revision.
 		old := st.Machines[index]
 		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
+		// The page doesn't hold the pinned key's type either: a paired
+		// machine kept at its address keeps it.
+		if m.Paired && sameHostPort(old, m.Host, m.Port) {
+			m.HostKeyType = old.HostKeyType
+		}
 		// A rename names the machine anew to its existing shares' guests
 		// (desk_guest_relabel.go), queued under the profile's local id at a
 		// new label revision.
@@ -1123,10 +1133,7 @@ func (d *Desk) run(ctx context.Context, l *link, m Machine, password string) {
 func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label string) (listed bool, err error) {
 	cfg := bridge.Config{
 		Host: m.Host, Port: m.Port, User: m.User, Session: m.Session,
-		Pins: d.pins,
-	}
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
+		Pins: d.pins, HostKeyAlgorithms: hostKeyAlgorithms(m),
 	}
 	if m.KeyPath != "" {
 		if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {

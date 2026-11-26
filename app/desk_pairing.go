@@ -113,6 +113,26 @@ func (d *Desk) DiscardPairingLink(id string) {
 
 var pairingHostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
 
+// pairHostKeyTypes are the host key types another device's approval may pin
+// (desk_pair_request.go): plain keys, never certificates.
+var pairHostKeyTypes = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSA, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
+
+// hostKeyAlgorithms is what a connection to m offers for the host key: SSH's
+// defaults (nil) for a machine not paired; for one another device approved,
+// the algorithms of the key type it pinned (an RSA key signs with SHA-2);
+// else herdr pair's.
+func hostKeyAlgorithms(m Machine) []string {
+	switch {
+	case !m.Paired:
+		return nil
+	case m.HostKeyType == ssh.KeyAlgoRSA:
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+	case m.HostKeyType != "":
+		return []string{m.HostKeyType}
+	}
+	return pairingHostKeyAlgorithms
+}
+
 // PairMachine pins before redemption, then persists the private key and host.
 // It never connects or starts a process on the machine: Open it is a separate
 // user action. Cancelling the scanner stops capture, not an accepted redemption.

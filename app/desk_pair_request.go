@@ -41,7 +41,6 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/account"
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
-	"golang.org/x/crypto/ssh"
 )
 
 // pairRetryWindow is how long after the approval a retry's list may still
@@ -300,7 +299,7 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 			p.view.Phase = PairDenied
 			p.end()
 			return p.copyView(), nil
-		case account.ApprovalExpired, "cancelled":
+		case account.ApprovalExpired, account.ApprovalCancelled:
 			p.view.Phase, p.view.ExpiresIn = PairExpired, 0
 			p.end()
 			return p.copyView(), nil
@@ -380,10 +379,7 @@ func (d *Desk) PairRequestConnect(ctx context.Context, id string) (PairRequestVi
 // tryPairedMachine connects to m as a session would (its key, its pin,
 // Paired's host key algorithms) and closes again.
 func (d *Desk) tryPairedMachine(ctx context.Context, m Machine, approver string) (reach, problem string) {
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: d.pins, ConnectTimeout: pairConnectTimeout}
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
-	}
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: d.pins, ConnectTimeout: pairConnectTimeout, HostKeyAlgorithms: hostKeyAlgorithms(m)}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
 		return PairRefused, "This device couldn't read its key for it."
@@ -445,7 +441,7 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 		decided[identity] = len(results) - 1
 	}
 	for _, em := range got.Envelope.Machines {
-		identity := account.IdentityOf(account.HostBody{Host: em.Host, Port: em.Port, Username: em.User})
+		identity := account.IdentityOf(em.HostBody())
 		if i, ok := decided[identity]; ok && results[i].Result != PairNotAdded {
 			continue // saved, kept or refused by an earlier list
 		}
@@ -455,13 +451,26 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 			set(r)
 			continue
 		}
+		if err := em.HostBody().Check(); err != nil {
+			r.Result, r.Reason = PairNotAdded, "its details can't be saved here ("+err.Error()+")"
+			set(r)
+			continue
+		}
 		hostKey, err := em.HostPublicKey()
 		if err != nil {
 			r.Result, r.Reason = PairNotAdded, "its host key couldn't be read"
 			set(r)
 			continue
 		}
-		m := Machine{Nickname: em.Nickname, Host: em.Host, Port: em.Port, User: em.User, Paired: hostKey.Type() == ssh.KeyAlgoED25519}
+		if !slices.Contains(pairHostKeyTypes, hostKey.Type()) {
+			r.Result, r.Reason = PairNotAdded, "its host key is a "+hostKey.Type()+" key, which this device doesn't pin"
+			set(r)
+			continue
+		}
+		// Paired with the key type the approver pinned: a connection offers
+		// only that type's algorithms (hostKeyAlgorithms), so an sshd that
+		// also serves another key type is checked against this pin.
+		m := Machine{Nickname: em.Nickname, Host: em.Host, Port: em.Port, User: em.User, Paired: true, HostKeyType: hostKey.Type()}
 		for _, h := range mirror {
 			if account.IdentityOf(h.Body) == identity && !slices.ContainsFunc(st.Machines, func(s Machine) bool { return s.SyncID == h.ID }) {
 				m.Nickname, m.Host, m.Port, m.User, m.SyncID = h.Body.Nickname, h.Body.Host, h.Body.Port, h.Body.Username, h.ID
