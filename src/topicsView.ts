@@ -122,15 +122,16 @@ export class TopicsPane {
  private readonly seeded: TopicInfo[];
  private selected: string | null = null;
  private chat: TopicChat | null = null;
- private actionNote: string | null = null;
+ /** The notice over the list, owned by the newest list action: its own answer (Create or Not now,
+  *  Rename), or the lifecycle note of the topic closed or reopened from its row (that topic's, which
+  *  its conversation shows too). Organise and opening a row clear it. */
+ private listNotice: { text: string } | { topicID: string } | null = null;
  /** Each topic's notes by slot (NoteSlot), by topic id: a send or a Close that settles after its
   *  topic was left shows there when the topic opens again. */
  private readonly notes: Record<NoteSlot, Map<string, string>> = { send: new Map(), lifecycle: new Map() };
  /** The newest Close or Reopen asked per topic id (lifecycle): only its answer writes the topic's
   *  lifecycle note, so an older one that comes back later changes nothing. */
  private readonly lifecycleSeq = new Map<string, number>();
- /** The topic whose lifecycle note the list shows: the last one closed or reopened from its row. */
- private listLifecycle: string | null = null;
  private inbox = "";
  private wide = false;
  private shown = false;
@@ -276,10 +277,12 @@ export class TopicsPane {
   this.chat?.dispose(); this.chat = null;
   const topic = id ? this.topics().find(t => t.topic_id === id) : undefined;
   if (topic) {
+   const topicID = topic.topic_id;
    this.chat = new TopicChat(this.host, topic, () => this.showList(), {
-    read: (topicID, slot) => this.notes[slot].get(topicID) ?? null,
-    write: (topicID, slot, note) => this.setNote(topicID, slot, note),
-   }, (topicID, item) => this.lifecycle(topicID, item, false));
+    read: slot => this.notes[slot].get(topicID) ?? null,
+    send: note => this.setNote(topicID, "send", note),
+    lifecycle: item => this.lifecycle(topicID, item, false),
+   });
    this.chat.setActive(this.shown);
    this.side.replaceChildren(this.chat.root);
    this.chat.focus();
@@ -290,12 +293,12 @@ export class TopicsPane {
   this.layout();
  }
 
- /** A topic's note in one slot, drawn now when that topic is the one open (and in the list, for
-  *  the lifecycle note of the topic last closed or reopened from its row). */
+ /** A topic's note in one slot, drawn now when that topic is the one open (and over the list, when
+  *  the list's notice is that topic's lifecycle note). */
  private setNote(topicID: string, slot: NoteSlot, note: string | null) {
   if (note) this.notes[slot].set(topicID, note); else this.notes[slot].delete(topicID);
   if (this.chat?.topicID === topicID) this.chat.drawNote(slot, note);
-  if (slot === "lifecycle" && this.listLifecycle === topicID) this.drawList();
+  if (slot === "lifecycle" && this.listNotice && "topicID" in this.listNotice && this.listNotice.topicID === topicID) this.drawNotice();
  }
 
  /** Close or Reopen of one topic, from its row's menu (fromList) or its conversation's: the newest
@@ -303,7 +306,8 @@ export class TopicsPane {
  private lifecycle(topicID: string, item: "Close" | "Reopen", fromList: boolean) {
   const seq = (this.lifecycleSeq.get(topicID) ?? 0) + 1;
   this.lifecycleSeq.set(topicID, seq);
-  if (fromList) { this.actionNote = null; this.listLifecycle = topicID; this.drawList(); }
+  // Only the notice changes: the rows stay, and the row whose menu asked keeps the focus.
+  if (fromList) { this.listNotice = { topicID }; this.drawNotice(); }
   const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose;
   void call(this.host.token, topicID).then(() => null, (error: unknown) => errorText(error)).then(note => {
    if (!this.disposed && this.lifecycleSeq.get(topicID) === seq) this.setNote(topicID, "lifecycle", note);
@@ -311,15 +315,8 @@ export class TopicsPane {
  }
 
  private drawList() {
-  const u = this.update, query = this.searchInput.value;
-  // Why the newest read failed shows only while the list has no rows: the rows it kept say more
-  // (the agent busy with another topic misses a read; its topics are still there).
-  const listed = this.listLifecycle === null ? undefined : this.notes.lifecycle.get(this.listLifecycle);
-  const note = this.actionNote ?? listed ?? (this.topics().length ? "" : u?.problem ?? "");
-  this.problem.replaceChildren(); this.problem.hidden = note === "" && this.organiseText === null;
-  // A refusal or problem has a dot; what Organise is doing is plain dim text (TopicsView: topics-organise-note).
-  if (note) { const dot = el("span", "topics-problem-dot"); dot.setAttribute("aria-hidden", "true"); this.problem.append(dot, el("span", "", note)); }
-  else if (this.organiseText !== null) this.problem.append(el("span", "topics-organise-note", this.organiseText));
+  const query = this.searchInput.value;
+  this.drawNotice();
   this.drawOrganise();
   const nodes: HTMLElement[] = [this.inboxRow()];
   const suggestions = this.suggestions();
@@ -333,10 +330,24 @@ export class TopicsPane {
    nodes.push(el("h3", "topics-section", section.id));
    for (const topic of section.topics) nodes.push(this.row(topic));
   }
-  if (u?.loaded && !this.topics().length && !u.problem && !u.stale) nodes.push(el("p", "topics-empty", "No topics yet. A topic is a lasting line of work with its own conversation."));
+  if (this.update?.loaded && !this.topics().length && !this.update.problem && !this.update.stale) nodes.push(el("p", "topics-empty", "No topics yet. A topic is a lasting line of work with its own conversation."));
   else if (query.trim() !== "" && !shown.length) nodes.push(el("p", "topics-empty", "No topic matches."));
   this.rows.replaceChildren(...nodes);
   this.drawBar();
+ }
+
+ /** The notice over the list: the list's own (listNotice), else why the newest read failed, else
+  *  what Organise is doing. */
+ private drawNotice() {
+  const owned = this.listNotice === null ? undefined
+   : "text" in this.listNotice ? this.listNotice.text : this.notes.lifecycle.get(this.listNotice.topicID);
+  // Why the newest read failed shows only while the list has no rows: the rows it kept say more
+  // (the agent busy with another topic misses a read; its topics are still there).
+  const note = owned ?? (this.topics().length ? "" : this.update?.problem ?? "");
+  this.problem.replaceChildren(); this.problem.hidden = note === "" && this.organiseText === null;
+  // A refusal or problem has a dot; what Organise is doing is plain dim text (TopicsView: topics-organise-note).
+  if (note) { const dot = el("span", "topics-problem-dot"); dot.setAttribute("aria-hidden", "true"); this.problem.append(dot, el("span", "", note)); }
+  else if (this.organiseText !== null) this.problem.append(el("span", "topics-organise-note", this.organiseText));
  }
 
  private suggestions(): AgentTopicSuggestionInfo[] { return this.update?.suggestions ?? []; }
@@ -355,7 +366,7 @@ export class TopicsPane {
  private async organise() {
   if (this.organising) return;
   const seq = ++this.organiseSeq;
-  this.organising = true; this.organiseText = null; this.actionNote = null; this.organiseAt = Infinity; this.drawList();
+  this.organising = true; this.organiseText = null; this.listNotice = null; this.organiseAt = Infinity; this.drawList();
   try {
    const queued = await Desk.topicsOrganise(this.host.token);
    if (this.disposed || seq !== this.organiseSeq) return;
@@ -423,8 +434,8 @@ export class TopicsPane {
   const plan = settlePlan(this.suggestions(), create ? this.unticked : new Set(this.suggestions().map(s => s.suggestion_id)));
   try {
    const problem = await Desk.topicsSettleSuggestions(this.host.token, plan.accept, plan.dismiss);
-   this.actionNote = problem === "" ? null : problem;
-  } catch (error) { this.actionNote = errorText(error); }
+   this.listNotice = problem === "" ? null : { text: problem };
+  } catch (error) { this.listNotice = { text: errorText(error) }; }
   this.settling = false; this.unticked = new Set();
   this.drawList();
  }
@@ -442,7 +453,7 @@ export class TopicsPane {
  }
 
  private row(topic: TopicInfo): HTMLElement {
-  const row = button("", "topic-row", () => { this.actionNote = null; this.listLifecycle = null; this.select(topic.topic_id); });
+  const row = button("", "topic-row", () => { this.listNotice = null; this.select(topic.topic_id); });
   row.dataset.topic = topic.topic_id;
   if (topic.state === "closed") row.dataset.closed = "";
   if (this.wide && this.selected === topic.topic_id) row.setAttribute("aria-current", "true");
@@ -472,8 +483,8 @@ export class TopicsPane {
  }
 
  private async act(call: () => Promise<void>) {
-  try { await call(); this.actionNote = null; }
-  catch (error) { this.actionNote = errorText(error); }
+  try { await call(); this.listNotice = null; }
+  catch (error) { this.listNotice = { text: errorText(error) }; }
   if (!this.disposed) this.drawList();
  }
 
@@ -591,10 +602,13 @@ export class TopicsPane {
  *  refusal, a file's problem) and what Close or Reopen answered (`lifecycle`). */
 type NoteSlot = "send" | "lifecycle";
 
-/** The pane's notes by topic id (TopicsPane.notes), as an open topic reads and writes its own. */
+/** What an open topic does with its notes, bound to it by the pane (TopicsPane.select): it reads
+ *  either slot, writes its composer's (`send`) only, and asks Close or Reopen, whose answer the pane
+ *  writes when that request still owns the topic's `lifecycle` slot (TopicsPane.lifecycle). */
 interface TopicNotes {
- read(topicID: string, slot: NoteSlot): string | null;
- write(topicID: string, slot: NoteSlot, note: string | null): void;
+ read(slot: NoteSlot): string | null;
+ send(note: string | null): void;
+ lifecycle(item: "Close" | "Reopen"): void;
 }
 
 /** One topic's conversation (TopicChat): agent.transcript with `topic`, under it the page's own
@@ -637,8 +651,7 @@ class TopicChat {
  /** What the page's composer needs of this topic while it writes here. */
  private readonly composer: TopicComposer;
 
- constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, private readonly notes: TopicNotes,
-  lifecycle: (topicID: string, item: "Close" | "Reopen") => void) {
+ constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, private readonly notes: TopicNotes) {
   // The topic's header (Apple clean, owner picks 2026-11-24, items 14 and 15): [sidebar Topics ⌥⌘T |]
   // ‹ Inbox | title, status … •••, its text buttons capsules.
   this.listButton = button("Topics", "topic-list-open button-compact", showList);
@@ -652,7 +665,7 @@ class TopicChat {
   void host.symbol("chevron.left", 13, "semibold").then(icon => chevron.append(icon));
   inbox.append(chevron, el("span", "", "Inbox"));
   const actions = button("", "topic-actions", () => popup([this.topic.state === "closed" ? "Reopen" : "Close"], item => {
-   if (item === "Reopen" || item === "Close") lifecycle(this.topic.topic_id, item);
+   if (item === "Reopen" || item === "Close") notes.lifecycle(item);
   }));
   actions.setAttribute("aria-label", "Topic actions"); actions.setAttribute("aria-haspopup", "menu");
   // The page's own ••• (interaction.ts showMuted): ellipsis has no Windows/Linux stand-in.
@@ -673,8 +686,8 @@ class TopicChat {
   };
   this.column = new ConversationColumn(this.root, () => this.layout());
   this.root.append(header, this.notice, this.messages, this.note, this.actionNote, this.composerSlot, ...this.column.handles, this.column.readout);
-  this.drawNote("send", notes.read(topic.topic_id, "send"));
-  this.drawNote("lifecycle", notes.read(topic.topic_id, "lifecycle"));
+  this.drawNote("send", notes.read("send"));
+  this.drawNote("lifecycle", notes.read("lifecycle"));
   this.setTopic(topic);
   this.messages.append(this.earlier);
   this.resize = new ResizeObserver(() => this.layout());
@@ -729,7 +742,7 @@ class TopicChat {
 
  /** The composer's note: kept by the pane (TopicNotes), so a send that settles after this
   *  conversation closed still shows when the topic opens again. */
- private showNote(note: string | null) { this.notes.write(this.topic.topic_id, "send", note); }
+ private showNote(note: string | null) { this.notes.send(note); }
  drawNote(slot: NoteSlot, note: string | null) {
   const line = slot === "send" ? this.note : this.actionNote;
   line.textContent = note ?? ""; line.hidden = !note;
