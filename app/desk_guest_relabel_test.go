@@ -288,12 +288,14 @@ func TestAnOldHerdrIsSentARenameOnceWhileConnected(t *testing.T) {
 	h.d.Disconnect()
 	h.rename(t, "Offline")
 	h.reconnect(t)
+	h.d.Disconnect() // its work (the connect's) ended
 	if n := len(h.updates()); n != 2 {
 		t.Fatalf("%d guest.update calls; want the two renames made while connected", n)
 	}
 	if got, _ := h.labels(t); !slices.Equal(got, everywhere(want)) {
 		t.Fatalf("labels %q; want the old name kept until the next rename", got)
 	}
+	h.reconnect(t)
 	h.rename(t, "Next")
 	h.answered(t, 3)
 	if got, _ := h.labels(t); !slices.Equal(got, everywhere("Next")) {
@@ -302,11 +304,14 @@ func TestAnOldHerdrIsSentARenameOnceWhileConnected(t *testing.T) {
 }
 
 // A herdr without guest_relabel is asked nothing, connected or on its next
-// connect: its shares keep their label, as before.
+// connect: its shares keep their label, as before. The link's work ends
+// (Disconnect waits for it) before nothing sent is checked.
 func TestARenameIsNotSentToAHerdrWithoutGuestRelabel(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", false)
 	h.rename(t, "New")
 	h.reconnect(t)
+	h.rename(t, "Newer")
+	h.d.Disconnect()
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("guest.update sent to a herdr without guest_relabel: %+v", got)
 	}
@@ -319,10 +324,10 @@ func TestARenameIsNotSentToAHerdrWithoutGuestRelabel(t *testing.T) {
 func TestEveryConnectSendsTheLabelAtItsRevision(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.reconnect(t)
+	h.d.Disconnect() // its work (the connect's) ended
 	if n := len(h.updates()); n != 0 {
 		t.Fatalf("%d guest.update calls for a machine never renamed", n)
 	}
-	h.d.Disconnect()
 	h.rename(t, "New")
 	if n := len(h.updates()); n != 0 {
 		t.Fatalf("%d guest.update calls while not connected", n)
@@ -339,22 +344,55 @@ func TestEveryConnectSendsTheLabelAtItsRevision(t *testing.T) {
 	}
 }
 
+// A session switch keeps the SSH connection, and the label goes once per
+// connection: the new session's first list sends nothing more.
+func TestASessionSwitchSendsTheLabelNoMore(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "New")
+	h.reconnect(t)
+	h.answered(t, 1)
+	h.srv.SetSessionList(`{"sessions":[{"name":"default","default":true,"running":true},{"name":"work","running":true}]}`)
+	if err := h.d.SelectSession("work"); err != nil {
+		t.Fatal(err)
+	}
+	// The work watch cleared caps before its first list asked: caps again
+	// after that list is that first list, taken.
+	waitFor(t, "the work session's first list, taken", func() bool {
+		listed := slices.ContainsFunc(h.srv.Requests(), func(r fakeherdr.Request) bool {
+			return r.Method == "agent.list" && r.Session == "work"
+		})
+		h.d.mu.Lock()
+		defer h.d.mu.Unlock()
+		return listed && h.d.link != nil && h.d.link.session == "work" && h.d.link.caps != nil
+	})
+	h.d.Disconnect() // its work ended
+	if n := len(h.updates()); n != 1 {
+		t.Fatalf("%d guest.update calls after a session switch; want the connection's one", n)
+	}
+}
+
 // #570's probe, with guest_relabel_rev: First is held past the connection
 // it went on (unanswered), Second goes beside it and is taken, the next
 // connect sends Second again, and First lands late: herdr keeps Second,
 // whose revision is above First's.
 func TestAnUnansweredRelabelAcrossAReconnectEndsWithTheNewest(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
+	// A connection whose own send is answered: nothing more of it comes.
+	h.d.Disconnect()
+	h.rename(t, "Zero")
+	h.reconnect(t)
+	h.answered(t, 1)
 	release := h.hold(t)
 	h.rename(t, "First")
 	waitFor(t, "First held", func() bool { return h.claims.Load() == 1 })
 	h.rename(t, "Second")
 	second := h.labelRev(t)
-	waitFor(t, "Second taken", func() bool { return h.done.Load() == 1 && h.holds(t, "Second", second) })
+	waitFor(t, "Second taken", func() bool { return h.done.Load() == 2 && h.holds(t, "Second", second) })
 	h.reconnect(t)
-	waitFor(t, "Second sent again on connect", func() bool { return len(h.updates()) == 3 && h.done.Load() == 2 })
+	waitFor(t, "Second sent again on connect", func() bool { return len(h.updates()) == 4 && h.done.Load() == 3 })
 	release(nil)
-	h.answered(t, 3)
+	h.answered(t, 4)
 	if !h.holds(t, "Second", second) {
 		t.Fatalf("shares %+v after First landed late; want Second at %d", h.list(t), second)
 	}
@@ -362,9 +400,9 @@ func TestAnUnansweredRelabelAcrossAReconnectEndsWithTheNewest(t *testing.T) {
 
 // The startup connect (main starts the saved machine directly) sends the
 // profile's label at its revision as every connect does, and a profile
-// without a local id started there is still the one renames while
-// connected relabel (the first gives it one): sent, and the next invite
-// carries the newest.
+// saved without a local id gets one where it is read (stored), so the link
+// started with it is the one renames while connected relabel: sent, and
+// the next invite carries the newest.
 func TestAStartupConnectRelabels(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	startup := func() {
@@ -429,14 +467,17 @@ func TestAMovedProfileIsRelabeledOnlyAtItsNewDestination(t *testing.T) {
 }
 
 // #594's probe: account sync removes the connected profile (its connection
-// stays until it ends) and moves another to its address. A save of a third
-// profile, or a rename of the one now at the address, leaves the link
-// naming the profile it was started with: nothing is sent, and an invite
-// carries that profile's label and revision.
+// stays until it ends) and moves another to its address, written without a
+// local id (given one where it is read). A save of a third profile, or a
+// rename of the one now at the address, leaves the link naming the profile
+// it was started with: nothing is sent, and an invite carries that
+// profile's label and revision.
 func TestALinkKeepsItsLabelWhenAnotherProfileTakesItsAddress(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
 	h.rename(t, "Named")
 	rev := h.labelRev(t)
+	h.reconnect(t)
 	h.answered(t, 1)
 	h.store(t, func(st *machineStore) {
 		other := st.Machines[0]
@@ -461,32 +502,81 @@ func TestALinkKeepsItsLabelWhenAnotherProfileTakesItsAddress(t *testing.T) {
 	}
 }
 
-// guest-relabels.json, an older build's relabel queue, is deleted where a
-// connection starts, unread: the connect sends the profile's own label at
-// its revision.
-func TestTheOlderRelabelQueueIsDeletedUnread(t *testing.T) {
+// #594's probe: a rename saved after a connect took its profile's snapshot
+// and before the link went in (SelectMachine's gap) goes on that
+// connection's first list, read from the profile as saved then, and the
+// next invite carries it. A profile moved to another destination in that
+// gap is sent nothing over the connection to its former one.
+func TestARenameSavedAsAConnectionStartsIsSent(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	snapshot := func() Machine {
+		t.Helper()
+		h.d.Disconnect()
+		m, err := h.d.Machine()
+		if err != nil || m == nil {
+			t.Fatalf("the saved machine %+v, %v", m, err)
+		}
+		return *m
+	}
+	m := snapshot()
+	h.rename(t, "Gap")
+	rev := h.labelRev(t)
+	h.d.start(m, "")
+	h.listed(t)
+	if p := h.answered(t, 1)[0]; *p.MachineLabel != "Gap" || *p.MachineLabelRev != rev || !h.holds(t, "Gap", rev) {
+		t.Fatalf("sent %+v, shares %+v; want Gap at %d", p, h.list(t), rev)
+	}
+	if p := h.invite(t); p.MachineLabel != "Gap" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite: %+v (rev %v); want Gap at %d", p, p.MachineLabelRev, rev)
+	}
+	m = snapshot()
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	moved := saved[0].Machine
+	moved.Nickname, moved.User = "Moved", "other"
+	if err := h.d.SaveMachine(moved, saved[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	h.d.start(m, "")
+	h.listed(t)
+	h.d.Disconnect() // its work ended
+	if n := len(h.updates()); n != 1 {
+		t.Fatalf("%d guest.update calls; want nothing sent to the moved profile's former destination", n)
+	}
+}
+
+// v0.1.0-preview.28 kept renames not yet sent in guest-relabels.json, by
+// local id, the label alone, and saved no label revision. Upgrading, each
+// one of a saved profile takes a revision of now, so the profile's label
+// goes at it on the next connect; the file is deleted, entries of no saved
+// profile with it.
+func TestAPreview28RelabelQueueIsSentOnTheNextConnect(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
-	h.rename(t, "Named")
+	h.store(t, func(st *machineStore) { st.Machines[0].Nickname, st.Machines[0].LabelRev = "Renamed", 0 })
 	saved, err := h.d.Machines()
-	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" || saved[0].LabelRev != 0 {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
 	h.d.storeMu.Lock()
-	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(fmt.Sprintf(`{%q:{"label":"Legacy","rev":%d}}`, saved[0].LocalID, saved[0].LabelRev+1)))
+	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(fmt.Sprintf(`{%q:"Renamed","0123456789abcdef0123456789abcdef":"Gone"}`, saved[0].LocalID)))
 	h.d.storeMu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
+	before := uint64(time.Now().UnixMilli())
 	h.reconnect(t)
+	p := h.answered(t, 1)[0]
+	if rev := h.labelRev(t); *p.MachineLabel != "Renamed" || *p.MachineLabelRev < before || *p.MachineLabelRev != rev || !h.holds(t, "Renamed", rev) {
+		t.Fatalf("sent %+v (rev %v), saved revision %d, shares %+v; want Renamed at a revision of the upgrade, saved", p, *p.MachineLabelRev, rev, h.list(t))
+	}
 	h.d.storeMu.Lock()
 	_, err = os.Stat(h.d.guestRelabelsPath())
 	h.d.storeMu.Unlock()
 	if !os.IsNotExist(err) {
-		t.Fatalf("the older queue after a connect: %v; want it deleted", err)
-	}
-	if p := h.answered(t, 1)[0]; *p.MachineLabel != "Named" || *p.MachineLabelRev != saved[0].LabelRev {
-		t.Fatalf("sent %+v; want Named at %d", p, saved[0].LabelRev)
+		t.Fatalf("the older queue after the upgrade: %v; want it deleted", err)
 	}
 }
 
@@ -540,16 +630,18 @@ func TestAProfileSavedAgainInheritsNoLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.reconnect(t)
+	h.d.Disconnect() // its work (the connect's) ended
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("the fresh profile's connect sent %+v", got)
 	}
 }
 
-// Only a rename of a saved machine gives it a new label revision, above the
-// one before, and a local id if it has none, which an edit that moves the
-// machine to another user@host:port keeps; a new profile takes neither from
-// the page.
-func TestARenameGivesItsProfileANewLabelRevision(t *testing.T) {
+// Every saved profile has its own local id, never the page's, kept by any
+// edit, a move to another user@host:port included, and given where it is
+// read to one saved without (account sync, older builds). A change of its
+// invite label (its nickname, or its host while it has none) gives it a new
+// label revision, above the one before; nothing else does.
+func TestALabelChangeGivesItsProfileANewLabelRevision(t *testing.T) {
 	d := newDesk(t.TempDir())
 	save := func(m Machine, replacing string) Machine {
 		t.Helper()
@@ -563,23 +655,54 @@ func TestARenameGivesItsProfileANewLabelRevision(t *testing.T) {
 		return saved[0].Machine
 	}
 	pi := save(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k", LocalID: "from-the-page", LabelRev: 9}, "")
-	if pi.LocalID != "" || pi.LabelRev != 0 {
+	profile := pi.LocalID
+	if len(profile) != 32 || pi.LabelRev != 0 {
 		t.Fatalf("a new machine: local id %q, label revision %d", pi.LocalID, pi.LabelRev)
 	}
 	pi.Session = "work"
-	if pi = save(pi, "root@pi:22"); pi.LocalID != "" || pi.LabelRev != 0 {
-		t.Fatalf("an edit that renames nothing: local id %q, label revision %d", pi.LocalID, pi.LabelRev)
+	if pi = save(pi, "root@pi:22"); pi.LocalID != profile || pi.LabelRev != 0 {
+		t.Fatalf("an edit that relabels nothing: local id %q, label revision %d", pi.LocalID, pi.LabelRev)
 	}
 	pi.Nickname = "New"
 	pi = save(pi, "root@pi:22")
-	profile, first := pi.LocalID, pi.LabelRev
+	first := pi.LabelRev
 	pi.User, pi.LocalID, pi.LabelRev = "admin", "another", 1
-	if pi = save(pi, "root@pi:22"); len(profile) != 32 || first == 0 || pi.LocalID != profile || pi.LabelRev != first {
-		t.Fatalf("local id %q then %q, label revision %d then %d; want the rename's kept", profile, pi.LocalID, first, pi.LabelRev)
+	if pi = save(pi, "root@pi:22"); first == 0 || pi.LocalID != profile || pi.LabelRev != first {
+		t.Fatalf("local id %q, label revision %d then %d; want both kept", pi.LocalID, first, pi.LabelRev)
 	}
 	pi.Nickname = "Newer"
 	if pi = save(pi, "admin@pi:22"); pi.LabelRev <= first {
 		t.Fatalf("label revision %d after %d; a rename's is above the one before", pi.LabelRev, first)
+	}
+	// Without a nickname the host is the label: a host change relabels, a
+	// nickname naming the machine as its host already does doesn't.
+	renamed := pi.LabelRev
+	pi.Nickname = ""
+	pi = save(pi, "admin@pi:22")
+	unnamed := pi.LabelRev
+	pi.Host = "pi.local"
+	if pi = save(pi, "admin@pi:22"); unnamed <= renamed || pi.LabelRev <= unnamed {
+		t.Fatalf("label revisions %d, %d, %d; want each label change above the one before", renamed, unnamed, pi.LabelRev)
+	}
+	hostRev := pi.LabelRev
+	pi.Nickname = "pi.local"
+	if pi = save(pi, "admin@pi.local:22"); pi.LabelRev != hostRev {
+		t.Fatalf("label revision %d after a nickname naming it as it was, want %d", pi.LabelRev, hostRev)
+	}
+	d.storeMu.Lock()
+	st, err := d.load()
+	if err == nil {
+		st.Machines[0].LocalID = ""
+		err = d.store(st)
+	}
+	d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := d.Machines()
+	again, _ := d.Machines()
+	if err != nil || len(saved[0].LocalID) != 32 || saved[0].LocalID == profile || again[0].LocalID != saved[0].LocalID {
+		t.Fatalf("a profile read without a local id: %q, then %q; want one given and kept", saved[0].LocalID, again[0].LocalID)
 	}
 }
 

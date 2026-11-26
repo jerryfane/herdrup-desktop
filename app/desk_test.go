@@ -51,6 +51,9 @@ func TestMachinesMigrateFromSingleMachineJSON(t *testing.T) {
 	d := newDesk(dir)
 	want := Machine{Host: "old.example", Port: 2222, User: "me", KeyPath: "/keys/id", Session: "work"}
 	got, err := d.Machine()
+	if got != nil && len(got.LocalID) == 32 { // given where it is read
+		want.LocalID = got.LocalID
+	}
 	if err != nil || got == nil || *got != want {
 		t.Fatalf("Machine() = %+v, %v; want the machine from machine.json", got, err)
 	}
