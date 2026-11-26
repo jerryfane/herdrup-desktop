@@ -296,11 +296,12 @@ test("a saved terminal opens though its view carries no topic sessions", async (
 });
 
 /** Two topics listed for the open page: Board pack (t1) and Beta (t2), both idle; Organise shows
- *  where `served` (the agent serves suggestions). */
-function twoTopics(token: string, served = false) {
+ *  where `served` (the agent serves suggestions); `proposals` titles one proposal each. */
+function twoTopics(token: string, served = false, proposals: string[] = []) {
  const ms = Date.now() - 60_000;
  const info = (topic_id: string, title: string) => ({ topic_id, title, state: "idle", turns: 1, queued: 0, created_unix_ms: ms, last_activity_unix_ms: ms });
- emit("topics:changed", { token, topics: [info("t1", TOPIC.title), info("t2", "Beta")], offered: true, loaded: true, suggestions: [], suggestionsServed: served, requestedMs: Date.now() });
+ const suggestions = proposals.map((title, i) => ({ suggestion_id: `s${i + 1}`, title, reason: "", message_ids: ["m1"], created_unix_ms: ms }));
+ emit("topics:changed", { token, topics: [info("t1", TOPIC.title), info("t2", "Beta")], offered: true, loaded: true, suggestions, suggestionsServed: served || proposals.length > 0, requestedMs: Date.now() });
 }
 /** Opens a topic from the list; the narrow page brings the list back first (the header's Topics). */
 async function openRow(title: string) {
@@ -527,6 +528,85 @@ test("Organise replaces a row's Close refusal over the list; the topic still sho
  expect([listNotice().hidden, listNotice().text()]).toEqual([false, "Organise starts when the agent's current turn ends."]);
  await openRow(TOPIC.title);
  expect(chatNote("topic-send-note topic-action-note").text()).toBe("The topic has a turn running.");
+});
+
+/** Board pack open on a wide page, the list beside it; `proposals` as twoTopics'. */
+async function wideTopic(proposals: string[] = []) {
+ const { token } = await openTopic();
+ twoTopics(token, false, proposals);
+ await settle();
+ const surface = doc.body.all().find(n => n.className === "topics-surface")!;
+ surface.clientWidth = 1200; resized(surface);
+ await settle();
+}
+
+/** Chooses item in Board pack's row menu in the list. */
+async function fromRow(item: string) {
+ answers["Desk.GramMenu"] = () => true;
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-row") && n.text().includes(TOPIC.title))!.dispatchEvent(new Event("contextmenu"));
+ await settle();
+ const menu = calls.filter(c => c.method === "Desk.GramMenu").at(-1)!;
+ expect(menu.args[1]).toContain(item);
+ emit("gram:menu", { id: menu.args[0], item });
+ await settle();
+}
+
+// #550 review (P3): a list action's answer wrote the notice over the list whatever came after it:
+// a Rename that went through late erased a newer Close's refusal. Each list action owns the notice
+// from its start; an older one's answer leaves it alone.
+test("a Rename that goes through late leaves a newer Close refusal over the list", async () => {
+ await wideTopic();
+ const renamed = Promise.withResolvers<void>();
+ answers["Desk.TopicsRename"] = () => renamed.promise;
+ await fromRow("Rename…");
+ const sheet = doc.body.all().find(n => n.className.includes("topics-rename"))!;
+ sheet.all().find(n => n.tagName === "input")!.value = "Board pack 2";
+ sheet.all().find(n => n.tagName === "button" && n.className === "topics-sheet-start")!.click();
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicsRename").map(c => c.args[2])).toEqual(["Board pack 2"]);
+ const close = Promise.withResolvers<void>();
+ answers["Desk.TopicsClose"] = () => close.promise;
+ await fromRow("Close");
+ close.reject(new Error("The topic has a turn running."));
+ await settle();
+ expect(listNotice().text()).toBe("The topic has a turn running.");
+ renamed.resolve();
+ await settle();
+ expect([listNotice().hidden, listNotice().text()]).toEqual([false, "The topic has a turn running."]);
+});
+
+test("Not now that goes through while a row's Close is out leaves that Close's later refusal shown", async () => {
+ await wideTopic(["Pricing"]);
+ const settled = Promise.withResolvers<string>();
+ answers["Desk.TopicsSettleSuggestions"] = () => settled.promise;
+ doc.body.all().find(n => n.tagName === "button" && n.text() === "Not now")!.click();
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicsSettleSuggestions").map(c => c.args.slice(1))).toEqual([[[], ["s1"]]]);
+ const close = Promise.withResolvers<void>();
+ answers["Desk.TopicsClose"] = () => close.promise;
+ await fromRow("Close");
+ settled.resolve("");
+ await settle();
+ close.reject(new Error("The topic has a turn running."));
+ await settle();
+ expect([listNotice().hidden, listNotice().text()]).toEqual([false, "The topic has a turn running."]);
+});
+
+// #550 review (P3): opening the row of the topic already open (wide) cleared the list's notice but
+// drew nothing, so the old notice stayed. The notice is drawn as it is cleared; the topic's own
+// lifecycle note stays in its conversation.
+test("opening the open topic's row clears the notice over the list, not the conversation's", async () => {
+ await wideTopic();
+ const close = Promise.withResolvers<void>();
+ answers["Desk.TopicsClose"] = () => close.promise;
+ await fromRow("Close");
+ close.reject(new Error("The topic has a turn running."));
+ await settle();
+ expect(listNotice().text()).toBe("The topic has a turn running.");
+ doc.body.all().find(n => n.tagName === "button" && n.className.includes("topic-row") && n.text().includes(TOPIC.title))!.click();
+ await settle();
+ const action = chatNote("topic-send-note topic-action-note");
+ expect([listNotice().hidden, action.hidden, action.text()]).toEqual([true, false, "The topic has a turn running."]);
 });
 
 // #539 review (P3): a kept row's day header was matched on the prompt's time alone, so after

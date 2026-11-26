@@ -122,10 +122,12 @@ export class TopicsPane {
  private readonly seeded: TopicInfo[];
  private selected: string | null = null;
  private chat: TopicChat | null = null;
- /** The notice over the list, owned by the newest list action: its own answer (Create or Not now,
-  *  Rename), or the lifecycle note of the topic closed or reopened from its row (that topic's, which
-  *  its conversation shows too). Organise and opening a row clear it. */
+ /** The notice over the list, owned by the newest list action (listNoticeSeq): its own answer
+  *  (Create or Not now, Rename), or the lifecycle note of the topic closed or reopened from its row
+  *  (that topic's, which its conversation shows too). Organise and opening a row clear it. */
  private listNotice: { text: string } | { topicID: string } | null = null;
+ /** The newest list action, numbered as it starts: an older one's answer leaves the notice alone. */
+ private listNoticeSeq = 0;
  /** Each topic's notes by slot (NoteSlot), by topic id: a send or a Close that settles after its
   *  topic was left shows there when the topic opens again. */
  private readonly notes: Record<NoteSlot, Map<string, string>> = { send: new Map(), lifecycle: new Map() };
@@ -307,7 +309,7 @@ export class TopicsPane {
   const seq = (this.lifecycleSeq.get(topicID) ?? 0) + 1;
   this.lifecycleSeq.set(topicID, seq);
   // Only the notice changes: the rows stay, and the row whose menu asked keeps the focus.
-  if (fromList) { this.listNotice = { topicID }; this.drawNotice(); }
+  if (fromList) { this.listNoticeSeq++; this.listNotice = { topicID }; this.drawNotice(); }
   const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose;
   void call(this.host.token, topicID).then(() => null, (error: unknown) => errorText(error)).then(note => {
    if (!this.disposed && this.lifecycleSeq.get(topicID) === seq) this.setNote(topicID, "lifecycle", note);
@@ -366,7 +368,7 @@ export class TopicsPane {
  private async organise() {
   if (this.organising) return;
   const seq = ++this.organiseSeq;
-  this.organising = true; this.organiseText = null; this.listNotice = null; this.organiseAt = Infinity; this.drawList();
+  this.organising = true; this.organiseText = null; this.listNoticeSeq++; this.listNotice = null; this.organiseAt = Infinity; this.drawList();
   try {
    const queued = await Desk.topicsOrganise(this.host.token);
    if (this.disposed || seq !== this.organiseSeq) return;
@@ -431,11 +433,12 @@ export class TopicsPane {
  private async settle(create: boolean) {
   if (this.settling) return;
   this.settling = true; this.drawList();
+  const seq = ++this.listNoticeSeq;
   const plan = settlePlan(this.suggestions(), create ? this.unticked : new Set(this.suggestions().map(s => s.suggestion_id)));
   try {
    const problem = await Desk.topicsSettleSuggestions(this.host.token, plan.accept, plan.dismiss);
-   this.listNotice = problem === "" ? null : { text: problem };
-  } catch (error) { this.listNotice = { text: errorText(error) }; }
+   this.answerList(seq, problem === "" ? null : { text: problem });
+  } catch (error) { this.answerList(seq, { text: errorText(error) }); }
   this.settling = false; this.unticked = new Set();
   this.drawList();
  }
@@ -453,7 +456,8 @@ export class TopicsPane {
  }
 
  private row(topic: TopicInfo): HTMLElement {
-  const row = button("", "topic-row", () => { this.listNotice = null; this.select(topic.topic_id); });
+  // Opening a row clears the notice over the list, drawn now: an open row's select changes nothing.
+  const row = button("", "topic-row", () => { this.listNoticeSeq++; this.listNotice = null; this.drawNotice(); this.select(topic.topic_id); });
   row.dataset.topic = topic.topic_id;
   if (topic.state === "closed") row.dataset.closed = "";
   if (this.wide && this.selected === topic.topic_id) row.setAttribute("aria-current", "true");
@@ -483,9 +487,16 @@ export class TopicsPane {
  }
 
  private async act(call: () => Promise<void>) {
-  try { await call(); this.listNotice = null; }
-  catch (error) { this.listNotice = { text: errorText(error) }; }
+  const seq = ++this.listNoticeSeq;
+  try { await call(); this.answerList(seq, null); }
+  catch (error) { this.answerList(seq, { text: errorText(error) }); }
   if (!this.disposed) this.drawList();
+ }
+
+ /** A list action's answer for the notice over the list, kept only while that action (seq) is
+  *  still the newest. */
+ private answerList(seq: number, notice: { text: string } | null) {
+  if (seq === this.listNoticeSeq) this.listNotice = notice;
  }
 
  /** The "i" after the Topics heading: info.circle in the secondary ink (SF on a Mac, Phosphor's
@@ -651,7 +662,7 @@ class TopicChat {
  /** What the page's composer needs of this topic while it writes here. */
  private readonly composer: TopicComposer;
 
- constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, private readonly notes: TopicNotes) {
+ constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, notes: TopicNotes) {
   // The topic's header (Apple clean, owner picks 2026-11-24, items 14 and 15): [sidebar Topics ⌥⌘T |]
   // ‹ Inbox | title, status … •••, its text buttons capsules.
   this.listButton = button("Topics", "topic-list-open button-compact", showList);
@@ -681,7 +692,7 @@ class TopicChat {
    room: () => this.messages.clientHeight,
    closed: () => this.topic.state === "closed",
    placeholder: () => this.topic.state === "closed" ? "Closed. Reopen it to continue." : `Message ${this.topic.title.trim() ? this.topic.title.trim() : "this topic"}`,
-   note: text => this.showNote(text),
+   note: notes.send,
    stage: message => this.stage(message),
   };
   this.column = new ConversationColumn(this.root, () => this.layout());
@@ -740,9 +751,6 @@ class TopicChat {
 
  get topicID(): string { return this.topic.topic_id; }
 
- /** The composer's note: kept by the pane (TopicNotes), so a send that settles after this
-  *  conversation closed still shows when the topic opens again. */
- private showNote(note: string | null) { this.notes.send(note); }
  drawNote(slot: NoteSlot, note: string | null) {
   const line = slot === "send" ? this.note : this.actionNote;
   line.textContent = note ?? ""; line.hidden = !note;
