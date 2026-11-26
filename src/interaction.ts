@@ -46,7 +46,7 @@ import bellIcon from "../third_party/phosphor/web/bell.svg?url";
 import bellSlashIcon from "../third_party/phosphor/web/bell-slash.svg?url";
 import arrowDownIcon from "../third_party/phosphor/web/arrow-down.svg?url";
 import arrowUpIcon from "../third_party/phosphor/regular/arrow-up.svg?url";
-import { isMine, previousMine } from "./chatJumpMine";
+import { isMine, previousMine, showsJumpMine } from "./chatJumpMine";
 import circleIcon from "../third_party/phosphor/web/circle-bold.svg?url";
 import pauseCircleIcon from "../third_party/phosphor/web/pause-circle-bold.svg?url";
 import arrowCircleIcon from "../third_party/phosphor/web/arrow-circle-right-fill.svg?url";
@@ -1019,7 +1019,7 @@ class Detail {
   this.chatJump.hidden = !away || this.findOpen;
   const first = this.mineNodes(1)[0];
   const above = !!first && this.chatTop(first) < this.chatScroll.scrollTop - 1;
-  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || this.viewer().guest || !(above || this.hasEarlier() || this.mineBusy);
+  this.chatJumpMine.hidden = !this.chat || this.mode !== "chat" || this.findOpen || !showsJumpMine(this.view) || !(above || this.hasEarlier() || this.mineBusy);
   this.chatJumpMine.disabled = this.mineBusy;
   this.chatJumpMine.classList.toggle("busy", this.mineBusy);
   this.chatJumpMine.setAttribute("aria-busy", String(this.mineBusy));

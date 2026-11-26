@@ -244,6 +244,12 @@ export interface AgentView {
   guestSelf?: string;
   plainTerminal: boolean;
   /**
+   * OwnerLink: a Guest view the owner opened in a browser over an owner link
+   * (src/web/desk.ts openAgentView), which has the owner's up arrow to their
+   * previous prompt (src/chatJumpMine.ts). The desktop never sets it.
+   */
+  ownerLink?: boolean;
+  /**
    * AskForm: the host answers omp's HTML-form asks (capabilities.ask_form).
    * A guest's gate advertises no capabilities, so for a guest herdr's
    * form_answerable on the pending ask decides alone.
