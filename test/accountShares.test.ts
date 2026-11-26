@@ -123,6 +123,29 @@ test("a failed sign-in reports and gives the choices back; closing the sheet sto
  dispose();
 });
 
+test("a sign-in that comes back without a session gives the choices back, with why; a cancel too, saying nothing", async () => {
+ const { emit } = bridge({ "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple", "google"], "Desk.AccountSignIn": undefined });
+ const { made, redeemed, reported } = choices({ account: true });
+ const { root, buttons: all } = await made;
+ const waiting = () => shown(root).includes("Finish signing in in your browser.");
+ named(root, "Continue with Apple").click();
+ await settle();
+ expect([waiting(), all.every(b => b.disabled)]).toEqual([true, true]);
+ // The app's account link came back expired (desk_account.go queueAccountLink).
+ emit("account:changed", { signedIn: false, problem: "The sign-in took too long. Sign in again." });
+ expect([waiting(), all.map(b => b.disabled), reported.map(errorText)]).toEqual([false, [false, false, false], ["The sign-in took too long. Sign in again."]]);
+ // Tried again, then cancelled: the choices again, nothing more to say.
+ named(root, "Continue with Google").click();
+ await settle();
+ expect(all.every(b => b.disabled)).toBe(true);
+ emit("account:changed", { signedIn: false, problem: "" });
+ expect([waiting(), all.every(b => !b.disabled), reported.length]).toEqual([false, true, 1]);
+ // Only this device now; a session that turns up later accepts nothing more.
+ named(root, "Only this device").click();
+ emit("account:changed", { signedIn: true });
+ expect(redeemed).toEqual([["device", "Only this device"]]);
+});
+
 test("g3: after a share went into the account, one quiet line with OK among the window's notices", () => {
  const { doc } = bridge({});
  const notice = showAccountShareNotice("enyo") as unknown as FakeElement;

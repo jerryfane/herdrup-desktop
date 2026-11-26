@@ -34,7 +34,9 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
  const root = node("div", "guest-choices");
  const buttons: HTMLButtonElement[] = [];
  let stop = () => {};
- const choice = (text: string, cls: string, keep: Keep) => { const button = action(text, () => redeem(keep, button)); button.className = cls; buttons.push(button); return button; };
+ // Any choice made ends the wait for an earlier sign-in (stop), so a session that comes later
+ // accepts nothing more.
+ const choice = (text: string, cls: string, keep: Keep) => { const button = action(text, () => { stop(); redeem(keep, button); }); button.className = cls; buttons.push(button); return button; };
  const done = { root, buttons, dispose: () => stop() };
  const plain = () => { root.append(choice("Accept", "", "device")); return done; };
  if (!invite.account) return plain();
@@ -56,7 +58,7 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
   waiting.textContent = "Finish signing in in your browser."; waiting.hidden = false;
   stop();
   const off = events.accountChanged.on(next => {
-   if (!next.signedIn) return;
+   if (!next.signedIn) { signInEnded(next.problem ?? ""); return; }
    stop(); waiting.hidden = true;
    redeem("account", pressed);
   });
@@ -68,6 +70,14 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
    report(failure);
   });
  });
+ /** This sign-in came back without a session (the app's account link: expired, refused, or
+  *  cancelled, problem "" then) while the choices waited for it: they come back, with why. A
+  *  session that still arrives goes on as asked, unless another choice was made meanwhile. */
+ function signInEnded(problem: string) {
+  waiting.hidden = true;
+  for (const button of buttons) button.disabled = false;
+  if (problem !== "") report(new Error(problem));
+ }
  buttons.push(...signIn);
  pair.append(...signIn);
  root.append(node("p", "guest-choice-label", "Keep it on all your devices"), pair, choice("Only this device", "button-secondary button-large guest-choice-wide", "device"), waiting);
