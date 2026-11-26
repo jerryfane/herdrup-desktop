@@ -1553,11 +1553,13 @@ class Detail {
  }
  /** Refresh (the header's button, ⌘R): the terminal reconnects, Topics reads its list again and
   *  its open topic starts over, and the chat starts over from its newest page (chatRestart):
-  *  never from the held cursors, which herdr may have expired. */
+  *  never from the held cursors, which herdr may have expired. The question's last refusal goes
+  *  (#571): the form it reloads may be answerable again, as after ask_form_moved once the
+  *  Terminal's form is back where it started; its unsent draft and step stay. */
  refresh() {
   if (this.mode === "terminal") void this.reconnectTerminal();
   else if (this.mode === "topics") this.topics?.refresh();
-  else { this.chatRestart = true; void this.refreshChat(this.generation); }
+  else { this.answerProblem = null; this.chatRestart = true; void this.refreshChat(this.generation); }
  }
  // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
  async refreshChat(generation: number) {
@@ -1882,8 +1884,10 @@ class Detail {
  /** What a question card shows depends on: redraw it only when one of these changes. */
  private questionSignature(row: ChatRow | null, id: string): unknown[] {
   // A form's state appears on its first draw at version 0: count none as 0 too, or the first
-  // unchanged poll would redraw the card and take the focus from a field being typed in.
-  return [row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
+  // unchanged poll would redraw the card and take the focus from a field being typed in. The
+  // session keys the card with the question (#572): a new session's same question and payload
+  // gets a card of its own, never the old one's field and handlers on state the reset dropped.
+  return [this.chat?.session_id, row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
  }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
   * its board status, or with none yet the transcript's working turn — and the chat loads. */
