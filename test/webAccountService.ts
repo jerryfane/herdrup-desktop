@@ -122,13 +122,13 @@ export function worker() {
   /** The next push is applied, and its answer held until the promise given resolves. */
   holdAnswer: null as Promise<void> | null,
   /** The next push is a late one: kept unapplied (held, oldest first) and never answered, so the
-   *  browser gives it up at its deadline; landHeld lands the oldest now, unless the service is
-   *  past its not_after then (refused, as a late request would be). */
+   *  browser gives it up at its deadline; landHeld lands the oldest now, in the account it was sent
+   *  as, unless the service is past its not_after then (refused, as a late request would be). */
   holdNextPush: false,
   landHeld() {
    const late = held.shift()!;
    if (late.notAfter !== undefined && w.serverNow > late.notAfter) { w.expired++; return; }
-   apply(late.changes);
+   apply(late.changes, late.store);
   },
   /** What the account holds as its quota counts it: every live item's body, prompts and machines. */
   usedBytes: () => [...stored().values()].reduce((n, body) => n + body.length, 0),
@@ -206,7 +206,7 @@ export function worker() {
     if (url.pathname === "/v1/devices/challenge") {
      w.challenges++;
      await w.challengeGate;
-     return Response.json({ challenge_id: "c".repeat(22), server_pub: toB64url(x25519.getPublicKey(x25519.utils.randomSecretKey())), salt: toB64url(new Uint8Array(32).fill(1)), account_id: "acct", expires_in: 60 });
+     return Response.json({ challenge_id: "c".repeat(22), server_pub: toB64url(x25519.getPublicKey(x25519.utils.randomSecretKey())), salt: toB64url(new Uint8Array(32).fill(1)), account_id: s.account, expires_in: 60 });
     }
     if (url.pathname === "/v1/devices" && method === "POST") {
      w.enrolments++;
@@ -229,7 +229,8 @@ export function worker() {
    return answer as typeof fetch;
   },
  };
- const held: { changes: SyncChange[]; notAfter?: number }[] = [];
+ /** Late pushes (holdNextPush), each with the sync items of the account it was sent as. */
+ const held: { changes: SyncChange[]; notAfter?: number; store: Map<string, SyncItem> }[] = [];
  /** now_ms for an answer: the service's clock, or nothing (omitNow). */
  const now = () => w.omitNow ? {} : { now_ms: w.serverNow };
  /** A refusal: its status, and its error body, or one that never ends (stallErrorBody) or is cut
@@ -300,7 +301,7 @@ export function worker() {
    if (over("agent_name", 128) || over("owner_name", 64) || over("machine_label", 128)) return Response.json({ error: "invalid_item" }, { status: 400 });
   }
   if (w.holdNextPush) {
-   w.holdNextPush = false; held.push({ changes, notAfter });
+   w.holdNextPush = false; held.push({ changes, notAfter, store });
    const given = Promise.withResolvers<Response>();
    signal?.addEventListener("abort", () => given.reject(signal.reason));
    return given.promise;

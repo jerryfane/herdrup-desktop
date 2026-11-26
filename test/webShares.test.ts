@@ -78,8 +78,15 @@ function inviteText(relay: TestRelay, acct = true, agent = "docs"): string {
  return APP_LINK_PREFIX + toB64url(new TextEncoder().encode(JSON.stringify(payload)));
 }
 
-/** The account's statement for any machine: its text names the account (the host binds to it). */
-const statements = (): StatementSource => ({ get: async () => ({ jws: "statement-of-acct", expMs: Date.now() + 600_000, account: "acct", live: () => true }), drop() {} });
+/** The statement of the account signed in ("acct" signed out) for any machine: its text names the
+ *  account (the host binds to it). */
+const statements = (account: WebAccount): StatementSource => ({
+ get: async () => {
+  const acct = account.current?.accountID ?? "acct";
+  return { jws: `statement-of-${acct}`, expMs: Date.now() + 600_000, account: acct, live: () => true };
+ },
+ drop() {},
+});
 
 let sessions = 0;
 /** One browser of the account: its own session, storage, guest key, grant and Web Locks. Signed
@@ -93,7 +100,7 @@ async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore
  const account = new WebAccount(signedIn ? fetcher : signedOut, undefined, undefined, null);
  if (signedIn) await account.check();
  const shares = createShareSync(account, { storage: () => storage, locks, name: "Chrome on macOS", background: false, ...(roundMs === undefined ? {} : { roundMs }) });
- const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(account), shares });
  return { desk, grants, shares, account, storage, identities };
 }
 
@@ -254,6 +261,19 @@ test("a push given up at its deadline is sent again as it was, and a Leave of it
  const record = JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct")!) as { pending: unknown[]; sent: unknown[] };
  const writes = sharesOn(w).map(c => `${c.deleted ? "delete" : "put"} ${c.base_rev}`);
  expect([left, replayed, w.sharesIn("acct"), await grants.list(), b.shares.list(), record.pending, record.sent, writes]).toEqual(["unsent", [id], [], [], [], [], [], ["put 0", "put 0", "delete 1"]]);
+}, CONNECTS_LIMIT_MS);
+
+test("a late push lands in the account it was sent as, not another", async () => {
+ const w = worker(), h = host();
+ w.accountsApart = true;
+ w.accountId = "acct-b";
+ const mac = await browser(w, true, undefined, undefined, undefined, undefined, 300);
+ w.holdNextPush = true;
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ expect([mac.account.current?.accountID, w.sharesIn("acct"), w.sharesIn("acct-b")]).toEqual(["acct-b", [], []]);
+ w.landHeld();
+ expect([w.sharesIn("acct"), w.sharesIn("acct-b")]).toEqual([[], [id]]);
 }, CONNECTS_LIMIT_MS);
 
 test("a bound accept writes the share to the account; another browser of the account opens it with no invite", async () => {
