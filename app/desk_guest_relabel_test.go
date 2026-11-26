@@ -276,9 +276,10 @@ func TestAFailedRelabelIsSentAgainOnTheNextConnect(t *testing.T) {
 // queued behind it, never sent beside it, and goes once that one is done.
 // Taken or refused (an answer), it goes at once on the live connection, so
 // the newest name is the last one herdr takes and nothing waits. Unanswered
-// (the client's deadline passed; herdr may still apply it, and does here,
-// late), it doesn't go on that connection: it waits for the next one, which
-// sends it. First is held on a gate that carries its outcome; no timing.
+// (the relabel's context ended while herdr held it; herdr may still apply it,
+// and does here, late), it doesn't go on that connection: it waits for the
+// next one, which sends it. First is held on a gate that carries its outcome,
+// and its context is cancelled only once Second is queued: no timing.
 func TestARenameQueuedBehindARelabelOut(t *testing.T) {
 	refusal := &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
 	for _, c := range []struct {
@@ -292,22 +293,24 @@ func TestARenameQueuedBehindARelabelOut(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newRelabelHerdr(t, "Old", true)
-			if c.unanswered {
-				h.d.relabelTimeout = 300 * time.Millisecond
-			}
 			release := h.hold(t)
 			h.rename(t, "First")
 			waitFor(t, "the first relabel out", func() bool { return len(h.updates()) >= 1 })
 			h.rename(t, "Second")
 			h.queuedBehind(t)
 			if c.unanswered {
+				// The relabel's context is the watch's: ending it (as a session
+				// switch does) leaves First unanswered on the same connection.
+				h.d.mu.Lock()
+				restart := h.d.link.restart
+				h.d.mu.Unlock()
+				restart()
 				h.idle(t, "the sender to give up on the unanswered relabel")
 				release(nil)
 				waitFor(t, "the late relabel applied", func() bool { return h.done.Load() == 1 })
 				if n, pending, got := len(h.updates()), h.pending(t), h.labels(t); n != 1 || pending != "Second" || !slices.Equal(got, everywhere("First")) {
 					t.Fatalf("after an unanswered relabel: %d sent, pending %q, shares %q; want Second kept for the next connection", n, pending, got)
 				}
-				h.d.relabelTimeout = 0 // the next connection's relabel waits for its answer
 				h.reconnect(t)
 			} else {
 				release(c.outcome)
@@ -355,9 +358,10 @@ func (h *relabelHerdr) idle(t *testing.T, what string) {
 }
 
 // Entries of no saved profile, such as the address-keyed format (#554,
-// before #557), are retired by the read: written out of the file, never
-// matched to the profile at that address, so nothing is sent. The sender
-// runs here, synchronously, on the live connection.
+// before #557), are retired: never matched to the profile at that address,
+// so nothing is sent, and written out of the file with the next write (here
+// the next rename's, which leaves the profile's own entry alone in it). The
+// sender runs here, synchronously, on the live connection.
 func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", true)
 	h.rename(t, "Named")
@@ -374,8 +378,14 @@ func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	}
 	h.idle(t, "the rename's sender to end")
 	h.d.relabelGuests(h.live())
-	if p, n := h.relabels(t), len(h.updates()); len(p) != 0 || n != 1 {
-		t.Fatalf("relabels %v, %d guest.update calls; want the address-keyed entry retired and none sent", p, n)
+	if n := len(h.updates()); n != 1 {
+		t.Fatalf("%d guest.update calls; the address-keyed entry must send none", n)
+	}
+	h.failing.Store(true) // the next rename stays queued, so the file shows it
+	h.rename(t, "Renamed")
+	h.idle(t, "the next rename's sender to end")
+	if p := h.relabels(t); len(p) != 1 || p[saved[0].LocalID] != "Renamed" {
+		t.Fatalf("relabels %v after the next rename; want the address-keyed entry written out, the profile's alone", p)
 	}
 }
 
@@ -467,7 +477,7 @@ func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 		st, err := d.load()
 		var p map[string]string
 		if err == nil {
-			p, err = d.loadRelabels(st)
+			p, _, err = d.loadRelabels(st)
 		}
 		if err != nil {
 			t.Fatal(err)

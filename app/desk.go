@@ -196,12 +196,9 @@ type Desk struct {
 
 	// relabeling is the guest relabels being sent, by profile (LocalID): at
 	// most one at a time each; true asks the one sending to send again once
-	// it is done (desk_guest_relabel.go). Under relabelMu. relabelTimeout,
-	// when set, bounds how long a relabel waits for herdr's answer (the
-	// bridge's own call limit otherwise); replaced in tests.
-	relabelMu      sync.Mutex
-	relabeling     map[string]bool
-	relabelTimeout time.Duration
+	// it is done (desk_guest_relabel.go). Under relabelMu.
+	relabelMu  sync.Mutex
+	relabeling map[string]bool
 
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
@@ -791,12 +788,9 @@ func (d *Desk) RemoveMachine(id string) error {
 		// Within storeMu, as the save paths' allow: the cache's eligibility ends as the saved
 		// machines do, whatever order a concurrent save and this removal run in.
 		d.boards.forget(id)
-		// A relabel not yet sent goes with its profile (desk_guest_relabel.go):
-		// reading the relabels with the profile gone retires it.
+		// A relabel not yet sent goes with its profile (desk_guest_relabel.go).
 		if localID != "" {
-			if _, err := d.loadRelabels(st); err != nil {
-				log.Printf("guest relabel: %s: %v", id, err)
-			}
+			d.retireRelabels(st)
 		}
 	}
 	d.storeMu.Unlock()

@@ -21,7 +21,6 @@ package main
 // guest_relabel is asked nothing: its shares keep their label, as before.
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -51,20 +50,21 @@ func (d *Desk) guestRelabelsPath() string { return filepath.Join(d.dir, "guest-r
 // loadRelabels reads the relabels not yet taken of the profiles st holds.
 // An entry of a profile st no longer holds (removed, or replaced by account
 // sync) or of none (#554's user@host:port keys, before #557) is retired: left
-// out of the map, and written out of the file. A failure to write that is
-// logged, never the read's: the entries kept are as usable. Nothing is ever
-// matched to a profile by address. d.storeMu must be held.
-func (d *Desk) loadRelabels(st machineStore) (map[string]string, error) {
-	pending := map[string]string{}
+// out of the map, and retired reports it, so the caller writes it out with
+// its own changes in one write (a cleanup that can't be written leaves the
+// map as usable). Nothing is ever matched to a profile by address.
+// d.storeMu must be held.
+func (d *Desk) loadRelabels(st machineStore) (pending map[string]string, retired bool, err error) {
+	pending = map[string]string{}
 	data, err := os.ReadFile(d.guestRelabelsPath())
 	if errors.Is(err, fs.ErrNotExist) {
-		return pending, nil
+		return pending, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := json.Unmarshal(data, &pending); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	saved := map[string]bool{}
 	for _, m := range st.Machines {
@@ -72,19 +72,13 @@ func (d *Desk) loadRelabels(st machineStore) (map[string]string, error) {
 			saved[m.LocalID] = true
 		}
 	}
-	retired := false
 	for profile := range pending {
 		if !saved[profile] {
 			delete(pending, profile)
 			retired = true
 		}
 	}
-	if retired {
-		if err := d.storeRelabels(pending); err != nil {
-			log.Printf("guest relabel: retiring relabels of no saved profile: %v", err)
-		}
-	}
-	return pending, nil
+	return pending, retired, nil
 }
 
 // storeRelabels writes them. d.storeMu must be held.
@@ -96,10 +90,22 @@ func (d *Desk) storeRelabels(pending map[string]string) error {
 	return writeFileAtomic(d.guestRelabelsPath(), data)
 }
 
+// retireRelabels writes out the relabels of profiles st no longer holds, if
+// there are any; a failure is logged. d.storeMu must be held.
+func (d *Desk) retireRelabels(st machineStore) {
+	pending, retired, err := d.loadRelabels(st)
+	if err == nil && retired {
+		err = d.storeRelabels(pending)
+	}
+	if err != nil {
+		log.Printf("guest relabel: retiring relabels of no saved profile: %v", err)
+	}
+}
+
 // queueRelabel records that the profile localID of st, just saved, was
 // renamed to label. d.storeMu must be held.
 func (d *Desk) queueRelabel(st machineStore, localID, label string) error {
-	pending, err := d.loadRelabels(st)
+	pending, _, err := d.loadRelabels(st)
 	if err != nil {
 		return err
 	}
@@ -165,11 +171,12 @@ func (d *Desk) relabelOnce(l *link, profile string) (done bool) {
 	if !live || c == nil || ctx == nil || unsure || !herdrapi.CapabilityGuestRelabel.Supported(caps) {
 		return true
 	}
+	// A read alone writes nothing: retired entries go with the next write.
 	d.storeMu.Lock()
 	st, err := d.load()
 	var pending map[string]string
 	if err == nil {
-		pending, err = d.loadRelabels(st)
+		pending, _, err = d.loadRelabels(st)
 	}
 	d.storeMu.Unlock()
 	if err != nil {
@@ -182,11 +189,6 @@ func (d *Desk) relabelOnce(l *link, profile string) (done bool) {
 		return true
 	}
 	label := inviteLabel(st.Machines[i])
-	if d.relabelTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, d.relabelTimeout)
-		defer cancel()
-	}
 	view, err := c.ForSession(session)
 	if err == nil {
 		_, err = engine.New(engine.Bridge(view)).GuestRelabel(ctx, label)
@@ -204,12 +206,18 @@ func (d *Desk) relabelOnce(l *link, profile string) (done bool) {
 	}
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
+	retired := false
 	if st, err = d.load(); err == nil {
-		pending, err = d.loadRelabels(st)
+		pending, retired, err = d.loadRelabels(st)
 	}
-	if err == nil && pending[profile] == queued {
-		delete(pending, profile)
-		err = d.storeRelabels(pending)
+	if err == nil {
+		taken := pending[profile] == queued
+		if taken {
+			delete(pending, profile)
+		}
+		if taken || retired {
+			err = d.storeRelabels(pending)
+		}
 	}
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
