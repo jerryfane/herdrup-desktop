@@ -8,7 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 import { WebAccount } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
-import { createShareSync, SHARES_KEY_PREFIX, SYNC_LOCK_PREFIX } from "../src/web/shares";
+import { createShareSync, LeaveUnsent, SHARES_KEY_PREFIX, SYNC_LOCK_PREFIX } from "../src/web/shares";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { toB64url } from "../src/webguest/b64url";
 import { MemoryIdentityStore } from "../src/webguest/identity";
@@ -205,6 +205,25 @@ test("a tab whose pull stalls gives the sync turn up at its deadline: a Leave in
   const outcome = await Promise.race([left, Bun.sleep(3_000).then(() => "still waiting")]);
   expect([outcome, await grants.list(), w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual(["left", [], [], { collection: "shares", id, base_rev: 1, deleted: true }]);
   await expect(synced).rejects.toThrow();
+ } finally { stalled.resolve(); }
+}, CONNECTS_LIMIT_MS);
+
+// A Leave in a tab whose own round is running (its pull stalled) gets a turn of its own once that
+// round has settled, failed or not: its delete goes, and only then does the Leave resolve.
+test("a Leave while its own tab's pull stalls gets a turn of its own once that round gives up: its delete goes", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w, true, new MemoryGrantStore(), memory(), new MemoryIdentityStore(), tabLocks(), 300);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const stalled = Promise.withResolvers<void>(), pulling = Promise.withResolvers<void>();
+ w.onPull = () => pulling.resolve();
+ w.holdPull = stalled.promise;
+ const synced = mac.shares.sync();
+ await pulling.promise;
+ try {
+  await mac.desk.forgetGuestConnection(id);
+  await expect(synced).rejects.toThrow();
+  expect([w.sharesIn("acct"), sharesOn(w).at(-1), recordOf(mac.storage).pending]).toEqual([[], { collection: "shares", id, base_rev: 1, deleted: true }, []]);
  } finally { stalled.resolve(); }
 }, CONNECTS_LIMIT_MS);
 
@@ -491,9 +510,11 @@ test("a share is written to and deleted from the account that bound it, never an
  await switchTo("acct");
  await mac.shares.sync();
  expect([w.sharesIn("acct"), w.sharesIn("acct-b")]).toEqual([[id], []]);
- // Left under B: deleted from A alone, at A's next sync here.
+ // Left under B: deleted from A alone, at A's next sync here. The Leave says the account still
+ // lists it.
  await switchTo("acct-b");
- await mac.desk.forgetGuestConnection(id);
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow(LeaveUnsent);
+ expect(await mac.grants.list()).toEqual([]);
  await mac.shares.sync();
  expect([w.sharesIn("acct"), sharesOn(w).length]).toEqual([[id], 1]);
  await switchTo("acct");

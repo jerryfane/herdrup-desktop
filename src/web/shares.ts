@@ -26,6 +26,11 @@ export const SYNC_LOCK_PREFIX = "herdrup.web.shares.sync.";
 export class SharesUnsupported extends Error {
  constructor() { super("This browser can't sync shared access. Update it."); this.name = "SharesUnsupported"; }
 }
+/** A Leave done on this browser whose delete no request carried yet (another sign-in here, or its
+ *  round failed before sending it): kept, it goes with a later round. */
+export class LeaveUnsent extends Error {
+ constructor() { super("You left this shared access on this browser. Your HerdrUp account still lists it; it will be removed there at the next sync."); this.name = "LeaveUnsent"; }
+}
 
 /** The shares collection's allowlist (sync.ts SCHEMAS.shares). */
 export interface ShareBody {
@@ -44,6 +49,10 @@ export interface RemoteShare { id: string; rev: number; body: ShareBody }
 interface PendingWrite { id: string; deleted?: true; body?: ShareBody }
 /** A write as a push sent it: based on base_rev. */
 interface SentWrite extends PendingWrite { base_rev: number }
+/** p as written (its id, its delete or body), whatever else is stored with it. */
+const bare = (p: PendingWrite): PendingWrite => p.deleted ? { id: p.id, deleted: true } : { id: p.id, body: p.body! };
+/** p's key: one write of one share, whatever it is based on. */
+const writeKey = (p: PendingWrite) => JSON.stringify(bare(p));
 /** gone: the revisions of the shares seen deleted, which a write of the same id is based on.
  *  drop: the shares left here (kept in the same write as the delete) or a pull saw leave the
  *  account (a tombstone, or, in a full pull, a share seen live that it no longer holds) whose
@@ -140,12 +149,8 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  and a write kept since goes in a later push. Each push is journaled (sent) before it goes and
   *  settled as it is answered: one that fails leaves its writes for the next round, and the others
   *  still go. A write goes at most once a round. */
- async function pushQueue(acct: string, signal: AbortSignal | undefined, generation: number): Promise<void> {
-  const bare = (p: PendingWrite): PendingWrite => p.deleted ? { id: p.id, deleted: true } : { id: p.id, body: p.body! };
-  const writeKey = (p: PendingWrite) => JSON.stringify(bare(p));
+ async function pushQueue(acct: string, signal: AbortSignal, generation: number, attempted: Set<string>): Promise<void> {
   const sentKey = (s: SentWrite) => JSON.stringify({ ...bare(s), base_rev: s.base_rev });
-  /** The writes sent this round. */
-  const attempted = new Set<string>();
   const change = (s: SentWrite): SyncChange => s.deleted
    ? { collection: "shares", id: s.id, base_rev: s.base_rev, deleted: true }
    : { collection: "shares", id: s.id, base_rev: s.base_rev, body: s.body };
@@ -238,14 +243,16 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    return left.slice(0, batches(left.map(change))[0]?.length ?? 0);
   };
   // Cancelled, or another sign-in now: nothing more goes for this one.
-  while (await push(next) > 0 && !signal?.aborted && account.generation === generation);
+  while (await push(next) > 0 && !signal.aborted && account.generation === generation);
   if (failed !== null) throw (failed as { error: unknown }).error;
  }
 
- /** One round for acct: this browser's writes, then what the account holds since the last pull. */
- async function round(acct: string, signal?: AbortSignal): Promise<SharesChange> {
+ /** One round for acct: this browser's writes, then what the account holds since the last pull.
+  *  attempted gets each write handed to a request (writeKey), as it goes: a round that fails
+  *  after still says what it sent. */
+ async function round(acct: string, signal: AbortSignal, attempted: Set<string>): Promise<SharesChange> {
   const generation = account.generation;
-  await pushQueue(acct, signal, generation);
+  await pushQueue(acct, signal, generation, attempted);
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
   return update(acct, r => {
    const before = new Set(r.shares.map(s => s.id));
@@ -271,37 +278,49 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  /** Runs f as acct's sync turn across this browser's tabs (Web Locks, SYNC_LOCK_PREFIX): one
   *  tab's round at a time, so no tab sends or settles writes while another does (a push of
   *  another tab's still answering can't come after a Leave this tab sent and settled). f's signal
-  *  aborts at signal, or roundMs after the turn was granted: its requests are cancelled and the
-  *  turn passes, a stalled request holding no other tab's round. What a push cancelled so may
-  *  still write stays journaled (pushQueue), and goes again first. Without Web Locks nothing runs
+  *  aborts roundMs after the turn was granted: its requests are cancelled and the turn passes, a
+  *  stalled request holding no other tab's round. What a push cancelled so may still write stays
+  *  journaled (pushQueue), and goes again first. Without Web Locks nothing runs
   *  (SharesUnsupported); a lock the browser refuses fails the turn. */
- async function turn<T>(acct: string, f: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+ async function turn<T>(acct: string, f: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const locks = place.locks;
   if (locks === null) throw new SharesUnsupported();
-  const run = () => {
-   const deadline = AbortSignal.timeout(place.roundMs ?? ROUND_MS);
-   return f(signal ? AbortSignal.any([signal, deadline]) : deadline);
-  };
-  return signal ? locks.request(SYNC_LOCK_PREFIX + acct, { signal }, run) : locks.request(SYNC_LOCK_PREFIX + acct, run);
+  return locks.request(SYNC_LOCK_PREFIX + acct, () => f(AbortSignal.timeout(place.roundMs ?? ROUND_MS)));
  }
 
- let running: Promise<void> | null = null, again = false;
- /** A round now, or right after the one running (callers share it); a round that fails leaves the
-  *  writes for the next one. Signed out: nothing to do. */
- function sync(signal?: AbortSignal): Promise<void> {
-  if (running !== null) { again = true; return running; }
-  running = (async () => {
+ /** A turn of this tab's: the account it ran for (null: signed out, none ran), the writes its round
+  *  handed to a request (writeKey), and why it failed. */
+ interface Turn { account: string | null; sent: Set<string>; error?: unknown }
+ let running: Promise<Turn> | null = null, queued: Promise<Turn> | null = null;
+ /** A turn now, for the account signed in as it starts. */
+ const turnNow = (): Promise<Turn> => {
+  const now = (async (): Promise<Turn> => {
+   const acct = account.current?.accountID;
+   if (acct === undefined) return { account: null, sent: new Set() };
+   const sent = new Set<string>();
    try {
-    do {
-     again = false;
-     const acct = account.current?.accountID;
-     if (acct === undefined) return;
-     await tell(await turn(acct, bounded => round(acct, bounded), signal));
-    } while (again);
-   } finally { running = null; }
+    await tell(await turn(acct, signal => round(acct, signal, sent)));
+    return { account: acct, sent };
+   } catch (error) { return { account: acct, sent, error }; }
   })();
-  return running;
- }
+  running = now;
+  void now.then(() => { if (running === now) running = null; });
+  return now;
+ };
+ /** A turn that starts after this call: now when none runs, else the one queued after the turn
+  *  running (callers that come meanwhile share it), which starts once that one has settled, as it
+  *  succeeded or failed. So whatever was kept before the call is in a round begun after it. */
+ const nextTurn = (): Promise<Turn> => {
+  if (queued !== null) return queued;
+  if (running === null) return turnNow();
+  return queued = running.then(() => { queued = null; return turnNow(); });
+ };
+ /** A round after this call (as nextTurn); a round that fails leaves the writes for the next one.
+  *  Signed out: nothing to do. */
+ const sync = async (): Promise<void> => {
+  const done = await nextTurn();
+  if (done.error !== undefined) throw done.error;
+ };
 
  /** Keeps change for acct, the account the share is bound to, in this browser's record: one
   *  storage refuses rejects, and nothing is kept. */
@@ -312,14 +331,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   // service ever held the share, so whether or not a tombstone of it comes.
   r.drop = change.body ? (r.drop ?? []).filter(id => id !== change.id) : [...new Set([...r.drop ?? [], change.id])];
  });
- /** Sends acct's kept writes while acct is signed in here: never to another account. Under
-  *  another sign-in (or none) they wait for acct's next round on this browser; a round that fails
-  *  sends them with the next one. Rejects only where this browser can't sync (SharesUnsupported):
-  *  they then wait for a browser that can. */
- const send = async (acct: string): Promise<void> => {
-  if (account.current?.accountID !== acct) return;
+ /** Sends acct's kept writes while acct is signed in here, in a turn begun after this call: never
+  *  to another account. Under another sign-in (or none) they wait for acct's next round on this
+  *  browser (null); a round that fails sends them with the next one. */
+ const send = async (acct: string): Promise<Turn | null> => {
+  if (account.current?.accountID !== acct) return null;
   await tell({ account: acct, shares: visible(read(acct)) });
-  await sync().catch((error: unknown) => { if (error instanceof SharesUnsupported) throw error; });
+  return nextTurn();
  };
 
  // Another sign-in shows its own account's shares (and pulls them); signed out, none.
@@ -360,21 +378,28 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   put: async (access: Access) => {
    if (access.account === undefined) throw new Error("This shared access isn't bound to a HerdrUp account.");
    await keep(access.account, { id: grantKey(access), body: shareBody(access) });
-   await send(access.account);
+   const sent = await send(access.account);
+   if (sent?.error instanceof SharesUnsupported) throw sent.error;
   },
   /** Leaves share id of acct, the account it is bound to, as one operation: keeps its delete, and
    *  with it the removal of its grant owed here (dropping; rejected: storage refused them, and
    *  nothing else ran, so the Leave can be tried again), runs forget (this browser's own part: its
-   *  link, its grant), then sends the delete, whether forget succeeded or not: kept, it leaves
-   *  every device either way, and a grant forget failed to remove goes at the next change heard
-   *  (each round's), tombstone or not. Rejects as forget did, else where this browser can't sync
-   *  (SharesUnsupported: the delete waits, kept, for one that can). */
+   *  link, its grant), then sends the delete in a turn of its own, whether forget succeeded or
+   *  not: kept, it leaves every device either way, and a grant forget failed to remove goes at the
+   *  next change heard (each round's), tombstone or not. Rejects as forget did; else where this
+   *  browser can't sync (SharesUnsupported), or when the delete is still queued after that turn
+   *  and no request of it carried it (LeaveUnsent: another sign-in here, a round that failed
+   *  first; it goes with a later one). One another tab's round took meanwhile went. */
   async leave(id: string, acct: string, forget: () => Promise<void>): Promise<void> {
-   await keep(acct, { id, deleted: true });
+   const remove: PendingWrite = { id, deleted: true };
+   await keep(acct, remove);
    let failed: { error: unknown } | null = null;
    try { await forget(); } catch (error) { failed = { error }; }
-   await send(acct).catch((error: unknown) => { failed ??= { error }; });
+   const sent = await send(acct);
    if (failed !== null) throw (failed as { error: unknown }).error;
+   if (sent?.error instanceof SharesUnsupported) throw sent.error;
+   const queued = read(acct).pending.some(p => writeKey(p) === writeKey(remove));
+   if (queued && !sent?.sent.has(writeKey(remove))) throw new LeaveUnsent();
   },
   /** Binds this sign-in's session to key as an account device (the statements a bound share
    *  needs are issued only to a session with a device); a session bound already is fine. Where
