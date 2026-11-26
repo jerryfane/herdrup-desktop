@@ -530,6 +530,65 @@ async function withHeldPoll(body: (poll: () => Promise<void>) => Promise<void>) 
  } finally { win.setTimeout = real; }
 }
 
+// #582: a Refresh whose newest page failed leaves the chat to start over, but no newest-page read
+// is in flight then: an older page whose cursor herdr expires afterwards reads the newest page at
+// once, and the error goes when it lands, not at the next scheduled poll.
+test("an older page that expires after a failed Refresh reads the newest page at once", async () => {
+ const session = { session_id: "s582", before: "b1" };
+ const older = Promise.withResolvers<string>();
+ const reads: string[] = [];
+ let down = false;
+ await withHeldPoll(async () => {
+  await openPage("chat", topicPage(), (_token: unknown, after: unknown, before: unknown) => {
+   reads.push(`${after}|${before}`);
+   if (before) return older.promise;
+   if (down) throw new Error("herdr: unavailable: herdr is restarting");
+   return topicPage({ ...session, entries: [reply("old", "Projected before the update")] });
+  });
+  // The top is in view as the chat lands: its older page is being read (checkTop).
+  expect(reads.at(-1)).toBe("|b1");
+  down = true; reads.length = 0;
+  refreshButton().click();
+  await settle();
+  expect(reads).toEqual(["|"]);
+  expect(statusText()).toStartWith("Chat: herdr: unavailable");
+  down = false;
+  older.reject(new Error(EXPIRED));
+  await settle();
+  expect([reads, statusText()]).toEqual([["|", "|"], ""]);
+ });
+});
+
+// #582: a live read that started over (its after cursor expired) is reading the newest page; an
+// older page whose cursor expires meanwhile leaves that read to land, reading no newest page of
+// its own.
+test("an older page that expires while a live read starts over reads no second newest page", async () => {
+ const session = { session_id: "s582-over", before: "b1" };
+ const older = Promise.withResolvers<string>(), newest = Promise.withResolvers<string>();
+ const reads: string[] = [];
+ let landed = false;
+ await withHeldPoll(async poll => {
+  await openPage("chat", topicPage(), (_token: unknown, after: unknown, before: unknown) => {
+   reads.push(`${after}|${before}`);
+   if (before) return older.promise;
+   if (after) return Promise.reject(new Error(EXPIRED));
+   return landed ? newest.promise : topicPage({ ...session, entries: [reply("old", "Projected before the update")] });
+  });
+  // The top is in view as the chat lands: its older page is being read (checkTop).
+  expect(reads.at(-1)).toBe("|b1");
+  landed = true; reads.length = 0;
+  // The next poll's after cursor expired: it starts over, and its newest page is held.
+  await poll();
+  expect(reads).toEqual(["a1|", "|"]);
+  older.reject(new Error(EXPIRED));
+  await settle();
+  newest.resolve(topicPage({ ...session, after: "a2", entries: [reply("n1", "The newest page")] }));
+  await settle();
+  expect(reads).toEqual(["a1|", "|"]);
+  expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
+ });
+});
+
 test("the Inbox whose newest page failed after an expired cursor reads its newest page again, then clears the error", async () => {
  const session = { session_id: "s-expired-failed" };
  await openPage("chat", topicPage(), topicPage({ ...session, entries: [reply("old", "Projected before the update")] }));
