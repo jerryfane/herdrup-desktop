@@ -95,6 +95,15 @@ type Access struct {
 	// account's collection, whichever account is signed in later. Empty
 	// for a plain share and for one saved before it was kept.
 	Account string `json:"account,omitempty"`
+	// AccountShare is how a bound share's item stands in its account, as
+	// the desk last knew (never saved with the grant): "confirmed", the
+	// account holds it; "queued", it is owed and goes with the next sync;
+	// "refused", the account turned its last write down, and
+	// AccountShareProblem says why in words. AccountBound alone says only
+	// that herdr bound the share. Empty for a plain share, or one no write
+	// is known of.
+	AccountShare        string `json:"accountShare,omitempty"`
+	AccountShareProblem string `json:"accountShareProblem,omitempty"`
 }
 
 func (a Access) ID() string { return a.Endpoint.HostID + "/" + a.GuestID }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"maps"
 	"slices"
 	"time"
 
@@ -115,6 +116,97 @@ func syncedSharesOf(acct string, state syncState, grants []guest.Access) []Synce
 			add(op.ID, *op.Body)
 			listed[op.ID] = true
 		}
+	}
+	return out
+}
+
+// How a bound share's item stands in its account (guest.Access.AccountShare).
+const (
+	shareConfirmed = "confirmed"
+	shareQueued    = "queued"
+	shareRefused   = "refused"
+)
+
+// acceptShareWait bounds the sync an accept runs to confirm its share's
+// write (AcceptGuestInvitation): past it, the share is told as queued.
+var acceptShareWait = 20 * time.Second
+
+// shareRefusalWords is what a share's refused write says, by the service's
+// code: its quota (AccountService src/sync.ts: a cap's CHECK constraint
+// failed, 403 quota; COLLECTION_CAPS.shares is 500), or any other.
+func shareRefusalWords(code string) string {
+	if code == "quota" {
+		return "Your HerdrUp account holds as many shares as it can. Remove one from it, and this one is added at the next sync."
+	}
+	return "Your HerdrUp account didn't take this share. It is tried again at the next sync."
+}
+
+// accountShareOf is how bound grant a's item stands in its account by
+// state (guest.Access.AccountShare, AccountShareProblem): confirmed once
+// the account's synced shares hold it; refused while its owed write was
+// last turned down; queued while it is owed; else nothing is known.
+func accountShareOf(state syncState, a guest.Access) (string, string) {
+	if !a.AccountBound || a.Account == "" {
+		return "", ""
+	}
+	id := a.ShareID()
+	if state.AccountID == a.Account && slices.ContainsFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }) {
+		return shareConfirmed, ""
+	}
+	if slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id && op.Account == a.Account }) {
+		if code, ok := state.ShareRefusals[id]; ok {
+			return shareRefused, shareRefusalWords(code)
+		}
+		return shareQueued, ""
+	}
+	return "", ""
+}
+
+// withAccountShares tells each bound grant of list how its item stands in
+// its account (accountShareOf), in place.
+func (d *Desk) withAccountShares(list []guest.Access) ([]guest.Access, error) {
+	if !slices.ContainsFunc(list, func(a guest.Access) bool { return a.AccountBound }) {
+		return list, nil
+	}
+	d.storeMu.Lock()
+	state, err := d.loadSyncState()
+	d.storeMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		list[i].AccountShare, list[i].AccountShareProblem = accountShareOf(state, list[i])
+	}
+	return list, nil
+}
+
+// confirmShare runs one sync round, within acceptShareWait, so a bound
+// grant just accepted can say whether its account took its item.
+func (d *Desk) confirmShare() {
+	ctx, cancel := context.WithTimeout(context.Background(), acceptShareWait)
+	defer cancel()
+	_ = d.SyncMachines(ctx)
+}
+
+// noteShareRefusals is ShareRefusals after a round: prev, with the round's
+// refusals (refused, by id) added, the writes the service took (acked) let
+// go, and only writes still owed (writes) kept.
+func noteShareRefusals(prev map[string]string, writes []shareOp, acked []account.Change, refused map[string]string) map[string]string {
+	out := maps.Clone(prev)
+	if out == nil {
+		out = map[string]string{}
+	}
+	maps.Copy(out, refused)
+	for _, c := range acked {
+		if c.Collection == "shares" && !c.Deleted {
+			delete(out, c.ID)
+		}
+	}
+	maps.DeleteFunc(out, func(id, _ string) bool {
+		return !slices.ContainsFunc(writes, func(op shareOp) bool { return op.ID == id })
+	})
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

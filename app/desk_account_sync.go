@@ -94,6 +94,10 @@ type syncState struct {
 	// whichever account this state is.
 	ShareWrites  []shareOp `json:"shareWrites,omitempty"`
 	ShareDeletes []shareOp `json:"shareDeletes,omitempty"`
+	// ShareRefusals are the owed share writes the service last refused
+	// alone (its quota, say), by id: the refusal's code. Each goes once its
+	// write is taken, or no longer owed.
+	ShareRefusals map[string]string `json:"shareRefusals,omitempty"`
 	// PushFrom is the write ("collection/id") the next round's pushes
 	// start from: a round the service's rate limit stopped leaves it at the
 	// first write it didn't settle, so the writes past a long run of
@@ -932,7 +936,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	removed = usedRemoved(removed, st.Machines, deletes, prompts, promptDeletes, attempts, slices.Concat(shareWrites, shareDeletes))
 	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline, PromptsPulled: true,
 		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptBaselineHash: baselineHash, PromptAttempts: attempts, PromptLastSent: lastSent,
-		SharesPulled: true, ShareWrites: shareWrites, ShareDeletes: shareDeletes,
+		SharesPulled: true, ShareWrites: shareWrites, ShareDeletes: shareDeletes, ShareRefusals: noteShareRefusals(latest.ShareRefusals, shareWrites, nil, nil),
 		Removed: removed, PushFrom: pushFrom, LastSync: lastSync, History: latest.History, ResetsSeen: latest.ResetsSeen}
 	if switched {
 		// Another account's state starts its own count: its first pull
@@ -998,6 +1002,9 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// heldBack are the writes prepare held back at dispatch (a prompt's
 	// variants at maxVariants): no work for a resumed round to start from.
 	heldBack := map[string]bool{}
+	// refusedShares are the share writes the service refused alone this
+	// round, by id: the refusal's code.
+	refusedShares := map[string]string{}
 	var unsent error
 	if deleteWaits {
 		unsent = errDeleteHeldBack // the round is incomplete until the delete goes
@@ -1098,6 +1105,16 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			unsent = err
 			for _, c := range part {
 				settled[c.Collection+"/"+c.ID] = true
+			}
+			// A share's write the service refused alone (its quota, say)
+			// is told as refused (accountShareOf) while it stays owed.
+			var api *account.APIError
+			if errors.As(err, &api) {
+				for _, c := range dispatched {
+					if c.Collection == "shares" && !c.Deleted {
+						refusedShares[c.ID] = api.Code
+					}
+				}
 			}
 		}
 	}
@@ -1258,6 +1275,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 	}
 	state.PushFrom = pushFrom
+	state.ShareRefusals = noteShareRefusals(state.ShareRefusals, state.ShareWrites, acked, refusedShares)
 	// The merge pruned the tombstones; again only when the push or its
 	// readback changed what that saw: tombstones added, or pending deletes
 	// and open sends settled.

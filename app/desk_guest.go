@@ -135,13 +135,14 @@ func (g guestStatementSource) Drop(host, jws string) { g.cache.Drop(host, jws) }
 // host's grant a hello named last (guest.Access.NamedAt), whichever grant
 // comes first, as a sibling opened since may hold an older name until its
 // own hello. Each grant keeps its own label saved; only the copies
-// returned are named so.
+// returned are named so. A bound grant says how its item stands in its
+// account (guest.Access.AccountShare).
 func (d *Desk) SharedConnections() ([]guest.Access, error) {
 	list, err := d.guestStore.List()
 	if err != nil {
 		return nil, err
 	}
-	return sharedConnectionsOf(list), nil
+	return d.withAccountShares(sharedConnectionsOf(list))
 }
 
 // sharedConnectionsOf is SharedConnections' naming of held, in place.
@@ -164,7 +165,10 @@ func sharedConnectionsOf(held []guest.Access) []guest.Access {
 // redemption carries its statement), and a share the host bound goes to
 // the shares of the account it was bound to (Access.Account: the
 // admitted statement's), for every device of it; "device" keeps it on
-// this device only, as any other invitation is.
+// this device only, as any other invitation is. A bound share's write is
+// sent at once, one sync round within acceptShareWait, and the access says
+// how it stands (Access.AccountShare): confirmed only once the account
+// holds it, refused with why, else queued for the next sync.
 func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (guest.Access, error) {
 	if keep != "account" && keep != "device" {
 		return guest.Access{}, fmt.Errorf("unknown way to keep a share: %q", keep)
@@ -203,6 +207,12 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (gu
 	if access.AccountBound {
 		if err := d.noteShare(access, false); err != nil {
 			return guest.Access{}, fmt.Errorf("Access was accepted and saved on this device, but could not be added to your HerdrUp account: %w", err)
+		}
+		d.confirmShare()
+		// Unread, the access says nothing of the account (no AccountShare),
+		// never that it holds the share.
+		if told, err := d.withAccountShares([]guest.Access{access}); err == nil {
+			access = told[0]
 		}
 	}
 	return access, nil

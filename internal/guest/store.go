@@ -56,6 +56,9 @@ func (s *Store) load() ([]Access, error) {
 }
 func (s *Store) List() ([]Access, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.load() }
 func (s *Store) Save(access Access) error {
+	// How the share stands in the account is the desk's report, not the
+	// grant's.
+	access.AccountShare, access.AccountShareProblem = "", ""
 	if err := access.validate(); err != nil {
 		return err
 	}

@@ -77,8 +77,8 @@ func acceptBound(t *testing.T) (w *syncWorker, srv *httptest.Server, relay *fake
 		t.Fatalf("an invitation whose host takes accounts: %+v, %v", inv, err)
 	}
 	access, err := d.AcceptGuestInvitation(context.Background(), link, "account")
-	if err != nil || !access.AccountBound || relay.Bound() != "acct" {
-		t.Fatalf("bound accept: %+v (bound to %q), %v", access, relay.Bound(), err)
+	if err != nil || !access.AccountBound || relay.Bound() != "acct" || access.AccountShare != shareConfirmed {
+		t.Fatalf("bound accept: %+v (bound to %q), %v; want the account to hold it", access, relay.Bound(), err)
 	}
 	if err := d.SyncMachines(context.Background()); err != nil {
 		t.Fatal(err)
@@ -385,16 +385,15 @@ func TestARefusedBatchLeavesItsChangesPending(t *testing.T) {
 	w, srv := newWorker(t, "")
 	relay, base := shareRelay(t, true)
 	d := shareDevice(t, srv)
-	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
-	if err != nil || !access.AccountBound {
-		t.Fatalf("bound accept: %+v, %v", access, err)
-	}
+	// The accept's own sync, with a prompt saved before it, is the push
+	// the service refuses whole.
 	savePrompt(t, d, "", "", "summarise the build")
 	w.mu.Lock()
 	w.invalidNextPush = true
 	w.mu.Unlock()
-	if err := d.SyncMachines(context.Background()); err == nil {
-		t.Fatal("a refused push synced")
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.AccountShare != shareQueued {
+		t.Fatalf("bound accept: %+v, %v; want it queued", access, err)
 	}
 	id := relay.HostID() + "/" + access.GuestID
 	if _, ok := w.live()[id]; ok || len(w.livePrompts()) != 0 {
@@ -411,6 +410,60 @@ func TestARefusedBatchLeavesItsChangesPending(t *testing.T) {
 	}
 	if _, ok := w.live()[id]; !ok || len(w.livePrompts()) != 1 {
 		t.Fatalf("after the refusal, the next sync wrote %v", w.live())
+	}
+}
+
+// A bound accept says the account holds its share only once the service
+// took the write: with the account full (403 quota) it is refused, with
+// why, never confirmed, and stays owed; once there is room, the next sync
+// writes it and it is confirmed.
+func TestABoundAcceptTheAccountRefusesIsNotConfirmed(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("prompt-1", `{"text":"held"}`)
+	w.mu.Lock()
+	w.maxItems = 1 // full
+	w.mu.Unlock()
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound {
+		t.Fatalf("bound accept: %+v, %v", access, err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	if _, held := w.live()[id]; held {
+		t.Fatal("the account took a share past its quota")
+	}
+	want := "Your HerdrUp account holds as many shares as it can. Remove one from it, and this one is added at the next sync."
+	if access.AccountShare != shareRefused || access.AccountShareProblem != want {
+		t.Fatalf("a refused share's accept says %q (%q), want refused (%q)", access.AccountShare, access.AccountShareProblem, want)
+	}
+	told := func() guest.Access {
+		t.Helper()
+		list, err := d.SharedConnections()
+		if err != nil || len(list) != 1 {
+			t.Fatalf("shared connections %+v, %v", list, err)
+		}
+		return list[0]
+	}
+	if got := told(); got.AccountShare != shareRefused || got.AccountShareProblem != want {
+		t.Fatalf("a refused share is listed as %q (%q)", got.AccountShare, got.AccountShareProblem)
+	}
+	if saved, _ := d.guestStore.List(); saved[0].AccountShare != "" {
+		t.Fatalf("the account's answer was saved with the grant: %+v", saved[0])
+	}
+	w.mu.Lock()
+	w.maxItems = 0
+	w.mu.Unlock()
+	if err := d.SyncMachines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, held := w.live()[id]; !held {
+		t.Fatal("the owed write never went")
+	}
+	if got := told(); got.AccountShare != shareConfirmed || got.AccountShareProblem != "" {
+		t.Fatalf("a share the account took is listed as %q (%q)", got.AccountShare, got.AccountShareProblem)
 	}
 }
 

@@ -32,6 +32,17 @@ export interface Access {
    * for a plain share and for one saved before it was kept.
    */
   account?: string;
+  /**
+   * AccountShare is how a bound share's item stands in its account, as
+   * the desk last knew (never saved with the grant): "confirmed", the
+   * account holds it; "queued", it is owed and goes with the next sync;
+   * "refused", the account turned its last write down, and
+   * AccountShareProblem says why in words. AccountBound alone says only
+   * that herdr bound the share. Empty for a plain share, or one no write
+   * is known of.
+   */
+  accountShare?: string;
+  accountShareProblem?: string;
 }
 
 /** AccountDeleteInfo is what the account page needs to offer Delete account. */
@@ -1505,7 +1516,10 @@ export const Desk = {
    * redemption carries its statement), and a share the host bound goes to
    * the shares of the account it was bound to (Access.Account: the
    * admitted statement's), for every device of it; "device" keeps it on
-   * this device only, as any other invitation is.
+   * this device only, as any other invitation is. A bound share's write is
+   * sent at once, one sync round within acceptShareWait, and the access says
+   * how it stands (Access.AccountShare): confirmed only once the account
+   * holds it, refused with why, else queued for the next sync.
    */
   acceptGuestInvitation(text: string, keep: string): Promise<Access> {
     return call("Desk.AcceptGuestInvitation", text, keep);
@@ -2420,7 +2434,8 @@ export const Desk = {
    * host's grant a hello named last (guest.Access.NamedAt), whichever grant
    * comes first, as a sibling opened since may hold an older name until its
    * own hello. Each grant keeps its own label saved; only the copies
-   * returned are named so.
+   * returned are named so. A bound grant says how its item stands in its
+   * account (guest.Access.AccountShare).
    */
   sharedConnections(): Promise<Access[]> {
     return call("Desk.SharedConnections");
