@@ -338,8 +338,9 @@ test("a send with a file settles against the topic it was sent to, not the one o
 });
 
 /** Board pack's send with a file and its caption, out while the owner opens Beta and then Board
- *  pack again; herdr's reply (answer) comes after. Returns the reopened topic's note and the field. */
-async function sendThenReopen(answer: unknown) {
+ *  pack again; herdr's reply (answer) comes after. `meanwhile` runs once the send is out, before
+ *  Board pack is left. Returns the reopened topic's note and the field. */
+async function sendThenReopen(answer: unknown, meanwhile: () => Promise<void> = async () => {}) {
  const { input, token } = await openTopic();
  twoTopics(token);
  await settle();
@@ -349,6 +350,7 @@ async function sendThenReopen(answer: unknown) {
  answers["Desk.TopicsSend"] = () => reply.promise;
  input!.dispatchEvent(Object.assign(new Event("keydown"), { key: "Enter" }));
  await settle();
+ await meanwhile();
  await openRow("Beta");
  await openRow(TOPIC.title);
  reply.resolve(answer);
@@ -372,6 +374,29 @@ test("a refused send's reason shows in its topic opened again before the reply, 
 test("an unconfirmed send's warning shows in its topic opened again before the reply, the caption gone", async () => {
  const { input, note } = await sendThenReopen({ delivery: "unconfirmed" });
  expect([note().hidden, note().text(), input.value]).toEqual([false, "Couldn't confirm delivery. Check the topic before sending again.", ""]);
+});
+
+// #539 post-merge review (P3): a Close asked in Board pack whose answer came after the topic was
+// left and opened again, and after the send's warning showed there, cleared that warning. Close and
+// Reopen answer on their own line, which never clears a send's notice.
+test("a Close answered late leaves the send's warning in the topic opened again", async () => {
+ const close = Promise.withResolvers<void>();
+ const { note } = await sendThenReopen({ delivery: "unconfirmed" }, async () => {
+  answers["Desk.GramMenu"] = () => true;
+  answers["Desk.TopicsClose"] = () => close.promise;
+  doc.body.all().find(n => n.tagName === "button" && n.className === "topic-actions")!.click();
+  await settle();
+  const menu = calls.filter(c => c.method === "Desk.GramMenu").at(-1)!;
+  expect(menu.args[1]).toEqual(["Close"]);
+  emit("gram:menu", { id: menu.args[0], item: "Close" });
+  await settle();
+  expect(calls.filter(c => c.method === "Desk.TopicsClose").map(c => c.args[1])).toEqual([TOPIC.topicID]);
+ });
+ const warning = "Couldn't confirm delivery. Check the topic before sending again.";
+ expect([note().hidden, note().text()]).toEqual([false, warning]);
+ close.resolve();
+ await settle();
+ expect([note().hidden, note().text()]).toEqual([false, warning]);
 });
 
 // #539 review (P3): a kept row's day header was matched on the prompt's time alone, so after

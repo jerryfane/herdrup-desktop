@@ -1798,7 +1798,8 @@ class Detail {
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id)
-    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null] : rowShown(row, now));
+    : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null]
+    : row.kind === "mark" ? row : rowShown(row, now));
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "suggestion" || row.kind === "mark" ? this.renderSuggestionRow(row, true)
     : row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);

@@ -123,9 +123,9 @@ export class TopicsPane {
  private selected: string | null = null;
  private chat: TopicChat | null = null;
  private actionNote: string | null = null;
- /** The latest note each topic's composer had (a send's receipt or refusal, a file's problem, an
-  *  action's), by topic id: a send that settles after its topic was left shows there when the
-  *  topic opens again. */
+ /** The latest note each topic's composer had (a send's receipt or refusal, a file's problem), by
+  *  topic id: a send that settles after its topic was left shows there when the topic opens
+  *  again. Close and Reopen answer in the open conversation only (TopicChat.actionNote). */
  private readonly notes = new Map<string, string>();
  private inbox = "";
  private wide = false;
@@ -590,7 +590,11 @@ class TopicChat {
  /** The topic's handovers its reader unfolded (chatRelay.ts), by entry id. */
  private readonly unfolded = new Set<string>();
  private readonly notice = el("p", "interaction-status topic-notice");
+ /** The composer's notes (a send's notice, a file's problem): the pane's, by topic (TopicNotes). */
  private readonly note = el("p", "topic-send-note");
+ /** What Close or Reopen answered: this conversation's own, apart from the composer's notes, so a
+  *  lifecycle answer never clears a send's notice. */
+ private readonly actionNote = el("p", "topic-send-note topic-action-note");
  /** Where the page's composer sits while this topic shows. */
  private readonly composerSlot = el("div", "topic-composer-slot");
  private readonly earlier = button("Earlier messages", "chat-earlier button-plain button-compact", () => { void this.load(true); });
@@ -627,7 +631,7 @@ class TopicChat {
   inbox.append(chevron, el("span", "", "Inbox"));
   const actions = button("", "topic-actions", () => popup([this.topic.state === "closed" ? "Reopen" : "Close"], item => {
    const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose;
-   void call(this.host.token, this.topic.topic_id).then(() => this.showNote(null), error => this.showNote(errorText(error)));
+   void call(this.host.token, this.topic.topic_id).then(() => this.showActionNote(null), error => this.showActionNote(errorText(error)));
   }));
   actions.setAttribute("aria-label", "Topic actions"); actions.setAttribute("aria-haspopup", "menu");
   // The page's own ••• (interaction.ts showMuted): ellipsis has no Windows/Linux stand-in.
@@ -637,6 +641,7 @@ class TopicChat {
   this.earlier.hidden = true;
   this.notice.setAttribute("role", "status");
   this.note.setAttribute("role", "status"); this.note.hidden = true;
+  this.actionNote.setAttribute("role", "status"); this.actionNote.hidden = true;
   this.composer = {
    topicID: topic.topic_id, slot: this.composerSlot,
    room: () => this.messages.clientHeight,
@@ -646,7 +651,7 @@ class TopicChat {
    stage: message => this.stage(message),
   };
   this.column = new ConversationColumn(this.root, () => this.layout());
-  this.root.append(header, this.notice, this.messages, this.note, this.composerSlot, ...this.column.handles, this.column.readout);
+  this.root.append(header, this.notice, this.messages, this.note, this.actionNote, this.composerSlot, ...this.column.handles, this.column.readout);
   this.drawNote(notes.read(topic.topic_id));
   this.setTopic(topic);
   this.messages.append(this.earlier);
@@ -700,11 +705,14 @@ class TopicChat {
 
  get topicID(): string { return this.topic.topic_id; }
 
- /** The topic's note: kept by the pane (TopicNotes), so a send that settles after this
+ /** The composer's note: kept by the pane (TopicNotes), so a send that settles after this
   *  conversation closed still shows when the topic opens again. */
  private showNote(note: string | null) { this.notes.write(this.topic.topic_id, note); }
  drawNote(note: string | null) {
   this.note.textContent = note ?? ""; this.note.hidden = !note;
+ }
+ private showActionNote(note: string | null) {
+  this.actionNote.textContent = note ?? ""; this.actionNote.hidden = !note;
  }
 
  /** A send from the page's composer: its bubble at the topic's tail until the transcript shows it
