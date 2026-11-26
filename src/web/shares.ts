@@ -11,7 +11,7 @@ import { accountShareNotice } from "../notices";
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, SignedOutError, type SyncChange, type WebAccount } from "./account";
+import { AccountServiceError, SignedOutError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
 
 /** The shares collection's allowlist (sync.ts SCHEMAS.shares). */
 export interface ShareBody {
@@ -63,6 +63,7 @@ export const ADD_UNKNOWN = "Added on this device; we'll finish adding it to your
 export function addRefused(error: unknown): string {
  const why = error instanceof SignedOutError ? "you're signed out of HerdrUp"
   : error instanceof AccountServiceError && error.code === "account_changed" ? "this browser is now signed in to another HerdrUp account"
+  : error instanceof AccountServiceError && error.status === 401 ? "your sign-in expired"
   : error instanceof Error ? error.message : String(error);
  return `Added on this device only. Your HerdrUp account didn't take it: ${why}.`;
 }
@@ -77,9 +78,10 @@ export function boundNotice(agentName: string, added: ShareAdd): string {
 /** How long the write may take before its outcome counts as unknown. */
 export const ADD_MS = 15_000;
 
-/** Whether error says the request wrote nothing: the service refused it (a 4xx), or it never went
- *  (signed out; another sign-in now, account_changed, refused before sending). Anything else (a
- *  5xx, the network, a timeout) leaves the write's outcome unknown. */
+/** Whether error says the request wrote nothing: the service refused it (a 4xx; a 401 too, as the
+ *  one request isn't sent again), or it never went (signed out; another sign-in now,
+ *  account_changed, refused before sending). Anything else (a 5xx, the network, a timeout) leaves
+ *  the write's outcome unknown. */
 const refusal = (error: unknown) =>
  error instanceof SignedOutError || (error instanceof AccountServiceError && error.status >= 400 && error.status < 500);
 
@@ -94,7 +96,9 @@ export function createShareAdder(account: WebAccount, name: string, options: { a
   },
   /** Writes a bound grant's share to the account it is bound to (Access.account), its id the
    *  grant's key, as one POST /v1/sync of one change based on no item (base_rev 0: the key is
-   *  new, as the grant is), sent once. Never rejects: the outcome is ShareAdd's. */
+   *  new, as the grant is), sent once (WebAccount.syncPushOnce: a token near expiry is refreshed
+   *  first, and a 401 is a refusal, never a second POST). Never rejects: the outcome is
+   *  ShareAdd's. */
   async add(access: Access): Promise<ShareAdd> {
    if (access.account === undefined) return { outcome: "refused", error: new Error("this shared access isn't bound to a HerdrUp account") };
    const id = grantKey(access);
@@ -105,7 +109,7 @@ export function createShareAdder(account: WebAccount, name: string, options: { a
    const timer = setTimeout(() => deadline.abort(new DOMException("The account service didn't answer in time.", "TimeoutError")), options.addMs ?? ADD_MS);
    let answer;
    try {
-    answer = await account.syncPush({ prepare: async () => ({ changes: [change] }), sending() {}, refused: async () => {} }, access.account, deadline.signal);
+    answer = await account.syncPushOnce({ changes: [change] }, access.account, deadline.signal) as SyncPushAnswer | null;
    } catch (error) {
     return refusal(error) ? { outcome: "refused", error } : { outcome: "unknown", error };
    } finally {

@@ -32,11 +32,13 @@ type SyncAnswer = (push: Push, signal: AbortSignal | undefined) => Response | Pr
 
 /** The account service as signed in to acct-1 (signedIn false: the cookie holds no session): a
  *  session bound to a device already (enrol is session_has_device), and POST /v1/sync answered by
- *  sync, each push it was sent recorded. */
-function service(sync: SyncAnswer, signedIn = true) {
- const pushes: Push[] = [];
+ *  sync, each push it was sent recorded, every request's path in order (requests). The page's
+ *  clock is now(). */
+function service(sync: SyncAnswer, signedIn = true, now = Date.now) {
+ const pushes: Push[] = [], requests: string[] = [];
  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
   const url = String(input);
+  requests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
   if (url.endsWith("/v1/auth/refresh")) return signedIn ? Response.json({ account_id: "acct-1", access_token: TOKEN, access_expires_in: 3600 }) : Response.json({ error: "session_revoked" }, { status: 401 });
   if (url.endsWith("/v1/devices/challenge")) return Response.json({ error: "session_has_device" }, { status: 409 });
   if (url.endsWith("/v1/sync") && init?.method === "POST") {
@@ -46,7 +48,7 @@ function service(sync: SyncAnswer, signedIn = true) {
   }
   return Response.json({ error: "not_found" }, { status: 404 });
  };
- return { pushes, account: new WebAccount(fetcher as unknown as typeof fetch, undefined, undefined, null) };
+ return { pushes, requests, account: new WebAccount(fetcher as unknown as typeof fetch, undefined, now, null) };
 }
 
 const item = (c: SyncChange, deleted: boolean) => ({ collection: c.collection, id: c.id, rev: 3, updated_ms: 0, deleted, body: deleted ? null : c.body });
@@ -76,6 +78,20 @@ test("added only when the service says it holds the share: it applied the one wr
   expect(s.pushes).toEqual([ONE_WRITE]);
  }
  expect(boundNotice("docs", { outcome: "added" })).toBe(accountShareNotice("docs"));
+});
+
+test("one POST, a 401 included: the 401 is a refusal (the sign-in expired), never a second POST; a token near expiry is refreshed before it", async () => {
+ const s = service(answers.status(401, "invalid_token"));
+ const added = await createShareAdder(s.account, "Chrome on macOS").add(bound());
+ expect([added.outcome, s.requests]).toEqual(["refused", ["POST /v1/auth/refresh", "POST /v1/sync"]]);
+ expect(boundNotice("docs", added)).toBe("Added on this device only. Your HerdrUp account didn't take it: your sign-in expired.");
+ // The token (an hour) held until a minute before its end: past that, a refresh goes first.
+ let clock = 1_000_000;
+ const later = service(answers.applied, true, () => clock);
+ await later.account.check();
+ clock += 3_600_000 - 30_000;
+ expect(await createShareAdder(later.account, "Chrome on macOS").add(bound())).toEqual({ outcome: "added" });
+ expect(later.requests).toEqual(["POST /v1/auth/refresh", "POST /v1/auth/refresh", "POST /v1/sync"]);
 });
 
 test("a refusal shows as one: a 4xx, the share deleted from the account, signed out or another sign-in (nothing sent)", async () => {

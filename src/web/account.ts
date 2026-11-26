@@ -365,10 +365,11 @@ export class WebAccount {
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
-  *  fresh token when the service says the one sent is no longer good (401). The call is bound to
-  *  account, else to the account this page already signed in to, before any refresh; only with
-  *  none yet does the first token's account bind it. A token for another account (the cookie now
-  *  holds another sign-in) is refused before anything is sent, so a write never goes there.
+  *  fresh token when the service says the one sent is no longer good (401), unless once: a call
+  *  sent at most once takes that 401 as its answer. The call is bound to account, else to the
+  *  account this page already signed in to, before any refresh; only with none yet does the first
+  *  token's account bind it. A token for another account (the cookie now holds another sign-in) is
+  *  refused before anything is sent, so a write never goes there.
   *  signal, when it aborts, stops the call: nothing is sent once it has, not even the retry, and a
   *  request in flight is cancelled. A push (dispatch, in place of body) makes its body right before
   *  each request (the retry included), once the token is in hand; null sends nothing and the call
@@ -376,7 +377,7 @@ export class WebAccount {
  *  is read (which may stall until the call is aborted); what it throws ends the call, as itself.
  *  Errors are AccountServiceError with the service's code, SignedOutError, or the abort's
  *  reason. */
- private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void): Promise<T> {
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void, once = false): Promise<T> {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
@@ -411,7 +412,7 @@ export class WebAccount {
    if (dispatch && response.status >= 400 && response.status < 500) await dispatch.refused();
    if (response.status === 401 && attempt === 0) {
     if (this.access === token) { this.access = ""; this.accessUntil = 0; }
-    continue;
+    if (!once) continue;
    }
    if (!response.ok) {
     const code = await errorCode(response);
@@ -537,6 +538,13 @@ export class WebAccount {
   *  in the session generation names; none sends nothing and the answer is null. */
  syncPush(dispatch: PushDispatch, account: string, signal?: AbortSignal, generation?: number): Promise<SyncPushAnswer | null> {
   return this.authed("POST", "/v1/sync", undefined, account, signal, dispatch, generation);
+ }
+
+ /** POST /v1/sync of body as account, sent at most once: the token is refreshed before it when
+  *  it is near expiry (accessToken), and a 401 is the answer (AccountServiceError 401), not a
+  *  reason to send it again. The answer is the service's JSON as it came, for the caller to read. */
+ syncPushOnce(body: SyncPushBody, account: string, signal?: AbortSignal): Promise<unknown> {
+  return this.authed("POST", "/v1/sync", body, account, signal, undefined, undefined, undefined, true);
  }
 
  /** Calls changed whenever this page's session or sign-out attempt changes, at the moment it does
