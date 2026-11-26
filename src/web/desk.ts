@@ -431,7 +431,7 @@ export function createGuestDesk(env: DeskEnv) {
     const u: TopicsUpdate = { ...t.last, token: v.token, loaded: true };
     delete u.changed;
     const requested = Date.now();
-    // stale and as_of_unix_ms: a herdr serving the list from its cache (desk_topics.go TopicsFreshness).
+    // stale and as_of_unix_ms: a herdr serving the list from its cache (herdr #520, desk_topics.go topicsReadOnce).
     type Listed = { topics?: TopicsUpdate["topics"]; suggestions?: TopicsUpdate["suggestions"]; stale?: boolean; as_of_unix_ms?: number };
     let list: Listed | null = null;
     try {

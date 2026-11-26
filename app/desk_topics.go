@@ -380,7 +380,7 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	ctx, cancel := context.WithTimeout(v.ctx, 20*time.Second)
 	defer cancel()
 	requested := time.Now()
-	list, fresh, err := v.client.AgentTopicsList(ctx, v.PaneID)
+	list, err := v.client.AgentTopicsList(ctx, v.PaneID)
 	served, known := false, true
 	if err == nil && list.Suggestions != nil {
 		served, known = v.client.Supports(ctx, herdrapi.CapabilityAgentTopicSuggestions)
@@ -393,14 +393,14 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	u := t.last
 	u.Token, u.Loaded, u.Changed = v.Token, true, ""
 	switch {
-	case err == nil && fresh.AsOfMs != 0 && fresh.AsOfMs < t.asOf:
+	case err == nil && list.AsOfUnixMs != 0 && list.AsOfUnixMs < t.asOf:
 		// An answer older than the list shown (a cache behind the
 		// refresh that brought it): the newer list stays.
 	case err == nil:
-		u.Topics, u.Offered, u.Problem, u.Stale = orderedTopics(list.Topics), true, "", fresh.Stale
+		u.Topics, u.Offered, u.Problem, u.Stale = orderedTopics(list.Topics), true, "", list.Stale
 		u.Suggestions, u.RequestedMs = openSuggestions(list.Suggestions), requested.UnixMilli()
-		if fresh.AsOfMs != 0 {
-			t.asOf = fresh.AsOfMs
+		if list.AsOfUnixMs != 0 {
+			t.asOf = list.AsOfUnixMs
 		}
 		// A capability that couldn't be read keeps the last answer and
 		// leaves the read unsettled.
