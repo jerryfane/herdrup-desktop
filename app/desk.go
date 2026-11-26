@@ -546,8 +546,11 @@ func (d *Desk) store(st machineStore) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(d.machinesPath(), data)
+	return writeMachines(d.machinesPath(), data)
 }
+
+// writeMachines writes machines.json; tests fail it.
+var writeMachines = writeFileAtomic
 
 // encodeMachines is machines.json's content for st.
 func encodeMachines(st machineStore) ([]byte, error) {
@@ -650,6 +653,13 @@ func (d *Desk) Machines() ([]SavedMachine, error) {
 // SaveMachine updates the saved profile without opening a connection. A running
 // connection keeps its existing credentials until the user reconnects.
 func (d *Desk) SaveMachine(m Machine, replacing string) error {
+	return d.saveMachine(m, replacing, true)
+}
+
+// saveMachine is SaveMachine. keepKeyType: a paired machine edited at its
+// address keeps the pinned host key's type (an edit from the page, which
+// doesn't hold it); a QR re-pairing, which pins anew, passes false.
+func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error {
 	m.Nickname = strings.TrimSpace(m.Nickname)
 	m.Host = strings.TrimSpace(m.Host)
 	m.User = strings.TrimSpace(m.User)
@@ -689,8 +699,8 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		old := st.Machines[index]
 		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
 		// The page doesn't hold the pinned key's type either: a paired
-		// machine kept at its address keeps it.
-		if m.Paired && sameHostPort(old, m.Host, m.Port) {
+		// machine edited at its address keeps it.
+		if keepKeyType && m.Paired && sameHostPort(old, m.Host, m.Port) {
 			m.HostKeyType = old.HostKeyType
 		}
 		// A rename names the machine anew to its existing shares' guests

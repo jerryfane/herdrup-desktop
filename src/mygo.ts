@@ -882,13 +882,18 @@ export interface PairRequestMachine {
   host: string;
   port: number;
   user: string;
+  /**
+   * SyncedID is the account's record of the machine (SyncedMachine.ID)
+   * when the account lists it.
+   */
+  syncedId?: string;
   /** Result is PairSaved, PairKept, PairPinDiffers or PairNotAdded. */
   result: string;
   /** Reason is the approver's, for PairNotAdded. */
   reason?: string;
   /**
    * Reach is a saved machine's connection try: "" until tried, then
-   * PairOnline, PairUnreachable or PairRefused (Problem).
+   * PairOnline, PairUnreachable, PairRefused (Problem) or PairRemoved.
    */
   reach?: string;
   problem?: string;
@@ -2133,8 +2138,9 @@ export const Desk = {
   },
   /**
    * PairRequestCancel ends request id: the service cancels it, so no device
-   * can approve it any more; when it can't be told, this computer abandons it
-   * (it reveals nothing more and opens no list). S was never written.
+   * can approve it any more. It is fenced here first (it reveals nothing more,
+   * opens no list and saves nothing, a read in flight included), so when the
+   * service can't be told it still ends here.
    */
   pairRequestCancel(id: string): Promise<void> {
     return call("Desk.PairRequestCancel", id);
@@ -2163,9 +2169,10 @@ export const Desk = {
   /**
    * PairRequestRead reads request id once and moves it on: the code once a
    * device opened it, and, once approved, the approver's machine list, saved
-   * here (the save rules in app/desk_pair_request.go). A list sent again at a higher
-   * seq is saved too, while RetryOpen. An error is a read that failed (no
-   * answer); the page reads again.
+   * here (the save rules in app/desk_pair_request.go). A list sent again at a
+   * higher seq is saved too, while RetryOpen. A list that couldn't be saved
+   * is the view's Problem, and is read again. An error is a read that failed
+   * (no answer); the page reads again.
    */
   pairRequestRead(id: string): Promise<PairRequestView> {
     return call("Desk.PairRequestRead", id);

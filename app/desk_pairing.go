@@ -163,7 +163,9 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 		machine = saved.Machines[index]
 		replacing = id
 	}
-	machine.Paired = true
+	// The QR's pin replaces the one before, so does its policy: herdr pair's
+	// host key algorithms, not the type another device's approval pinned.
+	machine.Paired, machine.HostKeyType = true, ""
 	// QR fingerprints use OpenSSH SHA256:base64; Parse normalizes them to the
 	// same hex digest that the real SSH host-key callback verifies.
 	if err := d.pins.SetPin(net.JoinHostPort(payload.Host, "22"), payload.Fingerprint); err != nil {
@@ -188,7 +190,7 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 		return PairedMachine{}, errors.New("Your key was added to that computer, but this device couldn't save it. Remove the herdr-pair line from ~/.ssh/authorized_keys on that computer before pairing again.")
 	}
 	machine.KeyPath = keyPath
-	if err := d.SaveMachine(machine, replacing); err != nil {
+	if err := d.saveMachine(machine, replacing, false); err != nil {
 		// Keep the only copy of an already-authorized key. A failed config write must
 		// not turn recoverable local storage trouble into a lost remote credential.
 		return PairedMachine{}, fmt.Errorf("The computer accepted the key, but its saved host could not be written. The private key remains at %s; add that file manually, or remove the herdr-pair line on the computer before pairing again: %w", keyPath, err)

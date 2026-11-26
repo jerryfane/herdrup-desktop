@@ -2,7 +2,7 @@ import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
 import type { Machine, PairingOffer, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
-import { notAddedLine, pairLayout, pairReadDelay, pairRequestCard, pairResultSection, sameMachine, showPairing, showPairChoice, thisDevice, untried } from "./pairing";
+import { notAddedLine, pairLayout, pairNextStep, pairRequestCard, pairResultSection, showPairing, showPairChoice, thisDevice } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
@@ -84,7 +84,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   syncedRows.replaceChildren(...syncedMachines.map(m => {
    const row = element("div", "host-home-row host-home-synced-row");
    // A machine the other device couldn't add the key to says why, and keeps its button.
-   const failed = pairView?.phase === "done" ? pairView.machines.find(r => r.result === "failed" && sameMachine(m, r)) : undefined;
+   const failed = pairView?.phase === "done" ? pairView.machines.find(r => r.result === "failed" && r.syncedId === m.id) : undefined;
    const lines = hostRowLines(m.nickname?.trim() || m.host, failed ? notAddedLine(pairView!, failed)
     : `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`);
    const pairButton = action("Pair this device", () => void pairSynced(m)); pairButton.className = "host-home-pair-synced";
@@ -102,6 +102,9 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const here = thisDevice(navigator.platform);
  const pairBox = element("div", "host-home-pair-request");
  let pairView: PairRequestView | null = null;
+ // The machines saved here, as the last refresh read them (null before it): a result whose
+ // machine is gone says so, and the rest have the saved host's menu.
+ let savedList: SavedMachine[] | null = null;
  let pairStarted = 0, pairExpiresAt = 0, pairFailures = 0, pairTimer: ReturnType<typeof setTimeout> | undefined;
  const rowGlyphs: { icon: Node | null; chevron: Node | null } = { icon: null, chevron: null };
  void hostGlyph(symbol, "desktopcomputer", desktopIcon).then(icon => { rowGlyphs.icon = icon; drawPair(); });
@@ -124,7 +127,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (layout.card) parts.push(...pairRequestCard(view, here, accountHint ?? "", spinner, pairExpiresAt, {
    cancel: () => void cancelRequest(), again: () => void startRequest(), qr: () => startPairing(),
   }));
-  if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, glyphs, spinner, { open: id => void openPaired(id), qr: () => startPairing() }));
+  if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, savedList && new Set(savedList.map(m => m.id)), glyphs, spinner, {
+   open: id => void openPaired(id), qr: () => startPairing(),
+   menu: (id, x, y) => { const machine = savedList?.find(m => m.id === id); if (machine) openMachineMenu(machine, x, y); },
+  }));
   pairBox.replaceChildren(...parts);
  }
  function showRequest(view: PairRequestView | null) {
@@ -141,19 +147,19 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  function schedulePair() {
   clearTimeout(pairTimer);
   const view = pairView; if (!view) return;
-  if (untried(view)) { pairTimer = setTimeout(() => void connectPaired(view.id), pairFailures ? 5000 : 0); return; }
-  const wait = pairReadDelay(view, Date.now() - pairStarted, pairFailures);
-  if (wait !== null) pairTimer = setTimeout(() => void readRequest(view.id), wait);
+  const next = pairNextStep(view, Date.now() - pairStarted, pairFailures); if (!next) return;
+  pairTimer = setTimeout(() => void (next.connect ? connectPaired(view.id) : readRequest(view.id)), next.wait);
  }
  async function readRequest(id: string) {
-  try { const view = await Desk.pairRequestRead(id); if (pairView?.id === id) { pairFailures = 0; showRequest(view); } }
-  catch {
+  try { const view = await Desk.pairRequestRead(id); if (pairView?.id === id) { pairFailures = 0; message.hidden = true; showRequest(view); } }
+  catch (failure) {
    if (pairView?.id !== id) return;
-   // Gone here (another window asked again): show what Go has now; else read again later.
+   // Gone here (another window asked again): show what Go has now; else say why and read again
+   // later, the request as it was meanwhile.
    const now = await Desk.pairRequestCurrent().catch(() => undefined);
    if (pairView?.id !== id) return;
    if (now !== undefined && now?.id !== id) { showRequest(now); return; }
-   pairFailures++; schedulePair();
+   report(failure); pairFailures++; schedulePair();
   }
  }
  async function connectPaired(id: string) {
@@ -321,6 +327,15 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  };
  let menu: HTMLElement | null = null;
  const closeMenu = () => { menu?.remove(); menu = null; };
+ /** A saved host's menu (Edit, Delete) at x, y: its SAVED row's, and its pairing result's. */
+ const openMachineMenu = (machine: SavedMachine, x: number, y: number) => {
+  closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
+  const editButton = action("Edit", () => edit(machine)); editButton.setAttribute("role", "menuitem");
+  const deleteButton = action("Delete", () => remove(machine)); deleteButton.setAttribute("role", "menuitem");
+  menu.append(editButton, deleteButton); document.body.append(menu);
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`; editButton.focus();
+ };
  document.addEventListener("click", closeMenu);
  document.addEventListener("keydown", event => { if (event.key === "Escape") closeMenu(); });
  sheet.addEventListener("close", () => { (form.elements.namedItem("password") as HTMLInputElement).value = ""; });
@@ -380,6 +395,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   void refreshPaste();
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
+   savedList = machines; drawPair();
    if (accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
    const welcomed = await welcome.decide(machines.length === 0 && shares.length === 0);
    // Only the newest refresh decides: an older lookup answering late changes nothing. The
@@ -430,14 +446,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     const lines = hostRowLines(nickname || machine.host, busy ? "Connecting…" : nickname ? `${machine.user}@${machine.host}` : machine.user);
     const chevron = busy ? hostRowChevron(null, spinner) : hostRowChevron(await symbol("chevron.right", 13, "semibold"));
     row.append(icon, lines, chevron);
-    const openMenu = (x: number, y: number) => {
-     closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
-     const editButton = action("Edit", () => edit(machine)); editButton.setAttribute("role", "menuitem");
-     const deleteButton = action("Delete", () => remove(machine)); deleteButton.setAttribute("role", "menuitem");
-     menu.append(editButton, deleteButton); document.body.append(menu);
-     menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
-     menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`; editButton.focus();
-    };
+    const openMenu = (x: number, y: number) => openMachineMenu(machine, x, y);
     row.oncontextmenu = event => { event.preventDefault(); openMenu(event.clientX, event.clientY); };
     row.onkeydown = event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); const rect = row.getBoundingClientRect(); openMenu(rect.left + 20, rect.bottom); } };
     next.push(row);

@@ -107,6 +107,27 @@ func (s *FilePinStore) SetPin(hostPort, fingerprint string) error {
 		return err
 	}
 	pins[hostPort] = fingerprint
+	return s.write(pins)
+}
+
+// RemovePin forgets hostPort's pin, as a save that set it and then failed
+// takes it back; none there is no error.
+func (s *FilePinStore) RemovePin(hostPort string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pins, err := s.load()
+	if err != nil {
+		return err
+	}
+	if _, ok := pins[hostPort]; !ok {
+		return nil
+	}
+	delete(pins, hostPort)
+	return s.write(pins)
+}
+
+// write replaces the pins file with pins. s.mu is held.
+func (s *FilePinStore) write(pins map[string]string) error {
 	data, err := json.MarshalIndent(pins, "", "  ")
 	if err != nil {
 		return err

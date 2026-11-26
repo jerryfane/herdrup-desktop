@@ -146,6 +146,15 @@ export function untried(view: PairRequestView): boolean {
   return view.machines.some(m => m.result === "saved" && !m.reach);
 }
 
+/** The page's next step for a request: try the saved machines (connect) or read it again, after
+ *  wait ms (never 0: a step that settles nothing can't spin; longer after failures, to 30 s);
+ *  null: nothing more to do. */
+export function pairNextStep(view: PairRequestView, sinceStartMs: number, failures: number): { connect: boolean; wait: number } | null {
+  if (untried(view)) return { connect: true, wait: Math.min(1000 * 2 ** Math.min(failures, 5), 30_000) };
+  const wait = pairReadDelay(view, sinceStartMs, failures);
+  return wait === null ? null : { connect: false, wait };
+}
+
 /** What the host home draws for a request: the card (n3 waiting/claimed, n3b approved while its
  *  machines are saved and tried, n5 ended), the result section (n4), or both. */
 export function pairLayout(view: PairRequestView): { card: "waiting" | "claimed" | "approved" | "ended" | null; results: boolean } {
@@ -220,6 +229,12 @@ function pairDigits(code: string | undefined) {
   return box;
 }
 
+/** What went wrong while the request goes on (a list that couldn't be saved yet): muted, read out. */
+function pairProblem(text: string) {
+  const line = el("p", "host-home-approval-lead host-home-approval-problem", text); line.setAttribute("role", "alert");
+  return line;
+}
+
 /** n3 and n5: the request as one host-home section, "PAIR THIS MAC". `expiresAt` is when it
  *  expires (ms), `account` the signed-in account's hint. */
 export function pairRequestCard(view: PairRequestView, here: string, account: string, spinner: string, expiresAt: number, actions: PairCardActions): HTMLElement[] {
@@ -236,10 +251,7 @@ export function pairRequestCard(view: PairRequestView, here: string, account: st
     switch (view.phase) {
       case "denied": head.append(title("Not approved"), lead(`${view.approver || "Your other device"} didn't approve ${here}.`)); break;
       case "expired": head.append(title("The request expired"), lead(`No device approved ${here} in 10 minutes.`)); break;
-      default: {
-        const problem = lead(view.problem || "Something went wrong."); problem.className += " host-home-approval-problem"; problem.setAttribute("role", "alert");
-        head.append(title(`Couldn't pair ${here}`), problem);
-      }
+      default: head.append(title(`Couldn't pair ${here}`), pairProblem(view.problem || "Something went wrong."));
     }
     head.append(lead("Ask again for a new code, or pair with herdr pair instead."), row);
     return [root];
@@ -250,12 +262,14 @@ export function pairRequestCard(view: PairRequestView, here: string, account: st
       lead(names.length ? `${capital(here)}'s key is on ${nameList(names)}. ${capital(here)} connects to each one now.`
         : `Adding ${here}'s key to the machines you ticked. ${capital(here)} connects to each one as soon as its key is there.`),
       pairDigits(view.code));
+    if (view.problem) head.append(pairProblem(view.problem));
     return [root];
   }
   const claimed = card === "claimed";
   head.append(pairStatus(spinner, claimed ? `Opened on ${approver}` : "Waiting for your other device"), title("Approve on your iPhone, iPad or Mac"),
     lead(claimed ? `HerdrUp there asks to pair ${view.device}. Type these 4 digits there.` : `Open HerdrUp there. It asks to pair ${view.device}, and the code to type shows here.`),
     pairDigits(view.code));
+  if (view.problem) head.append(pairProblem(view.problem));
   const cancel = button("Cancel", actions.cancel); cancel.className = "button-secondary button-large";
   const left = el("b", "", minutesLeft((expiresAt - Date.now()) / 1000));
   const tick = setInterval(() => { if (!left.isConnected) clearInterval(tick); else left.textContent = minutesLeft((expiresAt - Date.now()) / 1000); }, 1000);
@@ -277,12 +291,8 @@ export function pairRequestCard(view: PairRequestView, here: string, account: st
 export interface PairResultActions {
   open(id: string): void;
   qr(): void;
-}
-
-/** The account's machine a result is, by sign-in identity (user, host without case, port). */
-export function sameMachine(a: { user: string; host: string; port: number }, b: { user: string; host: string; port: number }): boolean {
-  const host = (h: string) => h.toLowerCase().replace(/\.$/, "");
-  return a.user === b.user && host(a.host) === host(b.host) && (a.port || 22) === (b.port || 22);
+  /** The saved host's menu (Edit, Delete), at x, y. */
+  menu(id: string, x: number, y: number): void;
 }
 
 /** A machine the approver couldn't add, as the account's row under FROM YOUR ACCOUNT says it. */
@@ -290,17 +300,20 @@ export function notAddedLine(view: PairRequestView, m: PairRequestMachine): stri
   return `${view.approver || "Your other device"} couldn't add the key${m.reason ? `: ${m.reason}` : ""}`;
 }
 
-/** n4: "PAIRED BY ‹APPROVER›", one row per machine of the list: saved ones open; one this
- *  computer can't reach is dimmed with "Join its network to connect" and Use herdr pair; one it
- *  kept or couldn't save says why. A machine the approver couldn't add shows here only when the
- *  account doesn't list it (`synced`): the account's row says it then. */
-export function pairResultSection(view: PairRequestView, here: string, synced: readonly SyncedMachine[], glyphs: { machine(): HTMLElement; chevron(): HTMLElement }, spinner: string, actions: PairResultActions): HTMLElement[] {
+/** n4: "PAIRED BY ‹APPROVER›", one row per machine of the list: saved ones open, with the saved
+ *  host's menu (Edit, Delete); one this computer can't reach is dimmed with "Join its network to
+ *  connect" and Use herdr pair; one it kept, couldn't save or no longer has says why. A machine
+ *  the approver couldn't add shows here only when the account doesn't list it (`synced`): the
+ *  account's row says it then. `saved`: the ids saved here now; null before they are known. */
+export function pairResultSection(view: PairRequestView, here: string, synced: readonly SyncedMachine[], saved: ReadonlySet<string> | null, glyphs: { machine(): HTMLElement; chevron(): HTMLElement }, spinner: string, actions: PairResultActions): HTMLElement[] {
   const { root, rows } = hostSection(`PAIRED BY ${(view.approver || "your other device").toUpperCase()}`, "host-home-paired");
   const away: string[] = [];
   for (const m of view.machines) {
-    if (m.result === "failed" && synced.some(s => sameMachine(s, m))) continue;
+    if (m.result === "failed" && synced.some(s => s.id === m.syncedId)) continue;
+    const gone = (m.result === "saved" || m.result === "kept") && (m.reach === "removed" || !m.id || (saved !== null && !saved.has(m.id)));
     let second: string, value: HTMLElement | null = null, off = false, pair = false;
-    switch (m.result) {
+    switch (gone ? "gone" : m.result) {
+      case "gone": second = `No longer saved on ${here}`; off = true; break;
       case "saved":
         if (m.reach === "online") { second = `${m.user}@${m.host}`; value = hostRowValue("Online"); }
         else if (m.reach === "unreachable") { second = "Join its network to connect"; off = pair = true; away.push(m.label); }
@@ -311,15 +324,23 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
       case "pin_differs": second = `Not saved: ${here} knows another host key for it`; off = true; break;
       default: second = notAddedLine(view, m); off = true;
     }
-    // A machine saved here opens from its row (a dimmed one too, once its network is joined);
-    // the rest only say why. Use herdr pair sits beside the row's button, not in it.
-    const opens = (m.result === "saved" || m.result === "kept") && !!m.id;
+    // A machine saved here opens from its row (a dimmed one too, once its network is joined) and
+    // has the saved host's menu; the rest only say why. Use herdr pair sits beside the row's
+    // button, not in it.
+    const id = gone ? null : m.id ?? null;
     const row = el("div", "host-home-row host-home-paired-row");
-    const body = opens ? button("", () => actions.open(m.id!)) : el("span", "");
+    const body = id ? button("", () => actions.open(id)) : el("span", "");
+    if (id) {
+      body.oncontextmenu = event => { event.preventDefault(); actions.menu(id, event.clientX, event.clientY); };
+      body.onkeydown = event => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault(); const rect = body.getBoundingClientRect(); actions.menu(id, rect.left + 20, rect.bottom);
+      };
+    }
     body.className = off ? "host-home-paired-body host-home-row-off" : "host-home-paired-body";
     body.append(hostRowIcon(glyphs.machine()), hostRowLines(m.label, second));
     if (value) body.append(value);
-    if (opens && !pair) body.append(m.reach ? hostRowChevron(glyphs.chevron()) : hostRowChevron(null, spinner));
+    if (id && !pair) body.append(m.reach ? hostRowChevron(glyphs.chevron()) : hostRowChevron(null, spinner));
     row.append(body);
     if (pair) { const qr = button("Use herdr pair", actions.qr); qr.className = "host-home-pair-synced"; row.append(qr); }
     rows.append(row);

@@ -24,18 +24,27 @@ package main
 //   - A host and port this computer pinned to another host key is not
 //     saved: its pin stays, and the result says so.
 //   - S is written to identities/ only when a machine uses it, once per
-//     request, and removed again if those machines couldn't be saved.
+//     request. S, the new pins and the machines are one save: when the
+//     machines aren't written, the pins new for them and S are removed
+//     again; once they are (even if the folder's sync then fails), all stay.
+//   - Nothing is saved once the request was cancelled or replaced here, or
+//     the account session that asked signed out: Cancel fences the request
+//     before it waits for a read in flight, and the save checks both at its
+//     commit.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/account"
@@ -90,6 +99,9 @@ const (
 	PairUnreachable = "unreachable"
 	// PairRefused: reached, but it refused this connection (Problem).
 	PairRefused = "refused"
+	// PairRemoved: no longer saved here (removed or edited since), so not
+	// tried.
+	PairRemoved = "removed"
 )
 
 // PairRequestView is a pair request as the page draws it.
@@ -120,20 +132,28 @@ type PairRequestMachine struct {
 	Host  string `json:"host"`
 	Port  int    `json:"port"`
 	User  string `json:"user"`
+	// SyncedID is the account's record of the machine (SyncedMachine.ID)
+	// when the account lists it.
+	SyncedID string `json:"syncedId,omitempty"`
 	// Result is PairSaved, PairKept, PairPinDiffers or PairNotAdded.
 	Result string `json:"result"`
 	// Reason is the approver's, for PairNotAdded.
 	Reason string `json:"reason,omitempty"`
 	// Reach is a saved machine's connection try: "" until tried, then
-	// PairOnline, PairUnreachable or PairRefused (Problem).
+	// PairOnline, PairUnreachable, PairRefused (Problem) or PairRemoved.
 	Reach   string `json:"reach,omitempty"`
 	Problem string `json:"problem,omitempty"`
 }
 
 // pairRequest is the one pair request this computer runs.
 type pairRequest struct {
-	acct string
-	ask  *account.PairAsk
+	// round is the account session that asked: nothing is saved once it
+	// isn't the current one.
+	round account.Round
+	ask   *account.PairAsk
+	// fenced: cancelled or replaced here. Set before waiting for op, so a
+	// read in flight saves nothing.
+	fenced atomic.Bool
 	// key is S. Its private half is cleared once nothing more can use it.
 	key pairing.PairKey
 	// op makes reads, connection tries and the cancel one at a time.
@@ -166,8 +186,8 @@ func (d *Desk) PairRequestOffered(ctx context.Context) (bool, error) {
 // with a new key S. It replaces this computer's earlier request, here and
 // at the service.
 func (d *Desk) PairRequestStart(ctx context.Context) (PairRequestView, error) {
-	cur, err := d.account.Current()
-	if err != nil || cur == nil {
+	round, ok, err := d.account.Round()
+	if err != nil || !ok {
 		return PairRequestView{}, errSignedOutHere(err)
 	}
 	identity, err := d.guestIdentity()
@@ -181,12 +201,12 @@ func (d *Desk) PairRequestStart(ctx context.Context) (PairRequestView, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	ask, err := d.account.AskToPair(ctx, cur.AccountID, identity, key.Public)
+	ask, err := d.account.AskToPair(ctx, round.Account, identity, key.Public)
 	if err != nil {
 		clear(key.PrivatePEM)
 		return PairRequestView{}, err
 	}
-	p := &pairRequest{acct: cur.AccountID, ask: ask, key: key,
+	p := &pairRequest{round: round, ask: ask, key: key,
 		view: PairRequestView{ID: ask.ID(), Phase: PairWaiting, ExpiresIn: ask.ExpiresIn(), Device: device, Machines: []PairRequestMachine{}}}
 	d.mu.Lock()
 	old := d.pairRequest
@@ -194,8 +214,8 @@ func (d *Desk) PairRequestStart(ctx context.Context) (PairRequestView, error) {
 	d.mu.Unlock()
 	if old != nil {
 		// The service replaced it with this one.
+		old.fence()
 		old.op.Lock()
-		old.ask.Abandon()
 		old.end()
 		old.op.Unlock()
 	}
@@ -227,8 +247,9 @@ func (d *Desk) currentPairRequest(id string) (*pairRequest, error) {
 }
 
 // PairRequestCancel ends request id: the service cancels it, so no device
-// can approve it any more; when it can't be told, this computer abandons it
-// (it reveals nothing more and opens no list). S was never written.
+// can approve it any more. It is fenced here first (it reveals nothing more,
+// opens no list and saves nothing, a read in flight included), so when the
+// service can't be told it still ends here.
 func (d *Desk) PairRequestCancel(ctx context.Context, id string) error {
 	p, err := d.currentPairRequest(id)
 	if err != nil {
@@ -239,29 +260,34 @@ func (d *Desk) PairRequestCancel(ctx context.Context, id string) error {
 		d.pairRequest = nil
 	}
 	d.mu.Unlock()
+	p.fence()
 	p.op.Lock()
 	defer p.op.Unlock()
-	if p.ended || p.view.Phase == PairDone {
-		// Over, or approved already: what was saved stays; the reading stops.
-		p.end()
-		return nil
-	}
+	// A list saved before the fence stays; the service is told either way.
+	saved := p.view.Phase == PairDone
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	// Cancel abandons the request here whatever the service answers.
 	err = p.ask.Cancel(ctx)
 	p.end()
-	if err != nil {
-		return fmt.Errorf("This device stopped the request, but the account service didn't hear it (%w). A device that already has the code could still approve it until it expires.", err)
+	var api *account.APIError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &api) && api.Status == http.StatusConflict:
+		if saved {
+			return nil
+		}
+		return errors.New("This device stopped the request, but your other device had already approved it: its key may be on those machines, though this device saved none of them.")
 	}
-	return nil
+	return fmt.Errorf("This device stopped the request, but the account service didn't hear it (%w). A device that already has the code could still approve it until it expires.", err)
 }
 
 // PairRequestRead reads request id once and moves it on: the code once a
 // device opened it, and, once approved, the approver's machine list, saved
-// here (the save rules in app/desk_pair_request.go). A list sent again at a higher
-// seq is saved too, while RetryOpen. An error is a read that failed (no
-// answer); the page reads again.
+// here (the save rules in app/desk_pair_request.go). A list sent again at a
+// higher seq is saved too, while RetryOpen. A list that couldn't be saved
+// is the view's Problem, and is read again. An error is a read that failed
+// (no answer); the page reads again.
 func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView, error) {
 	p, err := d.currentPairRequest(id)
 	if err != nil {
@@ -269,7 +295,11 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 	}
 	p.op.Lock()
 	defer p.op.Unlock()
-	if p.ended {
+	if p.ended || p.fenced.Load() {
+		return p.copyView(), nil
+	}
+	if !d.account.Holds(p.round) {
+		p.signedOut()
 		return p.copyView(), nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -333,8 +363,16 @@ func (d *Desk) PairRequestRead(ctx context.Context, id string) (PairRequestView,
 	case !ok || got.Seq <= p.applied:
 		return p.copyView(), nil
 	}
-	if err := d.savePairDelivery(p, got); err != nil {
-		return p.copyView(), err
+	switch err := d.savePairDelivery(p, got); {
+	case errors.Is(err, errPairStopped):
+		if !p.fenced.Load() {
+			p.signedOut()
+		}
+		return p.copyView(), nil
+	case err != nil:
+		// The page shows it while the list is read again.
+		p.view.Problem = err.Error()
+		return p.copyView(), nil
 	}
 	p.view.Phase = PairDone
 	return p.copyView(), nil
@@ -363,6 +401,8 @@ func (d *Desk) PairRequestConnect(ctx context.Context, id string) (PairRequestVi
 		}
 		at := st.find(pm.ID)
 		if at < 0 {
+			// Removed or edited since it was saved: nothing to try.
+			pm.Reach = PairRemoved
 			continue
 		}
 		m := st.Machines[at]
@@ -402,13 +442,28 @@ func (d *Desk) tryPairedMachine(ctx context.Context, m Machine, approver string)
 	return PairUnreachable, ""
 }
 
+// errPairStopped: the request was cancelled or replaced here, or the
+// account session that asked signed out, so nothing was saved from it.
+var errPairStopped = errors.New("pair request stopped here")
+
+// pairCommitHolds is whether p may still save: it is this computer's
+// request, not fenced, and the session that asked is the current one.
+func (d *Desk) pairCommitHolds(p *pairRequest) bool {
+	d.mu.Lock()
+	current := d.pairRequest == p
+	d.mu.Unlock()
+	return current && !p.fenced.Load() && d.account.Holds(p.round)
+}
+
 // savePairDelivery saves the machines of got, a list above any applied:
 // each added or already machine not decided by an earlier list, by the
 // rules at the top of this file. p.op is held.
 func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error {
-	cur, _ := d.account.Current()
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
+	if !d.pairCommitHolds(p) {
+		return errPairStopped
+	}
 	st, err := d.load()
 	if err != nil {
 		return err
@@ -417,7 +472,7 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 	// fields and sync id), so it isn't listed to pair any more and doesn't
 	// sync as a second one.
 	var mirror []account.RemoteHost
-	if state, err := d.loadSyncState(); err == nil && cur != nil && state.AccountID == cur.AccountID {
+	if state, err := d.loadSyncState(); err == nil && state.AccountID == p.round.Account {
 		mirror = state.Mirror.Hosts
 	}
 	// Decided here and put in the view only once everything is saved.
@@ -429,6 +484,8 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 	type planned struct {
 		m   Machine
 		pin string
+		// fresh: no pin was there before; a failed save removes it again.
+		fresh bool
 	}
 	var adds []planned
 	set := func(r PairRequestMachine) {
@@ -446,16 +503,19 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 			continue // saved, kept or refused by an earlier list
 		}
 		r := PairRequestMachine{Label: pairLabel(em.Nickname, em.Host), Host: em.Host, Port: em.Port, User: em.User}
+		// The record SyncedMachines lists for it (the first, as there).
+		for _, h := range mirror {
+			if account.IdentityOf(h.Body) == identity {
+				r.SyncedID = h.ID
+				break
+			}
+		}
 		if em.Status != account.PairAdded && em.Status != account.PairAlready {
 			r.Result, r.Reason = PairNotAdded, em.Reason
 			set(r)
 			continue
 		}
-		if err := em.HostBody().Check(); err != nil {
-			r.Result, r.Reason = PairNotAdded, "its details can't be saved here ("+err.Error()+")"
-			set(r)
-			continue
-		}
+		// PairAsk.Machines checked the body and the host key's form.
 		hostKey, err := em.HostPublicKey()
 		if err != nil {
 			r.Result, r.Reason = PairNotAdded, "its host key couldn't be read"
@@ -491,7 +551,8 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 		}
 		pin := bridge.Fingerprint(hostKey)
 		hostPort := net.JoinHostPort(m.Host, strconv.Itoa(m.Port))
-		if pinned, ok, err := d.pins.Pin(hostPort); err != nil {
+		pinned, ok, err := d.pins.Pin(hostPort)
+		if err != nil {
 			return fmt.Errorf("Couldn't read this device's host keys: %w", err)
 		} else if ok && pinned != pin {
 			r.Result = PairPinDiffers
@@ -500,10 +561,25 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 		}
 		r.Result, r.ID = PairSaved, machineID(m)
 		set(r)
-		adds = append(adds, planned{m: m, pin: pin})
+		adds = append(adds, planned{m: m, pin: pin, fresh: !ok})
 	}
 	if len(adds) > 0 {
+		// S, the pins and the machines are one save. Until the machines are
+		// written, a failure takes back the pins new for them and S (when
+		// written for them); once they are, all of it is theirs.
 		wrote := false
+		var fresh []string
+		undo := func() {
+			for _, hostPort := range fresh {
+				if err := d.pins.RemovePin(hostPort); err != nil {
+					log.Printf("pair request: host key of %s: %v", hostPort, err)
+				}
+			}
+			if wrote {
+				_ = os.Remove(p.keyPath)
+				p.keyPath = ""
+			}
+		}
 		if p.keyPath == "" {
 			path, err := pairing.SaveIdentity(d.dir, p.key.PrivatePEM)
 			if err != nil {
@@ -512,25 +588,36 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 			p.keyPath, wrote = path, true
 		}
 		for _, a := range adds {
-			if err := d.pins.SetPin(net.JoinHostPort(a.m.Host, strconv.Itoa(a.m.Port)), a.pin); err != nil {
-				if wrote {
-					_ = os.Remove(p.keyPath)
-					p.keyPath = ""
-				}
+			hostPort := net.JoinHostPort(a.m.Host, strconv.Itoa(a.m.Port))
+			if err := d.pins.SetPin(hostPort, a.pin); err != nil {
+				undo()
 				return errors.New("This device couldn't save those machines' host keys. Nothing was saved; the list is read again.")
+			}
+			if a.fresh {
+				fresh = append(fresh, hostPort)
 			}
 			a.m.KeyPath = p.keyPath
 			st.Machines = append(st.Machines, a.m)
 		}
+		// The commit: a request stopped meanwhile publishes nothing.
+		if !d.pairCommitHolds(p) {
+			undo()
+			return errPairStopped
+		}
 		if err := d.store(st); err != nil {
-			if wrote {
-				_ = os.Remove(p.keyPath)
-				p.keyPath = ""
+			// The machines may be written already (the folder's sync failed
+			// after the rename): then S and their pins stay with them.
+			after, loadErr := d.load()
+			at := after.find(machineID(adds[0].m))
+			if loadErr != nil || at < 0 || after.Machines[at].KeyPath != p.keyPath {
+				undo()
+				return fmt.Errorf("This device couldn't save those machines (%w); the list is read again.", err)
 			}
-			return fmt.Errorf("This device couldn't save those machines (%w); the list is read again.", err)
+			log.Printf("pair request: the machines are saved, but: %v", err)
 		}
 	}
 	p.view.Machines = results
+	p.view.Problem = ""
 	p.applied = got.Seq
 	if p.deliveredAt.IsZero() {
 		p.deliveredAt = pairNow()
@@ -575,6 +662,26 @@ func (p *pairRequest) fail(problem string) {
 	p.view.Phase, p.view.Problem = PairFailed, problem
 	p.ask.Abandon()
 	p.end()
+}
+
+// fence stops p here before its op is waited for: a read in flight opens
+// no list and saves nothing (pairCommitHolds), and no reveal is sent.
+func (p *pairRequest) fence() {
+	p.fenced.Store(true)
+	p.ask.Abandon()
+}
+
+// signedOut ends p once the session that asked isn't the current one:
+// nothing more is saved, and what was stays. p.op is held.
+func (p *pairRequest) signedOut() {
+	const problem = "This device signed out of the account that asked, so it stopped the request. Nothing more was saved from it."
+	if p.view.Phase == PairDone {
+		p.ask.Abandon()
+		p.view.Problem = problem
+		p.end()
+		return
+	}
+	p.fail(problem)
 }
 
 // end stops reading the request and clears S's private half from memory:

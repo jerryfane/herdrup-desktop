@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -675,16 +676,26 @@ func TestHostKeyAlgorithmsFollowThePinnedType(t *testing.T) {
 }
 
 // When saving the machines fails (their pins or the machine list), nothing
-// is saved and the key file written for them is removed again; the next
-// read saves them with a new one.
-func TestPairRequestRemovesItsKeyWhenSavingFails(t *testing.T) {
-	for _, blocked := range []string{"host-keys.json.tmp", "machines.json.tmp"} {
-		t.Run(blocked, func(t *testing.T) {
+// is saved: the key file written for them is removed again, and so are the
+// pins new for them (a pin that was there before stays). The view says so
+// while the list is read again, and the next read saves them with a new key.
+func TestPairRequestRemovesItsKeyAndNewPinsWhenSavingFails(t *testing.T) {
+	for _, c := range []struct {
+		blocked string
+		pinned  bool // the machine's host key was pinned here already
+	}{{"host-keys.json.tmp", false}, {"machines.json.tmp", false}, {"machines.json.tmp", true}} {
+		t.Run(fmt.Sprintf("%s pinned=%v", c.blocked, c.pinned), func(t *testing.T) {
 			w := newPairWorld(t)
 			ctx := context.Background()
 			v := w.start(t)
 			a, s, code := w.claim(t, v.ID)
 			studio := servedMachine(t, s)
+			at := net.JoinHostPort(studio.host, strconv.Itoa(studio.port))
+			if c.pinned {
+				if err := w.d.pins.SetPin(at, bridge.Fingerprint(studio.hostKey)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
 				t.Fatal(c, err)
 			}
@@ -692,12 +703,13 @@ func TestPairRequestRemovesItsKeyWhenSavingFails(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A folder where the file's replacement is written: that write fails.
-			obstacle := filepath.Join(w.d.dir, blocked)
+			obstacle := filepath.Join(w.d.dir, c.blocked)
 			if err := os.MkdirAll(filepath.Join(obstacle, "x"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := w.d.PairRequestRead(ctx, v.ID); err == nil {
-				t.Fatal("saved past a failing write")
+			v = w.read(t, v.ID)
+			if v.Phase != PairApproved || !strings.Contains(v.Problem, "Nothing was saved") && !strings.Contains(v.Problem, "couldn't save those machines") {
+				t.Fatalf("failed save %+v", v)
 			}
 			if keys := w.identities(t); len(keys) != 0 {
 				t.Fatalf("key files left %v", keys)
@@ -705,14 +717,229 @@ func TestPairRequestRemovesItsKeyWhenSavingFails(t *testing.T) {
 			if len(w.machines(t)) != 0 {
 				t.Fatalf("saved %+v", w.machines(t))
 			}
+			if _, ok, err := w.d.pins.Pin(at); err != nil || ok != c.pinned {
+				t.Fatalf("pin there %v (%v), want %v", ok, err, c.pinned)
+			}
 			if err := os.RemoveAll(obstacle); err != nil {
 				t.Fatal(err)
 			}
 			v = w.read(t, v.ID)
 			keys, saved := w.identities(t), w.machines(t)
-			if resultOf(v, "studio").Result != PairSaved || len(keys) != 1 || len(saved) != 1 || saved[0].KeyPath != keys[0] {
+			if v.Problem != "" || resultOf(v, "studio").Result != PairSaved || len(keys) != 1 || len(saved) != 1 || saved[0].KeyPath != keys[0] {
 				t.Fatalf("after %+v, keys %v, saved %+v", v, keys, saved)
 			}
 		})
+	}
+}
+
+// A write of the machines that fails after they are in place (the folder's
+// sync) keeps them, their key and their pins: nothing a saved machine uses
+// is removed.
+func TestPairRequestKeepsItsKeyOnceTheMachinesAreWritten(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	studio := servedMachine(t, s)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(studio.entry("studio", account.PairAdded, ""))); err != nil {
+		t.Fatal(err)
+	}
+	writeMachines = func(path string, data []byte) error {
+		if err := writeFileAtomic(path, data); err != nil {
+			return err
+		}
+		return errors.New("sync: input/output error")
+	}
+	t.Cleanup(func() { writeMachines = writeFileAtomic })
+	v = w.read(t, v.ID)
+	keys, saved := w.identities(t), w.machines(t)
+	if v.Phase != PairDone || resultOf(v, "studio").Result != PairSaved || len(keys) != 1 || len(saved) != 1 || saved[0].KeyPath != keys[0] {
+		t.Fatalf("view %+v, keys %v, saved %+v", v, keys, saved)
+	}
+	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port))); err != nil || !ok || pin != bridge.Fingerprint(studio.hostKey) {
+		t.Fatalf("pin %q %v %v", pin, ok, err)
+	}
+}
+
+// holdMachinesRead holds the new device's next GET /v1/pairs/self until
+// release: arrived closes once it is held.
+func (w *pairWorld) holdMachinesRead() (arrived <-chan struct{}, release func()) {
+	arrive, rel := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hold := func(_ http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodGet && r.URL.Path == account.PairSelfPath {
+			once.Do(func() { close(arrive); <-rel })
+		}
+		return false
+	}
+	w.intercept.Store(&hold)
+	return arrive, func() { close(rel) }
+}
+
+// approvedAndHeld is a request approved with studio's list, its read of
+// that list in flight and held.
+func (w *pairWorld) approvedAndHeld(t *testing.T) (id string, read <-chan PairRequestView, release func()) {
+	t.Helper()
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	studio := servedMachine(t, s)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(studio.entry("studio", account.PairAdded, ""))); err != nil {
+		t.Fatal(err)
+	}
+	arrived, release := w.holdMachinesRead()
+	done := make(chan PairRequestView, 1)
+	go func() {
+		v, err := w.d.PairRequestRead(ctx, v.ID)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- v
+	}()
+	<-arrived
+	return v.ID, done, release
+}
+
+func (w *pairWorld) savedNothing(t *testing.T) {
+	t.Helper()
+	if keys, saved := w.identities(t), w.machines(t); len(keys) != 0 || len(saved) != 0 {
+		t.Fatalf("keys %v, saved %+v", keys, saved)
+	}
+	if pins, err := os.ReadFile(filepath.Join(w.d.dir, "host-keys.json")); err == nil && strings.Contains(string(pins), "127.0.0.1") {
+		t.Fatalf("pins %s", pins)
+	}
+}
+
+// Cancel while the approved list's read is in flight: the request is fenced
+// first, so that read saves nothing, and the service is still told (it
+// answers that the request was approved already, which Cancel says).
+func TestPairRequestCancelFencesAReadInFlight(t *testing.T) {
+	w := newPairWorld(t)
+	id, read, release := w.approvedAndHeld(t)
+	p := w.d.pairRequest
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- w.d.PairRequestCancel(context.Background(), id) }()
+	for !p.fenced.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	<-read
+	err := <-cancelled
+	if err == nil || !strings.Contains(err.Error(), "had already approved it") {
+		t.Fatalf("cancel: %v", err)
+	}
+	w.savedNothing(t)
+	if w.d.PairRequestCurrent() != nil {
+		t.Fatal("the request stayed")
+	}
+}
+
+// Signed out while the approved list's read is in flight: the session that
+// asked isn't the current one at the save, so nothing is saved and the
+// request ends.
+func TestPairRequestSavesNothingAfterSignOut(t *testing.T) {
+	w := newPairWorld(t)
+	id, read, release := w.approvedAndHeld(t)
+	// The fake service has no sign-out route: the session is dropped here
+	// whatever it answers.
+	_ = w.d.account.SignOut(context.Background())
+	if cur, _ := w.d.account.Current(); cur != nil {
+		t.Fatal("still signed in")
+	}
+	release()
+	v := <-read
+	if v.Phase != PairFailed || !strings.Contains(v.Problem, "signed out") {
+		t.Fatalf("view %+v", v)
+	}
+	w.savedNothing(t)
+	if v = w.read(t, id); v.Phase != PairFailed {
+		t.Fatalf("read again %+v", v)
+	}
+}
+
+// Cancel once the list is saved still tells the service; its answer that
+// the request finished already is no error then, and what was saved stays.
+func TestPairRequestCancelAfterTheSaveStillTellsTheService(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	studio := servedMachine(t, s)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(studio.entry("studio", account.PairAdded, ""))); err != nil {
+		t.Fatal(err)
+	}
+	if v = w.read(t, v.ID); v.Phase != PairDone {
+		t.Fatalf("saved %+v", v)
+	}
+	var told atomic.Int32
+	count := func(_ http.ResponseWriter, r *http.Request) bool {
+		if strings.HasSuffix(r.URL.Path, "/cancel") {
+			told.Add(1)
+		}
+		return false
+	}
+	w.intercept.Store(&count)
+	if err := w.d.PairRequestCancel(ctx, v.ID); err != nil {
+		t.Fatal(err)
+	}
+	if told.Load() != 1 || len(w.machines(t)) != 1 || len(w.identities(t)) != 1 {
+		t.Fatalf("told %d, saved %+v", told.Load(), w.machines(t))
+	}
+}
+
+// A machine removed here after the list saved it is settled as removed,
+// not tried again and again.
+func TestPairRequestSettlesARemovedMachine(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	studio := servedMachine(t, s)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(studio.entry("studio", account.PairAdded, ""))); err != nil {
+		t.Fatal(err)
+	}
+	v = w.read(t, v.ID)
+	if err := w.d.RemoveMachine(resultOf(v, "studio").ID); err != nil {
+		t.Fatal(err)
+	}
+	v, err := w.d.PairRequestConnect(ctx, v.ID)
+	if err != nil || resultOf(v, "studio").Reach != PairRemoved {
+		t.Fatalf("connect %+v, %v", v, err)
+	}
+}
+
+// Pairing again with herdr pair's QR pins the QR's host key, so the machine
+// takes herdr pair's host key policy, not the type an approval pinned.
+func TestQRPairingReplacesThePinnedKeyType(t *testing.T) {
+	d := newDesk(t.TempDir())
+	raw, _, _, _, outcome := pairingListener(t, d, `{"type":"pair.ok"}`)
+	before := Machine{Host: "127.0.0.1", Port: 22, User: "pairing-user", Paired: true, HostKeyType: ssh.KeyAlgoRSA, KeyPath: "/old.key"}
+	d.storeMu.Lock()
+	err := d.store(machineStore{Machines: []Machine{before}})
+	d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.PairMachine(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-outcome; err != nil {
+		t.Fatal(err)
+	}
+	hosts, err := d.Machines()
+	if err != nil || len(hosts) != 1 || !hosts[0].Paired || hosts[0].HostKeyType != "" || hosts[0].KeyPath == "/old.key" {
+		t.Fatalf("re-paired %+v, %v", hosts, err)
 	}
 }

@@ -5,7 +5,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { FakeDocument, type FakeElement } from "./fakeDom";
 import type { PairRequestMachine, PairRequestView, SyncedMachine } from "../src/mygo";
-import { minutesLeft, nameList, notAddedLine, pairChoiceParts, pairLayout, pairReadDelay, pairRequestCard, pairResultSection, sameMachine, showPairChoice, thisDevice, untried } from "../src/pairing";
+import { minutesLeft, nameList, notAddedLine, pairChoiceParts, pairLayout, pairNextStep, pairReadDelay, pairRequestCard, pairResultSection, showPairChoice, thisDevice, untried } from "../src/pairing";
 
 const G = globalThis as { document?: unknown };
 const saved = G.document;
@@ -129,29 +129,38 @@ test("n3b: approved, the card says where and what it connects to, without Cancel
  expect(connecting.text()).toContain("This Mac's key is on studio and mini.");
 });
 
-test("n4: the saved machines open; one off this network says so with Use herdr pair; the rest say why", () => {
+test("n4: the saved machines open with their menu; one off this network says so with Use herdr pair; the rest say why", () => {
  const doc = page();
- const opened: string[] = [], qr: string[] = [];
- const synced: SyncedMachine[] = [{ id: "s1", host: "Pi.lan.", port: 22, user: "pi", key: true }];
+ const opened: string[] = [], qr: string[] = [], menus: string[] = [];
+ const synced: SyncedMachine[] = [{ id: "s1", host: "pi.lan", port: 22, user: "pi", key: true }];
  const list = view({ phase: "done", approver: "Jerry's iPhone", machines: [
   machine({ id: "jerry@studio.lan:22", reach: "online" }),
   machine({ id: "jerry@mini.lan:22", label: "mini", host: "mini.lan", reach: "unreachable" }),
   machine({ id: "jerry@old.lan:22", label: "old", host: "old.lan", reach: "refused", problem: "It didn't accept this device's key." }),
   machine({ id: "jerry@kept.lan:22", label: "kept", host: "kept.lan", result: "kept" }),
+  machine({ id: "jerry@gone.lan:22", label: "gone", host: "gone.lan", reach: "removed" }),
+  machine({ id: "jerry@deleted.lan:22", label: "deleted", host: "deleted.lan", reach: "online" }),
   machine({ label: "moved", host: "moved.lan", result: "pin_differs" }),
-  machine({ label: "pi", host: "pi.lan", user: "pi", result: "failed", reason: "herdr is too old" }),
+  machine({ label: "pi", host: "pi.lan", user: "pi", result: "failed", reason: "herdr is too old", syncedId: "s1" }),
   machine({ label: "nas", host: "nas.lan", result: "failed", reason: "unreachable" }),
  ] });
+ const saved = new Set(["jerry@studio.lan:22", "jerry@mini.lan:22", "jerry@old.lan:22", "jerry@kept.lan:22"]);
+ const actions = { open: (id: string) => opened.push(id), qr: () => qr.push("qr"), menu: (id: string, x: number, y: number) => menus.push(`${id} ${x},${y}`) };
  expect(pairLayout(list)).toEqual({ card: null, results: true });
- const box = holder(doc, pairResultSection(list, "this Mac", synced, glyphs, "<svg/>", { open: id => opened.push(id), qr: () => qr.push("qr") }));
+ const box = holder(doc, pairResultSection(list, "this Mac", synced, saved, glyphs, "<svg/>", actions));
  expect(box.querySelector("h2")!.text()).toBe("PAIRED BY JERRY'S IPHONE");
  const rows = box.all().filter(n => n.className.includes("host-home-paired-row"));
  const rowOf = (name: string) => rows.find(r => r.querySelector(".host-home-name")!.text() === name)!;
- // The failed machine the account lists says why on its own row there, not here.
- expect(rows.map(r => r.querySelector(".host-home-name")!.text())).toEqual(["studio", "mini", "old", "kept", "moved", "nas"]);
+ // The failed machine the account lists (by its record's id) says why on its own row there.
+ expect(rows.map(r => r.querySelector(".host-home-name")!.text())).toEqual(["studio", "mini", "old", "kept", "gone", "deleted", "moved", "nas"]);
  expect(rowOf("studio").querySelector(".host-home-value")!.text()).toBe("Online");
- rowOf("studio").querySelector("button")!.click();
+ const studio = rowOf("studio").querySelector("button")!;
+ studio.click();
  expect(opened).toEqual(["jerry@studio.lan:22"]);
+ // The saved host's menu (Edit, Delete), as its SAVED row has it: right click, or the menu key.
+ (studio.oncontextmenu as unknown as (e: object) => void)({ preventDefault() {}, clientX: 5, clientY: 7 });
+ (studio.onkeydown as unknown as (e: object) => void)({ key: "ContextMenu", shiftKey: false, preventDefault() {} });
+ expect(menus).toEqual(["jerry@studio.lan:22 5,7", "jerry@studio.lan:22 20,0"]);
  const mini = rowOf("mini");
  expect(mini.querySelector(".host-home-address")!.text()).toBe("Join its network to connect");
  expect(mini.querySelector(".host-home-paired-body")!.className).toContain("host-home-row-off");
@@ -161,14 +170,34 @@ test("n4: the saved machines open; one off this network says so with Use herdr p
  expect(rowOf("old").querySelector(".host-home-address")!.text()).toBe("It didn't accept this device's key.");
  expect(rowOf("kept").querySelector(".host-home-address")!.text()).toBe("Already saved on this Mac, kept as it was");
  expect(rowOf("kept").querySelector(".host-home-paired-body")!.className).not.toContain("host-home-row-off");
+ // Removed here since (Go settled it, or the page's list no longer has it): no row to open.
+ for (const name of ["gone", "deleted"]) {
+  expect(rowOf(name).querySelector(".host-home-address")!.text()).toBe("No longer saved on this Mac");
+  expect(rowOf(name).querySelector("button")).toBeNull();
+ }
  expect(rowOf("moved").querySelector(".host-home-address")!.text()).toBe("Not saved: this Mac knows another host key for it");
  expect(rowOf("moved").querySelector("button")).toBeNull();
  expect(rowOf("nas").querySelector(".host-home-address")!.text()).toBe("Jerry's iPhone couldn't add the key: unreachable");
- // The account's row for a failed machine: matched by user, host without case or dot, port.
- expect(sameMachine(synced[0]!, list.machines[5]!)).toBe(true);
- expect(notAddedLine(list, list.machines[5]!)).toBe("Jerry's iPhone couldn't add the key: herdr is too old");
+ expect(notAddedLine(list, list.machines[7]!)).toBe("Jerry's iPhone couldn't add the key: herdr is too old");
  // A list with only an account-listed failure draws nothing.
- expect(pairResultSection(view({ phase: "done", machines: [list.machines[5]!] }), "this Mac", synced, glyphs, "", { open() {}, qr() {} })).toEqual([]);
+ expect(pairResultSection(view({ phase: "done", machines: [list.machines[7]!] }), "this Mac", synced, saved, glyphs, "", actions)).toEqual([]);
+});
+
+test("the page tries saved machines, then reads, never at once, and stops once settled", () => {
+ const tried = view({ phase: "done", retryOpen: true, machines: [machine({ id: "a", reach: "online" })] });
+ expect(pairNextStep(view({ phase: "done", retryOpen: true, machines: [machine({ id: "a" })] }), 0, 0)).toEqual({ connect: true, wait: 1000 });
+ expect(pairNextStep(view({ phase: "done", machines: [machine({ id: "a" })] }), 0, 9)).toEqual({ connect: true, wait: 30_000 });
+ // A machine Go settled as removed is not tried again.
+ expect(pairNextStep(view({ phase: "done", retryOpen: false, machines: [machine({ id: "a", reach: "removed" })] }), 0, 0)).toBeNull();
+ expect(pairNextStep(tried, 0, 0)).toEqual({ connect: false, wait: 5000 });
+ for (const v of [view(), view({ phase: "approved" }), tried]) expect(pairNextStep(v, 0, 0)!.wait).toBeGreaterThan(0);
+});
+
+test("a list that couldn't be saved yet shows on the card while it is read again", () => {
+ const doc = page();
+ const card = holder(doc, pairRequestCard(view({ phase: "approved", approver: "Jerry's iPhone", code: "4831", problem: "This device couldn't save those machines (disk full); the list is read again." }), "this Mac", "", "<svg/>", 0, { cancel() {}, again() {}, qr() {} }));
+ expect(card.querySelector("h3")!.text()).toBe("Approved on Jerry's iPhone");
+ expect(card.all().find(n => n.getAttribute("role") === "alert")!.text()).toBe("This device couldn't save those machines (disk full); the list is read again.");
 });
 
 test("n5: denied, expired or failed, the card offers Ask again and herdr pair", () => {
