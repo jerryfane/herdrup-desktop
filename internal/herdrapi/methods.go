@@ -75,6 +75,10 @@ const (
 	// topics come back as `relay` entries (herdr #521); a server without it
 	// ignores the param and sends them as `user`/`note`.
 	CapabilityTranscriptRelayEntries Capability = "transcript_relay_entries"
+	// guest.update {machine_label}: relabel the machine for existing shares
+	// (herdr #519). Older servers refuse a guest.update without guest_id and
+	// share_gram.
+	CapabilityGuestRelabel Capability = "guest_relabel"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -116,6 +120,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.TranscriptMaxBytes
 	case CapabilityAgentTopics:
 		return caps.AgentTopics
+	case CapabilityGuestRelabel:
+		return caps.GuestRelabel
 	case CapabilityAgentTranscriptTopic:
 		return caps.AgentTranscriptTopic
 	case CapabilityAgentTopicsSwitch:
@@ -196,8 +202,10 @@ var Methods = []Method{
 	{Name: "owner_access.remove", Params: typeOf[OwnerAccessRemoveParams](), Results: []Result{result[ResponseResultOwnerAccessRemoved]("owner_access_removed")}},
 	// schema.rs:100; guest_owner.rs:140.
 	{Name: "guest.revoke", Params: typeOf[GuestRevokeParams](), Results: []Result{result[ResponseResultGuestRevoked]("guest_revoked")}},
-	// schema.rs:101; guest_owner.rs:154.
-	{Name: "guest.update", Params: typeOf[GuestUpdateParams](), Results: []Result{result[ResponseResultGuestUpdated]("guest_updated")}},
+	// schema.rs:101; guest_owner.rs:154. With machine_label and no guest_id
+	// (herdr #519, guest_relabel) it relabels every active guest and pending
+	// invite and answers guest_relabeled.
+	{Name: "guest.update", Params: typeOf[GuestUpdateParams](), Results: []Result{result[ResponseResultGuestUpdated]("guest_updated"), result[ResponseResultGuestRelabeled]("guest_relabeled")}},
 	// schema.rs:108; guest_owner.rs:171 (herdr 0e651ed). Owner only; a plain
 	// share answers guest_not_account_bound.
 	{Name: "guest.remove_device", Params: typeOf[GuestRemoveDeviceParams](), Results: []Result{result[ResponseResultGuestDeviceRemoved]("guest_device_removed")}},

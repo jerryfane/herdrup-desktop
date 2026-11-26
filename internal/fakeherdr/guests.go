@@ -78,7 +78,7 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		InviteID     string `json:"invite_id"`
 		Person       string `json:"person"`
 		Fingerprint  string `json:"fingerprint"`
-		ShareGram    bool   `json:"share_gram"`
+		ShareGram    *bool  `json:"share_gram"`
 		Target       string `json:"target"`
 		Name         string `json:"name"`
 		OwnerName    string `json:"owner_name"`
@@ -124,7 +124,7 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		now := time.Now().UnixMilli()
 		id := fmt.Sprintf("created-%d", len(store.invites)+1)
 		invite := map[string]any{"invite_id": id, "name": p.Name, "owner_name": p.OwnerName, "machine_label": p.MachineLabel,
-			"created_ms": now, "expires_ms": now + 86400000, "share_gram": p.ShareGram,
+			"created_ms": now, "expires_ms": now + 86400000, "share_gram": p.ShareGram != nil && *p.ShareGram,
 			"grant": map[string]any{"terminal_id": p.Target, "agent_name": p.Target}}
 		store.invites = append(store.invites, invite)
 		// Deliberately non-credential payload; exercises local QR/copy only.
@@ -135,6 +135,35 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 	case "guest.audit":
 		return snapshot(map[string]any{"type": "guest_audit", "entries": store.entries})
 	case "guest.update":
+		// herdr #519 (guest_relabel): machine_label without a scope relabels
+		// every active guest and pending invite, checked as guest.invite.create
+		// checks it; never with share_gram. A scoped relabel is not modelled.
+		if p.MachineLabel != "" {
+			if p.ShareGram != nil || p.GuestID != "" || p.InviteID != "" {
+				return nil, &APIError{Code: "invalid_params", Message: "the fixture relabels every share, and never with share_gram"}, true
+			}
+			if strings.TrimSpace(p.MachineLabel) == "" || utf8.RuneCountInString(p.MachineLabel) > 64 || strings.ContainsFunc(p.MachineLabel, unicode.IsControl) {
+				return nil, &APIError{Code: "invalid_params", Message: "machine_label must be 1 to 64 printable characters"}, true
+			}
+			guests, invites := []map[string]any{}, []map[string]any{}
+			for _, guest := range store.guests {
+				if guest["revoked"] != true {
+					guest["machine_label"] = p.MachineLabel
+					guests = append(guests, guest)
+				}
+			}
+			now := time.Now().UnixMilli()
+			for _, invite := range store.invites {
+				if expires, _ := invite["expires_ms"].(int64); invite["used_by"] == nil && expires > now {
+					invite["machine_label"] = p.MachineLabel
+					invites = append(invites, invite)
+				}
+			}
+			return snapshot(map[string]any{"type": "guest_relabeled", "guests": guests, "invites": invites})
+		}
+		if p.ShareGram == nil {
+			return nil, &APIError{Code: "invalid_params", Message: "share_gram or machine_label is required"}, true
+		}
 		for _, guest := range store.guests {
 			if guest["guest_id"] != p.GuestID {
 				continue
@@ -142,7 +171,7 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 			if guest["revoked"] == true {
 				return nil, &APIError{Code: "permission_denied", Message: "guest access was revoked"}, true
 			}
-			guest["share_gram"] = p.ShareGram
+			guest["share_gram"] = *p.ShareGram
 			return snapshot(map[string]any{"type": "guest_updated", "guest": guest})
 		}
 	case "guest.revoke":

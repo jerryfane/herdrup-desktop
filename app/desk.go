@@ -642,11 +642,17 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
 		return errors.New("that host and user are already saved")
 	}
+	relabel := ""
 	if index < 0 {
 		st.Machines = append(st.Machines, m)
 	} else {
 		// The page doesn't hold the sync id: an edit keeps the machine's.
 		m.SyncID = st.Machines[index].SyncID
+		// A rename names the machine anew to its existing shares' guests
+		// (desk_guest_relabel.go).
+		if old := st.Machines[index]; old.Nickname != m.Nickname && inviteLabel(old) != inviteLabel(m) {
+			relabel = inviteLabel(m)
+		}
 		st.Machines[index] = m
 		if st.Active == replacing {
 			st.Active = id
@@ -655,12 +661,22 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
+	if index >= 0 {
+		// The rename stands whatever happens to its relabel.
+		if err := d.queueRelabel(id, replacing, relabel); err != nil {
+			log.Printf("guest relabel: %s: %v", id, err)
+		}
+	}
 	// The live link to this machine names it to its guests as saved now: a
-	// share view opened after a rename sends the new name (#523). A view
-	// already open keeps the name it opened with.
+	// share view opened after a rename sends the new name (#523), and the
+	// shares it has already are relabeled. A view already open keeps the name
+	// it opened with.
 	d.mu.Lock()
-	if d.link != nil && d.link.guest == nil && d.link.id == id {
-		d.link.shareLabel = inviteLabel(m)
+	if l := d.link; l != nil && l.guest == nil && l.id == id {
+		l.shareLabel = inviteLabel(m)
+		if relabel != "" {
+			l.work.Go(func() { d.relabelGuests(l) })
+		}
 	}
 	d.mu.Unlock()
 	if replacing != "" && replacing != id {
@@ -1121,6 +1137,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				d.mu.Unlock()
 				return
 			}
+			first := !shown
 			if !shown {
 				shown, listed = true, true
 				groups.attach(ec, u.Pong)
@@ -1139,6 +1156,11 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
+			if first {
+				// A rename not yet sent to this herdr (desk_guest_relabel.go):
+				// its capabilities are known now.
+				l.work.Go(func() { d.relabelGuests(l) })
+			}
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
 			d.presence.notify(started, l.id, l.session)
