@@ -17,6 +17,8 @@ import { withStorageLock, type AbortableLocks } from "./locks";
 
 /** One account's record: SHARES_KEY_PREFIX + the account id. */
 export const SHARES_KEY_PREFIX = "herdrup.web.shares.";
+/** The Web Lock a tab holds for an account's sync round: SYNC_LOCK_PREFIX + the account id. */
+const SYNC_LOCK_PREFIX = "herdrup.web.shares.sync.";
 
 /** The shares collection's allowlist (sync.ts SCHEMAS.shares). */
 export interface ShareBody {
@@ -108,66 +110,86 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   await Promise.allSettled([...listeners].map(async f => f(change)));
  };
 
+ /** Sends acct's queue in pushes the service takes (at most 100 changes and 256 KiB each,
+  *  account.ts batches). Each push is made at dispatch from the queue as it is then, read again for
+  *  every one: a write replaced since (a put by a Leave's delete, in this tab or another) is never
+  *  sent, and a write kept since goes in a later push. Each is settled as it is answered: one that
+  *  fails leaves its writes for the next round, and the others still go. A write goes at most once
+  *  a round. */
+ async function pushQueue(acct: string, signal: AbortSignal | undefined, generation: number): Promise<void> {
+  const writeKey = (p: PendingWrite) => JSON.stringify(p);
+  /** The writes sent this round, as sent. */
+  const attempted = new Set<string>();
+  const change = (r: SharesRecord, p: PendingWrite): SyncChange => {
+   const base_rev = r.shares.find(s => s.id === p.id)?.rev ?? r.gone[p.id] ?? 0;
+   return p.deleted ? { collection: "shares", id: p.id, base_rev, deleted: true } : { collection: "shares", id: p.id, base_rev, body: p.body };
+  };
+  /** Leaves the queue the writes sent that the answer settles: applied, a put refused for its
+   *  base (the service's item stands), a delete of a share already gone, or (refused) one the
+   *  service refused alone. A delete refused while the share is still live stays, based next on
+   *  the service's row. A write replaced since it was sent stays (it goes next). */
+  const settle = (sent: PendingWrite[], answer: SyncPushAnswer | null, refused: PendingWrite[] = []) => update(acct, r => {
+   const sentAs = new Map(sent.map(p => [p.id, p] as const));
+   const done = new Set(refused.map(writeKey));
+   const rebased: RemoteShare[] = [];
+   for (const c of answer?.applied ?? []) { const p = c.collection === "shares" ? sentAs.get(c.id) : undefined; if (p) done.add(writeKey(p)); }
+   for (const c of answer?.conflicts ?? []) {
+    const p = c.collection === "shares" ? sentAs.get(c.id) : undefined;
+    if (p === undefined) continue;
+    const server = c.server;
+    if (p.deleted && server !== null && !server.deleted && validBody(server.body)) rebased.push({ id: c.id, rev: server.rev, body: server.body });
+    else done.add(writeKey(p));
+   }
+   r.pending = r.pending.filter(p => !done.has(writeKey(p)));
+   for (const row of rebased) {
+    if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
+    r.shares = r.shares.filter(s => s.id !== row.id).concat(row).sort((a, b) => a.rev - b.rev);
+    delete r.gone[row.id];
+   }
+  });
+  let failed: { error: unknown } | null = null;
+  /** One push of what pick takes from the queue at dispatch, settled; how many writes it sent.
+   *  A failure other than a 400 is kept (failed) and leaves its writes queued. A 400 refuses the
+   *  whole push for one change the service won't keep, and none of it is written: each write then
+   *  goes alone, while it is still the one queued, and only one refused alone (malformed, never to
+   *  be taken) leaves unwritten. */
+  const push = async (pick: (r: SharesRecord) => PendingWrite[]): Promise<number> => {
+   let sent: PendingWrite[] = [];
+   let answer: SyncPushAnswer | null;
+   try {
+    answer = await account.syncPush({
+     prepare: async () => {
+      const r = read(acct);
+      sent = pick(r);
+      return sent.length === 0 ? null : { changes: sent.map(p => change(r, p)) };
+     },
+     sending() {}, async refused() {},
+    }, acct, signal, generation);
+   } catch (error) {
+    for (const p of sent) attempted.add(writeKey(p));
+    if (!(error instanceof AccountServiceError && error.status === 400)) { failed ??= { error }; return sent.length; }
+    if (sent.length === 1) await settle([], null, sent);
+    else for (const w of sent) await push(r => r.pending.filter(p => writeKey(p) === writeKey(w)));
+    return sent.length;
+   }
+   for (const p of sent) attempted.add(writeKey(p));
+   await settle(sent, answer);
+   return sent.length;
+  };
+  /** The next push: the writes queued now not yet sent this round, as many as one push takes. */
+  const next = (r: SharesRecord) => {
+   const left = r.pending.filter(p => !attempted.has(writeKey(p)));
+   return left.slice(0, batches(left.map(p => change(r, p)))[0]?.length ?? 0);
+  };
+  // Cancelled, or another sign-in now: nothing more goes for this one.
+  while (await push(next) > 0 && !signal?.aborted && account.generation === generation);
+  if (failed !== null) throw (failed as { error: unknown }).error;
+ }
+
  /** One round for acct: this browser's writes, then what the account holds since the last pull. */
  async function round(acct: string, signal?: AbortSignal): Promise<SharesChange> {
   const generation = account.generation;
-  const record = read(acct);
-  if (record.pending.length > 0) {
-   const seen = (id: string) => record.shares.find(s => s.id === id)?.rev ?? record.gone[id] ?? 0;
-   const sent = record.pending.map((p): SyncChange => p.deleted
-    ? { collection: "shares", id: p.id, base_rev: seen(p.id), deleted: true }
-    : { collection: "shares", id: p.id, base_rev: seen(p.id), body: p.body });
-   const deletes = new Set(record.pending.filter(p => p.deleted).map(p => p.id));
-   const settled = new Set<string>();
-   // Deletes refused for their base while the share is still live: the service's rows they go on from.
-   const rebased: RemoteShare[] = [];
-   /** Sends changes and notes what each settles: applied, a put refused for its base (the
-    *  service's item stands), or a delete of a share already gone. */
-   const push = async (changes: SyncChange[]): Promise<void> => {
-    let answer: SyncPushAnswer | null;
-    try {
-     answer = await account.syncPush({ prepare: async () => ({ changes }), sending() {}, async refused() {} }, acct, signal, generation);
-    } catch (error) {
-     // Anything but a 400 (offline, a rate limit, the quota) leaves the writes for the next round.
-     if (!(error instanceof AccountServiceError && error.status === 400)) throw error;
-     // A 400 refuses the whole push for one change the service won't keep, and none of it is
-     // written: each change then goes alone, and only one refused alone (malformed, never to be
-     // taken) goes unwritten.
-     if (changes.length === 1) settled.add(changes[0]!.id);
-     else for (const change of changes) await push([change]);
-     return;
-    }
-    for (const c of answer?.applied ?? []) if (c.collection === "shares") settled.add(c.id);
-    for (const c of answer?.conflicts ?? []) {
-     if (c.collection !== "shares") continue;
-     const server = c.server;
-     if (deletes.has(c.id) && server !== null && !server.deleted && validBody(server.body)) rebased.push({ id: c.id, rev: server.rev, body: server.body });
-     else settled.add(c.id);
-    }
-   };
-   // Only the writes sent leave: one made meanwhile for the same share goes next round. What was
-   // settled before a push failed (sent alone after a 400) leaves too.
-   const sentAs = new Set(record.pending.map(p => JSON.stringify(p)));
-   const settle = () => update(acct, r => {
-    r.pending = r.pending.filter(p => !(settled.has(p.id) && sentAs.has(JSON.stringify(p))));
-    for (const row of rebased) {
-     if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
-     r.shares = r.shares.filter(s => s.id !== row.id).concat(row).sort((a, b) => a.rev - b.rev);
-     delete r.gone[row.id];
-    }
-   });
-   // In pushes the service takes (at most 100 changes and 256 KiB each, account.ts batches), each
-   // settled as it is answered: one that fails leaves its writes for the next round, and the
-   // others still go.
-   let failed: { error: unknown } | null = null;
-   for (const part of batches(sent)) {
-    try { await push(part); } catch (error) { failed ??= { error }; }
-    await settle();
-    // Cancelled, or another sign-in now: nothing more goes for this one.
-    if (signal?.aborted || account.generation !== generation) break;
-   }
-   if (failed !== null) throw failed.error;
-  }
+  await pushQueue(acct, signal, generation);
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
   return update(acct, r => {
    const before = new Set(r.shares.map(s => s.id));
@@ -188,6 +210,24 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   });
  }
 
+ /** Runs f as acct's sync turn across this browser's tabs (Web Locks, SYNC_LOCK_PREFIX): one
+  *  tab's round at a time, so no tab sends or settles writes while another does (a push of
+  *  another tab's still answering can't come after a Leave this tab sent and settled). Without
+  *  Web Locks, or where the browser refuses the lock, f runs at once: each push is still made from
+  *  the queue as it is then (pushQueue). */
+ async function turn<T>(acct: string, f: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const locks = place.locks;
+  if (locks === null) return f();
+  let ran = false;
+  const run = () => { ran = true; return f(); };
+  try {
+   return await (signal ? locks.request(SYNC_LOCK_PREFIX + acct, { signal }, run) : locks.request(SYNC_LOCK_PREFIX + acct, run));
+  } catch (error) {
+   if (ran || signal?.aborted) throw error;
+   return f();
+  }
+ }
+
  let running: Promise<void> | null = null, again = false;
  /** A round now, or right after the one running (callers share it); a round that fails leaves the
   *  writes for the next one. Signed out: nothing to do. */
@@ -199,7 +239,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      again = false;
      const acct = account.current?.accountID;
      if (acct === undefined) return;
-     await tell(await round(acct, signal));
+     await tell(await turn(acct, () => round(acct, signal), signal));
     } while (again);
    } finally { running = null; }
   })();

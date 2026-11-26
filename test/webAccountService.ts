@@ -112,6 +112,8 @@ export function worker() {
   newWindow() { w.windowPosts = 0; },
   /** Runs once, after the next push is applied and before it is answered. */
   afterPush: null as (() => void) | null,
+  /** The next push is applied, and its answer held until the promise given resolves. */
+  holdAnswer: null as Promise<void> | null,
   /** The next push is a late one: kept unapplied (held, oldest first) and never answered, so the
    *  browser gives it up at its deadline; landHeld lands the oldest now, unless the service is
    *  past its not_after then (refused, as a late request would be). */
@@ -299,7 +301,9 @@ export function worker() {
   w.pushes++;
   const after = w.afterPush; w.afterPush = null; after?.();
   if (w.losePush) { w.losePush = false; return Response.json({ error: "unavailable" }, { status: 503 }); }
-  return Response.json({ rev: w.rev, ...answer, ...now() });
+  const answered = Response.json({ rev: w.rev, ...answer, ...now() });
+  const hold = w.holdAnswer; w.holdAnswer = null;
+  return hold ? hold.then(() => answered) : answered;
  }
  return w;
 }

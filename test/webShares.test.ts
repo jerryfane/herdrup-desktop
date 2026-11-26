@@ -15,6 +15,7 @@ import { MemoryIdentityStore } from "../src/webguest/identity";
 import { APP_LINK_PREFIX } from "../src/webguest/invite";
 import type { StatementSource } from "../src/webguest/owner";
 import type { Access } from "../src/webguest/transport";
+import type { AbortableLocks } from "../src/web/locks";
 import { memory, worker, type Worker } from "./webAccountService";
 import { CONNECTS_LIMIT_MS, startRelay, type HostSession, type TestRelay } from "./webguestResponder";
 
@@ -82,19 +83,82 @@ const statements = (): StatementSource => ({ get: async () => ({ jws: "statement
 
 let sessions = 0;
 /** One browser of the account: its own session, storage, guest key and grant. Signed out, the
- *  service refuses its cookie. Another tab of a browser holds its grants, storage and guest key. */
-async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore()) {
+ *  service refuses its cookie. Another tab of a browser holds its grants, storage, guest key and
+ *  Web Locks (none: null). */
+async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore(), storage = memory(), identities = new MemoryIdentityStore(), locks: AbortableLocks | null = null) {
  const fetcher = w.fetcher(`s${++sessions}`);
  const signedOut = ((input: string | URL | Request, init?: RequestInit) => String(input).includes("/v1/auth/refresh")
   ? Promise.resolve(Response.json({ error: "session_revoked" }, { status: 401 })) : fetcher(input, init)) as typeof fetch;
  const account = new WebAccount(signedIn ? fetcher : signedOut, undefined, undefined, null);
  if (signedIn) await account.check();
- const shares = createShareSync(account, { storage: () => storage, locks: null, name: "Chrome on macOS", background: false });
+ const shares = createShareSync(account, { storage: () => storage, locks, name: "Chrome on macOS", background: false });
  const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
  return { desk, grants, shares, account, storage, identities };
 }
 
 const sharesOn = (w: Worker) => w.pushed.flat().filter(c => c.collection === "shares");
+
+/** A browser's Web Locks: one holder per name, the others waiting their turn in order. */
+function tabLocks(): AbortableLocks {
+ const tails = new Map<string, Promise<unknown>>();
+ const request = <T>(name: string, ...args: [() => Promise<T>] | [{ signal?: AbortSignal }, () => Promise<T>]): Promise<T> => {
+  const callback = args.length === 1 ? args[0] : args[1];
+  const turn = (tails.get(name) ?? Promise.resolve()).then(() => callback());
+  tails.set(name, turn.catch(() => {}));
+  return turn;
+ };
+ return { request } as AbortableLocks;
+}
+
+/** Two tabs of one browser (sharing locks, null: no Web Locks) with 100 share puts kept while the
+ *  service was out, then a bound share accepted, its put the 101st: the second push's. Tab a's
+ *  sync has sent its first push, applied and its answer held until release. */
+async function leaveDuringBatch(locks: AbortableLocks | null) {
+ const w = worker(), h = host();
+ const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore();
+ const a = await browser(w, true, grants, storage, identities, locks), b = await browser(w, true, grants, storage, identities, locks);
+ const guest = (n: number) => toB64url(new Uint8Array(16).fill(100 + n));
+ const queued = Array.from({ length: 100 }, (_, n) => ({ id: `host/${guest(n)}`, body: { relay: "wss://relay.example", host_id: "host", node_pub: toB64url(new Uint8Array(32).fill(1)), guest_id: guest(n) } }));
+ storage.setItem(SHARES_KEY_PREFIX + "acct", JSON.stringify({ rev: 0, shares: [], gone: {}, pending: queued }));
+ w.failPush = true;
+ const access = await b.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ w.failPush = false;
+ const answer = Promise.withResolvers<void>();
+ w.holdAnswer = answer.promise;
+ const before = w.pushed.length;
+ const synced = a.shares.sync();
+ while (w.pushed.length === before) await Bun.sleep(1);
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ /** What was sent for the share since a's first push. */
+ const sentSince = () => w.pushed.slice(before).flat().filter(c => c.id === id).map(c => c.deleted ? "delete" : "put");
+ return { w, a, b, id, grants, synced, release: () => answer.resolve(), firstPush: before + 1, sentSince };
+}
+
+test("without Web Locks, a tab's push answered late sends no write a Leave in another tab replaced: the share left stays deleted", async () => {
+ const t = await leaveDuringBatch(null);
+ expect(t.w.pushed.at(-1)!.length).toBe(100);
+ await t.b.desk.forgetGuestConnection(t.id);
+ expect([await t.grants.list(), t.w.sharesIn("acct").includes(t.id)]).toEqual([[], false]);
+ t.release();
+ await t.synced;
+ await t.a.shares.sync();
+ await t.b.shares.sync();
+ expect([t.w.sharesIn("acct").includes(t.id), t.w.sharesIn("acct").length, t.sentSince()]).toEqual([false, 100, ["delete"]]);
+}, CONNECTS_LIMIT_MS);
+
+test("with Web Locks, a tab's Leave syncs once another tab's round is done: the share left stays deleted", async () => {
+ const t = await leaveDuringBatch(tabLocks());
+ const left = t.b.desk.forgetGuestConnection(t.id);
+ while ((await t.grants.list()).length > 0) await Bun.sleep(1);
+ await Bun.sleep(20);
+ // The leaving tab sends nothing while the other's round is still answering.
+ expect(t.w.pushed.length).toBe(t.firstPush);
+ t.release();
+ await Promise.all([t.synced, left]);
+ await t.a.shares.sync();
+ await t.b.shares.sync();
+ expect([await t.grants.list(), t.w.sharesIn("acct").includes(t.id), t.w.sharesIn("acct").length, t.sentSince()]).toEqual([[], false, 100, ["delete"]]);
+}, CONNECTS_LIMIT_MS);
 
 test("a bound accept writes the share to the account; another browser of the account opens it with no invite", async () => {
  const w = worker(), h = host();
