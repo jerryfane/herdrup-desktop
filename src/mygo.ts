@@ -842,6 +842,14 @@ export interface Machine {
    * "" until then.
    */
   localId?: string;
+  /**
+   * LabelRev is the revision of the machine's invite label (inviteLabel)
+   * for its guests: the unix ms of the rename that set it, never below
+   * the one before, 0 until a rename (desk_guest_relabel.go). Herdr keeps
+   * it on each share and invite (guest_relabel_rev), so an older relabel
+   * never overwrites a newer one.
+   */
+  labelRev?: number;
 }
 
 /**
@@ -1128,6 +1136,14 @@ export interface SavedMachine {
    * "" until then.
    */
   localId?: string;
+  /**
+   * LabelRev is the revision of the machine's invite label (inviteLabel)
+   * for its guests: the unix ms of the rename that set it, never below
+   * the one before, 0 until a rename (desk_guest_relabel.go). Herdr keeps
+   * it on each share and invite (guest_relabel_rev), so an older relabel
+   * never overwrites a newer one.
+   */
+  labelRev?: number;
   /** Active marks the machine the desk connects to. */
   active: boolean;
 }

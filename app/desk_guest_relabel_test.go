@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -20,19 +22,39 @@ import (
 // herdr reporting guest_relabel when relabel is set. updates are the
 // guest.update params sent, in order, and done counts those herdr has
 // answered; while failing is set herdr refuses them. A gate in held (hold)
-// holds the next guest.update until it carries that reply's outcome.
+// holds the next guest.update until it carries that reply's outcome. invites
+// are the guest.invite.create params sent. While ignoreRev is set herdr
+// drops machine_label_rev, as one that doesn't keep revisions does.
 type relabelHerdr struct {
-	d       *Desk
-	srv     *fakeherdr.Server
-	guests  *fakeherdr.Guests
-	failing atomic.Bool
-	held    atomic.Pointer[chan *fakeherdr.APIError]
-	done    atomic.Int32
-	mu      sync.Mutex
-	sent    []herdrapi.GuestUpdateParams
+	d         *Desk
+	srv       *fakeherdr.Server
+	guests    *fakeherdr.Guests
+	failing   atomic.Bool
+	ignoreRev atomic.Bool
+	held      atomic.Pointer[chan *fakeherdr.APIError]
+	done      atomic.Int32
+	mu        sync.Mutex
+	sent      []herdrapi.GuestUpdateParams
+	invites   []herdrapi.GuestInviteCreateParams
 }
 
 func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr {
+	t.Helper()
+	var caps []string
+	if relabel {
+		caps = []string{"guest_relabel"}
+	}
+	return newRelabelHerdrWith(t, nickname, caps...)
+}
+
+// newOrderedRelabelHerdr is newRelabelHerdr's with herdr #526: its ping also
+// reports guest_relabel_rev, and the fixture keeps revisions.
+func newOrderedRelabelHerdr(t *testing.T, nickname string) *relabelHerdr {
+	t.Helper()
+	return newRelabelHerdrWith(t, nickname, "guest_relabel", "guest_relabel_rev")
+}
+
+func newRelabelHerdrWith(t *testing.T, nickname string, capabilities ...string) *relabelHerdr {
 	t.Helper()
 	h := &relabelHerdr{guests: fakeherdr.NewGuests()}
 	h.d, h.srv = federatedDeskAs(t, nickname, func(s *fakeherdr.Server) {
@@ -41,10 +63,18 @@ func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr 
 			switch method {
 			case "ping":
 				value, err := original(method, raw)
-				if caps, ok := value.(map[string]any)["capabilities"].(map[string]bool); ok && relabel {
-					caps["guest_relabel"] = true
+				if caps, ok := value.(map[string]any)["capabilities"].(map[string]bool); ok {
+					for _, c := range capabilities {
+						caps[c] = true
+					}
 				}
 				return value, err
+			case "guest.invite.create":
+				var p herdrapi.GuestInviteCreateParams
+				_ = json.Unmarshal(raw, &p)
+				h.mu.Lock()
+				h.invites = append(h.invites, p)
+				h.mu.Unlock()
 			case "guest.update":
 				var p herdrapi.GuestUpdateParams
 				_ = json.Unmarshal(raw, &p)
@@ -60,6 +90,10 @@ func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr 
 						h.done.Add(1)
 						return nil, refused
 					}
+				}
+				if h.ignoreRev.Load() {
+					p.MachineLabelRev = nil
+					raw, _ = json.Marshal(p)
 				}
 				value, err, _ := h.guests.Handle(method, raw)
 				h.done.Add(1)
@@ -129,13 +163,24 @@ func (h *relabelHerdr) pending(t *testing.T) string {
 	return h.relabels(t)[saved[0].LocalID]
 }
 
-// relabels are every relabel the desk still has to send, by profile, as the
-// file holds them.
+// relabels are the labels of every relabel the desk still has to send, by
+// profile, as the file holds them.
 func (h *relabelHerdr) relabels(t *testing.T) map[string]string {
+	t.Helper()
+	labels := map[string]string{}
+	for profile, q := range h.queued(t) {
+		labels[profile] = q.Label
+	}
+	return labels
+}
+
+// queued are every relabel the desk still has to send, by profile, as the
+// file holds them.
+func (h *relabelHerdr) queued(t *testing.T) map[string]queuedRelabel {
 	t.Helper()
 	h.d.storeMu.Lock()
 	defer h.d.storeMu.Unlock()
-	pending := map[string]string{}
+	pending := map[string]queuedRelabel{}
 	data, err := os.ReadFile(h.d.guestRelabelsPath())
 	if os.IsNotExist(err) {
 		return pending
@@ -273,14 +318,17 @@ func TestAFailedRelabelIsSentAgainOnTheNextConnect(t *testing.T) {
 	}
 }
 
-// #556, #561, #563: a rename while the previous one's relabel is out is
-// queued behind it, never sent beside it, and goes once that one is done.
-// Taken or refused (an answer), it goes at once on the live connection, so
-// the newest name is the last one herdr takes and nothing waits. Unanswered
-// (the relabel's context ended while herdr held it; herdr may still apply it,
-// and does here, late), it doesn't go on that connection: it waits for the
-// next one, which sends it. First is held on a gate that carries its outcome,
-// and its context is cancelled only once Second is queued: no timing.
+// #556, #561, #563, on a herdr without guest_relabel_rev: a rename while the
+// previous one's relabel is out is queued behind it, never sent beside it,
+// and goes once that one is done. Taken or refused (an answer), it goes at
+// once on the live connection, so the newest name is the last one herdr
+// takes and nothing waits. Unanswered (the relabel's context ended while
+// herdr held it; herdr may still apply it, and does here, late), it doesn't
+// go on that connection: not by the replacement watch's first list, nor by a
+// relabel asked for on it while First is still held (#570); it waits for
+// the next connection, which sends it. First is held on a gate that carries
+// its outcome, and its context is cancelled only once Second is queued: no
+// timing.
 func TestARenameQueuedBehindARelabelOut(t *testing.T) {
 	refusal := &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
 	for _, c := range []struct {
@@ -300,13 +348,13 @@ func TestARenameQueuedBehindARelabelOut(t *testing.T) {
 			h.rename(t, "Second")
 			h.queuedBehind(t)
 			if c.unanswered {
-				// The relabel's context is the watch's: ending it (as a session
-				// switch does) leaves First unanswered on the same connection.
-				h.d.mu.Lock()
-				restart := h.d.link.restart
-				h.d.mu.Unlock()
-				restart()
+				h.restartWatch(t)
 				h.idle(t, "the sender to give up on the unanswered relabel")
+				// The same connection, First still held: asked again, it sends nothing.
+				h.d.relabelGuests(h.live())
+				if n := len(h.updates()); n != 1 {
+					t.Fatalf("%d guest.update calls on the connection First went unanswered on; want none more", n)
+				}
 				release(nil)
 				waitFor(t, "the late relabel applied", func() bool { return h.done.Load() == 1 })
 				if n, pending, got := len(h.updates()), h.pending(t), h.labels(t); n != 1 || pending != "Second" || !slices.Equal(got, everywhere("First")) {
@@ -356,6 +404,202 @@ func (h *relabelHerdr) idle(t *testing.T, what string) {
 		defer h.d.relabelMu.Unlock()
 		return len(h.d.relabeling) == 0
 	})
+}
+
+// restartWatch ends the watch a relabel out runs on (as a session switch
+// does), which leaves that relabel unanswered on the same connection, and
+// waits for the replacement watch's first list.
+func (h *relabelHerdr) restartWatch(t *testing.T) {
+	t.Helper()
+	h.d.mu.Lock()
+	l := h.d.link
+	restart, old := l.restart, l.ctx
+	h.d.mu.Unlock()
+	restart()
+	waitFor(t, "the replacement watch's first list", func() bool {
+		h.d.mu.Lock()
+		defer h.d.mu.Unlock()
+		return l.ctx != old && l.caps != nil
+	})
+}
+
+// labelRevs are the machine label revisions of the fixture's active guests
+// and pending invites.
+func (h *relabelHerdr) labelRevs(t *testing.T) []uint64 {
+	t.Helper()
+	value, apiErr, _ := h.guests.Handle("guest.list", json.RawMessage(`{}`))
+	if apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	var list herdrapi.ResponseResultGuestList
+	if err := json.Unmarshal(value.(json.RawMessage), &list); err != nil {
+		t.Fatal(err)
+	}
+	var out []uint64
+	for _, g := range list.Guests {
+		if !g.Revoked {
+			out = append(out, g.MachineLabelRev)
+		}
+	}
+	now := uint64(time.Now().UnixMilli())
+	for _, i := range list.Invites {
+		if i.UsedBy == nil && i.ExpiresMs > now {
+			out = append(out, i.MachineLabelRev)
+		}
+	}
+	return out
+}
+
+// labelRev is the saved machine's label revision.
+func (h *relabelHerdr) labelRev(t *testing.T) uint64 {
+	t.Helper()
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	return saved[0].LabelRev
+}
+
+// answered waits for herdr to have answered every guest.update sent.
+func (h *relabelHerdr) answered(t *testing.T) {
+	t.Helper()
+	waitFor(t, "every relabel answered", func() bool { return int(h.done.Load()) == len(h.updates()) })
+}
+
+// #570, herdr #526 (guest_relabel_rev): the probe's sequence. First is held
+// past the connection it went on (unanswered), Second goes on the next one
+// and is taken, and First lands late: herdr keeps Second, whose revision is
+// above First's, and nothing is left to send.
+func TestAnOrderedRelabelHeldAcrossAReconnectNeverRevertsANewerOne(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	release := h.hold(t)
+	h.rename(t, "First")
+	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) >= 1 })
+	first := h.labelRev(t)
+	h.rename(t, "Second")
+	second := h.labelRev(t)
+	h.reconnect(t)
+	waitFor(t, "Second taken on the next connection", func() bool { return h.pending(t) == "" && slices.Equal(h.labels(t), everywhere("Second")) })
+	release(nil)
+	h.answered(t)
+	h.idle(t, "the senders to end")
+	if got, revs, pending := h.labels(t), h.labelRevs(t), h.pending(t); !slices.Equal(got, everywhere("Second")) || slices.ContainsFunc(revs, func(r uint64) bool { return r != second }) || pending != "" {
+		t.Fatalf("after First landed late: shares %q at %v, pending %q; want Second at %d everywhere (First was %d)", got, revs, pending, second, first)
+	}
+	if p := h.updates()[0]; p.MachineLabelRev == nil || *p.MachineLabelRev != first || first >= second {
+		t.Fatalf("First went as %+v; want its revision %d, below Second's %d", p, first, second)
+	}
+}
+
+// #570: on a herdr that orders labels by revision, a relabel left unanswered
+// doesn't hold back its connection: Second goes on the same connection (the
+// replacement watch's), with no reconnect, and First, landing late, changes
+// nothing.
+func TestAnOrderedRelabelUnansweredDoesNotHoldBackItsConnection(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	release := h.hold(t)
+	h.rename(t, "First")
+	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) >= 1 })
+	h.rename(t, "Second")
+	h.queuedBehind(t)
+	client := h.live().client
+	h.restartWatch(t)
+	waitFor(t, "Second taken on the same connection", func() bool { return h.pending(t) == "" && slices.Equal(h.labels(t), everywhere("Second")) })
+	if h.live().client != client {
+		t.Fatal("the connection was replaced")
+	}
+	release(nil)
+	h.answered(t)
+	if got := h.labels(t); !slices.Equal(got, everywhere("Second")) {
+		t.Fatalf("shares %q after First landed late; want Second", got)
+	}
+}
+
+// #570: a relabel is forgotten only when the reply shows every share and
+// invite at its revision or above. A record below it (a herdr that didn't
+// keep the revision) keeps it for the next connect; one above it (a newer
+// label, from another of the owner's devices) stands, and the relabel is
+// done.
+func TestAnOrderedRelabelIsForgottenOnlyWhenEveryRecordReachedItsRevision(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.ignoreRev.Store(true)
+	h.rename(t, "Mine")
+	waitFor(t, "Mine sent", func() bool { return len(h.updates()) >= 1 })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	if pending := h.pending(t); pending != "Mine" {
+		t.Fatalf("pending %q after a reply below the revision; want Mine kept", pending)
+	}
+	h.ignoreRev.Store(false)
+	newer := uint64(time.Now().Add(time.Hour).UnixMilli())
+	if _, apiErr, _ := h.guests.Handle("guest.update", json.RawMessage(fmt.Sprintf(`{"machine_label":"Elsewhere","machine_label_rev":%d}`, newer))); apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	h.reconnect(t)
+	waitFor(t, "Mine sent again and done", func() bool { return len(h.updates()) >= 2 && h.pending(t) == "" })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	if got, pending := h.labels(t), h.pending(t); !slices.Equal(got, everywhere("Elsewhere")) || pending != "" {
+		t.Fatalf("shares %q, pending %q; want the newer Elsewhere kept and Mine done", got, pending)
+	}
+}
+
+// #570: an entry queued before revisions (its label alone) takes the file's
+// time as its revision, the same on every read, and goes with it.
+func TestARelabelQueuedBeforeRevisionsGoesAtTheFilesTime(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "Named")
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	h.d.storeMu.Lock()
+	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(`{"`+saved[0].LocalID+`":"Legacy"}`))
+	var stamp uint64
+	if info, statErr := os.Stat(h.d.guestRelabelsPath()); err == nil && statErr == nil {
+		stamp = uint64(info.ModTime().UnixMilli())
+	}
+	h.d.storeMu.Unlock()
+	if err != nil || stamp == 0 {
+		t.Fatalf("legacy entry: %v", err)
+	}
+	h.reconnect(t)
+	waitFor(t, "the legacy entry sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	if n := len(h.updates()); n != 1 {
+		t.Fatalf("%d guest.update calls; want the legacy entry's one", n)
+	}
+	if p := h.updates()[0]; *p.MachineLabel != "Legacy" || p.MachineLabelRev == nil || *p.MachineLabelRev != stamp || h.pending(t) != "" || !slices.Equal(h.labels(t), everywhere("Legacy")) {
+		t.Fatalf("sent %+v (rev %v), pending %q, shares %q; want Legacy at %d, taken", p, p.MachineLabelRev, h.pending(t), h.labels(t), stamp)
+	}
+}
+
+// #570: an invite of the machine carries its label's revision, so a relabel
+// older than its label never overwrites it; before any rename, none.
+func TestAnInviteCarriesItsLabelsRevision(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	b := h.d.Board()
+	invite := func() herdrapi.GuestInviteCreateParams {
+		t.Helper()
+		if _, err := h.d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: "w1:p1"}, "v"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.d.CreateGuestInvite(context.Background(), "v", "Taylor", "Owner", false); err != nil {
+			t.Fatal(err)
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.invites[len(h.invites)-1]
+	}
+	if p := invite(); p.MachineLabel != "Old" || p.MachineLabelRev != nil {
+		t.Fatalf("an invite before any rename: %+v (rev %v); want Old, no revision", p, p.MachineLabelRev)
+	}
+	h.rename(t, "New")
+	if p, rev := invite(), h.labelRev(t); p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite after the rename: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
+	}
 }
 
 // Entries of no saved profile, such as the address-keyed format (#554,
@@ -468,7 +712,8 @@ func TestARelabelGoesWithItsProfile(t *testing.T) {
 }
 
 // Only a rename of a saved machine queues a relabel, under the profile's own
-// id, which an edit that moves the machine to another user@host:port keeps.
+// id, which an edit that moves the machine to another user@host:port keeps,
+// at the profile's new label revision (above the one before).
 func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 	d := newDesk(t.TempDir())
 	pending := func() map[string]string {
@@ -476,12 +721,19 @@ func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 		d.storeMu.Lock()
 		defer d.storeMu.Unlock()
 		st, err := d.load()
-		var p map[string]string
+		var q map[string]queuedRelabel
 		if err == nil {
-			p, _, err = d.loadRelabels(st)
+			q, _, err = d.loadRelabels(st)
 		}
 		if err != nil {
 			t.Fatal(err)
+		}
+		p := map[string]string{}
+		for profile, entry := range q {
+			if i := slices.IndexFunc(st.Machines, func(m Machine) bool { return m.LocalID == profile }); i < 0 || entry.Rev != st.Machines[i].LabelRev {
+				t.Fatalf("queued %+v for %s, whose label revision is not its", entry, profile)
+			}
+			p[profile] = entry.Label
 		}
 		return p
 	}
@@ -496,22 +748,26 @@ func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 		}
 		return saved[0].Machine
 	}
-	pi := save(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k", LocalID: "from-the-page"}, "")
-	if p := pending(); len(p) != 0 || pi.LocalID != "" {
-		t.Fatalf("a new machine queued %v, local id %q", p, pi.LocalID)
+	pi := save(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k", LocalID: "from-the-page", LabelRev: 9}, "")
+	if p := pending(); len(p) != 0 || pi.LocalID != "" || pi.LabelRev != 0 {
+		t.Fatalf("a new machine queued %v, local id %q, label revision %d", p, pi.LocalID, pi.LabelRev)
 	}
 	pi.Session = "work"
 	pi = save(pi, "root@pi:22")
-	if p := pending(); len(p) != 0 || pi.LocalID != "" {
-		t.Fatalf("an edit that renames nothing queued %v, local id %q", p, pi.LocalID)
+	if p := pending(); len(p) != 0 || pi.LocalID != "" || pi.LabelRev != 0 {
+		t.Fatalf("an edit that renames nothing queued %v, local id %q, label revision %d", p, pi.LocalID, pi.LabelRev)
 	}
 	pi.Nickname = "New"
 	pi = save(pi, "root@pi:22")
-	profile := pi.LocalID
-	pi.User, pi.LocalID = "admin", "another"
+	profile, first := pi.LocalID, pi.LabelRev
+	pi.User, pi.LocalID, pi.LabelRev = "admin", "another", 1
 	pi = save(pi, "root@pi:22")
-	if p := pending(); len(profile) != 32 || pi.LocalID != profile || len(p) != 1 || p[profile] != "New" {
-		t.Fatalf("pending %v, local id %q then %q; want New for the profile's own id", p, profile, pi.LocalID)
+	if p := pending(); len(profile) != 32 || first == 0 || pi.LocalID != profile || pi.LabelRev != first || len(p) != 1 || p[profile] != "New" {
+		t.Fatalf("pending %v, local id %q then %q, label revision %d then %d; want New for the profile's own id and revision", p, profile, pi.LocalID, first, pi.LabelRev)
+	}
+	pi.Nickname = "Newer"
+	if pi = save(pi, "admin@pi:22"); pi.LabelRev <= first {
+		t.Fatalf("label revision %d after %d; a rename's is above the one before", pi.LabelRev, first)
 	}
 }
 

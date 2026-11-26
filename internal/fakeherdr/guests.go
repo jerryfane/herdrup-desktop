@@ -83,6 +83,8 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		Name         string `json:"name"`
 		OwnerName    string `json:"owner_name"`
 		MachineLabel string `json:"machine_label"`
+		// MachineLabelRev is herdr #526's (guest_relabel_rev).
+		MachineLabelRev *uint64 `json:"machine_label_rev"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, &APIError{Code: "invalid_request", Message: err.Error()}, true
@@ -123,7 +125,7 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		}
 		now := time.Now().UnixMilli()
 		id := fmt.Sprintf("created-%d", len(store.invites)+1)
-		invite := map[string]any{"invite_id": id, "name": p.Name, "owner_name": p.OwnerName, "machine_label": p.MachineLabel,
+		invite := map[string]any{"invite_id": id, "name": p.Name, "owner_name": p.OwnerName, "machine_label": p.MachineLabel, "machine_label_rev": revOf(p.MachineLabelRev),
 			"created_ms": now, "expires_ms": now + 86400000, "share_gram": p.ShareGram != nil && *p.ShareGram,
 			"grant": map[string]any{"terminal_id": p.Target, "agent_name": p.Target}}
 		store.invites = append(store.invites, invite)
@@ -138,6 +140,10 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		// herdr #519 (guest_relabel): machine_label without a scope relabels
 		// every active guest and pending invite, checked as guest.invite.create
 		// checks it; never with share_gram. A scoped relabel is not modelled.
+		// herdr #526 (guest_relabel_rev): with machine_label_rev a record takes
+		// the label only above its stored revision, which it then stores;
+		// without, the label overwrites and the revision stays. The reply
+		// lists every matched record as it now is.
 		if p.MachineLabel != "" {
 			if p.ShareGram != nil || p.GuestID != "" || p.InviteID != "" {
 				return nil, &APIError{Code: "invalid_params", Message: "the fixture relabels every share, and never with share_gram"}, true
@@ -145,17 +151,26 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 			if strings.TrimSpace(p.MachineLabel) == "" || utf8.RuneCountInString(p.MachineLabel) > 64 || strings.ContainsFunc(p.MachineLabel, unicode.IsControl) {
 				return nil, &APIError{Code: "invalid_params", Message: "machine_label must be 1 to 64 printable characters"}, true
 			}
+			apply := func(record map[string]any) {
+				if p.MachineLabelRev != nil {
+					if stored, _ := record["machine_label_rev"].(uint64); *p.MachineLabelRev <= stored {
+						return
+					}
+					record["machine_label_rev"] = *p.MachineLabelRev
+				}
+				record["machine_label"] = p.MachineLabel
+			}
 			guests, invites := []map[string]any{}, []map[string]any{}
 			for _, guest := range store.guests {
 				if guest["revoked"] != true {
-					guest["machine_label"] = p.MachineLabel
+					apply(guest)
 					guests = append(guests, guest)
 				}
 			}
 			now := time.Now().UnixMilli()
 			for _, invite := range store.invites {
 				if expires, _ := invite["expires_ms"].(int64); invite["used_by"] == nil && expires > now {
-					invite["machine_label"] = p.MachineLabel
+					apply(invite)
 					invites = append(invites, invite)
 				}
 			}
@@ -245,4 +260,12 @@ func (x *Guests) Handle(method string, raw json.RawMessage) (any, *APIError, boo
 		}
 	}
 	return missing()
+}
+
+// revOf is a machine_label_rev param as herdr stores it: 0 when not given.
+func revOf(rev *uint64) uint64 {
+	if rev == nil {
+		return 0
+	}
+	return *rev
 }

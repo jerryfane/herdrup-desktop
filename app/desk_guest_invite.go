@@ -21,17 +21,22 @@ type guestShareRoute struct {
 	details GuestShareDetails
 	target  string
 	machine *string
+	// labelRev is details.MachineLabel's revision (Machine.LabelRev) for
+	// this machine's agents: the invite carries it (machine_label_rev), so a
+	// relabel older than its label never overwrites it. 0 sends none.
+	labelRev uint64
 }
 
 // shareRoute routes an invite to agent and names its machine to the guests:
-// hostLabel (inviteLabel, already a shareLabel) for this machine's agents, a
-// federated peer's by herdr's machine_label for it (as a shareLabel), else the
-// peer's id.
-func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string) guestShareRoute {
-	route := guestShareRoute{details: GuestShareDetails{AgentName: name, MachineLabel: hostLabel}, target: agent.PaneID}
+// hostLabel (inviteLabel, already a shareLabel) at hostRev for this
+// machine's agents, a federated peer's by herdr's machine_label for it (as a
+// shareLabel), else the peer's id, with no revision.
+func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string, hostRev uint64) guestShareRoute {
+	route := guestShareRoute{details: GuestShareDetails{AgentName: name, MachineLabel: hostLabel}, target: agent.PaneID, labelRev: hostRev}
 	if agent.MachineID != nil && *agent.MachineID != "" && strings.HasPrefix(agent.PaneID, *agent.MachineID+"/") {
 		route.target = strings.TrimPrefix(agent.PaneID, *agent.MachineID+"/")
 		route.machine = agent.MachineID
+		route.labelRev = 0
 		route.details.AgentName = strings.TrimPrefix(name, *agent.MachineID+"/")
 		route.details.MachineLabel = *agent.MachineID
 		if agent.MachineLabel != nil {
@@ -94,11 +99,16 @@ func (d *Desk) CreateGuestInvite(ctx context.Context, token, name, ownerName str
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	created, err := v.client.GuestInviteCreate(ctx, herdrapi.GuestInviteCreateParams{
+	params := herdrapi.GuestInviteCreateParams{
 		Target: v.guestShare.target, Machine: v.guestShare.machine,
 		MachineLabel: v.guestShare.details.MachineLabel,
 		Name:         strings.TrimSpace(name), OwnerName: strings.TrimSpace(ownerName), ShareGram: shareGram,
-	})
+	}
+	// A herdr without guest_relabel_rev ignores the field.
+	if rev := v.guestShare.labelRev; rev > 0 {
+		params.MachineLabelRev = &rev
+	}
+	created, err := v.client.GuestInviteCreate(ctx, params)
 	if err != nil {
 		return "", err
 	}

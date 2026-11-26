@@ -51,6 +51,12 @@ type Machine struct {
 	// reused: a profile saved later at the same user@host:port gets another.
 	// "" until then.
 	LocalID string `json:"localId,omitempty"`
+	// LabelRev is the revision of the machine's invite label (inviteLabel)
+	// for its guests: the unix ms of the rename that set it, never below
+	// the one before, 0 until a rename (desk_guest_relabel.go). Herdr keeps
+	// it on each share and invite (guest_relabel_rev), so an older relabel
+	// never overwrites a newer one.
+	LabelRev uint64 `json:"labelRev,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -320,6 +326,9 @@ type link struct {
 	// SaveMachine renews it under d.mu. A guest's link has its access's
 	// label.
 	shareLabel string
+	// shareLabelRev is shareLabel's revision (Machine.LabelRev), taken with
+	// it, which an invite of this machine carries; 0 for a guest's link.
+	shareLabelRev uint64
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
 	sessionGen  uint64
@@ -659,20 +668,24 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	}
 	relabel := ""
 	if index < 0 {
-		// A new profile never takes another's id, even one the page held.
-		m.LocalID = ""
+		// A new profile never takes another's id, even one the page held,
+		// nor a label revision.
+		m.LocalID, m.LabelRev = "", 0
 		st.Machines = append(st.Machines, m)
 	} else {
-		// The page doesn't hold the sync id: an edit keeps the machine's, and
-		// its local id.
-		m.SyncID, m.LocalID = st.Machines[index].SyncID, st.Machines[index].LocalID
+		// The page doesn't hold the sync id: an edit keeps the machine's, its
+		// local id and its label revision.
+		old := st.Machines[index]
+		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
 		// A rename names the machine anew to its existing shares' guests
-		// (desk_guest_relabel.go), queued under the profile's local id.
-		if old := st.Machines[index]; old.Nickname != m.Nickname && inviteLabel(old) != inviteLabel(m) {
+		// (desk_guest_relabel.go), queued under the profile's local id at a
+		// new label revision.
+		if old.Nickname != m.Nickname && inviteLabel(old) != inviteLabel(m) {
 			relabel = inviteLabel(m)
 			if m.LocalID == "" {
 				m.LocalID = newLocalID()
 			}
+			m.LabelRev = nextLabelRev(old.LabelRev)
 		}
 		st.Machines[index] = m
 		if st.Active == replacing {
@@ -684,7 +697,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	}
 	if relabel != "" {
 		// The rename stands whatever happens to its relabel.
-		if err := d.queueRelabel(st, m.LocalID, relabel); err != nil {
+		if err := d.queueRelabel(st, m.LocalID, queuedRelabel{Label: relabel, Rev: m.LabelRev}); err != nil {
 			log.Printf("guest relabel: %s: %v", id, err)
 		}
 	}
@@ -694,7 +707,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	// it opened with.
 	d.mu.Lock()
 	if l := d.link; l != nil && l.guest == nil && l.id == id {
-		l.shareLabel = inviteLabel(m)
+		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
 		if relabel != "" {
 			l.work.Go(func() { d.relabelGuests(l) })
 		}
@@ -930,10 +943,11 @@ func (d *Desk) Connect(m Machine, password string) error {
 	case !bridge.ValidSession(m.Session):
 		return fmt.Errorf("invalid herdr session name %q", m.Session)
 	}
-	if err := d.remember(m); err != nil {
+	saved, err := d.remember(m)
+	if err != nil {
 		return err
 	}
-	d.start(m, password)
+	d.start(saved, password)
 	return nil
 }
 
@@ -1005,36 +1019,38 @@ func (x detached) stop() []*link {
 func (x detached) remove() { x.cache.drop() }
 
 // remember saves m, replacing the saved machine with its ID, and makes it
-// the active machine.
-func (d *Desk) remember(m Machine) error {
+// the active machine. saved is m as saved, with the fields the page doesn't
+// hold (sync and local ids, label revision) kept from the machine it
+// replaced.
+func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
 	st, err := d.load()
 	if err != nil {
-		return err
+		return m, err
 	}
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
 		// The page doesn't hold the sync id: a reconnect keeps the machine's,
-		// and its local id.
-		m.SyncID, m.LocalID = st.Machines[i].SyncID, st.Machines[i].LocalID
+		// its local id and its label revision.
+		m.SyncID, m.LocalID, m.LabelRev = st.Machines[i].SyncID, st.Machines[i].LocalID, st.Machines[i].LabelRev
 		st.Machines[i] = m
 	} else {
-		m.LocalID = ""
+		m.LocalID, m.LabelRev = "", 0
 		st.Machines = append(st.Machines, m)
 	}
 	st.Active = id
 	if err := d.store(st); err != nil {
-		return err
+		return m, err
 	}
 	d.boards.allow(id)
 	d.syncMachinesSoon()
-	return nil
+	return m, nil
 }
 
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), session: m.Session, shareLabel: inviteLabel(m)}
+	l := &link{id: machineID(m), session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()
