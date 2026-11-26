@@ -5,6 +5,7 @@
 // put back after it (withPage).
 import { expect, test } from "bun:test";
 import { GuestSettings, sharePeople, type Guest } from "../src/settingsGuests";
+import { decodeGuestList } from "../src/guestList";
 import { Desk } from "../src/mygo";
 
 class FakeElement {
@@ -291,6 +292,62 @@ test("Confirm when the listing isn't a list of shares takes it as unreadable: sa
         .toEqual([listed, [], ["Couldn't check MacBook's access. Nothing was removed. Try again."], false]);
     });
   }
+});
+
+// #548 review P3: the fields that decide which shares a removal targets are typed at the
+// confirmation: a wrongly typed one, on any share, is an unreadable listing, never another answer
+// (removed: "false" read as removed, removed: 0 as not).
+/** current's shares, one of them changed by change (on a copy). */
+const changed = (id: string, change: (guest: Record<string, unknown> & { devices: Record<string, unknown>[] }) => void) =>
+  current.guests.map(guest => { const copy = structuredClone({ devices: [], ...guest }) as Record<string, unknown> & { devices: Record<string, unknown>[] }; if (guest.guest_id === id) change(copy); return copy; });
+test("Confirm when a field that decides the removal's shares is wrongly typed takes the listing as unreadable: says so, sends nothing", async () => {
+  const cases: [string, unknown[]][] = [
+    ["removed \"false\"", changed("nike-2", g => { g.devices[0]!.removed = "false"; })],
+    ["removed 0", changed("nike-1", g => { g.devices[0]!.removed = 0; })],
+    ["revoked \"false\"", changed("nike-2", g => { g.revoked = "false"; })],
+    ["person 7, another share", changed("sam-1", g => { g.person = 7; })],
+    ["fingerprint 1, another share", changed("sam-1", g => { g.fingerprint = 1; })],
+    ["device fingerprint 5", changed("nike-1", g => { g.devices[1]!.fingerprint = 5; })],
+  ];
+  for (const [field, listed] of cases) {
+    const listing: { guests: Guest[]; listed?: unknown } = { guests: [...current.guests] };
+    await withPage(listing, async ({ root, body, calls, reported }) => {
+      const dialog = askRemoveMacBook(root, body);
+      listing.listed = listed;
+      click(dialog.button("Remove device"));
+      await settle();
+      expect([field, removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message), root.button("Manage MacBook").disabled])
+        .toEqual([field, [], [], ["Couldn't check MacBook's access. Nothing was removed. Try again."], false]);
+    });
+  }
+});
+
+test("Confirm when optional fields are absent (or null) still reads the listing: the device goes from its shares", async () => {
+  const listed = current.guests.map(guest => {
+    const { revoked: _revoked, ...rest } = guest;
+    return guest.guest_id === "sam-1" ? { ...rest, person: null, fingerprint: null, devices: null }
+      : { ...rest, devices: guest.devices!.map(({ removed: _removed, ...device }) => device) };
+  });
+  const listing: { guests: Guest[]; listed?: unknown } = { guests: [...current.guests] };
+  await withPage(listing, async ({ root, body, calls, reported }) => {
+    const dialog = askRemoveMacBook(root, body);
+    listing.listed = listed;
+    click(dialog.button("Remove device"));
+    await settle();
+    expect([removals(calls), reported]).toEqual([["nike-1", "nike-2"], []]);
+  });
+});
+
+test("decodeGuestList, the one decoder at the confirmation, takes a list of shares typed as targeting reads them, and nothing else", () => {
+  const share = { guest_id: "g", revoked: false, person: "p", fingerprint: "f", devices: [{ fingerprint: "d", removed: false }] };
+  const read = (listing: unknown) => decodeGuestList(typeof listing === "string" ? listing : JSON.stringify(listing));
+  expect([read({ guests: [share] }), read({ guests: [{ guest_id: "g" }] }), read({ guests: [{ guest_id: "g", devices: [{ fingerprint: "d" }] }] }), read({ guests: [] })])
+    .toEqual([[share], [{ guest_id: "g" }], [{ guest_id: "g", devices: [{ fingerprint: "d" }] }], []]);
+  const refused = ["not json", "null", "[]", { guests: null }, { guests: {} }, { guests: [1] }, { guests: [{ name: "g" }] }, { guests: [{ ...share, guest_id: 1 }] },
+    { guests: [{ ...share, revoked: 0 }] }, { guests: [{ ...share, person: false }] }, { guests: [{ ...share, fingerprint: [] }] }, { guests: [{ ...share, devices: {} }] },
+    { guests: [{ ...share, devices: [null] }] }, { guests: [{ ...share, devices: [{ removed: false }] }] }, { guests: [{ ...share, devices: [{ fingerprint: "d", removed: "false" }] }] },
+    { guests: [{ ...share, devices: [{ fingerprint: "d", removed: 0 }] }] }];
+  expect(refused.map(read)).toEqual(refused.map(() => null));
 });
 
 test("Confirm when the device has since come to another share asks again with them all, and sends nothing until then", async () => {

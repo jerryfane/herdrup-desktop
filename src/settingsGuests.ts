@@ -2,7 +2,7 @@ import { Desk } from "./mygo";
 import type { PeerSummary, SavedMachineStatus } from "./mygo";
 import { guestOwnerName } from "./guestInviteModel";
 import { errorText } from "./errors";
-import { listedGuests } from "./guestList";
+import { decodeGuestList } from "./guestList";
 import type { Glyph } from "./herdrupAccount";
 
 type Machine = { alias: string; label: string };
@@ -363,11 +363,12 @@ export class GuestSettings {
   }
   /** Confirm's check, read-only, then the removals, all within one hold of key (taken at Confirm,
    *  let go in finally however it ends). The machine's shares are listed afresh (guest.list alone)
-   *  on the same Settings scope; a listing that can't be read or isn't a list of shares is
-   *  unreadable. Only if the device is on exactly the shares confirmed are the removals sent (each
-   *  tried, failures said after, then the lists again). Otherwise nothing is sent and the device's
-   *  button is freed in place; while the person's page and this confirmation are still the current
-   *  ones, an unreadable listing says so, and a changed set asks again with the new shares or says
+   *  on the same Settings scope; a listing that can't be read, or that decodeGuestList doesn't take
+   *  as a list of shares (a field deciding targets wrongly typed included), is unreadable. Only if
+   *  the device is on exactly the shares confirmed are the removals sent (each tried, failures said
+   *  after, then the lists again). Otherwise nothing is sent and the device's button is freed in
+   *  place; while the person's page and this confirmation are still the current ones, an
+   *  unreadable listing says so, and a changed set asks again with the new shares or says
    *  the device has no access left, and lists again. Superseded (Back, another person, another
    *  confirmation), it says nothing and leaves the page as it is. */
   private async recheckRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[], key: string) {
@@ -375,7 +376,7 @@ export class GuestSettings {
     let sent = false;
     try {
       let fresh: Guest[] | null = null;
-      try { fresh = listedGuests((JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as { guests?: unknown } | null)?.guests); }
+      try { fresh = decodeGuestList(await Desk.settingsGuestList(token, machine.alias)); }
       catch { /* not read: nothing is known of the device's access */ }
       if (token !== this.token) return;
       const now = fresh && removalTargets(fresh, person.id, device.fingerprint);
