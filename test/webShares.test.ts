@@ -179,7 +179,7 @@ test("with Web Locks, a tab's Leave syncs once another tab's round is done: the 
  const left = t.b.desk.forgetGuestConnection(t.id);
  // The leaving tab's sync asks for the turn tab a holds, and isn't given it while a's round is
  // still answering: it sends nothing (a Leave done first would have sent its delete).
- await Promise.race([queued, left]);
+ expect(await Promise.race([queued.then(() => "waiting"), left.then(() => "left", () => "left")])).toBe("waiting");
  expect([t.locks.granted(lock), t.w.pushed.length]).toEqual([granted, t.firstPush]);
  t.release();
  await Promise.all([t.synced, left]);
