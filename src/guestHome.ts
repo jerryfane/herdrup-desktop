@@ -12,10 +12,11 @@ import "./settings.css";
 
 type GuestState = NonNullable<ConnState["guest"]>;
 
-/** Leave share's words. A share in the HerdrUp account (Access.accountBound, #700) leaves every
- *  device signed in to it where leaving deletes the account's item (everywhere: the desktop's
- *  forgetGuestConnection); a plain one, or where Leave forgets only this device's grant (the
- *  browser's, until it syncs the account's shares), this device. */
+/** Leave share's words. A share herdr bound to the HerdrUp account (Access.accountBound, #700)
+ *  leaves every device signed in to it where leaving lets the account's share go too (everywhere:
+ *  the desktop's forgetGuestConnection, which goes by accountBound, not by Access.accountShare); a
+ *  plain one, or where Leave forgets only this device's grant (the browser's, until it syncs the
+ *  account's shares), this device. */
 export function leaveWords(access: Pick<GuestState["access"], "machineLabel" | "agentName" | "ownerName" | "accountBound">, everywhere = true): { title: string; message: string; note: string } {
  const back = `To come back, ${access.ownerName} has to send a new invite.`;
  return access.accountBound && everywhere

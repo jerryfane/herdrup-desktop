@@ -3,7 +3,7 @@ import type { GuestInvitation } from "./mygo";
 import { errorText } from "./errors";
 import { grantKey } from "./grantKey";
 import { providerButtons } from "./herdrupAccount";
-import { showAccountShareNotice } from "./notices";
+import { accountShareWords, showAccountShareNotice } from "./notices";
 import "./guest.css";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
@@ -158,11 +158,13 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
      const access = await Desk.acceptGuestInvitation(reviewed, keep);
      input.value = ""; await saved();
      if (disposed) return;
-     const inAccount = keep === "account" && access.accountBound === true;
-     content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", inAccount ? `${access.agentName} is in your HerdrUp account.` : `${access.agentName} is saved on this device.`), action("Open shared agent", () => {
-      void Desk.connectGuest(grantKey(access)).then(() => { sheet.close(); opened(); }).catch(report);
-     }));
-     if (inAccount) showAccountShareNotice(access.agentName);
+     // How the account took it (accountShare): accountBound says only that herdr bound it.
+     const account = accountShareWords(access);
+     content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", `${access.agentName} is saved on this device.`),
+      ...(account === null ? [] : [node("p", "", account)]), action("Open shared agent", () => {
+       void Desk.connectGuest(grantKey(access)).then(() => { sheet.close(); opened(); }).catch(report);
+      }));
+     if (access.accountShare === "confirmed") showAccountShareNotice(access.agentName);
     } catch (failure) {
      report(failure); pressed.replaceChildren(...label);
      for (const button of choices.buttons) button.disabled = false;

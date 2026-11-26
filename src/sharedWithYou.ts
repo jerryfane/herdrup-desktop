@@ -7,14 +7,16 @@
 import { grantKey } from "./grantKey";
 import { Desk } from "./mygo";
 import type { Access, SyncedShare } from "./mygo";
+import { accountShareWords } from "./notices";
 import { element, hostGlyph, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type SymbolRenderer } from "./hostHome";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
 
 /** How a row opens its share: a grant this device holds, or a synced share it doesn't yet. */
 export type ShareOpen = { kind: "grant"; id: string } | { kind: "synced"; id: string };
 
-/** One share on a machine: its agent, and how its row opens it. */
-export interface SharedGrant { agent: string; open: ShareOpen }
+/** One share on a machine: its agent, how its row opens it, and, for a grant whose account write
+ *  is still owed or was turned down, how it stands (accountShareWords), shown muted on its row. */
+export interface SharedGrant { agent: string; open: ShareOpen; pending?: string }
 
 /** One machine of SHARED WITH YOU: its name, whose it is, the agents shared on it, and each share
  *  on it, held here first, each opening on its own. */
@@ -26,17 +28,22 @@ export const addsDevice = (m: Pick<SharedMachine, "grants">) => m.grants.some(g 
 
 /** The grants this device holds and the account's synced shares, one entry per machine (host id),
  *  in the order they first come: the grants, then the shares only the account has. A synced share
- *  this device holds (local) is its grant's. */
+ *  this device holds (local) is its grant's. A grant's queued or refused account write is its
+ *  pending words; a confirmed one needs none. */
 export function sharedMachines(grants: readonly Access[], synced: readonly SyncedShare[]): SharedMachine[] {
  const byHost = new Map<string, SharedMachine>();
- const add = (hostID: string, machine: string, owner: string, agent: string, open: ShareOpen) => {
+ const add = (hostID: string, machine: string, owner: string, agent: string, open: ShareOpen, pending: string | null = null) => {
+  const share: SharedGrant = pending === null ? { agent, open } : { agent, open, pending };
   const had = byHost.get(hostID);
-  if (had === undefined) { byHost.set(hostID, { hostID, machine, owner, agents: agent ? [agent] : [], grants: [{ agent, open }] }); return; }
+  if (had === undefined) { byHost.set(hostID, { hostID, machine, owner, agents: agent ? [agent] : [], grants: [share] }); return; }
   if (agent && !had.agents.includes(agent)) had.agents.push(agent);
-  had.grants.push({ agent, open });
+  had.grants.push(share);
  };
  const held = new Set<string>();
- for (const g of grants) { held.add(grantKey(g)); add(g.endpoint.hostID, g.machineLabel || g.agentName, g.ownerName, g.agentName, { kind: "grant", id: grantKey(g) }); }
+ for (const g of grants) {
+  held.add(grantKey(g));
+  add(g.endpoint.hostID, g.machineLabel || g.agentName, g.ownerName, g.agentName, { kind: "grant", id: grantKey(g) }, g.accountShare === "confirmed" ? null : accountShareWords(g));
+ }
  for (const s of synced) {
   if (held.has(s.id)) continue;
   // A synced share this device holds but didn't list: its grant opens it.
@@ -88,6 +95,12 @@ export function sharedSection(symbol: SymbolRenderer, opened: () => void, report
   row.append(icon, lines, chevron);
   return row;
  };
+ /** A row's lines, with a grant's pending account words under them, muted (no colour, no dot). */
+ const rowLines = (name: string, second: string | null, pending: string | undefined) => {
+  const drawn = hostRowLines(name, second);
+  if (pending !== undefined) drawn.append(element("span", "host-home-address host-shared-state", pending));
+  return drawn;
+ };
  return {
   root,
   /** Draws machines (sharedMachines); resolves true once they're drawn, false when a newer draw
@@ -98,13 +111,13 @@ export function sharedSection(symbol: SymbolRenderer, opened: () => void, report
    for (const m of machines) {
     const icon = hostRowIcon(await hostGlyph(symbol, "person.2", usersIcon));
     const only = m.grants.length === 1 ? m.grants[0] : undefined;
-    if (only) { nodes.push(openRow(only.open, icon, hostRowLines(m.machine, sharedLine(m)), hostRowChevron(await symbol("chevron.right", 13, "semibold")))); continue; }
+    if (only) { nodes.push(openRow(only.open, icon, rowLines(m.machine, sharedLine(m), only.pending), hostRowChevron(await symbol("chevron.right", 13, "semibold")))); continue; }
     const head = element("div", "host-home-row host-shared-machine");
     head.append(icon, hostRowLines(m.machine, m.owner ? `shared by ${m.owner}` : null));
     nodes.push(head);
     for (const g of m.grants) {
-     const row = openRow(g.open, hostRowIcon(""), hostRowLines(g.agent || m.machine, null), hostRowChevron(await symbol("chevron.right", 13, "semibold")));
-     row.setAttribute("aria-label", `${g.agent || m.machine} on ${m.machine}`);
+     const row = openRow(g.open, hostRowIcon(""), rowLines(g.agent || m.machine, null, g.pending), hostRowChevron(await symbol("chevron.right", 13, "semibold")));
+     row.setAttribute("aria-label", `${g.agent || m.machine} on ${m.machine}${g.pending === undefined ? "" : `. ${g.pending}`}`);
      nodes.push(row);
     }
    }

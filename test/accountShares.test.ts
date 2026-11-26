@@ -7,9 +7,10 @@
 // worded from Go (internal/guest/session.go). The app's Desk calls go to a fake mygo bridge;
 // test/fakeDom.ts stands in for the DOM.
 import { afterEach, expect, test } from "bun:test";
-import { acceptChoices, type Keep } from "../src/guestAccept";
+import { acceptChoices, showGuestAccept, type Keep } from "../src/guestAccept";
 import { accountNote, addsDevice, sharedLine, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
-import { accountShareNotice, showAccountShareNotice } from "../src/notices";
+import { accountShareNotice, accountShareWords, showAccountShareNotice } from "../src/notices";
+import { initHosts } from "../src/hosts";
 import { initGuestHome, leaveWords } from "../src/guestHome";
 import { errorText } from "../src/errors";
 import { bindRequest, CHECK_FAILED, PENDING_BIND_KEY, pendingBindWaits, start, startAccount, takePendingBind, type Started, type StartAccount } from "../src/web/start";
@@ -20,9 +21,9 @@ import { notInvite } from "../src/webguest/errors";
 import { Desk, type Access, type Features, type SyncedShare } from "../src/mygo";
 import { FakeDocument, type FakeElement } from "./fakeDom";
 
-const G = globalThis as { document?: unknown; mygo?: unknown; ResizeObserver?: unknown };
-const saved = { document: G.document, mygo: G.mygo, ResizeObserver: G.ResizeObserver };
-afterEach(() => { G.document = saved.document; G.mygo = saved.mygo; G.ResizeObserver = saved.ResizeObserver; });
+const G = globalThis as { document?: unknown; mygo?: unknown; ResizeObserver?: unknown; window?: unknown };
+const saved = { document: G.document, mygo: G.mygo, ResizeObserver: G.ResizeObserver, window: G.window };
+afterEach(() => { G.document = saved.document; G.mygo = saved.mygo; G.ResizeObserver = saved.ResizeObserver; G.window = saved.window; });
 
 /** A fake document and bridge: answers by Desk method, records calls, and emits Go events. */
 function bridge(answers: Record<string, unknown>) {
@@ -257,6 +258,77 @@ test("a row the account brought opens with openSyncedShare; one held here connec
  // A newer draw takes over one still drawing: the older draws nothing and says so.
  const [older, newer] = await Promise.all([section.draw(rows), section.draw([])]);
  expect([older, newer, root.hidden, buttons(root).length]).toEqual([false, true, true, 0]);
+});
+
+// How a bound grant's account write stands (Access.accountShare, #596): accountBound says only
+// that herdr bound the share; only "confirmed" may say it is in the account.
+const QUOTA = "Your HerdrUp account holds as many shares as it can. Remove one from it, and this one is added at the next sync.";
+const QUEUED = "Adding to your HerdrUp account at the next sync.";
+const standing = (hostID: string, agentName: string, machineLabel: string, accountShare: string, accountShareProblem = ""): Access =>
+ ({ ...grant(hostID, `g-${agentName}`, agentName, "jerry", machineLabel, true), accountShare, ...(accountShareProblem ? { accountShareProblem } : {}) });
+
+test("accountShareWords: Added only when confirmed; queued; refused in the desk's own words; bound with none known, or plain, says nothing", () => {
+ expect([standing("H", "enyo", "m", "confirmed"), standing("H", "enyo", "m", "queued"), standing("H", "enyo", "m", "refused", QUOTA), standing("H", "enyo", "m", ""), grant("H", "g", "enyo", "jerry", "m", true), grant("H", "g", "enyo", "jerry", "m")].map(accountShareWords))
+  .toEqual(["Added to your HerdrUp account.", QUEUED, QUOTA, null, null, null]);
+});
+
+test("the accept sheet says how the account took the share: Added, and the g3 notice, only when confirmed; queued; refused with the desk's problem; a bound grant with none known claims nothing", async () => {
+ const cases: [Access, string[], boolean][] = [[standing("H1", "enyo", "hetzner", "confirmed"), ["Added to your HerdrUp account."], true], [standing("H1", "enyo", "hetzner", "queued"), [QUEUED], false],
+  [standing("H1", "enyo", "hetzner", "refused", QUOTA), [QUOTA], false], [standing("H1", "enyo", "hetzner", ""), [], false]];
+ for (const [access, account, notice] of cases) {
+  const { doc, calls } = bridge({ "Desk.InspectGuestInvitation": { ...INVITE, account: true }, "Desk.AccountState": { signedIn: true, persistent: true }, "Desk.AcceptGuestInvitation": access });
+  showGuestAccept(async () => {}, () => {}, "herdrup://guest-invite#X");
+  await settle();
+  const sheet = doc.body.all().find(n => n.tagName === "dialog")!;
+  named(sheet, "Add to my account").click();
+  await settle();
+  expect(calls).toContainEqual(["Desk.AcceptGuestInvitation", "herdrup://guest-invite#X", "account"]);
+  const words = shown(sheet);
+  expect([access.accountShare, words.includes("enyo is saved on this device."), words.filter(t => t.includes("HerdrUp account")), (doc.getElementById("notices")?.children ?? []).map(n => n.text())])
+   .toEqual([access.accountShare, true, account, notice ? [`${accountShareNotice("enyo")}OK`] : []]);
+  sheet.close();
+ }
+});
+
+test("SHARED WITH YOU: a queued or refused account write shows muted on its grant's row, in the desk's words; confirmed or none known claims nothing", async () => {
+ bridge({});
+ const symbol = async () => (G.document as FakeDocument).createElement("span") as unknown as HTMLElement;
+ const section = sharedSection(symbol, () => {}, () => {});
+ const root = section.root as unknown as FakeElement;
+ const grants = [standing("H1", "enyo", "hetzner", "confirmed"), standing("H2", "docs", "mac-mini", "queued"), standing("H3", "ops", "studio", "refused", QUOTA), standing("H4", "web", "nuc", ""),
+  standing("H5", "a", "pi", "queued"), standing("H5", "b", "pi", "confirmed")];
+ expect(await section.draw(sharedMachines(grants, []))).toBe(true);
+ // Muted: the row's dim second-line ink, nothing else (no colour, no dot).
+ const pending = root.all().filter(n => n.className.includes("host-shared-state"));
+ expect(pending.map(n => [n.className, n.textContent])).toEqual([["host-home-address host-shared-state", QUEUED], ["host-home-address host-shared-state", QUOTA], ["host-home-address host-shared-state", QUEUED]]);
+ expect([named(root, "mac-mini").text(), named(root, "studio").text()]).toEqual([`mac-minidocs · shared by jerry${QUEUED}`, `studioops · shared by jerry${QUOTA}`]);
+ expect([named(root, "hetzner").text(), named(root, "nuc").text()]).toEqual(["hetznerenyo · shared by jerry", "nucweb · shared by jerry"]);
+ expect(buttons(root).slice(-2).map(b => b.getAttribute("aria-label"))).toEqual([`a on pi. ${QUEUED}`, "b on pi"]);
+ expect(shown(root).filter(t => t.startsWith("Added"))).toEqual([]);
+});
+
+test("SHARED WITH YOU reads the grants again on syncedShares:changed, so a share queued at accept shows its later state", async () => {
+ let state = "queued";
+ const { doc, calls, emit } = bridge({ "Desk.Machines": [], "Desk.SharedConnections": () => [standing("H1", "enyo", "hetzner", state, state === "refused" ? QUOTA : "")],
+  "Desk.AccountState": { signedIn: true, persistent: true, displayHint: "nike@example.com" },
+  "Desk.AccountProviders": [], "Desk.SyncedMachines": [], "Desk.SyncedShares": [], "Desk.HasGuestInvitationClipboardText": false });
+ G.window = doc.defaultView;
+ const container = doc.createElement("div"); doc.body.append(container);
+ const symbol = async () => doc.createElement("span") as unknown as HTMLElement;
+ initHosts(container as unknown as HTMLElement, doc.createElement("form") as unknown as HTMLFormElement, () => {}, symbol, "", () => {}, () => {});
+ for (let i = 0; i < 3; i++) await settle();
+ const pending = () => container.all().filter(n => n.className.includes("host-shared-state")).map(n => n.textContent);
+ const reads = () => calls.filter(c => c[0] === "Desk.SharedConnections").length;
+ expect(pending()).toEqual([QUEUED]);
+ const before = reads();
+ state = "confirmed";
+ emit("syncedShares:changed", []);
+ for (let i = 0; i < 3; i++) await settle();
+ expect([reads(), pending(), named(container, "hetzner").text()]).toEqual([before + 1, [], "hetznerenyo · shared by jerry"]);
+ state = "refused";
+ emit("syncedShares:changed", []);
+ for (let i = 0; i < 3; i++) await settle();
+ expect(pending()).toEqual([QUOTA]);
 });
 
 test("the account's shares are asked for only when signed in; a list that can't be read is none", async () => {

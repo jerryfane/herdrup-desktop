@@ -96,6 +96,15 @@ export class FakeElement extends Listened {
   node.parent = this; node.inserted++;
   return node;
  }
+ /** nodes right after this one in its parent, in order, moved from where they were. */
+ after(...nodes: FakeElement[]) {
+  const parent = this.parent;
+  if (parent === null) return;
+  let ref = this.nextSibling;
+  for (const n of nodes) { if (n === ref) { ref = n.nextSibling; continue; } parent.insertBefore(n, ref); }
+ }
+ /** The children (no text nodes here: text is the element's textContent). */
+ get childNodes(): FakeElement[] { return [...this.children]; }
  get firstChild(): FakeElement | null { return this.children[0] ?? null; }
  get firstElementChild(): FakeElement | null { return this.children.find(c => c.tagName !== "#text") ?? null; }
  get childElementCount(): number { return this.children.filter(c => c.tagName !== "#text").length; }

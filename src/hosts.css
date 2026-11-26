@@ -124,6 +124,9 @@ body.host-home-visible > .sidebar { display:none; }
 .host-empty-copy { flex:none; display:flex; padding-top:2px; color:var(--color-text-faint); }
 .host-empty-copy.copied { color:var(--status-done); }
 
+/* SHARED WITH YOU: a grant's queued or refused account write, muted under its row's lines, whole. */
+.host-home-address.host-shared-state { white-space:normal; }
+
 /* 1B-dk "Welcome back": the account's machines to pair; neutral rows, one button each. */
 .host-home-synced-row { display: flex; align-items: center; gap: 12px; cursor: default; }
 .host-home-synced-row .host-home-lines { flex: 1; min-width: 0; }
