@@ -16,9 +16,12 @@ export type ShareOpen = { kind: "grant"; id: string } | { kind: "synced"; id: st
 export interface SharedGrant { agent: string; open: ShareOpen }
 
 /** One machine of SHARED WITH YOU: its name, whose it is, the agents shared on it, and each share
- *  on it, held here first, each opening on its own. fromAccount: only the account has it, so
- *  opening it adds this device (the owner sees each device). */
-export interface SharedMachine { hostID: string; machine: string; owner: string; agents: string[]; grants: SharedGrant[]; fromAccount: boolean }
+ *  on it, held here first, each opening on its own. */
+export interface SharedMachine { hostID: string; machine: string; owner: string; agents: string[]; grants: SharedGrant[] }
+
+/** Whether a row of m opens a share only the account has: opening it adds this device (the owner
+ *  sees each device), whatever grants the machine's other rows hold. */
+export const addsDevice = (m: Pick<SharedMachine, "grants">) => m.grants.some(g => g.open.kind === "synced");
 
 const grantID = (a: Pick<Access, "endpoint" | "guestID">) => `${a.endpoint.hostID}/${a.guestID}`;
 
@@ -29,10 +32,9 @@ export function sharedMachines(grants: readonly Access[], synced: readonly Synce
  const byHost = new Map<string, SharedMachine>();
  const add = (hostID: string, machine: string, owner: string, agent: string, open: ShareOpen) => {
   const had = byHost.get(hostID);
-  if (had === undefined) { byHost.set(hostID, { hostID, machine, owner, agents: agent ? [agent] : [], grants: [{ agent, open }], fromAccount: open.kind === "synced" }); return; }
+  if (had === undefined) { byHost.set(hostID, { hostID, machine, owner, agents: agent ? [agent] : [], grants: [{ agent, open }] }); return; }
   if (agent && !had.agents.includes(agent)) had.agents.push(agent);
   had.grants.push({ agent, open });
-  if (open.kind === "grant") had.fromAccount = false;
  };
  const held = new Set<string>();
  for (const g of grants) { held.add(grantID(g)); add(g.endpoint.hostID, g.machineLabel || g.agentName, g.ownerName, g.agentName, { kind: "grant", id: grantID(g) }); }
@@ -52,10 +54,12 @@ export function sharedLine(m: Pick<SharedMachine, "agents" | "owner">): string {
  return [m.agents.join(", "), m.owner ? `shared by ${m.owner}` : ""].filter(Boolean).join(" · ");
 }
 
-/** The note under rows the account brought: nothing to accept, and the owner sees this device. */
+/** The note under rows the account brought: nothing to accept, and the owner sees this device.
+ *  Shown while any row opens a share only the account has (addsDevice), on any machine. */
 export function accountNote(machines: readonly SharedMachine[]): string | null {
- const owners = [...new Set(machines.filter(m => m.fromAccount).map(m => m.owner).filter(Boolean))];
- if (!machines.some(m => m.fromAccount)) return null;
+ const adding = machines.filter(addsDevice);
+ if (adding.length === 0) return null;
+ const owners = [...new Set(adding.map(m => m.owner).filter(Boolean))];
  return `From your HerdrUp account: nothing to accept here. ${owners.length === 1 ? `${owners[0]} sees` : "The owner sees"} each device you open it on.`;
 }
 

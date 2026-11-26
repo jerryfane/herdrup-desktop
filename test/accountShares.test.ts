@@ -8,7 +8,7 @@
 // test/fakeDom.ts stands in for the DOM.
 import { afterEach, expect, test } from "bun:test";
 import { acceptChoices, type Keep } from "../src/guestAccept";
-import { accountNote, sharedLine, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
+import { accountNote, addsDevice, sharedLine, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
 import { accountShareNotice, showAccountShareNotice } from "../src/notices";
 import { initGuestHome, leaveWords } from "../src/guestHome";
 import { errorText } from "../src/errors";
@@ -150,11 +150,12 @@ test("SHARED WITH YOU: one entry per machine from the grants held here and the a
  const grants = [grant("H1", "g1", "enyo", "jerry", "hetzner", true)];
  const synced = [share("H1", "g1", "enyo", "jerry", "hetzner", true), share("H1", "g2", "orgstudio", "jerry", "hetzner", false), share("H2", "g3", "landing", "maya", "", false)];
  const rows = sharedMachines(grants, synced);
- expect(rows.map(r => [r.machine, sharedLine(r), r.grants, r.fromAccount])).toEqual([
-  ["hetzner", "enyo, orgstudio · shared by jerry", [{ agent: "enyo", open: { kind: "grant", id: "H1/g1" } }, { agent: "orgstudio", open: { kind: "synced", id: "H1/g2" } }], false],
+ expect(rows.map(r => [r.machine, sharedLine(r), r.grants, addsDevice(r)])).toEqual([
+  ["hetzner", "enyo, orgstudio · shared by jerry", [{ agent: "enyo", open: { kind: "grant", id: "H1/g1" } }, { agent: "orgstudio", open: { kind: "synced", id: "H1/g2" } }], true],
   ["landing", "landing · shared by maya", [{ agent: "landing", open: { kind: "synced", id: "H2/g3" } }], true],
  ]);
- expect(accountNote(rows)).toBe("From your HerdrUp account: nothing to accept here. maya sees each device you open it on.");
+ // hetzner's orgstudio adds this device too, though enyo is held here: both owners see it.
+ expect(accountNote(rows)).toBe("From your HerdrUp account: nothing to accept here. The owner sees each device you open it on.");
  // Only the account has hetzner (g4): it opens with openSyncedShare.
  const remote = sharedMachines([], [share("H1", "g1", "enyo", "jerry", "hetzner", false)]);
  expect(remote.map(r => [r.machine, sharedLine(r), r.grants])).toEqual([["hetzner", "enyo · shared by jerry", [{ agent: "enyo", open: { kind: "synced", id: "H1/g1" } }]]]);
@@ -164,10 +165,20 @@ test("SHARED WITH YOU: one entry per machine from the grants held here and the a
  // A grant held here opens before a synced share of the same machine, whatever came first.
  const local = sharedMachines([], [share("H1", "g2", "orgstudio", "jerry", "hetzner", false), share("H1", "g1", "enyo", "jerry", "hetzner", true)]);
  expect(local[0]!.grants.map(g => g.open)).toEqual([{ kind: "grant", id: "H1/g1" }, { kind: "synced", id: "H1/g2" }]);
- expect(local[0]!.fromAccount).toBe(false);
+ expect(addsDevice(local[0]!)).toBe(true);
  expect(sharedMachines([], [])).toEqual([]);
  expect(accountNote(sharedMachines(grants, []))).toBeNull();
  expect(sharedLine({ agents: ["enyo"], owner: "" })).toBe("enyo");
+});
+
+test("the account's note shows while any row adds this device, even on a machine with a grant held here", () => {
+ // A mixed machine: enyo held here, orgstudio only in the account.
+ const mixed = sharedMachines([grant("H1", "g1", "enyo", "jerry", "hetzner", true)], [share("H1", "g1", "enyo", "jerry", "hetzner", true), share("H1", "g2", "orgstudio", "jerry", "hetzner", false)]);
+ expect(accountNote(mixed)).toBe("From your HerdrUp account: nothing to accept here. jerry sees each device you open it on.");
+ // Every share held here (as a grant, or the account's copy marked local): no note.
+ const held = sharedMachines([grant("H1", "g1", "enyo", "jerry", "hetzner", true)], [share("H1", "g1", "enyo", "jerry", "hetzner", true), share("H1", "g4", "orgstudio", "jerry", "hetzner", true)]);
+ expect(held[0]!.grants.map(g => g.open.kind)).toEqual(["grant", "grant"]);
+ expect(accountNote(held)).toBeNull();
 });
 
 test("a machine with several shares: its row, then a row per share, each opening its own", async () => {
