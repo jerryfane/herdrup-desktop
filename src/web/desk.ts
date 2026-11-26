@@ -232,6 +232,8 @@ export function pageAccess(a: Access): PageAccess {
   guestID: a.guestID, guestName: a.guestName, machineLabel: a.machineLabel, ownerName: a.ownerName, agentName: a.agentName, agentTarget: a.agentTarget,
   endpoint: { relay: a.endpoint.relay, hostID: a.endpoint.hostID, hostPublicKey: btoa(String.fromCharCode(...a.endpoint.hostPublicKey)) },
   acceptedAt: goTime(a.acceptedAt), accountBound: a.accountBound === true,
+  // Go's `account,omitempty`: present only for a share bound to an account.
+  ...(a.account ? { account: a.account } : {}),
  };
 }
 

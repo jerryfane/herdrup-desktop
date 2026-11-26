@@ -109,6 +109,11 @@ test("the grant reads as Go's JSON Access; the device key's fingerprint is ident
  const page = pageAccess({ guestID: "G", guestName: "ada", machineLabel: "m", ownerName: "o", agentName: "a", agentTarget: "t", endpoint: { relay: "https://r", hostID: "H", hostPublicKey: new Uint8Array([0xfb, 0xff]) }, acceptedAt: new Date(Date.UTC(2026, 10, 3, 1, 2, 3, 500)) });
  expect(page.endpoint.hostPublicKey).toBe("+/8=");
  expect(page.acceptedAt).toBe("2026-11-03T01:02:03.5Z");
+ expect(page.accountBound).toBe(false);
+ expect("account" in page).toBe(false);
+ // A bound share names its account, as Go's Access does (session.go Account, omitempty).
+ const bound = pageAccess({ guestID: "G", guestName: "ada", machineLabel: "m", ownerName: "o", agentName: "a", agentTarget: "t", endpoint: { relay: "https://r", hostID: "H", hostPublicKey: new Uint8Array([0xfb, 0xff]) }, acceptedAt: new Date(0), accountBound: true, account: "acct-1" });
+ expect([bound.accountBound, bound.account]).toEqual([true, "acct-1"]);
  expect(goTime(new Date(Date.UTC(2026, 0, 1)))).toBe("2026-01-01T00:00:00Z");
  // sha256 of 32 zero bytes is 66687aadf862bd77…
  expect(fingerprint(new Uint8Array(32))).toBe("SHA256:6668·7aad·f862·bd77");
