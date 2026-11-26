@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -36,10 +38,12 @@ import (
 // ApprovalRequests is every request waiting for approval on the account,
 // both kinds, from one read of the service (GET /v1/approvals?kind=any):
 // the page polls this once, not a list per kind, so pair requests cost the
-// account's approval rate nothing over browser ones.
+// account's approval rate nothing over browser ones. Order is the request
+// ids of both kinds in the service's order, which the page opens them in.
 type ApprovalRequests struct {
 	Browsers []WebAccessRequest   `json:"browsers"`
 	Pairs    []PairApproveRequest `json:"pairs"`
+	Order    []string             `json:"order"`
 }
 
 // PairApproveRequest is one new device waiting for a pair approval, for
@@ -48,28 +52,35 @@ type PairApproveRequest struct {
 	ID         string `json:"id"`
 	DeviceName string `json:"deviceName"`
 	// Platform is the new device's (macos, windows, linux, ios, ipados).
-	Platform  string `json:"platform"`
-	CreatedMs int64  `json:"createdMs"`
+	Platform string `json:"platform"`
 	// Claimed is "no", "you" or "other" (another device is approving it).
 	Claimed   string `json:"claimed"`
 	ExpiresIn int64  `json:"expiresIn"`
 }
 
-// PairApproveOffered reports whether the account service carries pair
-// requests (pair_v1). An error means it couldn't be asked.
-func (d *Desk) PairApproveOffered(ctx context.Context) (bool, error) {
+// ApprovalOffers says which approval requests the account service
+// carries: browsers' (web_approve) and new devices' (pair_v1).
+type ApprovalOffers struct {
+	Browsers bool `json:"browsers"`
+	Pairs    bool `json:"pairs"`
+}
+
+// ApprovalsOffered reads both from one /v1/health answer. An error means
+// the service couldn't be asked; the page asks again on its next look.
+func (d *Desk) ApprovalsOffered(ctx context.Context) (ApprovalOffers, error) {
 	cur, err := d.account.Current()
 	if err != nil || cur == nil {
-		return false, errSignedOutHere(err)
+		return ApprovalOffers{}, errSignedOutHere(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return d.account.PairOffered(ctx)
+	browsers, pairs, err := d.account.ApprovalsOffered(ctx)
+	return ApprovalOffers{Browsers: browsers, Pairs: pairs}, err
 }
 
 // ApprovalRequests lists the browsers and new devices waiting for approval.
 func (d *Desk) ApprovalRequests(ctx context.Context) (ApprovalRequests, error) {
-	out := ApprovalRequests{Browsers: []WebAccessRequest{}, Pairs: []PairApproveRequest{}}
+	out := ApprovalRequests{Browsers: []WebAccessRequest{}, Pairs: []PairApproveRequest{}, Order: []string{}}
 	cur, err := d.account.Current()
 	if err != nil || cur == nil {
 		return out, errSignedOutHere(err)
@@ -80,7 +91,7 @@ func (d *Desk) ApprovalRequests(ctx context.Context) (ApprovalRequests, error) {
 	if err != nil {
 		return out, err
 	}
-	out.Browsers = webAccessRequests(lists.Browser)
+	out.Browsers, out.Order = webAccessRequests(lists.Browser), lists.Order
 	for _, r := range lists.Pair {
 		out.Pairs = append(out.Pairs, pairApproveRequest(r))
 	}
@@ -89,7 +100,7 @@ func (d *Desk) ApprovalRequests(ctx context.Context) (ApprovalRequests, error) {
 
 func pairApproveRequest(r account.PairRequest) PairApproveRequest {
 	return PairApproveRequest{ID: r.ID, DeviceName: r.Requester.Name, Platform: r.Requester.Platform,
-		CreatedMs: r.Requester.CreatedMs, Claimed: r.Claimed, ExpiresIn: r.ExpiresIn}
+		Claimed: r.Claimed, ExpiresIn: r.ExpiresIn}
 }
 
 // pairApproval is the one pair approval in progress on this computer.
@@ -113,10 +124,13 @@ type pairApproval struct {
 }
 
 // pairRow is one ticked machine: its saved entry, and its envelope entry.
+// held is why a machine the envelope can't carry was left out of it (it
+// is shown failed, never sealed, never tried again).
 type pairRow struct {
 	m        Machine
 	entry    account.PairMachine
 	keyLabel string
+	held     string
 }
 
 // pairProbeSlots bounds the machines probed at once.
@@ -139,20 +153,34 @@ var pairNow = time.Now
 
 // PairProbe is what the sheet learns of one machine before the user ticks
 // it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
-// "needs_update" (Version is its herdr's, when it said) or "needs_key"
-// (a password machine not connected now).
+// "needs_update" (Version is its herdr's, when it said), "needs_key" (a
+// password machine not connected now), "needs_pin" (never opened from
+// this computer, so no host key is kept for it) or "unsendable" (the list
+// the new device gets can't carry it; Reason says why).
 type PairProbe struct {
 	State   string `json:"state"`
 	Version string `json:"version,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
-// PairApproveProbe connects to saved machine id, briefly and at most a few
-// machines at a time, and says whether a key can be added there. It adds
-// nothing.
-func (d *Desk) PairApproveProbe(ctx context.Context, id string) (PairProbe, error) {
-	m, err := d.savedMachine(id)
+// PairApproveProbe connects to saved machine machineID for pair request
+// id, briefly and at most a few machines at a time, and says whether a key
+// can be added there. Only once the typed code matched: before, no
+// machine is reached at all. It adds nothing, and pins nothing.
+func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (PairProbe, error) {
+	p, err := d.currentPair(id)
 	if err != nil {
 		return PairProbe{}, err
+	}
+	if err := p.a.Ready(); err != nil {
+		return PairProbe{}, err
+	}
+	m, err := d.savedMachine(machineID)
+	if err != nil {
+		return PairProbe{}, err
+	}
+	if err := pairSendable(m); err != nil {
+		return PairProbe{State: "unsendable", Reason: pairHeldReason(err)}, nil
 	}
 	select {
 	case pairProbeSlots <- struct{}{}:
@@ -162,10 +190,12 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id string) (PairProbe, erro
 	defer func() { <-pairProbeSlots }()
 	ctx, cancel := context.WithTimeout(ctx, pairProbeTime)
 	defer cancel()
-	c, done, err := d.ownerBridge(ctx, m)
+	c, done, err := d.pairBridge(ctx, m)
 	switch {
 	case errors.Is(err, errNeedsKey):
 		return PairProbe{State: "needs_key"}, nil
+	case errors.Is(err, errNoPin):
+		return PairProbe{State: "needs_pin"}, nil
 	case err != nil:
 		return PairProbe{State: "unreachable"}, nil
 	}
@@ -180,6 +210,59 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id string) (PairProbe, erro
 		return PairProbe{State: "needs_update", Version: pong.Version}, nil
 	}
 	return PairProbe{State: "ready"}, nil
+}
+
+// errNoPin is a machine with no host key kept here: it was never opened
+// from this computer.
+var errNoPin = errors.New("open it once on this computer first")
+
+// pairPins is the pin store a pair approval dials with: the pins kept
+// here, read only. An approval is no time to trust a host key on first
+// sight, and the new device would be handed whatever key answered.
+type pairPins struct {
+	bridge.PinStore
+	missing atomic.Bool
+}
+
+func (p *pairPins) SetPin(string, string) error {
+	p.missing.Store(true)
+	return errNoPin
+}
+
+// pairBridge is ownerBridge for a pair approval: a machine without a pin
+// kept here is errNoPin, never pinned.
+func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
+	pins := &pairPins{PinStore: d.pins}
+	c, done, err := d.ownerBridge(ctx, m, pins)
+	if err != nil && pins.missing.Load() {
+		return nil, nil, errNoPin
+	}
+	return c, done, err
+}
+
+// pairTrialHostKey stands for a machine's host key when its entry is
+// checked before the machine is reached.
+var pairTrialHostKey = func() string {
+	k, err := ssh.NewPublicKey(ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)))
+	if err != nil {
+		panic(err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k)))
+}()
+
+// pairSendable says why m can't be in the list the new device gets, by the
+// envelope's own rules (PairEnvelope.Marshal) with the entry it would have
+// once its key is added; nil when it can.
+func pairSendable(m Machine) error {
+	entry := pairEntry(m)
+	entry.Status, entry.HostKey = account.PairAdded, pairTrialHostKey
+	_, err := account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: []account.PairMachine{entry}}.Marshal()
+	return err
+}
+
+// pairHeldReason is a row's reason for a machine pairSendable refused.
+func pairHeldReason(err error) string {
+	return truncate("can't be sent to the new device: "+strings.TrimPrefix(err.Error(), "pair-v1: "), 120)
 }
 
 func (d *Desk) savedMachine(id string) (Machine, error) {
@@ -411,10 +494,13 @@ func (p *pairApproval) result() PairApproveResult {
 	return res
 }
 
+// envelope is the list the new device gets: every row but those held out.
 func (p *pairApproval) envelope() account.PairEnvelope {
 	e := account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: make([]account.PairMachine, 0, len(p.rows))}
 	for _, r := range p.rows {
-		e.Machines = append(e.Machines, r.entry)
+		if r.held == "" {
+			e.Machines = append(e.Machines, r.entry)
+		}
 	}
 	return e
 }
@@ -449,13 +535,27 @@ func (d *Desk) PairApproveAdd(ctx context.Context, id string, machineIDs []strin
 	if err != nil {
 		return PairApproveResult{Machines: []PairApproveRow{}}, err
 	}
+	// Every chosen machine is checked by the envelope's own rules before
+	// any machine changes: one the list can't carry is held out, never
+	// given the key, never sealed.
 	var chosen []Machine
+	var held []pairRow
 	for _, m := range st.Machines {
-		if slices.Contains(machineIDs, machineID(m)) {
-			chosen = append(chosen, m)
+		if !slices.Contains(machineIDs, machineID(m)) {
+			continue
 		}
+		if err := pairSendable(m); err != nil {
+			row := pairRow{m: m, entry: pairEntry(m), held: pairHeldReason(err)}
+			row.entry.Status, row.entry.Reason = account.PairFailed, row.held
+			held = append(held, row)
+			continue
+		}
+		chosen = append(chosen, m)
 	}
 	if len(chosen) == 0 {
+		if len(held) > 0 {
+			return PairApproveResult{Machines: []PairApproveRow{}}, errors.New("none of these machines can be sent to the new device: " + held[0].held)
+		}
 		return PairApproveResult{Machines: []PairApproveRow{}}, errNoMachines
 	}
 	if !pairEnvelopeFits(chosen) {
@@ -480,7 +580,11 @@ func (d *Desk) PairApproveAdd(ctx context.Context, id string, machineIDs []strin
 	reportBy := deadline.Add(-pairReportTime)
 	addCtx, cancelAdds := context.WithDeadline(ctx, reportBy)
 	defer cancelAdds()
-	p.rows = make([]pairRow, 0, len(chosen))
+	p.rows = make([]pairRow, 0, len(chosen)+len(held))
+	for _, row := range held {
+		publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(row.m), Status: account.PairFailed, Reason: row.held})
+		p.rows = append(p.rows, row)
+	}
 	for _, m := range chosen {
 		var row pairRow
 		if time.Until(reportBy) < pairAddTime {
@@ -556,10 +660,26 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 	if !p.approved {
 		return p.result(), errors.New("approve first")
 	}
-	if pairNow().Sub(p.sentAt) >= pairResendWindow {
+	// Before any machine changes: the service still holds the approval,
+	// with time left (its own count, and the window from here) for an add
+	// and the report.
+	cur, err := d.account.Current()
+	if err != nil || cur == nil {
+		return p.result(), errSignedOutHere(err)
+	}
+	octx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	st, err := d.account.ApprovalState(octx, cur.AccountID, p.a.Request().ID)
+	cancel()
+	var api *account.APIError
+	left := min(p.sentAt.Add(pairResendWindow).Sub(pairNow()), time.Duration(st.ExpiresIn)*time.Second)
+	switch {
+	case errors.As(err, &api) && (api.Status == http.StatusGone || api.Status == http.StatusNotFound),
+		err == nil && (st.State != account.ApprovalApproved || left < pairAddTime+pairReportTime):
 		res := p.result()
-		res.Ended, res.Problem = true, "Too late to try again: retries end 10 minutes after approving. Use herdr pair there."
+		res.Ended, res.Problem = true, pairTooLate
 		return res, nil
+	case err != nil:
+		return p.result(), fmt.Errorf("couldn't check that %s still takes a list (%w): Try again", deviceOf(p), err)
 	}
 	req := p.a.Request()
 	key, err := req.AuthorizedKey()
@@ -567,17 +687,31 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 		return p.result(), err
 	}
 	label := engine.PairKeyLabel(req.Requester.Name, accountDeviceName())
+	addCtx, cancelAdds := context.WithTimeout(ctx, left-pairReportTime)
+	defer cancelAdds()
 	tried := p.unsent
 	for i, r := range p.rows {
-		if r.entry.Status != account.PairFailed || !slices.Contains(machineIDs, machineID(r.m)) {
+		if r.held != "" || r.entry.Status != account.PairFailed || !slices.Contains(machineIDs, machineID(r.m)) {
 			continue
 		}
-		// Fresh from the store: its key file or address may have changed.
+		// Only a machine still saved here, as it is saved now: its key
+		// file or address may have changed, and one removed is not reached.
 		m, err := d.savedMachine(machineID(r.m))
+		reason := ""
 		if err != nil {
-			m = r.m
+			reason = err.Error()
+		} else if err := pairSendable(m); err != nil {
+			reason = pairHeldReason(err)
 		}
-		p.rows[i] = d.addPairKey(ctx, id, m, key, label)
+		if reason != "" {
+			p.rows[i].entry.Reason = reason
+			publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(r.m), Status: account.PairFailed, Reason: reason})
+			continue
+		}
+		if dl, _ := addCtx.Deadline(); time.Until(dl) < pairAddTime {
+			continue
+		}
+		p.rows[i] = d.addPairKey(addCtx, id, m, key, label)
 		tried = true
 	}
 	if !tried {
@@ -586,18 +720,20 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 	err = p.a.Resend(ctx, p.a.NextSeq(), p.envelope())
 	p.unsent = err != nil
 	res := p.result()
-	var api *account.APIError
 	switch {
 	case err == nil:
 	case errors.As(err, &api) && api.Status == http.StatusGone:
 		p.unsent = false
-		res.Ended, res.Problem = true, "Too late to try again: retries end 10 minutes after approving. Use herdr pair there."
+		res.Ended, res.Problem = true, pairTooLate
 	default:
 		res.Problem = fmt.Sprintf("Couldn't send the new list to %s (%v): Try again.", deviceOf(p), err)
 	}
 	res.Unsent = p.unsent
 	return res, nil
 }
+
+// pairTooLate is a retry the service no longer takes.
+const pairTooLate = "Too late to try again: retries end 10 minutes after approving. Use herdr pair there."
 
 // pairEntry is m in the envelope, before its key was added.
 func pairEntry(m Machine) account.PairMachine {
@@ -626,10 +762,12 @@ func (d *Desk) addPairKey(ctx context.Context, id string, m Machine, key, label 
 	}
 	ctx, cancel := context.WithTimeout(ctx, pairAddTime)
 	defer cancel()
-	c, done, err := d.ownerBridge(ctx, m)
+	c, done, err := d.pairBridge(ctx, m)
 	switch {
 	case errors.Is(err, errNeedsKey):
 		return fail("needs a key file")
+	case errors.Is(err, errNoPin):
+		return fail(errNoPin.Error())
 	case err != nil:
 		return fail(pairReason(ctx, err))
 	}
@@ -639,10 +777,6 @@ func (d *Desk) addPairKey(ctx context.Context, id string, m Machine, key, label 
 		return fail(err.Error())
 	}
 	row.entry.HostKey = hostKey
-	// The entry must seal before this machine changes.
-	if err := row.entry.HostBody().Check(); err != nil {
-		return fail(truncate(err.Error(), 120))
-	}
 	added, err := engine.New(engine.Bridge(c)).PairAddKey(ctx, engine.PairAddKeyParams{PublicKey: key, Label: label})
 	if err != nil {
 		return fail(pairReason(ctx, err))
@@ -656,14 +790,15 @@ func (d *Desk) addPairKey(ctx context.Context, id string, m Machine, key, label 
 	return row
 }
 
-// verifiedHostKey is the host key c's handshake verified, as an OpenSSH
-// line with no comment, once it matches the pin kept here for the machine.
+// verifiedHostKey is the host key c's first handshake verified, as an
+// OpenSSH line with no comment, once it matches the pin kept here under
+// the address it dialled.
 func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
-	key := c.HostKey()
+	key, addr := c.HostKey()
 	if key == nil {
 		return "", errors.New("no host key from this connection")
 	}
-	pin, ok, err := d.pins.Pin(c.PinAddress())
+	pin, ok, err := d.pins.Pin(addr)
 	switch {
 	case err != nil:
 		return "", err

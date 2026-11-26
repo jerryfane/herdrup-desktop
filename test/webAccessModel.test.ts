@@ -1,16 +1,21 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { choiceRows, initWebAccess, takesTyping, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
 import { followPresses } from "../src/codeField";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextInOrder, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 import { FakeDocument, FakeElement, Listened } from "./fakeDom";
 
 const req = (id: string, claimed = "no", expiresIn = 600) => ({ id, browserName: "Chrome on macOS", claimed, expiresIn });
 
-test("the sheet opens for the oldest request nobody is approving and the user hasn't closed", () => {
- expect(nextRequest([req("a", "other"), req("b"), req("c")], new Set())?.id).toBe("b");
- expect(nextRequest([req("b"), req("c")], new Set(["b"]))?.id).toBe("c");
- expect(nextRequest([req("a", "you"), req("b", "no", 0)], new Set())).toBeNull();
+test("the sheet opens for the first request, in the service's order, nobody is approving and the user hasn't closed", () => {
+ const ids = (rs: { id: string }[]) => rs.map(r => r.id);
+ const first = (rs: ReturnType<typeof req>[], closed = new Set<string>()) => nextInOrder(ids(rs), [rs], closed);
+ expect(first([req("a", "other"), req("b"), req("c")])?.id).toBe("b");
+ expect(first([req("b"), req("c")], new Set(["b"]))?.id).toBe("c");
+ expect(first([req("a", "you"), req("b", "no", 0)])).toBeNull();
+ // Across kinds, the service's order holds: a new device listed before a browser opens first.
+ expect(nextInOrder(["p", "b"], [[req("b")], [req("p")]], new Set())?.id).toBe("p");
+ expect(nextInOrder(["b", "p"], [[req("b")], [req("p")]], new Set())?.id).toBe("b");
 });
 
 test("the code is four digits and Approve needs a code and a machine", () => {
@@ -72,11 +77,11 @@ test("wrong codes show the computer's count, and a lockout whose denial failed s
  expect(wrongCode({ left: 0, denied: false, problem: "account service: 503" })).toContain("Deny to try again");
 });
 
-test("a 'not offered' answer is asked again later; 'offered' holds", () => {
+test("a 'not offered' answer for either kind is asked again later; both offered holds", () => {
  expect(askOffered(null, 0)).toBe(true);
- expect(askOffered({ offered: false, at: 1000 }, 1000 + OFFERED_RECHECK_MS - 1)).toBe(false);
- expect(askOffered({ offered: false, at: 1000 }, 1000 + OFFERED_RECHECK_MS)).toBe(true);
- expect(askOffered({ offered: true, at: 1000 }, 1000 + 10 * OFFERED_RECHECK_MS)).toBe(false);
+ expect(askOffered({ browsers: false, pairs: false, at: 1000 }, 1000 + OFFERED_RECHECK_MS - 1)).toBe(false);
+ expect(askOffered({ browsers: true, pairs: false, at: 1000 }, 1000 + OFFERED_RECHECK_MS)).toBe(true);
+ expect(askOffered({ browsers: true, pairs: true, at: 1000 }, 1000 + 10 * OFFERED_RECHECK_MS)).toBe(false);
 });
 
 test("the sheet's rows, closed, say the choice: ticked machines by name, and access", () => {
@@ -307,9 +312,8 @@ test("the sheet opens on Ready; Approve checks the code and sends the choices, h
    calls.push([method, ...args]);
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
-    case "Desk.WebAccessOffered": return true;
-    case "Desk.PairApproveOffered": return false;
-    case "Desk.ApprovalRequests": return { browsers: [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600, createdMs: 0 }], pairs: [] };
+    case "Desk.ApprovalsOffered": return { browsers: true, pairs: false };
+    case "Desk.ApprovalRequests": return { browsers: [{ id: "r1", browserName: "Chrome on macOS", claimed: "no", expiresIn: 600 }], pairs: [], order: ["r1"] };
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }, { id: "30d", seconds: 30 * 86_400 }];
     case "Desk.WebAccessMachines": return [{ id: "a", label: "hetzner", available: true }];
     case "Desk.WebAccessStart": queueMicrotask(() => on.get("web-access:update")?.({ id: "r1", state: "ready" })); return undefined;
@@ -403,9 +407,8 @@ function askingWindow({ holdMachines = false, requests = [{ id: "r1", browserNam
    calls.set(method, (calls.get(method) ?? 0) + 1);
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
-    case "Desk.WebAccessOffered": return true;
-    case "Desk.PairApproveOffered": return false;
-    case "Desk.ApprovalRequests": return { browsers: asking.requests, pairs: [] };
+    case "Desk.ApprovalsOffered": return { browsers: true, pairs: false };
+    case "Desk.ApprovalRequests": return { browsers: asking.requests, pairs: [], order: asking.requests.map((r: { id: string }) => r.id) };
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
     case "Desk.WebAccessMachines": {
      if (!holdMachines) return machines;

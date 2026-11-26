@@ -192,19 +192,6 @@ func (d *Desk) nextWebSeq(approver []byte) (uint64, error) {
 	return next, nil
 }
 
-// WebAccessOffered reports whether the account service carries browser
-// approvals. An error means the service couldn't be asked; the page asks
-// again on its next look.
-func (d *Desk) WebAccessOffered(ctx context.Context) (bool, error) {
-	cur, err := d.account.Current()
-	if err != nil || cur == nil {
-		return false, errSignedOutHere(err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return d.account.WebApproveOffered(ctx)
-}
-
 // webAccessRequests is the sheet's view of browsers waiting for approval
 // (ApprovalRequests lists them).
 func webAccessRequests(list []account.ApprovalRequest) []WebAccessRequest {
@@ -673,7 +660,7 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 // the machine this computer is connected to, otherwise a short SSH session
 // with its key file. done closes what was opened.
 func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func(), error) {
-	c, done, err := d.ownerBridge(ctx, m)
+	c, done, err := d.ownerBridge(ctx, m, d.pins)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -685,8 +672,8 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 var errNeedsKey = errors.New("needs a key file")
 
 // ownerBridge is ownerClient's SSH connection: this computer's own, never a
-// guest's.
-func (d *Desk) ownerBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
+// guest's. A new session checks the host key with pins.
+func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore) (*bridge.Client, func(), error) {
 	id := machineID(m)
 	d.mu.Lock()
 	if d.link != nil && d.link.id == id && d.link.client != nil {
@@ -698,7 +685,7 @@ func (d *Desk) ownerBridge(ctx context.Context, m Machine) (*bridge.Client, func
 	if m.KeyPath == "" {
 		return nil, nil, errNeedsKey
 	}
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: d.pins}
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins}
 	if m.Paired {
 		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
 	}

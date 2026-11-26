@@ -17,7 +17,7 @@ import { noticeRegion } from "./notices";
 import { codeField } from "./codeField";
 import { showPairSheet } from "./pairApproval";
 import { pairNotice, type PairRequestView } from "./pairApprovalModel";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, lengthLabel, machinesNote, machinesSummary, nextInOrder, resultLines, skipReason,
  timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
@@ -133,9 +133,9 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  const closed = new Set<string>();
  // The request whose sheet, or notice, is up: one at a time, of either kind.
  let open: string | null = null;
- // The service's last answers to "do you offer browser approval?" and "pair requests?"; an error isn't kept.
- let offered: { offered: boolean; at: number } | null = null;
- let pairOffered: { offered: boolean; at: number } | null = null;
+ // The service's last answer to "which approvals do you offer?" (one /v1/health read for both
+ // kinds); an error isn't kept.
+ let offers: { browsers: boolean; pairs: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
  // When the user last typed anywhere in the window.
  let typedAt = -Infinity;
@@ -149,28 +149,29 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  // look and one from coming back to the window never put up two for one request.
  let looking = false;
  // One read lists both kinds (GET /v1/approvals?kind=any), so pair requests add no call to the
- // account's approval rate; the oldest request of a kind the service offers opens first.
+ // account's approval rate; requests of a kind the service offers open in the service's order.
  async function look(): Promise<void> {
   if (looking) return;
   looking = true;
   try {
    if (document.visibilityState !== "visible" || open !== null) return;
    const state = await Desk.accountState();
-   if (!state.signedIn) { offered = null; pairOffered = null; return; }
-   if (askOffered(offered, Date.now())) offered = { offered: await Desk.webAccessOffered(), at: Date.now() };
-   if (askOffered(pairOffered, Date.now())) pairOffered = { offered: await Desk.pairApproveOffered(), at: Date.now() };
-   if (!offered?.offered && !pairOffered?.offered) return;
+   if (!state.signedIn) { offers = null; return; }
+   if (askOffered(offers, Date.now())) offers = { ...await Desk.approvalsOffered(), at: Date.now() };
+   if (!offers?.browsers && !offers?.pairs) return;
    const lists = await Desk.approvalRequests();
-   const browser = offered?.offered ? nextRequest(lists.browsers as WebAccessRequestView[], closed) : null;
-   const pair = pairOffered?.offered ? nextRequest(lists.pairs as PairRequestView[], closed) : null;
-   if (!browser && !pair) return;
+   const browsers: readonly WebAccessRequestView[] = offers.browsers ? lists.browsers : [];
+   const pairs: readonly PairRequestView[] = offers.pairs ? lists.pairs : [];
+   const next = nextInOrder<WebAccessRequestView | PairRequestView>(lists.order, [browsers, pairs], closed);
+   if (!next) return;
    let id: string, text: string, sheet: (machines: readonly WebAccessMachine[]) => Promise<void>;
    const done = () => { closed.add(id); open = null; };
-   if (pair && (!browser || pair.createdMs < browser.createdMs)) {
+   const pair = pairs.find(p => p.id === next.id);
+   if (pair) {
     id = pair.id; text = pairNotice(pair);
     sheet = machines => { open = pair.id; return showPairSheet(pair, machines, done, clock); };
    } else {
-    const req = browser!;
+    const req = next as WebAccessRequestView;
     const lengths = await Desk.webAccessLengths();
     id = req.id; text = "A browser wants to reach your machines.";
     sheet = machines => showSheet(req, lengths, machines, done);
@@ -185,7 +186,7 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
   finally { looking = false; schedule(); }
  }
  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { clearTimeout(timer); void look(); } });
- events.accountChanged.on(() => { offered = null; pairOffered = null; });
+ events.accountChanged.on(() => { offers = null; });
  schedule();
 
  /** A request that came while the user was typing: a modal sheet would take the keys mid-word

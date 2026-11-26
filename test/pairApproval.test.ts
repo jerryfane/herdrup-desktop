@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { initWebAccess, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
 import {
- approveLabel, expiresText, failureLine, keyNote, nameList, PAIR_ENDED, pairNotice, platformLine, probeReason, resultLead, retryLabel, rowStatusText,
+ approveLabel, expiresText, failureLine, keyListedAs, keyNote, nameList, PAIR_ENDED, pairNotice, platformLine, probeReason, resultLead, retryLabel, rowStatusText,
 } from "../src/pairApprovalModel";
 import { FakeDocument, type FakeElement } from "./fakeDom";
 
@@ -15,6 +15,9 @@ test("the sheet's words: platform, time left, reasons, the approve count, result
  expect(probeReason("unreachable", "this Mac")).toBe("Can't reach it from this Mac right now");
  expect(probeReason("needs_update", "this Mac", "0.9.2")).toBe("Needs a herdr update (herdr 0.9.2)");
  expect(probeReason("needs_key", "this Mac")).toBe("Needs a key file");
+ expect(probeReason("needs_pin", "this Mac")).toBe("Open it once on this Mac first");
+ expect(probeReason("unsendable", "this Mac", "", "can't be sent to the new device: machine user or host has an @ or a space"))
+  .toBe("Can't be sent to the new device: machine user or host has an @ or a space");
  expect([approveLabel(0), approveLabel(1), approveLabel(3)]).toEqual(["Approve", "Approve 1 machine", "Approve 3 machines"]);
  expect([rowStatusText("already"), rowStatusText("failed", "timed out")]).toEqual(["Already added", "Failed: timed out"]);
  expect(nameList(["a", "b", "c"])).toBe("a, b and c");
@@ -23,9 +26,10 @@ test("the sheet's words: platform, time left, reasons, the approve count, result
  expect(failureLine(rows)).toBe("build-box didn't answer. Try again from here later, or use herdr pair there.");
  expect(retryLabel(["build-box"])).toBe("Try build-box again");
  expect(retryLabel(["a", "b"])).toBe("Try 2 machines again");
- // The label herdr stored (its reply's), not the one sent.
- expect(keyNote("MacBook Air", [{ id: "1", label: "x", status: "added", keyLabel: "MacBook Air approved on Mac Studio" }]))
-  .toBe("Each machine lists the key as “MacBook Air approved on Mac Studio”. Remove it with herdr pair --revoke.");
+ // Each row says the label herdr stored (its reply's), not the one sent; the note says how to remove it.
+ expect(keyListedAs("MacBook Air via Mac Studio")).toBe("Listed as “MacBook Air via Mac Studio”");
+ expect(keyNote("MacBook Air", [{ id: "1", label: "x", status: "added", keyLabel: "MacBook Air via Mac Studio" }]))
+  .toBe("Remove a key with herdr pair --revoke and the name it's listed as.");
 });
 
 // ---- The sheet in the shared fake document (fakeDom.ts) ----
@@ -70,7 +74,7 @@ const MACHINES = [
 
 /** A signed-in window with the composer where MacBook Air asks to pair. The bridge's calls are
  *  recorded; probes and adds wait for the test (probe(), add()); emit() sends a Go event. */
-function pairingWindow({ browsers = [] as unknown[] } = {}) {
+function pairingWindow({ browsers = [] as { id: string }[], order = undefined as string[] | undefined } = {}) {
  jest.useFakeTimers(); fakeTimers = true;
  const doc = new FakeDocument();
  const on = new Map<string, (payload: unknown) => void>();
@@ -78,6 +82,8 @@ function pairingWindow({ browsers = [] as unknown[] } = {}) {
  const probes = new Map<string, (p: unknown) => void>();
  const adds: ((r: unknown) => void)[] = [];
  const checks: unknown[] = [];
+ // A Retry (or Add) the bridge rejects, with this message.
+ const refusals: string[] = [];
  G.document = doc;
  G.devicePixelRatio = 1;
  G.ResizeObserver = class { observe() {} };
@@ -87,15 +93,18 @@ function pairingWindow({ browsers = [] as unknown[] } = {}) {
    calls.push([method, ...args]);
    switch (method) {
     case "Desk.AccountState": return { signedIn: true };
-    case "Desk.WebAccessOffered": return true;
-    case "Desk.PairApproveOffered": return true;
-    case "Desk.ApprovalRequests": return { browsers, pairs: [{ id: "p1", deviceName: "MacBook Air", platform: "macos", claimed: "no", expiresIn: 600, createdMs: 5 }] };
+    case "Desk.ApprovalsOffered": return { browsers: true, pairs: true };
+    case "Desk.ApprovalRequests": return { browsers, pairs: [{ id: "p1", deviceName: "MacBook Air", platform: "macos", claimed: "no", expiresIn: 600 }],
+     order: order ?? ["p1", ...browsers.map(b => b.id)] };
     case "Desk.WebAccessLengths": return [{ id: "1d", seconds: 86_400 }];
     case "Desk.WebAccessMachines": return MACHINES;
-    case "Desk.PairApproveProbe": { const { promise, resolve } = Promise.withResolvers(); probes.set(args[0] as string, resolve); return promise; }
+    case "Desk.PairApproveProbe": { const { promise, resolve } = Promise.withResolvers(); probes.set(args[1] as string, resolve); return promise; }
     case "Desk.PairApproveStart": return undefined;
     case "Desk.PairApproveCheckCode": return checks.shift();
-    case "Desk.PairApproveAdd": case "Desk.PairApproveRetry": { const { promise, resolve } = Promise.withResolvers(); adds.push(resolve); return promise; }
+    case "Desk.PairApproveAdd": case "Desk.PairApproveRetry": {
+     if (refusals.length) throw new Error(refusals.shift());
+     const { promise, resolve } = Promise.withResolvers(); adds.push(resolve); return promise;
+    }
     case "Desk.PairApproveDeny": return undefined;
     default: return Promise.withResolvers<never>().promise;
    }
@@ -111,7 +120,7 @@ function pairingWindow({ browsers = [] as unknown[] } = {}) {
  const row = (label: string) => nodes().find(n => n.tagName === "label" && n.className.includes("pair-approve-machine") && n.text().includes(label))!;
  const box = (label: string) => row(label).children[0]!;
  return {
-  doc, composer, clock, dialog, calls, probes, adds, checks, notices,
+  doc, composer, clock, dialog, calls, probes, adds, checks, refusals, notices,
   sent: (method: string) => calls.filter(c => c[0] === method).map(c => c.slice(1)),
   start: () => { initWebAccess(clock); doc.dispatchEvent(new Event("visibilitychange")); },
   emit: (name: string, payload: unknown) => on.get(name)?.(payload),
@@ -146,12 +155,21 @@ test("a1: while the user types, a quiet notice says the device wants to pair; Re
  expect(w.title()).toBe("Pair MacBook Air?");
 });
 
-test("a1: with nothing taking typing the sheet opens at once; the older request of the two kinds opens first", async () => {
- const w = pairingWindow({ browsers: [{ id: "r1", browserName: "Chrome", claimed: "no", expiresIn: 600, createdMs: 9 }] });
+test("a1: with nothing taking typing the sheet opens at once, for the first request of either kind in the service's order", async () => {
+ const chrome = { id: "r1", browserName: "Chrome", claimed: "no", expiresIn: 600 };
+ const w = pairingWindow({ browsers: [chrome], order: ["p1", "r1"] });
  w.start();
  await until("an open sheet", () => w.dialog()?.open === true);
  expect(w.title()).toBe("Pair MacBook Air?");
  expect(w.sent("Desk.PairApproveStart")).toEqual([["p1"]]);
+});
+
+test("a1: a browser the service lists before the new device opens first", async () => {
+ const w = pairingWindow({ browsers: [{ id: "r1", browserName: "Chrome", claimed: "no", expiresIn: 600 }], order: ["r1", "p1"] });
+ w.start();
+ await until("an open sheet", () => w.dialog()?.open === true);
+ expect(w.title()).not.toBe("Pair MacBook Air?");
+ expect(w.sent("Desk.PairApproveStart")).toEqual([]);
 });
 
 test("a1: the sheet waits for a pause in typing", async () => {
@@ -205,6 +223,8 @@ async function matched() {
  w.ready();
  w.type("4821");
  w.checks.push({ ok: true, left: 3, denied: false });
+ // No machine is reached before the code matches.
+ expect(w.sent("Desk.PairApproveProbe")).toEqual([]);
  w.button("Continue")!.click();
  await until("step 2", () => w.lead() === "Tick the machines that get MacBook Air's key.");
  return w;
@@ -213,8 +233,8 @@ async function matched() {
 test("a2 step 2: every machine; the probes fill the rows in as they land, ticking the reachable ones; the rest greyed with the reason", async () => {
  const w = await matched();
  expect(w.status()).toBe("The code matches Expires in 10:00");
- // Probed at once, the password machine not at all.
- expect(w.sent("Desk.PairApproveProbe").map(a => a[0])).toEqual(["s", "f", "l", "o"]);
+ // Probed only once the code matched (matched() checks step 1 probed nothing), the password machine not at all.
+ expect(w.sent("Desk.PairApproveProbe")).toEqual([["p1", "s"], ["p1", "f"], ["p1", "l"], ["p1", "o"]]);
  expect(w.rowText("studio")).toBe("studio | Checking…");
  expect(w.rowText("build-box")).toBe("build-box | Needs a key file");
  expect(w.box("build-box").disabled).toBe(true);
@@ -255,7 +275,7 @@ test("a3 and a4: keys are added one machine at a time with a spinner per row; a 
  expect(w.row("studio").all().some(n => n.className === "ring-spinner")).toBe(true);
  expect(w.rowText("studio")).toBe("studio | Adding…");
  w.emit("pair-approve:progress", { id: "p1", machineId: "s", status: "added", keyLabel: "MacBook Air approved on Mac Studio" });
- expect(w.rowText("studio")).toBe("studio | Added");
+ expect(w.rowText("studio")).toBe("studio | Listed as “MacBook Air approved on Mac Studio” | Added");
  // laptop was never ticked: its reason stays, no status.
  expect(w.rowText("laptop")).toBe("laptop | Can't reach it from this computer right now");
  w.adds.shift()!({ sent: true, machines: [
@@ -266,15 +286,16 @@ test("a3 and a4: keys are added one machine at a time with a spinner per row; a 
  await until("the results", () => w.lead() === "MacBook Air can open studio and old-pi with its own key.");
  expect(w.rowText("fleet-hel1")).toBe("fleet-hel1 | Failed: timed out");
  expect(w.row("fleet-hel1").all().some(n => n.className === "pair-approve-dot")).toBe(true);
- expect(w.rowText("old-pi")).toBe("old-pi | Already added");
+ expect(w.rowText("old-pi")).toBe("old-pi | Listed as “MacBook Air approved on Mac Studio” | Already added");
  expect(w.problem()).toBe("fleet-hel1 didn't answer. Try again from here later, or use herdr pair there.");
- expect(w.dialog()!.text()).toContain("Each machine lists the key as “MacBook Air approved on Mac Studio”.");
+ expect(w.dialog()!.text()).toContain("Remove a key with herdr pair --revoke and the name it's listed as.");
  expect(w.buttons()).toEqual(["Try fleet-hel1 again", "Done"]);
  // a4: Try again re-adds that machine only.
  w.button("Try fleet-hel1 again")!.click();
  await until("retrying", () => w.sent("Desk.PairApproveRetry").length === 1);
  expect(w.sent("Desk.PairApproveRetry")).toEqual([["p1", ["f"]]]);
- expect(w.rowText("fleet-hel1")).toBe("fleet-hel1 | Waiting");
+ // The rows stay as last confirmed until Go says otherwise.
+ expect(w.rowText("fleet-hel1")).toBe("fleet-hel1 | Failed: timed out");
  w.adds.shift()!({ sent: true, machines: [
   { id: "s", label: "studio", status: "added" }, { id: "f", label: "fleet-hel1", status: "added" }, { id: "o", label: "old-pi", status: "already" },
  ] });
@@ -283,6 +304,75 @@ test("a3 and a4: keys are added one machine at a time with a spinner per row; a 
  expect(w.problem()).toBe("");
  w.button("Done")!.click();
  expect(w.dialog()).toBeUndefined();
+});
+
+/** A sheet showing a result where fleet-hel1 failed and studio got the key. */
+async function failedOne() {
+ const w = await matched();
+ for (const id of ["s", "f"]) w.probes.get(id)!({ state: "ready" });
+ await until("two ticked", () => w.button("Approve 2 machines") !== undefined);
+ w.button("Approve 2 machines")!.click();
+ await until("adding", () => w.adds.length === 1);
+ w.adds.shift()!({ sent: true, machines: [
+  { id: "s", label: "studio", status: "added", keyLabel: "MacBook Air approved on Mac Studio" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out" },
+ ] });
+ await until("the results", () => w.button("Try fleet-hel1 again") !== undefined);
+ return w;
+}
+
+test("a machine without a pin here, or one the list can't carry, is greyed with the reason", async () => {
+ const w = await matched();
+ w.probes.get("l")!({ state: "needs_pin" });
+ w.probes.get("o")!({ state: "unsendable", reason: "can't be sent to the new device: machine user or host has an @ or a space" });
+ await until("old-pi's reason", () => w.rowText("old-pi") === "old-pi | Can't be sent to the new device: machine user or host has an @ or a space");
+ expect(w.rowText("laptop")).toBe("laptop | Open it once on this computer first");
+ expect([w.box("laptop").disabled, w.box("old-pi").disabled]).toEqual([true, true]);
+});
+
+test("a4: a Try again the bridge refuses keeps the rows as last confirmed and says why", async () => {
+ const w = await failedOne();
+ w.refusals.push("The request isn't approved any more.");
+ w.button("Try fleet-hel1 again")!.click();
+ await until("the refusal", () => w.problem() === "The request isn't approved any more.");
+ expect(w.rowText("fleet-hel1")).toBe("fleet-hel1 | Failed: timed out");
+ expect(w.rowText("studio")).toBe("studio | Listed as “MacBook Air approved on Mac Studio” | Added");
+ expect(w.lead()).toBe("MacBook Air can open studio with its own key.");
+ expect(w.buttons()).toEqual(["Try fleet-hel1 again", "Done"]);
+ expect(w.button("Try fleet-hel1 again")!.disabled).toBe(false);
+});
+
+test("a4: once retries are over, Try again stays off and only the reason is said", async () => {
+ const w = await failedOne();
+ w.button("Try fleet-hel1 again")!.click();
+ await until("retrying", () => w.adds.length === 1);
+ const late = "Too late to try again: retries end 10 minutes after approving. Use herdr pair there.";
+ w.adds.shift()!({ sent: false, ended: true, problem: late, machines: [
+  { id: "s", label: "studio", status: "added", keyLabel: "MacBook Air approved on Mac Studio" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "timed out" },
+ ] });
+ await until("the reason", () => w.problem() === late);
+ expect(w.button("Try fleet-hel1 again")!.disabled).toBe(true);
+ expect(w.button("Done")!.disabled).toBe(false);
+});
+
+test("while an earlier send's outcome is unknown the ticks are frozen: Try again sends the same list", async () => {
+ const w = await matched();
+ for (const id of ["s", "f"]) w.probes.get(id)!({ state: "ready" });
+ await until("two ticked", () => w.button("Approve 2 machines") !== undefined);
+ w.button("Approve 2 machines")!.click();
+ await until("adding", () => w.adds.length === 1);
+ w.adds.shift()!({ sent: false, unsure: true, problem: "timed out", machines: [] });
+ await until("unsure", () => w.button("Try again") !== undefined);
+ expect(w.problem()).toBe("Couldn't tell whether MacBook Air got the list (timed out). Try again sends the same list.");
+ expect([w.box("studio").disabled, w.box("fleet-hel1").disabled, w.box("studio").checked]).toEqual([true, true, true]);
+ // A probe landing now doesn't tick another machine.
+ w.probes.get("l")!({ state: "ready" });
+ await until("laptop checked", () => w.rowText("laptop") === "laptop");
+ expect([w.box("laptop").checked, w.box("laptop").disabled]).toEqual([false, true]);
+ w.button("Try again")!.click();
+ await until("sent again", () => w.sent("Desk.PairApproveAdd").length === 2);
+ expect(w.sent("Desk.PairApproveAdd")[1]).toEqual(["p1", ["s", "f"]]);
 });
 
 test("a5: the request ends while the sheet is open: This request ended, Done", async () => {

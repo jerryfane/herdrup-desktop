@@ -294,14 +294,25 @@ export interface AppUpdateState {
 }
 
 /**
+ * ApprovalOffers says which approval requests the account service
+ * carries: browsers' (web_approve) and new devices' (pair_v1).
+ */
+export interface ApprovalOffers {
+  browsers: boolean;
+  pairs: boolean;
+}
+
+/**
  * ApprovalRequests is every request waiting for approval on the account,
  * both kinds, from one read of the service (GET /v1/approvals?kind=any):
  * the page polls this once, not a list per kind, so pair requests cost the
- * account's approval rate nothing over browser ones.
+ * account's approval rate nothing over browser ones. Order is the request
+ * ids of both kinds in the service's order, which the page opens them in.
  */
 export interface ApprovalRequests {
   browsers: WebAccessRequest[];
   pairs: PairApproveRequest[];
+  order: string[];
 }
 
 /** One answered field, copied from the ask result's `details.answers`. */
@@ -897,7 +908,6 @@ export interface PairApproveRequest {
   deviceName: string;
   /** Platform is the new device's (macos, windows, linux, ios, ipados). */
   platform: string;
-  createdMs: number;
   /** Claimed is "no", "you" or "other" (another device is approving it). */
   claimed: string;
   expiresIn: number;
@@ -944,12 +954,15 @@ export interface PairApproveUpdate {
 /**
  * PairProbe is what the sheet learns of one machine before the user ticks
  * it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
- * "needs_update" (Version is its herdr's, when it said) or "needs_key"
- * (a password machine not connected now).
+ * "needs_update" (Version is its herdr's, when it said), "needs_key" (a
+ * password machine not connected now), "needs_pin" (never opened from
+ * this computer, so no host key is kept for it) or "unsendable" (the list
+ * the new device gets can't carry it; Reason says why).
  */
 export interface PairProbe {
   state: string;
   version?: string;
+  reason?: string;
 }
 
 export interface PairedMachine {
@@ -1695,6 +1708,13 @@ export const Desk = {
     return call("Desk.ApprovalRequests");
   },
   /**
+   * ApprovalsOffered reads both from one /v1/health answer. An error means
+   * the service couldn't be asked; the page asks again on its next look.
+   */
+  approvalsOffered(): Promise<ApprovalOffers> {
+    return call("Desk.ApprovalsOffered");
+  },
+  /**
    * ArchiveAgent archives the agent, attributed to herdrup
    * (HerdrApp.swift:2223-2232).
    */
@@ -2179,19 +2199,13 @@ export const Desk = {
     return call("Desk.PairApproveDeny", id);
   },
   /**
-   * PairApproveOffered reports whether the account service carries pair
-   * requests (pair_v1). An error means it couldn't be asked.
+   * PairApproveProbe connects to saved machine machineID for pair request
+   * id, briefly and at most a few machines at a time, and says whether a key
+   * can be added there. Only once the typed code matched: before, no
+   * machine is reached at all. It adds nothing, and pins nothing.
    */
-  pairApproveOffered(): Promise<boolean> {
-    return call("Desk.PairApproveOffered");
-  },
-  /**
-   * PairApproveProbe connects to saved machine id, briefly and at most a few
-   * machines at a time, and says whether a key can be added there. It adds
-   * nothing.
-   */
-  pairApproveProbe(id: string): Promise<PairProbe> {
-    return call("Desk.PairApproveProbe", id);
+  pairApproveProbe(id: string, machineID: string): Promise<PairProbe> {
+    return call("Desk.PairApproveProbe", id, machineID);
   },
   /**
    * PairApproveRetry adds the key again on machines that failed, then sends
@@ -2734,14 +2748,6 @@ export const Desk = {
   /** WebAccessMachines lists the saved machines the sheet offers. */
   webAccessMachines(): Promise<WebAccessMachine[]> {
     return call("Desk.WebAccessMachines");
-  },
-  /**
-   * WebAccessOffered reports whether the account service carries browser
-   * approvals. An error means the service couldn't be asked; the page asks
-   * again on its next look.
-   */
-  webAccessOffered(): Promise<boolean> {
-    return call("Desk.WebAccessOffered");
   },
   /**
    * WebAccessStart claims request id for this computer and waits (in the

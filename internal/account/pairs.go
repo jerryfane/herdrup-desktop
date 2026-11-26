@@ -144,10 +144,12 @@ func (c *Client) PairRequests(ctx context.Context, acct string) ([]PairRequest, 
 
 // ApprovalLists is GET /v1/approvals?kind=any: every request waiting for
 // this account's approval, browsers' and new devices', each in the
-// service's order. Neither slice is nil.
+// service's order, and Order, the request ids of both kinds in the
+// service's order. No slice is nil.
 type ApprovalLists struct {
 	Browser []ApprovalRequest
 	Pair    []PairRequest
+	Order   []string
 }
 
 // AnyApprovals lists both kinds of request in one read, so an approver
@@ -160,7 +162,7 @@ func (c *Client) AnyApprovals(ctx context.Context, acct string) (ApprovalLists, 
 	if err := c.authed(ctx, acct, http.MethodGet, "/v1/approvals?kind=any", nil, &out); err != nil {
 		return ApprovalLists{}, err
 	}
-	lists := ApprovalLists{Browser: []ApprovalRequest{}, Pair: []PairRequest{}}
+	lists := ApprovalLists{Browser: []ApprovalRequest{}, Pair: []PairRequest{}, Order: []string{}}
 	for _, raw := range out.Requests {
 		var kind struct {
 			Kind string `json:"kind"`
@@ -174,6 +176,7 @@ func (c *Client) AnyApprovals(ctx context.Context, acct string) (ApprovalLists, 
 				return ApprovalLists{}, err
 			}
 			lists.Pair = append(lists.Pair, r)
+			lists.Order = append(lists.Order, r.ID)
 			continue
 		}
 		var r ApprovalRequest
@@ -181,6 +184,7 @@ func (c *Client) AnyApprovals(ctx context.Context, acct string) (ApprovalLists, 
 			return ApprovalLists{}, err
 		}
 		lists.Browser = append(lists.Browser, r)
+		lists.Order = append(lists.Order, r.ID)
 	}
 	return lists, nil
 }

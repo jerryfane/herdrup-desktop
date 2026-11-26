@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/account"
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeaccount"
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
@@ -103,8 +104,9 @@ func noMethod(method string, _ json.RawMessage) (any, *fakeherdr.APIError) {
 	return nil, &fakeherdr.APIError{Code: "unknown_method", Message: method}
 }
 
-// keyMachine starts a fake herdr reached with a key file and saves it.
-func (w *pairWorld) keyMachine(t *testing.T, name string, pairOK bool) {
+// keyMachine starts a fake herdr reached with a key file and saves it;
+// pinned: its host key is pinned here, as once this computer opened it.
+func (w *pairWorld) keyMachine(t *testing.T, name string, pairOK, pinned bool) {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostKey, _ := ssh.NewSignerFromKey(hostPriv)
@@ -129,6 +131,11 @@ func (w *pairWorld) keyMachine(t *testing.T, name string, pairOK bool) {
 	port, _ := strconv.Atoi(portStr)
 	w.save(t, name, Machine{Nickname: name, Host: host, Port: port, User: "dev", KeyPath: keyPath})
 	w.machines[name] = h
+	if pinned {
+		if err := w.d.pins.SetPin(addr, bridge.Fingerprint(hostKey.PublicKey())); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func (w *pairWorld) save(t *testing.T, name string, m Machine) {
@@ -208,8 +215,8 @@ func newPairWorld(t *testing.T) *pairWorld {
 		t.Fatal(err)
 	}
 
-	w.keyMachine(t, "fleet", true)
-	w.keyMachine(t, "old", false)
+	w.keyMachine(t, "fleet", true, true)
+	w.keyMachine(t, "old", false, true)
 	// gone: a key that works elsewhere, at an address nothing answers.
 	w.save(t, "gone", Machine{Nickname: "gone", Host: "127.0.0.1", Port: freePort(t), User: "dev", KeyPath: w.machines["fleet"].keyPath})
 	w.save(t, "box", Machine{Nickname: "box", Host: "127.0.0.1", Port: freePort(t), User: "dev"})
@@ -302,9 +309,15 @@ func hostKeyLine(k ssh.PublicKey) string {
 func TestPairApproveAddsTheKeyOnTickedMachinesAndSealsTheirHostKeys(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
+	// No machine is reached before the code matches.
+	id := w.start(t)
+	if _, err := w.d.PairApproveProbe(ctx, id, w.ids["fleet"]); err == nil {
+		t.Fatal("a probe before the code was typed")
+	}
+	w.typeCode(t, id)
 	probes := map[string]string{}
-	for name, id := range w.ids {
-		p, err := w.d.PairApproveProbe(ctx, id)
+	for name, mid := range w.ids {
+		p, err := w.d.PairApproveProbe(ctx, id, mid)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -320,8 +333,6 @@ func TestPairApproveAddsTheKeyOnTickedMachinesAndSealsTheirHostKeys(t *testing.T
 	if w.allKeys() != 0 {
 		t.Fatal("a probe added a key")
 	}
-	id := w.start(t)
-	w.typeCode(t, id)
 	// Ticked: studio and fleet; old is ready on nobody's list and stays untouched.
 	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["fleet"]})
 	if err != nil || !res.Sent || res.Unsure || len(res.Machines) != 2 {
@@ -560,7 +571,7 @@ func TestPairApproveRefusesAHostKeyThatDoesntMatchItsPin(t *testing.T) {
 	id := w.start(t)
 	w.typeCode(t, id)
 	w.d.mu.Lock()
-	addr := w.d.link.client.PinAddress()
+	_, addr := w.d.link.client.HostKey()
 	w.d.mu.Unlock()
 	if err := w.d.pins.SetPin(addr, strings.Repeat("0", 64)); err != nil {
 		t.Fatal(err)
@@ -633,5 +644,132 @@ func TestPairApproveShowsHerdrsRefusalAsTheRowsReason(t *testing.T) {
 	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["fleet"]})
 	if err != nil || res.Machines[0].Status != account.PairFailed || res.Machines[0].Reason != "herdr couldn't write authorized_keys" {
 		t.Fatalf("approve %+v, %v", res, err)
+	}
+}
+
+func rowsByLabel(res PairApproveResult) map[string]PairApproveRow {
+	out := map[string]PairApproveRow{}
+	for _, r := range res.Machines {
+		out[r.Label] = r
+	}
+	return out
+}
+
+// A machine never opened from this computer has no pin kept here: an
+// approval neither trusts its host key nor pins it. It is unusable, gets
+// no key, and no pin is written, before the code or after.
+func TestPairApproveNeverPinsAMachineOnFirstContact(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	w.keyMachine(t, "fresh", true, false)
+	m, err := w.d.savedMachine(w.ids["fresh"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := net.JoinHostPort(m.Host, strconv.Itoa(m.Port))
+	id := w.start(t)
+	if _, err := w.d.PairApproveProbe(ctx, id, w.ids["fresh"]); err == nil {
+		t.Fatal("a probe before the code was typed")
+	}
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["fresh"]); err != nil || p.State != "needs_pin" {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["fresh"], w.ids["fleet"]})
+	rows := rowsByLabel(res)
+	if err != nil || rows["fresh"].Status != account.PairFailed || rows["fresh"].Reason != errNoPin.Error() || rows["fleet"].Status != account.PairAdded {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if w.machines["fresh"].adds.Load() != 0 {
+		t.Fatal("a key on a machine whose host key isn't pinned here")
+	}
+	if _, ok, _ := w.d.pins.Pin(addr); ok {
+		t.Fatal("the approval pinned a host key on first contact")
+	}
+	for _, e := range w.delivered(t).Envelope.Machines {
+		if e.Nickname == "fresh" && e.HostKey != "" {
+			t.Fatalf("sent fresh's unpinned host key %q", e.HostKey)
+		}
+	}
+}
+
+// Try again reaches no machine once the service no longer holds the
+// approval.
+func TestPairApproveTryAgainChecksTheRequestFirst(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	id := w.start(t)
+	w.typeCode(t, id)
+	w.machines["fleet"].failing.Store(1)
+	if res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["fleet"]}); err != nil || !res.Sent {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	adds := w.machines["fleet"].adds.Load()
+	w.elapsed.Store(int64(fakeaccount.RequestTTL + fakeaccount.OutcomeKeep + time.Minute))
+	res, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
+	if err != nil || !res.Ended || res.Problem != pairTooLate {
+		t.Fatalf("retry %+v, %v", res, err)
+	}
+	if w.machines["fleet"].adds.Load() != adds {
+		t.Fatal("Try again reached a machine for a request that no longer takes a list")
+	}
+}
+
+// Try again reaches only machines still saved here.
+func TestPairApproveTryAgainOnlyReachesMachinesStillSaved(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	id := w.start(t)
+	w.typeCode(t, id)
+	w.machines["fleet"].failing.Store(1)
+	if res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["fleet"]}); err != nil || !res.Sent {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	adds := w.machines["fleet"].adds.Load()
+	if err := w.d.RemoveMachine(w.ids["fleet"]); err != nil {
+		t.Fatal(err)
+	}
+	res, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
+	if err == nil || rowsByLabel(res)["fleet"].Reason != "that machine is no longer saved here" {
+		t.Fatalf("retry %+v, %v", res, err)
+	}
+	if w.machines["fleet"].adds.Load() != adds {
+		t.Fatal("Try again reached a machine no longer saved")
+	}
+}
+
+// A machine the list can't carry (a user with an @ can't split back from
+// user@host) is found before any machine changes: shown failed with why,
+// never given the key, never sealed, never tried again.
+func TestPairApproveHoldsOutAMachineTheListCantCarry(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	at, err := w.d.savedMachine(w.ids["fleet"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	at.Nickname, at.User = "at", "dev@box"
+	w.save(t, "at", at)
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["at"]); err != nil || p.State != "unsendable" || !strings.Contains(p.Reason, "@") {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	if _, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["at"]}); err == nil {
+		t.Fatal("approved with only a machine the list can't carry")
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["at"], w.ids["studio"]})
+	rows := rowsByLabel(res)
+	if err != nil || !res.Sent || rows["at"].Status != account.PairFailed || !strings.HasPrefix(rows["at"].Reason, "can't be sent to the new device") || rows["studio"].Status != account.PairAdded {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["fleet"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds where only the @ user's machine points", n)
+	}
+	if env := w.delivered(t).Envelope; len(env.Machines) != 1 || env.Machines[0].Nickname != "studio" {
+		t.Fatalf("envelope %+v", env)
+	}
+	if _, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["at"]}); err == nil || w.machines["fleet"].adds.Load() != 0 {
+		t.Fatalf("Try again on a held machine: %v", err)
 	}
 }

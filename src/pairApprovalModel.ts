@@ -2,7 +2,7 @@
 // kept free of the DOM so bun tests it: what "Pair ‹device›?" says at each step.
 
 /** One new device asking to pair (Desk.approvalRequests). */
-export interface PairRequestView { id: string; deviceName: string; platform: string; claimed: string; expiresIn: number; createdMs: number }
+export interface PairRequestView { id: string; deviceName: string; platform: string; claimed: string; expiresIn: number }
 
 /** The new device as the sheet names it. */
 export function deviceName(r: { deviceName: string }): string {
@@ -30,18 +30,21 @@ export function expiresText(ms: number): string {
  return `Expires in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** What the sheet knows of a machine before keys are added: checking (a probe is out), ready, or a
- *  reason it can't be ticked (Desk.pairApproveProbe; needs_key from Desk.webAccessMachines). */
-export type ProbeState = "checking" | "ready" | "unreachable" | "needs_update" | "needs_key";
+/** What the sheet knows of a machine before keys are added: checking (a probe is out, or waits for
+ *  the code), ready, or a reason it can't be ticked (Desk.pairApproveProbe; needs_key from
+ *  Desk.webAccessMachines). */
+export type ProbeState = "checking" | "ready" | "unreachable" | "needs_update" | "needs_key" | "needs_pin" | "unsendable";
 
 /** Why a machine can't be ticked, or that it is still being checked. here names this computer
- *  ("this Mac"). */
-export function probeReason(state: ProbeState, here: string, version = ""): string {
+ *  ("this Mac"); why is Go's reason for an unsendable one. */
+export function probeReason(state: ProbeState, here: string, version = "", why = ""): string {
  switch (state) {
   case "checking": return "Checking…";
   case "unreachable": return `Can't reach it from ${here} right now`;
   case "needs_update": return version ? `Needs a herdr update (herdr ${version})` : "Needs a herdr update";
   case "needs_key": return "Needs a key file";
+  case "needs_pin": return `Open it once on ${here} first`;
+  case "unsendable": return why ? why.charAt(0).toUpperCase() + why.slice(1) : "Can't be sent to the new device";
   default: return "";
  }
 }
@@ -96,13 +99,17 @@ export function retryLabel(failed: readonly string[]): string {
  return failed.length === 1 ? `Try ${failed[0]} again` : `Try ${failed.length} machines again`;
 }
 
-/** The line under the machines: what Approve does, and once keys exist, the label herdr stored
- *  them under (the reply's, which may differ from the one sent), to revoke them by. */
+/** The line under the machines: what Approve does, and once keys exist, how to remove one (each row
+ *  says the label herdr stored it under, keyListedAs). */
 export function keyNote(name: string, rows: readonly PairRowView[] = []): string {
- const labels = [...new Set(rows.filter(r => r.keyLabel).map(r => r.keyLabel!))];
- const how = "Remove it with herdr pair --revoke.";
- if (labels.length === 1) return `Each machine lists the key as “${labels[0]}”. ${how}`;
- return `Approving adds ${name}'s key to the machines you tick, with a herdr command on each. ${how}`;
+ if (rows.some(r => r.keyLabel)) return "Remove a key with herdr pair --revoke and the name it's listed as.";
+ return `Approving adds ${name}'s key to the machines you tick, with a herdr command on each. Remove it with herdr pair --revoke.`;
+}
+
+/** A row's line once its key is there: the label herdr stored it under (its reply's, which may
+ *  differ from the one sent). */
+export function keyListedAs(label: string): string {
+ return `Listed as “${label}”`;
 }
 
 /** The sheet's line for a request that ended before it was approved. */

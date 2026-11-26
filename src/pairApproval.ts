@@ -15,7 +15,7 @@ import { codeField } from "./codeField";
 import type { SheetClock } from "./webAccess";
 import { codeInput, wrongCode } from "./webAccessModel";
 import {
- approveLabel, deviceName, expiresText, failureLine, keyNote, PAIR_ENDED, platformLine, probeReason, resultLead, retryLabel, rowStatusText,
+ approveLabel, deviceName, expiresText, failureLine, keyListedAs, keyNote, PAIR_ENDED, platformLine, probeReason, resultLead, retryLabel, rowStatusText,
  type PairRequestView, type PairRowView, type ProbeState, type RowStatus,
 } from "./pairApprovalModel";
 
@@ -38,6 +38,8 @@ interface Row {
  m: WebAccessMachine;
  probe: ProbeState;
  version: string;
+ /** Why the list can't carry it (unsendable), as Go says it. */
+ why: string;
  status?: RowStatus;
  reason?: string;
  keyLabel?: string;
@@ -54,7 +56,8 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
  let step: Step = "code";
  // ready: the new device shows its code. busy: a call is out.
  // unsent: the service holds the approval but not this list (Go sends it again on Try again).
- let ready = false, busy = false, unsure = false, unsent = false;
+ // over: retries ended (the service no longer takes a list): Try again stays off.
+ let ready = false, busy = false, unsure = false, unsent = false, over = false;
  const ticked = new Set<string>();
  // Machines the user ticked or unticked: a probe that lands later leaves them as they are.
  const touched = new Set<string>();
@@ -81,7 +84,7 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
   const state = el("span", "pair-approve-state");
   node.append(box, text, state);
   list.append(node);
-  const row: Row = { m, probe: m.available ? "checking" : "needs_key", version: "", box, sub, state, node };
+  const row: Row = { m, probe: m.available ? "checking" : "needs_key", version: "", why: "", box, sub, state, node };
   box.onchange = () => { touched.add(m.id); if (box.checked) ticked.add(m.id); else ticked.delete(m.id); paint(); };
   return row;
  });
@@ -102,9 +105,12 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
   const usable = r.probe === "ready";
   r.node.classList.toggle("unusable", !usable && !r.status);
   r.box.checked = ticked.has(r.m.id);
-  r.box.disabled = step !== "machines" || busy || !usable;
-  r.sub.textContent = usable ? "" : probeReason(r.probe, here(), r.version);
-  r.sub.hidden = usable || r.probe === "checking";
+  // While a send's outcome is unknown the selection is frozen: Try again sends that same list.
+  r.box.disabled = step !== "machines" || busy || unsure || !usable;
+  // Once added, the row says the label herdr stored the key under (its reply's).
+  const listed = (r.status === "added" || r.status === "already") && r.keyLabel ? keyListedAs(r.keyLabel) : "";
+  r.sub.textContent = listed || (usable ? "" : probeReason(r.probe, here(), r.version, r.why));
+  r.sub.hidden = !listed && (usable || r.probe === "checking");
   r.state.replaceChildren();
   if (r.status && ticked.has(r.m.id)) {
    if (r.status === "adding") { const spin = el("span", "ring-spinner"); spin.setAttribute("aria-hidden", "true"); r.state.append(spin); }
@@ -140,7 +146,7 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
   deny.hidden = step === "result" || step === "ended";
   deny.disabled = busy;
   retry.hidden = step !== "result" || (!fails.length && !unsent);
-  retry.disabled = busy;
+  retry.disabled = busy || over;
   if (!retry.hidden) retry.textContent = fails.length ? retryLabel(fails.map(f => f.m.label)) : "Send the list again";
   primary.classList.toggle("pair-approve-busy", step === "adding");
   switch (step) {
@@ -176,8 +182,10 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
    const r = rows.find(x => x.m.id === m.id);
    if (r) { r.status = m.status as RowStatus; r.reason = m.reason; r.keyLabel = m.keyLabel; }
   }
-  step = "result"; stopTick(); unsent = result.unsent === true;
-  say([failureLine(views()), result.problem ?? ""].filter(Boolean).join(" "));
+  step = "result"; stopTick();
+  if (result.ended) over = true;
+  unsent = !over && result.unsent === true;
+  say((over ? [result.problem ?? ""] : [failureLine(views()), result.problem ?? ""]).filter(Boolean).join(" "));
   paint();
  }
 
@@ -218,12 +226,24 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
  const continueWithCode = () => run(async () => {
   say("");
   const check = await Desk.pairApproveCheckCode(req.id, code.value);
-  if (check.ok) { step = "machines"; code.disabled = true; return; }
+  if (check.ok) { step = "machines"; code.disabled = true; probe(); return; }
   say(wrongCode(check, name));
   code.value = "";
   if (check.left === 0) { if (check.denied) end("Too many wrong codes. The request was denied."); else code.disabled = true; }
   else focusCode();
  });
+
+ // Only once the code matched does Go reach any machine; rows fill in as each answers (a few at a
+ // time), and a machine the user already ticked or unticked stays as they left it.
+ function probe(): void {
+  for (const r of rows) {
+   if (r.probe !== "checking") continue;
+   Desk.pairApproveProbe(req.id, r.m.id).then(p => {
+    r.probe = p.state as ProbeState; r.version = p.version ?? ""; r.why = p.reason ?? "";
+    if (r.probe === "ready" && !touched.has(r.m.id) && step === "machines" && !unsure) ticked.add(r.m.id);
+   }, () => { r.probe = "unreachable"; }).finally(paint);
+  }
+ }
 
  const approve = () => {
   const chosen = rows.filter(r => ticked.has(r.m.id));
@@ -252,13 +272,15 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
 
  retry.onclick = () => {
   const again = failed();
-  for (const r of again) { r.status = "waiting"; r.reason = undefined; }
+  // The rows stay as last confirmed until Go says otherwise (its progress, or the result).
+  const confirmed = rows.map(r => ({ r, status: r.status, reason: r.reason, keyLabel: r.keyLabel }));
   step = "adding";
   void run(async () => {
    try {
     const result = await Desk.pairApproveRetry(req.id, again.map(r => r.m.id));
     showResult(result);
    } catch (error) {
+    for (const c of confirmed) { c.r.status = c.status; c.r.reason = c.reason; c.r.keyLabel = c.keyLabel; }
     step = "result";
     throw error;
    }
@@ -278,14 +300,6 @@ export async function showPairSheet(req: PairRequestView, machines: readonly Web
  document.body.append(dialog);
  paint();
  dialog.showModal();
- // Rows fill in as each machine answers; Go probes a few at a time.
- for (const r of rows) {
-  if (r.probe !== "checking") continue;
-  Desk.pairApproveProbe(r.m.id).then(p => {
-   r.probe = p.state as ProbeState; r.version = p.version ?? "";
-   if (r.probe === "ready" && !touched.has(r.m.id) && (step === "code" || step === "machines")) ticked.add(r.m.id);
-  }, () => { r.probe = "unreachable"; }).finally(paint);
- }
  try { await Desk.pairApproveStart(req.id); }
  catch (error) { end(errorText(error)); }
 }

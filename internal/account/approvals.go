@@ -92,6 +92,16 @@ type Statement struct {
 // browser approvals (herdrup #792).
 const WebApproveFeature = "web_approve"
 
+// ApprovalsOffered reads /v1/health once for both kinds of approval
+// request: browsers' (web_approve) and new devices' (pair_v1).
+func (c *Client) ApprovalsOffered(ctx context.Context) (browsers, pairs bool, err error) {
+	features, err := c.healthFeatures(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	return slices.Contains(features, WebApproveFeature), slices.Contains(features, PairFeature), nil
+}
+
 // WebApproveOffered reports whether the service lists web_approve.
 func (c *Client) WebApproveOffered(ctx context.Context) (bool, error) {
 	features, err := c.healthFeatures(ctx)
