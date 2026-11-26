@@ -91,8 +91,6 @@ test("signed out (g1): sign in with a provider, then the share goes in the accou
  expect(calls).toContainEqual(["Desk.AccountSignIn", "google"]);
  expect(shown(root)).toContain("Finish signing in in your browser.");
  expect(all.every(b => b.disabled)).toBe(true);
- emit("account:changed", { signedIn: false });
- expect(redeemed).toEqual([]);
  emit("account:changed", { signedIn: true, displayHint: "nike@example.com" });
  expect(redeemed).toEqual([["account", "Continue with Google"]]);
  // Signed in once: a later account change accepts nothing more.
@@ -124,8 +122,8 @@ test("a failed sign-in reports and gives the choices back; closing the sheet sto
  dispose();
 });
 
-test("a sign-in that comes back without a session gives the choices back, with why; a cancel too, saying nothing", async () => {
- const { emit } = bridge({ "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple", "google"], "Desk.AccountSignIn": undefined });
+test("a sign-in that comes back without a session ends its attempt: the choices back, with why (a cancel says nothing), and a late session accepts nothing; a new choice starts anew", async () => {
+ const { emit, calls } = bridge({ "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple", "google"], "Desk.AccountSignIn": undefined });
  const { made, redeemed, reported } = choices({ account: true });
  const { root, buttons: all } = await made;
  const waiting = () => shown(root).includes("Finish signing in in your browser.");
@@ -135,16 +133,67 @@ test("a sign-in that comes back without a session gives the choices back, with w
  // The app's account link came back expired (desk_account.go queueAccountLink).
  emit("account:changed", { signedIn: false, problem: "The sign-in took too long. Sign in again." });
  expect([waiting(), all.map(b => b.disabled), reported.map(errorText)]).toEqual([false, [false, false, false], ["The sign-in took too long. Sign in again."]]);
- // Tried again, then cancelled: the choices again, nothing more to say.
+ // A session after the attempt ended acts on nothing.
+ emit("account:changed", { signedIn: true });
+ expect(redeemed).toEqual([]);
+ // Tried again, then cancelled: the choices again, nothing more to say; a late session, nothing.
  named(root, "Continue with Google").click();
  await settle();
  expect(all.every(b => b.disabled)).toBe(true);
  emit("account:changed", { signedIn: false, problem: "" });
  expect([waiting(), all.every(b => !b.disabled), reported.length]).toEqual([false, true, 1]);
- // Only this device now; a session that turns up later accepts nothing more.
- named(root, "Only this device").click();
+ emit("account:changed", { signedIn: true, displayHint: "nike@example.com" });
+ await settle();
+ expect([redeemed, calls.filter(c => c[0] === "Desk.AcceptGuestInvitation"), waiting(), all.every(b => !b.disabled)]).toEqual([[], [], false, true]);
+ // A new choice starts a new attempt, which accepts once its session comes.
+ named(root, "Continue with Apple").click();
+ await settle();
+ expect([waiting(), all.every(b => b.disabled)]).toEqual([true, true]);
  emit("account:changed", { signedIn: true });
- expect(redeemed).toEqual([["device", "Only this device"]]);
+ emit("account:changed", { signedIn: true });
+ expect(redeemed).toEqual([["account", "Continue with Apple"]]);
+});
+
+test("an ended attempt's start failing late changes nothing: the newer attempt keeps waiting", async () => {
+ const rejects: ((e: Error) => void)[] = [];
+ const { emit } = bridge({ "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple", "google"], "Desk.AccountSignIn": () => new Promise<void>((_, reject) => { rejects.push(reject); }) });
+ let failed = 0;
+ const reported: unknown[] = [], redeemed: string[] = [];
+ const { root, buttons: all } = await acceptChoices({ account: true }, (_keep, pressed) => { redeemed.push(pressed.textContent ?? ""); }, f => reported.push(f), { failed: () => { failed++; } });
+ named(root, "Continue with Apple").click();
+ await settle();
+ emit("account:changed", { signedIn: false, problem: "" });
+ named(root, "Continue with Google").click();
+ await settle();
+ rejects[0]!(new Error("the first browser closed"));
+ await settle();
+ expect([shown(root).includes("Finish signing in in your browser."), all.every(b => b.disabled), reported, failed]).toEqual([true, true, [], 0]);
+ rejects[1]!(new Error("the browser didn't open"));
+ await settle();
+ expect([shown(root).includes("Finish signing in in your browser."), all.every(b => !b.disabled), reported.map(errorText), failed]).toEqual([false, true, ["the browser didn't open"], 1]);
+});
+
+test("the sheet: a cancelled sign-in then a late session accepts nothing; the next choice's session accepts once, into the account", async () => {
+ const { doc, emit, calls } = bridge({ "Desk.InspectGuestInvitation": { ...INVITE, account: true }, "Desk.AccountState": { signedIn: false }, "Desk.AccountProviders": ["apple"], "Desk.AccountSignIn": undefined,
+  "Desk.AcceptGuestInvitation": standing("H1", "enyo", "hetzner", "confirmed") });
+ showGuestAccept(async () => {}, () => {}, "herdrup://guest-invite#X");
+ await settle();
+ const sheet = doc.body.all().find(n => n.tagName === "dialog")!;
+ const accepts = () => calls.filter(c => c[0] === "Desk.AcceptGuestInvitation");
+ named(sheet, "Continue with Apple").click();
+ await settle();
+ emit("account:changed", { signedIn: false, problem: "" });
+ emit("account:changed", { signedIn: true });
+ await settle();
+ expect([accepts(), shown(sheet).includes("Access accepted")]).toEqual([[], false]);
+ named(sheet, "Continue with Apple").click();
+ await settle();
+ emit("account:changed", { signedIn: true });
+ await settle();
+ emit("account:changed", { signedIn: true });
+ await settle();
+ expect([accepts(), shown(sheet).includes("Access accepted")]).toEqual([[["Desk.AcceptGuestInvitation", "herdrup://guest-invite#X", "account"]], true]);
+ sheet.close();
 });
 
 test("g3: after a share went into the account, one quiet line with OK among the window's notices", () => {

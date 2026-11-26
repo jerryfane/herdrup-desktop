@@ -57,24 +57,29 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
   for (const button of buttons) button.disabled = true;
   waiting.textContent = "Finish signing in in your browser."; waiting.hidden = false;
   stop();
-  const off = events.accountChanged.on(next => {
-   if (!next.signedIn) { signInEnded(next.problem ?? ""); return; }
-   stop(); waiting.hidden = true;
-   redeem("account", pressed);
+  // This attempt, and its continuation (the account listener), until it ends: by a session (it
+  // accepts into the account), a return without one (expired, refused or cancelled), a failure to
+  // start, another choice or the sheet closing. Ended, nothing of it acts again; only a new choice
+  // starts another attempt.
+  let off = () => {};
+  const end = () => { off(); if (stop === end) stop = () => {}; waiting.hidden = true; };
+  off = events.accountChanged.on(next => {
+   end();
+   if (next.signedIn) redeem("account", pressed);
+   else signInEnded(next.problem ?? "");
   });
-  stop = () => { off(); stop = () => {}; };
+  stop = end;
   Desk.accountSignIn(provider).catch((failure: unknown) => {
-   stop(); waiting.hidden = true;
+   if (stop !== end) return;
+   end();
    for (const button of buttons) button.disabled = false;
    hooks.failed?.();
    report(failure);
   });
  });
- /** This sign-in came back without a session (the app's account link: expired, refused, or
-  *  cancelled, problem "" then) while the choices waited for it: they come back, with why. A
-  *  session that still arrives goes on as asked, unless another choice was made meanwhile. */
+ /** The attempt came back without a session (the app's account link: expired, refused, or
+  *  cancelled, problem "" then): the choices come back, with why. */
  function signInEnded(problem: string) {
-  waiting.hidden = true;
   for (const button of buttons) button.disabled = false;
   if (problem !== "") report(new Error(problem));
  }
