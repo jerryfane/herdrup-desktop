@@ -83,6 +83,10 @@ const (
 	// reaches only records holding a lower revision (herdr #526). Older
 	// servers ignore the field and overwrite unconditionally.
 	CapabilityGuestRelabelRev Capability = "guest_relabel_rev"
+	// pair.add_key, pair.keys.list and pair.keys.remove: device keys in
+	// authorized_keys (herdr #529). Only the owner's own connection's ping
+	// reports it.
+	CapabilityPairAddKey Capability = "pair_add_key"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -136,6 +140,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentTopicSuggestions
 	case CapabilityTranscriptRelayEntries:
 		return caps.TranscriptRelayEntries
+	case CapabilityPairAddKey:
+		return caps.PairAddKey
 	}
 	return false
 }
@@ -206,6 +212,12 @@ var Methods = []Method{
 	{Name: "owner_access.add", Params: typeOf[OwnerAccessAddParams](), Results: []Result{result[ResponseResultOwnerAccessAdded]("owner_access_added")}},
 	{Name: "owner_access.renew", Params: typeOf[OwnerAccessRenewParams](), Results: []Result{result[ResponseResultOwnerAccessRenewed]("owner_access_renewed")}},
 	{Name: "owner_access.remove", Params: typeOf[OwnerAccessRemoveParams](), Results: []Result{result[ResponseResultOwnerAccessRemoved]("owner_access_removed")}},
+	// herdr #529 (35b59399): schema.rs pair.*, answered by
+	// src/api/server/pair_keys.rs handle. Owner's own connection only;
+	// guests get guest_forbidden, owner browsers owner_forbidden.
+	{Name: "pair.add_key", Params: typeOf[PairAddKeyParams](), Results: []Result{result[ResponseResultPairKeyAdded]("pair_key_added")}, Capability: CapabilityPairAddKey},
+	{Name: "pair.keys.list", Params: typeOf[PairKeysListParams](), Results: []Result{result[ResponseResultPairKeysList]("pair_keys_list")}, Capability: CapabilityPairAddKey},
+	{Name: "pair.keys.remove", Params: typeOf[PairKeysRemoveParams](), Results: []Result{result[ResponseResultPairKeysRemoved]("pair_keys_removed")}, Capability: CapabilityPairAddKey},
 	// schema.rs:100; guest_owner.rs:140.
 	{Name: "guest.revoke", Params: typeOf[GuestRevokeParams](), Results: []Result{result[ResponseResultGuestRevoked]("guest_revoked")}},
 	// schema.rs:101; guest_owner.rs:154. With machine_label and no guest_id

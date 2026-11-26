@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -14,16 +15,19 @@ import (
 )
 
 // The engine looks every method it sends up in herdrapi.Methods and panics
-// on a name the table lacks, so each name the package passes to method, do
-// or call must be in the table, or the call it backs panics when used.
+// on a name the table lacks, so each name the package passes to method, do,
+// doRaw, call or callRaw must be in the table, or the call it backs panics
+// when used.
 func TestEveryCalledMethodIsInTheTable(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	paths, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	var called []string
-	for _, path := range files {
+	var files []*ast.File
+	// The package's string constants, for a name passed as one.
+	pkgConsts := map[string]string{}
+	for _, path := range paths {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
@@ -31,12 +35,32 @@ func TestEveryCalledMethodIsInTheTable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		files = append(files, file)
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				spec := spec.(*ast.ValueSpec)
+				for i, name := range spec.Names {
+					if i < len(spec.Values) {
+						if lit, ok := spec.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							pkgConsts[name.Name], _ = strconv.Unquote(lit.Value)
+						}
+					}
+				}
+			}
+		}
+	}
+	var called []string
+	for _, file := range files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
-			consts := map[string]string{}
+			consts := maps.Clone(pkgConsts)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				if spec, ok := n.(*ast.ValueSpec); ok {
 					for i, name := range spec.Names {
@@ -58,11 +82,11 @@ func TestEveryCalledMethodIsInTheTable(t *testing.T) {
 						arg = 0
 					}
 				case *ast.SelectorExpr:
-					if f.Sel.Name == "do" {
+					if f.Sel.Name == "do" || f.Sel.Name == "doRaw" {
 						arg = 1
 					}
 				case *ast.IndexExpr:
-					if id, ok := f.X.(*ast.Ident); ok && id.Name == "call" {
+					if id, ok := f.X.(*ast.Ident); ok && (id.Name == "call" || id.Name == "callRaw") {
 						arg = 2
 					}
 				}
@@ -88,7 +112,7 @@ func TestEveryCalledMethodIsInTheTable(t *testing.T) {
 			})
 		}
 	}
-	if !slices.Contains(called, "agent.list") || !slices.Contains(called, "machine.status") {
+	if !slices.Contains(called, "agent.list") || !slices.Contains(called, "machine.status") || !slices.Contains(called, "pair.add_key") || !slices.Contains(called, "pair.keys.remove") {
 		t.Fatalf("the scan missed known calls: %q", called)
 	}
 	for _, name := range called {
