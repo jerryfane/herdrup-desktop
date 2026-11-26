@@ -85,6 +85,16 @@ export const ADD_MS = 15_000;
 const refusal = (error: unknown) =>
  error instanceof SignedOutError || (error instanceof AccountServiceError && error.status >= 400 && error.status < 500);
 
+const record = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+/** Whether answer is POST /v1/sync's success envelope (SyncPushAnswer): its applied and conflicts
+ *  lists, each entry naming its collection and id, a conflict's server item null or one that says
+ *  whether it is deleted. Any other 2xx body tells no outcome. */
+function pushAnswer(answer: unknown): answer is SyncPushAnswer {
+ const named = (c: unknown): c is Record<string, unknown> => record(c) && typeof c.collection === "string" && typeof c.id === "string";
+ return record(answer) && Array.isArray(answer.applied) && answer.applied.every(named) && Array.isArray(answer.conflicts)
+  && answer.conflicts.every(c => named(c) && (c.server === null || (record(c.server) && typeof c.server.deleted === "boolean")));
+}
+
 /** "Add to my account" against account: name is this browser's on the account's devices. */
 export function createShareAdder(account: WebAccount, name: string, options: { addMs?: number } = {}) {
  return {
@@ -97,8 +107,9 @@ export function createShareAdder(account: WebAccount, name: string, options: { a
   /** Writes a bound grant's share to the account it is bound to (Access.account), its id the
    *  grant's key, as one POST /v1/sync of one change based on no item (base_rev 0: the key is
    *  new, as the grant is), sent once (WebAccount.syncPushOnce: a token near expiry is refreshed
-   *  first, and a 401 is a refusal, never a second POST). Never rejects: the outcome is
-   *  ShareAdd's. */
+   *  first, and a 401 is a refusal, never a second POST). An error status refuses it as it
+   *  arrives, whatever its body does; a 2xx whose body isn't the success envelope (pushAnswer)
+   *  tells nothing, so its outcome is unknown. Never rejects: the outcome is ShareAdd's. */
   async add(access: Access): Promise<ShareAdd> {
    if (access.account === undefined) return { outcome: "refused", error: new Error("this shared access isn't bound to a HerdrUp account") };
    const id = grantKey(access);
@@ -107,17 +118,18 @@ export function createShareAdder(account: WebAccount, name: string, options: { a
    // collected before it fires, in some engines).
    const deadline = new AbortController();
    const timer = setTimeout(() => deadline.abort(new DOMException("The account service didn't answer in time.", "TimeoutError")), options.addMs ?? ADD_MS);
-   let answer;
+   let answer: unknown;
    try {
-    answer = await account.syncPushOnce({ changes: [change] }, access.account, deadline.signal) as SyncPushAnswer | null;
+    answer = await account.syncPushOnce({ changes: [change] }, access.account, deadline.signal);
    } catch (error) {
     return refusal(error) ? { outcome: "refused", error } : { outcome: "unknown", error };
    } finally {
     clearTimeout(timer);
    }
+   if (!pushAnswer(answer)) return { outcome: "unknown", error: new Error("the account service's answer wasn't one it gives") };
    const mine = (c: { collection: string; id: string }) => c.collection === "shares" && c.id === id;
-   if (answer?.applied.some(mine)) return { outcome: "added" };
-   const conflict = answer?.conflicts.find(mine);
+   if (answer.applied.some(mine)) return { outcome: "added" };
+   const conflict = answer.conflicts.find(mine);
    if (conflict?.server?.deleted === false) return { outcome: "added" };
    if (conflict !== undefined) return { outcome: "refused", error: new Error("this shared access was removed from your account") };
    return { outcome: "unknown", error: new Error("the account service's answer didn't name this shared access") };

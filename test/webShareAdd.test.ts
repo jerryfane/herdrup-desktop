@@ -61,6 +61,10 @@ const answers = {
  status: (status: number, error: string): SyncAnswer => () => Response.json({ error }, { status }),
  network: (() => { throw new TypeError("Failed to fetch"); }) as SyncAnswer,
  stalls: ((_p: Push, signal: AbortSignal | undefined) => new Promise<Response>((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)))) as SyncAnswer,
+ /** The status line, then a body that never ends. */
+ stalledBody: (status: number): SyncAnswer => () => new Response(new ReadableStream({ start() {} }), { status, headers: { "Content-Type": "application/json" } }),
+ /** A 200 whose body is JSON but not the success envelope. */
+ malformed: (body: unknown): SyncAnswer => () => Response.json(body),
 };
 
 const HOST_KEY = new Uint8Array(32).fill(7);
@@ -123,6 +127,27 @@ test("an outcome no answer told is unknown, never added: a 5xx, the network, a t
  expect(ADD_UNKNOWN).toBe("Added on this device; we'll finish adding it to your account.");
 });
 
+test("an error status is the refusal once its status line is in: a body that stalls until the deadline doesn't make it unknown", async () => {
+ for (const status of [403, 409, 401]) {
+  const s = service(answers.stalledBody(status));
+  const added = await createShareAdder(s.account, "Chrome on macOS", { addMs: 50 }).add(bound());
+  expect([added.outcome, (added as { error?: AccountServiceError }).error?.status, s.pushes.length]).toEqual(["refused", status, 1]);
+ }
+ // A 2xx whose body stalls told nothing yet: unknown.
+ const s = service(answers.stalledBody(200));
+ expect((await createShareAdder(s.account, "Chrome on macOS", { addMs: 50 }).add(bound())).outcome).toBe("unknown");
+});
+
+test("a 2xx that isn't the success envelope tells no outcome: unknown, never an error or added", async () => {
+ const named = { collection: "shares", id: "HOST/G1" };
+ for (const body of [null, [], { rev: 1 }, { rev: 1, applied: "HOST/G1", conflicts: [] }, { rev: 1, applied: [named], conflicts: null }, { rev: 1, applied: [null], conflicts: [] },
+  { rev: 1, applied: [{ id: "HOST/G1" }], conflicts: [] }, { rev: 1, applied: [], conflicts: [{ ...named, server: {} }] }, { rev: 1, applied: [], conflicts: [{ ...named }] }]) {
+  const s = service(answers.malformed(body));
+  const added = await createShareAdder(s.account, "Chrome on macOS").add(bound());
+  expect([JSON.stringify(body), added.outcome, s.pushes.length]).toEqual([JSON.stringify(body), "unknown", 1]);
+ }
+});
+
 test("the start says how the add went as the desk told it; an accept that told nothing is unknown, never added", async () => {
  const access: PageAccess = { guestID: "G1", guestName: "visitor", machineLabel: "Mac Studio", ownerName: "Ana", agentName: "docs", agentTarget: "%7", endpoint: { relay: "https://relay.example", hostID: "HOST", hostPublicKey: "" }, acceptedAt: "", accountBound: true };
  const desk = (added?: ShareAdd) => ({
@@ -164,7 +189,8 @@ function inviteText(relay: TestRelay): string {
 const statements: StatementSource = { get: async () => ({ jws: "statement-of-acct-1", expMs: Date.now() + 600_000, account: "acct-1", live: () => true }), drop() {} };
 
 test("Add to my account keeps the grant on this browser, bound to the account, whatever the write's outcome; Only this device writes nothing", async () => {
- const cases: [SyncAnswer, ShareAdd["outcome"]][] = [[answers.applied, "added"], [answers.status(400, "invalid_body"), "refused"], [answers.status(503, ""), "unknown"], [answers.network, "unknown"]];
+ const cases: [SyncAnswer, ShareAdd["outcome"]][] = [[answers.applied, "added"], [answers.status(400, "invalid_body"), "refused"], [answers.status(503, ""), "unknown"], [answers.network, "unknown"],
+  [answers.malformed({ rev: 1 }), "unknown"]];
  for (const [answer, outcome] of cases) {
   const relay = host(), s = service(answer), grants = new MemoryGrantStore();
   const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url), statements, shares: createShareAdder(s.account, "Chrome on macOS") });

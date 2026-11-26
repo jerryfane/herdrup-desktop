@@ -415,13 +415,18 @@ export class WebAccount {
     if (!once) continue;
    }
    if (!response.ok) {
+    // A call sent once has its answer on the status line: an abort while its error body is read
+    // (one that stalls) leaves that status, with no code, never the abort.
+    if (once) throw new AccountServiceError(response.status, signal ? await untilAborted(errorCode(response), signal).catch(() => "") : await errorCode(response));
     const code = await errorCode(response);
     // An abort while the error body was read is the caller's, not the service's answer.
     signal?.throwIfAborted();
     throw new AccountServiceError(response.status, code);
    }
-   // 204 (a device removed) has no body.
-   return response.status === 204 ? undefined as T : await response.json() as T;
+   // 204 (a device removed) has no body. A call sent once stops reading one that stalls when its
+   // signal aborts.
+   if (response.status === 204) return undefined as T;
+   return await (once && signal ? untilAborted(response.json(), signal) : response.json()) as T;
   }
  }
 
