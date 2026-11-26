@@ -11,13 +11,16 @@ package main
 // (inviteLabel), that label's revision (Machine.LabelRev, the rename's unix
 // ms, above every one before) and the last revision its herdr settled
 // (Machine.LabelSent), written together by the rename. While LabelRev is
-// above LabelSent the label is to be sent: at once when the renamed profile
-// is the live connection's (link.profile, its LocalID, never its address),
-// else on its next connect; a refusal leaves it for the next connect. A
-// removed profile takes its relabel with it. One relabel of a profile is out
-// at a time: a rename while one is out is sent when it is done. While an
-// older build's relabel queue is there but not folded in (it can't be
-// read), nothing is sent or settled (#594): each attempt folds it first.
+// above LabelSent the label is to be sent: at once when the live connection
+// is the renamed profile's (link.profile, its LocalID, never its address)
+// to the destination it names now (link.id), else on its next connect; a
+// link to a former destination of the profile neither sends nor settles
+// it. A refusal leaves it for the next connect (not sent again on that SSH
+// connection). A removed profile takes its relabel with it. One relabel of
+// a profile is out at a time: a rename while one is out is sent when it is
+// done. While an older build's relabel queue is there but not folded in (it
+// can't be read), nothing is sent or settled (#594): each attempt folds it
+// first. Each link's identity is set where every link starts (Desk.start).
 //
 // With guest_relabel_rev (herdr #526) herdr keeps each share's and invite's
 // revision and takes a label only above it, so a relabel left unanswered (a
@@ -143,16 +146,15 @@ func (d *Desk) retireRelabelQueue() {
 }
 
 // followSavedLabel has the live connection name its machine to guests as
-// st saves its profile (link.profile, never the address, which account
-// sync can give to another profile while the link stays): the invite label
-// and its revision a share view opened from now on sends. A link whose
-// profile is no longer saved (removed on another device: the connection
-// stays until it ends) keeps what it had. Called with every stored change
-// of a LabelRev not made before the connection started (a rename, a fold).
-// d.mu must be held.
+// st saves its profile (findLinked): the invite label and its revision a
+// share view opened from now on sends. A link whose profile is no longer
+// saved (removed on another device: the connection stays until it ends) or
+// now names another destination keeps what it had. Called with every
+// stored change of a LabelRev not made before the connection started (a
+// rename, a fold). d.mu must be held.
 func (d *Desk) followSavedLabel(st machineStore) {
 	if l := d.link; l != nil && l.guest == nil {
-		if i := st.findProfile(l.profile); i >= 0 {
+		if i := st.findLinked(l); i >= 0 {
 			l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
 		}
 	}
@@ -200,12 +202,8 @@ func (d *Desk) relabelGuests(l *link) {
 	d.relabeling[profile] = false
 	d.relabelMu.Unlock()
 	resent := false
-	// answered is the revision this sender's last answered relabel went at:
-	// a call asking again while it was out (the rename was already saved)
-	// sends nothing new, and a refusal waits for the next connect.
-	var answered uint64
 	for {
-		outcome := d.relabelOnce(l, profile, &answered)
+		outcome := d.relabelOnce(l)
 		if hook := d.relabelSent.Load(); hook != nil {
 			(*hook)(l)
 		}
@@ -225,11 +223,17 @@ func (d *Desk) relabelGuests(l *link) {
 	}
 }
 
-// findProfile is the index of the saved profile localID (Machine.LocalID),
-// -1 if none.
-func (s *machineStore) findProfile(localID string) int {
+// findLinked is the index of l's saved profile (link.profile, never the
+// profile now at its address, which account sync can give to another while
+// the link stays) if it still names l's destination (link.id), -1 if not:
+// a link to a profile's former destination neither takes its relabels nor
+// settles them, nor names it to guests (#594).
+func (s *machineStore) findLinked(l *link) int {
 	for i, m := range s.Machines {
-		if localID != "" && m.LocalID == localID {
+		if l.profile != "" && m.LocalID == l.profile {
+			if machineID(m) != l.id {
+				return -1
+			}
 			return i
 		}
 	}
@@ -271,23 +275,29 @@ func (d *Desk) handRelabelOn(l *link) {
 	d.mu.Lock()
 	live := d.link
 	d.mu.Unlock()
-	if live != nil && live != l && live.guest == nil && live.profile == l.profile {
+	if live != nil && live != l && live.guest == nil && live.profile == l.profile && live.id == l.id {
 		live.work.Go(func() { d.relabelGuests(live) })
 	}
 }
 
-// relabelOnce sends profile's label over l if it is still to be sent, l is
-// the live connection, listed, its herdr reports guest_relabel, and (on a
-// herdr without guest_relabel_rev) no relabel went unanswered on that
-// connection. The label and revision sent are the profile's as saved now,
-// unless that revision is *answered (this sender's last answered one),
-// which it sets once herdr answers. Once settled (taken; on a herdr with
-// guest_relabel_rev, by the rule above) the profile records it sent, unless
-// a newer rename came meanwhile; a refusal leaves it for the next connect.
-func (d *Desk) relabelOnce(l *link, profile string, answered *uint64) relabelOutcome {
+// relabelOnce sends the label of l's profile over l if it is still to be
+// sent, the profile still names l's destination (findLinked), l is the live
+// connection, listed, its herdr reports guest_relabel, and (on a herdr
+// without guest_relabel_rev) no relabel went unanswered on that connection.
+// The label and revision sent are the profile's as saved now, unless herdr
+// already answered that revision on this connection (l.relabelAnswered: a
+// session switch keeps the connection, a reconnect doesn't). Once settled
+// (taken; on a herdr with guest_relabel_rev, by the rule above) the profile
+// records it sent, unless a newer rename came meanwhile or the profile now
+// names another destination; a refusal leaves it for the next connect.
+func (d *Desk) relabelOnce(l *link) relabelOutcome {
 	d.mu.Lock()
 	c, session, caps, ctx, live := l.client, l.session, l.caps, l.ctx, d.link == l
 	blocked := c != nil && c == l.relabelUnsure
+	answered := uint64(0)
+	if c != nil && c == l.relabelAnsweredOn {
+		answered = l.relabelAnswered
+	}
 	d.mu.Unlock()
 	if !live || c == nil || ctx == nil || blocked || !herdrapi.CapabilityGuestRelabel.Supported(caps) {
 		return relabelDone
@@ -304,8 +314,8 @@ func (d *Desk) relabelOnce(l *link, profile string, answered *uint64) relabelOut
 		log.Printf("guest relabel: %s: the older relabel queue is still to fold in (sent on a later connect)", l.id)
 		return relabelDone
 	}
-	i := st.findProfile(profile)
-	if i < 0 || !relabelPending(st.Machines[i]) || st.Machines[i].LabelRev == *answered {
+	i := st.findLinked(l)
+	if i < 0 || !relabelPending(st.Machines[i]) || st.Machines[i].LabelRev == answered {
 		return relabelDone
 	}
 	label, sent := inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
@@ -329,7 +339,12 @@ func (d *Desk) relabelOnce(l *link, profile string, answered *uint64) relabelOut
 		d.mu.Unlock()
 		return relabelBlocked
 	}
-	*answered = sent
+	if !errors.Is(err, bridge.ErrNotSent) {
+		// Answered (taken or refused); one never written is no answer.
+		d.mu.Lock()
+		l.relabelAnswered, l.relabelAnsweredOn = sent, c
+		d.mu.Unlock()
+	}
 	if err != nil {
 		log.Printf("guest relabel: %s: %v (sent again on the next connect)", l.id, err)
 		return relabelDone
@@ -346,7 +361,7 @@ func (d *Desk) relabelOnce(l *link, profile string, answered *uint64) relabelOut
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
 	if st, err = d.load(); err == nil {
-		if i := st.findProfile(profile); i >= 0 && st.Machines[i].LabelRev == sent {
+		if i := st.findLinked(l); i >= 0 && st.Machines[i].LabelRev == sent {
 			st.Machines[i].LabelSent = sent
 			err = d.store(st)
 		}

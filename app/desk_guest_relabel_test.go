@@ -221,6 +221,24 @@ func (h *relabelHerdr) legacyQueueGone() bool {
 	return os.IsNotExist(err)
 }
 
+// countTries counts, from now, the relabels this desk's senders tried
+// (each relabelOnce, sent or not, through the desk's relabelSent), by link.
+func (h *relabelHerdr) countTries() (tried func(*link) int) {
+	var mu sync.Mutex
+	n := map[*link]int{}
+	hook := func(l *link) {
+		mu.Lock()
+		n[l]++
+		mu.Unlock()
+	}
+	h.d.relabelSent.Store(&hook)
+	return func(l *link) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return n[l]
+	}
+}
+
 // hold holds the next guest.update until release gives its outcome: nil,
 // taken; an API error, refused. The cleanup releases it whatever happened.
 func (h *relabelHerdr) hold(t *testing.T) (release func(*fakeherdr.APIError)) {
@@ -359,6 +377,197 @@ func TestARefusedRelabelIsNotSentAgainOnItsConnection(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if n, pending := len(h.updates()), h.pending(t); n != 1 || pending != "New" {
 		t.Fatalf("%d guest.update calls, pending %q; want New refused once, left for the next connect", n, pending)
+	}
+}
+
+// #594: a relabel never written (bridge.ErrNotSent: here its watch had
+// already ended) is no answer from herdr, so it goes again on the same
+// connection.
+func TestARelabelNeverWrittenGoesAgainOnItsConnection(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	tried := h.countTries()
+	h.reconnect(t)
+	waitFor(t, "the first list's sender to try", func() bool { return tried(h.live()) > 0 })
+	h.idle(t, "the first list's sender to end")
+	// A rename stored without a sender of its own.
+	h.d.storeMu.Lock()
+	st, err := h.d.load()
+	if err == nil {
+		m := &st.Machines[0]
+		m.Nickname, m.LabelRev = "New", nextLabelRev(m.LabelRev)
+		err = h.d.store(st)
+	}
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := h.live()
+	ended, end := context.WithCancel(context.Background())
+	end()
+	h.d.mu.Lock()
+	watch := l.ctx
+	l.ctx = ended
+	h.d.mu.Unlock()
+	outcome := h.d.relabelOnce(l)
+	h.d.mu.Lock()
+	l.ctx = watch
+	h.d.mu.Unlock()
+	if n := len(h.updates()); outcome != relabelDone || n != 0 || h.pending(t) != "New" {
+		t.Fatalf("outcome %d, %d guest.update calls, pending %q; want New not written, still pending", outcome, n, h.pending(t))
+	}
+	h.d.relabelGuests(l)
+	if n, pending := len(h.updates()), h.pending(t); n != 1 || pending != "" {
+		t.Fatalf("%d guest.update calls, pending %q; want New sent on the same connection", n, pending)
+	}
+}
+
+// #594: herdr's answer to a relabel holds for the SSH connection it came
+// on. A refused one, its sender held while that connection dropped and the
+// new connection's first list asked it again, goes again on the new one.
+func TestARefusedRelabelGoesAgainOnANewConnection(t *testing.T) {
+	h := newRelabelHerdr(t, "Old", true)
+	// A connection whose first list's sender tried and ended, so the
+	// rename's own is the one held and nothing is queued behind it before
+	// the new connection asks.
+	tried := h.countTries()
+	h.reconnect(t)
+	l := h.live()
+	waitFor(t, "the first list's sender to try", func() bool { return tried(l) > 0 })
+	h.idle(t, "the first list's sender to end")
+	proceed := make(chan struct{})
+	var once sync.Once
+	resume := func() { once.Do(func() { close(proceed) }) }
+	t.Cleanup(resume)
+	var holding atomic.Bool
+	hook := func(hl *link) {
+		if hl == l && len(h.updates()) == 1 && holding.CompareAndSwap(false, true) {
+			<-proceed
+		}
+	}
+	h.d.relabelSent.Store(&hook)
+	h.failing.Store(true)
+	h.rename(t, "New")
+	waitFor(t, "New refused, its sender held", holding.Load)
+	h.failing.Store(false)
+	h.d.mu.Lock()
+	refusedOn := l.client
+	h.d.mu.Unlock()
+	h.srv.DropConns()
+	h.queuedBehind(t) // the new connection's first list
+	h.d.mu.Lock()
+	now := l.client
+	h.d.mu.Unlock()
+	if now == nil || now == refusedOn || h.live() != l {
+		t.Fatalf("the link's connection %p after %p; want a new one on the same link", now, refusedOn)
+	}
+	resume()
+	waitFor(t, "New sent again on the new connection", func() bool { return len(h.updates()) == 2 && h.pending(t) == "" })
+}
+
+// #594: a session switch keeps the SSH connection, so a relabel herdr
+// refused on it isn't sent again by the new watch's first list; a
+// reconnect sends it.
+func TestARefusedRelabelIsNotSentAgainAfterASessionSwitch(t *testing.T) {
+	h := newRelabelHerdr(t, "Old", true)
+	tried := h.countTries()
+	h.failing.Store(true)
+	h.rename(t, "New")
+	waitFor(t, "New refused", func() bool { return h.done.Load() == 1 })
+	h.idle(t, "the rename's sender to end")
+	h.failing.Store(false)
+	l := h.live()
+	n := tried(l)
+	h.restartWatch(t)
+	waitFor(t, "the new watch's sender", func() bool { return tried(l) > n })
+	h.idle(t, "the new watch's sender to end")
+	if got, pending := len(h.updates()), h.pending(t); got != 1 || pending != "New" {
+		t.Fatalf("%d guest.update calls, pending %q after the session switch; want New refused once, still pending", got, pending)
+	}
+	h.reconnect(t)
+	waitFor(t, "New sent again on the next connect", func() bool { return len(h.updates()) == 2 && h.pending(t) == "" })
+}
+
+// #594: the startup connect (main starts the saved machine directly) gives
+// the link its profile as every connect does: a profile saved before local
+// ids gets one there, so its first rename relabels its shares and an invite
+// carries the new label at its revision.
+func TestAStartupConnectGivesTheLinkItsProfile(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.d.storeMu.Lock()
+	st, err := h.d.load()
+	if err == nil {
+		st.Machines[0].LocalID = ""
+		err = h.d.store(st)
+	}
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := h.d.Machine()
+	if err != nil || m == nil {
+		t.Fatalf("the saved machine %+v, %v", m, err)
+	}
+	lists := h.count("agent.list")
+	h.d.start(*m, "")
+	waitFor(t, "the startup connection's first list", func() bool { return h.count("agent.list") > lists })
+	h.rename(t, "New")
+	waitFor(t, "New sent and taken", func() bool { return len(h.updates()) == 1 && h.pending(t) == "" })
+	b := h.d.Board()
+	if _, err := h.d.OpenAgentView(AgentTarget{MachineID: b.MachineID, Session: b.Session, PaneID: "w1:p1"}, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.d.CreateGuestInvite(context.Background(), "v", "Taylor", "Owner", false); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	p := h.invites[len(h.invites)-1]
+	h.mu.Unlock()
+	if rev := h.labelRev(t); p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite after the rename: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
+	}
+}
+
+// #594, the probe: one save moves the connected profile to another
+// destination (another user, here on the same server) and renames it. The
+// link to its former destination neither takes the relabel nor settles it,
+// nor names the new label to guests; connecting to the new destination
+// sends it.
+func TestARelabelGoesOnlyToItsProfilesCurrentDestination(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	tried := h.countTries()
+	h.reconnect(t)
+	l := h.live()
+	waitFor(t, "the first list's sender to try", func() bool { return tried(l) > 0 })
+	h.idle(t, "the first list's sender to end")
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	m := saved[0].Machine
+	m.Nickname, m.User = "New B", "other"
+	if err := h.d.SaveMachine(m, saved[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	h.d.relabelGuests(l) // the link to the former destination, asked
+	h.d.mu.Lock()
+	label, rev := l.shareLabel, l.shareLabelRev
+	h.d.mu.Unlock()
+	if got, pending := h.updates(), h.pending(t); len(got) != 0 || pending != "New B" || label != "Old" || rev != 0 {
+		t.Fatalf("sent %+v, pending %q, the old link names %q at %d; want nothing sent, New B pending, Old kept", got, pending, label, rev)
+	}
+	saved, err = h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	lists := h.count("agent.list")
+	if err := h.d.SelectMachine(saved[0].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the new destination's first list", func() bool { return h.count("agent.list") > lists })
+	waitFor(t, "New B sent and taken", func() bool { return len(h.updates()) == 1 && h.pending(t) == "" })
+	if got := h.labels(t); !slices.Equal(got, everywhere("New B")) {
+		t.Fatalf("shares %q; want New B", got)
 	}
 }
 
@@ -613,14 +822,25 @@ func TestARelabelQueuedBeforeRevisionsGoesAtTheFilesTime(t *testing.T) {
 	if want <= renamed {
 		t.Fatalf("the file's time %d is not above the rename's %d", want, renamed)
 	}
-	// Connected as the page connects a machine (Connect): the queue is
-	// folded then too.
+	// Connected as the page connects a machine (Connect): the connection
+	// starts with the queue folded, its invite revision the folded one
+	// before its first list (and its sender) comes.
 	h.d.Disconnect()
+	var atFirstList atomic.Uint64
+	record := func() {
+		h.d.mu.Lock()
+		atFirstList.Store(h.d.link.shareLabelRev)
+		h.d.mu.Unlock()
+	}
+	h.onList.Store(&record)
 	lists := h.count("agent.list")
 	if err := h.d.Connect(saved[0].Machine, ""); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the connection's first list", func() bool { return h.count("agent.list") > lists })
+	waitFor(t, "the connection's first list", func() bool { return h.count("agent.list") > lists && atFirstList.Load() != 0 })
+	if got := atFirstList.Load(); got != want {
+		t.Fatalf("the link's invite revision %d at its first list; want the folded %d", got, want)
+	}
 	waitFor(t, "the profile's label sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
 	h.answered(t)
 	h.idle(t, "the sender to end")
@@ -788,8 +1008,9 @@ func TestNoRelabelGoesWhileTheOlderQueueCantBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tried := h.countTries()
 	h.reconnect(t)
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, "the connection's sender to try", func() bool { return tried(h.live()) > 0 })
 	h.idle(t, "the sender to end")
 	if got, pending, rev := h.updates(), h.pending(t), h.labelRev(t); len(got) != 0 || pending != "Named" || rev != renamed {
 		t.Fatalf("sent %+v, pending %q, revision %d while the queue can't be read; want nothing sent, Named pending at %d", got, pending, rev, renamed)

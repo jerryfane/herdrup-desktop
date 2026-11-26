@@ -376,6 +376,12 @@ type link struct {
 	// relabelUnsure is the connection (l.client) a guest relabel went
 	// unanswered on, which takes no more (desk_guest_relabel.go).
 	relabelUnsure *bridge.Client
+	// relabelAnswered is the revision herdr last answered a guest relabel
+	// at, and relabelAnsweredOn the connection (l.client) it answered on:
+	// that revision isn't sent again on that connection, a session switch
+	// included; a new connection (a reconnect) sends it again.
+	relabelAnswered   uint64
+	relabelAnsweredOn *bridge.Client
 	// gram is the Gram state of a shared agent in the combined guest Gram
 	// (guestGramHub); nil for the connection Desk.gram follows. cancelGram
 	// ends that shared agent's reads.
@@ -722,7 +728,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	// open keeps the name it opened with.
 	d.mu.Lock()
 	d.followSavedLabel(st)
-	if l := d.link; relabel && l != nil && l.guest == nil && l.profile == m.LocalID {
+	if l := d.link; relabel && l != nil && l.guest == nil && l.profile == m.LocalID && l.id == id {
 		l.work.Go(func() { d.relabelGuests(l) })
 	}
 	d.mu.Unlock()
@@ -746,17 +752,10 @@ func (d *Desk) SelectMachine(id, password string) error {
 		d.storeMu.Unlock()
 		return err
 	}
-	// The connection starts with the profiles as an older build's relabel
-	// queue leaves them (its invite revision above every one sent).
-	folded := d.foldRelabels(&st)
 	i := st.find(id)
 	if i < 0 {
 		d.storeMu.Unlock()
 		return fmt.Errorf("no saved machine %q", id)
-	}
-	if st.Machines[i].LocalID == "" {
-		// The connection's identity among the saved profiles (link.profile).
-		st.Machines[i].LocalID = newLocalID()
 	}
 	m := st.Machines[i]
 	if m.KeyPath == "" && password == "" {
@@ -771,9 +770,6 @@ func (d *Desk) SelectMachine(id, password string) error {
 	d.mu.Unlock()
 	st.Active = id
 	err = d.store(st)
-	if err == nil && folded {
-		d.retireRelabelQueue()
-	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
@@ -1048,7 +1044,6 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	if err != nil {
 		return m, err
 	}
-	folded := d.foldRelabels(&st)
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
 		// The page doesn't hold the sync id: a reconnect keeps the machine's,
@@ -1060,26 +1055,40 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 		m.LocalID, m.LabelRev, m.LabelSent = "", 0, 0
 		st.Machines = append(st.Machines, m)
 	}
-	if i := st.find(id); st.Machines[i].LocalID == "" {
-		// The connection's identity among the saved profiles (link.profile).
-		st.Machines[i].LocalID = newLocalID()
-		m.LocalID = st.Machines[i].LocalID
-	}
 	st.Active = id
 	if err := d.store(st); err != nil {
 		return m, err
-	}
-	if folded {
-		d.retireRelabelQueue()
 	}
 	d.boards.allow(id)
 	d.syncMachinesSoon()
 	return m, nil
 }
 
+// start connects to m, replacing any current connection. Every owner link
+// starts here, so here it takes its identity (desk_guest_relabel.go): the
+// destination it connects to (link.id) and the saved profile there
+// (link.profile, its LocalID, given one if it has none, with an older
+// build's relabel queue folded in first), whose label and revision it names
+// its machine by to guests.
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), profile: m.LocalID, session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
+	l := &link{id: machineID(m), session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
+	d.storeMu.Lock()
+	st, _, err := d.loadFolded()
+	if i := st.find(l.id); err == nil && i >= 0 {
+		if st.Machines[i].LocalID == "" {
+			st.Machines[i].LocalID = newLocalID()
+			err = d.store(st)
+		}
+		if err == nil {
+			saved := st.Machines[i]
+			l.profile, l.shareLabel, l.shareLabelRev = saved.LocalID, inviteLabel(saved), saved.LabelRev
+		}
+	}
+	d.storeMu.Unlock()
+	if err != nil {
+		log.Printf("connect: %s: the saved profile: %v", l.id, err)
+	}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()
