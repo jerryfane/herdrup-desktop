@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -18,16 +19,18 @@ import (
 // herdr reporting guest_relabel when relabel is set. updates are the
 // guest.update params sent, in order, and done counts those herdr has
 // answered; while failing is set herdr refuses them. A channel in held holds
-// the next guest.update until it is closed.
+// the next guest.update until it is closed; refuseHeld has herdr refuse that
+// one then.
 type relabelHerdr struct {
-	d       *Desk
-	srv     *fakeherdr.Server
-	guests  *fakeherdr.Guests
-	failing atomic.Bool
-	held    atomic.Pointer[chan struct{}]
-	done    atomic.Int32
-	mu      sync.Mutex
-	sent    []herdrapi.GuestUpdateParams
+	d          *Desk
+	srv        *fakeherdr.Server
+	guests     *fakeherdr.Guests
+	failing    atomic.Bool
+	held       atomic.Pointer[chan struct{}]
+	refuseHeld atomic.Bool
+	done       atomic.Int32
+	mu         sync.Mutex
+	sent       []herdrapi.GuestUpdateParams
 }
 
 func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr {
@@ -55,6 +58,10 @@ func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr 
 				}
 				if gate := h.held.Swap(nil); gate != nil {
 					<-*gate
+					if h.refuseHeld.Swap(false) {
+						h.done.Add(1)
+						return nil, &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
+					}
 				}
 				value, err, _ := h.guests.Handle(method, raw)
 				h.done.Add(1)
@@ -253,6 +260,22 @@ func TestANewerRenameIsTheLastRelabelHerdrTakes(t *testing.T) {
 	h.rename(t, "First")
 	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) == 1 })
 	h.rename(t, "Second")
+	h.queuedBehind(t)
+	close(release)
+	waitFor(t, "both relabels answered", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
+	var sent []string
+	for _, p := range h.updates() {
+		sent = append(sent, *p.MachineLabel)
+	}
+	if got := h.labels(t); !slices.Equal(sent, []string{"First", "Second"}) || !slices.Equal(got, everywhere("Second")) {
+		t.Fatalf("sent %q, shares named %q; want First then Second, and Second everywhere", sent, got)
+	}
+}
+
+// queuedBehind waits for the rename just saved to be queued behind the
+// relabel out, and fails if it reached the server beside it instead.
+func (h *relabelHerdr) queuedBehind(t *testing.T) {
+	t.Helper()
 	queued := func() bool {
 		h.d.relabelMu.Lock()
 		defer h.d.relabelMu.Unlock()
@@ -263,15 +286,62 @@ func TestANewerRenameIsTheLastRelabelHerdrTakes(t *testing.T) {
 		}
 		return false
 	}
-	waitFor(t, "the second relabel sent or queued", func() bool { return len(h.updates()) == 2 || queued() })
+	waitFor(t, "the second relabel queued or sent", func() bool { return queued() || len(h.updates()) > 1 })
+	if n := len(h.updates()); !queued() || n != 1 {
+		t.Fatalf("the second relabel reached the server beside the first (%d updates sent), not queued behind it", n)
+	}
+}
+
+// #561: a refused relabel doesn't strand a newer rename queued behind it: the
+// newer one goes on the live connection at once, and is the name herdr
+// keeps; nothing is left for the next connect.
+func TestARenameQueuedBehindARefusedRelabelGoesAtOnce(t *testing.T) {
+	h := newRelabelHerdr(t, "Old", true)
+	release := make(chan struct{})
+	h.held.Store(&release)
+	h.refuseHeld.Store(true)
+	h.rename(t, "First")
+	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) == 1 })
+	h.rename(t, "Second")
+	h.queuedBehind(t)
 	close(release)
-	waitFor(t, "both relabels answered", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
+	waitFor(t, "the newer rename sent and taken", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
 	var sent []string
 	for _, p := range h.updates() {
 		sent = append(sent, *p.MachineLabel)
 	}
 	if got := h.labels(t); !slices.Equal(sent, []string{"First", "Second"}) || !slices.Equal(got, everywhere("Second")) {
-		t.Fatalf("sent %q, shares named %q; want First then Second, and Second everywhere", sent, got)
+		t.Fatalf("sent %q, shares named %q; want First refused, then Second taken", sent, got)
+	}
+}
+
+// Entries of the address-keyed format (#554, before #557) are bound to no
+// profile: the next load retires them and writes them out of the file; they
+// are never matched to the profile at that address, so nothing is sent.
+func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
+	h := newRelabelHerdr(t, "Old", true)
+	h.rename(t, "Named")
+	waitFor(t, "the rename taken", func() bool { return h.done.Load() == 1 && h.pending(t) == "" })
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	h.d.storeMu.Lock()
+	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(`{"`+saved[0].ID+`":"Old name"}`))
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reconnect(t)
+	waitFor(t, "the address-keyed entry retired", func() bool {
+		h.d.storeMu.Lock()
+		defer h.d.storeMu.Unlock()
+		raw, err := os.ReadFile(h.d.guestRelabelsPath())
+		return err == nil && string(raw) == "{}"
+	})
+	time.Sleep(300 * time.Millisecond)
+	if n := len(h.updates()); n != 1 {
+		t.Fatalf("%d guest.update calls; the retired entry must send none", n)
 	}
 }
 

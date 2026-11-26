@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/jerryfane/herdrup-desktop/internal/engine"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
@@ -43,6 +44,10 @@ func newLocalID() string {
 func (d *Desk) guestRelabelsPath() string { return filepath.Join(d.dir, "guest-relabels.json") }
 
 // loadRelabels reads the relabels not yet taken. d.storeMu must be held.
+// Entries keyed by anything but a profile's LocalID (the user@host:port keys
+// of #554, before #557) are bound to no profile: they are retired here,
+// written out of the file, and never matched to a profile by address, which
+// would let a new profile at that address inherit one again.
 func (d *Desk) loadRelabels() (map[string]string, error) {
 	pending := map[string]string{}
 	data, err := os.ReadFile(d.guestRelabelsPath())
@@ -52,8 +57,24 @@ func (d *Desk) loadRelabels() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pending, json.Unmarshal(data, &pending)
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return nil, err
+	}
+	retired := false
+	for key := range pending {
+		if !localIDPattern.MatchString(key) {
+			delete(pending, key)
+			retired = true
+		}
+	}
+	if retired {
+		return pending, d.storeRelabels(pending)
+	}
+	return pending, nil
 }
+
+// localIDPattern is a Machine.LocalID, as newLocalID makes them.
+var localIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // storeRelabels writes them. d.storeMu must be held.
 func (d *Desk) storeRelabels(pending map[string]string) error {
@@ -99,7 +120,9 @@ func (d *Desk) dropRelabel(localID string) error {
 // relabelGuests sends l's machine's relabel not yet taken, if l is the live
 // connection, listed, and its herdr reports guest_relabel. A profile has one
 // sender at a time: a call while one is out has it send again once done, so
-// a rename made meanwhile goes after the one out, never before it.
+// a rename made meanwhile goes after the one out, never before it. It goes
+// whether the one out was taken or refused: a refusal leaves the relabel for
+// the next connect only while no newer rename is waiting on this one.
 func (d *Desk) relabelGuests(l *link) {
 	d.storeMu.Lock()
 	st, err := d.load()
@@ -124,10 +147,9 @@ func (d *Desk) relabelGuests(l *link) {
 	d.relabeling[profile] = false
 	d.relabelMu.Unlock()
 	for {
-		taken := d.relabelOnce(l, profile)
+		d.relabelOnce(l, profile)
 		d.relabelMu.Lock()
-		again := d.relabeling[profile]
-		if !taken || !again {
+		if !d.relabeling[profile] {
 			delete(d.relabeling, profile)
 			d.relabelMu.Unlock()
 			return
@@ -140,14 +162,14 @@ func (d *Desk) relabelGuests(l *link) {
 // relabelOnce sends profile's relabel not yet taken over l, if l is the live
 // connection, listed, and its herdr reports guest_relabel; the label sent is
 // the machine's invite label as saved now. It is forgotten once taken, unless
-// a newer rename queued another meanwhile. taken reports a relabel herdr took,
-// or nothing to send; false keeps it for the next connect.
-func (d *Desk) relabelOnce(l *link, profile string) (taken bool) {
+// a newer rename queued another meanwhile; a refusal keeps it for the next
+// connect.
+func (d *Desk) relabelOnce(l *link, profile string) {
 	d.mu.Lock()
 	c, session, caps, ctx, live := l.client, l.session, l.caps, l.ctx, d.link == l
 	d.mu.Unlock()
 	if !live || c == nil || ctx == nil || !herdrapi.CapabilityGuestRelabel.Supported(caps) {
-		return false
+		return
 	}
 	d.storeMu.Lock()
 	pending, err := d.loadRelabels()
@@ -158,12 +180,12 @@ func (d *Desk) relabelOnce(l *link, profile string) (taken bool) {
 	d.storeMu.Unlock()
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
-		return false
+		return
 	}
 	queued, ok := pending[profile]
 	i := st.find(l.id)
 	if !ok || i < 0 || st.Machines[i].LocalID != profile {
-		return true
+		return
 	}
 	label := inviteLabel(st.Machines[i])
 	view, err := c.ForSession(session)
@@ -172,7 +194,7 @@ func (d *Desk) relabelOnce(l *link, profile string) (taken bool) {
 	}
 	if err != nil {
 		log.Printf("guest relabel: %s: %v (sent again on the next connect)", l.id, err)
-		return false
+		return
 	}
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
@@ -183,5 +205,4 @@ func (d *Desk) relabelOnce(l *link, profile string) (taken bool) {
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
 	}
-	return true
 }
