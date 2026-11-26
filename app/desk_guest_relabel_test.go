@@ -152,7 +152,8 @@ func (h *relabelHerdr) count(method string) int {
 	return n
 }
 
-// pending is the relabel the desk still has to send for its one profile.
+// pending is the label the desk still has to send for its one profile, ""
+// when none.
 func (h *relabelHerdr) pending(t *testing.T) string {
 	t.Helper()
 	saved, err := h.d.Machines()
@@ -162,35 +163,45 @@ func (h *relabelHerdr) pending(t *testing.T) string {
 	return h.relabels(t)[saved[0].LocalID]
 }
 
-// relabels are the labels of every relabel the desk still has to send, by
-// profile, as the file holds them.
+// relabels are the labels the desk still has to send, by profile, as the
+// saved profiles say.
 func (h *relabelHerdr) relabels(t *testing.T) map[string]string {
 	t.Helper()
+	return pendingRelabels(t, h.d)
+}
+
+// pendingRelabels are the labels d still has to send, by profile.
+func pendingRelabels(t *testing.T, d *Desk) map[string]string {
+	t.Helper()
+	saved, err := d.Machines()
+	if err != nil {
+		t.Fatal(err)
+	}
 	labels := map[string]string{}
-	for profile, q := range h.queued(t) {
-		labels[profile] = q.Label
+	for _, s := range saved {
+		if relabelPending(s.Machine) {
+			labels[s.LocalID] = inviteLabel(s.Machine)
+		}
 	}
 	return labels
 }
 
-// queued are every relabel the desk still has to send, by profile, as the
-// file holds them.
-func (h *relabelHerdr) queued(t *testing.T) map[string]queuedRelabel {
+// legacyQueue writes guest-relabels.json as a build before #592 left it.
+func (h *relabelHerdr) legacyQueue(t *testing.T, body string) {
 	t.Helper()
 	h.d.storeMu.Lock()
 	defer h.d.storeMu.Unlock()
-	pending := map[string]queuedRelabel{}
-	data, err := os.ReadFile(h.d.guestRelabelsPath())
-	if os.IsNotExist(err) {
-		return pending
-	}
-	if err == nil {
-		err = json.Unmarshal(data, &pending)
-	}
-	if err != nil {
+	if err := writeFileAtomic(h.d.guestRelabelsPath(), []byte(body)); err != nil {
 		t.Fatal(err)
 	}
-	return pending
+}
+
+// legacyQueueGone reports the older build's queue retired.
+func (h *relabelHerdr) legacyQueueGone() bool {
+	h.d.storeMu.Lock()
+	defer h.d.storeMu.Unlock()
+	_, err := os.Stat(h.d.guestRelabelsPath())
+	return os.IsNotExist(err)
 }
 
 // hold holds the next guest.update until release gives its outcome: nil,
@@ -543,8 +554,10 @@ func TestAnOrderedRelabelIsForgottenOnlyWhenEveryRecordReachedItsRevision(t *tes
 	}
 }
 
-// #570: an entry queued before revisions (its label alone) takes the file's
-// time as its revision, the same on every read, and goes with it.
+// #570, #592: an entry an older build queued before revisions (its label
+// alone) raises its profile's revision to the file's time; the profile's
+// own label goes at it (the profile, not the queue, holds the name), and the
+// file is retired.
 func TestARelabelQueuedBeforeRevisionsGoesAtTheFilesTime(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
@@ -553,25 +566,31 @@ func TestARelabelQueuedBeforeRevisionsGoesAtTheFilesTime(t *testing.T) {
 	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
+	renamed := saved[0].LabelRev
+	time.Sleep(5 * time.Millisecond) // the file's time above the rename's
+	h.legacyQueue(t, `{"`+saved[0].LocalID+`":"Legacy"}`)
 	h.d.storeMu.Lock()
-	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(`{"`+saved[0].LocalID+`":"Legacy"}`))
-	var stamp uint64
-	if info, statErr := os.Stat(h.d.guestRelabelsPath()); err == nil && statErr == nil {
-		stamp = uint64(info.ModTime().UnixMilli())
-	}
+	info, err := os.Stat(h.d.guestRelabelsPath())
 	h.d.storeMu.Unlock()
-	if err != nil || stamp == 0 {
-		t.Fatalf("legacy entry: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := uint64(info.ModTime().UnixMilli())
+	if want <= renamed {
+		t.Fatalf("the file's time %d is not above the rename's %d", want, renamed)
 	}
 	h.reconnect(t)
-	waitFor(t, "the legacy entry sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
+	waitFor(t, "the profile's label sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
 	h.answered(t)
 	h.idle(t, "the sender to end")
 	if n := len(h.updates()); n != 1 {
-		t.Fatalf("%d guest.update calls; want the legacy entry's one", n)
+		t.Fatalf("%d guest.update calls; want the profile's one", n)
 	}
-	if p := h.updates()[0]; *p.MachineLabel != "Legacy" || p.MachineLabelRev == nil || *p.MachineLabelRev != stamp || h.pending(t) != "" || !slices.Equal(h.labels(t), everywhere("Legacy")) {
-		t.Fatalf("sent %+v (rev %v), pending %q, shares %q; want Legacy at %d, taken", p, p.MachineLabelRev, h.pending(t), h.labels(t), stamp)
+	if p := h.updates()[0]; *p.MachineLabel != "Named" || p.MachineLabelRev == nil || *p.MachineLabelRev != want || !slices.Equal(h.labels(t), everywhere("Named")) {
+		t.Fatalf("sent %+v (rev %v), shares %q; want Named at %d, taken", p, p.MachineLabelRev, h.labels(t), want)
+	}
+	if rev := h.labelRev(t); rev != want || !h.legacyQueueGone() {
+		t.Fatalf("profile revision %d, queue gone %v; want %d kept as the floor, the queue retired", rev, h.legacyQueueGone(), want)
 	}
 }
 
@@ -601,11 +620,10 @@ func TestAnInviteCarriesItsLabelsRevision(t *testing.T) {
 	}
 }
 
-// Entries of no saved profile, such as the address-keyed format (#554,
-// before #557), are retired: never matched to the profile at that address,
-// so nothing is sent, and written out of the file with the next write (here
-// the next rename's, which leaves the profile's own entry alone in it). The
-// sender runs here, synchronously, on the live connection.
+// Entries of no saved profile in an older build's queue, such as the
+// address-keyed format (#554, before #557), are retired with it: never
+// matched to the profile at that address, so nothing is sent. The sender
+// runs here, synchronously, on the live connection.
 func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", true)
 	h.rename(t, "Named")
@@ -614,53 +632,188 @@ func TestAnAddressKeyedRelabelIsRetired(t *testing.T) {
 	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
-	h.d.storeMu.Lock()
-	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(`{"`+saved[0].ID+`":"Old name"}`))
-	h.d.storeMu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
+	h.legacyQueue(t, `{"`+saved[0].ID+`":"Old name"}`)
 	h.idle(t, "the rename's sender to end")
 	h.d.relabelGuests(h.live())
-	if n := len(h.updates()); n != 1 {
-		t.Fatalf("%d guest.update calls; the address-keyed entry must send none", n)
-	}
-	h.failing.Store(true) // the next rename stays queued, so the file shows it
-	h.rename(t, "Renamed")
-	h.idle(t, "the next rename's sender to end")
-	if p := h.relabels(t); len(p) != 1 || p[saved[0].LocalID] != "Renamed" {
-		t.Fatalf("relabels %v after the next rename; want the address-keyed entry written out, the profile's alone", p)
+	if n := len(h.updates()); n != 1 || !h.legacyQueueGone() || h.pending(t) != "" {
+		t.Fatalf("%d guest.update calls, queue gone %v, pending %q; the address-keyed entry must send none and go", n, h.legacyQueueGone(), h.pending(t))
 	}
 }
 
-// #563: a retired entry whose removal can't be written (the atomic write's
-// temp file can't be opened) doesn't hold back the current profile's relabel
-// beside it: it is sent all the same, and the failure is only logged.
-func TestARelabelBesideALegacyEntryGoesWhenTheCleanupCantBeWritten(t *testing.T) {
-	h := newRelabelHerdr(t, "Old", true)
-	h.failing.Store(true)
-	h.rename(t, "Named")
-	waitFor(t, "the rename refused", func() bool { return h.done.Load() == 1 })
+// #592, the probe's sequence: First was queued while disconnected, then
+// Second was saved while the queue's write failed, so an older build's queue
+// still names First. The profile holds the name: the reconnect sends Second
+// at its own revision, nothing else, and leaves nothing to send.
+func TestARelabelLeftByAFailedQueueWriteGoesWithTheSavedName(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "First")
+	first := h.labelRev(t)
 	saved, err := h.d.Machines()
-	if err != nil || len(saved) != 1 || h.pending(t) != "Named" {
-		t.Fatalf("saved %+v, %v, pending %v", saved, err, h.relabels(t))
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
 	}
+	time.Sleep(2 * time.Millisecond)
+	h.rename(t, "Second")
+	second := h.labelRev(t)
+	if second <= first {
+		t.Fatalf("Second's revision %d not above First's %d", second, first)
+	}
+	// The older build saved Second but failed to write its queue entry, so
+	// the queue still holds First's.
+	h.legacyQueue(t, fmt.Sprintf(`{%q:{"label":"First","rev":%d}}`, saved[0].LocalID, first))
+	h.reconnect(t)
+	waitFor(t, "Second sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	got := h.updates()
+	if len(got) != 1 || *got[0].MachineLabel != "Second" || got[0].MachineLabelRev == nil || *got[0].MachineLabelRev != second {
+		t.Fatalf("sent %+v; want Second alone, at %d", got, second)
+	}
+	if labels := h.labels(t); !slices.Equal(labels, everywhere("Second")) || !h.legacyQueueGone() {
+		t.Fatalf("shares %q, queue gone %v; want Second everywhere, the queue retired", labels, h.legacyQueueGone())
+	}
+}
+
+// #593: an older build's queue whose time is ahead of the clock (a skewed
+// mtime) never puts its time on herdr: the revision it raises the profile to
+// is clamped to now, and the next rename goes above it and is taken.
+func TestAMigratedRevisionNeverMakesTheNextRenameOlder(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "Named")
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	h.legacyQueue(t, `{"`+saved[0].LocalID+`":"Legacy"}`)
+	ahead := time.Now().Add(time.Hour)
 	h.d.storeMu.Lock()
-	err = writeFileAtomic(h.d.guestRelabelsPath(), []byte(`{"`+saved[0].LocalID+`":"Named","`+saved[0].ID+`":"Old name"}`))
+	err = os.Chtimes(h.d.guestRelabelsPath(), ahead, ahead)
 	h.d.storeMu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked := h.d.guestRelabelsPath() + ".tmp"
-	if err := os.Mkdir(blocked, 0o700); err != nil {
+	h.reconnect(t)
+	waitFor(t, "Named sent and taken", func() bool { return len(h.updates()) >= 1 && h.pending(t) == "" })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	now := uint64(time.Now().UnixMilli())
+	if p := h.updates()[0]; *p.MachineLabel != "Named" || p.MachineLabelRev == nil || *p.MachineLabelRev > now || h.labelRev(t) > now {
+		t.Fatalf("sent %+v (rev %v), profile revision %d; want Named at no later than now (%d)", p, p.MachineLabelRev, h.labelRev(t), now)
+	}
+	h.rename(t, "New")
+	waitFor(t, "New sent", func() bool { return len(h.updates()) >= 2 })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	if got, pending := h.labels(t), h.pending(t); !slices.Equal(got, everywhere("New")) || pending != "" {
+		t.Fatalf("shares %q, pending %q; want New taken", got, pending)
+	}
+}
+
+// #593: a rename's revision is above the profile's, even one ahead of the
+// clock (the clock went back since), so herdr, which holds that one, takes
+// it.
+func TestARenameGoesAboveItsProfilesRevision(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.rename(t, "Named")
+	waitFor(t, "Named taken", func() bool { return h.done.Load() == 1 && h.pending(t) == "" })
+	h.idle(t, "the sender to end")
+	ahead := uint64(time.Now().Add(time.Hour).UnixMilli())
+	h.d.Disconnect()
+	h.d.storeMu.Lock()
+	st, err := h.d.load()
+	if err == nil {
+		st.Machines[0].LabelRev, st.Machines[0].LabelSent = ahead, ahead
+		err = h.d.store(st)
+	}
+	h.d.storeMu.Unlock()
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Remove(blocked) })
-	h.failing.Store(false)
-	h.idle(t, "the rename's sender to end")
-	h.d.relabelGuests(h.live())
-	if n, got := len(h.updates()), h.labels(t); n != 2 || *h.updates()[1].MachineLabel != "Named" || !slices.Equal(got, everywhere("Named")) {
-		t.Fatalf("%d guest.update calls, shares named %q; want Named sent despite the cleanup", n, got)
+	if _, apiErr, _ := h.guests.Handle("guest.update", json.RawMessage(fmt.Sprintf(`{"machine_label":"Named","machine_label_rev":%d}`, ahead))); apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	h.reconnect(t)
+	h.rename(t, "New")
+	waitFor(t, "New sent", func() bool { return len(h.updates()) >= 2 })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	if got, pending, rev := h.labels(t), h.pending(t), h.labelRev(t); !slices.Equal(got, everywhere("New")) || pending != "" || rev <= ahead {
+		t.Fatalf("shares %q, pending %q, revision %d; want New taken above %d", got, pending, rev, ahead)
+	}
+}
+
+// #593, the rule: a share at this label's very revision holding another
+// label hasn't taken it, so it isn't settled; it goes again at once, at a
+// new revision, and is taken.
+func TestARelabelTiedWithAnotherLabelGoesAgainAbove(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.d.Disconnect()
+	h.rename(t, "Mine")
+	rev := h.labelRev(t)
+	if _, apiErr, _ := h.guests.Handle("guest.update", json.RawMessage(fmt.Sprintf(`{"machine_label":"Other","machine_label_rev":%d}`, rev))); apiErr != nil {
+		t.Fatal(apiErr)
+	}
+	h.reconnect(t)
+	waitFor(t, "Mine sent again", func() bool { return len(h.updates()) >= 2 && h.pending(t) == "" })
+	h.answered(t)
+	h.idle(t, "the sender to end")
+	got := h.updates()
+	if len(got) != 2 || *got[0].MachineLabelRev != rev || *got[1].MachineLabel != "Mine" || *got[1].MachineLabelRev <= rev {
+		t.Fatalf("sent %+v; want Mine at %d, then above it", got, rev)
+	}
+	if labels := h.labels(t); !slices.Equal(labels, everywhere("Mine")) {
+		t.Fatalf("shares %q; want Mine everywhere", labels)
+	}
+}
+
+// P3 (#591 review): a sender left on a link that another connection to the
+// machine replaced (no Disconnect) hands the relabel to the replacement
+// link's work: it goes out there while the old link's work ends.
+func TestARelabelOfAReplacedLinkGoesOnWithTheNewLinksWork(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	old := h.live()
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	if err := h.d.SelectMachine(saved[0].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the replacement's first list", func() bool {
+		h.d.mu.Lock()
+		defer h.d.mu.Unlock()
+		return h.d.link != nil && h.d.link != old && h.d.link.caps != nil
+	})
+	// The sender that first list starts finds nothing to send.
+	time.Sleep(300 * time.Millisecond)
+	h.idle(t, "the replacement's own sender to end")
+	// A rename stored without a sender of its own: the one left on old is
+	// what carries it.
+	h.d.storeMu.Lock()
+	st, err := h.d.load()
+	if err == nil {
+		m := &st.Machines[0]
+		m.Nickname, m.LocalID, m.LabelRev = "Handed", newLocalID(), nextLabelRev(m.LabelRev)
+		err = h.d.store(st)
+	}
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.hold(t)
+	if !old.work.Go(func() { h.d.relabelGuests(old) }) {
+		t.Fatal("the old link's work took nothing")
+	}
+	waitFor(t, "Handed out on the replacement", func() bool { return len(h.updates()) == 1 })
+	waitFor(t, "the old link's work to end", func() bool {
+		old.work.mu.Lock()
+		defer old.work.mu.Unlock()
+		return old.work.running == 0
+	})
+	if p := h.updates()[0]; *p.MachineLabel != "Handed" {
+		t.Fatalf("sent %+v; want Handed", p)
 	}
 }
 
@@ -710,31 +863,15 @@ func TestARelabelGoesWithItsProfile(t *testing.T) {
 	}
 }
 
-// Only a rename of a saved machine queues a relabel, under the profile's own
-// id, which an edit that moves the machine to another user@host:port keeps,
-// at the profile's new label revision (above the one before).
+// Only a rename of a saved machine leaves a relabel to send, under the
+// profile's own id, which an edit that moves the machine to another
+// user@host:port keeps, at the profile's new label revision (above the one
+// before).
 func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 	d := newDesk(t.TempDir())
 	pending := func() map[string]string {
 		t.Helper()
-		d.storeMu.Lock()
-		defer d.storeMu.Unlock()
-		st, err := d.load()
-		var q map[string]queuedRelabel
-		if err == nil {
-			q, _, err = d.loadRelabels(st)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		p := map[string]string{}
-		for profile, entry := range q {
-			if i := slices.IndexFunc(st.Machines, func(m Machine) bool { return m.LocalID == profile }); i < 0 || entry.Rev != st.Machines[i].LabelRev {
-				t.Fatalf("queued %+v for %s, whose label revision is not its", entry, profile)
-			}
-			p[profile] = entry.Label
-		}
-		return p
+		return pendingRelabels(t, d)
 	}
 	save := func(m Machine, replacing string) Machine {
 		t.Helper()
@@ -747,9 +884,9 @@ func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 		}
 		return saved[0].Machine
 	}
-	pi := save(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k", LocalID: "from-the-page", LabelRev: 9}, "")
-	if p := pending(); len(p) != 0 || pi.LocalID != "" || pi.LabelRev != 0 {
-		t.Fatalf("a new machine queued %v, local id %q, label revision %d", p, pi.LocalID, pi.LabelRev)
+	pi := save(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k", LocalID: "from-the-page", LabelRev: 9, LabelSent: 3}, "")
+	if p := pending(); len(p) != 0 || pi.LocalID != "" || pi.LabelRev != 0 || pi.LabelSent != 0 {
+		t.Fatalf("a new machine queued %v, local id %q, label revision %d sent %d", p, pi.LocalID, pi.LabelRev, pi.LabelSent)
 	}
 	pi.Session = "work"
 	pi = save(pi, "root@pi:22")
@@ -759,7 +896,7 @@ func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 	pi.Nickname = "New"
 	pi = save(pi, "root@pi:22")
 	profile, first := pi.LocalID, pi.LabelRev
-	pi.User, pi.LocalID, pi.LabelRev = "admin", "another", 1
+	pi.User, pi.LocalID, pi.LabelRev, pi.LabelSent = "admin", "another", 1, first
 	pi = save(pi, "root@pi:22")
 	if p := pending(); len(profile) != 32 || first == 0 || pi.LocalID != profile || pi.LabelRev != first || len(p) != 1 || p[profile] != "New" {
 		t.Fatalf("pending %v, local id %q then %q, label revision %d then %d; want New for the profile's own id and revision", p, profile, pi.LocalID, first, pi.LabelRev)

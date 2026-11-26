@@ -831,6 +831,13 @@ export interface Machine {
    * never overwrites a newer one.
    */
   labelRev?: number;
+  /**
+   * LabelSent is the last LabelRev its herdr settled (took, or holds a
+   * newer label than): the label is still to be sent while LabelRev is
+   * above it. Saved with the label and revision, in one write, so the
+   * profile alone says what to send (desk_guest_relabel.go).
+   */
+  labelSent?: number;
 }
 
 /**
@@ -1125,6 +1132,13 @@ export interface SavedMachine {
    * never overwrites a newer one.
    */
   labelRev?: number;
+  /**
+   * LabelSent is the last LabelRev its herdr settled (took, or holds a
+   * newer label than): the label is still to be sent while LabelRev is
+   * above it. Saved with the label and revision, in one write, so the
+   * profile alone says what to send (desk_guest_relabel.go).
+   */
+  labelSent?: number;
   /** Active marks the machine the desk connects to. */
   active: boolean;
 }

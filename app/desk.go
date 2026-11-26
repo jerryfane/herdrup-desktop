@@ -57,6 +57,11 @@ type Machine struct {
 	// it on each share and invite (guest_relabel_rev), so an older relabel
 	// never overwrites a newer one.
 	LabelRev uint64 `json:"labelRev,omitempty"`
+	// LabelSent is the last LabelRev its herdr settled (took, or holds a
+	// newer label than): the label is still to be sent while LabelRev is
+	// above it. Saved with the label and revision, in one write, so the
+	// profile alone says what to send (desk_guest_relabel.go).
+	LabelSent uint64 `json:"labelSent,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -658,6 +663,9 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err != nil {
 		return err
 	}
+	// The relabel queue of an older build becomes the profiles' (their floor
+	// for the revision below), and goes with this write.
+	migrated := d.migrateRelabels(&st)
 	id := machineID(m)
 	index := st.find(replacing)
 	if replacing != "" && index < 0 {
@@ -666,22 +674,22 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
 		return errors.New("that host and user are already saved")
 	}
-	relabel := ""
+	relabel := false
 	if index < 0 {
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision.
-		m.LocalID, m.LabelRev = "", 0
+		m.LocalID, m.LabelRev, m.LabelSent = "", 0, 0
 		st.Machines = append(st.Machines, m)
 	} else {
 		// The page doesn't hold the sync id: an edit keeps the machine's, its
-		// local id and its label revision.
+		// local id and its label revisions.
 		old := st.Machines[index]
-		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
+		m.SyncID, m.LocalID, m.LabelRev, m.LabelSent = old.SyncID, old.LocalID, old.LabelRev, old.LabelSent
 		// A rename names the machine anew to its existing shares' guests
-		// (desk_guest_relabel.go), queued under the profile's local id at a
-		// new label revision.
+		// (desk_guest_relabel.go): the new label at a new revision, above
+		// every one before, to be sent (LabelSent below it), all saved here.
 		if old.Nickname != m.Nickname && inviteLabel(old) != inviteLabel(m) {
-			relabel = inviteLabel(m)
+			relabel = true
 			if m.LocalID == "" {
 				m.LocalID = newLocalID()
 			}
@@ -695,11 +703,8 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
-	if relabel != "" {
-		// The rename stands whatever happens to its relabel.
-		if err := d.queueRelabel(st, m.LocalID, queuedRelabel{Label: relabel, Rev: m.LabelRev}); err != nil {
-			log.Printf("guest relabel: %s: %v", id, err)
-		}
+	if migrated {
+		d.retireRelabelQueue()
 	}
 	// The live link to this machine names it to its guests as saved now: a
 	// share view opened after a rename sends the new name (#523), and the
@@ -708,7 +713,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	d.mu.Lock()
 	if l := d.link; l != nil && l.guest == nil && l.id == id {
 		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
-		if relabel != "" {
+		if relabel {
 			l.work.Go(func() { d.relabelGuests(l) })
 		}
 	}
@@ -773,7 +778,7 @@ func (d *Desk) RemoveMachine(id string) error {
 		d.storeMu.Unlock()
 		return nil
 	}
-	syncID, localID := st.Machines[i].SyncID, st.Machines[i].LocalID
+	syncID := st.Machines[i].SyncID
 	if syncID != "" {
 		// Pushed as a tombstone on the next sync, so the account's other
 		// devices drop it too. Kept before the machine goes: a removal the
@@ -801,10 +806,6 @@ func (d *Desk) RemoveMachine(id string) error {
 		// Within storeMu, as the save paths' allow: the cache's eligibility ends as the saved
 		// machines do, whatever order a concurrent save and this removal run in.
 		d.boards.forget(id)
-		// A relabel not yet sent goes with its profile (desk_guest_relabel.go).
-		if localID != "" {
-			d.retireRelabels(st)
-		}
 	}
 	d.storeMu.Unlock()
 	if err != nil {
@@ -1033,10 +1034,11 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	if i := st.find(id); i >= 0 {
 		// The page doesn't hold the sync id: a reconnect keeps the machine's,
 		// its local id and its label revision.
-		m.SyncID, m.LocalID, m.LabelRev = st.Machines[i].SyncID, st.Machines[i].LocalID, st.Machines[i].LabelRev
+		old := st.Machines[i]
+		m.SyncID, m.LocalID, m.LabelRev, m.LabelSent = old.SyncID, old.LocalID, old.LabelRev, old.LabelSent
 		st.Machines[i] = m
 	} else {
-		m.LocalID, m.LabelRev = "", 0
+		m.LocalID, m.LabelRev, m.LabelSent = "", 0, 0
 		st.Machines = append(st.Machines, m)
 	}
 	st.Active = id
