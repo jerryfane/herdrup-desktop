@@ -129,6 +129,24 @@ test("leaving a bound share deletes it from the account, and every browser holdi
  expect(await linux.desk.syncedShares()).toEqual([]);
 }, CONNECTS_LIMIT_MS);
 
+test("a browser whose put was taken but whose readback failed still drops its bound grant when the share's tombstone comes", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w), linux = await browser(w);
+ // The put is applied; the pull after it is answered 503: this browser never sees the share live.
+ w.failPull = true;
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ expect([sharesOn(w).length, w.failPull, mac.grants.access?.accountBound]).toEqual([1, false, true]);
+ // Another browser of the account opens the synced list and leaves the share.
+ await linux.shares.sync();
+ await linux.desk.openSyncedShare(id);
+ await linux.desk.forgetGuestConnection(id);
+ expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
+ await mac.shares.sync();
+ expect(mac.grants.access).toBeUndefined();
+ expect(await mac.desk.syncedShares()).toEqual([]);
+}, CONNECTS_LIMIT_MS);
+
 test("a plain accept (Only this device, or an invite without acct) writes nothing to the account", async () => {
  const w = worker(), h = host();
  const mac = await browser(w);

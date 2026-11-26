@@ -54,6 +54,8 @@ export function worker() {
   losePush: false,
   /** GET /v1/sync answers nothing until its request is aborted. */
   stallPull: false,
+  /** The next GET /v1/sync is answered 503 (the service unavailable). */
+  failPull: false,
   /** The next 410 to a GET /v1/sync comes with its status line, and a body that never ends
    *  until its request is aborted. */
   stallResetBody: false,
@@ -141,6 +143,7 @@ export function worker() {
     if (url.pathname === "/v1/sync" && method === "GET") {
      const pulled = w.onPull; w.onPull = null; pulled?.();
      if (w.holdPull) { const gate = w.holdPull; w.holdPull = null; await gate; }
+     if (w.failPull) { w.failPull = false; return Response.json({ error: "unavailable" }, { status: 503 }); }
      if (w.stallPull) {
       const stalled = Promise.withResolvers<Response>();
       init.signal!.addEventListener("abort", () => stalled.reject(init.signal!.reason));

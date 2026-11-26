@@ -65,7 +65,8 @@ function validBody(body: unknown): body is ShareBody {
 }
 
 /** What listeners hear: the account's shares now, and those a pull saw deleted (by this device or
- *  another) that this browser had seen live. */
+ *  another): every share the pull shows a tombstone of, seen live here or not (a put whose
+ *  readback failed never was), and, after a full pull, those seen live that it no longer holds. */
 export interface SharesChange { shares: RemoteShare[]; removed: string[] }
 
 export function createShareSync(account: WebAccount, place: SharesPlace) {
@@ -139,7 +140,9 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    r.shares = [...live.values()].sort((a, b) => a.rev - b.rev);
    r.gone = gone;
    const puts = new Set(r.pending.filter(p => p.body).map(p => p.id));
-   return { shares: visible(r), removed: [...before].filter(id => !live.has(id) && !puts.has(id)) };
+   const tombstoned = pulled.items.filter(it => it.collection === "shares" && it.deleted).map(it => it.id);
+   const removed = new Set([...before, ...tombstoned].filter(id => !live.has(id) && !puts.has(id)));
+   return { shares: visible(r), removed: [...removed] };
   });
  }
 
