@@ -663,3 +663,48 @@ func TestAShareLeftWhileAnotherAccountWasSignedInStaysLeft(t *testing.T) {
 		})
 	}
 }
+
+// A share another device deletes between the push that wrote it and that
+// push's readback isn't confirmed: the readback is newer than the write's
+// acknowledgement. The accept says nothing of the account (no
+// AccountShare), the synced list doesn't list it, and the next sync lets
+// the grant go.
+func TestAShareDeletedBeforeItsReadbackIsNotConfirmed(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	invite := relay.InviteLink(base, time.Now().Add(time.Hour))
+	// The push is taken, then another device leaves the share, before the
+	// readback.
+	w.mu.Lock()
+	w.afterPush = func() {
+		for id, it := range w.items {
+			if it.Collection == "shares" {
+				w.tombstone(id)
+			}
+		}
+	}
+	w.mu.Unlock()
+	access, err := d.AcceptGuestInvitation(ctx, invite, "account")
+	if err != nil || !access.AccountBound {
+		t.Fatalf("bound accept: %+v, %v", access, err)
+	}
+	if access.AccountShare != "" {
+		t.Fatalf("a share deleted before its readback: the accept says %q, want nothing", access.AccountShare)
+	}
+	if len(w.live()) != 0 || len(sharesOf(t, d)) != 0 {
+		t.Fatalf("rows %v, synced shares %+v; want none", w.live(), sharesOf(t, d))
+	}
+	if grants, _ := d.SharedConnections(); len(grants) != 1 || grants[0].AccountShare != "" {
+		t.Fatalf("before the next sync: %+v; want the grant, not confirmed", grants)
+	}
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if grants, _ := d.SharedConnections(); len(grants) != 0 || len(w.live()) != 0 {
+		t.Fatalf("after the next sync: grants %+v, rows %v; want neither", grants, w.live())
+	}
+}

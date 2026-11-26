@@ -1298,7 +1298,14 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	state.PushFrom = pushFrom
 	state.ShareRefusals = noteShareRefusals(state.ShareRefusals, state.ShareWrites, acked, refusedShares)
-	state.SharesHeld = sharesHeldBy(state.SharesHeld, acct, state.Mirror.Shares, state.SharesGone, state.SharesHeld[acct])
+	// What the account was seen to hold: a full readback is the account as
+	// it is now (what it held before and no longer does is in SharesGone),
+	// else what was known before still counts.
+	heldBefore := state.SharesHeld[acct]
+	if readBack.Full {
+		heldBefore = nil
+	}
+	state.SharesHeld = sharesHeldBy(state.SharesHeld, acct, state.Mirror.Shares, state.SharesGone, heldBefore)
 	// The merge pruned the tombstones; again only when the push or its
 	// readback changed what that saw: tombstones added, or pending deletes
 	// and open sends settled.

@@ -142,19 +142,28 @@ func shareRefusalWords(code string) string {
 }
 
 // accountShareOf is how bound grant a's item stands in its account by
-// state (guest.Access.AccountShare, AccountShareProblem): confirmed once
-// the account's synced shares hold it; refused while its owed write was
-// last turned down; queued while it is owed; else nothing is known.
+// state (guest.Access.AccountShare, AccountShareProblem): confirmed while
+// the account's synced shares hold it, refused while its owed write was
+// last turned down, queued while it is owed, else nothing is known. That
+// the account once held it (SharesHeld: a write it took, before the
+// readback) confirms it only while the account's state, when it is this
+// state's, says nothing newer: a readback that saw it deleted since
+// (SharesGone) means it isn't there.
 func accountShareOf(state syncState, a guest.Access) (string, string) {
 	if !a.AccountBound || a.Account == "" {
 		return "", ""
 	}
 	id := a.ShareID()
-	if state.AccountID == a.Account && slices.ContainsFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }) ||
-		slices.Contains(state.SharesHeld[a.Account], id) && !slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id }) {
+	current := state.AccountID == a.Account
+	if current && slices.ContainsFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }) {
 		return shareConfirmed, ""
 	}
-	if slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id && op.Account == a.Account }) {
+	owed := slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id && op.Account == a.Account })
+	deleted := current && slices.Contains(state.SharesGone, id)
+	if !owed && !deleted && slices.Contains(state.SharesHeld[a.Account], id) {
+		return shareConfirmed, ""
+	}
+	if owed {
 		if code, ok := state.ShareRefusals[id]; ok {
 			return shareRefused, shareRefusalWords(code)
 		}
