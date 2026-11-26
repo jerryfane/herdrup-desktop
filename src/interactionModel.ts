@@ -5,8 +5,11 @@ export interface Entry {
  kind: string; id: string; ts_ms: number; text?: string; body?: string; title?: string;
  intent?: string; detail?: string; tool?: string; status?: string; error?: string;
  source?: string; from?: string;
- /** A relay's way (chatRelay.ts): "to_topic" from the Inbox, "to_inbox" from a topic. */
+ /** A relay's way (chatRelay.ts): "to_topic" into the topic whose page shows it, "to_inbox" from
+  *  a topic into the Inbox. */
  direction?: string;
+ /** A relay's sending topic (chatRelay.ts); absent when the Inbox sent it. */
+ topic_id?: string;
  questions?: Question[]; answer?: string[]; items?: PlanItem[];
  /** omp's HTML-form ask (herdr ask-form contract): the form, and once the tool result arrives
   *  its answers and how it ended. */

@@ -82,6 +82,16 @@ export class GuestClient {
   if (pong.capabilities?.[capability] !== true) throw new ErrUnsupported(method, capability, pong.version ?? "");
  }
 
+ /** engine.go Supports: whether the host's pong advertises capability, from the cached pong (one
+  *  ping when none answered yet); false when that ping fails. For an optional param, not a gate. */
+ async supports(capability: string, unsent?: AbortSignal): Promise<boolean> {
+  let pong = this.#probed;
+  if (pong === null) {
+   try { pong = await this.ping(unsent); } catch { presendCheck(unsent); return false; }
+  }
+  return pong.capabilities?.[capability] === true;
+ }
+
  /** engine.go doRaw: gate, call, map the error, check the result's tag; the result keeps its tag.
   *  sendSignal ends the call only while it is unsent (WebLink.call). One pre-send signal (signal
   *  and sendSignal), made before the gate, is the gate's and goes to the link as the call's

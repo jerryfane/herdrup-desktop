@@ -71,6 +71,10 @@ const (
 	// suggestions on agent.topics.list and topic_suggestion transcript
 	// entries (herdr #490).
 	CapabilityAgentTopicSuggestions Capability = "agent_topic_suggestions"
+	// agent.transcript relay_entries: handovers between the Inbox and its
+	// topics come back as `relay` entries (herdr #521); a server without it
+	// ignores the param and sends them as `user`/`note`.
+	CapabilityTranscriptRelayEntries Capability = "transcript_relay_entries"
 )
 
 // Supported reports whether caps advertises c. CapabilityNone is always
@@ -118,6 +122,8 @@ func (c Capability) Supported(caps *ServerCapabilities) bool {
 		return caps.AgentTopicsSwitch
 	case CapabilityAgentTopicSuggestions:
 		return caps.AgentTopicSuggestions
+	case CapabilityTranscriptRelayEntries:
+		return caps.TranscriptRelayEntries
 	}
 	return false
 }

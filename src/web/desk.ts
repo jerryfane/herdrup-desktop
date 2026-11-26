@@ -763,11 +763,15 @@ export function createGuestDesk(env: DeskEnv) {
 
   async chatTranscript(token: string, after: string, before: string, subagent: string, heldFrom: string): Promise<string> {
    const v = viewOf(token);
-   const params: Record<string, string> = { target: v.paneID };
+   const params: Record<string, string | boolean> = { target: v.paneID };
    // held_from goes with after (desk_interaction.go ChatTranscript, herdr #430).
    if (after !== "") { params.after = after; params.held_from = heldFrom; }
    if (before !== "") params.before = before;
    if (subagent !== "") params.subagent = subagent;
+   // Handovers between the Inbox and its topics as `relay` entries (herdr #521, chatRelay.ts),
+   // only where the host's cached pong serves them: an older herdr keeps today's user/note shape.
+   // A subagent's page has none.
+   else if (await v.active.client.supports("transcript_relay_entries", within(v))) params.relay_entries = true;
    const page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v));
    viewOf(token);
    return JSON.stringify(untagged(page));
@@ -806,9 +810,10 @@ export function createGuestDesk(env: DeskEnv) {
    // The cached pong (engine gate), not a ping per read: each guest read is a relay connect.
    try { await v.active.client.gate("agent.transcript", "agent_transcript_topic", within(v)); }
    catch (error) { throw error instanceof ErrUnsupported ? new Error("This server can't show a topic's conversation.") : error; }
-   const params: Record<string, string> = { target: v.paneID, topic };
+   const params: Record<string, string | boolean> = { target: v.paneID, topic };
    if (after !== "") { params.after = after; params.held_from = heldFrom; }
    if (before !== "") params.before = before;
+   if (await v.active.client.supports("transcript_relay_entries", within(v))) params.relay_entries = true;
    let page: unknown;
    try { page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v)); }
    catch (error) { throw error instanceof HerdrAPIError && error.code === "topic_not_found" ? new Error("This topic's conversation can't be found.") : error; }

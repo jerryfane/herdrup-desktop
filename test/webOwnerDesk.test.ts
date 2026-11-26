@@ -643,6 +643,38 @@ test("a host that doesn't say it serves pictures isn't asked for one: its answer
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
+// herdr #521: agent.transcript takes relay_entries where ping advertises transcript_relay_entries,
+// and then answers a handover as { kind: "relay", from, topic_id?, direction, text }. The Inbox's
+// and a topic's pages ask for it there; a subagent's page and a herdr without the flag never do.
+test("the Inbox's and a topic's transcript ask for relay entries only where the host serves them", async () => {
+ for (const served of [true, false]) {
+  const asked: Record<string, unknown>[] = [];
+  const relay = host({ other: (session, req) => {
+   const params = (req as Request & { params?: Record<string, unknown> }).params ?? {};
+   if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.6", capabilities: { agent_transcript: true, agent_transcript_topic: true, transcript_relay_entries: served } } });
+   else if (req.method === "agent.transcript") {
+    asked.push(params);
+    const entries = params.relay_entries === true
+     ? [{ kind: "relay", id: "r1", ts_ms: 1, from: "Board pack", topic_id: "t1", direction: "to_inbox", text: "The intro is drafted." }]
+     : [{ kind: "note", id: "r1", ts_ms: 1, from: "Board pack", text: "<irc>\nThe intro is drafted." }];
+    answer(session, req, { result: { type: "agent_transcript", agent: "claude", pane_id: "p1", session_id: "s", after: "1", entries, ...(params.relay_entries === true ? { relay_entries: true } : {}) } });
+   } else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+  } });
+  const desk = await deskWithKey();
+  try {
+   await openP1(desk, relay);
+   const inbox = JSON.parse(await desk.chatTranscript("view-1", "", "", "", ""));
+   await desk.topicTranscript("view-1", "t1", "", "", "");
+   await desk.chatTranscript("view-1", "", "", "sub-1", "");
+   expect(asked.map(p => p.relay_entries)).toEqual(served ? [true, true, undefined] : [undefined, undefined, undefined]);
+   // The page reaches chatRelay.ts with herdr's own field names.
+   expect(inbox.entries[0]).toEqual(served
+    ? { kind: "relay", id: "r1", ts_ms: 1, from: "Board pack", topic_id: "t1", direction: "to_inbox", text: "The intro is drafted." }
+    : { kind: "note", id: "r1", ts_ms: 1, from: "Board pack", text: "<irc>\nThe intro is drafted." });
+  } finally { desk.disconnectOwner(); relay.stop(); }
+ }
+});
+
 // #369 review, on the web: the desk decides at agent.avatar.get, by type, and says it as its
 // result. herdr's answers (an error reply, a result of another type, a data_base64 that is not
 // the photo's bytes, a number among them) are { unavailable }; a socket closed under the ask is

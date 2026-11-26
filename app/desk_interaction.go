@@ -429,6 +429,14 @@ func (d *Desk) transcript(ctx context.Context, token, after, before, subagent, h
 		budget := uint32(transcriptPageBytes)
 		p.MaxBytes = &budget
 	}
+	// Handovers between the Inbox and its topics as `relay` entries (herdr #521), drawn as
+	// chatRelay.ts's "From Inbox" / "From topic <title>" rows. Only where herdr serves them: an
+	// older one keeps today's user/note shape. A subagent's page has no handovers.
+	if subagent == "" {
+		if ok, _ := v.client.Supports(ctx, herdrapi.CapabilityTranscriptRelayEntries); ok {
+			p.RelayEntries = new(true)
+		}
+	}
 	page, err := v.client.AgentTranscript(ctx, p)
 	if apiErr := (*bridge.APIError)(nil); topic != "" && errors.As(err, &apiErr) && apiErr.Code == "topic_not_found" {
 		return "", errors.New(topicGone)
