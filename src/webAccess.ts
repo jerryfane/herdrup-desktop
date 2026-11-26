@@ -3,8 +3,9 @@
 // it looks for browsers asking to reach the owner's machines (no push in v1), and opens
 // "Approve a browser?", or, while the user is typing, says so among the window's notices until Review or
 // a pause in typing opens it (#464). The user types the code the browser shows, picks machines,
-// access and time, and this computer adds a grant on each machine over SSH. Desktop only: the web
-// guest is the browser being approved, never the approver.
+// access and time, and this computer adds a grant on each machine over SSH. The same look finds
+// another app device asking to pair (pairApproval.ts). Desktop only: the web guest is the browser
+// being approved, never the approver.
 
 import "./webAccess.css";
 import { Desk, events } from "./mygo";
@@ -13,8 +14,11 @@ import { errorText } from "./errors";
 import { symbolNow } from "./symbol";
 import { webGuest } from "./platform";
 import { noticeRegion } from "./notices";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
- slotSelection, timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
+import { codeField } from "./codeField";
+import { showPairSheet } from "./pairApproval";
+import { pairNotice } from "./pairApprovalModel";
+import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
+ timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
 
 /** How often to look for requests while the window is in front: the service allows 30 approval
  *  calls a minute per account, and a request lasts 10 minutes. */
@@ -108,61 +112,6 @@ export function choiceRows(list: HTMLElement, machinesOpen: boolean, lengths: re
  };
 }
 
-/** Follows one primary-pointer press on input, the code field. Its pointerdown starts the press and
- *  captures that pointer on input, so the pointer's moves, release and cancel all come to input,
- *  even off the window. The pointer that pressed keeps the press through its release and its
- *  click: only its moves count, its release stops following, and its cancel, or a close, forgets
- *  the press, which then isn't a click. Another pointer, even another device's primary one, can't
- *  take the press over or end it, and its click isn't this press's. If the capture is lost before
- *  the release, or input's window loses focus, the press is over. close() lets go of a pointer the
- *  field still holds and removes every listener this installed, so a field that stays in the
- *  document holds no pointer and follows no further presses. */
-export function followPresses(input: HTMLInputElement) {
- const win = input.ownerDocument.defaultView;
- const listening = new AbortController();
- const { signal } = listening;
- let press: { pointer: number; gesture: CodePress; down: boolean } | null = null;
- const ours = (event: Event): PointerEvent | null => {
-  const e = event as PointerEvent;
-  return press?.down && e.pointerId === press.pointer ? e : null;
- };
- const follow = (event: Event) => {
-  const e = ours(event);
-  if (e && press) press.gesture.move(e.clientX, e.clientY);
- };
- const stop = () => input.removeEventListener("pointermove", follow);
- const drop = () => { stop(); press = null; };
- input.addEventListener("pointerdown", event => {
-  const e = event as PointerEvent;
-  // A press still down belongs to its pointer; the same pointer pressing again means its release
-  // never reached the sheet, so that press is over.
-  if (!e.isPrimary || e.button !== 0 || (press?.down && press.pointer !== e.pointerId)) return;
-  press = { pointer: e.pointerId, gesture: new CodePress(e.clientX, e.clientY), down: true };
-  input.addEventListener("pointermove", follow, { signal });
-  input.setPointerCapture(e.pointerId);
- }, { signal });
- input.addEventListener("pointerup", event => { if (ours(event) && press) { stop(); press.down = false; } }, { signal });
- input.addEventListener("pointercancel", event => { if (ours(event)) drop(); }, { signal });
- input.addEventListener("lostpointercapture", event => { if (ours(event)) drop(); }, { signal });
- win?.addEventListener("blur", drop, { signal });
- return {
-  /** Whether this click ends a plain click on the code; the press is done either way. A click the
-   *  browser says came from another pointer (pointerId) leaves the press alone. */
-  plainClick(click: { detail: number; shiftKey: boolean; pointerId?: number }): boolean {
-   if (!press || (click.pointerId !== undefined && click.pointerId !== press.pointer)) return false;
-   const plain = press.gesture.plainClick(click);
-   drop();
-   return plain;
-  },
-  close: () => {
-   // Only a pointer still down is captured, so releasing it can't fail.
-   if (press && input.hasPointerCapture(press.pointer)) input.releasePointerCapture(press.pointer);
-   drop();
-   listening.abort();
-  },
- };
-}
-
 /** How long typing must pause before a request that came while the user was typing opens its
  *  sheet (#464). */
 export const TYPING_PAUSE_MS = 5000;
@@ -178,14 +127,16 @@ export function takesTyping(node: Element | null): boolean {
  return tag === "textarea" || (tag === "input" && !UNTYPED_INPUTS[(node as HTMLInputElement).type]);
 }
 
-/** clock is the For row's, and times the pause in typing (tests pass their own). */
+/** clock is the For row's and the pair sheet's, and times the pause in typing and the recheck of
+ *  what the service offers (tests pass their own). */
 export function initWebAccess(clock: SheetClock = systemClock): void {
  if (webGuest) return;
  const closed = new Set<string>();
- // The request whose sheet, or notice, is up.
+ // The request whose sheet, or notice, is up: one at a time, of either kind.
  let open: string | null = null;
- // The service's last answer to "do you offer browser approval?"; an error isn't kept.
- let offered: { offered: boolean; at: number } | null = null;
+ // The service's last answer to "which approvals do you offer?" (one /v1/health read for both
+ // kinds). A refresh that fails keeps it; with none yet, the look ends and the next asks again.
+ let offers: { browsers: boolean; pairs: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
  // When the user last typed anywhere in the window.
  let typedAt = -Infinity;
@@ -198,41 +149,56 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  // A look in flight: it alone picks a request and puts up its notice or sheet, so the timer's
  // look and one from coming back to the window never put up two for one request.
  let looking = false;
+ // One read lists both kinds (GET /v1/approvals?kind=any), so pair requests add no call to the
+ // account's approval rate; requests of a kind the service offers open in the service's order.
  async function look(): Promise<void> {
   if (looking) return;
   looking = true;
   try {
    if (document.visibilityState !== "visible" || open !== null) return;
    const state = await Desk.accountState();
-   if (!state.signedIn) { offered = null; return; }
-   if (askOffered(offered, Date.now())) offered = { offered: await Desk.webAccessOffered(), at: Date.now() };
-   if (!offered?.offered) return;
-   const req = nextRequest(await Desk.webAccessRequests() as WebAccessRequestView[], closed);
-   if (!req) return;
-   const lengths = await Desk.webAccessLengths();
-   const done = () => { closed.add(req.id); open = null; };
+   if (!state.signedIn) { offers = null; return; }
+   if (askOffered(offers, clock.now())) {
+    try { offers = { ...await Desk.approvalsOffered(), at: clock.now() }; }
+    catch (error) { if (!offers) throw error; offers = { ...offers, at: clock.now() }; }
+   }
+   if (!offers?.browsers && !offers?.pairs) return;
+   const next = nextRequest(await Desk.approvalRequests(), offers, closed);
+   if (!next) return;
+   let id: string, text: string, sheet: (machines: readonly WebAccessMachine[]) => Promise<void>;
+   const done = () => { closed.add(id); open = null; };
+   const { pair, browser } = next;
+   if (pair) {
+    id = pair.id; text = pairNotice(pair);
+    sheet = machines => { open = pair.id; return showPairSheet(pair, machines, done, clock); };
+   } else if (browser) {
+    const lengths = await Desk.webAccessLengths();
+    id = browser.id; text = "A browser wants to reach your machines.";
+    sheet = machines => showSheet(browser, lengths, machines, done);
+   } else return;
    // Typing owns the focus: the notice at once; its sheet asks for the machines when it opens.
-   if (takesTyping(document.activeElement)) { notify(req, lengths, done); return; }
+   if (takesTyping(document.activeElement)) { notify(id, text, sheet); return; }
    const machines = await machinesNow();
    // Checked again after the last wait, right before the sheet would open: typing may have begun meanwhile.
-   if (takesTyping(document.activeElement)) notify(req, lengths, done);
-   else await showSheet(req, lengths, machines, done);
+   if (takesTyping(document.activeElement)) notify(id, text, sheet);
+   else await sheet(machines);
   } catch { /* the next look tries again */ }
   finally { looking = false; schedule(); }
  }
  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { clearTimeout(timer); void look(); } });
- events.accountChanged.on(() => { offered = null; });
+ events.accountChanged.on(() => { offers = null; });
  schedule();
 
  /** A request that came while the user was typing: a modal sheet would take the keys mid-word
   *  (its code field kept four of them, #464), so a line among the window's notices (notices.ts)
   *  says so instead, taking no focus. Review opens the sheet, and so does a pause in typing that
-  *  still holds once the sheet is ready to open (#474). */
- function notify(req: WebAccessRequestView, lengths: readonly WebAccessLength[], done: () => void): void {
-  open = req.id;
+  *  still holds once the sheet is ready to open (#474). On desktop this notice is how a pair
+  *  request arrives while the app is open (no OS notification). */
+ function notify(id: string, text: string, sheet: (machines: readonly WebAccessMachine[]) => Promise<void>): void {
+  open = id;
   const notice = el("div", "web-access-notice"); notice.setAttribute("role", "status");
   const review = el("button", "button-secondary button-compact", "Review"); review.type = "button";
-  notice.append(el("span", "web-access-notice-text", "A browser wants to reach your machines."), review);
+  notice.append(el("span", "web-access-notice-text", text), review);
   noticeRegion().prepend(notice);
   let cancel = () => {};
   const pause = () => clock.now() - typedAt;
@@ -246,14 +212,14 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
    fetching = false;
    if (!reviewed && pause() < TYPING_PAUSE_MS) { wait(TYPING_PAUSE_MS - pause()); return; }
    notice.remove();
-   await showSheet(req, lengths, machines, done);
+   await sheet(machines);
   };
-  const sheet = () => { present().catch(() => { /* as a look's: the next look tries again */ }); };
-  review.onclick = () => { reviewed = true; cancel(); sheet(); };
+  const show = () => { present().catch(() => { /* as a look's: the next look tries again */ }); };
+  review.onclick = () => { reviewed = true; cancel(); show(); };
   // The first look comes a full pause after the notice; a later one a full pause after the last key.
   const wait = (ms: number) => {
    cancel = clock.after(ms, () => {
-    if (pause() >= TYPING_PAUSE_MS) sheet(); else wait(TYPING_PAUSE_MS - pause());
+    if (pause() >= TYPING_PAUSE_MS) show(); else wait(TYPING_PAUSE_MS - pause());
    });
   };
   wait(TYPING_PAUSE_MS);
@@ -267,40 +233,7 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
   const title = el("h2", "", "Approve a browser?");
   const lead = el("p", "web-access-lead", `${req.browserName} wants to reach your machines.`);
   const status = el("p", "web-access-status", "Waiting for the browser to show its code…");
-  const code = el("input", "web-access-code"); code.inputMode = "numeric"; code.autocomplete = "one-time-code";
-  code.maxLength = 4; code.disabled = true; code.setAttribute("aria-label", "Code shown in the browser");
-  // The code first (proposal D): four boxes drawn under the one input, which takes the typing; the
-  // boxes draw its digits, each centred in its own box whatever the font's metrics, and show the
-  // caret and selection (webAccess.css), and a click on a box takes that box's digit.
-  const boxes = el("span", "web-access-boxes"); boxes.setAttribute("aria-hidden", "true");
-  const digits = [0, 1, 2, 3].map(() => boxes.appendChild(el("span", "web-access-box")));
-  const codeBox = el("span", "web-access-codebox"); codeBox.append(boxes, code);
-  const codeLabel = el("label", "web-access-field"); codeLabel.append(el("span", "", "Enter the code shown in the browser"), codeBox);
-  const slots = () => {
-   const n = code.value.length;
-   codeSlots(n, code.selectionStart ?? n, code.selectionEnd ?? n).forEach((s, i) => {
-    const d = digits[i]!;
-    d.textContent = code.value[i] ?? "";
-    d.classList.toggle("filled", s.filled); d.classList.toggle("selected", s.selected); d.classList.toggle("active", s.active);
-   });
-  };
-  // A plain click on a box takes its digit; a drag (even one that came back to its start), a
-  // double click or a shift-click keeps the selection the field made (followPresses). The second
-  // press of a double click lands on the digit the first one took, which would start dragging that
-  // selection, so it's dropped first and the press selects the code as in any field.
-  const presses = followPresses(code);
-  code.addEventListener("mousedown", event => {
-   if (event.detail > 1) code.setSelectionRange(code.selectionStart, code.selectionStart);
-  });
-  code.addEventListener("click", event => {
-   if (presses.plainClick(event)) {
-    const slot = digits.findIndex(d => event.clientX < d.getBoundingClientRect().right);
-    code.setSelectionRange(...slotSelection(slot < 0 ? 3 : slot, code.value.length));
-   }
-   slots();
-  });
-  // Typing renders through oninput (update), after the value is cleaned; these follow the caret.
-  for (const type of ["keyup", "select", "focus"]) code.addEventListener(type, slots);
+  const { field: codeLabel, input: code, slots, close: closeCode } = codeField("Enter the code shown in the browser", "Code shown in the browser");
 
   const ticked = new Set(machines.filter(m => m.available).map(m => m.id));
   const list = el("div", "web-access-machines"); list.setAttribute("role", "group"); list.setAttribute("aria-label", "Machines");
@@ -404,7 +337,7 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
    });
   };
   dialog.addEventListener("cancel", event => { if (!finished) event.preventDefault(); });
-  dialog.addEventListener("close", () => { off(); choices.stop(); presses.close(); dialog.remove(); done(); }, { once: true });
+  dialog.addEventListener("close", () => { off(); choices.stop(); closeCode(); dialog.remove(); done(); }, { once: true });
   document.body.append(dialog);
   update();
   dialog.showModal();
