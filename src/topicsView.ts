@@ -665,6 +665,9 @@ class TopicChat {
  /** An older page can be read: a cursor is held and no restart has made it unusable. Earlier
   *  messages shows, and its action runs, only then. */
  private get paging(): boolean { return !!this.before && !this.restart; }
+ /** Paging stops (a restart) or resumes (a newest page landed with its cursor): Earlier messages
+  *  follows at once, not at the next draw, which a held newest-page read puts off. */
+ private setRestart(restart: boolean) { this.restart = restart; this.earlier.hidden = !this.paging; }
  private active = false;
  private disposed = false;
  private timer: number | undefined;
@@ -763,7 +766,7 @@ class TopicChat {
  /** The open topic changed (an owner's agent.topics.changed): read its tail now; startOver
   *  (Refresh) reads its newest page instead, dropping the history held. */
  refresh(startOver = false) {
-  if (startOver) this.restart = true;
+  if (startOver) this.setRestart(true);
   if (this.active) void this.load(false);
  }
 
@@ -803,7 +806,7 @@ class TopicChat {
     const newest = this.page;
     if (this.disposed || !newest || next.session_id !== session || newest.session_id !== session) return;
     const merged = mergeOlder(newest, this.entries, next);
-    if (!merged) { this.restart = this.again = true; return; }
+    if (!merged) { this.setRestart(true); this.again = true; return; }
     measure();
     this.entries = merged;
     this.before = next.before;
@@ -815,12 +818,12 @@ class TopicChat {
      return this.disposed ? null : read;
     }, () => {
      if (this.disposed) return false;
-     this.restart = true;
+     this.setRestart(true);
      return true;
     });
     if (!live) return;
     measure();
-    if (live.reset) { this.before = live.page.before; this.restart = false; }
+    if (live.reset) { this.before = live.page.before; this.setRestart(false); }
     this.entries = live.entries; this.page = live.page;
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    }
@@ -830,7 +833,7 @@ class TopicChat {
   } catch (error) {
    // herdr expired the older page's cursor: paging stops, and the topic starts over from its
    // newest page.
-   if (older && cursorExpired(error)) this.restart = this.again = true;
+   if (older && cursorExpired(error)) { this.setRestart(true); this.again = true; }
    else if (!this.disposed) this.notice.textContent = errorText(error);
   } finally {
    this.busy = false; this.earlier.disabled = false; this.earlier.hidden = !this.paging;

@@ -65,6 +65,8 @@ const noteStyles: Record<string, { label: string; symbol: string; icon?: string 
  advisor: { label: "Advisor", symbol: "lightbulb", icon: lightbulbIcon },
  other: { label: "Agent", symbol: "bell", icon: bellIcon },
 };
+/** Why a question's answer (or Dismiss) was refused, shown on its card. */
+type AnswerProblem = { askID: string; message: string; offersTerminal: boolean };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string) {
  const node = document.createElement(tag); node.className = cls; if (text !== undefined) node.textContent = text; return node;
@@ -404,7 +406,7 @@ class Detail {
  outgoingNodes = new Map<string, HTMLElement>();
  outgoingCount = 0;
  answering = false;
- answerProblem: { askID: string; message: string; offersTerminal: boolean } | null = null;
+ answerProblem: AnswerProblem | null = null;
  localAnswers = new Map<string, string[]>();
  /** omp's HTML-form asks: where the owner is in each, and the answers agent.answer_form
   *  reported before the transcript shows them. */
@@ -1553,16 +1555,18 @@ class Detail {
  }
  /** Refresh (the header's button, ⌘R): the terminal reconnects, Topics reads its list again and
   *  its open topic starts over, and the chat starts over from its newest page (chatRestart):
-  *  never from the held cursors, which herdr may have expired. The question's last refusal goes
-  *  (#571): the form it reloads may be answerable again, as after ask_form_moved once the
-  *  Terminal's form is back where it started; its unsent draft and step stay. */
+  *  never from the held cursors, which herdr may have expired. The question's refusal shown at
+  *  the press goes once that Refresh's page lands (#571): the form it reloads may be answerable
+  *  again, as after ask_form_moved once the Terminal's form is back where it started; its unsent
+  *  draft and step stay. A Refresh that fails keeps it (#576), and a newer refusal stays. */
  refresh() {
   if (this.mode === "terminal") void this.reconnectTerminal();
   else if (this.mode === "topics") this.topics?.refresh();
-  else { this.answerProblem = null; this.chatRestart = true; void this.refreshChat(this.generation); }
+  else { this.chatRestart = true; void this.refreshChat(this.generation, this.answerProblem); }
  }
  // The latest call owns the poll: an earlier reply still in flight is dropped and schedules nothing.
- async refreshChat(generation: number) {
+ // `refusal`: the question's refusal a Refresh was pressed over, dropped once this poll's page lands.
+ async refreshChat(generation: number, refusal: AnswerProblem | null = null) {
   const epoch = this.chatEpoch, poll = ++this.chatPoll;
   clearTimeout(this.refreshTimer);
   try {
@@ -1596,6 +1600,7 @@ class Detail {
    // mergeTranscript drops re-sent older history a live page lists (liveEntries), so the send
    // checks below read the merged entries: an old prompt with the same words is not the send.
    this.entries = live.entries; this.chat = page; this.chatFailed = false;
+   if (refusal && this.answerProblem === refusal) this.answerProblem = null;
    // Only a guest of a host older than guest answers is ever withheld an answerable question
    // (ChatView.swift:262-263).
    if (withheldFromCaller(page.pending_ask)) this.refuseAnswers();
@@ -1835,7 +1840,7 @@ class Detail {
   const now = new Date();
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
-   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? this.questionSignature(row, row.entry.id)
+   const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, ...this.questionKey(row.entry.id)]
     : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null]
     : row.kind === "mark" ? row : rowShown(row, now));
    if (old?.dataset.signature === signature) return old;
@@ -1852,7 +1857,7 @@ class Detail {
   if (pending && pendingCardShown(rows, start, pending.id)) {
    // Kept attached while unchanged, as entry rows are: a form's Other or text field keeps its
    // focus and caret across polls.
-   const id = `pending-ask:${pending.id}`, signature = JSON.stringify(this.questionSignature(null, pending.id));
+   const id = `pending-ask:${pending.id}`, signature = JSON.stringify(this.questionKey(pending.id));
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`);
    if (old?.dataset.signature === signature) nodes.push(old);
    else {
@@ -1881,13 +1886,14 @@ class Detail {
   if (this.findOpen && this.mode === "chat") { const index = this.findIndex; this.updateFind(true, index, false); }
   this.refreshQuestion?.();
  }
- /** What a question card shows depends on: redraw it only when one of these changes. */
- private questionSignature(row: ChatRow | null, id: string): unknown[] {
+ /** What a question card shows depends on, in the Inbox and in the question sheet alike; each
+  *  adds what its own card shows around it. Redraw a card only when one of these changes. */
+ private questionKey(id: string): unknown[] {
   // A form's state appears on its first draw at version 0: count none as 0 too, or the first
   // unchanged poll would redraw the card and take the focus from a field being typed in. The
   // session keys the card with the question (#572): a new session's same question and payload
   // gets a card of its own, never the old one's field and handlers on state the reset dropped.
-  return [this.chat?.session_id, row, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
+  return [this.chat?.session_id, id, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
  }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
   * its board status, or with none yet the transcript's working turn — and the chat loads. */
@@ -2295,7 +2301,7 @@ class Detail {
     if (this.entries[i]!.kind === "summary") break;
     if (this.entries[i]!.kind === "user") { prompt = this.entries[i]; break; }
    }
-   const next = JSON.stringify([this.chat?.session_id, entry, prompt, pending, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.view?.askForm]);
+   const next = JSON.stringify([entry, prompt, ...this.questionKey(id)]);
    if (next === signature) return; signature = next;
    const expanded = content.querySelector("details")?.open ?? false;
    content.replaceChildren();

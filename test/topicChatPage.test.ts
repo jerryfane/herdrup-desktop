@@ -425,6 +425,21 @@ test("Refresh drops a question's terminal-only refusal and keeps its unsent answ
  expect(calls.filter(c => c.method === "Desk.ChatAnswerForm").map(c => c.args[2])).toEqual([{ name: { text: "Ledger" } }, { name: { text: "Ledger" } }]);
 });
 
+// #576: the refusal goes only with the page that Refresh publishes. A Refresh whose read fails
+// keeps herdr's ask_form_moved refusal: the card still offers only the Terminal, never Submit.
+test("a Refresh that fails keeps a question's terminal-only refusal", async () => {
+ await openPage("chat", topicPage(), askPage({ session_id: "s576" }), { askForm: true });
+ answers["Desk.ChatAnswerForm"] = () => ({ code: "ask_form_moved", message: "the form changed" });
+ answerAsk("Ledger");
+ withClass(inboxTranscript(), "ask-form-submit")[0]!.click();
+ await settle();
+ answers["Desk.ChatTranscript"] = () => { throw new Error("herdr: unavailable: herdr is restarting"); };
+ refreshButton().click();
+ await settle();
+ expect([withClass(inboxTranscript(), "ask-form-submit").length, withClass(inboxTranscript(), "chat-question-terminal").length]).toEqual([0, 1]);
+ expect(calls.filter(c => c.method === "Desk.ChatAnswerForm").length).toBe(1);
+});
+
 test("the Inbox whose cursor herdr expired keeps an unsent answer to the question still pending", async () => {
  const session = { session_id: "s565-expired" };
  await openPage("chat", topicPage(), askPage(session), { askForm: true });
@@ -584,6 +599,25 @@ test("a topic whose newest page failed after an older cursor expired offers no E
   offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
  await settle();
  expect([reads, earlier.hidden]).toEqual([["|b1", "|", "|"], true]);
+});
+
+// #574 review P3: Earlier messages follows paging as it stops, not at the next draw: while the
+// newest-page read that replaces an expired after cursor (or Refresh's) is held, it is hidden.
+test("a topic hides Earlier messages as soon as its cursor stops being usable", async () => {
+ const { chat, token } = await openTopic(topicPage({ before: "b1", entries: [reply("old", "Projected before the update")] }));
+ const earlier = withClass(chat, "chat-earlier")[0]!;
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown) => after ? Promise.reject(new Error(EXPIRED)) : new Promise(() => {});
+ emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+  offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+ await settle();
+ expect(earlier.hidden).toBe(true);
+
+ page.closeInteraction();
+ const reopened = await openTopic(topicPage({ before: "b1", entries: [reply("old", "Projected before the update")] }));
+ answers["Desk.TopicTranscript"] = () => new Promise(() => {});
+ expect(page.refreshInteraction()).toBe(true);
+ await settle();
+ expect(withClass(reopened.chat, "chat-earlier")[0]!.hidden).toBe(true);
 });
 
 test("an older Inbox page whose cursor herdr expired stops paging; the Inbox starts over from its newest page", async () => {
