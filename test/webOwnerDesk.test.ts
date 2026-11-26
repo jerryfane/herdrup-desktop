@@ -2,6 +2,7 @@
 // whose host admits owner hellos as herdr's guest/owner.rs does and serves agent.list.
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { isGuestPaused } from "../src/guestPaused";
+import { sharedMachines } from "../src/sharedWithYou";
 import { cursorExpired, readLive } from "../src/interactionModel";
 import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
@@ -432,14 +433,15 @@ test("the IndexedDB grant store relabels only the saved grant named, in one read
  await store.put(grant);
  await store.put(sibling);
  modes.length = 0;
- await store.relabel("host-1", "grant-1", "Studio Mac");
+ const at = new Date(5_000);
+ await store.relabel("host-1", "grant-1", "Studio Mac", at);
  const used = [...modes];
- expect([used, await store.get("host-1/grant-1"), await store.get("host-1/grant-2")]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac" }, sibling]);
- await store.relabel("host-1", "grant-3", "Other");
- await store.relabel("host-2", "grant-1", "Other");
+ expect([used, await store.get("host-1/grant-1"), await store.get("host-1/grant-2")]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac", labeledAt: at }, sibling]);
+ await store.relabel("host-1", "grant-3", "Other", at);
+ await store.relabel("host-2", "grant-1", "Other", at);
  expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-1", "Studio Mac"], ["grant-2", "Machine"]]);
  await store.remove("host-1/grant-1");
- await store.relabel("host-1", "grant-1", "Again");
+ await store.relabel("host-1", "grant-1", "Again", at);
  expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-2", "Machine"]]);
 });
 
@@ -451,12 +453,63 @@ test("the memory grant store relabels the one share named; a share removed stays
  await store.put(grant);
  await store.put({ ...grant, guestID: "grant-2" });
  await store.activate("host-1/grant-2");
- await store.relabel("host-1", "grant-2", "Studio Mac");
+ await store.relabel("host-1", "grant-2", "Studio Mac", new Date(5_000));
  expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-2", "Studio Mac"], ["grant-1", "Machine"]]);
  await store.remove("host-1/grant-2");
- await store.relabel("host-1", "grant-2", "Again");
+ await store.relabel("host-1", "grant-2", "Again", new Date(6_000));
  expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-1", "Machine"]]);
 });
+
+// SHARED WITH YOU names a machine as its latest hello did (each grant keeps its own label saved):
+// a sibling opened since, first in the list, may hold the old name until its own hello.
+test("the shares list names a machine as its latest hello did, whichever of its grants was opened last", async () => {
+ const grants = new MemoryGrantStore();
+ const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Old Studio", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ await grants.put(grant);
+ await grants.put({ ...grant, guestID: "grant-2", agentName: "Other worker" });
+ await grants.put({ ...grant, endpoint: { ...grant.endpoint, hostID: "host-2" }, machineLabel: "Laptop", acceptedAt: new Date(9_000) });
+ await grants.activate("host-1/grant-1");
+ // grant-1's hello names the machine anew.
+ await grants.relabel("host-1", "grant-1", "New Studio", new Date(5_000));
+ const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const headings = async () => sharedMachines(await desk.sharedConnections(), []).map(m => m.machine);
+ expect(await headings()).toEqual(["New Studio", "Laptop"]);
+ // The sibling opened: first now, its saved label still the old one.
+ await grants.activate("host-1/grant-2");
+ expect([(await grants.list())[0]!.machineLabel, await headings()]).toEqual(["Old Studio", ["New Studio", "Laptop"]]);
+ // Its hello names the machine as it is now (renamed back): the latest hello's name is the machine's.
+ await grants.relabel("host-1", "grant-2", "Old Studio", new Date(7_000));
+ expect(await headings()).toEqual(["Old Studio", "Laptop"]);
+});
+
+// A hello naming the machine as the grant already does still says when it was named so: the
+// latest hello's name is the machine's even after a sibling's hello named it otherwise.
+test("a hello naming the machine as the grant does still saves when it named it", async () => {
+ const relay = startRelay({
+  async serve(_conn, handshake) {
+   const session = (await handshake()).reply({ ok: true, guest_id: "grant-1", machine_label: "Machine", features: { multi_request: false } });
+   const line = await session.readLine();
+   if (line === null) return;
+   answer(session, JSON.parse(line) as Request, { result: { type: "agent_list", agents: [{ pane_id: "p1", terminal_id: "t1", name: "Worker", agent: "claude" }] } });
+  },
+ });
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put({ guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date(1_000) });
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const id = `${relay.hostID}/grant-1`;
+ try {
+  const listed = Promise.withResolvers<void>();
+  const off = events.boardChanged.on(b => { if (b?.machineID === `guest:${id}`) listed.resolve(); });
+  await desk.connectGuest(id);
+  await listed.promise; off();
+  const saved = await grants.get(id);
+  expect([saved?.machineLabel, (saved?.labeledAt?.getTime() ?? 0) > 1_000]).toEqual(["Machine", true]);
+ } finally { await desk.forgetGuestConnection(id); relay.stop(); }
+}, CONNECTS_LIMIT_MS);
 
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;

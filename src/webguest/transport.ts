@@ -61,6 +61,9 @@ export interface Access {
  agentTarget: string;
  endpoint: Endpoint;
  acceptedAt: Date;
+ /** When a hello's reply last named the machine machineLabel (its owner may rename it, herdr
+  *  #519); absent: acceptedAt, when the accept's (or open's) hello named it. */
+ labeledAt?: Date;
  /** The share is bound to the HerdrUp account it was accepted with ("Add to my account"): every
   *  hello carries that account's statement for the host, and the session keeps it fresh. Absent
   *  (older grants) or false: a plain share, this browser's key alone. */
@@ -677,18 +680,14 @@ export interface LinkHello { payload: Uint8Array; refused?: () => void; live?: (
  *  bound share with no statements to give is account_required before anything is dialed. A
  *  retry within one connect stays in the sign-in of its first hello (a change stops it here,
  *  shareSignInChanged); each new connect takes the current sign-in's statement, and herdr checks
- *  it is the share's account (account_mismatch). relabeled hears the machine's name when a hello
- *  reply names it differently from the share (its owner renamed it, herdr #519): a valid label,
- *  never an absent one (an older herdr's). */
-export function guestLink(access: Access, statements?: StatementSource, relabeled?: (label: string) => void): TransportLink {
+ *  it is the share's account (account_mismatch). labeled hears the machine's name every hello
+ *  reply gives (its owner may have renamed it, herdr #519): a valid label, never an absent one
+ *  (an older herdr's). */
+export function guestLink(access: Access, statements?: StatementSource, labeled?: (label: string) => void): TransportLink {
  const hostID = access.endpoint.hostID;
- let label = access.machineLabel;
  const admit = (reply: HelloReply) => {
   if (reply.guestID !== access.guestID) throw revoked();
-  if (reply.machineLabel !== "" && reply.machineLabel !== label && validLabel(reply.machineLabel)) {
-   label = reply.machineLabel;
-   relabeled?.(label);
-  }
+  if (reply.machineLabel !== "" && validLabel(reply.machineLabel)) labeled?.(reply.machineLabel);
  };
  if (!access.accountBound) {
   const payload = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));

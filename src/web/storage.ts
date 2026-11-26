@@ -23,9 +23,10 @@ export interface GrantStore {
   *  then, in the same step (a grant forgotten meanwhile, in this tab or another, is undefined
   *  and nothing changes), so a connect uses only a grant still held as it starts. */
  activate(id: string): Promise<Access | undefined>;
- /** Names the machine machineLabel on the saved grant guestID of hostID, and nothing else: a
-  *  grant forgotten or replaced meanwhile is left as it is (a late hello never brings one back). */
- relabel(hostID: string, guestID: string, machineLabel: string): Promise<void>;
+ /** Names the machine machineLabel, as a hello's reply did at at (labeledAt), on the saved grant
+  *  guestID of hostID, and nothing else: a grant forgotten or replaced meanwhile is left as it is
+  *  (a late hello never brings one back). */
+ relabel(hostID: string, guestID: string, machineLabel: string, at: Date): Promise<void>;
 }
 
 /** The grants as stored: active is the share opened last, null when none is (or it was left). */
@@ -47,15 +48,11 @@ function activateIn(r: GrantsRecord, id: string): Access | undefined {
  if (grant !== undefined) r.active = id;
  return grant;
 }
-/** Renames the machine on the record's grant guestID of hostID, the one share it is, when that
- *  grant is still held; the others, and a grant removed meanwhile, stay as they are. */
-function relabelIn(r: GrantsRecord, hostID: string, guestID: string, machineLabel: string) {
- r.grants = r.grants.map(g => relabels(g, hostID, guestID, machineLabel) ? { ...g, machineLabel } : g);
+/** Names the machine on the record's grant guestID of hostID, the one share it is, as a hello did
+ *  at at, when that grant is still held; the others, and a grant removed meanwhile, stay as they are. */
+function relabelIn(r: GrantsRecord, hostID: string, guestID: string, machineLabel: string, at: Date) {
+ r.grants = r.grants.map(g => g.endpoint.hostID === hostID && g.guestID === guestID ? { ...g, machineLabel, labeledAt: at } : g);
 }
-
-/** Whether grant is the one guestID of hostID, saved under another machine name than machineLabel. */
-const relabels = (grant: Access | undefined, hostID: string, guestID: string, machineLabel: string): grant is Access =>
- grant !== undefined && grant !== null && grant.endpoint.hostID === hostID && grant.guestID === guestID && grant.machineLabel !== machineLabel;
 
 /** Who shared the last grant this browser held: kept when the grant goes. */
 export interface OwnerHint {
@@ -137,7 +134,7 @@ export class IndexedDBGrantStore implements GrantStore {
  /** One read-write transaction (#change): the grant is read and marked with no write between. */
  activate(id: string): Promise<Access | undefined> { return this.#change(r => activateIn(r, id)); }
  /** One read-write transaction (#change): no other write comes between the read and the write. */
- relabel(hostID: string, guestID: string, machineLabel: string): Promise<void> { return this.#change(r => relabelIn(r, hostID, guestID, machineLabel)); }
+ relabel(hostID: string, guestID: string, machineLabel: string, at: Date): Promise<void> { return this.#change(r => relabelIn(r, hostID, guestID, machineLabel, at)); }
 }
 
 export class MemoryGrantStore implements GrantStore {
@@ -147,7 +144,7 @@ export class MemoryGrantStore implements GrantStore {
  async put(access: Access) { putIn(this.record, access); }
  async remove(id: string) { removeFrom(this.record, id); }
  async activate(id: string) { return activateIn(this.record, id); }
- async relabel(hostID: string, guestID: string, machineLabel: string) { relabelIn(this.record, hostID, guestID, machineLabel); }
+ async relabel(hostID: string, guestID: string, machineLabel: string, at: Date) { relabelIn(this.record, hostID, guestID, machineLabel, at); }
 }
 
 export const localOwnerHint: OwnerHint = {

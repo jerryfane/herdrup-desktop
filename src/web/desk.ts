@@ -250,6 +250,20 @@ export function syncedSharesOf(shares: RemoteShare[], held: Access[]): SyncedSha
  }));
 }
 
+/** held as the page lists them (Desk.sharedConnections), in their order, each naming its machine
+ *  as its host's latest hello did: the label on the host's grant a hello named last (labeledAt,
+ *  else acceptedAt), whichever of them comes first (the one opened last), as a sibling opened
+ *  since may hold an older name until its own hello. Each grant keeps its own label saved. */
+export function sharedConnectionsOf(held: Access[]): PageAccess[] {
+ const namedAt = (g: Access) => (g.labeledAt ?? g.acceptedAt).getTime();
+ const latest = new Map<string, Access>();
+ for (const g of held) {
+  const had = latest.get(g.endpoint.hostID);
+  if (had === undefined || namedAt(g) > namedAt(had)) latest.set(g.endpoint.hostID, g);
+ }
+ return held.map(g => pageAccess({ ...g, machineLabel: latest.get(g.endpoint.hostID)?.machineLabel ?? g.machineLabel }));
+}
+
 /** paneMenu (desk_agent_actions.go:267-303) in the browser: a guest's has no share, avatar, mute or
  *  close; an owner's agent (muted not null) has Share with someone when the page offers it, then
  *  Avatar… and Close agent when the link may write them (owner.avatar, owner.close), with Mute or
@@ -623,7 +637,7 @@ export function createGuestDesk(env: DeskEnv) {
   // An owner link also says the scope its grant was admitted under (ownerScope). A snapshot is
   // made, and told, only when the connection changed: its phase, message, availability, admitted
   // scope, features, the shared agent's name (a guest's access, renamed on the host), or the
-  // machine's (renamed by its owner, connectGuest's relabeled).
+  // machine's (renamed by its owner, connectGuest's labeled).
   const publish = (phase: string, msg: string, availability: string) => {
    const now = l.conn, guest = now.guest, features = l.transport.features;
    const same = now.phase === phase && now.message === msg && (guest?.availability ?? "") === availability
@@ -691,9 +705,10 @@ export function createGuestDesk(env: DeskEnv) {
    return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint(), account: invite.accounts };
   },
 
-  /** Every grant this browser holds, the one opened last first (the page resumes it). */
+  /** Every grant this browser holds, the one opened last first (the page resumes it), each naming
+   *  its machine as its host's latest hello did (sharedConnectionsOf). */
   async sharedConnections(): Promise<PageAccess[]> {
-   return (await env.grants.list()).map(pageAccess);
+   return sharedConnectionsOf(await env.grants.list());
   },
 
   /** keep: "account" binds the share to the signed-in HerdrUp account when the invite offers it
@@ -777,16 +792,16 @@ export function createGuestDesk(env: DeskEnv) {
    const grant = await env.grants.activate(id);
    if (grant === undefined) throw missing();
    disconnect();
-   // The machine as a hello names it now (its owner renamed it, herdr #519): on the grant still
-   // saved (SHARED WITH YOU; one forgotten or replaced meanwhile, in this tab or another, stays
-   // so) and in the access, so the next publication names it (the header). Unsaved, the next
-   // connect hears it again.
-   const relabeled = (machineLabel: string) => {
+   // The machine as each hello names it (its owner may have renamed it, herdr #519): on the grant
+   // still saved, with when (SHARED WITH YOU; one forgotten or replaced meanwhile, in this tab or
+   // another, stays so), and in the access, so the next publication names it (the header).
+   // Unsaved, the next connect hears it again.
+   const labeled = (machineLabel: string) => {
     if (l.life.signal.aborted) return;
-    l.access = { ...l.access, machineLabel };
-    void env.grants.relabel(grant.endpoint.hostID, grant.guestID, machineLabel).catch(() => undefined);
+    if (machineLabel !== l.access.machineLabel) l.access = { ...l.access, machineLabel };
+    void env.grants.relabel(grant.endpoint.hostID, grant.guestID, machineLabel, new Date(now())).catch(() => undefined);
    };
-   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), relabeled), identity, { now, webSocket: env.webSocket });
+   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), labeled), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], conn: connection({ access: grant, transport }, print, "connecting", "", ""), listedAt: "" };
    active = l;
