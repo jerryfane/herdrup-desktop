@@ -489,7 +489,11 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
     admitted = statement;
     break;
    } catch (error) {
-    if (attempt === 0 && statement !== undefined && freshStatementMayAdmit(error)) { statements?.drop(invite.endpoint.hostID, statement.jws); continue; }
+    // Every statement the host refused as stale or invalid is dropped; a fresh one goes once.
+    if (statement !== undefined && freshStatementMayAdmit(error)) {
+     statements?.drop(invite.endpoint.hostID, statement.jws);
+     if (attempt === 0) continue;
+    }
     throw error;
    } finally {
     hello.fill(0);
@@ -532,7 +536,11 @@ export async function openShare(share: Pick<Access, "endpoint" | "guestID" | "ma
     account = hello.account;
     break;
    } catch (error) {
-    if (attempt === 0 && freshStatementMayAdmit(error)) { hello.refused?.(); earlier = hello.live; continue; }
+    // Every refused statement is dropped; a fresh one goes once.
+    if (freshStatementMayAdmit(error)) {
+     hello.refused?.();
+     if (attempt === 0) { earlier = hello.live; continue; }
+    }
     throw error;
    }
   }
@@ -914,8 +922,12 @@ export class GuestTransport {
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
-    // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); earlier = hello.live; continue; }
+    // A refused statement is dropped, every time; a fresh one goes once: it may have gone stale
+    // on the way.
+    if (freshStatementMayAdmit(error) && hello?.refused) {
+     hello.refused();
+     if (attempt === 0) { earlier = hello.live; continue; }
+    }
     throw error;
    }
   }

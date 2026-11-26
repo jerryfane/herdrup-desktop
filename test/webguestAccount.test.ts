@@ -8,7 +8,7 @@ import { GuestError } from "../src/webguest/errors";
 import { generateIdentity, MemoryIdentityStore, staticKey } from "../src/webguest/identity";
 import { decodeInviteJSON, Invite } from "../src/webguest/invite";
 import { REFRESH_AHEAD_MS, type StatementSource } from "../src/webguest/accountStatement";
-import { acceptInvite, closeError, guestLink, GuestTransport, type Access } from "../src/webguest/transport";
+import { acceptInvite, closeError, guestLink, GuestTransport, openShare, type Access } from "../src/webguest/transport";
 import { AccountServiceError, SignedOutError } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
@@ -139,6 +139,36 @@ test("a redemption whose statement was refused as expired goes once more with a 
  const error = await acceptInvite(inviteFor(relay, true), await identity(), "Browser", { account: s }).catch(e => e);
  expect((error as GuestError).kind).toBe("statement_expired");
  expect(accounts.length).toBe(4);
+}, CONNECTS_LIMIT_MS);
+
+test("every statement a host refuses as stale is dropped, a retry's too: the next connect asks for a fresh one", async () => {
+ const accounts: unknown[] = [];
+ const relay = relayWith(async (_conn, handshake) => {
+  const h = await handshake();
+  accounts.push(h.hello.account);
+  h.reply({ ok: false, error: "statement_expired" });
+ });
+ /** As the page's cache (statements.ts): the statement held is given again until dropped. */
+ const cache = (): StatementSource => {
+  let held: string | null = null, issued = 0;
+  return {
+   get: async () => ({ jws: held ??= `jws-${++issued}`, expMs: Date.now() + 600_000, account: "acct", live: () => true }),
+   drop(_host, jws) { if (held === jws) held = null; },
+  };
+ };
+ const key = await identity();
+ const opens: ((s: StatementSource) => Promise<unknown>)[] = [
+  s => acceptInvite(inviteFor(relay, true), key, "Browser", { account: s }),
+  s => openShare(accessOn(relay), key, s),
+  s => { const t = new GuestTransport(guestLink(accessOn(relay, true), s), key); return t.call("ping").finally(() => t.close()); },
+ ];
+ for (const open of opens) {
+  accounts.length = 0;
+  const s = cache();
+  for (let i = 0; i < 2; i++) expect(((await open(s).catch(e => e)) as GuestError).kind).toBe("statement_expired");
+  // Each open tries once more with a fresh statement; neither reuses one the host refused.
+  expect(accounts).toEqual(["jws-1", "jws-2", "jws-3", "jws-4"]);
+ }
 }, CONNECTS_LIMIT_MS);
 
 // ---- Returning ----
