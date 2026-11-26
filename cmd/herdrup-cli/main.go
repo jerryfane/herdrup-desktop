@@ -109,8 +109,25 @@ var calls = map[string]handler{
 	"guest.invite.create": typed((*engine.Client).GuestInviteCreate),
 	"guest.list":          typed((*engine.Client).GuestList),
 	"guest.revoke":        typed((*engine.Client).GuestRevoke),
-	"guest.update":        typed((*engine.Client).GuestShareGram),
+	"guest.update":        typed(guestShareGram),
 	"guest.audit":         typed((*engine.Client).GuestAudit),
+}
+
+// guestUpdateParams is guest.update's JSON as the CLI takes it. guest_id and
+// share_gram are required: absent or null, the call is invalid_params, as
+// herdr answers it, and never reaches GuestShareGram as "" or false.
+type guestUpdateParams struct {
+	Machine   *string `json:"machine,omitempty"`
+	GuestID   *string `json:"guest_id"`
+	ShareGram *bool   `json:"share_gram"`
+}
+
+// guestShareGram is guest.update once its params are checked.
+func guestShareGram(c *engine.Client, ctx context.Context, p guestUpdateParams) (herdrapi.ResponseResultGuestUpdated, error) {
+	if p.GuestID == nil || p.ShareGram == nil {
+		return herdrapi.ResponseResultGuestUpdated{}, &bridge.APIError{Code: "invalid_params", Message: "guest.update needs guest_id and share_gram (true or false)"}
+	}
+	return c.GuestShareGram(ctx, engine.GuestShareGramParams{Machine: p.Machine, GuestID: *p.GuestID, ShareGram: *p.ShareGram})
 }
 
 func usage() {
