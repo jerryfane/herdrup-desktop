@@ -349,6 +349,9 @@ type link struct {
 	// the first list: the agent menus' agent_avatar and
 	// agent_session_transfer (desk_agent_actions.go).
 	caps *herdrapi.ServerCapabilities
+	// relabelUnsure is the connection (l.client) a guest relabel went
+	// unanswered on, which takes no more (desk_guest_relabel.go).
+	relabelUnsure *bridge.Client
 	// gram is the Gram state of a shared agent in the combined guest Gram
 	// (guestGramHub); nil for the connection Desk.gram follows. cancelGram
 	// ends that shared agent's reads.
@@ -787,9 +790,7 @@ func (d *Desk) RemoveMachine(id string) error {
 		d.boards.forget(id)
 		// A relabel not yet sent goes with its profile (desk_guest_relabel.go).
 		if localID != "" {
-			if err := d.dropRelabel(localID); err != nil {
-				log.Printf("guest relabel: %s: %v", id, err)
-			}
+			d.retireRelabels(st)
 		}
 	}
 	d.storeMu.Unlock()
