@@ -709,6 +709,52 @@ func TestAShareDeletedBeforeItsReadbackIsNotConfirmed(t *testing.T) {
 	}
 }
 
+// A share another device deletes between the push that wrote it and that
+// push's readback, its tombstone pruned at once, so the readback starts
+// over (410, a full one), is gone just the same: the account acknowledged
+// holding it, and the full readback lacks it with no tombstone to say so.
+// Neither the accept nor the list confirms it, and the next sync lets the
+// grant go.
+func TestAShareDeletedAndPrunedBeforeAFullReadbackIsLetGo(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("prompt-1", `{"text":"held"}`) // the readback pulls from past 0
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	w.mu.Lock()
+	w.afterPush = func() {
+		for id, it := range w.items {
+			if it.Collection == "shares" {
+				w.tombstone(id)
+				w.prune(id) // past the device's mirror: its readback starts over
+			}
+		}
+	}
+	w.mu.Unlock()
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound {
+		t.Fatalf("bound accept: %+v, %v", access, err)
+	}
+	if access.AccountShare != "" {
+		t.Fatalf("a share deleted before its full readback: the accept says %q, want nothing", access.AccountShare)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	if _, live := w.live()[id]; live || len(sharesOf(t, d)) != 0 {
+		t.Fatalf("rows %v, synced shares %+v; want no share", w.live(), sharesOf(t, d))
+	}
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if grants, _ := d.SharedConnections(); len(grants) != 0 {
+		t.Fatalf("after the next sync: grants %+v; want none", grants)
+	}
+	if _, live := w.live()[id]; live {
+		t.Fatal("the deleted share was written to the account again")
+	}
+}
+
 // A share write the service took, whose settling couldn't be saved, is
 // still journaled as sent (saved before the push went), so it is settled
 // by what the account holds, never written afresh: left elsewhere while

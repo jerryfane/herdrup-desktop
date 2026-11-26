@@ -1288,6 +1288,17 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 					goneShares = append(goneShares, s.ID)
 				}
 			}
+			// A share the account acknowledged holding (SharesHeld, this
+			// round's writes it took among them) that the full readback
+			// lacks was deleted, its tombstone pruned (or restored away)
+			// since: gone, as a tombstone would say, before the held ids
+			// are discarded below, so its grant here goes at the next merge
+			// (mergeShares) and no list or accept confirms it.
+			for _, id := range state.SharesHeld[acct] {
+				if key := "shares/" + id; !present[key] && !pushed[key] && !slices.Contains(goneShares, id) {
+					goneShares = append(goneShares, id)
+				}
+			}
 		}
 		state.HostsGone, state.PromptsGone, state.SharesGone = goneHosts, gonePrompts, goneShares
 	}
@@ -1304,8 +1315,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	state.PushFrom = pushFrom
 	state.ShareRefusals = noteShareRefusals(state.ShareRefusals, state.ShareWrites, acked, refusedShares)
 	// What the account was seen to hold: a full readback is the account as
-	// it is now (what it held before and no longer does is in SharesGone),
-	// else what was known before still counts.
+	// it is now (what it held before and no longer does is in SharesGone,
+	// above), else what was known before still counts.
 	heldBefore := state.SharesHeld[acct]
 	if readBack.Full {
 		heldBefore = nil
