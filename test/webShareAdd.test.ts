@@ -147,6 +147,20 @@ test("a 2xx that isn't the success envelope tells no outcome: unknown, never an 
  }
 });
 
+test("now_ms is optional (a service without the clock extension, #826, sends none): a reply without it tells its outcome; one with it bad tells none", async () => {
+ const reply = (p: Push, conflict: "live" | "tombstone" | null) => conflict === null
+  ? { rev: 4, applied: p.changes.map(c => ({ collection: c.collection, id: c.id, rev: 4 })), conflicts: [] }
+  : { rev: 4, applied: [], conflicts: p.changes.map(c => ({ collection: c.collection, id: c.id, server: item(c, conflict === "tombstone") })) };
+ const outcome = async (answer: (p: Push) => unknown) => {
+  const s = service(p => Response.json(answer(p)));
+  return [(await createShareAdder(s.account, "Chrome on macOS").add(bound())).outcome, s.pushes.length];
+ };
+ // The review's loopback reply: a matching applied entry, both revisions, no now_ms.
+ expect([await outcome(p => reply(p, null)), await outcome(p => reply(p, "live")), await outcome(p => reply(p, "tombstone"))]).toEqual([["added", 1], ["added", 1], ["refused", 1]]);
+ for (const now of [0, 1_000, Number.MAX_SAFE_INTEGER]) expect([now, ...await outcome(p => ({ ...reply(p, null), now_ms: now }))]).toEqual([now, "added", 1]);
+ for (const now of [-1, 1.5, "1000", null, true, {}, Number.MAX_SAFE_INTEGER + 2]) expect([now, ...await outcome(p => ({ ...reply(p, null), now_ms: now }))]).toEqual([now, "unknown", 1]);
+});
+
 test("a 2xx confirms the add only as the service writes it: a matching entry in a reply with any required field missing or mistyped is unknown", async () => {
  type Reply = Record<string, unknown> & { applied: Record<string, unknown>[]; conflicts: Record<string, unknown>[] };
  const applied = (p: Push): Reply => ({ rev: 4, applied: p.changes.map(c => ({ collection: c.collection, id: c.id, rev: 4 })), conflicts: [], now_ms: 1_000 });
@@ -162,16 +176,19 @@ test("a 2xx confirms the add only as the service writes it: a matching entry in 
  const broken: [string, (p: Push) => unknown][] = [
   // The review's probe: a matching applied entry, no revision on the envelope or the entry.
   ["no revision anywhere", p => without({ ...applied(p), applied: applied(p).applied.map(a => without(a, "rev")) }, "rev")],
-  ...["rev", "applied", "conflicts", "now_ms"].map((k): [string, (p: Push) => unknown] => [`no envelope ${k}`, p => without(applied(p), k)]),
+  ...["rev", "applied", "conflicts"].map((k): [string, (p: Push) => unknown] => [`no envelope ${k}`, p => without(applied(p), k)]),
   ...["collection", "id", "rev"].map((k): [string, (p: Push) => unknown] => [`applied entry without ${k}`, p => ({ ...applied(p), applied: applied(p).applied.map(a => without(a, k)) })]),
-  ...([["rev", "4"], ["rev", -1], ["rev", 1.5], ["rev", null], ["now_ms", "1000"], ["now_ms", null]] as const)
+  ...([["rev", "4"], ["rev", -1], ["rev", 1.5], ["rev", null], ["now_ms", "1000"], ["now_ms", null], ["now_ms", -1], ["now_ms", 1.5]] as const)
    .map(([k, v]): [string, (p: Push) => unknown] => [`envelope ${k} ${JSON.stringify(v)}`, p => ({ ...applied(p), [k]: v })]),
   ...([["rev", "4"], ["rev", -1], ["rev", Number.MAX_VALUE], ["id", 7], ["collection", null]] as const)
    .map(([k, v]): [string, (p: Push) => unknown] => [`applied entry ${k} ${JSON.stringify(v)}`, p => ({ ...applied(p), applied: applied(p).applied.map(a => ({ ...a, [k]: v })) })]),
   ...["collection", "id", "rev", "updated_ms", "deleted", "body"].map((k): [string, (p: Push) => unknown] =>
    [`conflict's server without ${k}`, p => ({ ...held(p), conflicts: held(p).conflicts.map(c => ({ ...c, server: without(c.server as Record<string, unknown>, k) })) })]),
-  ...([["rev", "3"], ["updated_ms", "0"], ["deleted", 0]] as const).map(([k, v]): [string, (p: Push) => unknown] =>
+  // An item's updated_ms is D1's integer clock; a tombstone has no body and a live item has one
+  // (migrations/0003_sync.sql: updated_ms INTEGER NOT NULL, CHECK ((deleted = 1) = (body IS NULL))).
+  ...([["rev", "3"], ["updated_ms", "0"], ["updated_ms", -1], ["updated_ms", 0.5], ["deleted", 0], ["body", null]] as const).map(([k, v]): [string, (p: Push) => unknown] =>
    [`conflict's server ${k} ${JSON.stringify(v)}`, p => ({ ...held(p), conflicts: held(p).conflicts.map(c => ({ ...c, server: { ...(c.server as object), [k]: v } })) })]),
+  ["a tombstone with a body", p => ({ ...held(p), conflicts: held(p).conflicts.map(c => ({ ...c, server: { ...(c.server as object), deleted: true } })) })],
   ["conflict without server", p => ({ ...held(p), conflicts: held(p).conflicts.map(c => without(c, "server")) })],
  ];
  for (const [what, reply] of broken) expect([what, ...await outcome(reply)]).toEqual([what, "unknown", 1]);

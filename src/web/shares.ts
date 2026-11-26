@@ -86,18 +86,23 @@ const refusal = (error: unknown) =>
  error instanceof SignedOutError || (error instanceof AccountServiceError && error.status >= 400 && error.status < 500);
 
 const record = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
-/** A revision as the service writes one (AccountService src/sync.ts isRev): a safe integer, 0 up. */
-const isRev = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
+/** A revision or a time in ms as the service writes one (AccountService src/sync.ts isRev; D1's
+ *  INTEGER columns and clock): a safe integer, 0 up. */
+const natural = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
 /** Whether answer is POST /v1/sync's success envelope as the service writes it (AccountService
- *  src/sync.ts handlePush): {rev, applied: [{collection, id, rev}], conflicts: [{collection, id,
- *  server}], now_ms}, every revision a revision, now_ms a number, a conflict's server null or a
- *  whole item ({collection, id, rev, updated_ms, deleted, body}: itemJson). A 2xx with any of them
- *  missing or mistyped tells no outcome, a matching entry in it included. */
+ *  src/sync.ts handlePush, DESIGN.md §5): {rev, applied: [{collection, id, rev}], conflicts:
+ *  [{collection, id, server}], now_ms?}. Required: rev; applied and conflicts, each entry naming
+ *  its collection and id; an applied entry's rev; a conflict's server, null or a whole item
+ *  (itemJson: collection, id, rev, updated_ms, deleted, and body, null exactly when deleted, as
+ *  migrations/0003_sync.sql's CHECK holds). Optional: now_ms, the clock extension (#826), absent
+ *  from a service without it; when present, a time in ms. Revisions and times are naturals. A 2xx
+ *  with a required field missing, or any field mistyped, tells no outcome, a matching entry in it
+ *  included. */
 function pushAnswer(answer: unknown): answer is SyncPushAnswer {
  const named = (c: unknown): c is Record<string, unknown> => record(c) && typeof c.collection === "string" && typeof c.id === "string";
- const item = (s: unknown) => named(s) && isRev(s.rev) && typeof s.updated_ms === "number" && Number.isFinite(s.updated_ms) && typeof s.deleted === "boolean" && "body" in s;
- return record(answer) && isRev(answer.rev) && typeof answer.now_ms === "number" && Number.isFinite(answer.now_ms)
-  && Array.isArray(answer.applied) && answer.applied.every(a => named(a) && isRev(a.rev))
+ const item = (s: unknown) => named(s) && natural(s.rev) && natural(s.updated_ms) && typeof s.deleted === "boolean" && "body" in s && s.deleted === (s.body === null);
+ return record(answer) && natural(answer.rev) && (!("now_ms" in answer) || natural(answer.now_ms))
+  && Array.isArray(answer.applied) && answer.applied.every(a => named(a) && natural(a.rev))
   && Array.isArray(answer.conflicts) && answer.conflicts.every(c => named(c) && (c.server === null || item(c.server)));
 }
 
