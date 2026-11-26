@@ -107,7 +107,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  void hostGlyph(symbol, "desktopcomputer", desktopIcon).then(icon => { rowGlyphs.icon = icon; drawPair(); });
  void symbol("chevron.right", 13, "semibold").then(chevron => { rowGlyphs.chevron = chevron; drawPair(); });
  const glyphs = {
-  icon: () => (rowGlyphs.icon?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
+  machine: () => (rowGlyphs.icon?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
   chevron: () => (rowGlyphs.chevron?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
  };
  function qrGlyph(size: number): HTMLElement {

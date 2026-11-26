@@ -294,7 +294,7 @@ export function notAddedLine(view: PairRequestView, m: PairRequestMachine): stri
  *  computer can't reach is dimmed with "Join its network to connect" and Use herdr pair; one it
  *  kept or couldn't save says why. A machine the approver couldn't add shows here only when the
  *  account doesn't list it (`synced`): the account's row says it then. */
-export function pairResultSection(view: PairRequestView, here: string, synced: readonly SyncedMachine[], glyphs: { icon(): HTMLElement; chevron(): HTMLElement }, spinner: string, actions: PairResultActions): HTMLElement[] {
+export function pairResultSection(view: PairRequestView, here: string, synced: readonly SyncedMachine[], glyphs: { machine(): HTMLElement; chevron(): HTMLElement }, spinner: string, actions: PairResultActions): HTMLElement[] {
   const { root, rows } = hostSection(`PAIRED BY ${(view.approver || "your other device").toUpperCase()}`, "host-home-paired");
   const away: string[] = [];
   for (const m of view.machines) {
@@ -317,7 +317,7 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
     const row = el("div", "host-home-row host-home-paired-row");
     const body = opens ? button("", () => actions.open(m.id!)) : el("span", "");
     body.className = off ? "host-home-paired-body host-home-row-off" : "host-home-paired-body";
-    body.append(hostRowIcon(glyphs.icon()), hostRowLines(m.label, second));
+    body.append(hostRowIcon(glyphs.machine()), hostRowLines(m.label, second));
     if (value) body.append(value);
     if (opens && !pair) body.append(m.reach ? hostRowChevron(glyphs.chevron()) : hostRowChevron(null, spinner));
     row.append(body);

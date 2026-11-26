@@ -18,7 +18,7 @@ const holder = (doc: FakeDocument, parts: HTMLElement[]) => { const box = doc.cr
 
 const view = (over: Partial<PairRequestView> = {}): PairRequestView => ({ id: "r1", phase: "waiting", expiresIn: 600, device: "Jerry's MacBook Pro", machines: [], retryOpen: false, ...over });
 const machine = (over: Partial<PairRequestMachine> = {}): PairRequestMachine => ({ label: "studio", host: "studio.lan", port: 22, user: "jerry", result: "saved", ...over });
-const glyphs = { icon: () => document.createElement("span"), chevron: () => document.createElement("span") };
+const glyphs = { machine: () => document.createElement("span"), chevron: () => document.createElement("span") };
 
 test("this computer names itself by its platform", () => {
  expect(thisDevice("MacIntel")).toBe("this Mac");
