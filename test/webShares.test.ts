@@ -8,7 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 import { WebAccount } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
-import { createShareSync, SHARES_KEY_PREFIX } from "../src/web/shares";
+import { createShareSync, SHARES_KEY_PREFIX, SYNC_LOCK_PREFIX } from "../src/web/shares";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { toB64url } from "../src/webguest/b64url";
 import { MemoryIdentityStore } from "../src/webguest/identity";
@@ -98,16 +98,25 @@ async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore
 
 const sharesOn = (w: Worker) => w.pushed.flat().filter(c => c.collection === "shares");
 
-/** A browser's Web Locks: one holder per name, the others waiting their turn in order. */
-function tabLocks(): AbortableLocks {
- const tails = new Map<string, Promise<unknown>>();
+/** A browser's Web Locks: one holder per name, the others waiting their turn in order.
+ *  waiting(name) resolves once a request for name comes while another holds it or waits for it;
+ *  granted(name) counts the requests for name granted so far. */
+function tabLocks() {
+ const tails = new Map<string, Promise<unknown>>(), open = new Map<string, number>(), grants = new Map<string, number>();
+ const waiters = new Map<string, (() => void)[]>();
  const request = <T>(name: string, ...args: [() => Promise<T>] | [{ signal?: AbortSignal }, () => Promise<T>]): Promise<T> => {
   const callback = args.length === 1 ? args[0] : args[1];
-  const turn = (tails.get(name) ?? Promise.resolve()).then(() => callback());
-  tails.set(name, turn.catch(() => {}));
+  const ahead = open.get(name) ?? 0;
+  open.set(name, ahead + 1);
+  if (ahead > 0) for (const told of waiters.get(name)?.splice(0) ?? []) told();
+  const turn = (tails.get(name) ?? Promise.resolve()).then(() => { grants.set(name, (grants.get(name) ?? 0) + 1); return callback(); });
+  tails.set(name, turn.finally(() => open.set(name, open.get(name)! - 1)).catch(() => {}));
   return turn;
  };
- return { request } as AbortableLocks;
+ return Object.assign({ request } as AbortableLocks, {
+  waiting: (name: string) => { const told = Promise.withResolvers<void>(); waiters.set(name, [...waiters.get(name) ?? [], told.resolve]); return told.promise; },
+  granted: (name: string) => grants.get(name) ?? 0,
+ });
 }
 
 /** Two tabs of one browser (sharing locks) with 100 share puts kept while the service was out,
@@ -131,7 +140,7 @@ async function leaveDuringBatch() {
  const id = `${h.relay.hostID}/${access.guestID}`;
  /** What was sent for the share since a's first push. */
  const sentSince = () => w.pushed.slice(before).flat().filter(c => c.id === id).map(c => c.deleted ? "delete" : "put");
- return { w, a, b, id, grants, synced, release: () => answer.resolve(), firstPush: before + 1, sentSince };
+ return { w, a, b, id, grants, locks, synced, release: () => answer.resolve(), firstPush: before + 1, sentSince };
 }
 
 // A browser without Web Locks can't take turns with its other tabs: a push of one could land after
@@ -156,11 +165,13 @@ test("without Web Locks, a browser sends no share write: Add to my account says 
 
 test("with Web Locks, a tab's Leave syncs once another tab's round is done: the share left stays deleted", async () => {
  const t = await leaveDuringBatch();
+ const lock = SYNC_LOCK_PREFIX + "acct", granted = t.locks.granted(lock);
+ const queued = t.locks.waiting(lock);
  const left = t.b.desk.forgetGuestConnection(t.id);
- while ((await t.grants.list()).length > 0) await Bun.sleep(1);
- await Bun.sleep(20);
- // The leaving tab sends nothing while the other's round is still answering.
- expect(t.w.pushed.length).toBe(t.firstPush);
+ // The leaving tab's sync asks for the turn tab a holds, and isn't given it while a's round is
+ // still answering: it sends nothing (a Leave done first would have sent its delete).
+ await Promise.race([queued, left]);
+ expect([t.locks.granted(lock), t.w.pushed.length]).toEqual([granted, t.firstPush]);
  t.release();
  await Promise.all([t.synced, left]);
  await t.a.shares.sync();
