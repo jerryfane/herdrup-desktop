@@ -533,11 +533,13 @@ export function createGuestDesk(env: DeskEnv) {
   const signal = l.life.signal;
   // An owner link also says the scope its grant was admitted under (ownerScope). A snapshot is
   // made, and told, only when the connection changed: its phase, message, availability, admitted
-  // scope, features, or the shared agent's name (a guest's access, renamed on the host).
+  // scope, features, the shared agent's name (a guest's access, renamed on the host), or the
+  // machine's (renamed by its owner, connectGuest's relabeled).
   const publish = (phase: string, msg: string, availability: string) => {
    const now = l.conn, guest = now.guest, features = l.transport.features;
    const same = now.phase === phase && now.message === msg && (guest?.availability ?? "") === availability
     && (guest?.ownerScope ?? "") === (l.owner ? l.transport.scope : "") && guest?.access.agentName === l.access.agentName
+    && guest.access.machineLabel === l.access.machineLabel
     && guest.features.gram === features.gram && guest.features.push === features.push && guest.features.multi_request === features.multiRequest;
    if (!same) setState(l, connection(l, print, phase, msg, availability));
   };
@@ -630,7 +632,15 @@ export function createGuestDesk(env: DeskEnv) {
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
-   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements)), identity, { now, webSocket: env.webSocket });
+   // The machine as a hello names it now (its owner renamed it, herdr #519): saved with the
+   // grant (SHARED WITH YOU) and in the access, so the next publication names it (the header).
+   // Unsaved, the next connect hears it again.
+   const relabeled = (machineLabel: string) => {
+    if (l.life.signal.aborted) return;
+    l.access = { ...l.access, machineLabel };
+    void env.grants.put({ ...grant, machineLabel }).catch(() => undefined);
+   };
+   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), relabeled), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], conn: connection({ access: grant, transport }, print, "connecting", "", ""), listedAt: "" };
    active = l;

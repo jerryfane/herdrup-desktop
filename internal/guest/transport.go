@@ -90,6 +90,11 @@ type Transport struct {
 
 	// statements gives a bound share's statements (connect).
 	statements StatementSource
+
+	// label is the machine's name as the share last heard it (under mu):
+	// the access's, then each hello reply's. onLabel hears it change.
+	label   string
+	onLabel func(label string)
 }
 
 // idleSession is a session waiting for a call since since; taken closes
@@ -104,7 +109,17 @@ type idleSession struct {
 // share's statements (Access.AccountBound); a plain share never asks.
 func NewTransport(access Access, identity Identity, clock Clock, statements StatementSource) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel}
+	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel, label: access.MachineLabel}
+}
+
+// OnMachineLabel has f hear the machine's name when a connect's hello reply
+// names it differently from the share (the owner relabeled the machine,
+// herdr #519): a valid label, never an absent one (an older herdr's). Set it
+// before the first call; f runs on the connecting goroutine.
+func (t *Transport) OnMachineLabel(f func(label string)) {
+	t.mu.Lock()
+	t.onLabel = f
+	t.mu.Unlock()
 }
 func (t *Transport) Done() <-chan struct{} { return t.ctx.Done() }
 func (t *Transport) Close() error {
@@ -436,6 +451,15 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 		connected.bound = bound
 	}
 	t.admitted(refusals, connected.reply.Features)
+	if label := connected.reply.MachineLabel; label != "" && validLabel(label) {
+		t.mu.Lock()
+		changed, heard := label != t.label, t.onLabel
+		t.label = label
+		t.mu.Unlock()
+		if changed && heard != nil {
+			heard(label)
+		}
+	}
 	connected.handshook = t.clock.Now()
 	return connected, nil, nil
 }

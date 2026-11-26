@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/fakeherdr"
+	"github.com/jerryfane/herdrup-desktop/internal/guest"
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
@@ -279,5 +280,52 @@ func TestARelabelIsQueuedForARenameAndFollowsTheMachine(t *testing.T) {
 	save(pi, "root@pi:22")
 	if p := pending(); len(p) != 1 || p["admin@pi:22"] != "New" {
 		t.Fatalf("pending %v, want New for admin@pi:22", p)
+	}
+}
+
+// A guest's reconnect takes the machine's new name from herdr's hello reply
+// (the owner renamed it, herdr #519): saved with the share (SHARED WITH YOU)
+// and named by the open link's state (its header). A reply that names no
+// machine (an older herdr) changes nothing.
+func TestAGuestReconnectTakesTheMachinesNewName(t *testing.T) {
+	relay, err := fakeherdr.NewGuestRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.Handle = (&guestOwnerHost{status: "idle"}).handle
+	d, _ := openGuestAgent(t, relay, guest.SystemClock)
+	list, err := d.SharedConnections()
+	if err != nil || len(list) != 1 || list[0].MachineLabel != "studio" {
+		t.Fatalf("shares %+v, %v", list, err)
+	}
+	id := list[0].ID()
+	names := func() [3]string {
+		saved, _ := d.SharedConnections()
+		s := d.State()
+		shown := ""
+		if s.Guest != nil {
+			shown = s.Guest.Access.MachineLabel
+		}
+		return [3]string{saved[0].MachineLabel, s.Machine, shown}
+	}
+	reconnect := func(label string) {
+		t.Helper()
+		relay.SetMachineLabel(label)
+		hellos := len(relay.Hellos())
+		if err := d.ConnectGuest(id); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "the reconnect listed", func() bool {
+			s := d.State()
+			return len(relay.Hellos()) > hellos && s.Phase == "connected" && s.Guest != nil
+		})
+	}
+	reconnect("Studio Mac")
+	if got, want := names(), [3]string{"Studio Mac", "Studio Mac", "Studio Mac"}; got != want {
+		t.Fatalf("after a reconnect to the renamed machine: saved, state, header %q, want %q", got, want)
+	}
+	reconnect("")
+	if got, want := names(), [3]string{"Studio Mac", "Studio Mac", "Studio Mac"}; got != want {
+		t.Fatalf("after a hello naming no machine: saved, state, header %q, want %q", got, want)
 	}
 }

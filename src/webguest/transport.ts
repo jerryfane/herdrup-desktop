@@ -22,7 +22,7 @@
 // shared machine that is offline, or a dropped network, is retried 15 s later instead of at once.
 
 import { accountRefusal, closed, expired, freshStatementMayAdmit, GuestError, HerdrAPIError, hostOffline, notSent, other, rateLimited, relayRefused, revoked, timedOut } from "./errors";
-import { socketURL, type Endpoint, type Invite } from "./invite";
+import { socketURL, validLabel, type Endpoint, type Invite } from "./invite";
 import { Initiator, MAX_NOISE_MESSAGE, MAX_NOISE_PLAINTEXT, NoiseSession, type StaticKey } from "./noise";
 import { accountChanged, HELLO_MIN_LEFT_MS, REFRESH_AHEAD_MS, REFRESH_MIN_LEFT_MS, shareSignInChanged, type AccountStatement, type StatementSource } from "./accountStatement";
 
@@ -622,15 +622,25 @@ export interface LinkHello { payload: Uint8Array; refused?: () => void; live?: (
  *  bound share with no statements to give is account_required before anything is dialed. A
  *  retry within one connect stays in the sign-in of its first hello (a change stops it here,
  *  shareSignInChanged); each new connect takes the current sign-in's statement, and herdr checks
- *  it is the share's account (account_mismatch). */
-export function guestLink(access: Access, statements?: StatementSource): TransportLink {
+ *  it is the share's account (account_mismatch). relabeled hears the machine's name when a hello
+ *  reply names it differently from the share (its owner renamed it, herdr #519): a valid label,
+ *  never an absent one (an older herdr's). */
+export function guestLink(access: Access, statements?: StatementSource, relabeled?: (label: string) => void): TransportLink {
  const hostID = access.endpoint.hostID;
+ let label = access.machineLabel;
+ const admit = (reply: HelloReply) => {
+  if (reply.guestID !== access.guestID) throw revoked();
+  if (reply.machineLabel !== "" && reply.machineLabel !== label && validLabel(reply.machineLabel)) {
+   label = reply.machineLabel;
+   relabeled?.(label);
+  }
+ };
  if (!access.accountBound) {
   const payload = new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID }));
   return {
    endpoint: access.endpoint,
    hello: async () => ({ payload }),
-   admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
+   admit,
   };
  }
  const source = () => {
@@ -649,7 +659,7 @@ export function guestLink(access: Access, statements?: StatementSource): Transpo
     ...(earlier ? { stale: shareSignInChanged } : {}),
    };
   },
-  admit: reply => { if (reply.guestID !== access.guestID) throw revoked(); },
+  admit,
   statement: signal => source().get(hostID, REFRESH_MIN_LEFT_MS, signal),
  };
 }
