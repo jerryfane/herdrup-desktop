@@ -820,7 +820,7 @@ test("the web desk's cursor_expired starts the Inbox and a topic over from their
    (after: string) => desk.chatTranscript("view-1", after, "", "", after ? "b0" : ""),
    (after: string) => desk.topicTranscript("view-1", "t1", after, "", after ? "b0" : ""),
   ]) {
-   const live = await readLive(held, () => ({ entries: held.entries, hasOlder: true }), async after => JSON.parse(await read(after)));
+   const live = await readLive(held, () => ({ entries: held.entries, hasOlder: true }), async after => JSON.parse(await read(after)), () => true);
    expect([live!.reset, live!.entries.map(e => e.id)]).toEqual([true, ["n1"]]);
   }
   expect(asked.map(p => [p.after ?? "", p.topic ?? ""])).toEqual([["1", ""], ["", ""], ["1", "t1"], ["", "t1"]]);

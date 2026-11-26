@@ -151,7 +151,7 @@ test("a live read re-reads the newest page when an after page may replay unloade
   a1: { after: "a2", session_id: "s", entries: [...resent, ...appended] },
   "": { after: "a2", session_id: "s", entries: [...newest, ...appended] },
  };
- const live = await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async after => { reads.push(after); return pages[after]!; });
+ const live = await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async after => { reads.push(after); return pages[after]!; }, () => true);
  expect(reads).toEqual(["a1", ""]);
  expect(live!.reset).toBe(false);
  expect(live!.entries.map(e => e.id)).toEqual([...newest, ...appended].map(e => e.id));
@@ -159,9 +159,9 @@ test("a live read re-reads the newest page when an after page may replay unloade
 
 test("a live read takes a new session whole, and stops on a stale reply", async () => {
  const fresh: TranscriptPage = { after: "b1", session_id: "t", entries: appended };
- const live = await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async () => fresh);
+ const live = await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async () => fresh, () => true);
  expect([live!.reset, live!.entries.map(e => e.id)]).toEqual([true, appended.map(e => e.id)]);
- expect(await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async () => null)).toBeNull();
+ expect(await readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: newest, hasOlder: true }), async () => null, () => true)).toBeNull();
 });
 
 // #253: history loaded while a live read waits on the network is the chat's entries when the reply
@@ -174,7 +174,7 @@ test("a live read merges into the entries held when its reply arrives, keeping h
  const live = await readLive({ after: "a1", session_id: "s", entries: tail }, () => ({ entries, hasOlder: false }), async () => {
   entries = [...history, ...tail]; // "Earlier messages" finished during the request
   return { after: "a2", session_id: "s", entries: fresh, resent: [] };
- });
+ }, () => true);
  expect(live!.entries.map(e => e.id)).toEqual(["h1", "t1", "n1"]);
 });
 
@@ -191,14 +191,40 @@ test("a live read whose cursor herdr expired starts over from the newest page", 
    reads.push(after);
    if (after) throw expired;
    return { after: "a2", before: "b2", session_id: "s", entries: fresh };
-  });
+  }, () => true);
   expect(reads).toEqual(["a1", ""]);
   expect([live!.reset, live!.page.after, live!.page.before, live!.entries]).toEqual([true, "a2", "b2", fresh]);
  }
  // Another failure is the read's, and a newest page's read has no cursor to expire.
- await expect(readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: [], hasOlder: false }), async () => { throw new Error("herdr: owner_forbidden: no"); })).rejects.toThrow("owner_forbidden");
- await expect(readLive(null, () => ({ entries: [], hasOlder: false }), async () => { throw new Error(EXPIRED); })).rejects.toThrow("cursor_expired");
+ await expect(readLive({ after: "a1", session_id: "s", entries: [] }, () => ({ entries: [], hasOlder: false }), async () => { throw new Error("herdr: owner_forbidden: no"); }, () => true)).rejects.toThrow("owner_forbidden");
+ await expect(readLive(null, () => ({ entries: [], hasOlder: false }), async () => { throw new Error(EXPIRED); }, () => true)).rejects.toThrow("cursor_expired");
  expect([cursorExpired(new Error(`Chat: ${EXPIRED}`)), cursorExpired(new Error("herdr: owner_forbidden: cursor_expired")), cursorExpired("cursor_expired")]).toEqual([true, false, false]);
+});
+// #560 review: the chat owns its restart. readLive marks it (restart) before it reads the newest
+// page, so a failed newest-page read leaves the next poll starting over too, never resending the
+// expired cursor; a read that no longer owns the chat (Refresh or a later poll took over) reads
+// nothing more.
+test("a live read whose cursor herdr expired marks the chat to start over, and reads no newest page once superseded", async () => {
+ const held: TranscriptPage = { after: "a1", session_id: "s", entries: [] };
+ const reads: string[] = [];
+ let restarts = 0;
+ await expect(readLive(held, () => ({ entries: [], hasOlder: false }), async after => {
+  reads.push(after);
+  throw new Error(after ? EXPIRED : "herdr: owner_forbidden: no");
+ }, () => { restarts++; return true; })).rejects.toThrow("owner_forbidden");
+ expect([reads, restarts]).toEqual([["a1", ""], 1]);
+ reads.length = 0;
+ expect(await readLive(held, () => ({ entries: [], hasOlder: false }), async after => { reads.push(after); throw new Error(EXPIRED); }, () => false)).toBeNull();
+ expect(reads).toEqual(["a1"]);
+});
+// #560 review: on the web the desk's HerdrAPIError carries herdr's code; cursorExpired reads it
+// there, not the text it shows.
+test("a web HerdrAPIError is read by its code, not its text", async () => {
+ const reworded = new HerdrAPIError("cursor_expired", "the transcript changed under this cursor; reload the newest page", {});
+ reworded.message = "Couldn't read the transcript.";
+ const other = new HerdrAPIError("not_found", "no such pane", {});
+ other.message = EXPIRED;
+ expect([cursorExpired(reworded), cursorExpired(other)]).toEqual([true, false]);
 });
 // #555: herdr may leave relay_entries off a fallback page (the handover as the user entry it was
 // sent as) and set it on a later page of the same session (a relay entry), or the other way. A
@@ -214,7 +240,9 @@ for (const [name, heldRelays, held, newest] of [["plain to relay", false, asUser
    a1: { after: "a2", session_id: "s", entries: later, resent: [], relay_entries: !heldRelays },
    "": { after: "a2", session_id: "s", entries: [...newest, ...later], relay_entries: !heldRelays },
   };
-  const live = await readLive({ after: "a1", session_id: "s", entries: held, relay_entries: heldRelays }, () => ({ entries: held, hasOlder: true }), async after => { reads.push(after); return pages[after]!; });
+  let restarts = 0;
+  const live = await readLive({ after: "a1", session_id: "s", entries: held, relay_entries: heldRelays }, () => ({ entries: held, hasOlder: true }), async after => { reads.push(after); return pages[after]!; }, () => { restarts++; return true; });
+  expect(restarts).toBe(1);
   expect(reads).toEqual(["a1", ""]);
   expect(live!.reset).toBe(true);
   expect(live!.entries).toEqual([...newest, ...later]);

@@ -13,3 +13,11 @@ export function herdrCode(text: string): string | null {
  const end = field.indexOf(": ");
  return end < 0 ? field : field.slice(0, end);
 }
+
+/** The herdr error code an error carries, or null: the web desk's HerdrAPIError (webguest/errors)
+ *  carries its own `code`, checked by shape so the desktop bundle takes no web code; a desktop
+ *  bridge error (mygo's CallError) carries only its text, decoded by herdrCode. */
+export function herdrErrorCode(error: unknown): string | null {
+ const code = error instanceof Error && "code" in error ? error.code : undefined;
+ return typeof code === "string" ? code : herdrCode(errorText(error));
+}
