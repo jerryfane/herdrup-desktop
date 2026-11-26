@@ -10,6 +10,7 @@ import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
 import { createShareSync } from "../src/web/shares";
 import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
+import type { Access } from "../src/webguest/transport";
 import { toB64url } from "../src/webguest/b64url";
 import { MemoryIdentityStore } from "../src/webguest/identity";
 import { APP_LINK_PREFIX } from "../src/webguest/invite";
@@ -67,12 +68,12 @@ function inviteText(relay: TestRelay, acct = true): string {
 }
 
 /** The account's statement for any machine: its text names the account (the host binds to it). */
-const statements = (): StatementSource => ({ get: async () => ({ jws: "statement-of-acct", expMs: Date.now() + 600_000, live: () => true }), drop() {} });
+const statements = (): StatementSource => ({ get: async () => ({ jws: "statement-of-acct", expMs: Date.now() + 600_000, account: "acct", live: () => true }), drop() {} });
 
 let sessions = 0;
 /** One browser of the account: its own session, storage, guest key and grant. Signed out, the
  *  service refuses its cookie. */
-async function browser(w: Worker, signedIn = true) {
+async function browser(w: Worker, signedIn = true, grants = new MemoryGrantStore()) {
  const fetcher = w.fetcher(`s${++sessions}`);
  const signedOut = ((input: string | URL | Request, init?: RequestInit) => String(input).includes("/v1/auth/refresh")
   ? Promise.resolve(Response.json({ error: "session_revoked" }, { status: 401 })) : fetcher(input, init)) as typeof fetch;
@@ -80,7 +81,6 @@ async function browser(w: Worker, signedIn = true) {
  if (signedIn) await account.check();
  const storage = memory();
  const shares = createShareSync(account, { storage: () => storage, locks: null, name: "Chrome on macOS", background: false });
- const grants = new MemoryGrantStore();
  const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: (url) => new WebSocket(url), statements: statements(), shares });
  return { desk, grants, shares, account };
 }
@@ -166,6 +166,36 @@ test("a leave based on a revision the share has moved past stays pending, and th
  const pushes = w.pushed.length;
  await mac.shares.sync();
  expect(w.pushed.length).toBe(pushes);
+}, CONNECTS_LIMIT_MS);
+
+test("a share is written to and deleted from the account that bound it, never another signed in meanwhile", async () => {
+ const w = worker(), h = host();
+ w.accountsApart = true;
+ // Account B signs in here while the grant bound to A ("acct") is being saved.
+ const grants = new class extends MemoryGrantStore {
+  onPut: (() => Promise<void>) | null = null;
+  override async put(access: Access) { await super.put(access); const run = this.onPut; this.onPut = null; await run?.(); }
+ }();
+ const mac = await browser(w, true, grants);
+ const switchTo = async (acct: string) => { w.accountId = acct; await mac.account.signOut().catch(() => {}); await mac.account.check(); };
+ grants.onPut = () => switchTo("acct-b");
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ expect([mac.account.current?.accountID, access.accountBound, mac.grants.access?.account]).toEqual(["acct-b", true, "acct"]);
+ await mac.shares.sync();
+ expect([w.sharesIn("acct"), w.sharesIn("acct-b"), sharesOn(w), await mac.desk.syncedShares()]).toEqual([[], [], [], []]);
+ // Back on A: its next sync here writes the share there, and only there.
+ await switchTo("acct");
+ await mac.shares.sync();
+ expect([w.sharesIn("acct"), w.sharesIn("acct-b")]).toEqual([[id], []]);
+ // Left under B: deleted from A alone, at A's next sync here.
+ await switchTo("acct-b");
+ await mac.desk.forgetGuestConnection(id);
+ await mac.shares.sync();
+ expect([w.sharesIn("acct"), sharesOn(w).length]).toEqual([[id], 1]);
+ await switchTo("acct");
+ await mac.shares.sync();
+ expect([w.sharesIn("acct"), sharesOn(w).at(-1)]).toEqual([[], { collection: "shares", id, base_rev: 1, deleted: true }]);
 }, CONNECTS_LIMIT_MS);
 
 test("a plain accept (Only this device, or an invite without acct) writes nothing to the account", async () => {

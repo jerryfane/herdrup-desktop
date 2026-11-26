@@ -11,7 +11,7 @@
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, SignedOutError, type SyncChange, type WebAccount } from "./account";
+import { AccountServiceError, type SyncChange, type WebAccount } from "./account";
 import { withStorageLock, type AbortableLocks } from "./locks";
 import { pullSince } from "./prompts";
 
@@ -65,10 +65,11 @@ function validBody(body: unknown): body is ShareBody {
  return typeof b.relay === "string" && typeof b.host_id === "string" && typeof b.node_pub === "string" && typeof b.guest_id === "string";
 }
 
-/** What listeners hear: the account's shares now, and those a pull saw deleted (by this device or
- *  another): every share the pull shows a tombstone of, seen live here or not (a put whose
- *  readback failed never was), and, after a full pull, those seen live that it no longer holds. */
-export interface SharesChange { shares: RemoteShare[]; removed: string[] }
+/** What listeners hear: whose shares they are (null: signed out), the account's shares now, and
+ *  those a pull saw deleted (by this device or another): every share the pull shows a tombstone
+ *  of, seen live here or not (a put whose readback failed never was), and, after a full pull,
+ *  those seen live that it no longer holds. */
+export interface SharesChange { account: string | null; shares: RemoteShare[]; removed: string[] }
 
 export function createShareSync(account: WebAccount, place: SharesPlace) {
  const listeners = new Set<(change: SharesChange) => void>();
@@ -157,7 +158,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    const puts = new Set(r.pending.filter(p => p.body).map(p => p.id));
    const tombstoned = pulled.items.filter(it => it.collection === "shares" && it.deleted).map(it => it.id);
    const removed = new Set([...before, ...tombstoned].filter(id => !live.has(id) && !puts.has(id)));
-   return { shares: visible(r), removed: [...removed] };
+   return { account: acct, shares: visible(r), removed: [...removed] };
   });
  }
 
@@ -179,11 +180,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   return running;
  }
 
- const write = async (change: PendingWrite): Promise<void> => {
-  const acct = account.current?.accountID;
-  if (acct === undefined) throw new SignedOutError();
+ /** Keeps change for acct, the account the share is bound to, and sends it while acct is signed in
+  *  here: never to another account. Under another sign-in (or none) it waits for acct's next
+  *  round on this browser. */
+ const write = async (acct: string, change: PendingWrite): Promise<void> => {
   const shown = await update(acct, r => { r.pending = r.pending.filter(p => p.id !== change.id).concat(change); return visible(r); });
-  tell({ shares: shown, removed: [] });
+  if (account.current?.accountID !== acct) return;
+  tell({ account: acct, shares: shown, removed: [] });
   // The write is kept: a round that fails sends it with the next one.
   await sync().catch(() => {});
  };
@@ -191,7 +194,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  // Another sign-in shows its own account's shares (and pulls them); signed out, none.
  account.onSessionChange(() => {
   const acct = account.current?.accountID;
-  tell({ shares: acct === undefined ? [] : visible(read(acct)), removed: [] });
+  tell({ account: acct ?? null, shares: acct === undefined ? [] : visible(read(acct)), removed: [] });
   if (acct !== undefined && place.background) void sync().catch(() => {});
  });
  if (place.background) setInterval(() => { if (account.current) void sync().catch(() => {}); }, SYNC_EVERY_MS);
@@ -203,10 +206,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    return acct === undefined ? [] : visible(read(acct));
   },
   sync,
-  /** Writes a bound grant's share to the account. */
-  put: (access: Access) => write({ id: shareID(access), body: shareBody(access) }),
-  /** Deletes a share from the account: it leaves every device. */
-  remove: (id: string) => write({ id, deleted: true }),
+  /** Writes a bound grant's share to the account it is bound to (Access.account). */
+  put: (access: Access) => {
+   if (access.account === undefined) return Promise.reject(new Error("This shared access isn't bound to a HerdrUp account."));
+   return write(access.account, { id: shareID(access), body: shareBody(access) });
+  },
+  /** Deletes a share from acct, the account it is bound to: it leaves every device. */
+  remove: (id: string, acct: string) => write(acct, { id, deleted: true }),
   /** Binds this sign-in's session to key as an account device (the statements a bound share
    *  needs are issued only to a session with a device); a session bound already is fine. */
   async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {

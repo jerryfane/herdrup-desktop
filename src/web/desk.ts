@@ -377,11 +377,11 @@ export function createGuestDesk(env: DeskEnv) {
  async function publishShares(shares: RemoteShare[]) {
   emit("syncedSharesChanged", syncedSharesOf(shares, await env.grants.get()));
  }
- // A share deleted on the account (left on any device) leaves this browser too, when it holds it
- // bound; a plain grant is never dropped by the sync.
+ // A share deleted on the account it is bound to (left on any device) leaves this browser too,
+ // when it holds it bound; a plain grant is never dropped by the sync.
  env.shares?.onChange(change => void (async () => {
   const grant = await env.grants.get();
-  if (grant?.accountBound && change.removed.includes(shareID(grant))) {
+  if (grant?.accountBound && grant.account === change.account && change.removed.includes(shareID(grant))) {
    await env.grants.remove();
    if (active?.id === "guest:" + shareID(grant)) { disconnect(); publishIdle(); }
   }
@@ -698,7 +698,9 @@ export function createGuestDesk(env: DeskEnv) {
      throw new Error(`Access was accepted but could not be saved: ${message(error)}. Keep this device's guest identity and ask the owner for a new invitation`);
     }
     env.owner.set(access.ownerName);
-    // Written to the account once herdr bound it: it then shows on the account's other devices.
+    // Written to the account herdr bound it to (the admitted statement's), once it did: it then
+    // shows on the account's other devices. Never to another: with a sign-in changed meanwhile it
+    // waits for that account's next sync here.
     if (bound && access.accountBound) await bound.shares.put(access);
     return pageAccess(access);
    });
@@ -754,8 +756,9 @@ export function createGuestDesk(env: DeskEnv) {
    void runGuest(l, print).finally(() => shutdown(l));
   },
 
-  /** Leaving a share bound to the account also deletes it from the account's shares, so it leaves
-   *  every device; a plain one is this browser's alone, as before. */
+  /** Leaving a share bound to the account also deletes it from the account it is bound to, so it
+   *  leaves every device (with another sign-in now, at that account's next sync here); a plain
+   *  one is this browser's alone, as before. */
   async forgetGuestConnection(id: string): Promise<void> {
    const grant = await env.grants.get();
    const held = grant !== undefined && `${grant.endpoint.hostID}/${grant.guestID}` === id;
@@ -767,7 +770,7 @@ export function createGuestDesk(env: DeskEnv) {
     disconnect();
     publishIdle();
    }
-   if (held && grant.accountBound && env.shares) await env.shares.remove(id);
+   if (held && grant.accountBound && grant.account !== undefined && env.shares) await env.shares.remove(id, grant.account);
   },
 
   async takeGuestInvitation(): Promise<string> { return ""; },

@@ -65,6 +65,9 @@ export interface Access {
   *  hello carries that account's statement for the host, and the session keeps it fresh. Absent
   *  (older grants) or false: a plain share, this browser's key alone. */
  accountBound?: boolean;
+ /** The HerdrUp account a bound share is bound to: the account of the statement herdr admitted it
+  *  with. Its shares item is written to and deleted from that account only. */
+ account?: string;
 }
 
 /** The part of the WebSocket API the transport uses, so tests can inject one. */
@@ -471,6 +474,8 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
  try {
   let connected: Session;
   let first: AccountStatement | undefined;
+  // The statement of the hello herdr admitted: a share it binds is bound to its account.
+  let admitted: AccountStatement | undefined;
   for (let attempt = 0; ; attempt++) {
    // A retry stays in the sign-in of the first hello: herdr would bind the invite to another
    // account for good (helloStatement).
@@ -481,6 +486,7 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
    const hello = invite.helloPayload(device, statement?.jws);
    try {
     connected = await openSession(invite.endpoint, identity, hello, signal, options.webSocket ?? browserWebSocket, statement?.live, refusal, pin === undefined ? helloStale : accountChanged);
+    admitted = statement;
     break;
    } catch (error) {
     if (attempt === 0 && statement !== undefined && freshStatementMayAdmit(error)) { statements?.drop(invite.endpoint.hostID, statement.jws); continue; }
@@ -499,7 +505,7 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
    ownerName: reply.ownerName || invite.ownerName, agentName: reply.agent.name || invite.agentName, agentTarget: reply.agent.target,
    endpoint: invite.endpoint, acceptedAt: new Date(now),
    // Bound when herdr says so: an account-bound session has a statement deadline.
-   ...(statements !== undefined && reply.deadlineUnix > 0 ? { accountBound: true } : {}),
+   ...(admitted !== undefined && reply.deadlineUnix > 0 ? { accountBound: true, account: admitted.account } : {}),
   };
  } finally {
   dispose();
@@ -517,11 +523,13 @@ export async function openShare(share: Pick<Access, "endpoint" | "guestID" | "ma
  try {
   let connected: Session;
   let earlier: (() => boolean) | undefined;
+  let account: string | undefined;
   for (let attempt = 0; ; attempt++) {
    // A retry stays in the sign-in of the attempt before it (guestLink's earlier).
    const hello = await link.hello(signal, earlier);
    try {
     connected = await openSession(share.endpoint, identity, hello.payload, signal, options.webSocket ?? browserWebSocket, hello.live, refusal, hello.stale);
+    account = hello.account;
     break;
    } catch (error) {
     if (attempt === 0 && freshStatementMayAdmit(error)) { hello.refused?.(); earlier = hello.live; continue; }
@@ -539,6 +547,7 @@ export async function openShare(share: Pick<Access, "endpoint" | "guestID" | "ma
   return {
    guestID: reply.guestID, guestName: reply.name, machineLabel: reply.machineLabel || share.machineLabel, ownerName: reply.ownerName || share.ownerName,
    agentName: reply.agent.name || share.agentName, agentTarget: reply.agent.target, endpoint: share.endpoint, acceptedAt: new Date(options.now ?? Date.now()), accountBound: true,
+   ...(account !== undefined ? { account } : {}),
   };
  } finally {
   dispose();
@@ -651,8 +660,8 @@ export interface TransportLink {
  /** The link's own reading of a hello's refusal code (an owner's), or null for the guest one. */
  refusal?(code: string): GuestError | null;
 }
-/** One connect attempt's hello (TransportLink.hello). */
-export interface LinkHello { payload: Uint8Array; refused?: () => void; live?: () => boolean; stale?: () => GuestError }
+/** One connect attempt's hello (TransportLink.hello); account: its statement's (an account-bound link's). */
+export interface LinkHello { payload: Uint8Array; refused?: () => void; live?: () => boolean; stale?: () => GuestError; account?: string }
 
 /** A guest grant's link (session.go Resume): {v:1, guest_id}; another grant's reply is a revocation.
  *  An account-bound share's hello adds its account's statement for the host, and its session is
@@ -688,11 +697,12 @@ export function guestLink(access: Access, statements?: StatementSource, relabele
  return {
   endpoint: access.endpoint,
   async hello(signal, earlier) {
-   const { jws, live } = await helloStatement(source(), hostID, signal, earlier, shareSignInChanged);
+   const { jws, live, account } = await helloStatement(source(), hostID, signal, earlier, shareSignInChanged);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
     refused: () => source().drop(hostID, jws),
     live: earlier ? () => earlier() && live() : live,
+    account,
     ...(earlier ? { stale: shareSignInChanged } : {}),
    };
   },

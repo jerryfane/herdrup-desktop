@@ -31,11 +31,21 @@ export function memory(quota = Infinity) {
  return store;
 }
 
-/** The account service: one account's sync items and devices, and a session per browser. */
+/** The account service: one account's sync items and devices, and a session per browser (with
+ *  accountsApart, each account its own sync items). */
 export function worker() {
  const items = new Map<string, SyncItem>();
+ /** With accountsApart, the sync items of each account other than "acct" (whose are items). */
+ const others = new Map<string, Map<string, SyncItem>>();
  const devices: AccountDevice[] = [];
- const sessions = new Map<string, { device: string | null; ended: boolean }>();
+ const sessions = new Map<string, { device: string | null; ended: boolean; account: string }>();
+ /** The sync items a session reads and writes: its account's (the one it last refreshed into). */
+ const itemsOf = (s: { account: string }) => {
+  if (!w.accountsApart || s.account === "acct") return items;
+  let mine = others.get(s.account);
+  if (mine === undefined) others.set(s.account, mine = new Map());
+  return mine;
+ };
  const w = {
   rev: 0, pushes: 0, failPush: false, maxDevices: 20, onPush: null as (() => void) | null,
   /** Runs before each push is applied, every time (onPush: the next one only). */
@@ -50,6 +60,11 @@ export function worker() {
   accountId: "acct",
   /** Items per sync page (sync.ts: 500); a page with more names the next by cursor `<lastRev>.<base>`. */
   pageSize: 500, onNextPage: null as (() => void) | null,
+  /** Each account keeps its own sync items (sharesIn); otherwise every session reads and writes
+   *  one account's, whichever account it is signed in to. */
+  accountsApart: false,
+  /** The ids of the live shares the account holds. */
+  sharesIn(acct: string): string[] { return [...itemsOf({ account: acct }).values()].filter(it => it.collection === "shares" && !it.deleted).map(it => it.id); },
   /** The next push is applied, and its answer lost (a 503 instead). */
   losePush: false,
   /** GET /v1/sync answers nothing until its request is aborted. */
@@ -121,7 +136,7 @@ export function worker() {
   addDevice(name: string, created: number) { devices.push({ id: `dev${devices.length}`.padEnd(22, "x"), name, platform: "macos", device_pub: `pub-${name}`, created_ms: created }); },
   /** The page fetch of one browser, with its own session. */
   fetcher(session: string): typeof fetch {
-   sessions.set(session, { device: null, ended: false });
+   sessions.set(session, { device: null, ended: false, account: w.accountId });
    let n = 0;
    const answer = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
     // As fetch: a request whose signal already aborted isn't sent.
@@ -137,7 +152,8 @@ export function worker() {
      }
      if (s.ended) return Response.json({ error: "session_revoked" }, { status: 401 });
      if (w.refreshUnavailable) { w.refreshUnavailable = false; return Response.json({ error: "unavailable" }, { status: 503 }); }
-     n++; return Response.json({ account_id: w.accountId, access_token: access(n), access_expires_in: 3600 });
+     n++; s.account = w.accountId;
+     return Response.json({ account_id: w.accountId, access_token: access(n), access_expires_in: 3600 });
     }
     if (s.ended) return Response.json({ error: "invalid_token" }, { status: 401 });
     if (url.pathname === "/v1/sync" && method === "GET") {
@@ -168,11 +184,11 @@ export function worker() {
      // now_ms is read before the rows (themartianapp/herdrup#826): nothing the page holds was
      // written after it.
      const told = now();
-     const changes = [...items.values()].filter(it => it.rev > position).sort((a, b) => a.rev - b.rev);
+     const changes = [...itemsOf(s).values()].filter(it => it.rev > position).sort((a, b) => a.rev - b.rev);
      const page = changes.slice(0, w.pageSize), more = changes.length > page.length;
      return Response.json({ rev: w.rev, changes: page, more, ...(more ? { cursor: `${page.at(-1)!.rev}.${base}` } : {}), ...told });
     }
-    if (url.pathname === "/v1/sync" && method === "POST") return push(String(init.body), body.changes as SyncChange[], body.not_after as number | undefined, init.signal ?? undefined);
+    if (url.pathname === "/v1/sync" && method === "POST") return push(String(init.body), body.changes as SyncChange[], body.not_after as number | undefined, init.signal ?? undefined, itemsOf(s));
     if (url.pathname === "/v1/devices/challenge") {
      w.challenges++;
      await w.challengeGate;
@@ -218,8 +234,8 @@ export function worker() {
   *  account's caps (500 prompts, maxItems live items, quotaBytes of bodies): a push past one is
   *  refused whole (null). Otherwise the answer: each change applied when the account now holds
   *  what it asked for, else a conflict with the account's copy. */
- function apply(changes: SyncChange[]): { applied: object[]; conflicts: object[] } | null {
-  const next = new Map(items);
+ function apply(changes: SyncChange[], store = items): { applied: object[]; conflicts: object[] } | null {
+  const next = new Map(store);
   let rev = w.rev;
   for (const c of changes) {
    const was = next.get(c.id);
@@ -231,12 +247,12 @@ export function worker() {
   const live = [...next.values()].filter(it => !it.deleted);
   const bytes = live.reduce((n, it) => n + JSON.stringify(it.body).length, 0);
   if (live.filter(it => it.collection === "prompts").length > PROMPTS_CAP || live.length > w.maxItems || (w.quotaBytes > 0 && bytes > w.quotaBytes)) return null;
-  items.clear();
-  for (const [id, it] of next) items.set(id, it);
+  store.clear();
+  for (const [id, it] of next) store.set(id, it);
   w.rev = rev;
   const applied: object[] = [], conflicts: object[] = [];
   for (const c of changes) {
-   const row = items.get(c.id);
+   const row = store.get(c.id);
    const holds = (row === undefined || row.deleted) === !!c.deleted && (c.deleted || JSON.stringify(row!.body) === JSON.stringify(c.body));
    if (holds) applied.push({ collection: c.collection, id: c.id, rev: row?.rev ?? 0 });
    else conflicts.push({ collection: c.collection, id: c.id, server: row ?? null });
@@ -245,7 +261,7 @@ export function worker() {
  }
  // sync.ts: a push over 100 changes or 256 KiB is refused whole, as is one holding an item it
  // won't keep or one past a cap (apply).
- function push(raw: string, changes: SyncChange[], notAfter: number | undefined, signal?: AbortSignal): Response | Promise<Response> {
+ function push(raw: string, changes: SyncChange[], notAfter: number | undefined, signal?: AbortSignal, store = items): Response | Promise<Response> {
   w.posts++;
   w.pushed.push(changes); w.notAfters.push(notAfter);
   if (w.pushUnauthorized) { w.pushUnauthorized = false; w.onUnauthorized?.(); return refusal(401, "invalid_token"); }
@@ -270,7 +286,7 @@ export function worker() {
   // themartianapp/herdrup#826: not_after is checked inside the write, at the moment it applies (a
   // held one too: landHeld), so one past it writes nothing.
   if (notAfter !== undefined && w.serverNow > notAfter) { w.expired++; return Response.json({ error: "expired" }, { status: 409 }); }
-  const answer = apply(changes);
+  const answer = apply(changes, store);
   if (answer === null) return refusal(403, "quota");
   w.pushes++;
   const after = w.afterPush; w.afterPush = null; after?.();
