@@ -337,10 +337,10 @@ test("a send with a file settles against the topic it was sent to, not the one o
  expect(input!.value).toBe("");
 });
 
-/** Board pack's send with a file and its caption, out while the owner opens Beta and then Board
- *  pack again; herdr's reply (answer) comes after. `meanwhile` runs once the send is out, before
- *  Board pack is left. Returns the reopened topic's note and the field. */
-async function sendThenReopen(answer: unknown, meanwhile: () => Promise<void> = async () => {}) {
+/** Board pack's send with a file and its caption, out and unanswered. `reopen` opens Beta and then
+ *  Board pack again, then herdr's reply (answer) comes; it returns the reopened topic's composer
+ *  note. Whatever runs between the two steps happens while the send is out. */
+async function startSend() {
  const { input, token } = await openTopic();
  twoTopics(token);
  await settle();
@@ -350,20 +350,41 @@ async function sendThenReopen(answer: unknown, meanwhile: () => Promise<void> = 
  answers["Desk.TopicsSend"] = () => reply.promise;
  input!.dispatchEvent(Object.assign(new Event("keydown"), { key: "Enter" }));
  await settle();
- await meanwhile();
- await openRow("Beta");
- await openRow(TOPIC.title);
- reply.resolve(answer);
+ const reopen = async (answer: unknown) => {
+  await openRow("Beta");
+  await openRow(TOPIC.title);
+  reply.resolve(answer);
+  await settle();
+  return () => chatNote("topic-send-note");
+ };
+ return { input: input!, reopen };
+}
+
+/** The open conversation's line of that exact class: "topic-send-note" (the composer's) or
+ *  "topic-send-note topic-action-note" (Close or Reopen's). */
+function chatNote(className: string) {
+ return doc.body.all().find(n => n.className === "topic-chat")!.all().find(n => n.className === className)!;
+}
+
+/** Close from the open topic's ••• menu; herdr answers when `answer` settles. */
+async function askClose(answer: Promise<void>) {
+ answers["Desk.GramMenu"] = () => true;
+ answers["Desk.TopicsClose"] = () => answer;
+ doc.body.all().find(n => n.tagName === "button" && n.className === "topic-actions")!.click();
  await settle();
- const note = () => doc.body.all().find(n => n.className === "topic-chat")!.all().find(n => n.className === "topic-send-note")!;
- return { input: input!, note };
+ const menu = calls.filter(c => c.method === "Desk.GramMenu").at(-1)!;
+ expect(menu.args[1]).toEqual(["Close"]);
+ emit("gram:menu", { id: menu.args[0], item: "Close" });
+ await settle();
+ expect(calls.filter(c => c.method === "Desk.TopicsClose").at(-1)?.args[1]).toBe(TOPIC.topicID);
 }
 
 // #539 review (P2): a send that settled after its topic was left and opened again wrote its notice
 // into the conversation it was sent from, gone by then. The pane keeps each topic's latest notice:
 // the reopened topic shows it, Beta doesn't, and it is still there when the topic opens again.
 test("a refused send's reason shows in its topic opened again before the reply, the caption kept", async () => {
- const { input, note } = await sendThenReopen({ delivery: "refused", problem: "The agent is busy with another topic." });
+ const { input, reopen } = await startSend();
+ const note = await reopen({ delivery: "refused", problem: "The agent is busy with another topic." });
  expect([note().hidden, note().text(), input.value]).toEqual([false, "The agent is busy with another topic.", "Same caption"]);
  await openRow("Beta");
  expect(note().hidden).toBe(true);
@@ -372,7 +393,8 @@ test("a refused send's reason shows in its topic opened again before the reply, 
 });
 
 test("an unconfirmed send's warning shows in its topic opened again before the reply, the caption gone", async () => {
- const { input, note } = await sendThenReopen({ delivery: "unconfirmed" });
+ const { input, reopen } = await startSend();
+ const note = await reopen({ delivery: "unconfirmed" });
  expect([note().hidden, note().text(), input.value]).toEqual([false, "Couldn't confirm delivery. Check the topic before sending again.", ""]);
 });
 
@@ -381,22 +403,37 @@ test("an unconfirmed send's warning shows in its topic opened again before the r
 // Reopen answer on their own line, which never clears a send's notice.
 test("a Close answered late leaves the send's warning in the topic opened again", async () => {
  const close = Promise.withResolvers<void>();
- const { note } = await sendThenReopen({ delivery: "unconfirmed" }, async () => {
-  answers["Desk.GramMenu"] = () => true;
-  answers["Desk.TopicsClose"] = () => close.promise;
-  doc.body.all().find(n => n.tagName === "button" && n.className === "topic-actions")!.click();
-  await settle();
-  const menu = calls.filter(c => c.method === "Desk.GramMenu").at(-1)!;
-  expect(menu.args[1]).toEqual(["Close"]);
-  emit("gram:menu", { id: menu.args[0], item: "Close" });
-  await settle();
-  expect(calls.filter(c => c.method === "Desk.TopicsClose").map(c => c.args[1])).toEqual([TOPIC.topicID]);
- });
+ const { reopen } = await startSend();
+ await askClose(close.promise);
+ const note = await reopen({ delivery: "unconfirmed" });
  const warning = "Couldn't confirm delivery. Check the topic before sending again.";
  expect([note().hidden, note().text()]).toEqual([false, warning]);
  close.resolve();
  await settle();
- expect([note().hidden, note().text()]).toEqual([false, warning]);
+ expect([note().hidden, note().text(), chatNote("topic-send-note topic-action-note").hidden]).toEqual([false, warning, true]);
+});
+
+// #544 review (P3): a Close refused after its topic was left and opened again wrote the refusal
+// into the conversation it was asked from, gone by then, so the topic stayed open unexplained. The
+// pane keeps Close and Reopen's answer by topic, in a slot of its own beside the send's notice.
+test("a Close refused after the topic opened again shows its reason there, the send's warning kept", async () => {
+ const close = Promise.withResolvers<void>();
+ const { reopen } = await startSend();
+ await askClose(close.promise);
+ const note = await reopen({ delivery: "unconfirmed" });
+ close.reject(new Error("The topic has a turn running."));
+ await settle();
+ const action = chatNote("topic-send-note topic-action-note");
+ expect([action.hidden, action.text(), note().hidden, note().text()])
+  .toEqual([false, "The topic has a turn running.", false, "Couldn't confirm delivery. Check the topic before sending again."]);
+ await openRow("Beta");
+ expect(chatNote("topic-send-note topic-action-note").hidden).toBe(true);
+ await openRow(TOPIC.title);
+ expect(chatNote("topic-send-note topic-action-note").text()).toBe("The topic has a turn running.");
+ // A Close that goes through clears its refusal and nothing else.
+ await askClose(Promise.resolve());
+ expect([chatNote("topic-send-note topic-action-note").hidden, note().hidden, note().text()])
+  .toEqual([true, false, "Couldn't confirm delivery. Check the topic before sending again."]);
 });
 
 // #539 review (P3): a kept row's day header was matched on the prompt's time alone, so after

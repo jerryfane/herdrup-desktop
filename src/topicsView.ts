@@ -123,10 +123,9 @@ export class TopicsPane {
  private selected: string | null = null;
  private chat: TopicChat | null = null;
  private actionNote: string | null = null;
- /** The latest note each topic's composer had (a send's receipt or refusal, a file's problem), by
-  *  topic id: a send that settles after its topic was left shows there when the topic opens
-  *  again. Close and Reopen answer in the open conversation only (TopicChat.actionNote). */
- private readonly notes = new Map<string, string>();
+ /** Each topic's notes by slot (NoteSlot), by topic id: a send or a Close that settles after its
+  *  topic was left shows there when the topic opens again. */
+ private readonly notes: Record<NoteSlot, Map<string, string>> = { send: new Map(), lifecycle: new Map() };
  private inbox = "";
  private wide = false;
  private shown = false;
@@ -273,8 +272,8 @@ export class TopicsPane {
   const topic = id ? this.topics().find(t => t.topic_id === id) : undefined;
   if (topic) {
    this.chat = new TopicChat(this.host, topic, () => this.showList(), {
-    read: topicID => this.notes.get(topicID) ?? null,
-    write: (topicID, note) => this.setNote(topicID, note),
+    read: (topicID, slot) => this.notes[slot].get(topicID) ?? null,
+    write: (topicID, slot, note) => this.setNote(topicID, slot, note),
    });
    this.chat.setActive(this.shown);
    this.side.replaceChildren(this.chat.root);
@@ -286,10 +285,10 @@ export class TopicsPane {
   this.layout();
  }
 
- /** A topic's note, drawn now when that topic is the one open. */
- private setNote(topicID: string, note: string | null) {
-  if (note) this.notes.set(topicID, note); else this.notes.delete(topicID);
-  if (this.chat?.topicID === topicID) this.chat.drawNote(note);
+ /** A topic's note in one slot, drawn now when that topic is the one open. */
+ private setNote(topicID: string, slot: NoteSlot, note: string | null) {
+  if (note) this.notes[slot].set(topicID, note); else this.notes[slot].delete(topicID);
+  if (this.chat?.topicID === topicID) this.chat.drawNote(slot, note);
  }
 
  private drawList() {
@@ -569,10 +568,14 @@ export class TopicsPane {
  }
 }
 
+/** A topic's notes, apart so neither clears the other: the composer's (`send`: a send's receipt or
+ *  refusal, a file's problem) and what Close or Reopen answered (`lifecycle`). */
+type NoteSlot = "send" | "lifecycle";
+
 /** The pane's notes by topic id (TopicsPane.notes), as an open topic reads and writes its own. */
 interface TopicNotes {
- read(topicID: string): string | null;
- write(topicID: string, note: string | null): void;
+ read(topicID: string, slot: NoteSlot): string | null;
+ write(topicID: string, slot: NoteSlot, note: string | null): void;
 }
 
 /** One topic's conversation (TopicChat): agent.transcript with `topic`, under it the page's own
@@ -590,10 +593,9 @@ class TopicChat {
  /** The topic's handovers its reader unfolded (chatRelay.ts), by entry id. */
  private readonly unfolded = new Set<string>();
  private readonly notice = el("p", "interaction-status topic-notice");
- /** The composer's notes (a send's notice, a file's problem): the pane's, by topic (TopicNotes). */
+ /** The composer's notes: the pane's `send` slot for this topic (TopicNotes). */
  private readonly note = el("p", "topic-send-note");
- /** What Close or Reopen answered: this conversation's own, apart from the composer's notes, so a
-  *  lifecycle answer never clears a send's notice. */
+ /** What Close or Reopen answered: the pane's `lifecycle` slot for this topic (TopicNotes). */
  private readonly actionNote = el("p", "topic-send-note topic-action-note");
  /** Where the page's composer sits while this topic shows. */
  private readonly composerSlot = el("div", "topic-composer-slot");
@@ -630,8 +632,8 @@ class TopicChat {
   void host.symbol("chevron.left", 13, "semibold").then(icon => chevron.append(icon));
   inbox.append(chevron, el("span", "", "Inbox"));
   const actions = button("", "topic-actions", () => popup([this.topic.state === "closed" ? "Reopen" : "Close"], item => {
-   const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose;
-   void call(this.host.token, this.topic.topic_id).then(() => this.showActionNote(null), error => this.showActionNote(errorText(error)));
+   const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose, topicID = this.topic.topic_id;
+   void call(this.host.token, topicID).then(() => notes.write(topicID, "lifecycle", null), error => notes.write(topicID, "lifecycle", errorText(error)));
   }));
   actions.setAttribute("aria-label", "Topic actions"); actions.setAttribute("aria-haspopup", "menu");
   // The page's own ••• (interaction.ts showMuted): ellipsis has no Windows/Linux stand-in.
@@ -652,7 +654,8 @@ class TopicChat {
   };
   this.column = new ConversationColumn(this.root, () => this.layout());
   this.root.append(header, this.notice, this.messages, this.note, this.actionNote, this.composerSlot, ...this.column.handles, this.column.readout);
-  this.drawNote(notes.read(topic.topic_id));
+  this.drawNote("send", notes.read(topic.topic_id, "send"));
+  this.drawNote("lifecycle", notes.read(topic.topic_id, "lifecycle"));
   this.setTopic(topic);
   this.messages.append(this.earlier);
   this.resize = new ResizeObserver(() => this.layout());
@@ -707,12 +710,10 @@ class TopicChat {
 
  /** The composer's note: kept by the pane (TopicNotes), so a send that settles after this
   *  conversation closed still shows when the topic opens again. */
- private showNote(note: string | null) { this.notes.write(this.topic.topic_id, note); }
- drawNote(note: string | null) {
-  this.note.textContent = note ?? ""; this.note.hidden = !note;
- }
- private showActionNote(note: string | null) {
-  this.actionNote.textContent = note ?? ""; this.actionNote.hidden = !note;
+ private showNote(note: string | null) { this.notes.write(this.topic.topic_id, "send", note); }
+ drawNote(slot: NoteSlot, note: string | null) {
+  const line = slot === "send" ? this.note : this.actionNote;
+  line.textContent = note ?? ""; line.hidden = !note;
  }
 
  /** A send from the page's composer: its bubble at the topic's tail until the transcript shows it
