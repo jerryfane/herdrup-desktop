@@ -15,8 +15,9 @@ package account
 //	aad    = "herdrup-approve-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ uint64_be(seq)
 //	sealed = b64url(iv(12) ‖ AES-256-GCM(k, iv, aad, json))
 //
-// pair-v1 (pair.go) is the same with its own labels and the new device's SSH
-// key S after B in both hashes; protocol carries the difference.
+// pair-v1 (pair.go) is the same with its own labels, the new device's SSH
+// key S after B in both hashes, and S and the request id after T in the
+// envelope's AAD; protocol carries the difference.
 
 import (
 	"crypto/aes"
@@ -30,6 +31,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"unicode/utf8"
 )
 
 const (
@@ -159,16 +162,47 @@ func (p protocol) aead(key DeviceKey, peerPub, requesterPub, approverPub []byte)
 	return cipher.NewGCM(block)
 }
 
-func (p protocol) aad(requesterPub, approverPub []byte, seq uint64) []byte {
+// binding is what the envelope's AAD takes after T: S and the request id
+// (22 ASCII characters) for pair-v1; nothing for approve-v1, which must be
+// given neither.
+func (p protocol) binding(sshPub []byte, requestID string) ([]byte, error) {
+	s, err := p.bound(sshPub)
+	if err != nil {
+		return nil, err
+	}
+	if !p.ssh {
+		if requestID != "" {
+			return nil, fmt.Errorf("%s: binds no request id", p.name)
+		}
+		return nil, nil
+	}
+	if len(requestID) != pairRequestIDSize {
+		return nil, fmt.Errorf("%s: request id is %d characters, want %d", p.name, len(requestID), pairRequestIDSize)
+	}
+	for i := range len(requestID) {
+		if requestID[i] >= utf8.RuneSelf {
+			return nil, fmt.Errorf("%s: request id isn't ASCII", p.name)
+		}
+	}
+	return append(slices.Clone(s[0]), requestID...), nil
+}
+
+func (p protocol) aad(requesterPub, approverPub, binding []byte, seq uint64) []byte {
 	aad := append([]byte(p.envelope), 0)
 	aad = append(aad, requesterPub...)
 	aad = append(aad, approverPub...)
+	aad = append(aad, binding...)
 	return binary.BigEndian.AppendUint64(aad, seq)
 }
 
-// seal seals plaintext from approver to the requester's key at seq.
-func (p protocol) seal(approver DeviceKey, requesterPub []byte, seq uint64, plaintext []byte) (string, error) {
+// seal seals plaintext from approver to the requester's key at seq, bound to
+// sshPub and requestID for pair-v1.
+func (p protocol) seal(approver DeviceKey, requesterPub, sshPub []byte, requestID string, seq uint64, plaintext []byte) (string, error) {
 	approverPub := approver.PublicKey()
+	binding, err := p.binding(sshPub, requestID)
+	if err != nil {
+		return "", err
+	}
 	aead, err := p.aead(approver, requesterPub, requesterPub, approverPub)
 	if err != nil {
 		return "", err
@@ -177,13 +211,18 @@ func (p protocol) seal(approver DeviceKey, requesterPub []byte, seq uint64, plai
 	if _, err := io.ReadFull(approveRand, iv); err != nil {
 		return "", err
 	}
-	out := aead.Seal(iv, iv, plaintext, p.aad(requesterPub, approverPub, seq))
+	out := aead.Seal(iv, iv, plaintext, p.aad(requesterPub, approverPub, binding, seq))
 	return base64.RawURLEncoding.EncodeToString(out), nil
 }
 
-// openSealed opens sealed as the requester from approverPub at seq.
-func (p protocol) openSealed(requester DeviceKey, approverPub []byte, seq uint64, sealed string) ([]byte, error) {
+// openSealed opens sealed as the requester from approverPub at seq, bound to
+// sshPub and requestID for pair-v1.
+func (p protocol) openSealed(requester DeviceKey, approverPub, sshPub []byte, requestID string, seq uint64, sealed string) ([]byte, error) {
 	requesterPub := requester.PublicKey()
+	binding, err := p.binding(sshPub, requestID)
+	if err != nil {
+		return nil, err
+	}
 	aead, err := p.aead(requester, approverPub, requesterPub, approverPub)
 	if err != nil {
 		return nil, err
@@ -193,7 +232,7 @@ func (p protocol) openSealed(requester DeviceKey, approverPub []byte, seq uint64
 		return nil, fmt.Errorf("%s: malformed envelope", p.name)
 	}
 	iv, ct := raw[:aead.NonceSize()], raw[aead.NonceSize():]
-	return aead.Open(nil, iv, ct, p.aad(requesterPub, approverPub, seq))
+	return aead.Open(nil, iv, ct, p.aad(requesterPub, approverPub, binding, seq))
 }
 
 // approveRand supplies nonces and IVs; tests make it deterministic.
@@ -233,7 +272,7 @@ func ApproveCodeMatches(typed, code string) bool {
 // SealEnvelope seals plaintext (the envelope JSON) from approver to the browser
 // with key browserPub, at sequence seq.
 func SealEnvelope(approver DeviceKey, browserPub []byte, seq uint64, plaintext []byte) (string, error) {
-	return approveV1.seal(approver, browserPub, seq, plaintext)
+	return approveV1.seal(approver, browserPub, nil, "", seq, plaintext)
 }
 
 // MaxSealedLength is the longest sealed envelope the account service takes
@@ -249,5 +288,5 @@ func SealedLength(n int) int {
 
 // OpenEnvelope opens sealed as the browser (key holds b) from approverPub at seq.
 func OpenEnvelope(browser DeviceKey, approverPub []byte, seq uint64, sealed string) ([]byte, error) {
-	return approveV1.openSealed(browser, approverPub, seq, sealed)
+	return approveV1.openSealed(browser, approverPub, nil, "", seq, sealed)
 }

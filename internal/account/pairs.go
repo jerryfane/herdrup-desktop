@@ -7,20 +7,24 @@ package account
 //
 //	POST /v1/approvals                new device {kind:"pair", commit, ssh_pub} → 201 {id, expires_in}
 //	GET  /v1/approvals?kind=pair      approver   → {requests:[PairRequest]} (never the caller's own)
+//	GET  /v1/approvals?kind=any       approver   → browser and pair requests, each with its kind
 //	POST /v1/approvals/<id>/claim     approver   {nonce_t}
 //	GET  /v1/approvals/<id>           either     → ApprovalStatus (+ kind, commit, ssh_pub, device)
 //	POST /v1/approvals/<id>/reveal    new device {nonce_b}
+//	POST /v1/approvals/<id>/cancel    new device, while the request is open → outcome cancelled
 //	POST /v1/approvals/<id>/finish    claimant   {outcome:"approved", seq ≥ 1, sealed} | {outcome:"denied"}
 //	PUT  /v1/approvals/<id>/envelope  claimant   {seq, sealed} → {seq}, for 10 minutes after the finish
 //	GET  /v1/pairs/self               new device → {request?, envelopes:[PairSealed]} (at most one)
 //
 // A request lives 10 minutes, a reported expiry is final, and a new request
-// replaces the new device's earlier one and its envelope. There is no
-// cancel: a request ends by expiry, a denial, or a new request.
+// replaces the new device's earlier one and its envelope. A request ends by
+// expiry, a denial, the new device's cancel or its new request; a step on a
+// cancelled request answers 410.
 
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -138,6 +142,49 @@ func (c *Client) PairRequests(ctx context.Context, acct string) ([]PairRequest, 
 	return out.Requests, nil
 }
 
+// ApprovalLists is GET /v1/approvals?kind=any: every request waiting for
+// this account's approval, browsers' and new devices', each in the
+// service's order. Neither slice is nil.
+type ApprovalLists struct {
+	Browser []ApprovalRequest
+	Pair    []PairRequest
+}
+
+// AnyApprovals lists both kinds of request in one read, so an approver
+// polls once: the browsers Approvals lists and the new devices
+// PairRequests lists (this device's own request left out).
+func (c *Client) AnyApprovals(ctx context.Context, acct string) (ApprovalLists, error) {
+	var out struct {
+		Requests []json.RawMessage `json:"requests"`
+	}
+	if err := c.authed(ctx, acct, http.MethodGet, "/v1/approvals?kind=any", nil, &out); err != nil {
+		return ApprovalLists{}, err
+	}
+	lists := ApprovalLists{Browser: []ApprovalRequest{}, Pair: []PairRequest{}}
+	for _, raw := range out.Requests {
+		var kind struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &kind); err != nil {
+			return ApprovalLists{}, err
+		}
+		if kind.Kind == PairKind {
+			var r PairRequest
+			if err := json.Unmarshal(raw, &r); err != nil {
+				return ApprovalLists{}, err
+			}
+			lists.Pair = append(lists.Pair, r)
+			continue
+		}
+		var r ApprovalRequest
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return ApprovalLists{}, err
+		}
+		lists.Browser = append(lists.Browser, r)
+	}
+	return lists, nil
+}
+
 // RequestPair asks the account's other devices to pair this one, with
 // commit over this device's key, sshPub and nonce_b (PairCommit). It
 // replaces this device's request.
@@ -162,6 +209,12 @@ func (c *Client) RevealPair(ctx context.Context, acct, id string, nonceB []byte)
 		map[string]string{"nonce_b": base64.RawURLEncoding.EncodeToString(nonceB)}, nil)
 }
 
+// CancelPair cancels this device's request id while it is open: its outcome
+// becomes cancelled, and every later step on it answers 410.
+func (c *Client) CancelPair(ctx context.Context, acct, id string) error {
+	return c.authed(ctx, acct, http.MethodPost, approvalPath(id, "cancel"), struct{}{}, nil)
+}
+
 // ReadPairSelf is GET /v1/pairs/self.
 func (c *Client) ReadPairSelf(ctx context.Context, acct string) (PairSelf, error) {
 	var out PairSelf
@@ -172,12 +225,11 @@ func (c *Client) ReadPairSelf(ctx context.Context, acct string) (PairSelf, error
 // FinishPair finishes request id as approved, with the machine list sealed
 // at seq (≥ 1).
 func (c *Client) FinishPair(ctx context.Context, acct, id string, seq uint64, sealed string) error {
-	body := struct {
+	return c.finishApproval(ctx, acct, id, struct {
 		Outcome string `json:"outcome"`
 		Seq     uint64 `json:"seq"`
 		Sealed  string `json:"sealed"`
-	}{"approved", seq, sealed}
-	return c.authed(ctx, acct, http.MethodPost, approvalPath(id, "finish"), body, nil)
+	}{ApprovalApproved, seq, sealed})
 }
 
 // PutPairEnvelope replaces the machine list of request id, which this

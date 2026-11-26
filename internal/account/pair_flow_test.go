@@ -67,7 +67,6 @@ type bench struct {
 
 func newBench(t *testing.T) *bench {
 	t.Helper()
-	account.FastPolls(t)
 	b := &bench{svc: fakeaccount.New(), newKey: fixedKey(t, 0xb0), macKey: fixedKey(t, 0x70)}
 	start := time.Unix(1_800_000_000, 0)
 	b.svc.Now = func() time.Time { return start.Add(time.Duration(b.elapsed.Load())) }
@@ -255,7 +254,7 @@ func TestTheServiceTakesOnlyAHigherSeqFromTheClaimant(t *testing.T) {
 		t.Fatal(err)
 	}
 	seal := func(seq uint64) string {
-		sealed, err := account.SealPairEnvelope(b.macKey, b.newKey.PublicKey(), seq, []byte(`{"v":1,"machines":[]}`))
+		sealed, err := account.SealPairEnvelope(b.macKey, b.newKey.PublicKey(), b.ssh.Public, ask.ID(), seq, []byte(`{"v":1,"machines":[]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -384,6 +383,83 @@ func TestTheNewDeviceRefusesAnEnvelopeForAnotherKeyOrApprover(t *testing.T) {
 	}
 }
 
+// The new device's cancel ends the request on the service: the approver
+// that claimed it can go no further, and every later step answers 410.
+func TestACancelledRequestEndsForTheApprover(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask := b.ask(t)
+	a, err := b.mac.StartPairApproval(ctx, acct, b.macKey, b.listed(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ask.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if reqs := b.svc.Requests(); reqs[0].Outcome != account.ApprovalCancelled || reqs[0].NonceB != "" {
+		t.Fatalf("request after the cancel: %+v", reqs[0])
+	}
+	if _, err := ask.Poll(ctx); !errors.Is(err, account.ErrApprovalEnded) {
+		t.Fatalf("poll after the cancel: %v", err)
+	}
+	if err := a.AwaitReveal(ctx); !errors.Is(err, account.ErrApprovalEnded) {
+		t.Fatalf("approver after the cancel: %v", err)
+	}
+	if err := b.newDev.RevealPair(ctx, acct, ask.ID(), bytes.Repeat([]byte{1}, 32)); !apiError(err, http.StatusGone, "cancelled") {
+		t.Fatalf("reveal after the cancel: %v", err)
+	}
+	if reqs, err := b.mac.PairRequests(ctx, acct); err != nil || len(reqs) != 0 {
+		t.Fatalf("listed after the cancel: %+v, %v", reqs, err)
+	}
+	// A second cancel finds the request ended: nil.
+	if err := ask.Cancel(ctx); err != nil {
+		t.Fatalf("second cancel: %v", err)
+	}
+}
+
+// Only the new device cancels, and not once the request is finished.
+func TestOnlyTheNewDeviceCancelsAnOpenRequest(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask, _ := b.approved(t)
+	if err := b.mac.CancelPair(ctx, acct, ask.ID()); !apiError(err, http.StatusNotFound, "not_found") {
+		t.Fatalf("the approver's cancel: %v", err)
+	}
+	if err := ask.Cancel(ctx); !apiError(err, http.StatusConflict, "already_finished") {
+		t.Fatalf("cancel after the approval: %v", err)
+	}
+	if _, ok, err := ask.Machines(ctx); ok || err != nil {
+		t.Fatalf("machines after a cancel: %v, %v", ok, err)
+	}
+}
+
+// GET ?kind=any splits by kind: the approver polls one list.
+func TestAnyApprovalsListsBothKinds(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask := b.ask(t)
+	lists, err := b.mac.AnyApprovals(ctx, acct)
+	if err != nil || len(lists.Pair) != 1 || lists.Pair[0].ID != ask.ID() || lists.Pair[0].Requester.Name != "Studio PC" || lists.Browser == nil || len(lists.Browser) != 0 {
+		t.Fatalf("lists %+v, %v", lists, err)
+	}
+	// The service's browser entries (which the fake doesn't hold) go to Browser.
+	intercept := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Query().Get("kind") != "any" {
+			return false
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"requests":[
+			{"id":"web-1","kind":"browser","browser":{"device_id":"dev-web","name":"Chrome"},"commit":"c","claimed":"no","expires_in":300},
+			{"id":"` + ask.ID() + `","kind":"pair","device":{"device_id":"dev-new","name":"Studio PC"},"commit":"c","ssh_pub":"s","claimed":"other","expires_in":200}]}`))
+		return true
+	}
+	b.intercept.Store(&intercept)
+	lists, err = b.mac.AnyApprovals(ctx, acct)
+	if err != nil || len(lists.Browser) != 1 || lists.Browser[0].Browser.Name != "Chrome" || len(lists.Pair) != 1 || lists.Pair[0].Claimed != "other" {
+		t.Fatalf("mixed lists %+v, %v", lists, err)
+	}
+}
+
 func TestAnAbandonedRequestRevealsAndOpensNothing(t *testing.T) {
 	b := newBench(t)
 	ctx := context.Background()
@@ -434,5 +510,188 @@ func TestAPairRequestsStateNamesTheDeviceAndKey(t *testing.T) {
 	st, err = b.newDev.ApprovalState(ctx, acct, ask.ID())
 	if err != nil || st.NonceT == "" || st.NonceB != "" {
 		t.Fatalf("requester reads %+v, %v", st, err)
+	}
+}
+
+// hold holds the first request of method to path in the service, before it
+// reads anything, until release: entered closes once it's held.
+func (b *bench) hold(t *testing.T, method, path string) (entered <-chan struct{}, release func()) {
+	t.Helper()
+	in, out := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	f := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == method && r.URL.Path == path && held.CompareAndSwap(false, true) {
+			close(in)
+			<-out
+		}
+		return false
+	}
+	b.intercept.Store(&f)
+	release = sync.OnceFunc(func() { close(out) })
+	t.Cleanup(release)
+	return in, release
+}
+
+// An Abandon while a Poll's read is on the way stops the reveal it would
+// have sent: the code is never shown, nonce_b never leaves the device.
+func TestAnAbandonDuringAPollsReadRevealsNothing(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask := b.ask(t)
+	if _, err := b.mac.StartPairApproval(ctx, acct, b.macKey, b.listed(t)); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := b.hold(t, http.MethodGet, "/v1/approvals/"+ask.ID())
+	type polled struct {
+		prog account.PairProgress
+		err  error
+	}
+	done := make(chan polled, 1)
+	go func() {
+		prog, err := ask.Poll(ctx)
+		done <- polled{prog, err}
+	}()
+	<-entered
+	ask.Abandon()
+	release()
+	got := <-done
+	if !errors.Is(got.err, account.ErrApprovalEnded) || got.prog.Code != "" || got.prog.State != account.ApprovalCancelled {
+		t.Fatalf("poll = %+v, %v", got.prog, got.err)
+	}
+	if b.svc.Requests()[0].NonceB != "" || ask.RevealSent() {
+		t.Fatal("an abandoned request revealed")
+	}
+}
+
+// An Abandon while Machines reads opens nothing, and a list Machines gave
+// is the caller's own copy.
+func TestAnAbandonDuringMachinesOpensNothing(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask, _ := b.approved(t)
+	got, ok, err := ask.Machines(ctx)
+	if err != nil || !ok || got.Envelope.Machines[0].Nickname != "studio" {
+		t.Fatalf("machines = %+v, %v, %v", got, ok, err)
+	}
+	got.Envelope.Machines[0].Nickname = "changed"
+	if again, _, _ := ask.Machines(ctx); again.Envelope.Machines[0].Nickname != "studio" {
+		t.Fatalf("a caller's change reached the next list: %+v", again)
+	}
+
+	entered, release := b.hold(t, http.MethodGet, account.PairSelfPath)
+	type read struct {
+		d   account.PairDelivery
+		ok  bool
+		err error
+	}
+	done := make(chan read, 1)
+	go func() {
+		d, ok, err := ask.Machines(ctx)
+		done <- read{d, ok, err}
+	}()
+	<-entered
+	ask.Abandon()
+	release()
+	if r := <-done; r.ok || r.err != nil || len(r.d.Envelope.Machines) != 0 {
+		t.Fatalf("machines after the abandon = %+v", r)
+	}
+}
+
+// A finish the service applied but whose answer was lost (and the state
+// unreadable just then) is unknown; the retry, at a higher seq, finds the
+// request approved and sends its list over the envelope route. When that
+// fails too, the list is unknown and a Resend at NextSeq sends it.
+func TestAnApprovalWhoseAnswerWasLostSendsItsListOverTheEnvelopeRoute(t *testing.T) {
+	for _, putFails := range []bool{false, true} {
+		b := newBench(t)
+		ctx := context.Background()
+		ask := b.ask(t)
+		a, code := b.claimed(t, ask)
+		if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+			t.Fatal(c, err)
+		}
+		var reads, puts atomic.Bool // down
+		var lost atomic.Bool
+		reads.Store(true)
+		puts.Store(putFails)
+		path := "/v1/approvals/" + ask.ID()
+		f := func(w http.ResponseWriter, r *http.Request) bool {
+			switch {
+			case r.Method == http.MethodPost && r.URL.Path == path+"/finish" && lost.CompareAndSwap(false, true):
+				b.svc.ServeHTTP(httptest.NewRecorder(), r)
+				w.WriteHeader(http.StatusBadGateway)
+			case r.Method == http.MethodGet && r.URL.Path == path && reads.Load(),
+				r.Method == http.MethodPut && r.URL.Path == path+"/envelope" && puts.Load():
+				w.WriteHeader(http.StatusServiceUnavailable)
+			default:
+				return false
+			}
+			return true
+		}
+		b.intercept.Store(&f)
+
+		var not *account.NotApprovedError
+		if err := a.Approve(ctx, 10, machines("studio")); err == nil || errors.As(err, &not) {
+			t.Fatalf("approve with its answer lost: %v", err)
+		}
+		if got, ok, err := ask.Machines(ctx); err != nil || !ok || got.Seq != 10 {
+			t.Fatalf("the service took seq 10: %+v, %v, %v", got, ok, err)
+		}
+		if err := a.Approve(ctx, 10, machines("studio", "nas")); !errors.As(err, &not) || !errors.Is(err, account.ErrPairSeq) {
+			t.Fatalf("a retry at the same seq: %v", err)
+		}
+		reads.Store(false)
+		err := a.Approve(ctx, 20, machines("studio", "nas"))
+		want := uint64(20)
+		if putFails {
+			if !errors.Is(err, account.ErrPairListUnknown) || a.Seq() != 0 || a.NextSeq() != 21 {
+				t.Fatalf("retry with the envelope route down: %v, seq %d, next %d", err, a.Seq(), a.NextSeq())
+			}
+			if got, _, _ := ask.Machines(ctx); got.Seq != 10 {
+				t.Fatalf("machines = %+v", got)
+			}
+			puts.Store(false)
+			err = a.Resend(ctx, a.NextSeq(), machines("studio", "nas"))
+			want = 21
+		}
+		if err != nil || a.Seq() != want {
+			t.Fatalf("putFails %v: %v, seq %d", putFails, err, a.Seq())
+		}
+		if got, ok, err := ask.Machines(ctx); err != nil || !ok || got.Seq != want || len(got.Envelope.Machines) != 2 {
+			t.Fatalf("machines = %+v, %v, %v", got, ok, err)
+		}
+		if err := a.Approve(ctx, 30, machines("studio")); !errors.Is(err, account.ErrPairApproved) {
+			t.Fatalf("approve after the approval: %v", err)
+		}
+	}
+}
+
+// The fake refuses a seq above JavaScript's safe integers, as the service
+// does, and the approver never sends one.
+func TestASeqAboveMaxPairSeqIsRefused(t *testing.T) {
+	b := newBench(t)
+	ctx := context.Background()
+	ask, a := b.approved(t)
+	if err := a.Resend(ctx, account.MaxPairSeq+1, machines("studio")); !errors.Is(err, account.ErrPairSeq) {
+		t.Fatalf("resend above MaxPairSeq: %v", err)
+	}
+	sealed, err := account.SealPairEnvelope(b.macKey, b.newKey.PublicKey(), b.ssh.Public, ask.ID(), account.MaxPairSeq+1, []byte(`{"v":1,"machines":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.mac.PutPairEnvelope(ctx, acct, ask.ID(), account.MaxPairSeq+1, sealed); !apiError(err, http.StatusBadRequest, "bad_request") {
+		t.Fatalf("service, above MaxPairSeq: %v", err)
+	}
+	if err := a.Resend(ctx, account.MaxPairSeq, machines("studio")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Only a native app's new device cancels.
+func TestABrowserCantCancel(t *testing.T) {
+	b := newBench(t)
+	ask := b.ask(t)
+	if err := b.web.CancelPair(context.Background(), acct, ask.ID()); !apiError(err, http.StatusForbidden, account.PairErrNotNative) {
+		t.Fatalf("browser cancel: %v", err)
 	}
 }

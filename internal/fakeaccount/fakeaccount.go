@@ -8,10 +8,12 @@
 //
 // Every device is in one account. A request lives 10 minutes; the first
 // read past them stores its expiry, which is then final; a new request
-// replaces the new device's earlier one, envelope included. The finish
-// stores the envelope on the request and keeps the request for 10 more
-// minutes, during which its claimant may replace the envelope with a
-// higher seq. Browser requests aren't served: their routes fall through.
+// replaces the new device's earlier one, envelope included, and the new
+// device may cancel it while it is open, after which every step answers
+// 410. The finish stores the envelope on the request and keeps the request
+// for 10 more minutes, during which its claimant may replace the envelope
+// with a higher seq. Browser requests aren't served: their routes fall
+// through, and GET /v1/approvals?kind=any lists only the pair requests.
 package fakeaccount
 
 import (
@@ -191,7 +193,7 @@ func (s *Service) Serve(w http.ResponseWriter, r *http.Request) bool {
 		}
 		handle = func(c Device) { s.create(w, c, str("commit"), str("ssh_pub")) }
 	case path == "/v1/approvals" && method == http.MethodGet:
-		if r.URL.Query().Get("kind") != account.PairKind {
+		if kind := r.URL.Query().Get("kind"); kind != account.PairKind && kind != "any" {
 			return false
 		}
 		handle = func(c Device) { s.list(w, c) }
@@ -206,6 +208,8 @@ func (s *Service) Serve(w http.ResponseWriter, r *http.Request) bool {
 		handle = func(c Device) { s.claim(w, c, id, str("nonce_t")) }
 	case step == "reveal" && method == http.MethodPost:
 		handle = func(c Device) { s.reveal(w, c, id, str("nonce_b")) }
+	case step == "cancel" && method == http.MethodPost:
+		handle = func(c Device) { s.cancel(w, c, id) }
 	case step == "finish" && method == http.MethodPost:
 		handle = func(c Device) { s.finish(w, c, id, body) }
 	case step == "envelope" && method == http.MethodPut:
@@ -272,6 +276,8 @@ func notLive(w http.ResponseWriter, r *Request) bool {
 		return false
 	case account.ApprovalExpired:
 		refuse(w, http.StatusGone, "expired")
+	case account.ApprovalCancelled:
+		refuse(w, http.StatusGone, "cancelled")
 	default:
 		refuse(w, http.StatusConflict, "already_finished")
 	}
@@ -305,7 +311,7 @@ func (s *Service) create(w http.ResponseWriter, c Device, commit, sshPub string)
 	// One request per new device: a new one replaces it, whatever its state.
 	s.requests = slices.DeleteFunc(s.requests, func(r *Request) bool { return r.Requester == c.ID })
 	s.n++
-	r := &Request{ID: fmt.Sprintf("pair-%d", s.n), Requester: c.ID, Commit: commit, SSHPub: sshPub, Expires: s.now().Add(RequestTTL)}
+	r := &Request{ID: fmt.Sprintf("pair%018d", s.n), Requester: c.ID, Commit: commit, SSHPub: sshPub, Expires: s.now().Add(RequestTTL)}
 	s.requests = append(s.requests, r)
 	reply(w, http.StatusCreated, account.PairCreated{ID: r.ID, ExpiresIn: int64(RequestTTL / time.Second)})
 }
@@ -332,6 +338,21 @@ func (s *Service) list(w http.ResponseWriter, c Device) {
 			SSHPub: r.SSHPub, Claimed: claimed, ExpiresIn: s.expiresIn(r)})
 	}
 	reply(w, 200, map[string]any{"requests": out})
+}
+
+// cancel is the new device ending its open request.
+func (s *Service) cancel(w http.ResponseWriter, c Device, id string) {
+	r := s.find(id)
+	switch {
+	case c.Platform == "web":
+		refuse(w, http.StatusForbidden, account.PairErrNotNative)
+	case r.Requester != c.ID:
+		refuse(w, http.StatusNotFound, "not_found")
+	case notLive(w, r):
+	default:
+		r.Outcome, r.Expires = account.ApprovalCancelled, s.now().Add(OutcomeKeep)
+		reply(w, 200, map[string]string{"state": account.ApprovalCancelled})
+	}
 }
 
 func (s *Service) read(w http.ResponseWriter, c Device, id string) {
@@ -425,13 +446,13 @@ func opens(requesterPub, sshPub, commit string, nonceB []byte) bool {
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)) == commit
 }
 
-// sealed reads {seq, sealed} as readSealed does: seq a whole number ≥ 1,
+// sealed reads {seq, sealed} as readSealed does: seq a safe integer ≥ 1,
 // sealed canonical unpadded base64url of at least an IV and a tag, at most
 // MaxSealedLength long.
 func sealed(body map[string]any) (uint64, string, bool) {
 	seq, ok := body["seq"].(float64)
 	text, _ := body["sealed"].(string)
-	if !ok || seq < 1 || seq != float64(uint64(seq)) || len(text) > MaxSealedLength {
+	if !ok || seq < 1 || seq > account.MaxPairSeq || seq != float64(uint64(seq)) || len(text) > MaxSealedLength {
 		return 0, "", false
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(text)
@@ -483,7 +504,7 @@ func (s *Service) putEnvelope(w http.ResponseWriter, c Device, id string, body m
 	switch {
 	case r.Approver != c.ID:
 		refuse(w, http.StatusNotFound, "not_found")
-	case r.Outcome == account.ApprovalExpired || !s.now().Before(r.Expires):
+	case r.Outcome == account.ApprovalExpired || r.Outcome == account.ApprovalCancelled || !s.now().Before(r.Expires):
 		refuse(w, http.StatusGone, "expired")
 	case r.Outcome != account.ApprovalApproved:
 		refuse(w, http.StatusConflict, account.PairErrNotApproved)

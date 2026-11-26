@@ -307,6 +307,16 @@ func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, s
 	})
 }
 
+// seal seals plaintext to the requester at seq, bound for pair-v1 to the
+// request's SSH key and id.
+func (a *approvalRun) seal(seq uint64, plaintext []byte) (string, error) {
+	id := ""
+	if a.proto.ssh {
+		id = a.id
+	}
+	return a.proto.seal(a.key, a.requesterPub, a.sshPub, id, seq, plaintext)
+}
+
 // finish seals envelope to the requester at seq and sends it with send,
 // with Approve's outcomes.
 func (a *approvalRun) finish(ctx context.Context, seq uint64, envelope []byte, send func(sealed string) error) error {
@@ -315,7 +325,7 @@ func (a *approvalRun) finish(ctx context.Context, seq uint64, envelope []byte, s
 		// whether that report was recorded.
 		return a.settle(ctx, err)
 	}
-	sealed, err := a.proto.seal(a.key, a.requesterPub, seq, envelope)
+	sealed, err := a.seal(seq, envelope)
 	if err != nil {
 		return &NotApprovedError{err}
 	}
@@ -399,7 +409,7 @@ func (a *approvalRun) Deny(ctx context.Context) error {
 	case done:
 		return ErrApprovalEnded
 	}
-	err := a.c.DenyBrowser(ctx, a.acct, a.id)
+	err := a.c.DenyApproval(ctx, a.acct, a.id)
 	var api *APIError
 	if requestGone(err) || errors.As(err, &api) && api.Status == http.StatusConflict {
 		err = ErrApprovalEnded

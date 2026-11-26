@@ -1,26 +1,20 @@
 package fakeherdr
 
 import (
-	"crypto/ed25519"
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/ssh"
 )
 
-func pairKeyLine(t *testing.T, seed byte) string {
-	t.Helper()
-	pub, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed([]byte(strings.Repeat(string(rune(seed)), 32))).Public())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
-}
+// herdr#529's fixtures (src/pairing.rs, src/api/server/owner_gate/tests.rs).
+const (
+	pairFixtureKey         = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDYBEgq6QqJ3tTOxBY+efdRE3BnChf8Bpq2SozDhVhUF"
+	pairFixtureFingerprint = "SHA256:vL7GMFHkifrUqP8D1g/8YJGKWxWjkvRaHfKjeLXytuc"
+)
 
-func addKey(p *PairKeys, owner bool, params map[string]any) (map[string]any, *APIError) {
-	raw, _ := json.Marshal(params)
-	out, e, ok := p.HandleFrom(owner, "pair.add_key", raw)
+func addKey(p *PairKeys, caller PairCaller, publicKey, label string) (map[string]any, *APIError) {
+	raw, _ := json.Marshal(map[string]string{"public_key": publicKey, "label": label})
+	out, e, ok := p.HandleFrom(caller, "pair.add_key", raw)
 	if !ok {
 		panic("pair.add_key not handled")
 	}
@@ -28,42 +22,54 @@ func addKey(p *PairKeys, owner bool, params map[string]any) (map[string]any, *AP
 	return m, e
 }
 
-func TestPairKeysAddsOnceAndValidates(t *testing.T) {
+func TestPairKeysAddsOnceWithTheStoredLabel(t *testing.T) {
 	p := &PairKeys{}
 	if _, _, ok := p.Handle("ping", nil); ok {
 		t.Fatal("handled ping")
 	}
-	line := pairKeyLine(t, 'a')
-	out, e := addKey(p, true, map[string]any{"public_key": line + " studio@pc", "label": "Studio PC"})
-	if e != nil || out["added"] != true || !strings.HasPrefix(out["fingerprint"].(string), "SHA256:") {
+	out, e := addKey(p, PairOwner, pairFixtureKey+" jerry@phone", "Jerry's iPhone")
+	if e != nil || out["type"] != "pair_key_added" || out["added"] != true || out["already"] != false ||
+		out["fingerprint"] != pairFixtureFingerprint || out["label"] != "Jerry's iPhone" {
 		t.Fatalf("add = %v, %v", out, e)
 	}
-	out, e = addKey(p, true, map[string]any{"public_key": line, "label": "Another"})
-	if e != nil || out["added"] != false || out["already"] != true || out["label"] != "Studio PC" {
+	// A second add of the same material writes nothing; the reply's label is
+	// the new one, stored-form.
+	out, e = addKey(p, PairOwner, pairFixtureKey, "Another <name>")
+	if e != nil || out["added"] != false || out["already"] != true || out["label"] != "Another name" {
 		t.Fatalf("again = %v, %v", out, e)
 	}
-	if keys := p.Keys(); len(keys) != 1 || keys[0].PublicKey != line || keys[0].Label != "Studio PC" {
-		t.Fatalf("keys %+v", keys)
+	if keys := p.Keys(); len(keys) != 1 || keys[0].PublicKey != pairFixtureKey || keys[0].Label != "Jerry's iPhone" {
+		t.Fatalf("keys %+v (the client's comment is dropped)", keys)
 	}
-	for name, params := range map[string]map[string]any{
-		"two lines":    {"public_key": line + "\n" + pairKeyLine(t, 'b'), "label": "x"},
-		"not ed25519":  {"public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQC", "label": "x"},
-		"empty label":  {"public_key": line, "label": ""},
-		"long label":   {"public_key": line, "label": strings.Repeat("é", 81)},
-		"control char": {"public_key": line, "label": "a\x07b"},
-		"extra field":  {"public_key": line, "label": "x", "path": "/root"},
-	} {
-		if _, e := addKey(p, true, params); e == nil || e.Code != "invalid_params" {
-			t.Errorf("%s: %v", name, e)
+	long := "Mac<b>" + strings.Repeat("y", 74)
+	other := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb8L/Lx4VtiRK3T4NdDkBRT1ziVYddRSWSNqPDIVQVO"
+	if out, e := addKey(p, PairOwner, other, long); e != nil || out["label"] != "Macb"+strings.Repeat("y", 44) {
+		t.Fatalf("80 characters stored as %v, %v", out, e)
+	}
+}
+
+func TestPairKeysRefusals(t *testing.T) {
+	p := &PairKeys{}
+	for _, label := range []string{"", "a\nb", "tab\there", strings.Repeat("x", 81)} {
+		if _, e := addKey(p, PairOwner, pairFixtureKey, label); e == nil || e.Code != "pair_label_invalid" {
+			t.Errorf("label %q: %v", label, e)
 		}
 	}
-	if _, e := addKey(p, true, map[string]any{"public_key": line, "label": strings.Repeat("é", 80)}); e != nil {
-		t.Fatalf("80 characters: %v", e)
+	for _, key := range []string{"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7 user@host", "ssh-ed25519", "ssh-ed25519 AAAA", pairFixtureKey + "\n" + pairFixtureKey} {
+		if _, e := addKey(p, PairOwner, key, "Mac"); e == nil || e.Code != "pair_key_invalid" {
+			t.Errorf("key %q: %v", key, e)
+		}
 	}
-	if _, e := addKey(p, false, map[string]any{"public_key": pairKeyLine(t, 'c'), "label": "x"}); e == nil || e.Code != "forbidden" {
-		t.Fatalf("not the owner: %v", e)
+	if _, e := addKey(p, PairGuest, pairFixtureKey, "guest"); e == nil || e.Code != "guest_forbidden" {
+		t.Errorf("guest: %v", e)
 	}
-	if n := len(p.Keys()); n != 1 {
+	if _, e := addKey(p, PairOwnerBrowser, pairFixtureKey, "browser"); e == nil || e.Code != "owner_forbidden" {
+		t.Errorf("owner browser: %v", e)
+	}
+	if _, e, _ := p.Handle("pair.add_key", json.RawMessage(`{"public_key":"`+pairFixtureKey+`","label":"x","path":"/root"}`)); e == nil {
+		t.Error("took an unknown param")
+	}
+	if n := len(p.Keys()); n != 0 {
 		t.Fatalf("%d keys after refusals", n)
 	}
 }

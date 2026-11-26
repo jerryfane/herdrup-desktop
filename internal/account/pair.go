@@ -11,9 +11,11 @@ package account
 //	commit = SHA-256("herdrup-pair-v1|commit" ‖ 0x00 ‖ B ‖ S ‖ nonce_b)
 //	h      = SHA-256("herdrup-pair-v1|sas" ‖ 0x00 ‖ B ‖ S ‖ T ‖ nonce_b ‖ nonce_t)
 //	code   = uint32_be(h[0:4]) mod 10000, 4 digits, zero-padded
-//	envelope: approve-v1's, with "herdrup-pair-v1|envelope" for its label
+//	envelope: approve-v1's with the label "herdrup-pair-v1|envelope", and
+//	aad    = "herdrup-pair-v1|envelope" ‖ 0x00 ‖ B ‖ T ‖ S ‖ request_id ‖ uint64_be(seq)
 //
-// S is the 32 raw bytes of the ed25519 public key.
+// S is the 32 raw bytes of the ed25519 public key; request_id the
+// request's id as the service gave it, 22 ASCII characters.
 
 import (
 	"crypto/ed25519"
@@ -21,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -33,6 +34,10 @@ var pairV1 = protocol{
 	envelope: "herdrup-pair-v1|envelope",
 	ssh:      true,
 }
+
+// pairRequestIDSize is the length of a pair request's id (16 random bytes,
+// unpadded base64url), which the envelope's AAD binds.
+const pairRequestIDSize = 22
 
 // PairCommit is the new device's commitment to nonceB for its device key
 // requesterPub (B) and the request's SSH key sshPub (S).
@@ -54,15 +59,16 @@ func PairCode(requesterPub, sshPub, approverPub, nonceB, nonceT []byte) (string,
 }
 
 // SealPairEnvelope seals plaintext (PairEnvelope JSON) from approver to the
-// new device's key requesterPub at seq.
-func SealPairEnvelope(approver DeviceKey, requesterPub []byte, seq uint64, plaintext []byte) (string, error) {
-	return pairV1.seal(approver, requesterPub, seq, plaintext)
+// new device's key requesterPub at seq, bound to the request's SSH key
+// sshPub and its id requestID.
+func SealPairEnvelope(approver DeviceKey, requesterPub, sshPub []byte, requestID string, seq uint64, plaintext []byte) (string, error) {
+	return pairV1.seal(approver, requesterPub, sshPub, requestID, seq, plaintext)
 }
 
 // OpenPairEnvelope opens sealed as the new device (key holds b) from
-// approverPub at seq.
-func OpenPairEnvelope(requester DeviceKey, approverPub []byte, seq uint64, sealed string) ([]byte, error) {
-	return pairV1.openSealed(requester, approverPub, seq, sealed)
+// approverPub at seq, for the request requestID with SSH key sshPub.
+func OpenPairEnvelope(requester DeviceKey, approverPub, sshPub []byte, requestID string, seq uint64, sealed string) ([]byte, error) {
+	return pairV1.openSealed(requester, approverPub, sshPub, requestID, seq, sealed)
 }
 
 // A machine's status in the envelope: the approver added S to it, S was
@@ -99,13 +105,11 @@ type PairMachine struct {
 // would refuse (MaxSealedLength).
 var ErrPairEnvelopeTooLong = errors.New("pair-v1: too many machines for one envelope")
 
-// The hosts collection's limits (DESIGN §5.1: nickname ≤64, host ≤253,
-// username ≤64), so a machine from the envelope syncs as any other.
-const (
-	maxPairHost     = 253
-	maxPairNickname = 64
-	maxPairUser     = 64
-)
+// HostBody is m's hosts item, which Check holds to the hosts collection's
+// rules, so a machine from the envelope syncs as any other.
+func (m PairMachine) HostBody() HostBody {
+	return HostBody{Nickname: m.Nickname, Host: m.Host, Port: m.Port, Username: m.User}
+}
 
 // HostPublicKey parses HostKey. Its pin (bridge.Fingerprint) is what the
 // new device pins for the machine before it connects.
@@ -124,15 +128,16 @@ func (m PairMachine) HostPublicKey() (ssh.PublicKey, error) {
 }
 
 func (m PairMachine) check() error {
+	if err := m.HostBody().Check(); err != nil {
+		return fmt.Errorf("pair-v1: %w", err)
+	}
 	switch {
-	case m.Host == "" || len(m.Host) > maxPairHost || strings.ContainsAny(m.Host, " \t\r\n@"):
-		return fmt.Errorf("pair-v1: machine host %q", m.Host)
-	case m.Port < 1 || m.Port > 65535:
+	case m.Port < 1:
+		// The envelope always names the port.
 		return fmt.Errorf("pair-v1: machine port %d", m.Port)
-	case m.User == "" || utf8.RuneCountInString(m.User) > maxPairUser || strings.ContainsAny(m.User, " \t\r\n@"):
-		return fmt.Errorf("pair-v1: machine user %q", m.User)
-	case utf8.RuneCountInString(m.Nickname) > maxPairNickname:
-		return fmt.Errorf("pair-v1: machine nickname %q", m.Nickname)
+	case strings.Contains(m.Host, "@") || strings.ContainsAny(m.User, " \t\r\n@"):
+		// user@host has to split back into the two.
+		return errors.New("pair-v1: machine user or host has an @ or a space")
 	}
 	switch m.Status {
 	case PairAdded, PairAlready:

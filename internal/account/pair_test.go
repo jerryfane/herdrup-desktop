@@ -100,11 +100,15 @@ func TestSwappingTheSSHKeyOrTheDeviceKeyChangesCommitAndCode(t *testing.T) {
 	}
 }
 
-// The envelope is approve-v1's construction under the pair-v1 label,
-// checked against the contract written out here: HKDF over X25519(t, B)
-// with salt B ‖ T, AES-256-GCM with aad label ‖ 0x00 ‖ B ‖ T ‖ u64be(seq).
-func TestPairEnvelopeIsApproveV1sWithThePairLabel(t *testing.T) {
-	requester, approver, _, _, _ := pairInputs(t)
+// pairRequestID is a request id of the service's shape: 22 ASCII characters.
+const pairRequestID = "p0123456789abcdefghijk"
+
+// The envelope is approve-v1's construction under the pair-v1 label, with
+// S and the request id bound in the AAD, checked against the contract
+// written out here: HKDF over X25519(t, B) with salt B ‖ T, AES-256-GCM
+// with aad label ‖ 0x00 ‖ B ‖ T ‖ S ‖ request_id ‖ u64be(seq).
+func TestPairEnvelopeIsApproveV1sWithThePairLabelAndBinding(t *testing.T) {
+	requester, approver, S, _, _ := pairInputs(t)
 	B, T := requester.PublicKey(), approver.PublicKey()
 	label := "herdrup-pair-v1|envelope"
 	ikm, _ := approver.SharedSecret(B)
@@ -114,20 +118,22 @@ func TestPairEnvelopeIsApproveV1sWithThePairLabel(t *testing.T) {
 	}
 	block, _ := aes.NewCipher(k)
 	gcm, _ := cipher.NewGCM(block)
-	aad := binary.BigEndian.AppendUint64(append(append(append([]byte(label), 0), B...), T...), 9)
+	aad := append(append([]byte(label), 0), B...)
+	aad = append(append(append(aad, T...), S...), pairRequestID...)
+	aad = binary.BigEndian.AppendUint64(aad, 9)
 
-	sealed, err := SealPairEnvelope(approver, B, 9, []byte(`{"v":1,"machines":[]}`))
+	sealed, err := SealPairEnvelope(approver, B, S, pairRequestID, 9, []byte(`{"v":1,"machines":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := base64.RawURLEncoding.DecodeString(sealed)
 	plain, err := gcm.Open(nil, raw[:12], raw[12:], aad)
 	if err != nil || string(plain) != `{"v":1,"machines":[]}` {
-		t.Fatalf("the contract's key doesn't open SealPairEnvelope's: %q, %v", plain, err)
+		t.Fatalf("the contract's key and aad don't open SealPairEnvelope's: %q, %v", plain, err)
 	}
 	iv := make([]byte, 12)
 	theirs := base64.RawURLEncoding.EncodeToString(gcm.Seal(iv, iv, []byte(`{"v":1}`), aad))
-	if plain, err := OpenPairEnvelope(requester, T, 9, theirs); err != nil || string(plain) != `{"v":1}` {
+	if plain, err := OpenPairEnvelope(requester, T, S, pairRequestID, 9, theirs); err != nil || string(plain) != `{"v":1}` {
 		t.Fatalf("OpenPairEnvelope of the contract's = %q, %v", plain, err)
 	}
 	if _, err := OpenEnvelope(requester, T, 9, sealed); err == nil {
@@ -135,33 +141,67 @@ func TestPairEnvelopeIsApproveV1sWithThePairLabel(t *testing.T) {
 	}
 }
 
-// The new device opens an envelope only from the approver it computed the
-// code with, at the seq it was sealed for, and only unmodified.
-func TestPairEnvelopeRoundTripsAndRefusesTampering(t *testing.T) {
-	requester, approver, _, _, _ := pairInputs(t)
-	sealed, err := SealPairEnvelope(approver, requester.PublicKey(), 3, []byte(`{"v":1}`))
+// The new device opens an envelope only for its own key B, from the
+// approver T it computed the code with, for the SSH key S and request it
+// made, at the seq it was sealed for, and only unmodified.
+func TestPairEnvelopeRoundTripsAndIsBoundToBTSIDAndSeq(t *testing.T) {
+	requester, approver, S, _, _ := pairInputs(t)
+	T := approver.PublicKey()
+	sealed, err := SealPairEnvelope(approver, requester.PublicKey(), S, pairRequestID, 3, []byte(`{"v":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plain, err := OpenPairEnvelope(requester, approver.PublicKey(), 3, sealed); err != nil || string(plain) != `{"v":1}` {
+	if plain, err := OpenPairEnvelope(requester, T, S, pairRequestID, 3, sealed); err != nil || string(plain) != `{"v":1}` {
 		t.Fatalf("round trip = %q, %v", plain, err)
 	}
-	if _, err := OpenPairEnvelope(requester, approver.PublicKey(), 4, sealed); err == nil {
-		t.Error("opened at another seq")
-	}
+	otherS := []byte(ed25519.NewKeyFromSeed(make32(0x6b)).Public().(ed25519.PublicKey))
 	impostor, _ := ecdh.X25519().GenerateKey(nil)
-	if _, err := OpenPairEnvelope(requester, impostor.PublicKey().Bytes(), 3, sealed); err == nil {
-		t.Error("opened as from another approver")
+	for name, open := range map[string]func() ([]byte, error){
+		"B": func() ([]byte, error) { return OpenPairEnvelope(fixedKey(t, 0xc0), T, S, pairRequestID, 3, sealed) },
+		"T": func() ([]byte, error) {
+			return OpenPairEnvelope(requester, impostor.PublicKey().Bytes(), S, pairRequestID, 3, sealed)
+		},
+		"S":   func() ([]byte, error) { return OpenPairEnvelope(requester, T, otherS, pairRequestID, 3, sealed) },
+		"id":  func() ([]byte, error) { return OpenPairEnvelope(requester, T, S, "p0123456789abcdefghijK", 3, sealed) },
+		"seq": func() ([]byte, error) { return OpenPairEnvelope(requester, T, S, pairRequestID, 4, sealed) },
+	} {
+		if _, err := open(); err == nil {
+			t.Errorf("opened with another %s", name)
+		}
 	}
 	for _, i := range []int{0, len(sealed) / 2, len(sealed) - 5} {
 		raw := []byte(sealed)
 		raw[i] ^= 1
-		if _, err := OpenPairEnvelope(requester, approver.PublicKey(), 3, string(raw)); err == nil {
+		if _, err := OpenPairEnvelope(requester, T, S, pairRequestID, 3, string(raw)); err == nil {
 			t.Errorf("opened an envelope modified at %d", i)
 		}
 	}
-	if _, err := OpenPairEnvelope(requester, approver.PublicKey(), 3, sealed[:20]); err == nil {
+	if _, err := OpenPairEnvelope(requester, T, S, pairRequestID, 3, sealed[:20]); err == nil {
 		t.Error("opened a cut envelope")
+	}
+}
+
+// The request id the AAD binds is exactly 22 ASCII characters, and S 32
+// bytes; approve-v1 binds neither.
+func TestPairEnvelopeRefusesAMalformedBinding(t *testing.T) {
+	requester, approver, S, _, _ := pairInputs(t)
+	B, T := requester.PublicKey(), approver.PublicKey()
+	for _, id := range []string{"", pairRequestID[:21], pairRequestID + "x", "p0123456789abcdefghié"} {
+		if _, err := SealPairEnvelope(approver, B, S, id, 1, []byte(`{}`)); err == nil {
+			t.Errorf("sealed for request id %q", id)
+		}
+		if _, err := OpenPairEnvelope(requester, T, S, id, 1, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); err == nil || strings.Contains(err.Error(), "authentication") {
+			t.Errorf("opened for request id %q: %v", id, err)
+		}
+	}
+	if _, err := SealPairEnvelope(approver, B, S[:31], pairRequestID, 1, []byte(`{}`)); err == nil {
+		t.Error("sealed for a 31-byte S")
+	}
+	if _, err := approveV1.seal(approver, B, nil, pairRequestID, 1, []byte(`{}`)); err == nil {
+		t.Error("approve-v1 bound a request id")
+	}
+	if _, err := approveV1.seal(approver, B, S, "", 1, []byte(`{}`)); err == nil {
+		t.Error("approve-v1 bound an SSH key")
 	}
 }
 
@@ -271,13 +311,15 @@ type pairVector struct {
 	Seq           uint64 `json:"seq"`
 	EnvelopeJSON  string `json:"envelope_json"`
 	Sealed        string `json:"sealed"`
+	RequestID     string `json:"request_id"`
 }
 
 // testdata/pair-v1.json is AccountService's test/vectors/pair-v1.json
-// (themartianapp/herdrup#870 at 1382e7c1, made by test/pairs.test.ts from
+// (themartianapp/herdrup#870 at 90d7533c, made by test/pairs.test.ts from
 // the RFC 7748 §6.1 keys and S = the RFC 8032 §7.1 test 1 key): another
-// implementation's commit, code and envelope, matched byte for byte, the
-// envelope both opened and sealed again with its IV.
+// implementation's commit, code and envelope (its AAD binding S and the
+// request id), matched byte for byte, the envelope both opened and sealed
+// again with its IV.
 func TestPairMatchesTheOfficialVector(t *testing.T) {
 	raw, err := os.ReadFile("testdata/pair-v1.json")
 	if err != nil {
@@ -305,7 +347,10 @@ func TestPairMatchesTheOfficialVector(t *testing.T) {
 	if code, err := PairCode(B, S, T, b64(t, v.NonceB), b64(t, v.NonceT)); err != nil || code != v.Code {
 		t.Fatalf("code = %q, %v; want %q", code, err, v.Code)
 	}
-	plain, err := OpenPairEnvelope(requester, T, v.Seq, v.Sealed)
+	if len(v.RequestID) != pairRequestIDSize {
+		t.Fatalf("vector request id %q", v.RequestID)
+	}
+	plain, err := OpenPairEnvelope(requester, T, S, v.RequestID, v.Seq, v.Sealed)
 	if err != nil || string(plain) != v.EnvelopeJSON {
 		t.Fatalf("open = %q, %v", plain, err)
 	}
@@ -316,7 +361,7 @@ func TestPairMatchesTheOfficialVector(t *testing.T) {
 	saved := approveRand
 	approveRand = bytes.NewReader(sealedRaw[:12])
 	t.Cleanup(func() { approveRand = saved })
-	if again, err := SealPairEnvelope(approver, B, v.Seq, plain); err != nil || again != v.Sealed {
+	if again, err := SealPairEnvelope(approver, B, S, v.RequestID, v.Seq, plain); err != nil || again != v.Sealed {
 		t.Fatalf("sealed with the vector's IV = %s, %v; want the vector's", again, err)
 	}
 }

@@ -15,18 +15,19 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
-	"net/url"
 	"slices"
 )
 
-// Approval states (GET /v1/approvals/<id>).
+// Approval states (GET /v1/approvals/<id>). ApprovalCancelled is a pair
+// request its new device cancelled (pairs.go).
 const (
-	ApprovalWaiting  = "waiting"
-	ApprovalClaimed  = "claimed"
-	ApprovalRevealed = "revealed"
-	ApprovalDenied   = "denied"
-	ApprovalApproved = "approved"
-	ApprovalExpired  = "expired"
+	ApprovalWaiting   = "waiting"
+	ApprovalClaimed   = "claimed"
+	ApprovalRevealed  = "revealed"
+	ApprovalDenied    = "denied"
+	ApprovalApproved  = "approved"
+	ApprovalExpired   = "expired"
+	ApprovalCancelled = "cancelled"
 )
 
 // ApprovalRequest is one browser waiting for approval.
@@ -101,7 +102,7 @@ func (c *Client) WebApproveOffered(ctx context.Context) (bool, error) {
 }
 
 // Approvals lists the browsers waiting for this account's approval (pair
-// requests are listed apart: PairRequests).
+// requests are listed apart, PairRequests, or with them, AnyApprovals).
 func (c *Client) Approvals(ctx context.Context, acct string) ([]ApprovalRequest, error) {
 	var out struct {
 		Requests []ApprovalRequest `json:"requests"`
@@ -115,30 +116,35 @@ func (c *Client) Approvals(ctx context.Context, acct string) ([]ApprovalRequest,
 // ClaimApproval claims request id with nonceT. The service records this device
 // as the approver from the session, never from the body.
 func (c *Client) ClaimApproval(ctx context.Context, acct, id string, nonceT []byte) error {
-	return c.authed(ctx, acct, http.MethodPost, "/v1/approvals/"+url.PathEscape(id)+"/claim",
+	return c.authed(ctx, acct, http.MethodPost, approvalPath(id, "claim"),
 		map[string]string{"nonce_t": base64.RawURLEncoding.EncodeToString(nonceT)}, nil)
 }
 
 // ApprovalState reads request id.
 func (c *Client) ApprovalState(ctx context.Context, acct, id string) (ApprovalStatus, error) {
 	var out ApprovalStatus
-	err := c.authed(ctx, acct, http.MethodGet, "/v1/approvals/"+url.PathEscape(id), nil, &out)
+	err := c.authed(ctx, acct, http.MethodGet, approvalPath(id, ""), nil, &out)
 	return out, err
+}
+
+// finishApproval finishes request id with body: {outcome: "denied"}, or
+// {outcome: "approved"} and what the request's protocol reports with it.
+func (c *Client) finishApproval(ctx context.Context, acct, id string, body any) error {
+	return c.authed(ctx, acct, http.MethodPost, approvalPath(id, "finish"), body, nil)
 }
 
 // ApproveBrowser finishes request id as approved, with the grants it made.
 func (c *Client) ApproveBrowser(ctx context.Context, acct, id string, g ApprovalGrant) error {
-	body := struct {
+	return c.finishApproval(ctx, acct, id, struct {
 		Outcome string `json:"outcome"`
 		ApprovalGrant
-	}{"approved", g}
-	return c.authed(ctx, acct, http.MethodPost, "/v1/approvals/"+url.PathEscape(id)+"/finish", body, nil)
+	}{ApprovalApproved, g})
 }
 
-// DenyBrowser finishes request id as denied.
-func (c *Client) DenyBrowser(ctx context.Context, acct, id string) error {
-	return c.authed(ctx, acct, http.MethodPost, "/v1/approvals/"+url.PathEscape(id)+"/finish",
-		map[string]string{"outcome": "denied"}, nil)
+// DenyApproval finishes request id, a browser's or a pair request, as
+// denied.
+func (c *Client) DenyApproval(ctx context.Context, acct, id string) error {
+	return c.finishApproval(ctx, acct, id, map[string]string{"outcome": ApprovalDenied})
 }
 
 // Statements returns this device's account statements for hosts (≤ 50).

@@ -1,12 +1,8 @@
 package pairing
 
 import (
-	"crypto/ed25519"
-	"errors"
 	"os"
 	"path/filepath"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // PairKey is the SSH key a new device makes for one pair-v1 request (S):
@@ -23,23 +19,11 @@ func (k PairKey) GoString() string { return k.String() }
 // NewPairKey makes a request's key, as GenerateIdentity makes a key for
 // herdr pair: one ed25519 key, its private half commented device.
 func NewPairKey(device string) (PairKey, error) {
-	identity, err := GenerateIdentity(device)
+	identity, public, err := generateIdentity(device)
 	if err != nil {
 		return PairKey{}, err
 	}
-	public, _, _, _, err := ssh.ParseAuthorizedKey([]byte(identity.PublicLine))
-	if err != nil {
-		return PairKey{}, err
-	}
-	crypto, ok := public.(ssh.CryptoPublicKey)
-	if !ok {
-		return PairKey{}, errors.New("pairing: generated key has no public half")
-	}
-	raw, ok := crypto.CryptoPublicKey().(ed25519.PublicKey)
-	if !ok || len(raw) != ed25519.PublicKeySize {
-		return PairKey{}, errors.New("pairing: generated key is not ed25519")
-	}
-	return PairKey{Identity: identity, Public: []byte(raw)}, nil
+	return PairKey{Identity: identity, Public: []byte(public)}, nil
 }
 
 // SaveIdentity writes private (an OpenSSH private key) to a new file

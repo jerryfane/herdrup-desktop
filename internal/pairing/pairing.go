@@ -151,21 +151,28 @@ func (Identity) String() string     { return "pairing identity (private key reda
 func (i Identity) GoString() string { return i.String() }
 
 func GenerateIdentity(device string) (Identity, error) {
+	identity, _, err := generateIdentity(device)
+	return identity, err
+}
+
+// generateIdentity makes one ed25519 key, its private half commented
+// device, and returns its public half raw as well.
+func generateIdentity(device string) (Identity, ed25519.PublicKey, error) {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, nil, err
 	}
 	defer clear(private)
 	block, err := ssh.MarshalPrivateKey(private, device)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, nil, err
 	}
 	defer clear(block.Bytes)
 	key, err := ssh.NewPublicKey(public)
 	if err != nil {
-		return Identity{}, err
+		return Identity{}, nil, err
 	}
-	return Identity{PrivatePEM: pem.EncodeToMemory(block), PublicLine: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))}, nil
+	return Identity{PrivatePEM: pem.EncodeToMemory(block), PublicLine: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))}, public, nil
 }
 
 // Redeem performs one bounded exchange. It never retries: a lost response can
