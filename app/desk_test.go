@@ -318,38 +318,64 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// #540: Close waits for a link's running work, at most its bound, and once
-// closing, Go starts no more, though work that still runs may ask.
-func TestLinkWorkCloseWaitsAndRefusesLaterWork(t *testing.T) {
+// #540: Wait waits for a sealed link's running work, at most its bound, and
+// once sealed, Go starts no more, though work that still runs may ask.
+func TestLinkWorkWaitsAndRefusesLaterWork(t *testing.T) {
 	var w linkWork
 	release, ended := make(chan struct{}), make(chan struct{})
 	if !w.Go(func() { <-release; close(ended) }) {
 		t.Fatal("an open link refused work")
 	}
-	if w.Close(50 * time.Millisecond) {
-		t.Fatal("Close reported the link idle while its work ran")
+	w.Seal()
+	if w.Wait(50 * time.Millisecond) {
+		t.Fatal("Wait reported the link idle while its work ran")
 	}
 	ran := make(chan struct{}, 2)
 	if w.Go(func() { ran <- struct{}{} }) {
-		t.Fatal("Go started work on a closing link")
+		t.Fatal("Go started work on a sealed link")
 	}
-	closed := make(chan bool, 1)
-	go func() { closed <- w.Close(10 * time.Second) }()
+	idle := make(chan bool, 1)
+	go func() { idle <- w.Wait(10 * time.Second) }()
 	close(release)
-	if !<-closed {
-		t.Fatal("Close gave up before the work ended")
+	if !<-idle {
+		t.Fatal("Wait gave up before the work ended")
 	}
 	select {
 	case <-ended:
 	default:
-		t.Fatal("Close returned before the work ended")
+		t.Fatal("Wait returned before the work ended")
 	}
 	if w.Go(func() { ran <- struct{}{} }) {
-		t.Fatal("Go started work after Close")
+		t.Fatal("Go started work after Wait")
 	}
 	select {
 	case <-ran:
 		t.Fatal("refused work ran")
 	default:
+	}
+}
+
+// #547 review: closeLinks seals every link before it waits on any, so a
+// second link admits no work while the first still drains.
+func TestCloseLinksSealsEveryLinkBeforeDraining(t *testing.T) {
+	first, second := &link{}, &link{}
+	release := make(chan struct{})
+	if !first.work.Go(func() { <-release }) {
+		t.Fatal("an open link refused work")
+	}
+	idle := make(chan bool, 1)
+	go func() { idle <- closeLinks([]*link{first, second}, 10*time.Second) }()
+	waitFor(t, "the first link to drain", func() bool {
+		first.work.mu.Lock()
+		defer first.work.mu.Unlock()
+		return first.work.idle != nil
+	})
+	admitted := second.work.Go(func() {})
+	close(release)
+	if !<-idle {
+		t.Fatal("closeLinks gave up before the work ended")
+	}
+	if admitted {
+		t.Fatal("the second link admitted work while the first drained")
 	}
 }

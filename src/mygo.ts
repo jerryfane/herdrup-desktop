@@ -1684,9 +1684,11 @@ export const Desk = {
     return call("Desk.DiscardPairingLink", id);
   },
   /**
-   * Disconnect closes the connection and forgets its board. It returns once
-   * the connection's background work has ended (at most 5 s), so none of it
-   * writes to this device's files afterwards.
+   * Disconnect closes the connection and forgets its board. It waits for the
+   * connection's background work to end, at most 5 s, so none of it writes to
+   * this device's files afterwards; work still running then (a stalled
+   * network call) may yet write later. A connection made while it waits keeps
+   * its download cache and its state.
    */
   disconnect(): Promise<void> {
     return call("Desk.Disconnect");

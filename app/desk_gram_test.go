@@ -276,13 +276,30 @@ func TestGramSavedCopies(t *testing.T) {
 	}
 }
 
-// #540: a Gram refresh of the connection, still running as the desk
-// disconnects, holds Disconnect until it ends, so its write (a saved copy's
-// file expiring) never lands after Disconnect returns, where a test's TempDir
-// cleanup met it. The refresh is the one queued behind a load: it runs on
-// whatever its connection does.
-func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
-	const bound = 10 * time.Second
+// heldRefresh holds a desk's queued Gram refresh, which has its answer (it
+// expires a saved copy's file), before it writes it, until release.
+type heldRefresh struct {
+	release func()
+	// disconnected is set once Disconnect returned; late reports a head load
+	// after that.
+	disconnected, late *atomic.Bool
+}
+
+// within waits for c, failing the test after 10 s.
+func within(t *testing.T, what string, c <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// gramDeskWithHeldRefresh connects a desk whose saved copy of a1 has a file,
+// queues a refresh behind a load (it runs on whatever its connection does),
+// and holds it where its answer would expire that file.
+func gramDeskWithHeldRefresh(t *testing.T) (*Desk, heldRefresh) {
+	t.Helper()
 	g := fakeherdr.NewGram("store-1")
 	report := agentMsg("a1", "the report", false)
 	report.File = &herdrapi.GramFileInfo{Name: "report.pdf", Mime: "application/pdf", Size: 3}
@@ -304,14 +321,15 @@ func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
 	}
 	d := gramDeskFor(t, g)
 	// Once armed, a head load waits before expiring saved copies' files.
-	var armed, disconnected, late atomic.Bool
+	var armed atomic.Bool
+	held := heldRefresh{disconnected: new(atomic.Bool), late: new(atomic.Bool)}
 	atExpiry, expire := make(chan struct{}, 1), make(chan struct{})
 	d.gramListed = func() {
 		if !armed.Load() {
 			return
 		}
-		if disconnected.Load() {
-			late.Store(true)
+		if held.disconnected.Load() {
+			held.late.Store(true)
 			return
 		}
 		select {
@@ -321,16 +339,8 @@ func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
 		<-expire
 	}
 	var once sync.Once
-	release := func() { once.Do(func() { close(expire) }) }
-	t.Cleanup(func() { release(); close(ended) })
-	within := func(what string, c <-chan struct{}) {
-		t.Helper()
-		select {
-		case <-c:
-		case <-time.After(bound):
-			t.Fatalf("timed out waiting for %s", what)
-		}
-	}
+	held.release = func() { once.Do(func() { close(expire) }) }
+	t.Cleanup(func() { held.release(); close(ended) })
 	ctx := context.Background()
 	if err := d.GramRefresh(ctx); err != nil {
 		t.Fatal(err)
@@ -345,7 +355,7 @@ func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
 		defer close(loaded)
 		_ = d.GramRefresh(ctx)
 	}()
-	within("the load's list at the server", asked)
+	within(t, "the load's list at the server", asked)
 	if err := d.GramRefresh(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -353,33 +363,85 @@ func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
 		t.Fatalf("a refresh during a load: status %q, want it queued", s.Status)
 	}
 	answer <- struct{}{}
-	within("the load to end", loaded)
-	within("the queued refresh's list at the server", asked)
+	within(t, "the load to end", loaded)
+	within(t, "the queued refresh's list at the server", asked)
 	// Its answer expires the saved copy's file.
 	g.Update("a1", func(m *herdrapi.GramMessageInfo) { m.ExpiredFile, m.File = m.File, nil })
 	armed.Store(true)
 	answer <- struct{}{}
-	within("the queued refresh to reach the saved copies", atExpiry)
+	within(t, "the queued refresh to reach the saved copies", atExpiry)
+	return d, held
+}
 
+// disconnectAsync runs Disconnect; the channel closes as it returns.
+func disconnectAsync(d *Desk, held heldRefresh) <-chan struct{} {
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
 		d.Disconnect()
-		disconnected.Store(true)
+		held.disconnected.Store(true)
 	}()
+	return returned
+}
+
+// #540: a Gram refresh of the connection, still running as the desk
+// disconnects, holds Disconnect until it ends, so its write (a saved copy's
+// file expiring) never lands after Disconnect returns, where a test's TempDir
+// cleanup met it.
+func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
+	d, held := gramDeskWithHeldRefresh(t)
+	returned := disconnectAsync(d, held)
 	select {
 	case <-returned:
 		t.Fatal("Disconnect returned while a refresh of its connection had yet to write the saved copies")
 	case <-time.After(500 * time.Millisecond):
 	}
-	release()
-	within("Disconnect to return once the refresh ended", returned)
+	held.release()
+	within(t, "Disconnect to return once the refresh ended", returned)
 	saved := d.GramSaved()
 	if len(saved) != 1 || saved[0].File != nil || saved[0].ExpiredFile == nil {
 		t.Fatalf("the refresh's write did not land before Disconnect returned: %+v", saved)
 	}
-	if late.Load() {
+	if held.late.Load() {
 		t.Fatal("a head load ran after Disconnect returned")
+	}
+}
+
+// #547 review: a connection made while Disconnect waits for the old one's
+// work keeps what it claimed: its download cache (the owner marker) and its
+// connected state, which an idle published after the wait would clear.
+func TestDisconnectWaitingKeepsAReconnectsCacheAndState(t *testing.T) {
+	d, held := gramDeskWithHeldRefresh(t)
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := st.Machines[st.find(st.Active)]
+	returned := disconnectAsync(d, held)
+	waitFor(t, "Disconnect to take the connection", func() bool { return d.State().Phase == "idle" })
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Listed by the new connection: a cached board shows unlisted.
+	waitFor(t, "the reconnect", func() bool {
+		b := d.Board()
+		return d.State().Phase == "connected" && b != nil && b.ListedAt != ""
+	})
+	select {
+	case <-returned:
+		t.Fatal("Disconnect returned before the reconnect: the old refresh no longer held it")
+	default:
+	}
+	held.release()
+	within(t, "Disconnect to return once the refresh ended", returned)
+	if s := d.State(); s.Phase != "connected" {
+		t.Fatalf("the reconnected desk shows %q after the old Disconnect returned", s.Phase)
+	}
+	if owner, err := os.ReadFile(d.gramOwnerPath()); err != nil || string(owner) != machineID(m) {
+		t.Fatalf("the reconnect's download cache owner: %q, %v; want %q", owner, err, machineID(m))
+	}
+	if d.Board() == nil {
+		t.Fatal("the reconnected desk lost its board")
 	}
 }
 

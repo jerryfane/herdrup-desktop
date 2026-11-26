@@ -348,12 +348,12 @@ const disconnectWait = 5 * time.Second
 // waits for it, so none of it writes after (a test's TempDir cleanup met
 // such writes, #540). Work can start while that wait runs (a refresh queued
 // behind a load that just ended), so this is a guarded count, not a
-// WaitGroup: once closing, Go starts nothing.
+// WaitGroup: once sealed, Go starts nothing.
 type linkWork struct {
 	mu      sync.Mutex
 	running int
 	closing bool
-	// idle is closed as the running work ends after Close; nil until a Close
+	// idle is closed as the running work ends after Seal; nil until a Wait
 	// waits.
 	idle chan struct{}
 }
@@ -384,11 +384,17 @@ func (w *linkWork) done() {
 	}
 }
 
-// Close refuses further work and waits for the running work to end, at most
-// bound; false when some still runs.
-func (w *linkWork) Close(bound time.Duration) bool {
+// Seal refuses further work.
+func (w *linkWork) Seal() {
 	w.mu.Lock()
 	w.closing = true
+	w.mu.Unlock()
+}
+
+// Wait waits for the running work of a sealed link to end, at most bound;
+// false when some still runs.
+func (w *linkWork) Wait(bound time.Duration) bool {
+	w.mu.Lock()
 	if w.running == 0 {
 		w.mu.Unlock()
 		return true
@@ -408,13 +414,16 @@ func (w *linkWork) Close(bound time.Duration) bool {
 	}
 }
 
-// closeLinks closes the work of every link and waits for it, all within
-// bound; false when some still runs.
+// closeLinks seals every link, so none starts work while another drains,
+// then waits for their work, all within bound; false when some still runs.
 func closeLinks(links []*link, bound time.Duration) bool {
+	for _, l := range links {
+		l.work.Seal()
+	}
 	deadline := time.Now().Add(bound)
 	idle := true
 	for _, l := range links {
-		idle = l.work.Close(time.Until(deadline)) && idle
+		idle = l.work.Wait(time.Until(deadline)) && idle
 	}
 	return idle
 }
@@ -879,9 +888,11 @@ func (d *Desk) Connect(m Machine, password string) error {
 	return nil
 }
 
-// Disconnect closes the connection and forgets its board. It returns once
-// the connection's background work has ended (at most 5 s), so none of it
-// writes to this device's files afterwards.
+// Disconnect closes the connection and forgets its board. It waits for the
+// connection's background work to end, at most 5 s, so none of it writes to
+// this device's files afterwards; work still running then (a stalled
+// network call) may yet write later. A connection made while it waits keeps
+// its download cache and its state.
 func (d *Desk) Disconnect() {
 	d.mu.Lock()
 	l := d.link
@@ -892,6 +903,10 @@ func (d *Desk) Disconnect() {
 	d.link = nil
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
+	// Idle with the connection's end, under d.mu: a connection made after
+	// publishes its own state after it.
+	d.state = ConnState{Phase: "idle"}
+	StateChanged.Broadcast(d.state)
 	d.mu.Unlock()
 	d.gramReset(nil, "")
 	closed := d.stopGuestGram()
@@ -901,8 +916,14 @@ func (d *Desk) Disconnect() {
 	if !closeLinks(closed, disconnectWait) {
 		log.Printf("disconnect: the connection's background work still runs after %s", disconnectWait)
 	}
-	d.gramWipeCacheUnlessOwner("")
-	d.setState(context.Background(), ConnState{Phase: "idle"})
+	// Under d.mu, which a new connection takes before it claims the cache:
+	// unless one was made meanwhile, the cache is still the disconnected
+	// desk's.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.link == nil {
+		d.gramWipeCacheUnlessOwner("")
+	}
 }
 
 // remember saves m, replacing the saved machine with its ID, and makes it
