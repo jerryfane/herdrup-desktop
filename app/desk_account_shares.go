@@ -273,6 +273,17 @@ func (d *Desk) OpenSyncedShare(ctx context.Context, id string) error {
 
 // openSyncedShare is OpenSyncedShare's grant: the one held, or the one
 // guest.Open admits and this saves. d.guestAcceptMu must be held.
+//
+// A sync can take the share away while herdr admits this device (another
+// device left it): the grant is saved only if, under d.storeMu, the lock a
+// sync's tombstones are reconciled under (dropGoneShares, commitMerge),
+// the account herdr admitted is still the one signed in and the sync
+// state's, and the share is still live in its synced shares with no leave
+// owed. Otherwise nothing is saved, and the admitted session, which
+// guest.Open has closed, is not opened again: an open that lost the share
+// is errShareGone, one that lost the sign-in guest.ErrSignInChanged. A
+// sync after the save sees the grant and drops it on the share's
+// tombstone, since the save is ordered with the mirror it checked.
 func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Access, error) {
 	grants, err := d.guestStore.List()
 	if err != nil {
@@ -287,12 +298,7 @@ func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Acce
 	if err != nil {
 		return guest.Access{}, err
 	}
-	var body *account.ShareBody
-	if state.AccountID == acct && !slices.ContainsFunc(state.ShareDeletes, func(op shareOp) bool { return op.ID == id }) {
-		if i := slices.IndexFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }); i >= 0 {
-			body = &state.Mirror.Shares[i].Body
-		}
-	}
+	body := liveShare(state, acct, id)
 	if body == nil {
 		return guest.Access{}, errShareGone
 	}
@@ -310,8 +316,33 @@ func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Acce
 	if err != nil {
 		return guest.Access{}, err
 	}
+	d.storeMu.Lock()
+	defer d.storeMu.Unlock()
+	if cur, _ := d.account.Current(); cur == nil || cur.AccountID != access.Account {
+		return guest.Access{}, guest.ErrSignInChanged
+	}
+	state, err = d.loadSyncState()
+	if err != nil {
+		return guest.Access{}, err
+	}
+	if liveShare(state, access.Account, id) == nil {
+		return guest.Access{}, errShareGone
+	}
 	if err := d.guestStore.Save(access); err != nil {
 		return guest.Access{}, err
 	}
 	return access, nil
+}
+
+// liveShare is share id's item as state last synced it, while state is
+// account acct's, the account holds the share and no leave of it is owed;
+// else nil. d.storeMu must have been held for state.
+func liveShare(state syncState, acct, id string) *account.ShareBody {
+	if acct == "" || state.AccountID != acct || slices.ContainsFunc(state.ShareDeletes, func(op shareOp) bool { return op.ID == id }) {
+		return nil
+	}
+	if i := slices.IndexFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == id }); i >= 0 {
+		return &state.Mirror.Shares[i].Body
+	}
+	return nil
 }

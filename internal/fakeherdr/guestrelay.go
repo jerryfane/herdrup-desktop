@@ -111,6 +111,9 @@ type GuestRelay struct {
 	// and each one a bound share took in by its account's statement.
 	guestKeys [][]byte
 	calls     []GuestCall
+	// holdReply, when set (HoldReply), runs before each hello's answer is
+	// written.
+	holdReply func()
 	// connects are the guest's relay connects; past connectLimit in a minute
 	// the relay refuses one with 429 rate_limited (LimitConnects).
 	connects     []GuestConnect
@@ -248,6 +251,15 @@ func (r *GuestRelay) Devices() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.guestKeys)
+}
+
+// HoldReply runs hold, with the relay unlocked, once herdr has answered each
+// later hello (its admission done) and before the answer is written: a
+// test holds the reply there. nil stops it.
+func (r *GuestRelay) HoldReply(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdReply = hold
 }
 
 // Connects returns every guest connect to the relay, refused ones included,
@@ -395,6 +407,12 @@ func acceptGuest(w http.ResponseWriter, req *http.Request, hostID string, key no
 // until it ends, and says why it ended (GuestConnect.End).
 func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, handshake *noise.HandshakeState, hello guestHello, served, overlapped func()) string {
 	reply, request, bound := r.hello(hello, handshake.PeerStatic())
+	r.mu.Lock()
+	hold := r.holdReply
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
 	answer, receive, send, err := handshake.WriteMessage(nil, reply)
 	if err != nil || socket.Write(ctx, websocket.MessageBinary, answer) != nil {
 		return "guest"

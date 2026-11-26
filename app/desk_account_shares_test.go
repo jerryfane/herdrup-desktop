@@ -413,3 +413,65 @@ func TestARefusedBatchLeavesItsChangesPending(t *testing.T) {
 		t.Fatalf("after the refusal, the next sync wrote %v", w.live())
 	}
 }
+
+// An open whose share is left on another device while herdr admits it
+// saves nothing: with the returning hello's reply held, the first device
+// leaves the share and the second syncs through its tombstone; released,
+// the open fails, no grant is saved and no link opened, and a later sync
+// finds neither the share nor a grant.
+func TestAnOpenWhoseShareWasLeftMeanwhileSavesNothing(t *testing.T) {
+	w, srv, relay, _, d1, access := acceptBound(t)
+	id := relay.HostID() + "/" + access.GuestID
+	d2 := shareDevice(t, srv)
+	ctx := context.Background()
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	relay.HoldReply(func() {
+		relay.HoldReply(nil)
+		close(held)
+		<-release
+	})
+	opened := make(chan error, 1)
+	go func() { opened <- d2.OpenSyncedShare(ctx, id) }()
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the open's hello never reached herdr")
+	}
+	if err := d1.ForgetGuestConnection(access.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d1.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, live := w.live()[id]; live {
+		t.Fatal("the leave never reached the account")
+	}
+	close(release)
+	var err error
+	select {
+	case err = <-opened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the open never returned")
+	}
+	if !errors.Is(err, errShareGone) {
+		t.Fatalf("an open of a share left meanwhile: %v, want errShareGone", err)
+	}
+	d2.mu.Lock()
+	linked := d2.link != nil
+	d2.mu.Unlock()
+	if grants, _ := d2.SharedConnections(); len(grants) != 0 || linked {
+		t.Fatalf("grants %+v, link open %v; want neither", grants, linked)
+	}
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if grants, _ := d2.SharedConnections(); len(grants) != 0 || len(w.live()) != 0 || len(sharesOf(t, d2)) != 0 {
+		t.Fatalf("after a later sync: grants %+v, rows %v, synced shares %+v", grants, w.live(), sharesOf(t, d2))
+	}
+}
