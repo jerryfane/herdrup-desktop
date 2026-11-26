@@ -632,13 +632,14 @@ export function createGuestDesk(env: DeskEnv) {
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    disconnect();
-   // The machine as a hello names it now (its owner renamed it, herdr #519): saved with the
-   // grant (SHARED WITH YOU) and in the access, so the next publication names it (the header).
-   // Unsaved, the next connect hears it again.
+   // The machine as a hello names it now (its owner renamed it, herdr #519): on the grant still
+   // saved (SHARED WITH YOU; one forgotten or replaced meanwhile, in this tab or another, stays
+   // so) and in the access, so the next publication names it (the header). Unsaved, the next
+   // connect hears it again.
    const relabeled = (machineLabel: string) => {
     if (l.life.signal.aborted) return;
     l.access = { ...l.access, machineLabel };
-    void env.grants.put({ ...grant, machineLabel }).catch(() => undefined);
+    void env.grants.relabel(grant.endpoint.hostID, grant.guestID, machineLabel).catch(() => undefined);
    };
    const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), relabeled), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);

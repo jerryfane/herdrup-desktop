@@ -10,7 +10,14 @@ export interface GrantStore {
  get(): Promise<Access | undefined>;
  put(access: Access): Promise<void>;
  remove(): Promise<void>;
+ /** Names the machine machineLabel on the saved grant guestID of hostID, and nothing else: a
+  *  grant forgotten or replaced meanwhile is left as it is (a late hello never brings one back). */
+ relabel(hostID: string, guestID: string, machineLabel: string): Promise<void>;
 }
+
+/** Whether grant is the one guestID of hostID, saved under another machine name than machineLabel. */
+const relabels = (grant: Access | undefined, hostID: string, guestID: string, machineLabel: string): grant is Access =>
+ grant !== undefined && grant !== null && grant.endpoint.hostID === hostID && grant.guestID === guestID && grant.machineLabel !== machineLabel;
 
 /** Who shared the last grant this browser held: kept when the grant goes. */
 export interface OwnerHint {
@@ -63,6 +70,16 @@ export class IndexedDBGrantStore implements GrantStore {
 
  put(access: Access): Promise<void> { return this.#write((store) => store.put(access, GRANT_KEY)); }
  remove(): Promise<void> { return this.#write((store) => store.delete(GRANT_KEY)); }
+ /** One read-write transaction: no other write comes between the read and the write. */
+ relabel(hostID: string, guestID: string, machineLabel: string): Promise<void> {
+  return this.#write((store) => {
+   const read = store.get(GRANT_KEY);
+   read.onsuccess = () => {
+    const grant = read.result as Access | undefined;
+    if (relabels(grant, hostID, guestID, machineLabel)) store.put({ ...grant, machineLabel }, GRANT_KEY);
+   };
+  });
+ }
 }
 
 export class MemoryGrantStore implements GrantStore {
@@ -70,6 +87,9 @@ export class MemoryGrantStore implements GrantStore {
  async get() { return this.access; }
  async put(access: Access) { this.access = access; }
  async remove() { this.access = undefined; }
+ async relabel(hostID: string, guestID: string, machineLabel: string) {
+  if (relabels(this.access, hostID, guestID, machineLabel)) this.access = { ...this.access, machineLabel };
+ }
 }
 
 export const localOwnerHint: OwnerHint = {

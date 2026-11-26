@@ -107,19 +107,13 @@ type idleSession struct {
 
 // NewTransport makes a Transport for access. statements gives a bound
 // share's statements (Access.AccountBound); a plain share never asks.
-func NewTransport(access Access, identity Identity, clock Clock, statements StatementSource) *Transport {
+// onLabel, when not nil, hears the machine's name when a connect's hello
+// reply names it differently from the share (the owner relabeled the
+// machine, herdr #519): a valid label, never an absent one (an older
+// herdr's). It runs on the connecting goroutine.
+func NewTransport(access Access, identity Identity, clock Clock, statements StatementSource, onLabel func(label string)) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel, label: access.MachineLabel}
-}
-
-// OnMachineLabel has f hear the machine's name when a connect's hello reply
-// names it differently from the share (the owner relabeled the machine,
-// herdr #519): a valid label, never an absent one (an older herdr's). Set it
-// before the first call; f runs on the connecting goroutine.
-func (t *Transport) OnMachineLabel(f func(label string)) {
-	t.mu.Lock()
-	t.onLabel = f
-	t.mu.Unlock()
+	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel, label: access.MachineLabel, onLabel: onLabel}
 }
 func (t *Transport) Done() <-chan struct{} { return t.ctx.Done() }
 func (t *Transport) Close() error {

@@ -16,13 +16,16 @@ import (
 
 // relabelHerdr is a desk connected to the guest fixture as nickname, its
 // herdr reporting guest_relabel when relabel is set. updates are the
-// guest.update params sent, in order; while failing is set herdr refuses
-// them.
+// guest.update params sent, in order, and done counts those herdr has
+// answered; while failing is set herdr refuses them. A channel in held holds
+// the next guest.update until it is closed.
 type relabelHerdr struct {
 	d       *Desk
 	srv     *fakeherdr.Server
 	guests  *fakeherdr.Guests
 	failing atomic.Bool
+	held    atomic.Pointer[chan struct{}]
+	done    atomic.Int32
 	mu      sync.Mutex
 	sent    []herdrapi.GuestUpdateParams
 }
@@ -47,8 +50,15 @@ func newRelabelHerdr(t *testing.T, nickname string, relabel bool) *relabelHerdr 
 				h.sent = append(h.sent, p)
 				h.mu.Unlock()
 				if h.failing.Load() {
+					h.done.Add(1)
 					return nil, &fakeherdr.APIError{Code: "guest_store_unavailable", Message: "try again"}
 				}
+				if gate := h.held.Swap(nil); gate != nil {
+					<-*gate
+				}
+				value, err, _ := h.guests.Handle(method, raw)
+				h.done.Add(1)
+				return value, err
 			}
 			if value, err, handled := h.guests.Handle(method, raw); handled {
 				return value, err
@@ -104,20 +114,26 @@ func (h *relabelHerdr) count(method string) int {
 	return n
 }
 
-// pending is the relabel the desk still has to send for its machine.
+// pending is the relabel the desk still has to send for its one profile.
 func (h *relabelHerdr) pending(t *testing.T) string {
 	t.Helper()
 	saved, err := h.d.Machines()
 	if err != nil || len(saved) != 1 {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
+	return h.relabels(t)[saved[0].LocalID]
+}
+
+// relabels are every relabel the desk still has to send, by profile.
+func (h *relabelHerdr) relabels(t *testing.T) map[string]string {
+	t.Helper()
 	h.d.storeMu.Lock()
 	defer h.d.storeMu.Unlock()
 	pending, err := h.d.loadRelabels()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pending[saved[0].ID]
+	return pending
 }
 
 // labels are the machine labels of the fixture's active guests and pending
@@ -226,27 +242,88 @@ func TestAFailedRelabelIsSentAgainOnTheNextConnect(t *testing.T) {
 	}
 }
 
-// A rename while the previous one's relabel is out keeps its own: the
-// earlier relabel taken doesn't forget the newer one, which herdr refused
-// here, so it is still to be sent.
-func TestARenameDuringARelabelKeepsItsOwn(t *testing.T) {
+// #556: a rename while the previous one's relabel is out goes after it, never
+// before: one relabel of a machine is out at a time, and the newest name is
+// the last one herdr takes. First is held on a channel until Second is either
+// sent beside it (two out at once: the bug) or queued behind it; no timing.
+func TestANewerRenameIsTheLastRelabelHerdrTakes(t *testing.T) {
 	h := newRelabelHerdr(t, "Old", true)
+	release := make(chan struct{})
+	h.held.Store(&release)
 	h.rename(t, "First")
 	waitFor(t, "the first relabel out", func() bool { return len(h.updates()) == 1 })
-	// The fixture answers a guest.update 350ms after it arrives.
-	h.failing.Store(true)
 	h.rename(t, "Second")
-	waitFor(t, "the second relabel tried", func() bool { return len(h.updates()) == 2 })
-	time.Sleep(600 * time.Millisecond)
-	if pending := h.pending(t); pending != "Second" {
-		t.Fatalf("pending %q once the first relabel was taken, want Second", pending)
+	queued := func() bool {
+		h.d.relabelMu.Lock()
+		defer h.d.relabelMu.Unlock()
+		for _, again := range h.d.relabeling {
+			if again {
+				return true
+			}
+		}
+		return false
+	}
+	waitFor(t, "the second relabel sent or queued", func() bool { return len(h.updates()) == 2 || queued() })
+	close(release)
+	waitFor(t, "both relabels answered", func() bool { return h.done.Load() == 2 && h.pending(t) == "" })
+	var sent []string
+	for _, p := range h.updates() {
+		sent = append(sent, *p.MachineLabel)
+	}
+	if got := h.labels(t); !slices.Equal(sent, []string{"First", "Second"}) || !slices.Equal(got, everywhere("Second")) {
+		t.Fatalf("sent %q, shares named %q; want First then Second, and Second everywhere", sent, got)
 	}
 }
 
-// Only a rename of a saved machine queues a relabel, under the machine's id;
-// an edit that moves the machine to another id (its user) takes a relabel
-// not yet sent along.
-func TestARelabelIsQueuedForARenameAndFollowsTheMachine(t *testing.T) {
+// #557: a relabel belongs to the saved profile that was renamed. It goes with
+// the profile, whether removed here or replaced (as account sync replaces
+// one), and a profile saved again at the same user@host:port inherits nothing:
+// its connect sends no guest.update.
+func TestARelabelGoesWithItsProfile(t *testing.T) {
+	for _, gone := range []string{"removed", "replaced"} {
+		t.Run(gone, func(t *testing.T) {
+			h := newRelabelHerdr(t, "Old", true)
+			saved, err := h.d.Machines()
+			if err != nil || len(saved) != 1 {
+				t.Fatalf("saved %+v, %v", saved, err)
+			}
+			h.d.Disconnect()
+			h.rename(t, "Renamed")
+			if h.pending(t) != "Renamed" {
+				t.Fatalf("pending %v", h.relabels(t))
+			}
+			fresh := saved[0].Machine
+			fresh.Nickname, fresh.LocalID, fresh.SyncID = "Fresh", "", ""
+			if gone == "removed" {
+				if err := h.d.RemoveMachine(saved[0].ID); err != nil {
+					t.Fatal(err)
+				}
+				if p := h.relabels(t); len(p) != 0 {
+					t.Fatalf("a removed profile's relabel stayed: %v", p)
+				}
+				if err := h.d.SaveMachine(fresh, ""); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				h.d.storeMu.Lock()
+				err := h.d.store(machineStore{Active: saved[0].ID, Machines: []Machine{fresh}})
+				h.d.storeMu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.reconnect(t)
+			time.Sleep(300 * time.Millisecond)
+			if got := h.updates(); len(got) != 0 {
+				t.Fatalf("the fresh profile's connect sent %+v", got)
+			}
+		})
+	}
+}
+
+// Only a rename of a saved machine queues a relabel, under the profile's own
+// id, which an edit that moves the machine to another user@host:port keeps.
+func TestARelabelIsQueuedForARenameUnderItsProfile(t *testing.T) {
 	d := newDesk(t.TempDir())
 	pending := func() map[string]string {
 		t.Helper()
@@ -258,28 +335,33 @@ func TestARelabelIsQueuedForARenameAndFollowsTheMachine(t *testing.T) {
 		}
 		return p
 	}
-	save := func(m Machine, replacing string) {
+	save := func(m Machine, replacing string) Machine {
 		t.Helper()
 		if err := d.SaveMachine(m, replacing); err != nil {
 			t.Fatal(err)
 		}
+		saved, err := d.Machines()
+		if err != nil || len(saved) != 1 {
+			t.Fatalf("saved %+v, %v", saved, err)
+		}
+		return saved[0].Machine
 	}
-	pi := Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k"}
-	save(pi, "")
-	if p := pending(); len(p) != 0 {
-		t.Fatalf("a new machine queued %v", p)
+	pi := save(Machine{Nickname: "Old", Host: "pi", User: "root", KeyPath: "/k", LocalID: "from-the-page"}, "")
+	if p := pending(); len(p) != 0 || pi.LocalID != "" {
+		t.Fatalf("a new machine queued %v, local id %q", p, pi.LocalID)
 	}
 	pi.Session = "work"
-	save(pi, "root@pi:22")
-	if p := pending(); len(p) != 0 {
-		t.Fatalf("an edit that renames nothing queued %v", p)
+	pi = save(pi, "root@pi:22")
+	if p := pending(); len(p) != 0 || pi.LocalID != "" {
+		t.Fatalf("an edit that renames nothing queued %v, local id %q", p, pi.LocalID)
 	}
 	pi.Nickname = "New"
-	save(pi, "root@pi:22")
-	pi.User = "admin"
-	save(pi, "root@pi:22")
-	if p := pending(); len(p) != 1 || p["admin@pi:22"] != "New" {
-		t.Fatalf("pending %v, want New for admin@pi:22", p)
+	pi = save(pi, "root@pi:22")
+	profile := pi.LocalID
+	pi.User, pi.LocalID = "admin", "another"
+	pi = save(pi, "root@pi:22")
+	if p := pending(); len(profile) != 32 || pi.LocalID != profile || len(p) != 1 || p[profile] != "New" {
+		t.Fatalf("pending %v, local id %q then %q; want New for the profile's own id", p, profile, pi.LocalID)
 	}
 }
 

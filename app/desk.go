@@ -46,6 +46,11 @@ type Machine struct {
 	// SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
+	// LocalID is this device's own id for the saved profile (32 hex digits),
+	// made when first needed (a guest relabel queued for it) and never
+	// reused: a profile saved later at the same user@host:port gets another.
+	// "" until then.
+	LocalID string `json:"localId,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -188,6 +193,13 @@ type Desk struct {
 	storeMu       storeLock // serialises reads and writes of the desk's files
 	notifications notificationSettings
 	pairingMu     sync.Mutex
+
+	// relabeling is the guest relabels being sent, by profile (LocalID): at
+	// most one at a time each; true asks the one sending to send again once
+	// it is done (desk_guest_relabel.go). Under relabelMu.
+	relabelMu  sync.Mutex
+	relabeling map[string]bool
+
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
 	// inviteTransport fetches short invite links' sealed invites; nil is
@@ -644,14 +656,20 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	}
 	relabel := ""
 	if index < 0 {
+		// A new profile never takes another's id, even one the page held.
+		m.LocalID = ""
 		st.Machines = append(st.Machines, m)
 	} else {
-		// The page doesn't hold the sync id: an edit keeps the machine's.
-		m.SyncID = st.Machines[index].SyncID
+		// The page doesn't hold the sync id: an edit keeps the machine's, and
+		// its local id.
+		m.SyncID, m.LocalID = st.Machines[index].SyncID, st.Machines[index].LocalID
 		// A rename names the machine anew to its existing shares' guests
-		// (desk_guest_relabel.go).
+		// (desk_guest_relabel.go), queued under the profile's local id.
 		if old := st.Machines[index]; old.Nickname != m.Nickname && inviteLabel(old) != inviteLabel(m) {
 			relabel = inviteLabel(m)
+			if m.LocalID == "" {
+				m.LocalID = newLocalID()
+			}
 		}
 		st.Machines[index] = m
 		if st.Active == replacing {
@@ -661,9 +679,9 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
-	if index >= 0 {
+	if relabel != "" {
 		// The rename stands whatever happens to its relabel.
-		if err := d.queueRelabel(id, replacing, relabel); err != nil {
+		if err := d.queueRelabel(st, m.LocalID, relabel); err != nil {
 			log.Printf("guest relabel: %s: %v", id, err)
 		}
 	}
@@ -739,7 +757,7 @@ func (d *Desk) RemoveMachine(id string) error {
 		d.storeMu.Unlock()
 		return nil
 	}
-	syncID := st.Machines[i].SyncID
+	syncID, localID := st.Machines[i].SyncID, st.Machines[i].LocalID
 	if syncID != "" {
 		// Pushed as a tombstone on the next sync, so the account's other
 		// devices drop it too. Kept before the machine goes: a removal the
@@ -767,6 +785,12 @@ func (d *Desk) RemoveMachine(id string) error {
 		// Within storeMu, as the save paths' allow: the cache's eligibility ends as the saved
 		// machines do, whatever order a concurrent save and this removal run in.
 		d.boards.forget(id)
+		// A relabel not yet sent goes with its profile (desk_guest_relabel.go).
+		if localID != "" {
+			if err := d.dropRelabel(localID); err != nil {
+				log.Printf("guest relabel: %s: %v", id, err)
+			}
+		}
 	}
 	d.storeMu.Unlock()
 	if err != nil {
@@ -990,10 +1014,12 @@ func (d *Desk) remember(m Machine) error {
 	}
 	id := machineID(m)
 	if i := st.find(id); i >= 0 {
-		// The page doesn't hold the sync id: a reconnect keeps the machine's.
-		m.SyncID = st.Machines[i].SyncID
+		// The page doesn't hold the sync id: a reconnect keeps the machine's,
+		// and its local id.
+		m.SyncID, m.LocalID = st.Machines[i].SyncID, st.Machines[i].LocalID
 		st.Machines[i] = m
 	} else {
+		m.LocalID = ""
 		st.Machines = append(st.Machines, m)
 	}
 	st.Active = id

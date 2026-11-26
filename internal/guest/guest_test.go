@@ -225,7 +225,7 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	if access.AgentTarget != "%42" || access.GuestID != "grant-1" || access.OwnerName != "Owner" {
 		t.Fatalf("incomplete access: %+v", access)
 	}
-	transport := NewTransport(access, identity, SystemClock, nil)
+	transport := NewTransport(access, identity, SystemClock, nil, nil)
 	defer transport.Close()
 	longText := strings.Repeat("x", maxNoisePlaintext*2)
 	var result struct {
@@ -296,7 +296,7 @@ func TestGuestAcceptanceAndReturningTrafficAuthenticateBothPeers(t *testing.T) {
 	}
 	wrong := access
 	wrong.Endpoint.HostPublicKey = bytes.Repeat([]byte{9}, 32)
-	untrusted := NewTransport(wrong, identity, SystemClock, nil)
+	untrusted := NewTransport(wrong, identity, SystemClock, nil, nil)
 	defer untrusted.Close()
 	if err := untrusted.Call(context.Background(), "ping", nil, &result); err == nil {
 		t.Fatal("wrong host identity accepted")
@@ -415,7 +415,7 @@ func TestAnAdmittedHandshakeBegunBeforeA429KeepsItsCooldown(t *testing.T) {
 	}))
 	defer server.Close()
 	access := Access{GuestID: "grant-1", Endpoint: Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}}
-	transport := NewTransport(access, identity, SystemClock, nil)
+	transport := NewTransport(access, identity, SystemClock, nil, nil)
 	defer transport.Close()
 	ctx := context.Background()
 
@@ -475,7 +475,7 @@ func TestRelayRefusalCloseCodes(t *testing.T) {
 	hostID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, 16))
 	access := Access{GuestID: "grant-1", Endpoint: Endpoint{Relay: server.URL, HostID: hostID, HostPublicKey: host.Public}}
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
-	transport := NewTransport(access, identity, clock, nil)
+	transport := NewTransport(access, identity, clock, nil, nil)
 	defer transport.Close()
 	ctx := context.Background()
 

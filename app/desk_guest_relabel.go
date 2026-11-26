@@ -7,13 +7,18 @@ package main
 // invite label (guest.update {machine_label}, no scope: one call), and guests
 // see it in their next hello reply.
 //
-// The relabel is remembered per machine id in guest-relabels.json until its
-// herdr takes it: sent at once when the renamed machine is the live
-// connection, else on the machine's next connect; a failure is logged and
-// sent again on the next connect. A herdr whose ping doesn't report
-// guest_relabel is asked nothing: its shares keep their label, as before.
+// The relabel is remembered per saved profile (Machine.LocalID, never reused)
+// in guest-relabels.json until its herdr takes it, and goes when the profile
+// does: sent at once when the renamed machine is the live connection, else on
+// the machine's next connect; a failure is logged and sent again on the next
+// connect. One relabel of a profile is out at a time: a rename while one is
+// out is sent when it is done, so the newest name is the last one herdr
+// takes. A herdr whose ping doesn't report guest_relabel is asked nothing:
+// its shares keep their label, as before.
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -25,8 +30,16 @@ import (
 	"github.com/jerryfane/herdrup-desktop/internal/herdrapi"
 )
 
+// newLocalID is a new profile's Machine.LocalID: 16 random bytes in hex.
+func newLocalID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // guestRelabelsPath is guest-relabels.json: the relabels not yet taken, by
-// machine id, each the invite label the machine was renamed to.
+// profile (Machine.LocalID), each the invite label the machine was renamed
+// to.
 func (d *Desk) guestRelabelsPath() string { return filepath.Join(d.dir, "guest-relabels.json") }
 
 // loadRelabels reads the relabels not yet taken. d.storeMu must be held.
@@ -51,39 +64,90 @@ func (d *Desk) storeRelabels(pending map[string]string) error {
 	return writeFileAtomic(d.guestRelabelsPath(), data)
 }
 
-// queueRelabel records SaveMachine's edit of machine replacing, saved as id:
-// a relabel not yet taken follows the machine to id, and a rename (label,
-// "" when the save renamed nothing) is to be sent. d.storeMu must be held.
-func (d *Desk) queueRelabel(id, replacing, label string) error {
+// queueRelabel records that the profile localID of st, just saved, was
+// renamed to label, and forgets the relabels of profiles st no longer holds
+// (removed, or replaced by account sync). d.storeMu must be held.
+func (d *Desk) queueRelabel(st machineStore, localID, label string) error {
 	pending, err := d.loadRelabels()
 	if err != nil {
 		return err
 	}
-	changed := false
-	if queued, ok := pending[replacing]; ok && replacing != id {
-		delete(pending, replacing)
-		pending[id], changed = queued, true
+	saved := map[string]bool{}
+	for _, m := range st.Machines {
+		saved[m.LocalID] = true
 	}
-	if label != "" {
-		pending[id], changed = label, true
+	for id := range pending {
+		if !saved[id] {
+			delete(pending, id)
+		}
 	}
-	if !changed {
-		return nil
+	pending[localID] = label
+	return d.storeRelabels(pending)
+}
+
+// dropRelabel forgets the relabel of profile localID, removed. d.storeMu
+// must be held.
+func (d *Desk) dropRelabel(localID string) error {
+	pending, err := d.loadRelabels()
+	if _, ok := pending[localID]; err != nil || !ok {
+		return err
 	}
+	delete(pending, localID)
 	return d.storeRelabels(pending)
 }
 
 // relabelGuests sends l's machine's relabel not yet taken, if l is the live
-// connection, listed, and its herdr reports guest_relabel. The label sent is
-// the machine's invite label as saved now; the relabel is forgotten once
-// taken, unless a newer rename queued another meanwhile. A failure keeps it
-// for the next connect.
+// connection, listed, and its herdr reports guest_relabel. A profile has one
+// sender at a time: a call while one is out has it send again once done, so
+// a rename made meanwhile goes after the one out, never before it.
 func (d *Desk) relabelGuests(l *link) {
+	d.storeMu.Lock()
+	st, err := d.load()
+	d.storeMu.Unlock()
+	i := -1
+	if err == nil {
+		i = st.find(l.id)
+	}
+	if i < 0 || st.Machines[i].LocalID == "" {
+		return
+	}
+	profile := st.Machines[i].LocalID
+	d.relabelMu.Lock()
+	if _, out := d.relabeling[profile]; out {
+		d.relabeling[profile] = true
+		d.relabelMu.Unlock()
+		return
+	}
+	if d.relabeling == nil {
+		d.relabeling = map[string]bool{}
+	}
+	d.relabeling[profile] = false
+	d.relabelMu.Unlock()
+	for {
+		taken := d.relabelOnce(l, profile)
+		d.relabelMu.Lock()
+		again := d.relabeling[profile]
+		if !taken || !again {
+			delete(d.relabeling, profile)
+			d.relabelMu.Unlock()
+			return
+		}
+		d.relabeling[profile] = false
+		d.relabelMu.Unlock()
+	}
+}
+
+// relabelOnce sends profile's relabel not yet taken over l, if l is the live
+// connection, listed, and its herdr reports guest_relabel; the label sent is
+// the machine's invite label as saved now. It is forgotten once taken, unless
+// a newer rename queued another meanwhile. taken reports a relabel herdr took,
+// or nothing to send; false keeps it for the next connect.
+func (d *Desk) relabelOnce(l *link, profile string) (taken bool) {
 	d.mu.Lock()
 	c, session, caps, ctx, live := l.client, l.session, l.caps, l.ctx, d.link == l
 	d.mu.Unlock()
 	if !live || c == nil || ctx == nil || !herdrapi.CapabilityGuestRelabel.Supported(caps) {
-		return
+		return false
 	}
 	d.storeMu.Lock()
 	pending, err := d.loadRelabels()
@@ -94,12 +158,12 @@ func (d *Desk) relabelGuests(l *link) {
 	d.storeMu.Unlock()
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
-		return
+		return false
 	}
-	queued, ok := pending[l.id]
+	queued, ok := pending[profile]
 	i := st.find(l.id)
-	if !ok || i < 0 {
-		return
+	if !ok || i < 0 || st.Machines[i].LocalID != profile {
+		return true
 	}
 	label := inviteLabel(st.Machines[i])
 	view, err := c.ForSession(session)
@@ -108,15 +172,16 @@ func (d *Desk) relabelGuests(l *link) {
 	}
 	if err != nil {
 		log.Printf("guest relabel: %s: %v (sent again on the next connect)", l.id, err)
-		return
+		return false
 	}
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
-	if pending, err = d.loadRelabels(); err == nil && pending[l.id] == queued {
-		delete(pending, l.id)
+	if pending, err = d.loadRelabels(); err == nil && pending[profile] == queued {
+		delete(pending, profile)
 		err = d.storeRelabels(pending)
 	}
 	if err != nil {
 		log.Printf("guest relabel: %s: %v", l.id, err)
 	}
+	return true
 }

@@ -11,7 +11,7 @@ import { knownPhoto, loadPhoto, trackPhotoConnections } from "../src/avatars";
 import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
 import { probeList, probeMachine, type MachineStatus } from "../src/web/ownerProbe";
-import { MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
+import { IndexedDBGrantStore, MemoryGrantStore, MemoryOwnerHint } from "../src/web/storage";
 import { currentOwnerLink } from "../src/web/ownerLink";
 import { onLinkChanged } from "../src/web/link";
 import { closingLink } from "../src/web/ownerSession";
@@ -358,6 +358,85 @@ test("a guest's machine renamed by its owner is saved with the grant and named b
   expect(await names()).toEqual(["Studio Mac", "Studio Mac", "Studio Mac"]);
  } finally { await desk.forgetGuestConnection(id); relay.stop(); }
 }, CONNECTS_LIMIT_MS);
+
+// #558: a hello that comes back late, after the grant was forgotten (here by another desk on the
+// same storage, as another tab), names the machine on no grant: forgotten stays forgotten.
+test("a late hello naming the machine anew doesn't bring back a grant forgotten meanwhile", async () => {
+ const replied = Promise.withResolvers<void>(), reply = Promise.withResolvers<void>();
+ const relay = startRelay({
+  async serve(_conn, handshake) {
+   const hello = await handshake();
+   await reply.promise;
+   const session = hello.reply({ ok: true, guest_id: "grant-1", machine_label: "Studio Mac", features: { multi_request: false } });
+   replied.resolve();
+   const line = await session.readLine();
+   if (line === null) return;
+   const req = JSON.parse(line) as Request;
+   answer(session, req, { result: { type: "agent_list", agents: [{ pane_id: "p1", terminal_id: "t1", name: "Worker", agent: "claude" }] } });
+  },
+ });
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put({ guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date() });
+ const late = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const other = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const id = `${relay.hostID}/grant-1`;
+ try {
+  const listed = Promise.withResolvers<void>();
+  const off = events.boardChanged.on(b => { if (b?.machineID === `guest:${id}`) listed.resolve(); });
+  await late.connectGuest(id);
+  await other.forgetGuestConnection(id);
+  reply.resolve();
+  await replied.promise; await listed.promise; off();
+  expect([await grants.get(), (await late.state()).machine]).toEqual([undefined, "Studio Mac"]);
+ } finally { await late.forgetGuestConnection(id); relay.stop(); }
+}, CONNECTS_LIMIT_MS);
+
+// The IndexedDB grant store's relabel (#558): one read-write transaction that reads the grant and
+// writes only its machine name, and only when it is still the grant named; a grant missing or
+// replaced is left as it is. Bun has no IndexedDB: this fake keeps one object store whose
+// transactions complete once their requests and the callbacks they started are done.
+test("the IndexedDB grant store relabels only the saved grant named, in one read-write transaction", async () => {
+ const data = new Map<string, unknown>();
+ const modes: string[] = [];
+ const db = {
+  createObjectStore: () => undefined,
+  transaction: (_name: string, mode: string) => {
+   modes.push(mode);
+   let open = 0;
+   const tx = { oncomplete: null as null | (() => void), onerror: null, onabort: null, objectStore: () => store };
+   const request = <T>(run: () => T) => {
+    open++;
+    const req = { result: undefined as T | undefined, error: null as unknown, onsuccess: null as null | (() => void), onerror: null };
+    queueMicrotask(() => { req.result = run(); req.onsuccess?.(); if (--open === 0) setTimeout(() => { if (open === 0) tx.oncomplete?.(); }); });
+    return req;
+   };
+   const store = {
+    get: (key: string) => request(() => structuredClone(data.get(key))),
+    put: (value: unknown, key: string) => request(() => { data.set(key, structuredClone(value)); }),
+    delete: (key: string) => request(() => { data.delete(key); }),
+   };
+   return tx;
+  },
+ };
+ const factory = { open: () => { const req = { result: db, onupgradeneeded: null, onsuccess: null as null | (() => void), onerror: null, onblocked: null }; queueMicrotask(() => req.onsuccess?.()); return req; } } as unknown as IDBFactory;
+ const store = new IndexedDBGrantStore(factory);
+ const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ await store.put(grant);
+ modes.length = 0;
+ await store.relabel("host-1", "grant-1", "Studio Mac");
+ const used = [...modes];
+ expect([used, await store.get()]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac" }]);
+ await store.relabel("host-1", "grant-2", "Other");
+ await store.relabel("host-2", "grant-1", "Other");
+ expect((await store.get())?.machineLabel).toBe("Studio Mac");
+ await store.remove();
+ await store.relabel("host-1", "grant-1", "Again");
+ expect(await store.get()).toBeUndefined();
+});
 
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;
