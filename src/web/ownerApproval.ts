@@ -10,7 +10,7 @@ import { approveCode, approveCommit, newApproveNonce, openEnvelope, type Envelop
 import { fromB64url, toB64url } from "../webguest/b64url";
 import type { IdentityStore } from "../webguest/identity";
 import type { StaticKey } from "../webguest/noise";
-import { AccountServiceError, type ApprovalStatus, type BrowserSelf, type WebAccount } from "./account";
+import { AccountServiceError, bindSessionDevice, type ApprovalStatus, type BrowserSelf, type WebAccount } from "./account";
 import { ownerKey } from "./browserKey";
 import type { OwnerRecord, OwnerStore, VerifiedApprover } from "./ownerStore";
 
@@ -96,7 +96,7 @@ async function approve(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, sig
   // (another tab may have just finished one) shows instead of asking again.
   const saved = await untilAborted(deps.store.get(acct, devicePub), signal);
   if (saved !== undefined && saved.approvers.length > 0) { onPhase({ kind: "approved", record: saved }); return; }
-  await untilAborted(bindDevice(deps.account, key, deps.deviceName, acct, signal), signal);
+  await untilAborted(bindSessionDevice(deps.account, key, deps.deviceName, acct, signal), signal);
   const created = await untilAborted(deps.account.requestApproval(approveCommit(key.publicKey, nonceB), acct, signal), signal);
   id = created.id; expiresAt = now() + created.expires_in * 1000;
  } catch (error) { if (!signal.aborted) onPhase({ kind: "failed", problem: problemOf(error) }); return; }
@@ -169,14 +169,6 @@ async function takeApproval(deps: ApprovalDeps, acct: string, devicePub: string,
  return false;
 }
 
-/** Binds this sign-in's session to the browser's key as an account device (enrolling it the first
- *  time); a session bound already is fine. The service serves a browser's own endpoints only to a
- *  session bound to its device. */
-async function bindDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
- try { await account.enrol(key, name, acct, signal); }
- catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
-}
-
 /** On later loads: account's newer lists from approvers this browser verified, opened and merged
  *  in (an approver's list only for a higher seq, compared when written). A list from any other key,
  *  an older seq, or one that doesn't open is left out (the service carries them, so it could
@@ -192,7 +184,7 @@ export async function refreshLists(account: Pick<WebAccount, "browserSelf" | "en
   // A new sign-in's session isn't bound to this browser yet: bind it to the same key (no new
   // approval; the machines grant the key), then read once more.
   if (!(error instanceof AccountServiceError && error.code === "device_required")) throw error;
-  await bindDevice(account, key, deviceName, acct, signal);
+  await bindSessionDevice(account, key, deviceName, acct, signal);
   self = await account.browserSelf(acct, signal);
  }
  const newer = (await Promise.all(record.approvers.map(async (a): Promise<VerifiedApprover | null> => {

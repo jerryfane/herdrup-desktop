@@ -571,6 +571,14 @@ export class WebAccount {
  }
 }
 
+/** Binds this sign-in's session, on acct, to key as an account device (enrolling it the first
+ *  time, as name); a session bound already (session_has_device) is fine. The service serves a
+ *  browser's own endpoints and a bound share's statements only to a session bound to its device. */
+export async function bindSessionDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
+ try { await account.enrol(key, name, acct, signal); }
+ catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
+}
+
 async function errorCode(response: Response): Promise<string> {
  try { const body = await response.json() as { error?: unknown }; return typeof body.error === "string" ? body.error : ""; } catch { return ""; }
 }

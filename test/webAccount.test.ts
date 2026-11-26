@@ -3,7 +3,7 @@
 // so every call is credentialed and carries no token in its body, and refreshes are single-flight
 // because a rotated-away cookie revokes the session.
 import { expect, test } from "bun:test";
-import { AccountServiceError, returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
+import { AccountServiceError, bindSessionDevice, returnedFromSignIn, SignedOutError, WebAccount, webSignInAvailable, webSignInProviders, webSignInURL } from "../src/web/account";
 import type { AccountState } from "../src/mygo";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { fromB64url, toB64url } from "../src/webguest/b64url";
@@ -943,4 +943,17 @@ test("the cookie coming back as another account's: every view hears the old sess
  await desk.accountCheck();
  off();
  expect(heard).toEqual([false, true]);
+});
+
+test("bindSessionDevice: enrols key on the account named, as name; a session bound already is fine, any other refusal isn't", async () => {
+ const secret = new Uint8Array(32).fill(5);
+ const key = staticKey({ v: 1, kind: "raw", secret, publicKey: x25519.getPublicKey(secret) });
+ const signal = new AbortController().signal;
+ const asked: unknown[][] = [];
+ const enrolling = (refusal?: Error) => ({ enrol: async (...args: Parameters<WebAccount["enrol"]>) => { asked.push(args); if (refusal) throw refusal; return { id: "d1", name: args[1], platform: "web", device_pub: "", created_ms: 0 }; } });
+ await bindSessionDevice(enrolling(), key, "Chrome on macOS", "acct-1", signal);
+ await bindSessionDevice(enrolling(new AccountServiceError(409, "session_has_device")), key, "Chrome on macOS", "acct-1", signal);
+ expect(asked).toEqual([[key, "Chrome on macOS", "acct-1", signal], [key, "Chrome on macOS", "acct-1", signal]]);
+ for (const refusal of [new AccountServiceError(409, "device_in_other_account"), new AccountServiceError(403, "too_many_devices"), new AccountServiceError(500, "session_has_device_not"), new SignedOutError()])
+  expect(await bindSessionDevice(enrolling(refusal), key, "Chrome on macOS", "acct-1").catch((e: unknown) => e)).toBe(refusal);
 });

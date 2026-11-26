@@ -11,7 +11,7 @@ import { accountShareNotice } from "../notices";
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, SignedOutError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
+import { AccountServiceError, bindSessionDevice, SignedOutError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
 
 /** The shares collection's allowlist (sync.ts SCHEMAS.shares). */
 export interface ShareBody {
@@ -98,11 +98,10 @@ function pushAnswer(answer: unknown): answer is SyncPushAnswer {
 /** "Add to my account" against account: name is this browser's on the account's devices. */
 export function createShareAdder(account: WebAccount, name: string, options: { addMs?: number } = {}) {
  return {
-  /** Binds this sign-in's session to key as an account device (the statements a bound share
-   *  needs are issued only to a session with a device); a session bound already is fine. */
+  /** Binds this sign-in's session, on its current account, to key as an account device (the
+   *  statements a bound share needs are issued only to a session with a device). */
   async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {
-   try { await account.enrol(key, name, undefined, signal); }
-   catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
+   await bindSessionDevice(account, key, name, await account.currentAccount(signal), signal);
   },
   /** Writes a bound grant's share to the account it is bound to (Access.account), its id the
    *  grant's key, as one POST /v1/sync of one change based on no item (base_rev 0: the key is
