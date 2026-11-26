@@ -1331,9 +1331,10 @@ const GITMOOT = ownerPrompt("u0", "gitmoot: review PR 12", { origin: "other" });
 
 /** Opens the agent's chat once, as `view` (an AgentView's fields over a desktop owner's), for a
  *  `web` reader (a guest's or a web owner's connection and the pong that opens Chat, or how each
- *  Chat check answers; none on the desktop), with the Inbox answering live reads from `live` (all
- *  of it first, what follows later). */
-async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }, web?: { ownerScope?: string; chat: GuestChat | Answer }) {
+ *  Chat check answers; none on the desktop; `heldShare` holds the page's second Desk.State, the
+ *  Gram's share, until it settles), with the Inbox answering live reads from `live` (all of it
+ *  first, what follows later). */
+async function openChat(view: Record<string, unknown>, live: { entries: unknown[] }, web?: { ownerScope?: string; chat: GuestChat | Answer; heldShare?: Promise<void> }) {
  // A page of its own: no chat remembered from before.
  emit("state:changed", { phase: "idle" });
  const read = (_token: unknown, after: unknown) => {
@@ -1344,7 +1345,11 @@ async function openChat(view: Record<string, unknown>, live: { entries: unknown[
   "Desk.TopicsAvailable": () => false,
   ...(web ? {
    "Desk.GuestChatAvailable": typeof web.chat === "function" ? web.chat : () => web.chat,
-   "Desk.State": () => ({ phase: "connected", guest: { features: { gram: false }, ...(web.ownerScope ? { ownerScope: web.ownerScope } : {}) } }),
+   "Desk.State": (() => {
+    const state = { phase: "connected", guest: { features: { gram: false }, ...(web.ownerScope ? { ownerScope: web.ownerScope } : {}) } };
+    let asked = 0;
+    return () => (asked++ === 1 && web.heldShare ? web.heldShare.then(() => state) : state);
+   })(),
   } : {}),
  });
  expect(calls.filter(c => c.method === "Desk.OpenAgentView")).toHaveLength(1);
@@ -1414,6 +1419,51 @@ test("two Refreshes over a failed Chat check take Chat once", async () => {
  await settle();
  // Both checks answered; only the first taken asks for Topics (a page without Chat never does).
  expect([checks, calls.filter(c => c.method === "Desk.TopicsAvailable").length]).toEqual([3, 1]);
+});
+
+// #587: the page takes a Chat check's answer in one place. A Refresh while the page is still
+// opening asks nothing (the first check isn't taken yet), so the opening's failed check can't
+// come back over the Chat a Refresh opened.
+test("a Refresh while the opening's reply is held asks nothing; the Refresh after it opens Chat for good", async () => {
+ let checks = 0;
+ const chat = () => { if (checks++ === 0) throw new Error("try again"); return { available: true, ownerOrigin: true }; };
+ const share = Promise.withResolvers<void>();
+ // The page opens until its held reply lands: not awaited here.
+ const opened = openChat({ guest: true }, { entries: [] }, { ownerScope: "chat", chat, heldShare: share.promise });
+ await settle();
+ const reads = () => calls.filter(c => c.method === "Desk.ChatTranscript").length;
+ refreshButton().click();
+ await settle();
+ share.resolve();
+ await opened;
+ await settle();
+ const modes = doc.body.all().find(n => n.className === "chat-terminal-switch")!;
+ // The opening took its failed check: Terminal, and Chat was never shown and taken back.
+ expect([checks, reads(), modes.hidden]).toEqual([1, 0, true]);
+ refreshButton().click();
+ await settle();
+ expect([checks, reads() > 0, modes.hidden]).toEqual([2, true, false]);
+});
+
+// #587: a Refresh that opens Chat leaves the hidden terminal alone (its replacement stream could
+// only fail into the Chat); one that stays on Terminal reconnects it (Desk.StopTerminal ends the
+// old stream first, unanswered here).
+const stops = () => calls.filter(c => c.method === "Desk.StopTerminal").length;
+test("a Refresh that opens Chat doesn't reconnect the terminal", async () => {
+ let checks = 0;
+ const chat = () => { if (checks++ === 0) throw new Error("try again"); return { available: true, ownerOrigin: true }; };
+ await openChat({ guest: true }, { entries: [] }, { ownerScope: "chat", chat });
+ refreshButton().click();
+ await settle();
+ expect([checks, stops(), calls.filter(c => c.method === "Desk.ChatTranscript").length > 0]).toEqual([2, 0, true]);
+});
+
+test("a Refresh whose Chat check fails again reconnects the terminal", async () => {
+ let checks = 0;
+ await openChat({ guest: true }, { entries: [] }, { ownerScope: "chat", chat: () => { checks++; throw new Error("try again"); } });
+ refreshButton().click();
+ await settle();
+ expect([checks, stops()]).toEqual([2, 1]);
 });
 
 test("a pong without Chat keeps the page on Terminal, and Refresh doesn't ask again", async () => {

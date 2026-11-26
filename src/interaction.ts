@@ -283,8 +283,9 @@ class Detail {
  chatAvailable = false;
  /** The chat has the owner's up arrow (acceptChat). */
  jumpMine = false;
- /** A web view's Chat check failed (a ping error, no pong to say Chat is unsupported): the page
-  *  stays on Terminal and Refresh asks again (#584). */
+ /** The Chat check taken last failed (a ping error, no pong to say Chat is unsupported): the
+  *  page stays on Terminal and Refresh asks again (#584). Set only as a check's answer is taken
+  *  (acceptChat), so no Refresh retries before the page opened on the first (#587). */
  chatUnknown = false;
  /** An omp agent on a server with agent_topics; the page offers Topics once the agent answers
   *  its list (offered) or its session file holds topics (herdrup #745 topicsAvailable). */
@@ -784,7 +785,6 @@ class Detail {
    // A failed check (null) is no answer: Refresh asks again (#584).
    const chat = ompHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : undefined;
    if (this.disposed) return;
-   this.chatUnknown = chat === null;
    this.attach.hidden = view.guest && !view.guestGram;
    if (view.guest) {
     const connection = (await Desk.state().catch(() => null))?.guest;
@@ -1562,19 +1562,22 @@ class Detail {
   *  the press goes once that Refresh's page lands (#571): the form it reloads may be answerable
   *  again, as after ask_form_moved once the Terminal's form is back where it started; its unsent
  *  draft and step stay. A Refresh that fails keeps it (#576), and a newer refusal stays. Over a
- *  failed Chat check it also asks for Chat again (#584). */
+ *  failed Chat check it asks for Chat first (#584), and the terminal reconnects only if the
+ *  page stays on it (#587). */
  refresh() {
   if (this.chatUnknown) void this.recheckChat();
-  if (this.mode === "terminal") void this.reconnectTerminal();
+  else if (this.mode === "terminal") void this.reconnectTerminal();
   else if (this.mode === "topics") this.topics?.refresh();
   else { this.setPaging(this.oldestCursor, true); void this.refreshChat(this.generation, this.answerProblem); }
  }
- /** Refresh over a failed Chat check asks again; the first answer to land is taken. */
+ /** Refresh over a failed Chat check asks again; the first answer to land is taken. A page that
+  *  stays on Terminal (no answer again, or one without Chat) reconnects it; one that opens Chat
+  *  reads its newest page there, and the hidden terminal stays as it was. */
  async recheckChat() {
   const chat = await Desk.guestChatAvailable(this.token).catch(() => null);
-  if (this.disposed || !chat || !this.chatUnknown || !this.view || !this.guestModes) return;
-  this.chatUnknown = false;
-  await this.acceptChat(this.view, chat, this.guestModes);
+  if (this.disposed || !this.chatUnknown || !this.view || !this.guestModes) return;
+  if (chat) await this.acceptChat(this.view, chat, this.guestModes);
+  if (!this.disposed && this.mode === "terminal") await this.reconnectTerminal();
  }
  /** The Chat check's answer taken: GuestChat from a web view's one fresh pong, undefined where
   *  there is none to ask (the desktop's own agents, an agent other than omp), null for a check
@@ -1583,6 +1586,7 @@ class Detail {
   *  owner's (GuestChat.ownerOrigin): an older owner gate marks them other, and the arrow would
   *  skip them for an older prompt sent from the app (#575). A failed check has neither. */
  async acceptChat(view: AgentView, chat: GuestChat | null | undefined, modes: HTMLElement) {
+  this.chatUnknown = chat === null;
   const chatAvailable = ompHarness(view.harness) && (!view.guest || !!chat?.available);
   this.chatAvailable = chatAvailable;
   this.jumpMine = !view.guest || !!chat?.ownerOrigin;
