@@ -272,7 +272,7 @@ func (r *crashReporter) arm() {
 func (r *crashReporter) collect() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	metas, _ := filepath.Glob(filepath.Join(r.dir, "launch-*.json"))
+	metas := entriesNamed(r.dir, "launch-", ".json")
 	for _, meta := range metas {
 		base := strings.TrimSuffix(meta, ".json")
 		if r.id != "" && filepath.Base(base) == "launch-"+r.id {

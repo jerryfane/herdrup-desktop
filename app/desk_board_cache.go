@@ -93,7 +93,7 @@ func (c *boardCache) store(b BoardUpdate) {
 
 // pruneLocked drops the oldest boards beyond boardCacheMax.
 func (c *boardCache) pruneLocked() {
-	files, _ := filepath.Glob(filepath.Join(c.dir, "board-*.json"))
+	files := entriesNamed(c.dir, "board-", ".json")
 	if len(files) <= boardCacheMax {
 		return
 	}
@@ -133,7 +133,7 @@ func (c *boardCache) forget(machineID string) {
 		c.removed = map[string]bool{}
 	}
 	c.removed[machineID] = true
-	files, _ := filepath.Glob(filepath.Join(c.dir, "board-*.json"))
+	files := entriesNamed(c.dir, "board-", ".json")
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {

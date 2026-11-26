@@ -266,6 +266,13 @@ type Desk struct {
 	// load's list is answered (or fails), before saved copies' files expire
 	// by it; tests hold that moment open.
 	gramListed func()
+	// gramRename moves downloads aside (gramDetachCache); nil is os.Rename.
+	// Tests make it fail. Set under d.mu.
+	gramRename func(oldpath, newpath string) error
+	// gramCacheGen counts the download cache's claims and detaches, made
+	// under d.mu: a delete in place outside it checks that no later change
+	// took the cache (gramDiscard.drop).
+	gramCacheGen atomic.Uint64
 	// saved is this device's saved Gram messages, read on first use.
 	saved     *gramstore.Saved
 	savedOnce sync.Once
@@ -896,26 +903,11 @@ func (d *Desk) Connect(m Machine, password string) error {
 // its Gram, its download cache and its state.
 func (d *Desk) Disconnect() {
 	d.mu.Lock()
-	l := d.link
-	if d.cancel != nil {
-		d.cancel()
-		d.cancel = nil
-	}
-	d.link = nil
-	d.board, d.peers = nil, nil
-	d.presence.show(nil, "", "")
-	// Idle with the connection's end, under d.mu: a connection made after
-	// publishes its own state after it.
-	d.state = ConnState{Phase: "idle"}
-	StateChanged.Broadcast(d.state)
-	// Everything else of the connection is detached here too, its Gram, the
-	// combined guest Gram and the download cache's claim, so a connection
-	// made once d.mu is free installs its own, which nothing below touches.
-	x := detached{composer: d.gramSwap(nil, ""), hub: d.detachGuestGram(), discarded: d.gramDetachCache()}
+	x := d.endLocked()
 	d.mu.Unlock()
 	closed := x.stop()
-	if l != nil {
-		closed = append(closed, l)
+	if x.link != nil {
+		closed = append(closed, x.link)
 	}
 	if !closeLinks(closed, disconnectWait) {
 		log.Printf("disconnect: the connection's background work still runs after %s", disconnectWait)
@@ -923,13 +915,37 @@ func (d *Desk) Disconnect() {
 	x.remove()
 }
 
+// endLocked ends the current connection; d.mu must be held. The link, its
+// board and its state go (idle, published with it: a connection made after
+// publishes its own state after it), and everything else the connection
+// owned is detached, its Gram, the combined guest Gram and the download
+// cache's claim, so a connection made once d.mu is free installs its own.
+// The caller ends what it returns once d.mu is free, draining it or not.
+func (d *Desk) endLocked() detached {
+	x := detached{link: d.link}
+	if d.cancel != nil {
+		d.cancel()
+		d.cancel = nil
+	}
+	d.link = nil
+	d.board, d.peers = nil, nil
+	d.presence.show(nil, "", "")
+	d.state = ConnState{Phase: "idle"}
+	StateChanged.Broadcast(d.state)
+	x.composer = d.gramSwap(nil, "")
+	x.hub = d.detachGuestGram()
+	x.cache = d.gramDetachCache()
+	return x
+}
+
 // detached is what a connection change took out of use under d.mu, together
 // with d.link: Desk state a connection owns goes in and out only there. Its
 // caller ends it once d.mu is free.
 type detached struct {
-	composer  *gramstore.Composer
-	hub       *guestGramHub
-	discarded []string
+	link     *link // the ended connection's (endLocked), nil otherwise
+	composer *gramstore.Composer
+	hub      *guestGramHub
+	cache    gramDiscard
 }
 
 // stop closes the old composer and stops the old combined guest Gram,
@@ -944,12 +960,8 @@ func (x detached) stop() []*link {
 	return x.hub.stop()
 }
 
-// remove deletes the downloads moved aside.
-func (x detached) remove() {
-	for _, dir := range x.discarded {
-		_ = os.RemoveAll(dir)
-	}
-}
+// remove deletes the downloads taken off the cache.
+func (x detached) remove() { x.cache.drop() }
 
 // remember saves m, replacing the saved machine with its ID, and makes it
 // the active machine.
@@ -991,7 +1003,7 @@ func (d *Desk) start(m Machine, password string) {
 	// Gram belongs to the connection, its downloads to the machine, and the
 	// combined guest Gram ends: all of it changes with d.link, so a
 	// Disconnect detaches either none of it or all of it.
-	x := detached{composer: d.gramSwap(l, m.Host), hub: d.detachGuestGram(), discarded: d.gramClaimCache(l.id)}
+	x := detached{composer: d.gramSwap(l, m.Host), hub: d.detachGuestGram(), cache: d.gramClaimCache(l.id)}
 	// The machine's last listed board shows until its first list arrives
 	// (slow-network fix 4); unlisted, so the page knows it is not current.
 	if cached := d.boards.load(l.id, l.session); cached != nil {
@@ -1193,6 +1205,20 @@ func (d *Desk) setState(ctx context.Context, s ConnState) {
 func isAuthError(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "unable to authenticate") ||
 		strings.Contains(err.Error(), "read private key"))
+}
+
+// entriesNamed lists the entries of dir whose names start with prefix and
+// end with suffix, as paths, sorted. dir is read as it is, never as a
+// pattern (filepath.Glob): a user's path may hold [, * or ?.
+func entriesNamed(dir, prefix, suffix string) []string {
+	entries, _ := os.ReadDir(dir)
+	var out []string
+	for _, e := range entries {
+		if n := e.Name(); len(n) >= len(prefix)+len(suffix) && strings.HasPrefix(n, prefix) && strings.HasSuffix(n, suffix) {
+			out = append(out, filepath.Join(dir, n))
+		}
+	}
+	return out
 }
 
 func expandHome(p string) string {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,7 +31,9 @@ func gramDeskFor(t *testing.T, g *fakeherdr.Gram) *Desk {
 		}
 		s.Duplex = g.Duplex
 	})
-	d.cacheDir = t.TempDir()
+	// Under a name filepath.Glob reads as a pattern (#547 review): the cache
+	// takes the path as it is.
+	d.cacheDir = filepath.Join(t.TempDir(), "herdrup-cache-[review]")
 	// Before cacheDir's cleanup, which runs first: nothing downloads into it
 	// once it goes.
 	t.Cleanup(d.Disconnect)
@@ -216,6 +219,55 @@ func TestGramAttachmentUploadsPostsAndOpensFromTheCache(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("left in the download cache after Disconnect: %v", names)
+	}
+}
+
+// #547 review: downloads that cannot move aside (a cache directory that
+// refuses renames) are deleted in place once the owner marker is gone, so a
+// reconnect of the same machine never finds the old attachment.
+func TestDisconnectDropsDownloadsThatCannotMoveAside(t *testing.T) {
+	g := fakeherdr.NewGram("store-1")
+	g.Add(agentMsg("f1", "", false), []byte("the old bytes"))
+	d := gramDeskFor(t, g)
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := st.Machines[st.find(st.Active)]
+	// The machine owns the downloads, as its connection's claim records.
+	if err := os.MkdirAll(d.gramCacheBase(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.gramOwnerPath(), []byte(machineID(m)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.saveDialog = func(context.Context, string) (string, error) { return filepath.Join(t.TempDir(), "f1"), nil }
+	if err := d.GramSaveFile(ctx, "f1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.gramCache().Cached("f1"); !ok {
+		t.Fatal("the attachment is not in the download cache")
+	}
+	d.mu.Lock()
+	d.gramRename = func(string, string) error { return errors.New("this directory refuses renames") }
+	d.mu.Unlock()
+	d.Disconnect()
+	if _, ok := d.gramCache().Cached("f1"); ok {
+		t.Fatal("the old attachment is still in the download cache after Disconnect")
+	}
+	if owner, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(owner) == machineID(m) {
+		t.Fatal("the owner marker still names the disconnected machine")
+	}
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the reconnect", func() bool { return d.State().Phase == "connected" })
+	if _, ok := d.gramCache().Cached("f1"); ok {
+		t.Fatal("a reconnect of the same machine finds the old attachment")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,48 +53,96 @@ func (d *Desk) gramOwnerPath() string { return filepath.Join(d.gramCacheBase(), 
 // gramClaimCache gives the downloads to owner, a connection's machine, under
 // d.mu (start, ConnectGuest): the bytes must not outlive the machine that
 // could read them. Unless they are owner's already, it detaches them
-// (gramDetachCache) and records owner. It returns what to delete once d.mu
-// is free; a download directory a move failed to take is in it, deleted in
-// place as before, and leaves owner unrecorded, so the next connection
-// detaches it again.
-func (d *Desk) gramClaimCache(owner string) []string {
+// (gramDetachCache) and records owner, but only once nothing of another
+// connection stays in place: else the next connection detaches them again.
+// The caller drops what it returns once d.mu is free.
+func (d *Desk) gramClaimCache(owner string) gramDiscard {
 	if b, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(b) == owner {
-		return nil
+		return gramDiscard{}
 	}
-	discarded := d.gramDetachCache()
-	stuck := false
-	for _, p := range []string{d.gramCache().Root, d.gramPartialDir()} {
-		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
-			discarded, stuck = append(discarded, p), true
-		}
-	}
-	if !stuck {
+	c := d.gramDetachCache()
+	if len(c.stuck) == 0 {
 		if err := os.MkdirAll(d.gramCacheBase(), 0o700); err == nil {
 			_ = os.WriteFile(d.gramOwnerPath(), []byte(owner), 0o600)
 		}
 	}
-	return discarded
+	return c
 }
 
 // gramDetachCache takes every downloaded file out of use for good, cheaply
-// enough for d.mu (Disconnect, ForgetGuestConnection): the owner marker goes
-// and the files move aside, renamed gram-discarded-*. It returns every such
-// directory (one an earlier run left too) for the caller to delete outside
-// d.mu. Files a move fails to take go with the next connection's claim, the
-// marker being gone.
-func (d *Desk) gramDetachCache() []string {
+// enough for d.mu (a connection change): the owner marker goes first, so no
+// connection trusts what stays, then the files move aside, renamed
+// gram-discarded-*. The caller drops what it returns once d.mu is free.
+func (d *Desk) gramDetachCache() gramDiscard {
 	base := d.gramCacheBase()
-	_ = os.Remove(d.gramOwnerPath())
+	d.gramDisown()
+	// An earlier run's, left by a crash between the move and the delete.
+	c := gramDiscard{d: d, moved: entriesNamed(base, "gram-discarded-", ""), gen: d.gramCacheGen.Add(1)}
+	rename := d.gramRename
+	if rename == nil {
+		rename = os.Rename
+	}
 	stamp := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(gramDetaches.Add(1), 36)
 	for _, p := range []string{d.gramCache().Root, d.gramPartialDir()} {
-		_ = os.Rename(p, filepath.Join(base, "gram-discarded-"+stamp+"-"+filepath.Base(p)))
+		to := filepath.Join(base, "gram-discarded-"+stamp+"-"+filepath.Base(p))
+		switch err := rename(p, to); {
+		case err == nil:
+			c.moved = append(c.moved, to)
+		case !errors.Is(err, os.ErrNotExist):
+			c.stuck = append(c.stuck, p)
+		}
 	}
-	discarded, _ := filepath.Glob(filepath.Join(base, "gram-discarded-*"))
-	return discarded
+	return c
+}
+
+// gramDisown makes the downloads no connection's: the owner marker goes,
+// or, where the directory refuses that, is emptied, "" being no machine.
+func (d *Desk) gramDisown() {
+	p := d.gramOwnerPath()
+	err := os.Remove(p)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if werr := os.WriteFile(p, nil, 0o600); werr != nil {
+		log.Printf("gram cache: the owner marker %s stays: %v; emptying it: %v", p, err, werr)
+	}
 }
 
 // gramDetaches tells apart the directories gramDetachCache moves aside.
 var gramDetaches atomic.Uint64
+
+// gramDiscard is what a connection change took off the download cache under
+// d.mu, for drop once d.mu is free.
+type gramDiscard struct {
+	d *Desk
+	// moved: the directories moved aside (exact paths), and an earlier run's.
+	moved []string
+	// stuck: download directories a move failed to take (a directory that
+	// refuses renames). They are deleted in place, the old recursive delete,
+	// while they are still the detached connection's: the marker is gone and
+	// no later change (gen) took the cache.
+	stuck []string
+	gen   uint64
+}
+
+// drop deletes what c took off the cache, as far as it can; it logs what
+// stays.
+func (c gramDiscard) drop() {
+	for _, dir := range c.moved {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("gram cache: %s stays: %v", dir, err)
+		}
+	}
+	for _, dir := range c.stuck {
+		if c.d.gramCacheGen.Load() != c.gen {
+			log.Printf("gram cache: %s could not move aside and a later connection took it", dir)
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("gram cache: %s could not move aside, and deleting it in place left some: %v", dir, err)
+		}
+	}
+}
 
 // gramFileMeta is what a download needs of a message's file: from l's held
 // messages (id there), else a saved copy (key, the id the page knows, which
