@@ -306,7 +306,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    empty.hidden = sharedNow.length === 0 && machines.length > 0;
    // One row per machine. Several grants on one machine would open Swift's combined machine
    // home, which needs simultaneous guest connections; until then its row opens the first.
-   if (await sharedList.draw(sharedNow) === null || generation !== version) return;
+   if (!await sharedList.draw(sharedNow) || generation !== version) return;
    section.hidden = machines.length === 0;
    const next: HTMLElement[] = [];
    for (const machine of machines) {

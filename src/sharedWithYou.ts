@@ -76,9 +76,9 @@ export function syncedSharesNow(signedIn: boolean): Promise<SyncedShare[]> {
  *  sharedLine, the chevron) and the account's note. A machine with one share is one row that opens
  *  it; one with more is its row (the machine over who shared it), then a row per share, the agent's
  *  name, each opening its own. Picking a row opens it (openShared), then opened(); a failure goes
- *  to report. busy keeps the rows disabled while another connect runs. label: the heading. */
-export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false, label = "SHARED WITH YOU") {
- const { root, rows } = hostSection(label); root.hidden = true;
+ *  to report. busy keeps the rows disabled while another connect runs. */
+export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false) {
+ const { root, rows } = hostSection("SHARED WITH YOU"); root.hidden = true;
  const note = element("p", "host-home-note host-shared-note"); note.hidden = true;
  root.append(note);
  let version = 0;
@@ -90,9 +90,9 @@ export function sharedSection(symbol: SymbolRenderer, opened: () => void, report
  };
  return {
   root,
-  /** Draws machines (sharedMachines); resolves with how many machines it drew, or null when a
-   *  newer draw took over meanwhile. */
-  async draw(machines: readonly SharedMachine[]): Promise<number | null> {
+  /** Draws machines (sharedMachines); resolves true once they're drawn, false when a newer draw
+   *  took over meanwhile (this one drew nothing). */
+  async draw(machines: readonly SharedMachine[]): Promise<boolean> {
    const at = ++version;
    const nodes: HTMLElement[] = [];
    for (const m of machines) {
@@ -108,12 +108,12 @@ export function sharedSection(symbol: SymbolRenderer, opened: () => void, report
      nodes.push(row);
     }
    }
-   if (at !== version) return null;
+   if (at !== version) return false;
    rows.replaceChildren(...nodes);
    const words = accountNote(machines);
    note.textContent = words ?? ""; note.hidden = words === null;
    root.hidden = machines.length === 0;
-   return machines.length;
+   return true;
   },
  };
 }

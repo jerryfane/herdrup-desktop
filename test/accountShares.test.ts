@@ -217,11 +217,11 @@ test("a machine with several shares: its row, then a row per share, each opening
  const { calls } = bridge({ "Desk.OpenSyncedShare": undefined, "Desk.ConnectGuest": undefined });
  const symbol = async () => (G.document as FakeDocument).createElement("span") as unknown as HTMLElement;
  let opened = 0;
- const section = sharedSection(symbol, () => { opened++; }, () => {}, () => false, "YOUR SHARED AGENTS");
+ const section = sharedSection(symbol, () => { opened++; }, () => {}, () => false);
  const root = section.root as unknown as FakeElement;
  const machines = sharedMachines([grant("H1", "g1", "enyo", "jerry", "hetzner")], [share("H1", "g2", "orgstudio", "jerry", "hetzner", false)]);
- expect(await section.draw(machines)).toBe(1);
- expect(shown(root)).toEqual(expect.arrayContaining(["YOUR SHARED AGENTS", "hetzner", "shared by jerry", "enyo", "orgstudio"]));
+ expect(await section.draw(machines)).toBe(true);
+ expect(shown(root)).toEqual(expect.arrayContaining(["SHARED WITH YOU", "hetzner", "shared by jerry", "enyo", "orgstudio"]));
  // The machine's row is a heading here, not a control; each share is its own button.
  expect(buttons(root).map(b => b.getAttribute("aria-label"))).toEqual(["enyo on hetzner", "orgstudio on hetzner"]);
  named(root, "orgstudio").click();
@@ -240,8 +240,11 @@ test("a row the account brought opens with openSyncedShare; one held here connec
  const root = section.root as unknown as FakeElement;
  expect(root.hidden).toBe(true);
  const rows = sharedMachines([grant("H2", "g9", "landing", "maya", "mac-mini")], [share("H1", "g1", "enyo", "jerry", "hetzner", false)]);
- expect(await section.draw(rows)).toBe(2);
+ expect(await section.draw(rows)).toBe(true);
  expect(root.shown()).toBe(true);
+ expect(shown(root)).toContain("SHARED WITH YOU");
+ // One machine, one share: the machine's row is the control, the machine over its line.
+ expect(buttons(root).map(b => [b.text(), b.disabled])).toEqual([["mac-minilanding · shared by maya", false], ["hetznerenyo · shared by jerry", false]]);
  expect(shown(root)).toContain("From your HerdrUp account: nothing to accept here. jerry sees each device you open it on.");
  named(root, "hetzner").click();
  await settle();
@@ -251,6 +254,9 @@ test("a row the account brought opens with openSyncedShare; one held here connec
  expect(opened).toBe(2);
  await section.draw([]);
  expect(root.hidden).toBe(true);
+ // A newer draw takes over one still drawing: the older draws nothing and says so.
+ const [older, newer] = await Promise.all([section.draw(rows), section.draw([])]);
+ expect([older, newer, root.hidden, buttons(root).length]).toEqual([false, true, true, 0]);
 });
 
 test("the account's shares are asked for only when signed in; a list that can't be read is none", async () => {
