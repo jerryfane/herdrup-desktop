@@ -19,6 +19,13 @@ export interface Access {
    * (herdr src/guest/store.rs:1121-1128), and its sessions refresh it.
    */
   accountBound: boolean;
+  /**
+   * Account is the HerdrUp account a bound share is bound to: the one the
+   * statement herdr admitted it with names. Its shares item lives in that
+   * account's collection, whichever account is signed in later. Empty
+   * for a plain share and for one saved before it was kept.
+   */
+  account?: string;
 }
 
 /** AccountDeleteInfo is what the account page needs to offer Delete account. */
@@ -1474,8 +1481,9 @@ export const Desk = {
    * says (herdrup#700): "account" binds an invitation whose host takes
    * accounts (GuestInvitation.Account) to the signed-in HerdrUp account (the
    * redemption carries its statement), and a share the host bound goes to
-   * the account's shares, for every device of it; "device" keeps it on this
-   * device only, as any other invitation is.
+   * the shares of the account it was bound to (Access.Account: the
+   * admitted statement's), for every device of it; "device" keeps it on
+   * this device only, as any other invitation is.
    */
   acceptGuestInvitation(text: string, keep: string): Promise<Access> {
     return call("Desk.AcceptGuestInvitation", text, keep);

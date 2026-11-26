@@ -270,3 +270,77 @@ func TestOldInvitationsAreUnchanged(t *testing.T) {
 		t.Fatalf("grants after leaving %+v", grants)
 	}
 }
+
+// A bound share's item belongs to the account herdr bound it to (the
+// admitted statement's), whichever account is signed in when it is saved
+// or left: under another account its write and its delete wait for that
+// account, and never reach the account signed in.
+func TestABoundShareStaysWithTheAccountThatBoundIt(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	// switchTo signs this desk's client in to acct ("" is acct-2).
+	switchTo := func(acct string) {
+		w.mu.Lock()
+		w.handoffAccount = acct
+		w.mu.Unlock()
+		if _, err := d.account.StartSignIn("google"); err != nil {
+			t.Error(err)
+		}
+		if _, err := d.account.FinishSignIn(ctx, strings.Repeat("c", 43)); err != nil {
+			t.Error(err)
+		}
+	}
+	syncAs := func(as string) {
+		t.Helper()
+		if cur, _ := d.account.Current(); cur == nil || cur.AccountID != as {
+			t.Fatalf("signed in as %+v, want %s", cur, as)
+		}
+		if err := d.SyncMachines(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Another account signs in as herdr checks the redemption's statement
+	// (its hello already sent), before the grant is saved.
+	check, switched := relay.CheckStatement, false
+	relay.CheckStatement = func(jws string, device []byte) (string, time.Time, string) {
+		sub, exp, code := check(jws, device)
+		if !switched {
+			switched = true
+			switchTo("")
+		}
+		return sub, exp, code
+	}
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.Account != "acct" || relay.Bound() != "acct" {
+		t.Fatalf("bound accept: %+v (bound to %q), %v", access, relay.Bound(), err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	held := func() bool { _, ok := w.live()[id]; return ok }
+	syncAs("acct-2")
+	if held() {
+		t.Fatal("the share was written while another account was signed in")
+	}
+	switchTo("acct")
+	syncAs("acct")
+	if !held() {
+		t.Fatal("the share was not written once its account was back")
+	}
+	switchTo("")
+	syncAs("acct-2")
+	if err := d.ForgetGuestConnection(access.ID()); err != nil {
+		t.Fatal(err)
+	}
+	syncAs("acct-2")
+	if !held() {
+		t.Fatal("a leave under another account deleted the share there")
+	}
+	switchTo("acct")
+	syncAs("acct")
+	if held() {
+		t.Fatal("the leave never reached the share's account")
+	}
+}

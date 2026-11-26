@@ -956,7 +956,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// The bound grants whose share the account deleted go before the state
 	// that no longer knows the share is written: a failure leaves it known,
 	// and the next pass lets them go.
-	dropped, err := d.dropGoneShares(goneShares)
+	dropped, err := d.dropGoneShares(acct, goneShares)
 	if err != nil {
 		d.storeMu.Unlock()
 		return err

@@ -125,7 +125,7 @@ func (g guestStatementSource) Statement(ctx context.Context, host string, minLef
 	if err != nil {
 		return guest.Statement{}, err
 	}
-	return guest.Statement{JWS: got.JWS, Exp: got.Exp, Live: func() bool { return g.cache.Live(got) }}, nil
+	return guest.Statement{JWS: got.JWS, Exp: got.Exp, Live: func() bool { return g.cache.Live(got) }, Account: got.Account()}, nil
 }
 
 func (g guestStatementSource) Drop(host, jws string) { g.cache.Drop(host, jws) }
@@ -136,8 +136,9 @@ func (d *Desk) SharedConnections() ([]guest.Access, error) { return d.guestStore
 // says (herdrup#700): "account" binds an invitation whose host takes
 // accounts (GuestInvitation.Account) to the signed-in HerdrUp account (the
 // redemption carries its statement), and a share the host bound goes to
-// the account's shares, for every device of it; "device" keeps it on this
-// device only, as any other invitation is.
+// the shares of the account it was bound to (Access.Account: the
+// admitted statement's), for every device of it; "device" keeps it on
+// this device only, as any other invitation is.
 func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (guest.Access, error) {
 	if keep != "account" && keep != "device" {
 		return guest.Access{}, fmt.Errorf("unknown way to keep a share: %q", keep)
@@ -149,13 +150,11 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (gu
 		return guest.Access{}, err
 	}
 	var bind guest.StatementSource
-	acct := ""
 	if keep == "account" && invite.Account {
 		cur, _ := d.account.Current()
 		if bind = d.guestStatements(); cur == nil || bind == nil {
 			return guest.Access{}, account.ErrSignedOut
 		}
-		acct = cur.AccountID
 	}
 	identity, err := d.guestIdentity()
 	if err != nil {
@@ -176,7 +175,7 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (gu
 	}
 	d.syncGuestGram()
 	if access.AccountBound {
-		if err := d.noteShare(access, acct, false); err != nil {
+		if err := d.noteShare(access, false); err != nil {
 			return guest.Access{}, fmt.Errorf("Access was accepted and saved on this device, but could not be added to your HerdrUp account: %w", err)
 		}
 	}
@@ -238,7 +237,7 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 		return err
 	}
 	if i := slices.IndexFunc(list, func(a guest.Access) bool { return a.ID() == id }); i >= 0 && list[i].AccountBound {
-		if err := d.noteShare(list[i], "", true); err != nil {
+		if err := d.noteShare(list[i], true); err != nil {
 			return err
 		}
 	}

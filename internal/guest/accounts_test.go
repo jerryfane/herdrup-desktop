@@ -100,7 +100,7 @@ func (f *fakeStatements) Statement(_ context.Context, host string, minLeft time.
 	} else if f.repeat > 0 {
 		f.repeat--
 	}
-	signIn, hook := f.signIn, f.onAsk
+	signIn, hook, account := f.signIn, f.onAsk, f.account
 	f.onAsk = nil
 	f.mu.Unlock()
 	if hook != nil {
@@ -111,7 +111,7 @@ func (f *fakeStatements) Statement(_ context.Context, host string, minLeft time.
 		defer f.mu.Unlock()
 		return f.signIn == signIn
 	}
-	return Statement{JWS: h.jws, Exp: h.exp, Live: live}, nil
+	return Statement{JWS: h.jws, Exp: h.exp, Live: live, Account: account}, nil
 }
 
 func (f *fakeStatements) Drop(host, jws string) {

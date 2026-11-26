@@ -36,6 +36,8 @@ type Statement struct {
 	JWS  string
 	Exp  time.Time
 	Live func() bool
+	// Account is the HerdrUp account it names (its sub).
+	Account string
 }
 
 // StatementSource gives this device's HerdrUp account statement for host (a
@@ -84,6 +86,11 @@ type Access struct {
 	// redemption: every hello for it carries a statement for that account
 	// (herdr src/guest/store.rs:1121-1128), and its sessions refresh it.
 	AccountBound bool `json:"accountBound"`
+	// Account is the HerdrUp account a bound share is bound to: the one the
+	// statement herdr admitted it with names. Its shares item lives in that
+	// account's collection, whichever account is signed in later. Empty
+	// for a plain share and for one saved before it was kept.
+	Account string `json:"account,omitempty"`
 }
 
 func (a Access) ID() string { return a.Endpoint.HostID + "/" + a.GuestID }
@@ -732,7 +739,11 @@ func Accept(ctx context.Context, invite Invite, identity Identity, device string
 	// A host that bound the share says so with the session's deadline; one
 	// that predates accounts ignores the statement, and the share is plain.
 	bound := statement.JWS != "" && reply.Account != nil
-	return Access{GuestID: reply.GuestID, GuestName: fallback(reply.Name, invite.GuestName), MachineLabel: fallback(reply.MachineLabel, invite.MachineLabel), OwnerName: fallback(reply.OwnerName, invite.OwnerName), AgentName: fallback(reply.Agent.Name, invite.AgentName), AgentTarget: reply.Agent.Target, Endpoint: invite.Endpoint, AcceptedAt: now, AccountBound: bound}, nil
+	account := ""
+	if bound {
+		account = statement.Account
+	}
+	return Access{GuestID: reply.GuestID, GuestName: fallback(reply.Name, invite.GuestName), MachineLabel: fallback(reply.MachineLabel, invite.MachineLabel), OwnerName: fallback(reply.OwnerName, invite.OwnerName), AgentName: fallback(reply.Agent.Name, invite.AgentName), AgentTarget: reply.Agent.Target, Endpoint: invite.Endpoint, AcceptedAt: now, AccountBound: bound, Account: account}, nil
 }
 
 // errNotBound is a returning hello herdr answered as a plain grant's: the
@@ -758,8 +769,10 @@ func Open(ctx context.Context, share Access, identity Identity, now time.Time, b
 	defer cancel()
 	host := share.Endpoint.AccountHost()
 	var connected *session
-	// earlier is the first attempt's liveness, for its retry.
+	// earlier is the first attempt's liveness, for its retry; account is
+	// the account of the statement the admitted hello carried.
 	var earlier func() bool
+	var account string
 	for attempt := 0; ; attempt++ {
 		stale := errHelloStale
 		if earlier != nil {
@@ -787,6 +800,7 @@ func Open(ctx context.Context, share Access, identity Identity, now time.Time, b
 		if err != nil {
 			return Access{}, err
 		}
+		account = st.Account
 		connected, err = openSession(ctx, share.Endpoint, identity, hello, live, stale)
 		if err == nil {
 			break
@@ -817,5 +831,5 @@ func Open(ctx context.Context, share Access, identity Identity, now time.Time, b
 		}
 		return value
 	}
-	return Access{GuestID: reply.GuestID, GuestName: fallback(reply.Name, share.GuestName), MachineLabel: fallback(reply.MachineLabel, share.MachineLabel), OwnerName: fallback(reply.OwnerName, share.OwnerName), AgentName: fallback(reply.Agent.Name, share.AgentName), AgentTarget: reply.Agent.Target, Endpoint: share.Endpoint, AcceptedAt: now, AccountBound: true}, nil
+	return Access{GuestID: reply.GuestID, GuestName: fallback(reply.Name, share.GuestName), MachineLabel: fallback(reply.MachineLabel, share.MachineLabel), OwnerName: fallback(reply.OwnerName, share.OwnerName), AgentName: fallback(reply.Agent.Name, share.AgentName), AgentTarget: reply.Agent.Target, Endpoint: share.Endpoint, AcceptedAt: now, AccountBound: true, Account: account}, nil
 }

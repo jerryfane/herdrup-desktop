@@ -128,13 +128,16 @@ func shareBodyOf(a guest.Access) (account.ShareBody, error) {
 	return b, nil
 }
 
-// noteShare records what this device owes the account of a bound grant: its
-// item written (acct, the account it was bound to), or with leave deleted
-// (for the account an unsent write of it was owed to, else the one signed
-// in, else the state's). Either replaces any owed before. Then it syncs
-// soon and tells the page.
-func (d *Desk) noteShare(a guest.Access, acct string, leave bool) error {
-	op := shareOp{ID: a.ShareID(), Account: acct}
+// noteShare records what this device owes the account a bound grant is
+// bound to (Access.Account): its item written, or with leave deleted. It is
+// owed to that account whichever is signed in: under another, it waits in
+// the sync state until that account syncs again (mergeShares), and nothing
+// of it reaches the account signed in. A grant saved before its account
+// was kept takes the account an unsent write of it was owed to, else the
+// account whose synced shares hold it; with neither, nothing is owed.
+// Either replaces any owed before. Then it syncs soon and tells the page.
+func (d *Desk) noteShare(a guest.Access, leave bool) error {
+	op := shareOp{ID: a.ShareID(), Account: a.Account}
 	if !leave {
 		body, err := shareBodyOf(a)
 		if err != nil {
@@ -145,12 +148,10 @@ func (d *Desk) noteShare(a guest.Access, acct string, leave bool) error {
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
 	if err == nil {
-		if leave {
+		if op.Account == "" && leave {
 			if i := slices.IndexFunc(state.ShareWrites, func(o shareOp) bool { return o.ID == op.ID }); i >= 0 {
 				op.Account = state.ShareWrites[i].Account
-			} else if cur, _ := d.account.Current(); cur != nil {
-				op.Account = cur.AccountID
-			} else {
+			} else if slices.ContainsFunc(state.Mirror.Shares, func(s account.RemoteShare) bool { return s.ID == op.ID }) {
 				op.Account = state.AccountID
 			}
 		}
@@ -226,9 +227,10 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 }
 
 // dropGoneShares lets go of this device's bound grants whose shares item
-// the account deleted (gone, by item id), and returns their grant ids.
-// A plain grant is never dropped: sync knows nothing of it.
-func (d *Desk) dropGoneShares(gone map[string]bool) ([]string, error) {
+// account acct deleted (gone, by item id), and returns their grant ids.
+// A plain grant is never dropped: sync knows nothing of it; nor is one
+// bound to another account, whose collection this is not.
+func (d *Desk) dropGoneShares(acct string, gone map[string]bool) ([]string, error) {
 	if len(gone) == 0 {
 		return nil, nil
 	}
@@ -238,7 +240,7 @@ func (d *Desk) dropGoneShares(gone map[string]bool) ([]string, error) {
 	}
 	var dropped []string
 	for _, g := range grants {
-		if g.AccountBound && gone[g.ShareID()] {
+		if g.AccountBound && (g.Account == "" || g.Account == acct) && gone[g.ShareID()] {
 			if err := d.guestStore.Remove(g.ID()); err != nil {
 				return dropped, err
 			}
