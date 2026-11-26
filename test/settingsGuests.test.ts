@@ -308,7 +308,7 @@ test("Confirm when the device has since left one of the shares asks again with t
   });
 });
 
-test("Confirm when the device has no share left says so, and sends nothing", async () => {
+test("Confirm when the device has no share left says so, sends nothing, and lists again (the device goes)", async () => {
   const listing = { guests: [...current.guests] };
   await withPage(listing, async ({ root, body, calls, reported }) => {
     const dialog = askRemoveMacBook(root, body);
@@ -317,6 +317,7 @@ test("Confirm when the device has no share left says so, and sends nothing", asy
     await settle();
     expect([removals(calls), body.having("settings-guest-confirm"), reported.map(e => (e as Error).message)])
       .toEqual([[], [], ["Nike's MacBook no longer has access on hetzner. Nothing was removed."]]);
+    expect(root.having("settings-group")[1]!.having("settings-row-label").map(e => e.textContent)).toEqual(["iPhone", "Chrome on macOS"]);
   });
 });
 
@@ -377,6 +378,35 @@ test("a recheck that comes back changed after the person's page has gone asks no
     await settle();
     expect([removals(calls), body.having("settings-guest-confirm")]).toEqual([[], []]);
   }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
+});
+
+// #541 review: the recheck is read-only, apart from the removals' lifecycle (act): superseded, it
+// returns without listing again, so another person's page keeps its menu and no activity log is read.
+test("a superseded recheck leaves the page as it is: Ana's device menu stays open and nothing is listed again", async () => {
+  const ana: Guest = { ...nike("ana-1", "zeta", 500_000), name: "Ana", person: "acct-ana", last_seen_ms: now - 60_000, fingerprint: "SHA256:ana", device: "iPad", devices: [] };
+  const answers: [string, (listing: { guests: Guest[]; error?: string }) => void][] = [
+    ["changed", listing => { listing.guests = [...withMac(current.guests, { "nike-2": false }), ana]; }],
+    ["none left", listing => { listing.guests = [...withMac(current.guests, { "nike-1": false, "nike-2": false }), ana]; }],
+    ["unreadable", listing => { listing.error = "herdr: guest_store_unavailable: try again"; }],
+  ];
+  for (const [answer, change] of answers) {
+    const hold = listingHold(), listing: { guests: Guest[]; error?: string } = { guests: [...current.guests, ana] };
+    await withPage(listing, async ({ root, body, calls, reads }) => {
+      const dialog = askRemoveMacBook(root, body);
+      hold.arm();
+      click(dialog.button("Remove device"));
+      await hold.started;
+      click(root.button("Back to Shared access"));
+      click(root.having("settings-guest-open").find(row => row.getAttribute("aria-label")!.startsWith("Ana,"))!);
+      click(root.button("Manage iPad"));
+      await settle();
+      const before = reads.length;
+      change(listing);
+      hold.release();
+      await settle();
+      expect([answer, removals(calls), body.having("account-device-menu").length, reads.slice(before)]).toEqual([answer, [], 1, []]);
+    }, { settingsGuestList: (token, machine) => hold.answer(token, machine) });
+  }
 });
 
 test("a device menu already open when a refresh starts closes then, before the listing lands", async () => {
@@ -455,4 +485,18 @@ test("a person's devices are the ones their shares admit now, by the host's rule
   expect(people.map(p => [p.id, p.name, p.accountBound, p.devices.map(d => d.name)])).toEqual([
     ["acct-nike", "Nike", true, ["iPhone", "Chrome on macOS"]],
   ]);
+});
+
+// #541 review: admission is resolved once per share, not once per device per share.
+test("a share's devices are read a bounded number of times each, however many it lists", () => {
+  for (const n of [32, 64, 128]) {
+    let reads = 0;
+    // Every other device is listed removed further on; the rest stay.
+    const list: NonNullable<Guest["devices"]> = Array.from({ length: n }, (_, i) => i % 2 === 0
+      ? { fingerprint: `SHA256:d${i}`, device: `Device ${i}`, added_ms: i, removed: false }
+      : { fingerprint: `SHA256:d${i - 1}`, removed: true });
+    const devices = new Proxy(list, { get: (target, key, receiver) => { if (typeof key === "string" && /^\d+$/.test(key)) reads++; return Reflect.get(target, key, receiver); } });
+    const { people } = sharePeople([{ ...nike("nike-1", "enyo", 800_000), devices }]);
+    expect([n, people[0]!.devices.map(d => d.name), reads <= 3 * n]).toEqual([n, ["iPhone"], true]);
+  }
 });

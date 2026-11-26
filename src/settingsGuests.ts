@@ -28,22 +28,25 @@ export interface Person { id: string; name: string; accountBound: boolean; guest
 
 const latest = (a: number | null, b: number | null | undefined) => b == null ? a : a === null ? b : Math.max(a, b);
 
-/** herdr's admission rule (store.rs admits_fingerprint): the device with this fingerprint may use
- *  the share, the accepting one or an added one, and no removed entry names it. The page's devices
- *  and a removal's targets both follow it. */
-function admits(guest: Guest, fingerprint: string): boolean {
-  const devices = guest.devices ?? [];
-  return !devices.some(d => d.fingerprint === fingerprint && d.removed) && (guest.fingerprint === fingerprint || devices.some(d => d.fingerprint === fingerprint));
+/** herdr's admission rule (store.rs admits_fingerprint), resolved once per share: the fingerprints
+ *  it admits, the accepting device's and the added ones', less any a removed entry names wherever
+ *  that entry sits. The page's devices and a removal's targets both look devices up in it. */
+function admittedFingerprints(guest: Guest): Set<string> {
+  const admitted = new Set<string>(), removed = new Set<string>();
+  if (guest.fingerprint) admitted.add(guest.fingerprint);
+  for (const d of guest.devices ?? []) (d.removed ? removed : admitted).add(d.fingerprint);
+  for (const fingerprint of removed) admitted.delete(fingerprint);
+  return admitted;
 }
 
-/** The devices guest admits now (admits), as the page shows them: the one that accepted, then the
- *  ones added. The accepting device has no activity of its own on the wire: the share's
- *  last_seen_ms is any of its devices', so it stays the person's. */
+/** The devices guest admits now (admittedFingerprints), as the page shows them: the one that
+ *  accepted, then the ones added. The accepting device has no activity of its own on the wire: the
+ *  share's last_seen_ms is any of its devices', so it stays the person's. */
 function admitted(guest: Guest): Map<string, PersonDevice> {
-  const out = new Map<string, PersonDevice>();
-  if (guest.fingerprint && admits(guest, guest.fingerprint)) out.set(guest.fingerprint, { fingerprint: guest.fingerprint, name: guest.device || "A device", addedMs: guest.created_ms ?? 0, lastSeenMs: null });
+  const admits = admittedFingerprints(guest), out = new Map<string, PersonDevice>();
+  if (guest.fingerprint && admits.has(guest.fingerprint)) out.set(guest.fingerprint, { fingerprint: guest.fingerprint, name: guest.device || "A device", addedMs: guest.created_ms ?? 0, lastSeenMs: null });
   for (const d of guest.devices ?? []) {
-    if (!d.removed && admits(guest, d.fingerprint)) out.set(d.fingerprint, { fingerprint: d.fingerprint, name: d.device || "A device", addedMs: d.added_ms ?? 0, lastSeenMs: d.last_seen_ms ?? null });
+    if (admits.has(d.fingerprint)) out.set(d.fingerprint, { fingerprint: d.fingerprint, name: d.device || "A device", addedMs: d.added_ms ?? 0, lastSeenMs: d.last_seen_ms ?? null });
   }
   return out;
 }
@@ -52,7 +55,7 @@ function admitted(guest: Guest): Map<string, PersonDevice> {
  *  order listed. */
 type RemovalTarget = { guestID: string; agent: string };
 function removalTargets(guests: readonly Guest[], person: string, fingerprint: string): RemovalTarget[] {
-  return guests.filter(guest => !guest.revoked && guest.person === person && admits(guest, fingerprint)).map(guest => ({ guestID: guest.guest_id, agent: agentName(guest) }));
+  return guests.filter(guest => !guest.revoked && guest.person === person && admittedFingerprints(guest).has(fingerprint)).map(guest => ({ guestID: guest.guest_id, agent: agentName(guest) }));
 }
 const sameTargets = (a: readonly RemovalTarget[], b: readonly RemovalTarget[]) =>
   a.length === b.length && a.every(target => b.some(other => other.guestID === target.guestID));
@@ -61,6 +64,8 @@ const sameTargets = (a: readonly RemovalTarget[], b: readonly RemovalTarget[]) =
  *  guests of an older herdr, which names no person: they keep a row each. */
 export function sharePeople(guests: readonly Guest[]): { people: Person[]; ungrouped: Guest[] } {
   const people = new Map<string, Person>(), ungrouped: Guest[] = [];
+  // Each person's devices by fingerprint, so a device on several shares is found at once.
+  const devices = new Map<Person, Map<string, PersonDevice>>();
   for (const guest of guests) {
     if (guest.revoked) continue;
     if (!guest.person) { ungrouped.push(guest); continue; }
@@ -69,11 +74,13 @@ export function sharePeople(guests: readonly Guest[]): { people: Person[]; ungro
     person.guests.push(guest);
     person.accountBound ||= !!guest.account_bound;
     person.lastSeenMs = latest(person.lastSeenMs, guest.last_seen_ms);
+    let known = devices.get(person);
+    if (!known) devices.set(person, known = new Map());
     for (const device of admitted(guest).values()) {
-      const known = person.devices.find(d => d.fingerprint === device.fingerprint);
-      if (!known) { person.devices.push(device); continue; }
-      known.addedMs = Math.min(known.addedMs, device.addedMs);
-      known.lastSeenMs = latest(known.lastSeenMs, device.lastSeenMs);
+      const same = known.get(device.fingerprint);
+      if (!same) { known.set(device.fingerprint, device); person.devices.push(device); continue; }
+      same.addedMs = Math.min(same.addedMs, device.addedMs);
+      same.lastSeenMs = latest(same.lastSeenMs, device.lastSeenMs);
     }
   }
   for (const person of people.values()) {
@@ -333,39 +340,44 @@ export class GuestSettings {
     this.confirm(`Remove ${person.name}?`, `${person.name} loses access on ${person.accountBound ? "every device" : "their device"} right away, and open sessions close. To come back, ${person.name} needs a new invite.`,
       `Remove ${person.name}`, [agents, devices], () => { void this.act(machine, "person:" + person.id, token => Desk.revokeGuestPerson(token, machine.alias, person.id)); });
   }
-  /** Removing a device asks to confirm exactly the shares named (targets), then lists the machine's
-   *  shares afresh (guest.list alone) on the same Settings scope: only if the device is on exactly
-   *  those shares still are the removals sent (each tried; failures said after). A listing that
-   *  can't be read sends nothing and says so; a changed set asks again with the new shares while
-   *  the person's page and this confirmation are still the current ones (else nothing more), or
-   *  says the device has no access left. */
+  /** Removing a device asks to confirm exactly the shares named (targets); Confirm checks them
+   *  (recheckRemoveDevice) before anything is sent. */
   private confirmRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[], changed: boolean) {
     const agents = targets.map(target => target.agent).join(", ");
     this.confirm(`Remove ${device.name}?`, `${changed ? `${person.name}'s ${device.name} now has access to: ${agents}.` : `${person.name} can no longer open ${agents} on ${device.name}.`} Its open sessions close; ${person.name}'s other devices keep access.`,
-      "Remove device", [], () => {
-        const attempt = this.attempt;
-        void this.act(machine, "device:" + device.fingerprint, async token => {
-          let fresh: Guest[] | null = null;
-          try { fresh = (JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as Listing).guests ?? []; }
-          catch { /* not read: nothing is known of the device's access */ }
+      "Remove device", [], () => { void this.recheckRemoveDevice(machine, person, device, targets); });
+  }
+  /** Confirm's check, read-only and outside act: the machine's shares listed afresh (guest.list
+   *  alone) on the same Settings scope. Only if the device is on exactly the shares confirmed are
+   *  the removals sent (act: each tried, failures said after, then the lists again). Otherwise
+   *  nothing is sent: a listing that can't be read says so; a changed set asks again with the new
+   *  shares, or says the device has no access left, and lists again, while the person's page and
+   *  this confirmation are still the current ones. Superseded (Back, another person, another
+   *  confirmation), it leaves the page as it is. */
+  private async recheckRemoveDevice(machine: Machine, person: Person, device: PersonDevice, targets: RemovalTarget[]) {
+    const token = this.token, attempt = this.attempt;
+    let fresh: Guest[] | null = null;
+    try { fresh = (JSON.parse(await Desk.settingsGuestList(token, machine.alias)) as Listing).guests ?? []; }
+    catch { /* not read: nothing is known of the device's access */ }
+    if (token !== this.token) return;
+    if (fresh === null) { this.report(new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`)); return; }
+    const now = removalTargets(fresh, person.id, device.fingerprint);
+    if (sameTargets(now, targets)) {
+      void this.act(machine, "device:" + device.fingerprint, async token => {
+        const failed: string[] = [];
+        for (const target of now) {
           if (token !== this.token) return;
-          if (fresh === null) throw new Error(`Couldn't check ${device.name}'s access. Nothing was removed. Try again.`);
-          const now = removalTargets(fresh, person.id, device.fingerprint);
-          if (!now.length) throw new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`);
-          if (!sameTargets(now, targets)) {
-            // Another page or dialog since (Back, another person, another confirmation): not asked over it.
-            if (attempt === this.attempt && this.open?.alias === machine.alias && this.open.person === person.id) this.confirmRemoveDevice(machine, person, device, now, true);
-            return;
-          }
-          const failed: string[] = [];
-          for (const target of now) {
-            if (token !== this.token) return;
-            try { await Desk.removeGuestDevice(token, machine.alias, target.guestID, device.fingerprint); }
-            catch (error) { failed.push(`Couldn't remove from ${target.agent}: ${errorText(error)}`); }
-          }
-          if (failed.length) throw new Error(failed.join("\n"));
-        });
+          try { await Desk.removeGuestDevice(token, machine.alias, target.guestID, device.fingerprint); }
+          catch (error) { failed.push(`Couldn't remove from ${target.agent}: ${errorText(error)}`); }
+        }
+        if (failed.length) throw new Error(failed.join("\n"));
       });
+      return;
+    }
+    if (!now.length) this.report(new Error(`${person.name}'s ${device.name} no longer has access on ${machine.label}. Nothing was removed.`));
+    if (attempt !== this.attempt || this.open?.alias !== machine.alias || this.open.person !== person.id) return;
+    if (now.length) this.confirmRemoveDevice(machine, person, device, now, true);
+    void this.refresh();
   }
   /** A share of an older herdr (no person): today's row, Revoke and Share Gram on it. */
   private guestRow(machine: Machine, guest: Guest) {
