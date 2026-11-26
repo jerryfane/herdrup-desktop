@@ -7,7 +7,7 @@ import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } 
 import { toB64url } from "../src/webguest/b64url";
 import type { EnvelopeMachine } from "../src/webguest/approve";
 import type { StatementSource } from "../src/webguest/accountStatement";
-import { createGuestDesk, avatarDataURL, AvatarBytesError, OWNER_BROWSER_ORIGIN } from "../src/web/desk";
+import { createGuestDesk, avatarDataURL, AvatarBytesError } from "../src/web/desk";
 import { knownPhoto, loadPhoto, trackPhotoConnections } from "../src/avatars";
 import { Desk } from "../src/mygo";
 import { events } from "../src/web/events";
@@ -797,23 +797,87 @@ test("the Inbox's and a topic's transcript ask for relay entries only where the 
  }
 });
 
-// #575: an owner link's agent view has the owner's up arrow (ownerLink) only where the host's ping
-// says its owner gate records the browser's prompts as the owner's; an older herdr marks them other.
-test("an owner link's agent view is an ownerLink one only where the host attributes the browser's prompts", async () => {
- for (const attributed of [true, false, undefined]) {
-  const relay = host({ other: (session, req) => {
-   if (req.method === "ping") answer(session, req, { result: { type: "pong", version: "0.9.9", capabilities: attributed === undefined ? {} : { [OWNER_BROWSER_ORIGIN]: attributed } } });
-   else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
-  } });
-  const desk = await deskWithKey();
-  try {
-   const listed = boardOf(relay);
-   await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
-   await listed;
-   const view = await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "view-1");
-   expect([view.guest, view.ownerLink]).toEqual([true, attributed === true ? true : undefined]);
-  } finally { desk.disconnectOwner(); relay.stop(); }
- }
+// #575: the owner's up arrow on an owner link comes from the one fresh pong that opens Chat
+// (guestChatAvailable): only where it says herdr records the browser's prompts as the owner's
+// (owner_browser_origin); an older herdr marks them other. Never from an earlier pong.
+const pong = (capabilities: Record<string, unknown>) => ({ result: { type: "pong", version: "0.9.9", capabilities: { agent_transcript: true, ...capabilities } } });
+
+test("an owner link's Chat and its up arrow follow the same fresh pong: a host gone legacy on the same link has none", async () => {
+ let capable = true;
+ const relay = host({ other: (session, req) => answer(session, req, req.method === "ping" ? pong({ owner_browser_origin: capable }) : { error: { code: "owner_forbidden", message: "no" } }) });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: true });
+  // The host's herdr rolled back; the link stays, its last pong said capable.
+  capable = false;
+  await desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "view-2");
+  expect(await desk.guestChatAvailable("view-2")).toEqual({ available: true, ownerOrigin: false });
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+test("an owner link's up arrow shows when the pong that opens Chat says so, after an earlier ping failed", async () => {
+ // Every ping fails until the host recovers; then every pong is capable.
+ let recovered = false, failed = 0;
+ const relay = host({ other: (session, req) => {
+  if (req.method === "ping") { if (!recovered) failed++; answer(session, req, recovered ? pong({ owner_browser_origin: true }) : { error: { code: "internal", message: "try again" } }); }
+  else if (req.method === "agent.transcript") answer(session, req, { result: { type: "agent_transcript", agent: "omp", pane_id: "p1", session_id: "s", after: "1", entries: [] } });
+  else answer(session, req, { error: { code: "owner_forbidden", message: "no" } });
+ } });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  // A read's optional probe (transcript_relay_entries) meets a failed ping.
+  await desk.chatTranscript("view-1", "", "", "", "");
+  expect(failed).toBeGreaterThan(0);
+  recovered = true;
+  expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: true });
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+test("an owner link's terminal-only agent opens without waiting on a ping", async () => {
+ // A ping is held, never answered: opening the agent must not be waiting on it.
+ const pinged = Promise.withResolvers<"pinged">();
+ const relay = host({ other: (session, req) => { if (req.method === "ping") pinged.resolve("pinged"); else answer(session, req, { error: { code: "owner_forbidden", message: "no" } }); } });
+ const desk = await deskWithKey();
+ try {
+  const listed = boardOf(relay);
+  await desk.connectOwner(machineOn(relay), statements, "x", new AbortController().signal);
+  await listed;
+  const opened = desk.openAgentView({ machineID: `owner:${relay.hostID}`, session: "", paneID: "p1" }, "view-1").then(view => view.harness);
+  expect(await Promise.race([opened, pinged.promise])).toBe("claude");
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
+test("a guest's Chat never has the owner's up arrow, whatever the host's pong says", async () => {
+ const relay = startRelay({
+  async serve(_conn, handshake) {
+   const session = (await handshake()).reply({ ok: true, guest_id: "grant-1", features: { multi_request: true } });
+   for (;;) {
+    const line = await session.readLine();
+    if (line === null) return;
+    const req = JSON.parse(line) as Request;
+    if (req.method === "agent.list") answer(session, req, { result: { type: "agent_list", agents: [{ pane_id: "p1", terminal_id: "t1", name: "Worker", agent: "omp" }] } });
+    else if (req.method === "ping") answer(session, req, pong({ owner_browser_origin: true }));
+    else answer(session, req, { error: { code: "forbidden", message: "no" } });
+   }
+  },
+ });
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put({ guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date() });
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const id = `${relay.hostID}/grant-1`;
+ const listed = Promise.withResolvers<void>();
+ const off = events.boardChanged.on(b => { if (b?.machineID === `guest:${id}`) { off(); listed.resolve(); } });
+ try {
+  await desk.connectGuest(id);
+  await listed.promise;
+  await desk.openAgentView({ machineID: `guest:${id}`, session: "", paneID: "p1" }, "view-1");
+  expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: false });
+ } finally { off(); await desk.forgetGuestConnection(id); relay.stop(); }
 });
 
 // herdr 31bd88e6 answers cursor_expired for a cursor read before its update. On the web the

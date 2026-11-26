@@ -82,7 +82,7 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
 
  const view = await desk.openAgentView({ machineID: board.machineID, session: "", paneID: row.id }, "view-1");
  expect(view).toMatchObject({ guest: true, guestOwner: "Fixture Owner", name: "docs" });
- expect(await desk.guestChatAvailable("view-1")).toBe(true);
+ expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: false });
  const before = JSON.parse(await desk.chatTranscript("view-1", "", "", "", ""));
  expect(Array.isArray(before.entries)).toBe(true);
  expect(before.type).toBeUndefined();

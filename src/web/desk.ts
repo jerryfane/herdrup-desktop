@@ -6,7 +6,7 @@
 import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
- Access as PageAccess, AgentTarget, AgentView, AskFormValue, AvatarPhoto, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestConnection, GuestInvitation, GuestMenuKeyReply,
+ Access as PageAccess, AgentTarget, AgentView, AskFormValue, AvatarPhoto, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestChat, GuestConnection, GuestInvitation, GuestMenuKeyReply,
  GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, NotSentError, notSent, timedOut } from "../webguest/errors";
@@ -48,7 +48,7 @@ const OWNER_PAUSED = "owner_paused";
 const OWNER_FORBIDDEN = "owner_forbidden";
 /** herdr's ping capability: its owner gate records an owner browser's writes as the owner's
  *  (input_source app, turn origin mine), so the chat's up arrow finds them (#575). */
-export const OWNER_BROWSER_ORIGIN = "owner_browser_origin";
+const OWNER_BROWSER_ORIGIN = "owner_browser_origin";
 const refusedHere = (code: string) => code === GUEST_FORBIDDEN || code === OWNER_FORBIDDEN;
 // desk_guest_answers.go guestMenuKeys
 const GUEST_MENU_KEYS = ["Escape", "Space", "Left", "Up", "Down", "Right", "Tab", "Enter"];
@@ -747,11 +747,6 @@ export function createGuestDesk(env: DeskEnv) {
    if (token === "" || token.length > 128) throw new Error("invalid view token");
    const l = active;
    if (!l || l.id !== target.machineID || (target.session !== "" && target.session !== "default")) throw new Error("agent belongs to another connection or session");
-   // The owner's up arrow on an owner link: only where herdr records the browser's prompts as the
-   // owner's (turn origin mine); an older owner gate marks them other, and the arrow would skip
-   // them for an older prompt sent from the app (#575). From the link's cached pong.
-   const ownerOrigin = !!l.owner && await l.client.supports(OWNER_BROWSER_ORIGIN, l.life.signal);
-   if (active !== l) throw new Error("agent belongs to another connection or session");
    // An agent a start acknowledged opens before a list has it (OwnerLink.started).
    const agent = l.agents.find((a) => a.pane_id === target.paneID) ?? l.started?.get(target.paneID);
    if (!agent) throw new Error("agent is no longer on this board");
@@ -772,7 +767,6 @@ export function createGuestDesk(env: DeskEnv) {
     // desk_interaction.go topicSessions: the topics its session file holds, one without an id left out.
     topicSessions: (agent.topic_sessions ?? []).filter(t => !!t.topic_id).map(t => ({ topicID: t.topic_id!, title: t.title ?? "", createdMs: t.created_unix_ms ?? 0 })),
     ...(l.access.guestName !== "" ? { guestSelf: l.access.guestName } : {}), plainTerminal: false,
-    ...(ownerOrigin ? { ownerLink: true } : {}),
    };
    mountView(l, view, shareDetails(agent, name, linkShareLabel(l)), ownerAvailability([agent], view.paneID));
    return view;
@@ -805,10 +799,14 @@ export function createGuestDesk(env: DeskEnv) {
    return details;
   },
 
-  async guestChatAvailable(token: string): Promise<boolean> {
+  /** Chat and the owner's up arrow from the one fresh pong the page opens Chat with: the arrow
+   *  only on an owner link to a host that records the browser's prompts as the owner's; an older
+   *  owner gate marks them other, and the arrow would skip them for an older prompt sent from the
+   *  app (#575). */
+  async guestChatAvailable(token: string): Promise<GuestChat> {
    const v = viewOf(token);
    const pong = await v.active.client.ping(within(v));
-   return pong.capabilities?.agent_transcript === true;
+   return { available: pong.capabilities?.agent_transcript === true, ownerOrigin: !!v.active.owner && pong.capabilities?.[OWNER_BROWSER_ORIGIN] === true };
   },
 
   // ---- Chat (desk_interaction.go, desk_guest_answers.go) ----

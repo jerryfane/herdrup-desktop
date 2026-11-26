@@ -40,12 +40,6 @@ type AgentView struct {
 	// people's prompts, never the reader's own (ChatView.swift byline).
 	GuestSelf     string `json:"guestSelf,omitempty"`
 	PlainTerminal bool   `json:"plainTerminal"`
-	// OwnerLink: an agent's Guest view the owner opened in a browser over an
-	// owner link, on a host whose owner gate records the browser's prompts as
-	// the owner's (the ping capability OWNER_BROWSER_ORIGIN, src/web/desk.ts
-	// openAgentView). It has the owner's up arrow to their previous prompt
-	// (src/chatJumpMine.ts). The desktop never sets it.
-	OwnerLink bool `json:"ownerLink,omitempty"`
 	// AskForm: the host answers omp's HTML-form asks (capabilities.ask_form).
 	// A guest's gate advertises no capabilities, so for a guest herdr's
 	// form_answerable on the pending ask decides alone.
