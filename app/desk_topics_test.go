@@ -456,6 +456,48 @@ func TestTopicsOnScreenKeepTheListAndAskAgainWhenUnreachable(t *testing.T) {
 	}
 }
 
+// A failed read under the follower schedules one next read, at the earlier
+// of the follower's poll (the owner's topicsBackstop) and topicsRetry's
+// backoff, never both (#553 review).
+func TestTopicsFailedReadsScheduleOneReadAtTheEarlierDeadline(t *testing.T) {
+	saved := topicsRetry
+	t.Cleanup(func() { topicsRetry = saved })
+	for _, c := range []struct {
+		name     string
+		retry    time.Duration
+		min, max time.Duration
+	}{
+		{"the poll first", time.Hour, topicsBackstop - 10*time.Second, topicsBackstop},
+		{"the retry first", 20 * time.Millisecond, 0, time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			topicsRetry = []time.Duration{c.retry}
+			var lists atomic.Int32
+			fixture := fakeherdr.NewTopics()
+			fixture.ListFail = func() string { lists.Add(1); return "topics_unreachable" }
+			d, updates, _, _ := topicsDeskWith(t, true, fixture)
+			if err := d.TopicsFollow("view", true); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "the failed read", func() bool { u := updates(); return len(u) > 0 && u[len(u)-1].Problem != "" })
+			v, err := d.agentView("view")
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "one next read at the earlier deadline", func() bool {
+				v.topics.mu.Lock()
+				defer v.topics.mu.Unlock()
+				next := time.Until(v.topics.nextAt)
+				return v.topics.next != nil && next >= c.min && next <= c.max
+			})
+			if c.retry < topicsBackstop {
+				// The retry's deadline is the one that reads.
+				waitFor(t, "reads on the retry's schedule", func() bool { return lists.Load() >= 4 })
+			}
+		})
+	}
+}
+
 // The page lists the topics the agent's session file holds (topic_sessions)
 // until the agent's first list answers: the view carries them, one without
 // an id left out, never null.

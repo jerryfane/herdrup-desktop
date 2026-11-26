@@ -446,15 +446,16 @@ func TestTopicsInboxAsksAgainAfterAFailedList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v.topics.mu.Lock()
-	following, retrying := v.topics.cancel != nil, v.topics.retry != nil
-	v.topics.mu.Unlock()
-	if !following || retrying {
-		t.Fatalf("after the list: following %v, retrying %v", following, retrying)
-	}
+	// One next read, the follower's backstop: the retry's 20 ms went with the
+	// failures.
+	waitFor(t, "the follower's backstop as the next read", func() bool {
+		v.topics.mu.Lock()
+		defer v.topics.mu.Unlock()
+		return v.topics.cancel != nil && v.topics.next != nil && time.Until(v.topics.nextAt) > topicsBackstop-10*time.Second
+	})
 }
 
-// Closing the view drops a pending Inbox retry at once, not when it fires.
+// Closing the view drops a pending retry at once, not when it fires.
 func TestTopicsClosingTheViewDropsTheInboxRetry(t *testing.T) {
 	saved := topicsRetry
 	topicsRetry = []time.Duration{time.Hour}
@@ -476,7 +477,7 @@ func TestTopicsClosingTheViewDropsTheInboxRetry(t *testing.T) {
 	retrying := func() bool {
 		v.topics.mu.Lock()
 		defer v.topics.mu.Unlock()
-		return v.topics.retry != nil
+		return v.topics.next != nil
 	}
 	waitFor(t, "the retry armed", retrying)
 	d.CloseAgentView("view")
