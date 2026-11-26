@@ -52,10 +52,10 @@ type Endpoint struct {
 	HostPublicKey []byte `json:"hostPublicKey"`
 }
 
-// accountHost is the host id as account statements name it (their aud, and
+// AccountHost is the host id as account statements name it (their aud, and
 // the service's 22-character base64url host id): HostID, which an invite
 // may carry in either base64 alphabet, in unpadded base64url.
-func (e Endpoint) accountHost() string {
+func (e Endpoint) AccountHost() string {
 	raw, err := decode64(e.HostID)
 	if err != nil {
 		return e.HostID

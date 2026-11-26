@@ -6,10 +6,11 @@
 
 import { GuestError } from "./errors";
 
-/** An account statement (POST /v1/statements): its JWS, when it expires (ms), and whether the
- *  session it was issued in is still the page's. live() is required: nothing is sent with a
- *  statement whose session has ended (live false). */
-export interface AccountStatement { jws: string; expMs: number; live(): boolean }
+/** An account statement (POST /v1/statements): its JWS, when it expires (ms), the account it was
+ *  issued for (a share it admits is bound to that account), and whether the session it was issued
+ *  in is still the page's. live() is required: nothing is sent with a statement whose session has
+ *  ended (live false). */
+export interface AccountStatement { jws: string; expMs: number; account: string; live(): boolean }
 
 /** A statement the hello or a refresh sends: enough of it left, or a fresh one. */
 export interface StatementSource {

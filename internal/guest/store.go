@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Store holds grants, never invitation bearers or private device keys.
@@ -73,9 +74,10 @@ func (s *Store) Save(access Access) error {
 	return s.save(list)
 }
 
-// Relabel saves label as the machine's name on the share id (a hello reply
-// named it anew); nothing for a share no longer saved, or already so named.
-func (s *Store) Relabel(id, label string) error {
+// Relabel saves label as the machine's name on the share id, as a hello's
+// reply named it at at (Access.LabeledAt), an unchanged name too, in one
+// write; nothing for a share no longer saved.
+func (s *Store) Relabel(id, label string, at time.Time) error {
 	if !validLabel(label) {
 		return errors.New("not a machine label")
 	}
@@ -86,11 +88,20 @@ func (s *Store) Relabel(id, label string) error {
 		return err
 	}
 	index := slices.IndexFunc(list, func(item Access) bool { return item.ID() == id })
-	if index < 0 || list[index].MachineLabel == label {
+	if index < 0 {
 		return nil
 	}
-	list[index].MachineLabel = label
+	list[index].MachineLabel, list[index].LabeledAt = label, &at
 	return s.save(list)
+}
+
+// NamedAt is when a hello last named the share's machine: LabeledAt, else
+// AcceptedAt.
+func (a Access) NamedAt() time.Time {
+	if a.LabeledAt != nil {
+		return *a.LabeledAt
+	}
+	return a.AcceptedAt
 }
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()

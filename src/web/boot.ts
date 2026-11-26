@@ -9,6 +9,7 @@ import "../style.css";
 import "./web.css";
 import { Desk, ownerAccess } from "./mygo";
 import { ACCOUNT_LOOKUP_MS, boot, bootMarks, loadPage, signedInBefore } from "./bootChoice";
+import { pendingBindWaits } from "./start";
 
 const marks = bootMarks();
 
@@ -42,7 +43,7 @@ async function signedIn(): Promise<boolean> {
 async function run() {
  boot.guestInstead = marks.guestInstead();
  const outcome = await loadPage(marks, {
-  fragment: location.hash !== "",
+  fragment: location.hash !== "" || pendingBindWaits(() => sessionStorage),
   guestInstead: boot.guestInstead,
   grant: async () => (await Desk.sharedConnections()).length > 0,
   signedIn,

@@ -64,7 +64,7 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner, webSocket: (url) => new WebSocket(url), topicsRetryMs: [100] });
  const reviewed = await desk.inspectGuestInvitation(invite);
  expect(reviewed).toMatchObject({ ownerName: "Fixture Owner", agentName: "docs", guestName: "visitor" });
- const access = await desk.acceptGuestInvitation(invite);
+ const access = await desk.acceptGuestInvitation(invite, "device");
  expect(grants.access?.guestID).toBe(access.guestID);
  expect(owner.owner).toBe("Fixture Owner");
  expect(await desk.sharedConnections()).toEqual([access]);

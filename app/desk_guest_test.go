@@ -172,7 +172,7 @@ func TestShortGuestInvitationReachesReview(t *testing.T) {
 	gone.Store(true)
 	for name, run := range map[string]func() error{
 		"review": func() error { _, err := desk.InspectGuestInvitation(context.Background(), short); return err },
-		"accept": func() error { _, err := desk.AcceptGuestInvitation(context.Background(), short); return err },
+		"accept": func() error { _, err := desk.AcceptGuestInvitation(context.Background(), short, "device"); return err },
 	} {
 		if err := run(); !errors.Is(err, guest.ErrInviteRevoked) || err.Error() != "This invite has expired or was revoked." {
 			t.Errorf("%s of a revoked short link: %v", name, err)

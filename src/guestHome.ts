@@ -5,11 +5,23 @@ import { paintShape } from "./continuous";
 import { RELAY_RECONNECTING } from "./chatPoll";
 import { ACCOUNT_TITLE } from "./herdrupAccount";
 import { guestRowLine, rowStatus } from "./rowStatus";
+import { grantKey } from "./grantKey";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
 
 type GuestState = NonNullable<ConnState["guest"]>;
+
+/** Leave share's words. A share in the HerdrUp account (Access.accountBound, #700) leaves every
+ *  device signed in to it where leaving deletes the account's item (everywhere: the desktop's
+ *  forgetGuestConnection); a plain one, or where Leave forgets only this device's grant (the
+ *  browser's, until it syncs the account's shares), this device. */
+export function leaveWords(access: Pick<GuestState["access"], "machineLabel" | "agentName" | "ownerName" | "accountBound">, everywhere = true): { title: string; message: string; note: string } {
+ const back = `To come back, ${access.ownerName} has to send a new invite.`;
+ return access.accountBound && everywhere
+  ? { title: `Leave ${access.machineLabel} on all your devices?`, message: `${access.agentName} disappears from every device signed in to your HerdrUp account.`, note: `You stop seeing ${access.agentName} on all your devices. ${back}` }
+  : { title: `Leave ${access.machineLabel}?`, message: `${access.agentName} disappears from this device.`, note: `You stop seeing ${access.agentName}. ${back}` };
+}
 
 /** What the guest home borrows from the owner's sidebar (main.ts): its symbols, the roster row's
  * avatar with its status badge (faces.ts rowAvatar), the initial placement and the loading spinner. */
@@ -25,7 +37,7 @@ export interface GuestHomeDeps {
  * list under the bar, and Settings (App/GuestSettingsView.swift) in the detail column. */
 export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: GuestHomeDeps, callbacks: {
  hosts(): void; open(target: AgentTarget): void;
-}, options: { settings: boolean; account?: () => HTMLElement | null } = { settings: true }) {
+}, options: { settings: boolean; account?: () => HTMLElement | null; leavesAccount?: boolean } = { settings: true }) {
  const navigation = node("section", "guest-navigation"); navigation.hidden = true;
  const settings = node("section", "guest-settings settings-detail"); settings.hidden = true;
  // Where the owner's roster sits: between the top bar and the sidebar's foot (the tab bar).
@@ -101,7 +113,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   navigation.hidden = !visible || selected !== "agents"; settings.hidden = !options.settings || !visible || selected !== "settings";
   if (!visible || !state.guest) { last = ""; return; }
   const guest = state.guest, access = guest.access;
-  const id = `${access.endpoint.hostID}/${access.guestID}`;
+  const id = grantKey(access);
   // Only this share's board (desk_guest.go publishes it as "guest:<id>"): an owner
   // board still held from before the switch must never show here.
   const board = latest?.machineID === `guest:${id}` ? latest : null;
@@ -182,7 +194,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
  /** The share's own settings (GuestSettingsView.swift 30-89): who shared what, this device's
   *  key to compare, and Leave share. */
  function shareDetails(guest: GuestState): HTMLElement[] {
-  const access = guest.access, id = `${access.endpoint.hostID}/${access.guestID}`;
+  const access = guest.access, id = grantKey(access);
   const keyValue = (key: string, value: string, mono = false) => {
    const item = node("div", "guest-key-value"); item.append(node("dt", "", key), node("dd", mono ? "mono" : "", value)); return item;
   };
@@ -192,10 +204,11 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const fingerprint = node("span", "", guest.fingerprint || "Unavailable"); fingerprint.dataset.testid = "guest-settings-fingerprint";
   device.append(node("span", "", "Device key"), fingerprint);
   const leave = node("button", "guest-leave button-destructive button-large", "Leave share"); leave.type = "button"; leave.dataset.testid = "guest-leave";
-  leave.onclick = () => confirmLeave(`Leave ${access.machineLabel}?`, `${access.agentName} disappears from this device.`, "Leave share", id);
+  const words = leaveWords(access, options.leavesAccount ?? true);
+  leave.onclick = () => confirmLeave(words.title, words.message, "Leave share", id);
   return [node("h3", "guest-settings-section", "Shared with you"), shared, node("h3", "guest-settings-section", "This device"), device,
    node("p", "guest-settings-note", `${access.ownerName} sees the same key next to your name, so you can compare them.`), leave,
-   node("p", "guest-settings-note guest-leave-note", `You stop seeing ${access.agentName}. To come back, ${access.ownerName} has to send a new invite.`)];
+   node("p", "guest-settings-note guest-leave-note", words.note)];
  }
 
  /** The share's page for the app's own Settings (settings.ts, the desktop's guest mode). */

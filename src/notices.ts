@@ -20,3 +20,31 @@ export function noticeRegion(): HTMLElement {
   }
   return region;
 }
+
+/** The words after a share went into the HerdrUp account (frame com-g3). */
+export const accountShareNotice = (agentName: string) => `${agentName} is in your HerdrUp account. Sign in on your other devices to open it there.`;
+
+let accountNotice: HTMLElement | null = null;
+/** After an accept that put the share in the account (Access.accountBound): one quiet line among
+ *  the window's notices, with OK, until read. A second accept replaces the first's. */
+export function showAccountShareNotice(agentName: string): HTMLElement {
+  return showAccountNotice(accountShareNotice(agentName));
+}
+
+/** The account notice with words of its own: the browser's after an accept it bound, which says
+ *  whether the account took the share (web/shares.ts boundNotice). */
+export function showAccountNotice(words: string): HTMLElement {
+  const region = noticeRegion();
+  accountNotice?.remove();
+  const notice = document.createElement("div");
+  notice.className = "account-share-notice"; notice.setAttribute("role", "status");
+  const text = document.createElement("span");
+  text.className = "account-share-notice-text"; text.textContent = words;
+  const ok = document.createElement("button");
+  ok.type = "button"; ok.className = "button-secondary button-compact"; ok.textContent = "OK";
+  ok.onclick = () => notice.remove();
+  notice.append(text, ok);
+  region.prepend(notice);
+  accountNotice = notice;
+  return notice;
+}

@@ -17,6 +17,7 @@ import { createServerUpdateDesk } from "./serverUpdateDesk";
 import { terminalsDesk } from "./terminalsDesk";
 import { createDesk } from "./createDesk";
 import { statementCache } from "./statements";
+import { createShareAdder } from "./shares";
 
 export type * from "../mygo";
 export { events } from "./events";
@@ -26,15 +27,20 @@ type DeskFns = typeof GoDesk;
 
 const notAvailable = () => Promise.reject(new Error("Not available in the browser"));
 const env = browserEnv();
-const account = createAccountDesk(browserAccountPage(), browserAccountHere(env.identities));
+const here = browserAccountHere(env.identities);
+const account = createAccountDesk(browserAccountPage(), here);
 // This page's one statement cache: the owner's links and an account-bound share's both draw on it.
 const statements = statementCache(account.account);
-const guest = createGuestDesk({ ...env, statements });
+// "Add to my account": a share bound to the account is written there, as this browser's device.
+const guest = createGuestDesk({ ...env, statements, shares: createShareAdder(account.account, here.name) });
 const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...account.sync.prompts, ...agentActionsDesk, ...createSettingsAccountsDesk(), ...guestsDesk, ...createServerUpdateDesk(), ...terminalsDesk, ...createDesk };
 // The agent rows' account labels (the `accounts` method, accountsChanged) follow the open owner link.
 startAccountLabels();
 /** This load ended a sign-in (accountDesk.ts): main.ts opens the guest's Settings, where it shows. */
 export const signInReturned = account.signInReturned;
+/** How this load's sign-in ended, for the page that shows it itself (accountDesk.ts): the invite
+ *  that waited for it (start.ts takePendingBind). */
+export const signInEnded = account.signInEnded;
 /** What owner access (ownerApproval.ts) works with: this page's account session, its statements and
  *  the browser's key. */
 export const ownerAccess = { account: account.account, statements, identities: env.identities };

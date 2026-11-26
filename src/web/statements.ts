@@ -44,7 +44,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
    if (session !== `${generation}\n${acct}`) { session = `${generation}\n${acct}`; held = drop(held); asking = drop(asking); }
    const mine = { held, asking };
    const h = held.get(hostID);
-   if (h !== undefined && h.expMs - now() >= minLeftMs) return { ...h, live };
+   if (h !== undefined && h.expMs - now() >= minLeftMs) return { ...h, account: acct, live };
    let flight = asking.get(hostID);
    if (flight === undefined) {
     flight = account.statements([hostID], acct).then(reply => {
@@ -60,7 +60,7 @@ export function statementCache(account: Pick<WebAccount, "statements" | "current
    // The newest the service gives, even with less left than asked: it is all there is.
    const got = await untilAborted(flight, signal);
    if (!live()) throw stale();
-   return { ...got, live };
+   return { ...got, account: acct, live };
   },
   drop(hostID, jws) {
    if (held.get(hostID)?.jws === jws) held.delete(hostID);

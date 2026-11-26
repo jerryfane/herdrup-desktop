@@ -65,6 +65,9 @@ export interface Access {
   *  hello carries that account's statement for the host, and the session keeps it fresh. Absent
   *  (older grants) or false: a plain share, this browser's key alone. */
  accountBound?: boolean;
+ /** The HerdrUp account a bound share is bound to: the account of the statement herdr admitted it
+  *  with. Its shares item is written to that account only. */
+ account?: string;
 }
 
 /** The part of the WebSocket API the transport uses, so tests can inject one. */
@@ -471,10 +474,11 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
  try {
   let connected: Session;
   let first: AccountStatement | undefined;
+  // The statement of the hello herdr admitted: a share it binds is bound to its account.
+  let admitted: AccountStatement | undefined;
   for (let attempt = 0; ; attempt++) {
    // A retry stays in the sign-in of the first hello: herdr would bind the invite to another
-   // account for good.
-   if (first !== undefined && !first.live()) throw accountChanged();
+   // account for good (helloStatement).
    const got = statements === undefined ? undefined : await helloStatement(statements, invite.endpoint.hostID, signal, first?.live, accountChanged);
    const pin = first;
    const statement = got === undefined || pin === undefined ? got : { ...got, live: () => pin.live() && got.live() };
@@ -482,9 +486,14 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
    const hello = invite.helloPayload(device, statement?.jws);
    try {
     connected = await openSession(invite.endpoint, identity, hello, signal, options.webSocket ?? browserWebSocket, statement?.live, refusal, pin === undefined ? helloStale : accountChanged);
+    admitted = statement;
     break;
    } catch (error) {
-    if (attempt === 0 && statement !== undefined && freshStatementMayAdmit(error)) { statements?.drop(invite.endpoint.hostID, statement.jws); continue; }
+    // Every statement the host refused as stale or invalid is dropped; a fresh one goes once.
+    if (statement !== undefined && freshStatementMayAdmit(error)) {
+     statements?.drop(invite.endpoint.hostID, statement.jws);
+     if (attempt === 0) continue;
+    }
     throw error;
    } finally {
     hello.fill(0);
@@ -500,7 +509,7 @@ export async function acceptInvite(invite: Invite, identity: StaticKey, device: 
    ownerName: reply.ownerName || invite.ownerName, agentName: reply.agent.name || invite.agentName, agentTarget: reply.agent.target,
    endpoint: invite.endpoint, acceptedAt: new Date(now),
    // Bound when herdr says so: an account-bound session has a statement deadline.
-   ...(statements !== undefined && reply.deadlineUnix > 0 ? { accountBound: true } : {}),
+   ...(admitted !== undefined && reply.deadlineUnix > 0 ? { accountBound: true, account: admitted.account } : {}),
   };
  } finally {
   dispose();
@@ -650,7 +659,6 @@ export function guestLink(access: Access, statements?: StatementSource, relabele
  return {
   endpoint: access.endpoint,
   async hello(signal, earlier) {
-   if (earlier && !earlier()) throw shareSignInChanged();
    const { jws, live } = await helloStatement(source(), hostID, signal, earlier, shareSignInChanged);
    return {
     payload: new TextEncoder().encode(JSON.stringify({ v: 1, guest_id: access.guestID, account: jws })),
@@ -664,11 +672,12 @@ export function guestLink(access: Access, statements?: StatementSource, relabele
  };
 }
 
-/** A hello's statement from source. For a retry (earlier: the attempt before it), a lookup that
- *  fails after that attempt's sign-in ended (the cache's 409 account_changed, say) is that change,
- *  changed(); a cancelled lookup stays cancelled, and one that fails under the same sign-in stays
- *  as it is. */
+/** A hello's statement from source. For a retry (earlier: the attempt before it), none is asked
+ *  for once that attempt's sign-in has ended, and a lookup that fails after it ended (the cache's
+ *  409 account_changed, say) is that change: changed() either way. A cancelled lookup stays
+ *  cancelled, and one that fails under the same sign-in stays as it is. */
 async function helloStatement(source: StatementSource, hostID: string, signal: AbortSignal, earlier: (() => boolean) | undefined, changed: () => GuestError): Promise<AccountStatement> {
+ if (earlier && !earlier()) throw changed();
  try { return await source.get(hostID, HELLO_MIN_LEFT_MS, signal); }
  catch (error) {
   if (earlier && !signal.aborted && !earlier()) throw changed();
@@ -866,8 +875,12 @@ export class GuestTransport {
     break;
    } catch (error) {
     if (error instanceof GuestError && error.kind === "rate_limited") this.#limited();
-    // A refused statement once more with a fresh one: it may have gone stale on the way.
-    if (attempt === 0 && freshStatementMayAdmit(error) && hello?.refused) { hello.refused(); earlier = hello.live; continue; }
+    // A refused statement is dropped, every time; a fresh one goes once: it may have gone stale
+    // on the way.
+    if (freshStatementMayAdmit(error) && hello?.refused) {
+     hello.refused();
+     if (attempt === 0) { earlier = hello.live; continue; }
+    }
     throw error;
    }
   }
