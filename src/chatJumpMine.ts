@@ -9,13 +9,6 @@ export function isMine(entry: Entry): boolean {
   return entry.kind === "user" && entry.author !== "guest" && entry.origin !== "other";
 }
 
-/** Whose view has the arrow: the owner's, on the desktop (not a guest) or in the owner's browser
- *  over an owner link to a host that records its prompts as the owner's (`ownerOrigin`, from the
- *  pong that opened Chat: GuestChat, web/desk.ts guestChatAvailable); a guest's never. */
-export function showsJumpMine(guest: boolean, ownerOrigin: boolean): boolean {
-  return !guest || ownerOrigin;
-}
-
 /** The owner's prompt closest above the view's top edge: the last of `rows` (in transcript
  *  order, each with its top in scroll coordinates) that starts above `viewTop`. A prompt the
  *  previous tap left at the top of the view, or below it, is not above it. */
