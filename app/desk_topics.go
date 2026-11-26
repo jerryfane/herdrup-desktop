@@ -36,11 +36,12 @@ const (
 //go:embed topics_retry.json
 var topicsRetryJSON []byte
 
-// topicsRetry is the wait before the open Inbox asks again after a list that
-// failed for a passing reason (topics_unreachable, a timeout, a dropped call)
-// or a capability that couldn't be read: iOS TopicsDiscoveryBackoff, the last
-// one repeating. topics_retry.json holds it in seconds for this desk and the
-// web desk (src/web/desk.ts). Tests replace it.
+// topicsRetry is the wait before Topics on screen or the open Inbox asks
+// again after a list that failed for a passing reason (topics_unreachable, a
+// timeout, a dropped call) or a capability that couldn't be read, unless the
+// poll comes sooner (topicsScheduleLocked): iOS TopicsDiscoveryBackoff, the
+// last one repeating. topics_retry.json holds it in seconds for this desk and
+// the web desk (src/web/desk.ts). Tests replace it.
 var topicsRetry = func() []time.Duration {
 	var secs []int
 	if err := json.Unmarshal(topicsRetryJSON, &secs); err != nil || len(secs) == 0 {
@@ -101,10 +102,11 @@ func withLists(u TopicsUpdate) TopicsUpdate {
 	return u
 }
 
-// topicsState is one view's topics watch: the last list and the follower
-// that keeps it current while Topics shows, or while the Inbox (the chat)
-// is open on an agent whose suggestions are served (iOS ChatView follows
-// the list then, so a listed suggestion shows before its transcript entry).
+// topicsState is one view's topics watch: the last list, the follower that
+// keeps it current while Topics shows, or while the Inbox (the chat) is open
+// on an agent whose suggestions are served (iOS ChatView follows the list
+// then, so a listed suggestion shows before its transcript entry), and the
+// one next list read (topicsScheduleLocked).
 type topicsState struct {
 	mu      sync.Mutex
 	last    TopicsUpdate
@@ -115,13 +117,19 @@ type topicsState struct {
 	again   bool
 	// settled: the newest read is the agent's word: a list with a known
 	// suggestions capability, or a refusal for good (topicsNotOffered).
-	// Until then the open Inbox asks again on topicsRetry's schedule.
+	// Until then the list is asked again on topicsRetry's schedule.
 	settled bool
-	retry   *time.Timer
-	// retryOnClose stops retry when the view closes, so a closed view holds
-	// no timer.
-	retryOnClose func() bool
-	retries      int
+	// retries counts the reads since the last that settled.
+	retries int
+	// poll is the follower's pace while it follows: topicsBackstop behind
+	// the owner's event stream, topicsGuestPoll for a guest or a server that
+	// refuses the subscription.
+	poll time.Duration
+	// next is the one next list read and nextAt when it fires; nextOnClose
+	// stops it when the view closes, so a closed view holds no timer.
+	next        *time.Timer
+	nextAt      time.Time
+	nextOnClose func() bool
 	// asOf is when the agent last answered the list shown, as a herdr that
 	// serves the list from its cache says (as_of_unix_ms; 0 when unsaid).
 	asOf uint64
@@ -202,140 +210,123 @@ func (d *Desk) TopicsFollowInbox(token string, open bool) error {
 	return nil
 }
 
-// stopRetry drops the Inbox's retry timer and its hook on the view's
-// close. t.mu is held.
-func (t *topicsState) stopRetry() {
-	if t.retry != nil {
-		t.retry.Stop()
-		t.retry = nil
+// stopNext drops the next list read and its hook on the view's close. t.mu
+// is held.
+func (t *topicsState) stopNext() {
+	if t.next != nil {
+		t.next.Stop()
+		t.next = nil
 	}
-	if t.retryOnClose != nil {
-		t.retryOnClose()
-		t.retryOnClose = nil
+	if t.nextOnClose != nil {
+		t.nextOnClose()
+		t.nextOnClose = nil
 	}
 }
 
 // topicsWatch starts the follower when Topics shows or the Inbox is open on
-// served suggestions, and stops it when neither holds. Topics on screen or
-// an open Inbox whose newest read didn't settle (topics_unreachable on a
-// moment's miss, topics_timeout when omp didn't answer in time; herdr #520
-// retries both) asks again after a backoff, keeping the list.
+// served suggestions, and stops it when neither holds; then it schedules the
+// next list read (topicsScheduleLocked).
 func (d *Desk) topicsWatch(v *interaction) {
 	t := &v.topics
 	t.mu.Lock()
-	want := t.shown || (t.inbox && t.last.SuggestionsServed)
-	retry := (t.shown || t.inbox) && !t.settled && v.ctx.Err() == nil
+	defer t.mu.Unlock()
+	want := (t.shown || (t.inbox && t.last.SuggestionsServed)) && v.ctx.Err() == nil
 	switch {
-	case retry && t.retry == nil:
-		wait := topicsRetry[min(t.retries, len(topicsRetry)-1)]
-		t.retries++
-		// Each callback acts only on its own retry: one that fired while
-		// the Inbox rearmed waits on t.mu and must not stop the new one.
-		var timer *time.Timer
-		timer = time.AfterFunc(wait, func() {
-			t.mu.Lock()
-			if t.retry != timer {
-				t.mu.Unlock()
-				return
-			}
-			t.stopRetry()
-			t.mu.Unlock()
-			if v.ctx.Err() == nil {
-				d.topicsRead(v)
-			}
-		})
-		t.retry = timer
-		t.retryOnClose = context.AfterFunc(v.ctx, func() {
-			t.mu.Lock()
-			if t.retry == timer {
-				t.stopRetry()
-			}
-			t.mu.Unlock()
-		})
-	case !retry && t.retry != nil:
-		t.stopRetry()
-	}
-	if want == (t.cancel != nil) || v.ctx.Err() != nil {
-		t.mu.Unlock()
-		return
-	}
-	if !want {
+	case want && t.cancel == nil:
+		ctx, cancel := context.WithCancel(v.ctx)
+		t.cancel, t.poll = cancel, topicsGuestPoll
+		if !v.Guest {
+			t.poll = topicsBackstop
+			go d.followTopics(ctx, v)
+		}
+	case !want && t.cancel != nil:
 		t.cancel()
-		t.cancel = nil
-		t.mu.Unlock()
-		return
+		t.cancel, t.poll = nil, 0
 	}
-	ctx, cancel := context.WithCancel(v.ctx)
-	t.cancel = cancel
-	t.mu.Unlock()
-	go d.followTopics(ctx, v)
+	d.topicsScheduleLocked(v)
 }
 
-// followTopics: a guest polls every topicsGuestPoll; the owner follows
-// agent.topics.changed for this pane and polls every topicsBackstop. A
-// server that refuses the subscription is polled at the guest's pace.
-func (d *Desk) followTopics(ctx context.Context, v *interaction) {
-	poll := topicsGuestPoll
-	if !v.Guest {
-		events := make(chan struct{}, 1)
-		go func() {
-			err := v.client.Subscribe(ctx, engine.SubscribeOptions{
-				Subscriptions: []herdrapi.Subscription{{Value: herdrapi.SubscriptionAgentTopicsChanged{}}},
-				NoList:        true,
-			}, func(e engine.Event) {
-				if e.Kind != engine.EventLine || e.Line == nil || strings.ReplaceAll(e.Line.Event, ".", "_") != "agent_topics_changed" {
-					return
-				}
-				var change herdrapi.EventDataAgentTopicsChanged
-				if json.Unmarshal(e.Line.Data, &change) != nil || change.PaneID != v.PaneID {
-					return
-				}
-				// reason "listed" (herdr #520) names no topic: herdr's list
-				// changed, so the read below is all it asks for.
-				if change.TopicID != "" {
-					d.topicsChangedTopic(v, change.TopicID)
-				}
-				select {
-				case events <- struct{}{}:
-				default:
-				}
-			})
-			if err != nil && ctx.Err() == nil {
-				close(events)
-			}
-		}()
-		poll = topicsBackstop
-		timer := time.NewTimer(poll)
-		defer timer.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case _, open := <-events:
-				if !open {
-					d.pollTopics(ctx, v, topicsGuestPoll)
-					return
-				}
-				d.topicsRead(v)
-			case <-timer.C:
-				d.topicsRead(v)
-				timer.Reset(poll)
-			}
+// topicsScheduleLocked arms the one next list read: at the follower's pace
+// (poll) while it follows, and, while Topics shows or the Inbox is open and
+// the newest read didn't settle (topics_unreachable on a moment's miss,
+// topics_timeout when omp didn't answer in time; herdr #520 retries both),
+// after topicsRetry's backoff, whichever comes first. A read that lands
+// meanwhile (an event, a refresh) keeps an earlier deadline, and the list
+// shown stays. t.mu is held.
+func (d *Desk) topicsScheduleLocked(v *interaction) {
+	t := &v.topics
+	wait := t.poll
+	if (t.shown || t.inbox) && !t.settled {
+		if retry := topicsRetry[min(max(t.retries-1, 0), len(topicsRetry)-1)]; wait == 0 || retry < wait {
+			wait = retry
 		}
 	}
-	d.pollTopics(ctx, v, poll)
-}
-
-func (d *Desk) pollTopics(ctx context.Context, v *interaction, every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
+	if wait == 0 || v.ctx.Err() != nil {
+		t.stopNext()
+		return
+	}
+	at := time.Now().Add(wait)
+	if t.next != nil && !at.Before(t.nextAt) {
+		return
+	}
+	t.stopNext()
+	// Each callback acts only on its own timer: one that fired while a
+	// sooner one replaced it waits on t.mu and must not stop the new one.
+	var timer *time.Timer
+	timer = time.AfterFunc(wait, func() {
+		t.mu.Lock()
+		if t.next != timer {
+			t.mu.Unlock()
 			return
-		case <-ticker.C:
+		}
+		t.stopNext()
+		t.mu.Unlock()
+		if v.ctx.Err() == nil {
 			d.topicsRead(v)
 		}
+	})
+	t.next, t.nextAt = timer, at
+	t.nextOnClose = context.AfterFunc(v.ctx, func() {
+		t.mu.Lock()
+		if t.next == timer {
+			t.stopNext()
+		}
+		t.mu.Unlock()
+	})
+}
+
+// followTopics follows agent.topics.changed for the owner's pane: each
+// change reads the list (the next read stays scheduled behind it, at
+// topicsBackstop, for a missed event). A server that refuses the
+// subscription is polled at the guest's pace.
+func (d *Desk) followTopics(ctx context.Context, v *interaction) {
+	err := v.client.Subscribe(ctx, engine.SubscribeOptions{
+		Subscriptions: []herdrapi.Subscription{{Value: herdrapi.SubscriptionAgentTopicsChanged{}}},
+		NoList:        true,
+	}, func(e engine.Event) {
+		if e.Kind != engine.EventLine || e.Line == nil || strings.ReplaceAll(e.Line.Event, ".", "_") != "agent_topics_changed" {
+			return
+		}
+		var change herdrapi.EventDataAgentTopicsChanged
+		if json.Unmarshal(e.Line.Data, &change) != nil || change.PaneID != v.PaneID {
+			return
+		}
+		// reason "listed" (herdr #520) names no topic: herdr's list
+		// changed, so the read is all it asks for.
+		if change.TopicID != "" {
+			d.topicsChangedTopic(v, change.TopicID)
+		}
+		d.topicsRead(v)
+	})
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	t := &v.topics
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cancel != nil {
+		t.poll = topicsGuestPoll
+		d.topicsScheduleLocked(v)
 	}
 }
 
@@ -419,6 +410,8 @@ func (d *Desk) topicsReadOnce(v *interaction) {
 	}
 	if t.settled {
 		t.retries = 0
+	} else {
+		t.retries++
 	}
 	t.last = u
 	t.mu.Unlock()

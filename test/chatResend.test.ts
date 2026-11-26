@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { reconcileOutgoing, sendShown, type Outgoing } from "../src/chatPoll";
-import { cursorExpired, groupTranscript, liveEntries, mergeNewest, mergeTranscript, readLive, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
+import { cursorExpired, groupTranscript, liveEntries, mergeNewest, mergeOlder, mergeTranscript, readLive, replayUnknown, rereadMerge, type Entry, type TranscriptPage } from "../src/interactionModel";
 import { HerdrAPIError } from "../src/webguest/errors";
 
 // Captured 2026-11-15 from a live host (herdr 0.9.5) for enyo, shared with a guest; ids and
@@ -200,3 +200,29 @@ test("a live read whose cursor herdr expired starts over from the newest page", 
  await expect(readLive(null, () => ({ entries: [], hasOlder: false }), async () => { throw new Error(EXPIRED); })).rejects.toThrow("cursor_expired");
  expect([cursorExpired(new Error(`Chat: ${EXPIRED}`)), cursorExpired(new Error("herdr: owner_forbidden: cursor_expired")), cursorExpired("cursor_expired")]).toEqual([true, false, false]);
 });
+// #555: herdr may leave relay_entries off a fallback page (the handover as the user entry it was
+// sent as) and set it on a later page of the same session (a relay entry), or the other way. A
+// page that shows handovers otherwise than the held history drops it and starts over from the
+// newest page, in both directions; an older page in the other representation is never merged.
+const asUser: Entry[] = [{ kind: "user", id: "u1", ts_ms: 1, text: "<irc from=\"inbox\">look at this</irc>" }, { kind: "reply", id: "r1", ts_ms: 2, text: "ok" }];
+const asRelay: Entry[] = [{ kind: "relay", id: "u1", ts_ms: 1, from: "Inbox", direction: "to_topic", text: "look at this" }, { kind: "reply", id: "r1", ts_ms: 2, text: "ok" }];
+const later: Entry[] = [{ kind: "reply", id: "r2", ts_ms: 3, text: "more" }];
+for (const [name, heldRelays, held, newest] of [["plain to relay", false, asUser, asRelay], ["relay to plain", true, asRelay, asUser]] as const) {
+ test(`a live read starts over from the newest page when the handovers change ${name}`, async () => {
+  const reads: string[] = [];
+  const pages: Record<string, TranscriptPage> = {
+   a1: { after: "a2", session_id: "s", entries: later, resent: [], relay_entries: !heldRelays },
+   "": { after: "a2", session_id: "s", entries: [...newest, ...later], relay_entries: !heldRelays },
+  };
+  const live = await readLive({ after: "a1", session_id: "s", entries: held, relay_entries: heldRelays }, () => ({ entries: held, hasOlder: true }), async after => { reads.push(after); return pages[after]!; });
+  expect(reads).toEqual(["a1", ""]);
+  expect(live!.reset).toBe(true);
+  expect(live!.entries).toEqual([...newest, ...later]);
+ });
+
+ test(`an older page is not merged when the handovers change ${name}`, () => {
+  const chat: TranscriptPage = { after: "a2", session_id: "s", entries: later, relay_entries: !heldRelays };
+  expect(mergeOlder(chat, later, { after: "", before: "b1", session_id: "s", entries: held, relay_entries: heldRelays })).toBeNull();
+  expect(mergeOlder(chat, later, { after: "", before: "b1", session_id: "s", entries: newest, relay_entries: !heldRelays })).toEqual([...newest, ...later]);
+ });
+}

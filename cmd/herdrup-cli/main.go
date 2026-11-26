@@ -109,7 +109,7 @@ var calls = map[string]handler{
 	"guest.invite.create": typed((*engine.Client).GuestInviteCreate),
 	"guest.list":          typed((*engine.Client).GuestList),
 	"guest.revoke":        typed((*engine.Client).GuestRevoke),
-	"guest.update":        typed((*engine.Client).GuestUpdate),
+	"guest.update":        typed((*engine.Client).GuestShareGram),
 	"guest.audit":         typed((*engine.Client).GuestAudit),
 }
 

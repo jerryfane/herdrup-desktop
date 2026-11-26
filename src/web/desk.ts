@@ -312,12 +312,15 @@ interface Active {
 }
 
 interface MountedView extends GuestView {
- /** The agent's Topics (desk_topics.go topicsState): the last list and the poll while shown. */
+ /** The agent's Topics (desk_topics.go topicsState): the last list and the next read while shown. */
  topics: {
-  last: TopicsUpdate; poll: ReturnType<typeof setInterval> | null; reading: Promise<void> | null; again: boolean; shown: boolean; inbox: boolean;
+  last: TopicsUpdate; reading: Promise<void> | null; again: boolean; shown: boolean; inbox: boolean;
   /** desk_topics.go settled: the newest read is the agent's word (a list with a known suggestions
-   *  capability, or a refusal for good); until then the open Inbox asks again after retry's wait. */
-  settled: boolean; retry: ReturnType<typeof setTimeout> | null; retries: number;
+   *  capability, or a refusal for good); until then Topics on screen or the open Inbox asks again
+   *  after retryMs's wait for the retries-th read that didn't settle. */
+  settled: boolean; retries: number;
+  /** desk_topics.go next/nextAt: the one next list read (watchTopics) and when it fires. */
+  next: ReturnType<typeof setTimeout> | null; nextAt: number;
   /** desk_topics.go asOf: when the agent last answered the list shown (a cached list's
    *  as_of_unix_ms; 0 when unsaid). */
   asOf: number;
@@ -328,6 +331,10 @@ interface MountedView extends GuestView {
  sending: boolean;
  terminal: { id: string; life: AbortController; input: Promise<void>; failed: string | null } | null;
 }
+
+/** Whose conversation an agent.transcript page is: the Inbox's, one of its topics' or one of its
+ *  subagents' (createGuestDesk transcript). */
+type Conversation = { kind: "inbox" } | { kind: "topic"; topic: string } | { kind: "subagent"; subagent: string };
 
 export function createGuestDesk(env: DeskEnv) {
  const now = env.now ?? Date.now;
@@ -392,6 +399,31 @@ export function createGuestDesk(env: DeskEnv) {
   return signal ? AbortSignal.any([v.life.signal, signal]) : v.life.signal;
  }
 
+ /** desk_interaction.go transcript: one agent.transcript page of the conversation (the Inbox's, a
+  *  topic's or a subagent's) and its cursors; held_from goes with after (herdr #430). The
+  *  handovers between the Inbox and its topics come as `relay` entries (herdr #521, chatRelay.ts)
+  *  where the host's cached pong serves them; an older herdr keeps today's user/note shape, and a
+  *  subagent's page has none. */
+ async function transcript(token: string, conversation: Conversation, after: string, before: string, heldFrom: string): Promise<string> {
+  const v = viewOf(token);
+  const params: Record<string, string | boolean> = { target: v.paneID };
+  if (conversation.kind === "topic") {
+   // The cached pong (engine gate), not a ping per read: each guest read is a relay connect.
+   try { await v.active.client.gate("agent.transcript", "agent_transcript_topic", within(v)); }
+   catch (error) { throw error instanceof ErrUnsupported ? new Error("This server can't show a topic's conversation.") : error; }
+   params.topic = conversation.topic;
+  }
+  if (conversation.kind === "subagent") params.subagent = conversation.subagent;
+  if (after !== "") { params.after = after; params.held_from = heldFrom; }
+  if (before !== "") params.before = before;
+  if (conversation.kind !== "subagent" && await v.active.client.supports("transcript_relay_entries", within(v))) params.relay_entries = true;
+  let page: unknown;
+  try { page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v)); }
+  catch (error) { throw conversation.kind === "topic" && error instanceof HerdrAPIError && error.code === "topic_not_found" ? new Error("This topic's conversation can't be found.") : error; }
+  viewOf(token);
+  return JSON.stringify(untagged(page));
+ }
+
  /** One agent.topics.* call; a refusal comes back in the app's words (topicsProblem). */
  async function topicsCall<R>(v: MountedView, method: string, params: Record<string, string>, tag: string): Promise<R> {
   try {
@@ -403,22 +435,23 @@ export function createGuestDesk(env: DeskEnv) {
   }
  }
 
- /** desk_topics.go topicsWatch: the poll runs while Topics shows, or while the Inbox is open on an
-  *  agent whose suggestions are served; Topics on screen or an open Inbox whose newest read didn't
-  *  settle (topics_unreachable or topics_timeout, both retryable in herdr #520) asks again, keeping
-  *  the list. */
+ /** desk_topics.go topicsWatch and topicsScheduleLocked: one next list read, at the poll's pace
+  *  while Topics shows or the Inbox is open on an agent whose suggestions are served, and, while
+  *  Topics shows or the Inbox is open and the newest read didn't settle (topics_unreachable or
+  *  topics_timeout, both retryable in herdr #520), after retryMs's backoff, whichever comes first.
+  *  A read that lands meanwhile keeps an earlier deadline, and the list shown stays. */
  function watchTopics(v: MountedView) {
   const t = v.topics;
-  const want = !v.life.signal.aborted && (t.shown || (t.inbox && t.last.suggestionsServed));
-  const retry = !v.life.signal.aborted && (t.shown || t.inbox) && !t.settled;
-  if (retry && t.retry === null) {
-   const wait = retryMs[Math.min(t.retries, retryMs.length - 1)]!;
-   t.retries++;
-   t.retry = setTimeout(() => { t.retry = null; if (!v.life.signal.aborted) readTopics(v); }, wait);
-  } else if (!retry && t.retry !== null) { clearTimeout(t.retry); t.retry = null; }
-  if (want === (t.poll !== null)) return;
-  if (!want) { clearInterval(t.poll!); t.poll = null; return; }
-  t.poll = setInterval(() => { if (v.life.signal.aborted) { clearInterval(t.poll!); t.poll = null; return; } readTopics(v); }, TOPICS_GUEST_POLL_MS);
+  const alive = !v.life.signal.aborted;
+  const poll = alive && (t.shown || (t.inbox && t.last.suggestionsServed)) ? TOPICS_GUEST_POLL_MS : 0;
+  const retry = alive && (t.shown || t.inbox) && !t.settled ? retryMs[Math.min(Math.max(t.retries - 1, 0), retryMs.length - 1)]! : 0;
+  const wait = poll && retry ? Math.min(poll, retry) : poll || retry;
+  const at = Date.now() + wait;
+  if (wait !== 0 && t.next !== null && at >= t.nextAt) return;
+  if (t.next !== null) { clearTimeout(t.next); t.next = null; }
+  if (wait === 0) return;
+  t.nextAt = at;
+  t.next = setTimeout(() => { t.next = null; if (!v.life.signal.aborted) readTopics(v); }, wait);
  }
 
  /** desk_topics.go topicsRead: one list read at a time, one more after it when asked meanwhile. */
@@ -462,7 +495,7 @@ export function createGuestDesk(env: DeskEnv) {
      }
     }
     if (v.life.signal.aborted) return;
-    if (t.settled) t.retries = 0;
+    if (t.settled) t.retries = 0; else t.retries++;
     t.last = u;
     emit("topicsChanged", u);
     watchTopics(v);
@@ -474,8 +507,7 @@ export function createGuestDesk(env: DeskEnv) {
   const v = mounted;
   if (!v) return;
   mounted = null;
-  if (v.topics.poll) clearInterval(v.topics.poll);
-  if (v.topics.retry) clearTimeout(v.topics.retry);
+  if (v.topics.next !== null) clearTimeout(v.topics.next);
   v.life.abort(new Error("agent view changed; request was not sent"));
   setView(null);
  }
@@ -495,7 +527,7 @@ export function createGuestDesk(env: DeskEnv) {
   const life = new AbortController();
   const token = view.token;
   const v: MountedView = { token, paneID: view.paneID, signal: life.signal, active: l, view, shareDetails, life, sending: false, terminal: null,
-   topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, poll: null, reading: null, again: false, shown: false, inbox: false, settled: false, retry: null, retries: 0, asOf: 0 } };
+   topics: { last: { token, topics: [], offered: false, loaded: false, suggestions: [], suggestionsServed: false, requestedMs: 0 }, reading: null, again: false, shown: false, inbox: false, settled: false, retries: 0, next: null, nextAt: 0, asOf: 0 } };
   l.life.signal.addEventListener("abort", () => life.abort(), { once: true });
   mounted = v;
   setView(v);
@@ -773,19 +805,7 @@ export function createGuestDesk(env: DeskEnv) {
   // ---- Chat (desk_interaction.go, desk_guest_answers.go) ----
 
   async chatTranscript(token: string, after: string, before: string, subagent: string, heldFrom: string): Promise<string> {
-   const v = viewOf(token);
-   const params: Record<string, string | boolean> = { target: v.paneID };
-   // held_from goes with after (desk_interaction.go ChatTranscript, herdr #430).
-   if (after !== "") { params.after = after; params.held_from = heldFrom; }
-   if (before !== "") params.before = before;
-   if (subagent !== "") params.subagent = subagent;
-   // Handovers between the Inbox and its topics as `relay` entries (herdr #521, chatRelay.ts),
-   // only where the host's cached pong serves them: an older herdr keeps today's user/note shape.
-   // A subagent's page has none.
-   else if (await v.active.client.supports("transcript_relay_entries", within(v))) params.relay_entries = true;
-   const page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v));
-   viewOf(token);
-   return JSON.stringify(untagged(page));
+   return transcript(token, subagent === "" ? { kind: "inbox" } : { kind: "subagent", subagent }, after, before, heldFrom);
   },
 
   // ---- Topics (desk_topics.go, herdr #475): a guest polls; the gate has no event stream ----
@@ -816,20 +836,8 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   async topicTranscript(token: string, topic: string, after: string, before: string, heldFrom: string): Promise<string> {
-   const v = viewOf(token);
    if (topic === "") throw new Error("no topic");
-   // The cached pong (engine gate), not a ping per read: each guest read is a relay connect.
-   try { await v.active.client.gate("agent.transcript", "agent_transcript_topic", within(v)); }
-   catch (error) { throw error instanceof ErrUnsupported ? new Error("This server can't show a topic's conversation.") : error; }
-   const params: Record<string, string | boolean> = { target: v.paneID, topic };
-   if (after !== "") { params.after = after; params.held_from = heldFrom; }
-   if (before !== "") params.before = before;
-   if (await v.active.client.supports("transcript_relay_entries", within(v))) params.relay_entries = true;
-   let page: unknown;
-   try { page = await v.active.client.call("agent.transcript", params, "agent_transcript", "agent_transcript", within(v)); }
-   catch (error) { throw error instanceof HerdrAPIError && error.code === "topic_not_found" ? new Error("This topic's conversation can't be found.") : error; }
-   viewOf(token);
-   return JSON.stringify(untagged(page));
+   return transcript(token, { kind: "topic", topic }, after, before, heldFrom);
   },
 
   async topicsNew(token: string, title: string, message: string): Promise<string> {

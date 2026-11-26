@@ -358,9 +358,19 @@ func (c *Client) GuestRevoke(ctx context.Context, p herdrapi.GuestRevokeParams) 
 	return call[herdrapi.ResponseResultGuestRevoked](ctx, c, "guest.revoke", p)
 }
 
-// GuestUpdate is guest.update.
-func (c *Client) GuestUpdate(ctx context.Context, p herdrapi.GuestUpdateParams) (herdrapi.ResponseResultGuestUpdated, error) {
-	return call[herdrapi.ResponseResultGuestUpdated](ctx, c, "guest.update", p)
+// GuestShareGramParams picks the share whose Gram sharing changes: guest
+// GuestID on Machine (nil: the server itself). The tags are guest.update's.
+type GuestShareGramParams struct {
+	Machine   *string `json:"machine,omitempty"`
+	GuestID   string  `json:"guest_id"`
+	ShareGram bool    `json:"share_gram"`
+}
+
+// GuestShareGram is guest.update {guest_id, share_gram}: share the agent's
+// Gram with that guest or stop. It answers guest_updated; a relabel
+// (machine_label) is GuestRelabel's, which answers guest_relabeled.
+func (c *Client) GuestShareGram(ctx context.Context, p GuestShareGramParams) (herdrapi.ResponseResultGuestUpdated, error) {
+	return call[herdrapi.ResponseResultGuestUpdated](ctx, c, "guest.update", herdrapi.GuestUpdateParams{Machine: p.Machine, GuestID: &p.GuestID, ShareGram: &p.ShareGram})
 }
 
 // GuestRelabel is guest.update {machine_label} without a scope (herdr #519):

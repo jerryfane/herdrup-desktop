@@ -13,7 +13,8 @@ import (
 // transcript_relay_entries, and then answers a handover as a relay entry. The
 // Inbox's and a topic's pages ask for it there; a subagent's page and a herdr
 // without the flag never do. The page reaches chatRelay.ts with herdr's own
-// field names.
+// field names, and with herdr's relay_entries flag, which tells the page's
+// history apart from one built without relays (#555).
 func TestTranscriptAsksForRelayEntriesOnlyWhereHerdrServesThem(t *testing.T) {
 	relay := map[string]any{"kind": "relay", "id": "r1", "ts_ms": float64(1), "from": "Board pack", "topic_id": "t1", "direction": "to_inbox", "text": "The intro is drafted."}
 	note := map[string]any{"kind": "note", "id": "r1", "ts_ms": float64(1), "source": "irc", "title": "Board pack", "body": "<irc>\nThe intro is drafted."}
@@ -51,7 +52,8 @@ func TestTranscriptAsksForRelayEntriesOnlyWhereHerdrServesThem(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := d.TopicTranscript(context.Background(), "view", "t1", "", "", ""); err != nil {
+		topic, err := d.TopicTranscript(context.Background(), "view", "t1", "", "", "")
+		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := d.ChatTranscript(context.Background(), "view", "", "", "sub-1", ""); err != nil {
@@ -69,6 +71,18 @@ func TestTranscriptAsksForRelayEntriesOnlyWhereHerdrServesThem(t *testing.T) {
 		}
 		if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 			t.Fatalf("served %v: relay_entries inbox/topic/subagent = %v, want %v", served, got, want)
+		}
+		// The flag as herdr set it: true on a page showing relays, absent on one without.
+		for name, raw := range map[string]string{"inbox": inbox, "topic": topic} {
+			var p struct {
+				RelayEntries *bool `json:"relay_entries"`
+			}
+			if err := json.Unmarshal([]byte(raw), &p); err != nil {
+				t.Fatal(err)
+			}
+			if served && (p.RelayEntries == nil || !*p.RelayEntries) || !served && p.RelayEntries != nil {
+				t.Fatalf("served %v: the %s page's relay_entries = %v, want herdr's", served, name, p.RelayEntries)
+			}
 		}
 		var page struct {
 			Entries []map[string]any `json:"entries"`

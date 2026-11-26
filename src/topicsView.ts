@@ -9,7 +9,7 @@ import { errorText } from "./errors";
 import { ConversationColumn } from "./conversationColumn";
 import { ChatTail, placeRows } from "./chatTail";
 import { chatPollDelay, reconcileOutgoing, type Outgoing } from "./chatPoll";
-import { currentPlan, cursorExpired, groupTranscript, mergeTranscript, readLive, rowShown, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
+import { currentPlan, cursorExpired, groupTranscript, mergeOlder, readLive, rowShown, type ChatRow, type Entry, type PlanItem, type TranscriptPage, type TranscriptSubagent } from "./interactionModel";
 import { rowTime } from "./gramDates";
 import { activityMs, canFold, foldShortcutLabel, listedTopics, messageTooLong, searchTopics, seededTopics, statusDot, statusText, topicSections, topicsLayout, topicTitle, topicWorking, type TopicInfo } from "./topicsModel";
 import { createLabel, isTicked, keptUnticks, messagesText, ORGANISE_WAIT_MS, organiseNote, organiseOver, proposalsHeading, settlePlan, suggestionTitle, tickedCount } from "./topicSuggestionsModel";
@@ -658,7 +658,8 @@ class TopicChat {
  private busy = false;
  private again = false;
  /** The next live read starts over from the newest page (readLive with no held page), dropping
-  *  the topic's history and cursors: Refresh, or an older page whose cursor herdr expired. */
+  *  the topic's history and cursors: Refresh, an older page whose cursor herdr expired, or one
+  *  that showed handovers otherwise than the held history (mergeOlder). */
  private restart = false;
  private active = false;
  private disposed = false;
@@ -795,9 +796,12 @@ class TopicChat {
    const measure = () => { height = this.messages.scrollHeight; follow = this.messages.scrollHeight - this.messages.scrollTop - this.messages.clientHeight <= 8; };
    if (older) {
     const next: TranscriptPage = JSON.parse(await Desk.topicTranscript(this.host.token, this.topic.topic_id, "", this.before!, ""));
-    if (this.disposed || next.session_id !== session || this.page?.session_id !== session) return;
+    const newest = this.page;
+    if (this.disposed || !newest || next.session_id !== session || newest.session_id !== session) return;
+    const merged = mergeOlder(newest, this.entries, next);
+    if (!merged) { this.restart = this.again = true; return; }
     measure();
-    this.entries = mergeTranscript(this.entries, next.entries ?? [], { older: true });
+    this.entries = merged;
     this.before = next.before;
    } else {
     // The chat's own live read (readLive): an after page that may re-send unloaded history is

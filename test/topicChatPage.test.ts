@@ -381,6 +381,68 @@ test("an older Inbox page whose cursor herdr expired stops paging; the Inbox sta
  expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
 });
 
+// #555: herdr may leave relay_entries off a fallback page and set it on a later page of the same
+// session, or the other way. The chat whose handovers change representation starts over from its
+// newest page (readLive(null), as for an expired cursor), the Inbox's and a topic's, both ways.
+function handover(relays: boolean, direction: "to_topic" | "to_inbox") {
+ const from = direction === "to_topic" ? "Inbox" : TOPIC.title;
+ return relays
+  ? relay("u1", from, direction, "Draft the intro.", direction === "to_inbox" ? TOPIC.topicID : undefined)
+  : { kind: "user", id: "u1", ts_ms: Date.now() - 1000, text: `<irc>\nAsked by ${from} (\`Main\`):\n\nDraft the intro.` };
+}
+function handoverPage(relays: boolean, direction: "to_topic" | "to_inbox", over: Record<string, unknown> = {}) {
+ return topicPage({ entries: [handover(relays, direction), { kind: "reply", id: "r1", ts_ms: Date.now() - 500, text: "On it." }], ...(relays ? { relay_entries: true } : {}), ...over });
+}
+for (const [name, first, then] of [["plain to relay", false, true], ["relay to plain", true, false]] as const) {
+ const shown = (node: FakeElement) => [withClass(node, "relay").length, withClass(node, "user").length];
+ test(`a topic whose handovers change ${name} starts over from its newest page`, async () => {
+  const { transcript, token } = await openTopic(handoverPage(first, "to_topic"));
+  expect(shown(transcript)).toEqual(first ? [1, 0] : [0, 1]);
+  const reads: unknown[] = [];
+  answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown) => {
+   reads.push(after);
+   return after ? topicPage({ resent: [], ...(then ? { relay_entries: true } : {}) }) : handoverPage(then, "to_topic");
+  };
+  emit("topics:changed", { token, topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "idle", turns: 0, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 1 }],
+   offered: true, loaded: true, changed: TOPIC.topicID, suggestions: [], suggestionsServed: false, requestedMs: Date.now() });
+  await settle();
+  expect(reads).toEqual(["a1", ""]);
+  expect(shown(transcript)).toEqual(then ? [1, 0] : [0, 1]);
+ });
+
+ test(`the Inbox whose handovers change ${name} starts over from its newest page`, async () => {
+  // A session of its own: the Inbox remembers the agent's chat across openings.
+  const session = { session_id: `s555-${name}` };
+  await openPage("chat", topicPage(), handoverPage(first, "to_inbox", session));
+  expect(shown(inboxTranscript())).toEqual(first ? [1, 0] : [0, 1]);
+  page.closeInteraction();
+  // Reopened, the Inbox reads on from the chat it remembers (its after cursor).
+  const reads: unknown[] = [];
+  await openPage("chat", topicPage(), (_token: unknown, after: unknown) => {
+   reads.push(after);
+   return after ? topicPage({ ...session, resent: [], ...(then ? { relay_entries: true } : {}) }) : handoverPage(then, "to_inbox", session);
+  });
+  expect(reads).toEqual(["a1", ""]);
+  expect(shown(inboxTranscript())).toEqual(then ? [1, 0] : [0, 1]);
+ });
+}
+
+// #555: an older page in the other representation than the topic's newest page is not merged
+// above it; the topic starts over from its newest page.
+test("a topic's older page that shows handovers otherwise is not merged", async () => {
+ const newest = topicPage({ before: "b1", relay_entries: true, entries: [relay("u2", "Inbox", "to_topic", "Now this.")] });
+ const { chat, transcript } = await openTopic(newest);
+ const reads: string[] = [];
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown, before: unknown) => {
+  reads.push(`${after}|${before}`);
+  return before ? topicPage({ entries: [handover(false, "to_topic")] }) : newest;
+ };
+ withClass(chat, "chat-earlier")[0]!.click();
+ await settle();
+ expect(reads).toEqual(["|b1", "|"]);
+ expect([withClass(transcript, "relay").length, withClass(transcript, "user").length]).toEqual([1, 0]);
+});
+
 // #531: a saved desktop terminal's view (Desk.OpenTerminalView) carried topicSessions null, and the
 // page threw on its length before the terminal mounted.
 test("a saved terminal opens though its view carries no topic sessions", async () => {
