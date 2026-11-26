@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,7 +31,12 @@ func gramDeskFor(t *testing.T, g *fakeherdr.Gram) *Desk {
 		}
 		s.Duplex = g.Duplex
 	})
-	d.cacheDir = t.TempDir()
+	// Under a name filepath.Glob reads as a pattern (#547 review): the cache
+	// takes the path as it is.
+	d.cacheDir = filepath.Join(t.TempDir(), "herdrup-cache-[review]")
+	// Before cacheDir's cleanup, which runs first: nothing downloads into it
+	// once it goes.
+	t.Cleanup(d.Disconnect)
 	return d
 }
 
@@ -204,6 +211,64 @@ func TestGramAttachmentUploadsPostsAndOpensFromTheCache(t *testing.T) {
 	if err := d.GramOpenFile(ctx, "x1"); err == nil || opened != "" {
 		t.Fatalf("opened a program: %v %q", err, opened)
 	}
+	// The downloads go with the connection, moved aside and then deleted.
+	d.Disconnect()
+	if left, _ := os.ReadDir(d.gramCacheBase()); len(left) != 0 {
+		var names []string
+		for _, e := range left {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("left in the download cache after Disconnect: %v", names)
+	}
+}
+
+// #547 review: downloads that cannot move aside (a cache directory that
+// refuses renames) are deleted in place once the owner marker is gone, so a
+// reconnect of the same machine never finds the old attachment.
+func TestDisconnectDropsDownloadsThatCannotMoveAside(t *testing.T) {
+	g := fakeherdr.NewGram("store-1")
+	g.Add(agentMsg("f1", "", false), []byte("the old bytes"))
+	d := gramDeskFor(t, g)
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := st.Machines[st.find(st.Active)]
+	// The machine owns the downloads, as its connection's claim records.
+	if err := os.MkdirAll(d.gramCacheBase(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.gramOwnerPath(), []byte(machineID(m)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d.saveDialog = func(context.Context, string) (string, error) { return filepath.Join(t.TempDir(), "f1"), nil }
+	if err := d.GramSaveFile(ctx, "f1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.gramCache().Cached("f1"); !ok {
+		t.Fatal("the attachment is not in the download cache")
+	}
+	d.mu.Lock()
+	d.gramRename = func(string, string) error { return errors.New("this directory refuses renames") }
+	d.mu.Unlock()
+	d.Disconnect()
+	if _, ok := d.gramCache().Cached("f1"); ok {
+		t.Fatal("the old attachment is still in the download cache after Disconnect")
+	}
+	if owner, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(owner) == machineID(m) {
+		t.Fatal("the owner marker still names the disconnected machine")
+	}
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the reconnect", func() bool { return d.State().Phase == "connected" })
+	if _, ok := d.gramCache().Cached("f1"); ok {
+		t.Fatal("a reconnect of the same machine finds the old attachment")
+	}
 }
 
 // A Chat attachment names its file by Gram message id only: it opens even when Gram has not
@@ -269,6 +334,218 @@ func TestGramSavedCopies(t *testing.T) {
 	}
 	if err := d.GramSetSaved("a1", false); err != nil || len(d.GramSaved()) != 0 {
 		t.Fatalf("unsave: %v %v", err, d.GramSaved())
+	}
+}
+
+// heldRefresh holds a desk's queued Gram refresh, which has its answer (it
+// expires a saved copy's file), before it writes it, until release.
+type heldRefresh struct {
+	release func()
+	// serve stops the server holding head lists.
+	serve func()
+	// disconnected is set once Disconnect returned; late reports a head load
+	// after that.
+	disconnected, late *atomic.Bool
+}
+
+// within waits for c, failing the test after 10 s.
+func within(t *testing.T, what string, c <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// gramDeskWithHeldRefresh connects a desk whose saved copy of a1 has a file,
+// queues a refresh behind a load (it runs on whatever its connection does),
+// and holds it where its answer would expire that file.
+func gramDeskWithHeldRefresh(t *testing.T) (*Desk, heldRefresh) {
+	t.Helper()
+	g := fakeherdr.NewGram("store-1")
+	report := agentMsg("a1", "the report", false)
+	report.File = &herdrapi.GramFileInfo{Name: "report.pdf", Mime: "application/pdf", Size: 3}
+	g.Add(report, []byte("pdf"))
+	// Every head list after the first waits at the server for its answer.
+	asked, answer, ended := make(chan struct{}, 4), make(chan struct{}, 4), make(chan struct{})
+	var heads atomic.Int32
+	g.Fail = func(method string, raw json.RawMessage) *fakeherdr.APIError {
+		var p herdrapi.GramListParams
+		if method != "gram.list" || json.Unmarshal(raw, &p) != nil || p.UnreadOnly || heads.Add(1) == 1 {
+			return nil
+		}
+		asked <- struct{}{}
+		select {
+		case <-answer:
+		case <-ended:
+		}
+		return nil
+	}
+	d := gramDeskFor(t, g)
+	// Once armed, a head load waits before expiring saved copies' files.
+	var armed atomic.Bool
+	held := heldRefresh{disconnected: new(atomic.Bool), late: new(atomic.Bool)}
+	atExpiry, expire := make(chan struct{}, 1), make(chan struct{})
+	d.gramListed = func() {
+		if !armed.Load() {
+			return
+		}
+		if held.disconnected.Load() {
+			held.late.Store(true)
+			return
+		}
+		select {
+		case atExpiry <- struct{}{}:
+		default:
+		}
+		<-expire
+	}
+	var once sync.Once
+	held.release = func() { once.Do(func() { close(expire) }) }
+	var served sync.Once
+	held.serve = func() { served.Do(func() { close(ended) }) }
+	t.Cleanup(func() { held.release(); held.serve() })
+	ctx := context.Background()
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.GramSetSaved("a1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A refresh tapped while a load runs is queued, and runs once it ends.
+	loaded := make(chan struct{})
+	go func() {
+		defer close(loaded)
+		_ = d.GramRefresh(ctx)
+	}()
+	within(t, "the load's list at the server", asked)
+	if err := d.GramRefresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.GramState(); s.Status != "Refreshing…" {
+		t.Fatalf("a refresh during a load: status %q, want it queued", s.Status)
+	}
+	answer <- struct{}{}
+	within(t, "the load to end", loaded)
+	within(t, "the queued refresh's list at the server", asked)
+	// Its answer expires the saved copy's file.
+	g.Update("a1", func(m *herdrapi.GramMessageInfo) { m.ExpiredFile, m.File = m.File, nil })
+	armed.Store(true)
+	answer <- struct{}{}
+	within(t, "the queued refresh to reach the saved copies", atExpiry)
+	return d, held
+}
+
+// disconnectAsync runs Disconnect; the channel closes as it returns.
+func disconnectAsync(d *Desk, held heldRefresh) <-chan struct{} {
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		d.Disconnect()
+		held.disconnected.Store(true)
+	}()
+	return returned
+}
+
+// #540: a Gram refresh of the connection, still running as the desk
+// disconnects, holds Disconnect until it ends, so its write (a saved copy's
+// file expiring) never lands after Disconnect returns, where a test's TempDir
+// cleanup met it.
+func TestDisconnectWaitsForTheConnectionsGramRefresh(t *testing.T) {
+	d, held := gramDeskWithHeldRefresh(t)
+	returned := disconnectAsync(d, held)
+	select {
+	case <-returned:
+		t.Fatal("Disconnect returned while a refresh of its connection had yet to write the saved copies")
+	case <-time.After(500 * time.Millisecond):
+	}
+	held.release()
+	within(t, "Disconnect to return once the refresh ended", returned)
+	saved := d.GramSaved()
+	if len(saved) != 1 || saved[0].File != nil || saved[0].ExpiredFile == nil {
+		t.Fatalf("the refresh's write did not land before Disconnect returned: %+v", saved)
+	}
+	if held.late.Load() {
+		t.Fatal("a head load ran after Disconnect returned")
+	}
+}
+
+// #547 review: a connection made while Disconnect waits for the old one's
+// work keeps what it claimed: its Gram, its download cache (the owner marker)
+// and its connected state, which an idle published after the wait would
+// clear.
+func TestDisconnectWaitingKeepsAReconnectsGramCacheAndState(t *testing.T) {
+	d, held := gramDeskWithHeldRefresh(t)
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := st.Machines[st.find(st.Active)]
+	returned := disconnectAsync(d, held)
+	waitFor(t, "Disconnect to take the connection", func() bool { return d.State().Phase == "idle" })
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Listed by the new connection: a cached board shows unlisted.
+	waitFor(t, "the reconnect", func() bool {
+		b := d.Board()
+		return d.State().Phase == "connected" && b != nil && b.ListedAt != ""
+	})
+	select {
+	case <-returned:
+		t.Fatal("Disconnect returned before the reconnect: the old refresh no longer held it")
+	default:
+	}
+	held.release()
+	within(t, "Disconnect to return once the refresh ended", returned)
+	if s := d.State(); s.Phase != "connected" {
+		t.Fatalf("the reconnected desk shows %q after the old Disconnect returned", s.Phase)
+	}
+	if owner, err := os.ReadFile(d.gramOwnerPath()); err != nil || string(owner) != machineID(m) {
+		t.Fatalf("the reconnect's download cache owner: %q, %v; want %q", owner, err, machineID(m))
+	}
+	if d.Board() == nil {
+		t.Fatal("the reconnected desk lost its board")
+	}
+	held.serve()
+	if err := d.GramRefresh(context.Background()); err != nil {
+		t.Fatalf("the reconnected desk's Gram: %v", err)
+	}
+	if s := d.GramState(); s.Phase != "loaded" || !slices.Equal(snapIDs(s), []string{"a1"}) {
+		t.Fatalf("the reconnected desk's Gram after a refresh: phase %q, %v", s.Phase, snapIDs(s))
+	}
+}
+
+// #547 review: a connection's Gram and download cache claim go in with its
+// link, in one d.mu section. A Disconnect right after the link went in (here
+// as Connect shows the machine's cached board, which it does once d.mu is
+// free) takes them out too: no Gram is left for the closed link.
+func TestDisconnectRacingConnectLeavesNoGramForTheClosedLink(t *testing.T) {
+	d := gramDeskFor(t, fakeherdr.NewGram("store-1"))
+	st, err := d.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := st.Machines[st.find(st.Active)]
+	waitFor(t, "the machine's board in the cache", func() bool { return d.boards.load(machineID(m), m.Session) != nil })
+	d.Disconnect()
+	var once sync.Once
+	d.mu.Lock()
+	d.onBoard = func(BoardUpdate) { once.Do(d.Disconnect) }
+	d.mu.Unlock()
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := d.State(); s.Phase != "idle" {
+		t.Fatalf("the desk shows %q after the Disconnect", s.Phase)
+	}
+	if l, err := d.gramLink(); err == nil {
+		t.Fatalf("Gram is left on the closed link %q (phase %q)", l.id, d.GramState().Phase)
+	}
+	if owner, err := os.ReadFile(d.gramOwnerPath()); err == nil {
+		t.Fatalf("the download cache is left claimed by the closed link's machine %q", owner)
 	}
 }
 

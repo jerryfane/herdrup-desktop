@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -261,6 +262,17 @@ type Desk struct {
 	// shared agent found to share Gram is set up, before its Gram exists; tests
 	// hold that moment open. Never changed once a hub runs.
 	guestGramSettingUp func(grant string)
+	// gramListed, when set before the first head load, runs as each head
+	// load's list is answered (or fails), before saved copies' files expire
+	// by it; tests hold that moment open.
+	gramListed func()
+	// gramRename moves downloads aside (gramDetachCache); nil is os.Rename.
+	// Tests make it fail. Set under d.mu.
+	gramRename func(oldpath, newpath string) error
+	// gramCacheGen counts the download cache's claims and detaches, made
+	// under d.mu: a delete in place outside it checks that no later change
+	// took the cache (gramDiscard.drop).
+	gramCacheGen atomic.Uint64
 	// saved is this device's saved Gram messages, read on first use.
 	saved     *gramstore.Saved
 	savedOnce sync.Once
@@ -283,7 +295,7 @@ type Desk struct {
 }
 
 // link is the connection to the active machine. Its fields are guarded by
-// Desk.mu.
+// Desk.mu, but work, which has its own lock.
 type link struct {
 	id string // machineID of the machine
 	// session is the herdr session the board shows. Switching it keeps the
@@ -330,6 +342,98 @@ type link struct {
 	// ends that shared agent's reads.
 	gram       *gramDesk
 	cancelGram context.CancelFunc
+	// work is the link's background work, which Disconnect waits for.
+	work linkWork
+}
+
+// disconnectWait bounds how long Disconnect waits for a link's background
+// work to end.
+const disconnectWait = 5 * time.Second
+
+// linkWork is a link's background work: its watch, Gram polls, refreshes and
+// downloads, each of which can write to the desk's directory. Disconnect
+// waits for it (a test's TempDir cleanup met such writes, #540), but only so
+// long: work still running at the bound (a stalled network call) may write
+// after. Work can start while that wait runs (a refresh queued behind a load
+// that just ended), so this is a guarded count, not a WaitGroup: once sealed,
+// Go starts nothing.
+type linkWork struct {
+	mu      sync.Mutex
+	running int
+	closing bool
+	// idle is closed as the running work ends after Seal; nil until a Wait
+	// waits.
+	idle chan struct{}
+}
+
+// Go runs f on a goroutine of its own as the link's work, unless the link is
+// closing: false then, and f does not run.
+func (w *linkWork) Go(f func()) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closing {
+		return false
+	}
+	w.running++
+	go func() {
+		defer w.done()
+		f()
+	}()
+	return true
+}
+
+func (w *linkWork) done() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.running--
+	if w.running == 0 && w.idle != nil {
+		close(w.idle)
+		w.idle = nil
+	}
+}
+
+// Seal refuses further work.
+func (w *linkWork) Seal() {
+	w.mu.Lock()
+	w.closing = true
+	w.mu.Unlock()
+}
+
+// Wait waits for the running work of a sealed link to end, at most bound;
+// false when some still runs.
+func (w *linkWork) Wait(bound time.Duration) bool {
+	w.mu.Lock()
+	if w.running == 0 {
+		w.mu.Unlock()
+		return true
+	}
+	if w.idle == nil {
+		w.idle = make(chan struct{})
+	}
+	idle := w.idle
+	w.mu.Unlock()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-idle:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// closeLinks seals every link, so none starts work while another drains,
+// then waits for their work, all within bound; false when some still runs.
+func closeLinks(links []*link, bound time.Duration) bool {
+	for _, l := range links {
+		l.work.Seal()
+	}
+	deadline := time.Now().Add(bound)
+	idle := true
+	for _, l := range links {
+		idle = l.work.Wait(time.Until(deadline)) && idle
+	}
+	return idle
 }
 
 func newDesk(dir string) *Desk {
@@ -792,9 +896,33 @@ func (d *Desk) Connect(m Machine, password string) error {
 	return nil
 }
 
-// Disconnect closes the connection and forgets its board.
+// Disconnect closes the connection and forgets its board. It waits for the
+// connection's background work to end, at most 5 s, so none of it writes to
+// this device's files afterwards; work still running then (a stalled
+// network call) may yet write later. A connection made while it waits keeps
+// its Gram, its download cache and its state.
 func (d *Desk) Disconnect() {
 	d.mu.Lock()
+	x := d.endLocked()
+	d.mu.Unlock()
+	closed := x.stop()
+	if x.link != nil {
+		closed = append(closed, x.link)
+	}
+	if !closeLinks(closed, disconnectWait) {
+		log.Printf("disconnect: the connection's background work still runs after %s", disconnectWait)
+	}
+	x.remove()
+}
+
+// endLocked ends the current connection; d.mu must be held. The link, its
+// board and its state go (idle, published with it: a connection made after
+// publishes its own state after it), and everything else the connection
+// owned is detached, its Gram, the combined guest Gram and the download
+// cache's claim, so a connection made once d.mu is free installs its own.
+// The caller ends what it returns once d.mu is free, draining it or not.
+func (d *Desk) endLocked() detached {
+	x := detached{link: d.link}
 	if d.cancel != nil {
 		d.cancel()
 		d.cancel = nil
@@ -802,12 +930,38 @@ func (d *Desk) Disconnect() {
 	d.link = nil
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
-	d.mu.Unlock()
-	d.gramReset(nil, "")
-	d.stopGuestGram()
-	d.gramWipeCacheUnlessOwner("")
-	d.setState(context.Background(), ConnState{Phase: "idle"})
+	d.state = ConnState{Phase: "idle"}
+	StateChanged.Broadcast(d.state)
+	x.composer = d.gramSwap(nil, "")
+	x.hub = d.detachGuestGram()
+	x.cache = d.gramDetachCache()
+	return x
 }
+
+// detached is what a connection change took out of use under d.mu, together
+// with d.link: Desk state a connection owns goes in and out only there. Its
+// caller ends it once d.mu is free.
+type detached struct {
+	link     *link // the ended connection's (endLocked), nil otherwise
+	composer *gramstore.Composer
+	hub      *guestGramHub
+	cache    gramDiscard
+}
+
+// stop closes the old composer and stops the old combined guest Gram,
+// returning its links, whose work may still be ending.
+func (x detached) stop() []*link {
+	if x.composer != nil {
+		x.composer.Close()
+	}
+	if x.hub == nil {
+		return nil
+	}
+	return x.hub.stop()
+}
+
+// remove deletes the downloads taken off the cache.
+func (x detached) remove() { x.cache.drop() }
 
 // remember saves m, replacing the saved machine with its ID, and makes it
 // the active machine.
@@ -846,6 +1000,10 @@ func (d *Desk) start(m Machine, password string) {
 	d.link = l
 	d.board, d.peers = nil, nil
 	d.presence.show(nil, "", "")
+	// Gram belongs to the connection, its downloads to the machine, and the
+	// combined guest Gram ends: all of it changes with d.link, so a
+	// Disconnect detaches either none of it or all of it.
+	x := detached{composer: d.gramSwap(l, m.Host), hub: d.detachGuestGram(), cache: d.gramClaimCache(l.id)}
 	// The machine's last listed board shows until its first list arrives
 	// (slow-network fix 4); unlisted, so the page knows it is not current.
 	if cached := d.boards.load(l.id, l.session); cached != nil {
@@ -853,11 +1011,9 @@ func (d *Desk) start(m Machine, password string) {
 	} else {
 		d.mu.Unlock()
 	}
-	// Gram belongs to the connection; its downloads to the machine.
-	d.stopGuestGram()
-	d.gramReset(l, m.Host)
-	d.gramWipeCacheUnlessOwner(l.id)
-	go d.run(ctx, l, m, password)
+	x.stop()
+	x.remove()
+	l.work.Go(func() { d.run(ctx, l, m, password) })
 }
 
 // run connects and watches until ctx ends, reconnecting with backoff.
@@ -924,8 +1080,8 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	d.mu.Unlock()
 	sctx, stopSessions := context.WithCancel(ctx)
 	defer stopSessions()
-	go d.watchSessions(sctx, l, c)
-	go d.watchGram(sctx, l)
+	l.work.Go(func() { d.watchSessions(sctx, l, c) })
+	l.work.Go(func() { d.watchGram(sctx, l) })
 	defer func() {
 		d.mu.Lock()
 		l.client, l.restart = nil, nil
@@ -1049,6 +1205,20 @@ func (d *Desk) setState(ctx context.Context, s ConnState) {
 func isAuthError(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "unable to authenticate") ||
 		strings.Contains(err.Error(), "read private key"))
+}
+
+// entriesNamed lists the entries of dir whose names start with prefix and
+// end with suffix, as paths, sorted. dir is read as it is, never as a
+// pattern (filepath.Glob): a user's path may hold [, * or ?.
+func entriesNamed(dir, prefix, suffix string) []string {
+	entries, _ := os.ReadDir(dir)
+	var out []string
+	for _, e := range entries {
+		if n := e.Name(); len(n) >= len(prefix)+len(suffix) && strings.HasPrefix(n, prefix) && strings.HasSuffix(n, suffix) {
+			out = append(out, filepath.Join(dir, n))
+		}
+	}
+	return out
 }
 
 func expandHome(p string) string {

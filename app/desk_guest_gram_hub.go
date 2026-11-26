@@ -94,28 +94,32 @@ func guestGramPolls(multi bool, singles int) (visible, badge, cost time.Duration
 // connect each time).
 var guestGramRediscover = 2 * time.Minute
 
-// startGuestGram starts the combined guest Gram, or brings a running one up
-// to date with the saved shared agents.
-func (d *Desk) startGuestGram() {
+// installGuestGram is the combined guest Gram, made now if none runs. d.mu
+// must be held: ConnectGuest installs it with its link, and syncs it with the
+// saved shared agents after; only a connection change detaches it.
+func (d *Desk) installGuestGram() *guestGramHub {
 	h := d.guestGram.Load()
 	if h == nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		h = &guestGramHub{d: d, ctx: ctx, cancel: cancel, links: map[string]*link{}, grants: map[string]GuestGramGrant{}, snaps: map[string]GramSnapshot{}}
-		if !d.guestGram.CompareAndSwap(nil, h) {
-			cancel()
-			h = d.guestGram.Load()
-		}
+		d.guestGram.Store(h)
 	}
-	h.sync()
+	return h
 }
 
-// stopGuestGram ends the combined guest Gram (the owner connected, or nothing
-// is shared any more).
-func (d *Desk) stopGuestGram() {
+// detachGuestGram takes the combined guest Gram out of use and tells the page
+// it is gone; nil when none ran. Its reads run on until stop.
+func (d *Desk) detachGuestGram() *guestGramHub {
 	h := d.guestGram.Swap(nil)
-	if h == nil {
-		return
+	if h != nil {
+		GuestGramChanged.Broadcast(GuestGramSnapshot{Grants: []GuestGramState{}})
 	}
+	return h
+}
+
+// stop ends a detached hub's reads. It returns its links, closed, whose work
+// may still be ending (Disconnect waits for it).
+func (h *guestGramHub) stop() []*link {
 	h.cancel()
 	h.mu.Lock()
 	links := make([]*link, 0, len(h.links))
@@ -127,7 +131,7 @@ func (d *Desk) stopGuestGram() {
 	for _, l := range links {
 		closeLink(l)
 	}
-	GuestGramChanged.Broadcast(GuestGramSnapshot{Grants: []GuestGramState{}})
+	return links
 }
 
 // syncGuestGram brings a running combined guest Gram up to date with the
@@ -152,6 +156,12 @@ func (h *guestGramHub) sync() {
 	saved := map[string]bool{}
 	var started, dropped []*link
 	h.mu.Lock()
+	// Stopped (a Disconnect between ConnectGuest's install and this sync):
+	// stop has its links, and it gets no more.
+	if h.ctx.Err() != nil {
+		h.mu.Unlock()
+		return
+	}
 	h.order = h.order[:0]
 	for _, access := range list {
 		id := access.ID()
@@ -185,7 +195,10 @@ func (h *guestGramHub) sync() {
 		closeLink(l)
 	}
 	for _, l := range started {
-		go h.run(l)
+		// Refused once Disconnect closed it: nothing reads it.
+		if !l.work.Go(func() { h.run(l) }) {
+			_ = l.guest.Close()
+		}
 	}
 	h.publish()
 }
@@ -474,7 +487,7 @@ func (d *Desk) GuestGramLoadOlder(ctx context.Context, grants []string) (bool, e
 // GuestGramRefresh refreshes the named shared agents (every one when none).
 func (d *Desk) GuestGramRefresh(ctx context.Context, grants []string) {
 	for _, l := range d.guestGramLinks(grants) {
-		go d.gramRefresh(context.WithoutCancel(ctx), l)
+		l.work.Go(func() { d.gramRefresh(context.WithoutCancel(ctx), l) })
 	}
 }
 

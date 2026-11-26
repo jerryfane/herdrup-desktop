@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/gramstore"
@@ -46,21 +50,96 @@ func (d *Desk) gramPartialDir() string { return filepath.Join(d.gramCacheBase(),
 
 func (d *Desk) gramOwnerPath() string { return filepath.Join(d.gramCacheBase(), "gram-owner") }
 
-// gramWipeCacheUnlessOwner drops every downloaded file unless they were
-// downloaded from owner, then records owner: the bytes must not outlive the
-// machine that could read them. "" wipes them for good (a disconnect).
-func (d *Desk) gramWipeCacheUnlessOwner(owner string) {
-	if owner != "" {
-		if b, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(b) == owner {
-			return
-		}
+// gramClaimCache gives the downloads to owner, a connection's machine, under
+// d.mu (start, ConnectGuest): the bytes must not outlive the machine that
+// could read them. Unless they are owner's already, it detaches them
+// (gramDetachCache) and records owner, but only once nothing of another
+// connection stays in place: else the next connection detaches them again.
+// The caller drops what it returns once d.mu is free.
+func (d *Desk) gramClaimCache(owner string) gramDiscard {
+	if b, err := os.ReadFile(d.gramOwnerPath()); err == nil && string(b) == owner {
+		return gramDiscard{}
 	}
-	d.gramCache().RemoveAll()
-	_ = os.RemoveAll(d.gramPartialDir())
-	_ = os.Remove(d.gramOwnerPath())
-	if owner != "" {
+	c := d.gramDetachCache()
+	if len(c.stuck) == 0 {
 		if err := os.MkdirAll(d.gramCacheBase(), 0o700); err == nil {
 			_ = os.WriteFile(d.gramOwnerPath(), []byte(owner), 0o600)
+		}
+	}
+	return c
+}
+
+// gramDetachCache takes every downloaded file out of use for good, cheaply
+// enough for d.mu (a connection change): the owner marker goes first, so no
+// connection trusts what stays, then the files move aside, renamed
+// gram-discarded-*. The caller drops what it returns once d.mu is free.
+func (d *Desk) gramDetachCache() gramDiscard {
+	base := d.gramCacheBase()
+	d.gramDisown()
+	// An earlier run's, left by a crash between the move and the delete.
+	c := gramDiscard{d: d, moved: entriesNamed(base, "gram-discarded-", ""), gen: d.gramCacheGen.Add(1)}
+	rename := d.gramRename
+	if rename == nil {
+		rename = os.Rename
+	}
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(gramDetaches.Add(1), 36)
+	for _, p := range []string{d.gramCache().Root, d.gramPartialDir()} {
+		to := filepath.Join(base, "gram-discarded-"+stamp+"-"+filepath.Base(p))
+		switch err := rename(p, to); {
+		case err == nil:
+			c.moved = append(c.moved, to)
+		case !errors.Is(err, os.ErrNotExist):
+			c.stuck = append(c.stuck, p)
+		}
+	}
+	return c
+}
+
+// gramDisown makes the downloads no connection's: the owner marker goes,
+// or, where the directory refuses that, is emptied, "" being no machine.
+func (d *Desk) gramDisown() {
+	p := d.gramOwnerPath()
+	err := os.Remove(p)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if werr := os.WriteFile(p, nil, 0o600); werr != nil {
+		log.Printf("gram cache: the owner marker %s stays: %v; emptying it: %v", p, err, werr)
+	}
+}
+
+// gramDetaches tells apart the directories gramDetachCache moves aside.
+var gramDetaches atomic.Uint64
+
+// gramDiscard is what a connection change took off the download cache under
+// d.mu, for drop once d.mu is free.
+type gramDiscard struct {
+	d *Desk
+	// moved: the directories moved aside (exact paths), and an earlier run's.
+	moved []string
+	// stuck: download directories a move failed to take (a directory that
+	// refuses renames). They are deleted in place, the old recursive delete,
+	// while they are still the detached connection's: the marker is gone and
+	// no later change (gen) took the cache.
+	stuck []string
+	gen   uint64
+}
+
+// drop deletes what c took off the cache, as far as it can; it logs what
+// stays.
+func (c gramDiscard) drop() {
+	for _, dir := range c.moved {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("gram cache: %s stays: %v", dir, err)
+		}
+	}
+	for _, dir := range c.stuck {
+		if c.d.gramCacheGen.Load() != c.gen {
+			log.Printf("gram cache: %s could not move aside and a later connection took it", dir)
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("gram cache: %s could not move aside, and deleting it in place left some: %v", dir, err)
 		}
 	}
 }
@@ -112,8 +191,12 @@ func (d *Desk) gramFetch(ctx context.Context, l *link, id string, size uint64) (
 	f := g.flights[key]
 	if f == nil {
 		f = &gramFlight{done: make(chan struct{})}
+		dctx, epoch := g.ctx, g.epoch
+		if !l.work.Go(func() { d.gramDownload(dctx, l, epoch, id, key, size, f) }) {
+			g.mu.Unlock()
+			return "", "", "", errNotConnected
+		}
 		g.flights[key] = f
-		go d.gramDownload(g.ctx, l, g.epoch, id, key, size, f)
 	}
 	g.mu.Unlock()
 	select {
