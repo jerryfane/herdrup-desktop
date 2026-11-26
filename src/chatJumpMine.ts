@@ -11,7 +11,8 @@ export function isMine(entry: Entry): boolean {
 }
 
 /** Whose view has the arrow: the owner's, on the desktop (not a guest) or in the owner's browser
- *  over an owner link (AgentView.ownerLink, web/desk.ts openAgentView); a guest's never. */
+ *  over an owner link to a host that records its prompts as the owner's (AgentView.ownerLink,
+ *  web/desk.ts openAgentView); a guest's never. */
 export function showsJumpMine(view: Pick<AgentView, "guest" | "ownerLink"> | null | undefined): boolean {
   return !view?.guest || !!view.ownerLink;
 }

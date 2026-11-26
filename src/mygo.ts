@@ -244,9 +244,11 @@ export interface AgentView {
   guestSelf?: string;
   plainTerminal: boolean;
   /**
-   * OwnerLink: a Guest view the owner opened in a browser over an owner link
-   * (src/web/desk.ts openAgentView), which has the owner's up arrow to their
-   * previous prompt (src/chatJumpMine.ts). The desktop never sets it.
+   * OwnerLink: an agent's Guest view the owner opened in a browser over an
+   * owner link, on a host whose owner gate records the browser's prompts as
+   * the owner's (the ping capability OWNER_BROWSER_ORIGIN, src/web/desk.ts
+   * openAgentView). It has the owner's up arrow to their previous prompt
+   * (src/chatJumpMine.ts). The desktop never sets it.
    */
   ownerLink?: boolean;
   /**
