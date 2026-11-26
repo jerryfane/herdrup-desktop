@@ -47,9 +47,9 @@ type Machine struct {
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
 	// LocalID is this device's own id for the saved profile (32 hex digits),
-	// made when first needed (a connection to it, a guest relabel queued for
-	// it) and never reused: a profile saved later at the same user@host:port
-	// gets another. "" until then.
+	// made at its first rename and never reused: a profile saved later at
+	// the same user@host:port gets another. "" until then. A live link knows
+	// its profile by it (desk_guest_relabel.go).
 	LocalID string `json:"localId,omitempty"`
 	// LabelRev is the revision of the machine's invite label (inviteLabel)
 	// for its guests: the unix ms of the rename that set it, never below
@@ -57,11 +57,6 @@ type Machine struct {
 	// it on each share and invite (guest_relabel_rev), so an older relabel
 	// never overwrites a newer one.
 	LabelRev uint64 `json:"labelRev,omitempty"`
-	// LabelSent is the last LabelRev its herdr settled (took, or holds a
-	// newer label than): the label is still to be sent while LabelRev is
-	// above it. Saved with the label and revision, in one write, so the
-	// profile alone says what to send (desk_guest_relabel.go).
-	LabelSent uint64 `json:"labelSent,omitempty"`
 }
 
 // SavedMachine is one machine in the saved set.
@@ -87,9 +82,6 @@ func machineID(m Machine) string {
 type machineStore struct {
 	Active   string    `json:"active"`
 	Machines []Machine `json:"machines"`
-	// RelabelsFolded records an older build's relabel queue folded into
-	// Machines (foldRelabels, desk_guest_relabel.go), in the same write.
-	RelabelsFolded bool `json:"relabelsFolded,omitempty"`
 }
 
 func (s *machineStore) find(id string) int {
@@ -208,15 +200,6 @@ type Desk struct {
 	notifications notificationSettings
 	pairingMu     sync.Mutex
 
-	// relabeling is the guest relabels being sent, by profile (LocalID): at
-	// most one at a time each; true asks the one sending to send again once
-	// it is done (desk_guest_relabel.go). Under relabelMu.
-	relabelMu  sync.Mutex
-	relabeling map[string]bool
-	// relabelSent, when set, runs after each relabel a sender made, before
-	// it decides what comes next; set in tests, to hold a sender there.
-	relabelSent atomic.Pointer[func(*link)]
-
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
 	// inviteTransport fetches short invite links' sealed invites; nil is
@@ -327,23 +310,23 @@ type Desk struct {
 // Desk.mu, but work, which has its own lock.
 type link struct {
 	id string // machineID of the machine
-	// profile is the saved profile connected (Machine.LocalID), the link's
-	// identity among the saved machines: an address can come to name
-	// another profile (account sync) while the link stays.
-	profile string
 	// session is the herdr session the board shows. Switching it keeps the
 	// SSH connection.
 	session string
 	// shareLabel names the machine to the guests of its agents' shares
 	// (guest.invite.create's machine_label, shown on the invite page and
 	// under SHARED WITH YOU): the saved machine's nickname, else its host,
-	// never user@host:port, as herdr takes it (inviteLabel), as saved now:
-	// SaveMachine renews it under d.mu. A guest's link has its access's
+	// never user@host:port, as herdr takes it (inviteLabel), as saved in
+	// the profile it was started with, renewed under d.mu by a rename of
+	// that profile (desk_guest_relabel.go). A guest's link has its access's
 	// label.
 	shareLabel string
 	// shareLabelRev is shareLabel's revision (Machine.LabelRev), taken with
 	// it, which an invite of this machine carries; 0 for a guest's link.
 	shareLabelRev uint64
+	// profile is the local id (Machine.LocalID) of the saved profile the
+	// link was started with, "" if it had none.
+	profile string
 	// sessionGen counts session switches, so a read begun on one session
 	// is not taken for the session it switched back to.
 	sessionGen  uint64
@@ -373,15 +356,6 @@ type link struct {
 	// the first list: the agent menus' agent_avatar and
 	// agent_session_transfer (desk_agent_actions.go).
 	caps *herdrapi.ServerCapabilities
-	// relabelUnsure is the connection (l.client) a guest relabel went
-	// unanswered on, which takes no more (desk_guest_relabel.go).
-	relabelUnsure *bridge.Client
-	// relabelAnswered is the revision herdr last answered a guest relabel
-	// at, and relabelAnsweredOn the connection (l.client) it answered on:
-	// that revision isn't sent again on that connection, a session switch
-	// included; a new connection (a reconnect) sends it again.
-	relabelAnswered   uint64
-	relabelAnsweredOn *bridge.Client
 	// gram is the Gram state of a shared agent in the combined guest Gram
 	// (guestGramHub); nil for the connection Desk.gram follows. cancelGram
 	// ends that shared agent's reads.
@@ -679,9 +653,6 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err != nil {
 		return err
 	}
-	// The relabel queue of an older build becomes the profiles' (their floor
-	// for the revision below), and goes with this write.
-	folded := d.foldRelabels(&st)
 	id := machineID(m)
 	index := st.find(replacing)
 	if replacing != "" && index < 0 {
@@ -691,19 +662,19 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		return errors.New("that host and user are already saved")
 	}
 	relabel := false
+	var old Machine
 	if index < 0 {
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision.
-		m.LocalID, m.LabelRev, m.LabelSent = "", 0, 0
+		m.LocalID, m.LabelRev = "", 0
 		st.Machines = append(st.Machines, m)
 	} else {
 		// The page doesn't hold the sync id: an edit keeps the machine's, its
-		// local id and its label revisions.
-		old := st.Machines[index]
-		m.SyncID, m.LocalID, m.LabelRev, m.LabelSent = old.SyncID, old.LocalID, old.LabelRev, old.LabelSent
+		// local id and its label revision.
+		old = st.Machines[index]
+		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
 		// A rename names the machine anew to its existing shares' guests
-		// (desk_guest_relabel.go): the new label at a new revision, above
-		// every one before, to be sent (LabelSent below it), all saved here.
+		// (desk_guest_relabel.go), at a new label revision.
 		if old.Nickname != m.Nickname && inviteLabel(old) != inviteLabel(m) {
 			relabel = true
 			if m.LocalID == "" {
@@ -719,17 +690,19 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
-	if folded {
-		d.retireRelabelQueue()
-	}
-	// The live link names its machine to its guests as saved now: a share
-	// view opened after a rename (or a fold) sends the new name and revision
-	// (#523), and the shares it has already are relabeled. A view already
-	// open keeps the name it opened with.
+	// The live link started with this profile, its destination unchanged,
+	// names it to its guests as saved now: a share view opened after a
+	// rename sends the new name (#523), and the shares it has already are
+	// relabeled. A view already open keeps the name it opened with. A
+	// profile moved to another destination is relabeled there on its next
+	// connect.
 	d.mu.Lock()
-	d.followSavedLabel(st)
-	if l := d.link; relabel && l != nil && l.guest == nil && l.profile == m.LocalID && l.id == id {
-		l.work.Go(func() { d.relabelGuests(l) })
+	if l := d.link; index >= 0 && sameProfile(l, old, replacing) && l.id == id {
+		l.profile, l.shareLabel, l.shareLabelRev = m.LocalID, inviteLabel(m), m.LabelRev
+		if relabel {
+			label, rev := l.shareLabel, l.shareLabelRev
+			l.work.Go(func() { d.relabelGuests(l, label, rev) })
+		}
 	}
 	d.mu.Unlock()
 	if replacing != "" && replacing != id {
@@ -1048,11 +1021,10 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	if i := st.find(id); i >= 0 {
 		// The page doesn't hold the sync id: a reconnect keeps the machine's,
 		// its local id and its label revision.
-		old := st.Machines[i]
-		m.SyncID, m.LocalID, m.LabelRev, m.LabelSent = old.SyncID, old.LocalID, old.LabelRev, old.LabelSent
+		m.SyncID, m.LocalID, m.LabelRev = st.Machines[i].SyncID, st.Machines[i].LocalID, st.Machines[i].LabelRev
 		st.Machines[i] = m
 	} else {
-		m.LocalID, m.LabelRev, m.LabelSent = "", 0, 0
+		m.LocalID, m.LabelRev = "", 0
 		st.Machines = append(st.Machines, m)
 	}
 	st.Active = id
@@ -1064,31 +1036,15 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 	return m, nil
 }
 
-// start connects to m, replacing any current connection. Every owner link
-// starts here, so here it takes its identity (desk_guest_relabel.go): the
-// destination it connects to (link.id) and the saved profile there
-// (link.profile, its LocalID, given one if it has none, with an older
-// build's relabel queue folded in first), whose label and revision it names
-// its machine by to guests.
+// start connects to m, replacing any current connection. The link names
+// the machine to guests by m, the profile snapshot it was started with
+// (desk_guest_relabel.go).
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
+	l := &link{id: machineID(m), profile: m.LocalID, session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
 	d.storeMu.Lock()
-	st, _, err := d.loadFolded()
-	if i := st.find(l.id); err == nil && i >= 0 {
-		if st.Machines[i].LocalID == "" {
-			st.Machines[i].LocalID = newLocalID()
-			err = d.store(st)
-		}
-		if err == nil {
-			saved := st.Machines[i]
-			l.profile, l.shareLabel, l.shareLabelRev = saved.LocalID, inviteLabel(saved), saved.LabelRev
-		}
-	}
+	d.retireRelabelQueue()
 	d.storeMu.Unlock()
-	if err != nil {
-		log.Printf("connect: %s: the saved profile: %v", l.id, err)
-	}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()
@@ -1238,9 +1194,9 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			}
 			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
 			if first {
-				// A rename not yet sent to this herdr (desk_guest_relabel.go):
-				// its capabilities are known now.
-				l.work.Go(func() { d.relabelGuests(l) })
+				// Its label at its revision, its capabilities known now
+				// (desk_guest_relabel.go).
+				d.relabelOnConnect(l)
 			}
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)

@@ -818,9 +818,9 @@ export interface Machine {
   syncId?: string;
   /**
    * LocalID is this device's own id for the saved profile (32 hex digits),
-   * made when first needed (a connection to it, a guest relabel queued for
-   * it) and never reused: a profile saved later at the same user@host:port
-   * gets another. "" until then.
+   * made at its first rename and never reused: a profile saved later at
+   * the same user@host:port gets another. "" until then. A live link knows
+   * its profile by it (desk_guest_relabel.go).
    */
   localId?: string;
   /**
@@ -831,13 +831,6 @@ export interface Machine {
    * never overwrites a newer one.
    */
   labelRev?: number;
-  /**
-   * LabelSent is the last LabelRev its herdr settled (took, or holds a
-   * newer label than): the label is still to be sent while LabelRev is
-   * above it. Saved with the label and revision, in one write, so the
-   * profile alone says what to send (desk_guest_relabel.go).
-   */
-  labelSent?: number;
 }
 
 /**
@@ -1119,9 +1112,9 @@ export interface SavedMachine {
   syncId?: string;
   /**
    * LocalID is this device's own id for the saved profile (32 hex digits),
-   * made when first needed (a connection to it, a guest relabel queued for
-   * it) and never reused: a profile saved later at the same user@host:port
-   * gets another. "" until then.
+   * made at its first rename and never reused: a profile saved later at
+   * the same user@host:port gets another. "" until then. A live link knows
+   * its profile by it (desk_guest_relabel.go).
    */
   localId?: string;
   /**
@@ -1132,13 +1125,6 @@ export interface SavedMachine {
    * never overwrites a newer one.
    */
   labelRev?: number;
-  /**
-   * LabelSent is the last LabelRev its herdr settled (took, or holds a
-   * newer label than): the label is still to be sent while LabelRev is
-   * above it. Saved with the label and revision, in one write, so the
-   * profile alone says what to send (desk_guest_relabel.go).
-   */
-  labelSent?: number;
   /** Active marks the machine the desk connects to. */
   active: boolean;
 }
