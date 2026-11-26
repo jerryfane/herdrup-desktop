@@ -49,6 +49,11 @@ export interface RemoteShare { id: string; rev: number; body: ShareBody }
 interface PendingWrite { id: string; deleted?: true; body?: ShareBody }
 /** A write as a push sent it: based on base_rev. */
 interface SentWrite extends PendingWrite { base_rev: number }
+/** A journaled write (SharesRecord sent): not_after, the latest of its sends' (0: one went without,
+ *  and it may land whenever); answered, an answer to one of them was heard. */
+interface JournalEntry extends SentWrite { not_after?: number; answered?: true }
+/** e's not_after: 0 when one of its sends went without (a service without now_ms). */
+const deadline = (e: JournalEntry) => e.not_after ?? 0;
 /** p as written (its id, its delete or body), whatever else is stored with it. */
 const bare = (p: PendingWrite): PendingWrite => p.deleted ? { id: p.id, deleted: true } : { id: p.id, body: p.body! };
 /** p's key: one write of one share, whatever it is based on. */
@@ -59,14 +64,16 @@ const writeKey = (p: PendingWrite) => JSON.stringify(bare(p));
  *  grants this browser may still hold. A pull's are stored in the same write that moves rev past
  *  them, so a pull never forgets one before its grant is gone. Each stays until a listener has
  *  removed its grant (cleared), whichever tab left or pulled it.
- *  sent: the writes handed to a request whose answer no tab heard (written before the request
- *  goes; one that request was refused, 4xx or never sent, goes again): each may still land, however
- *  late. Until one is answered, it is sent again, as it was, before any other write of its share,
- *  so it can't land after a later one: with its base_rev, the copy and the late request write at
- *  most once between them, and once either is answered the other can't write (the share has moved
- *  off that base, or holds it already). Base 0 assumes no request outlives the 90 days a tombstone
- *  is kept (sync.ts), as the prompts' journal (prompts.ts PromptAttempt). */
-interface SharesRecord { rev: number; shares: RemoteShare[]; gone: Record<string, number>; pending: PendingWrite[]; drop?: string[]; sent?: SentWrite[] }
+ *  sent: the journal of the writes handed to a request (written before the request goes; a request
+ *  refused, 4xx or never sent, takes its entries out): each may land, however late, until its
+ *  not_after (the service writes nothing past it: sync.ts Deadline, 409 expired). Until one of its
+ *  sends is answered it is sent again, as it was, before any other write of its share; answered,
+ *  it still holds the share's other writes back until a pull's now_ms (read before its rows) is
+ *  past its not_after: the service prunes tombstones by count too (2,000 newer ones), so a share
+ *  deleted after the replay could be gone again, and the late send's base_rev good again. One with
+ *  a send that went without not_after (a service without now_ms, themartianapp/herdrup#826) can't
+ *  be bounded: it leaves once answered, and only that answer fences it, as before. */
+interface SharesRecord { rev: number; shares: RemoteShare[]; gone: Record<string, number>; pending: PendingWrite[]; drop?: string[]; sent?: JournalEntry[] }
 
 type KeyValue = Pick<Storage, "getItem" | "setItem">;
 
@@ -78,6 +85,9 @@ export interface SharesPlace { storage(): KeyValue; locks: AbortableLocks | null
 /** How long one round may run once it has its turn: its requests are then cancelled, so a stalled
  *  one can't keep every other tab's round (a Leave's delete) waiting (as the prompts' round). */
 const ROUND_MS = 60_000;
+/** How long past the service's newest now_ms a push may still be written (its not_after), longer
+ *  than a round (as the prompts', prompts.ts NOT_AFTER_MS). */
+const NOT_AFTER_MS = 2 * ROUND_MS;
 
 /** How often a signed-in page pulls the account's shares while open (as its prompts). */
 const SYNC_EVERY_MS = 15 * 60_000;
@@ -142,46 +152,59 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  };
 
  /** Sends acct's queue in pushes the service takes (at most 100 changes and 256 KiB each,
-  *  account.ts batches). Each push is made at dispatch from the record as it is then, read again
-  *  for every one: first the writes sent before that no answer settled (SharesRecord sent), as they
-  *  were sent; then the writes queued whose share has none such, each based on the revision last
-  *  seen. A write replaced since (a put by a Leave's delete, in this tab or another) is never sent,
-  *  and a write kept since goes in a later push. Each push is journaled (sent) before it goes and
-  *  settled as it is answered: one that fails leaves its writes for the next round, and the others
-  *  still go. A write goes at most once a round. */
- async function pushQueue(acct: string, signal: AbortSignal, generation: number, attempted: Set<string>): Promise<void> {
+  *  account.ts batches), each with notAfter as its not_after (0: none). Each push is made at
+  *  dispatch from the record as it is then, read again for every one: first the journaled writes
+  *  no answer settled (SharesRecord sent), as they were sent; then the writes queued whose share
+  *  has none journaled, each based on the revision last seen. A write replaced since (a put by a
+  *  Leave's delete, in this tab or another) is never sent, and a write kept since goes in a later
+  *  push. Each push is journaled before it goes and settled as it is answered: one that fails
+  *  leaves its writes for the next round, and the others still go. A write goes at most once a
+  *  round; attempted gets each as it is handed to a request (writeKey). */
+ async function pushQueue(acct: string, signal: AbortSignal, generation: number, notAfter: number, attempted: Set<string>): Promise<void> {
   const sentKey = (s: SentWrite) => JSON.stringify({ ...bare(s), base_rev: s.base_rev });
   const change = (s: SentWrite): SyncChange => s.deleted
    ? { collection: "shares", id: s.id, base_rev: s.base_rev, deleted: true }
    : { collection: "shares", id: s.id, base_rev: s.base_rev, body: s.body };
   /** p as it goes now: based on the revision last seen of its share. */
   const based = (r: SharesRecord, p: PendingWrite): SentWrite => ({ ...bare(p), base_rev: r.shares.find(s => s.id === p.id)?.rev ?? r.gone[p.id] ?? 0 });
+  /** What one push did to the journal: the entries it added, and for those journaled before, their
+   *  not_after before it (its own send raised it). */
+  interface Journaled { added: string[]; prior: Map<string, number> }
   /** Settles the writes sent that the answer (or refused: the service refused them alone) does.
-   *  Each answered leaves the journal: it can't land after. Off the queue go one applied, a put
-   *  refused for its base (the service's item stands), a delete of a share already gone, and one
-   *  refused alone. A delete refused while the share is still live stays, based next on the
-   *  service's row. A write replaced since it was sent stays (it goes next). What an applied write
-   *  left the share at is what its next write is based on. */
-  const settle = (sent: SentWrite[], answer: SyncPushAnswer | null, refused: SentWrite[] = []) => update(acct, r => {
+   *  A journal entry this push added leaves: its one send is answered. One journaled before has an
+   *  earlier send that never was: it is answered (SharesRecord sent), kept with its earlier
+   *  not_after and not sent again until those can't land, or leaves at once when one went without
+   *  not_after. One refused alone leaves (malformed, no send of it can be written). Off the queue
+   *  go one applied, a put refused for its base (the service's item stands), a delete of a share
+   *  already gone, and one refused alone. A delete refused while the share is still live stays,
+   *  based next on the service's row. A write replaced since it was sent stays (it goes next).
+   *  What an applied write left the share at is what its next write is based on. */
+  const settle = (sent: SentWrite[], answer: SyncPushAnswer | null, journaled: Journaled, refused: SentWrite[] = []) => update(acct, r => {
    const sentAs = new Map(sent.map(s => [s.id, s] as const));
-   const done = new Set(refused.map(writeKey)), closed = new Set(refused.map(sentKey));
+   const done = new Set(refused.map(writeKey)), gone = new Set(refused.map(sentKey)), answered = new Set<string>();
    const rows: { id: string; rev: number; body: ShareBody | null }[] = [];
    for (const c of answer?.applied ?? []) {
     const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
     if (s === undefined) continue;
-    done.add(writeKey(s)); closed.add(sentKey(s));
+    done.add(writeKey(s)); answered.add(sentKey(s));
     rows.push({ id: c.id, rev: c.rev, body: s.deleted ? null : s.body! });
    }
    for (const c of answer?.conflicts ?? []) {
     const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
     if (s === undefined) continue;
-    closed.add(sentKey(s));
+    answered.add(sentKey(s));
     const server = c.server;
     if (s.deleted && server !== null && !server.deleted && validBody(server.body)) rows.push({ id: c.id, rev: server.rev, body: server.body });
     else done.add(writeKey(s));
    }
    r.pending = r.pending.filter(p => !done.has(writeKey(p)));
-   r.sent = (r.sent ?? []).filter(s => !closed.has(sentKey(s)));
+   r.sent = (r.sent ?? []).flatMap((e): JournalEntry[] => {
+    const key = sentKey(e);
+    if (gone.has(key)) return [];
+    if (!answered.has(key)) return [e];
+    const earlier = journaled.added.includes(key) ? 0 : journaled.prior.get(key) ?? deadline(e);
+    return earlier > 0 ? [{ ...e, not_after: earlier, answered: true }] : [];
+   });
    for (const row of rows) {
     if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
     r.shares = r.shares.filter(s => s.id !== row.id);
@@ -192,54 +215,71 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   });
   let failed: { error: unknown } | null = null;
   /** One push of what pick takes from the record at dispatch, journaled, then settled; how many
-   *  writes it sent. A request refused (a 4xx, or cancelled before it went) leaves the journal
-   *  as it was. A failure other than a 400 is kept (failed) and leaves its writes queued and
-   *  journaled. A 400 refuses the whole push for one change the service won't keep, and none of
-   *  it is written: each write then goes alone, while it is still the one queued (or journaled),
-   *  and only one refused alone (malformed, never to be taken) leaves unwritten. */
+   *  writes it sent. Journaling one already journaled moves its not_after to the later (0 when
+   *  either send went without one). A request refused (a 4xx, or cancelled before it went) leaves
+   *  the journal as it was before it. A failure other than a 400 is kept (failed) and leaves its
+   *  writes queued and journaled. A 400 refuses the whole push for one change the service won't
+   *  keep, and none of it is written: each write then goes alone, while it is still the one queued
+   *  (or journaled, unanswered), and only one refused alone (malformed, never to be taken) leaves
+   *  unwritten. */
   const push = async (pick: (r: SharesRecord) => SentWrite[]): Promise<number> => {
-   let sent: SentWrite[] = [], added: string[] = [];
+   let sent: SentWrite[] = [];
+   let journaled: Journaled = { added: [], prior: new Map() };
    let answer: SyncPushAnswer | null;
    try {
     answer = await account.syncPush({
      prepare: () => update(acct, r => {
       sent = pick(r);
-      const journal = r.sent ?? [], had = new Set(journal.map(sentKey));
-      added = sent.map(sentKey).filter(k => !had.has(k));
-      if (added.length > 0) r.sent = journal.concat(sent.filter(s => added.includes(sentKey(s))));
-      return sent.length === 0 ? null : { changes: sent.map(change) };
+      const journal = r.sent ?? [], had = new Map(journal.map(e => [sentKey(e), e] as const));
+      journaled = { added: sent.map(sentKey).filter(k => !had.has(k)), prior: new Map() };
+      for (const s of sent) {
+       const e = had.get(sentKey(s));
+       if (e === undefined) continue;
+       journaled.prior.set(sentKey(e), deadline(e));
+       e.not_after = deadline(e) === 0 || notAfter === 0 ? 0 : Math.max(deadline(e), notAfter);
+      }
+      r.sent = journal.concat(sent.filter(s => journaled.added.includes(sentKey(s))).map(s => ({ ...s, not_after: notAfter })));
+      if (sent.length === 0) return null;
+      return notAfter === 0 ? { changes: sent.map(change) } : { changes: sent.map(change), not_after: notAfter };
      }),
      sending() {},
      refused: async () => {
-      const gone = added;
-      added = [];
-      if (gone.length > 0) await update(acct, r => { r.sent = (r.sent ?? []).filter(s => !gone.includes(sentKey(s))); });
+      const undo = journaled;
+      journaled = { added: [], prior: new Map() };
+      if (undo.added.length === 0 && undo.prior.size === 0) return;
+      await update(acct, r => {
+       r.sent = (r.sent ?? []).filter(e => !undo.added.includes(sentKey(e)));
+       for (const e of r.sent) { const d = undo.prior.get(sentKey(e)); if (d !== undefined) e.not_after = d; }
+      });
      },
     }, acct, signal, generation);
    } catch (error) {
     for (const s of sent) attempted.add(writeKey(s));
     if (!(error instanceof AccountServiceError && error.status === 400)) { failed ??= { error }; return sent.length; }
-    if (sent.length === 1) await settle([], null, sent);
+    if (sent.length === 1) await settle([], null, journaled, sent);
     else for (const w of sent) await push(r => still(r, w));
     return sent.length;
    }
    for (const s of sent) attempted.add(writeKey(s));
-   await settle(sent, answer);
+   await settle(sent, answer, journaled);
    return sent.length;
   };
-  /** w, sent in a push the service refused whole, as it goes alone now: as journaled while it is,
-   *  else while it is still the write queued and its share has no other journaled; else none. */
+  /** w as it was written: a journal entry carries more than the write. */
+  const asSent = (e: SentWrite): SentWrite => ({ ...bare(e), base_rev: e.base_rev });
+  /** w, sent in a push the service refused whole, as it goes alone now: as journaled while it is
+   *  (unanswered), else while it is still the write queued and its share has none journaled; else
+   *  none. */
   const still = (r: SharesRecord, w: SentWrite): SentWrite[] => {
-   const journal = r.sent ?? [];
-   if (journal.some(s => sentKey(s) === sentKey(w))) return [w];
+   const journal = r.sent ?? [], e = journal.find(s => sentKey(s) === sentKey(w));
+   if (e !== undefined) return e.answered ? [] : [asSent(e)];
    if (journal.some(s => s.id === w.id)) return [];
    return r.pending.filter(p => writeKey(p) === writeKey(w)).map(p => based(r, p));
   };
-  /** The next push: the journaled writes, then the writes queued whose share has none journaled,
-   *  none sent yet this round, as many as one push takes. */
+  /** The next push: the journaled writes unanswered, then the writes queued whose share has none
+   *  journaled (answered or not), none sent yet this round, as many as one push takes. */
   const next = (r: SharesRecord) => {
    const journal = r.sent ?? [], held = new Set(journal.map(s => s.id));
-   const left = [...journal, ...r.pending.filter(p => !held.has(p.id)).map(p => based(r, p))].filter(s => !attempted.has(writeKey(s)));
+   const left = [...journal.filter(e => !e.answered).map(asSent), ...r.pending.filter(p => !held.has(p.id)).map(p => based(r, p))].filter(s => !attempted.has(writeKey(s)));
    return left.slice(0, batches(left.map(change))[0]?.length ?? 0);
   };
   // Cancelled, or another sign-in now: nothing more goes for this one.
@@ -247,14 +287,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   if (failed !== null) throw (failed as { error: unknown }).error;
  }
 
- /** One round for acct: this browser's writes, then what the account holds since the last pull.
-  *  attempted gets each write handed to a request (writeKey), as it goes: a round that fails
-  *  after still says what it sent. */
- async function round(acct: string, signal: AbortSignal, attempted: Set<string>): Promise<SharesChange> {
-  const generation = account.generation;
-  await pushQueue(acct, signal, generation, attempted);
+ /** Pulls what acct holds since the record's revision and folds it in: the shares, those it saw
+  *  leave (drop), and the journal entries it proves can't land any more (a pull whose now_ms, read
+  *  before its rows, is past their not_after: sync.ts Deadline). Its newest now_ms is what a push
+  *  next counts its not_after from (null: none told). */
+ async function pullInto(acct: string, signal: AbortSignal, generation: number): Promise<{ change: SharesChange; newestMs: number | null }> {
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
-  return update(acct, r => {
+  const change = await update(acct, r => {
    const before = new Set(r.shares.map(s => s.id));
    const live = new Map(pulled.full ? [] : r.shares.map(s => [s.id, s] as const));
    const gone = pulled.full ? {} : r.gone;
@@ -271,8 +310,30 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    // A share left here stays until its grant is gone, live on the account or not (its delete
    // not taken yet).
    r.drop = [...new Set([...r.drop ?? [], ...before, ...tombstoned])].filter(id => !puts.has(id) && (deletes.has(id) || !live.has(id)));
+   const now = pulled.nowMs;
+   if (r.sent !== undefined && now !== null) r.sent = r.sent.filter(e => !(deadline(e) > 0 && now > deadline(e)));
    return { account: acct, shares: visible(r) };
   });
+  return { change, newestMs: pulled.nowMs === null ? null : pulled.newestMs };
+ }
+
+ /** One round for acct: this browser's writes, then what the account holds since the last pull.
+  *  With writes to send it pulls first: the service's clock, which each push's not_after counts
+  *  from (NOT_AFTER_MS past it), and the journal entries that can't land any more. attempted gets
+  *  each write handed to a request (writeKey), as it goes: a round that fails after still says
+  *  what it sent. */
+ async function round(acct: string, signal: AbortSignal, attempted: Set<string>): Promise<SharesChange> {
+  const generation = account.generation;
+  const writes = (r: SharesRecord) => r.pending.length > 0 || (r.sent ?? []).length > 0;
+  if (writes(read(acct))) {
+   const { newestMs } = await pullInto(acct, signal, generation);
+   if (newestMs === null) console.warn("account sync: the service gives no now_ms; a share write given up can't be fenced past its replay (themartianapp/herdrup#826)");
+   await pushQueue(acct, signal, generation, newestMs === null ? 0 : newestMs + NOT_AFTER_MS, attempted);
+  }
+  const pulled = await pullInto(acct, signal, generation);
+  const held = (read(acct).sent ?? []).map(deadline).filter(d => d > 0);
+  if (held.length > 0 && pulled.newestMs !== null) followUp(Math.max(...held) - pulled.newestMs);
+  return pulled.change;
  }
 
  /** Runs f as acct's sync turn across this browser's tabs (Web Locks, SYNC_LOCK_PREFIX): one
@@ -347,6 +408,15 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   if (acct !== undefined && place.background) void sync().catch(() => {});
  });
  if (place.background) setInterval(() => { if (account.current) void sync().catch(() => {}); }, SYNC_EVERY_MS);
+ let followed: ReturnType<typeof setTimeout> | undefined;
+ /** A round once the service's clock is past the journal's latest not_after, ms from its newest
+  *  now_ms: the writes held back for it (a Leave's delete) go then, not at the next round due. Only
+  *  in the background (tests sync by hand). */
+ function followUp(ms: number) {
+  if (!place.background) return;
+  clearTimeout(followed);
+  followed = setTimeout(() => { if (account.current) void sync().catch(() => {}); }, Math.max(0, ms) + 1_000);
+ }
 
  return {
   /** The current account's shares as this browser knows them; none signed out. */

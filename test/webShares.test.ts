@@ -227,10 +227,12 @@ test("a Leave while its own tab's pull stalls gets a turn of its own once that r
  } finally { stalled.resolve(); }
 }, CONNECTS_LIMIT_MS);
 
-// A push given up at its deadline may still land, however late: its writes stay journaled, and the
-// next round (any tab's) sends them again as they were, before anything else of their share. The
-// late request then can't write: the share has moved off the base it was sent on.
-test("a push given up at its deadline is sent again as it was before a Leave of its share: landing late, it brings nothing back", async () => {
+// A push given up at its deadline may still land until its not_after: its writes stay journaled,
+// the next round (any tab's) sends them again as they were, before anything else of their share,
+// and the share's next write waits until a pull shows the service past that not_after. A Leave
+// then can't put a tombstone under the late request: the service may prune it by count (it keeps
+// the newest 2,000) and a put based on 0 would write the share back.
+test("a push given up at its deadline is sent again as it was, and a Leave of its share waits out its not_after: landing late, past a tombstone pruned, it brings nothing back", async () => {
  const w = worker(), h = host();
  const { a, b, grants, storage } = await twoTabs(w);
  w.holdNextPush = true;
@@ -238,13 +240,20 @@ test("a push given up at its deadline is sent again as it was before a Leave of 
  const id = `${h.relay.hostID}/${access.guestID}`;
  // a's put went unanswered, given up: not on the account (yet).
  expect(w.sharesIn("acct")).toEqual([]);
- await b.desk.forgetGuestConnection(id);
+ // b sends the put again; its delete waits: the late put could still land.
+ const left = await b.desk.forgetGuestConnection(id).then(() => "sent", (error: unknown) => error instanceof LeaveUnsent ? "unsent" : error);
+ const replayed = w.sharesIn("acct");
+ await b.shares.sync();
+ w.keepTombstones(0);
  w.landHeld();
+ // Past the late put's not_after, the delete goes, and its tombstone may go too.
+ w.serverNow += 121_000;
  await a.shares.sync();
  await b.shares.sync();
+ w.keepTombstones(0);
  const record = JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct")!) as { pending: unknown[]; sent: unknown[] };
  const writes = sharesOn(w).map(c => `${c.deleted ? "delete" : "put"} ${c.base_rev}`);
- expect([w.sharesIn("acct"), await grants.list(), b.shares.list(), record.pending, record.sent, writes]).toEqual([[], [], [], [], [], ["put 0", "put 0", "delete 1"]]);
+ expect([left, replayed, w.sharesIn("acct"), await grants.list(), b.shares.list(), record.pending, record.sent, writes]).toEqual(["unsent", [id], [], [], [], [], [], ["put 0", "put 0", "delete 1"]]);
 }, CONNECTS_LIMIT_MS);
 
 test("a bound accept writes the share to the account; another browser of the account opens it with no invite", async () => {
@@ -349,7 +358,8 @@ test("a Leave whose delete isn't taken yet still owes its grant's removal while 
  const mac = await browser(w, true, grants);
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- w.seedShare(id, { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs (renamed)" });
+ // Another device of the account rewrites the share (revision 2) as the Leave's delete goes.
+ w.onPush = () => w.seedShare(id, { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs (renamed)" });
  grants.failing = 3;
  await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow("aborted");
  expect([w.sharesIn("acct"), (await grants.get(id))?.guestID, recordOf(mac.storage).drop]).toEqual([[id], access.guestID, [id]]);
@@ -361,7 +371,7 @@ test("a browser whose put was taken but whose readback failed still drops its bo
  const w = worker(), h = host();
  const mac = await browser(w), linux = await browser(w);
  // The put is applied; the pull after it is answered 503: this browser never sees the share live.
- w.failPull = true;
+ w.afterPush = () => { w.failPull = true; };
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
  expect([sharesOn(w).length, w.failPull, (await mac.grants.get(id))?.accountBound]).toEqual([1, false, true]);
@@ -474,8 +484,8 @@ test("a leave based on a revision the share has moved past stays pending, and th
  const mac = await browser(w), linux = await browser(w);
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- // Another device of the account rewrites the share (revision 2) before this browser pulls it.
- w.seedShare(id, { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs (renamed)" });
+ // Another device of the account rewrites the share (revision 2) as this browser's delete goes.
+ w.onPush = () => w.seedShare(id, { relay: h.relay.url, host_id: h.relay.hostID, node_pub: toB64url(h.relay.hostPublic), guest_id: access.guestID, agent_name: "docs (renamed)" });
  await mac.desk.forgetGuestConnection(id);
  expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
  expect(await mac.desk.syncedShares()).toEqual([]);

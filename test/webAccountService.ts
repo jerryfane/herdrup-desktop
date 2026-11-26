@@ -54,6 +54,12 @@ export function worker() {
   floor: 0,
   /** Tombstones at or below rev go and the floor rises to it (sync.ts:357-362, :432-443). */
   prune(rev: number) { w.floor = Math.max(w.floor, rev); for (const [id, it] of items) if (it.deleted && it.rev <= w.floor) items.delete(id); },
+  /** A push's count prune (sync.ts MAX_TOMBSTONES, RAISE_FLOOR and TRIM_TOMBSTONES): past max
+   *  tombstones, the floor rises to the newest that doesn't fit, and every one at or below it goes. */
+  keepTombstones(max: number) {
+   const tombs = [...items.values()].filter(it => it.deleted).sort((a, b) => b.rev - a.rev);
+   if (tombs.length > max) w.prune(tombs[max]!.rev);
+  },
   /** The account's live items, every collection (sync.ts MAX_ACCOUNT_ITEMS). */
   maxItems: 2000,
   /** The account a refresh signs the cookie in to (another sign-in changes it). */
