@@ -49,7 +49,7 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
  if (providers.length === 0) return plain();
  const waiting = node("p", "guest-note"); waiting.setAttribute("role", "status"); waiting.hidden = true;
  const pair = node("div", "guest-choice-pair");
- const signIn = providerButtons(providers, provider => {
+ const signIn = providerButtons(providers, (provider, pressed) => {
   if (hooks.before && !hooks.before()) return;
   for (const button of buttons) button.disabled = true;
   waiting.textContent = "Finish signing in in your browser."; waiting.hidden = false;
@@ -57,9 +57,7 @@ export async function acceptChoices(invite: Pick<GuestInvitation, "account">, re
   const off = events.accountChanged.on(next => {
    if (!next.signedIn) return;
    stop(); waiting.hidden = true;
-   // providerButtons lists Apple, then Google, each when offered.
-   const pressed = signIn[(["apple", "google"] as const).filter(p => providers.includes(p)).indexOf(provider)];
-   if (pressed) redeem("account", pressed);
+   redeem("account", pressed);
   });
   stop = () => { off(); stop = () => {}; };
   Desk.accountSignIn(provider).catch((failure: unknown) => {

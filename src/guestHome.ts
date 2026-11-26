@@ -35,7 +35,7 @@ export interface GuestHomeDeps {
  * list under the bar, and Settings (App/GuestSettingsView.swift) in the detail column. */
 export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: GuestHomeDeps, callbacks: {
  hosts(): void; open(target: AgentTarget): void;
-}, options: { settings: boolean; account?: () => HTMLElement | null } = { settings: true }) {
+}, options: { settings: boolean; account?: () => HTMLElement | null; shared?: () => HTMLElement | null } = { settings: true }) {
  const navigation = node("section", "guest-navigation"); navigation.hidden = true;
  const settings = node("section", "guest-settings settings-detail"); settings.hidden = true;
  // Where the owner's roster sits: between the top bar and the sidebar's foot (the tab bar).
@@ -185,7 +185,10 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    const accountCard = node("div", "guest-card guest-settings-card guest-account"); accountCard.append(account);
    accountPart.push(node("h3", "guest-settings-section", ACCOUNT_TITLE), accountCard);
   }
-  body.append(card, ...accountPart, ...shareDetails(guest));
+  // The account's shares (sharedWithYou.ts sharedSection, the browser guest's: web/main.ts): every
+  // share in reach from here, each opening in place of this one. It shows and hides itself.
+  const shared = options.shared?.() ?? null;
+  body.append(card, ...accountPart, ...(shared ? [shared] : []), ...shareDetails(guest));
   settings.replaceChildren(node("h1", "settings-page-title", "Settings"), body);
  }
 

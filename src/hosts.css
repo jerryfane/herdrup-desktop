@@ -27,6 +27,8 @@
    and back out over 0.2 s. */
 .host-home .host-home-row { transition:background-color var(--motion-settle-duration) var(--motion-settle-ease); }
 .host-home .host-home-row:active { background:var(--color-surface-raised); transition-duration:calc(var(--motion-settle-duration) / 4); }
+/* SHARED WITH YOU's machine over its agent rows (sharedWithYou.ts): a heading, never pressed. */
+.host-home .host-home-row.host-shared-machine:active { background:none; }
 .host-home-icon { width:22px; flex:none; display:flex; align-items:center; justify-content:center; color:var(--color-text-dim); }
 .host-computer-glyph { width:19px; height:19px; display:block; background:currentColor; mask:var(--host-computer) center/contain no-repeat; -webkit-mask:var(--host-computer) center/contain no-repeat; }
 .host-home-lines { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }

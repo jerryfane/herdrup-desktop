@@ -3,6 +3,7 @@
 // redeems an invitation, and the grant is kept. Later visits resume the kept grant.
 
 import type { Access, Desk } from "../mygo";
+import type { WebAccount } from "./account";
 import { APP_LINK_PREFIX, shortSegment } from "../webguest/invite";
 import { notInvite } from "../webguest/errors";
 
@@ -107,10 +108,22 @@ export function pendingBindWaits(storage: () => TabStorage): boolean {
  try { return storage().getItem(PENDING_BIND_KEY) !== null; } catch { return false; }
 }
 
-/** What a start knows about the account: whether this browser is signed in now, the invite whose
- *  sign-in this load ends (takePendingBind), and how that sign-in ended (null when this load isn't
- *  a sign-in's return; problem null for a session, else the error in words, "" for a cancel). */
+/** What a start knows about the account: whether this browser is signed in now (a rejection: the
+ *  check failed, which is not a sign-out), the invite whose sign-in this load ends
+ *  (takePendingBind), and how that sign-in ended (null when this load isn't a sign-in's return;
+ *  problem null for a session, else the error in words, "" for a cancel). */
 export interface StartAccount { signedIn(): Promise<boolean>; pending: string | null; signIn: { problem: string | null } | null }
+
+/** The start's account facts on this page (main.ts). signedIn asks the service for the session the
+ *  cookie holds (WebAccount.check, a refresh), never the new document's empty memory: an invite
+ *  load skips boot's own lookup (bootChoice.ts choosePage), and a bind must know before it chooses
+ *  between binding and signing in. */
+export function startAccount(account: Pick<WebAccount, "check">, pending: string | null, signIn: StartAccount["signIn"]): StartAccount {
+ return { signedIn: async () => await account.check() !== null, pending, signIn };
+}
+
+/** The bind's choice when the sign-in check itself failed (the service unreachable, a timeout). */
+export const CHECK_FAILED = "HerdrUp couldn't check your sign-in. Sign in, or choose Only this device.";
 
 /** Redeems payload, keeping it as keep says, and opens it. */
 export async function acceptInvite(desk: StartDesk, payload: string, origin: string, keep: "account" | "device"): Promise<Started> {
@@ -141,7 +154,11 @@ export async function start(desk: StartDesk, fragment: string, origin: string, o
   if (account.signIn === null || account.signIn.problem !== null) return { kind: "bind", payload, problem: account.signIn?.problem ?? "" };
  }
  if (payload !== "") {
-  if (bind && !await account.signedIn()) return provider !== null ? { kind: "signIn", payload, provider } : { kind: "bind", payload, problem: "" };
+  if (bind) {
+   let signedIn: boolean;
+   try { signedIn = await account.signedIn(); } catch { return { kind: "bind", payload, problem: CHECK_FAILED }; }
+   if (!signedIn) return provider !== null ? { kind: "signIn", payload, provider } : { kind: "bind", payload, problem: "" };
+  }
   try {
    return await acceptInvite(desk, payload, origin, bind ? "account" : "device");
   } catch (error) {

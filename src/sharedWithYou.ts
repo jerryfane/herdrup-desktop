@@ -9,13 +9,16 @@ import type { Access, SyncedShare } from "./mygo";
 import { element, hostGlyph, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type SymbolRenderer } from "./hostHome";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
 
-/** How a machine's row opens it: a grant this device holds, or a synced share it doesn't yet. */
+/** How a row opens its share: a grant this device holds, or a synced share it doesn't yet. */
 export type ShareOpen = { kind: "grant"; id: string } | { kind: "synced"; id: string };
 
-/** One machine of SHARED WITH YOU: its name, whose it is, the agents shared on it, and how its row
- *  opens it (the first grant held here, else the first synced share). fromAccount: only the
- *  account has it, so opening it adds this device (the owner sees each device). */
-export interface SharedMachine { hostID: string; machine: string; owner: string; agents: string[]; open: ShareOpen; fromAccount: boolean }
+/** One share on a machine: its agent, and how its row opens it. */
+export interface SharedGrant { agent: string; open: ShareOpen }
+
+/** One machine of SHARED WITH YOU: its name, whose it is, the agents shared on it, and each share
+ *  on it, held here first, each opening on its own. fromAccount: only the account has it, so
+ *  opening it adds this device (the owner sees each device). */
+export interface SharedMachine { hostID: string; machine: string; owner: string; agents: string[]; grants: SharedGrant[]; fromAccount: boolean }
 
 const grantID = (a: Pick<Access, "endpoint" | "guestID">) => `${a.endpoint.hostID}/${a.guestID}`;
 
@@ -26,9 +29,10 @@ export function sharedMachines(grants: readonly Access[], synced: readonly Synce
  const byHost = new Map<string, SharedMachine>();
  const add = (hostID: string, machine: string, owner: string, agent: string, open: ShareOpen) => {
   const had = byHost.get(hostID);
-  if (had === undefined) { byHost.set(hostID, { hostID, machine, owner, agents: agent ? [agent] : [], open, fromAccount: open.kind === "synced" }); return; }
+  if (had === undefined) { byHost.set(hostID, { hostID, machine, owner, agents: agent ? [agent] : [], grants: [{ agent, open }], fromAccount: open.kind === "synced" }); return; }
   if (agent && !had.agents.includes(agent)) had.agents.push(agent);
-  if (open.kind === "grant" && had.open.kind === "synced") { had.open = open; had.fromAccount = false; }
+  had.grants.push({ agent, open });
+  if (open.kind === "grant") had.fromAccount = false;
  };
  const held = new Set<string>();
  for (const g of grants) { held.add(grantID(g)); add(g.endpoint.hostID, g.machineLabel || g.agentName, g.ownerName, g.agentName, { kind: "grant", id: grantID(g) }); }
@@ -38,6 +42,8 @@ export function sharedMachines(grants: readonly Access[], synced: readonly Synce
   if (s.local) { add(s.hostID, s.machineLabel || s.agentName, s.ownerName, s.agentName, { kind: "grant", id: s.id }); continue; }
   add(s.hostID, s.machineLabel || s.agentName, s.ownerName, s.agentName, { kind: "synced", id: s.id });
  }
+ // Held here first: a machine's one row, or its first agent row, is the grant before any synced share.
+ for (const m of byHost.values()) m.grants.sort((a, b) => Number(a.open.kind === "synced") - Number(b.open.kind === "synced"));
  return [...byHost.values()];
 }
 
@@ -64,25 +70,40 @@ export function syncedSharesNow(signedIn: boolean): Promise<SyncedShare[]> {
 }
 
 /** The section, drawn again with draw(): the native sharedSection rows (person.2, the machine over
- *  sharedLine, the chevron) and the account's note. Picking a row opens it (openShared), then
- *  opened(); a failure goes to report. busy keeps the rows disabled while another connect runs. */
-export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false) {
- const { root, rows } = hostSection("SHARED WITH YOU"); root.hidden = true;
+ *  sharedLine, the chevron) and the account's note. A machine with one share is one row that opens
+ *  it; one with more is its row (the machine over who shared it), then a row per share, the agent's
+ *  name, each opening its own. Picking a row opens it (openShared), then opened(); a failure goes
+ *  to report. busy keeps the rows disabled while another connect runs. label: the heading. */
+export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false, label = "SHARED WITH YOU") {
+ const { root, rows } = hostSection(label); root.hidden = true;
  const note = element("p", "host-home-note host-shared-note"); note.hidden = true;
  root.append(note);
  let version = 0;
+ const openRow = (open: ShareOpen, icon: HTMLElement, lines: HTMLElement, chevron: HTMLElement) => {
+  const row = element("button", "host-home-row"); row.type = "button"; row.disabled = busy();
+  row.onclick = () => { row.disabled = true; void openShared(open).then(opened).catch(report).finally(() => { row.disabled = busy(); }); };
+  row.append(icon, lines, chevron);
+  return row;
+ };
  return {
   root,
-  /** Draws machines (sharedMachines); resolves with how many rows it drew, or null when a newer
-   *  draw took over meanwhile. */
+  /** Draws machines (sharedMachines); resolves with how many machines it drew, or null when a
+   *  newer draw took over meanwhile. */
   async draw(machines: readonly SharedMachine[]): Promise<number | null> {
    const at = ++version;
    const nodes: HTMLElement[] = [];
    for (const m of machines) {
-    const row = element("button", "host-home-row"); row.type = "button"; row.disabled = busy();
-    row.onclick = () => { row.disabled = true; void openShared(m.open).then(opened).catch(report).finally(() => { row.disabled = busy(); }); };
-    row.append(hostRowIcon(await hostGlyph(symbol, "person.2", usersIcon)), hostRowLines(m.machine, sharedLine(m)), hostRowChevron(await symbol("chevron.right", 13, "semibold")));
-    nodes.push(row);
+    const icon = hostRowIcon(await hostGlyph(symbol, "person.2", usersIcon));
+    const only = m.grants.length === 1 ? m.grants[0] : undefined;
+    if (only) { nodes.push(openRow(only.open, icon, hostRowLines(m.machine, sharedLine(m)), hostRowChevron(await symbol("chevron.right", 13, "semibold")))); continue; }
+    const head = element("div", "host-home-row host-shared-machine");
+    head.append(icon, hostRowLines(m.machine, m.owner ? `shared by ${m.owner}` : null));
+    nodes.push(head);
+    for (const g of m.grants) {
+     const row = openRow(g.open, hostRowIcon(""), hostRowLines(g.agent || m.machine, null), hostRowChevron(await symbol("chevron.right", 13, "semibold")));
+     row.setAttribute("aria-label", `${g.agent || m.machine} on ${m.machine}`);
+     nodes.push(row);
+    }
    }
    if (at !== version) return null;
    rows.replaceChildren(...nodes);

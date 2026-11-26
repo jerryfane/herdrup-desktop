@@ -10,13 +10,14 @@ import { afterEach, expect, test } from "bun:test";
 import { acceptChoices, type Keep } from "../src/guestAccept";
 import { accountNote, sharedLine, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
 import { accountShareNotice, showAccountShareNotice } from "../src/notices";
-import { leaveWords } from "../src/guestHome";
+import { initGuestHome, leaveWords } from "../src/guestHome";
 import { errorText } from "../src/errors";
-import { bindRequest, PENDING_BIND_KEY, pendingBindWaits, start, takePendingBind, type Started } from "../src/web/start";
+import { bindRequest, CHECK_FAILED, PENDING_BIND_KEY, pendingBindWaits, start, startAccount, takePendingBind, type Started, type StartAccount } from "../src/web/start";
+import { WebAccount } from "../src/web/account";
 import { showBindChoice, signInToBind, type BindPage } from "../src/web/bindChoice";
 import { createAccountDesk } from "../src/web/accountDesk";
 import { notInvite } from "../src/webguest/errors";
-import { Desk, type Access, type SyncedShare } from "../src/mygo";
+import { Desk, type Access, type Features, type SyncedShare } from "../src/mygo";
 import { FakeDocument, type FakeElement } from "./fakeDom";
 
 const G = globalThis as { document?: unknown; mygo?: unknown; ResizeObserver?: unknown };
@@ -145,21 +146,47 @@ const share = (hostID: string, guestID: string, agentName: string, ownerName: st
  id: `${hostID}/${guestID}`, relay: "https://guest.herdrup.app", hostID, nodePub: "", guestID, agentName, ownerName, machineLabel, shareGram: false, local,
 });
 
-test("SHARED WITH YOU: one row per machine from the grants held here and the account's shares (g4, g5)", () => {
+test("SHARED WITH YOU: one entry per machine from the grants held here and the account's shares, each share on it kept (g4, g5)", () => {
  const grants = [grant("H1", "g1", "enyo", "jerry", "hetzner", true)];
  const synced = [share("H1", "g1", "enyo", "jerry", "hetzner", true), share("H1", "g2", "orgstudio", "jerry", "hetzner", false), share("H2", "g3", "landing", "maya", "", false)];
  const rows = sharedMachines(grants, synced);
- expect(rows.map(r => [r.machine, sharedLine(r), r.open, r.fromAccount])).toEqual([
-  ["hetzner", "enyo, orgstudio · shared by jerry", { kind: "grant", id: "H1/g1" }, false],
-  ["landing", "landing · shared by maya", { kind: "synced", id: "H2/g3" }, true],
+ expect(rows.map(r => [r.machine, sharedLine(r), r.grants, r.fromAccount])).toEqual([
+  ["hetzner", "enyo, orgstudio · shared by jerry", [{ agent: "enyo", open: { kind: "grant", id: "H1/g1" } }, { agent: "orgstudio", open: { kind: "synced", id: "H1/g2" } }], false],
+  ["landing", "landing · shared by maya", [{ agent: "landing", open: { kind: "synced", id: "H2/g3" } }], true],
  ]);
  expect(accountNote(rows)).toBe("From your HerdrUp account: nothing to accept here. maya sees each device you open it on.");
  // Only the account has hetzner (g4): it opens with openSyncedShare.
  const remote = sharedMachines([], [share("H1", "g1", "enyo", "jerry", "hetzner", false)]);
- expect(remote.map(r => [r.machine, sharedLine(r), r.open])).toEqual([["hetzner", "enyo · shared by jerry", { kind: "synced", id: "H1/g1" }]]);
+ expect(remote.map(r => [r.machine, sharedLine(r), r.grants])).toEqual([["hetzner", "enyo · shared by jerry", [{ agent: "enyo", open: { kind: "synced", id: "H1/g1" } }]]]);
+ // Two grants held here on one machine (the desktop's saved grants): both stay.
+ const both = sharedMachines([grant("H1", "g1", "enyo", "jerry", "hetzner"), grant("H1", "g4", "enyo", "jerry", "hetzner")], []);
+ expect(both.map(r => [sharedLine(r), r.grants.map(g => g.open)])).toEqual([["enyo · shared by jerry", [{ kind: "grant", id: "H1/g1" }, { kind: "grant", id: "H1/g4" }]]]);
+ // A grant held here opens before a synced share of the same machine, whatever came first.
+ const local = sharedMachines([], [share("H1", "g2", "orgstudio", "jerry", "hetzner", false), share("H1", "g1", "enyo", "jerry", "hetzner", true)]);
+ expect(local[0]!.grants.map(g => g.open)).toEqual([{ kind: "grant", id: "H1/g1" }, { kind: "synced", id: "H1/g2" }]);
+ expect(local[0]!.fromAccount).toBe(false);
  expect(sharedMachines([], [])).toEqual([]);
  expect(accountNote(sharedMachines(grants, []))).toBeNull();
  expect(sharedLine({ agents: ["enyo"], owner: "" })).toBe("enyo");
+});
+
+test("a machine with several shares: its row, then a row per share, each opening its own", async () => {
+ const { calls } = bridge({ "Desk.OpenSyncedShare": undefined, "Desk.ConnectGuest": undefined });
+ const symbol = async () => (G.document as FakeDocument).createElement("span") as unknown as HTMLElement;
+ let opened = 0;
+ const section = sharedSection(symbol, () => { opened++; }, () => {}, () => false, "YOUR SHARED AGENTS");
+ const root = section.root as unknown as FakeElement;
+ const machines = sharedMachines([grant("H1", "g1", "enyo", "jerry", "hetzner")], [share("H1", "g2", "orgstudio", "jerry", "hetzner", false)]);
+ expect(await section.draw(machines)).toBe(1);
+ expect(shown(root)).toEqual(expect.arrayContaining(["YOUR SHARED AGENTS", "hetzner", "shared by jerry", "enyo", "orgstudio"]));
+ // The machine's row is a heading here, not a control; each share is its own button.
+ expect(buttons(root).map(b => b.getAttribute("aria-label"))).toEqual(["enyo on hetzner", "orgstudio on hetzner"]);
+ named(root, "orgstudio").click();
+ await settle();
+ named(root, "enyo").click();
+ await settle();
+ expect(calls).toEqual([["Desk.OpenSyncedShare", "H1/g2"], ["Desk.ConnectGuest", "H1/g1"]]);
+ expect(opened).toBe(2);
 });
 
 test("a row the account brought opens with openSyncedShare; one held here connects its grant", async () => {
@@ -210,8 +237,9 @@ function tabStorage(entries: [string, string][] = []) {
 }
 const KEPT: [string, string] = [PENDING_BIND_KEY, JSON.stringify({ payload: "PAYLOAD", bind: true })];
 
-/** start() against a desk that records each accept's text and keep. */
-async function startWith(fragment: string, account: { signedIn: boolean; pending?: string | null; signIn?: { problem: string | null } | null }, bound = true, held: Access[] = []) {
+/** start() against a desk that records each accept's text and keep; account is the start's own
+ *  (startAccount over a WebAccount) or a fixed answer, counted. */
+async function startWith(fragment: string, account: { signedIn: boolean; pending?: string | null; signIn?: { problem: string | null } | null } | StartAccount, bound = true, held: Access[] = []) {
  const keeps: string[] = [], connects: string[] = [];
  let asked = 0;
  const desk = {
@@ -219,11 +247,44 @@ async function startWith(fragment: string, account: { signedIn: boolean; pending
   acceptGuestInvitation: async (text: string, keep: string) => { keeps.push(`${text} ${keep}`); return grant("H", "G", "enyo", "jerry", "hetzner", bound && keep === "account"); },
   connectGuest: async (id: string) => { connects.push(id); },
  };
- const started = await start(desk, fragment, "https://guest.herdrup.app", () => null, {
-  signedIn: async () => { asked++; return account.signedIn; }, pending: account.pending ?? null, signIn: account.signIn ?? null,
+ const fixed = account;
+ const started = await start(desk, fragment, "https://guest.herdrup.app", () => null, typeof fixed.signedIn === "function" ? fixed as StartAccount : {
+  signedIn: async () => { asked++; return fixed.signedIn as boolean; }, pending: fixed.pending ?? null, signIn: fixed.signIn ?? null,
  });
  return { keeps, asked, started, connects };
 }
+
+/** This page's WebAccount, its memory empty (a new document), over a refresh that answers as given. */
+function cookieAccount(refresh: () => Response | Promise<Response>) {
+ const sent: string[] = [];
+ const fetcher = async (url: string) => { sent.push(url); return await refresh(); };
+ return { account: new WebAccount(fetcher as unknown as typeof fetch, undefined, undefined, null), sent };
+}
+const SESSION = () => Response.json({ account_id: "acct-1", access_token: `a1.${"s".repeat(22)}.${"1".padStart(43, "0")}`, access_expires_in: 3600 });
+
+test("the start asks the cookie: a page whose memory knows no session yet binds at once, and on its sign-in's return", async () => {
+ for (const [fragment, pending, signIn] of [["PAYLOAD&bind=1&provider=apple", null, null], ["PAYLOAD&bind=1", null, null], ["", "PAYLOAD", { problem: null }]] as const) {
+  const { account, sent } = cookieAccount(SESSION);
+  expect(account.current).toBeNull();
+  const r = await startWith(fragment, startAccount(account, pending, signIn));
+  expect(r).toEqual({ keeps: ["herdrup://guest-invite#PAYLOAD account"], asked: 0, connects: ["H/G"], started: { kind: "connected", id: "H/G", inAccount: "enyo" } });
+  expect(sent.map(u => u.endsWith("/v1/auth/refresh"))).toEqual([true]);
+ }
+});
+
+test("a sign-out the service confirms signs in or asks; a check that fails asks with why, never this browser alone", async () => {
+ const signedOut = () => cookieAccount(() => Response.json({ error: "session_revoked" }, { status: 401 })).account;
+ expect((await startWith("PAYLOAD&bind=1&provider=apple", startAccount(signedOut(), null, null))).started).toEqual({ kind: "signIn", payload: "PAYLOAD", provider: "apple" });
+ expect((await startWith("PAYLOAD&bind=1", startAccount(signedOut(), null, null))).started).toEqual({ kind: "bind", payload: "PAYLOAD", problem: "" });
+ expect((await startWith("", startAccount(signedOut(), "PAYLOAD", { problem: null }))).started).toEqual({ kind: "bind", payload: "PAYLOAD", problem: "" });
+ const failures = [() => Promise.reject(new TypeError("Failed to fetch")), () => Response.json({ error: "unavailable" }, { status: 503 })];
+ for (const refresh of failures) {
+  for (const [fragment, pending, signIn] of [["PAYLOAD&bind=1&provider=google", null, null], ["PAYLOAD&bind=1", null, null], ["", "PAYLOAD", { problem: null }]] as const) {
+   const r = await startWith(fragment, startAccount(cookieAccount(refresh).account, pending, signIn));
+   expect(r).toEqual({ keeps: [], asked: 0, connects: [], started: { kind: "bind", payload: "PAYLOAD", problem: CHECK_FAILED } });
+  }
+ }
+});
 
 test("only the payload reaches the invite decoder; a fragment of another shape is refused as a malformed invite", async () => {
  expect((await startWith("PAYLOAD&bind=1&provider=apple", { signedIn: true })).keeps).toEqual(["herdrup://guest-invite#PAYLOAD account"]);
@@ -362,4 +423,23 @@ test("leaving a share in the account says it leaves every device; a plain share,
  expect(plain).toEqual({ title: "Leave hetzner?", message: "enyo disappears from this device.", note: "You stop seeing enyo. To come back, jerry has to send a new invite." });
  const bound = leaveWords({ machineLabel: "hetzner", agentName: "enyo", ownerName: "jerry", accountBound: true });
  expect(bound).toEqual({ title: "Leave hetzner on all your devices?", message: "enyo disappears from every device signed in to your HerdrUp account.", note: "You stop seeing enyo on all your devices. To come back, jerry has to send a new invite." });
+});
+
+test("the browser guest's Settings holds the account's shares under the account, before this share's details", async () => {
+ const { doc } = bridge({});
+ const sidebar = doc.createElement("div"), detail = doc.createElement("div");
+ doc.body.append(sidebar, detail);
+ const accountPanel = doc.createElement("div"); accountPanel.textContent = "Signed in";
+ const list = doc.createElement("div"); list.textContent = "YOUR SHARED AGENTS";
+ const home = initGuestHome(sidebar as unknown as HTMLElement, detail as unknown as HTMLElement, {
+  symbol: async () => doc.createElement("span") as unknown as HTMLElement, rowAvatar: () => doc.createElement("span") as unknown as HTMLElement,
+  placeInitials: async () => {}, spinner: "",
+ }, { hosts() {}, open() {} }, { settings: true, account: () => accountPanel as unknown as HTMLElement, shared: () => list as unknown as HTMLElement });
+ const guest = { access: grant("H1", "g1", "enyo", "jerry", "hetzner", true), features: {} as Features, fingerprint: "AB:CD", availability: "" };
+ home.update({ phase: "connecting", message: "", machine: "", herdr: "", live: false, guest }, null, "settings", true, null);
+ await settle();
+ const body = detail.all().find(n => n.className === "settings-page-body")!;
+ const order = body.children.map(n => n === list ? "list" : n.all().includes(accountPanel) ? "account" : n.textContent);
+ expect(order.indexOf("list")).toBe(order.indexOf("account") + 1);
+ expect(order.indexOf("Shared with you")).toBe(order.indexOf("list") + 1);
 });
