@@ -126,6 +126,11 @@ export class TopicsPane {
  /** Each topic's notes by slot (NoteSlot), by topic id: a send or a Close that settles after its
   *  topic was left shows there when the topic opens again. */
  private readonly notes: Record<NoteSlot, Map<string, string>> = { send: new Map(), lifecycle: new Map() };
+ /** The newest Close or Reopen asked per topic id (lifecycle): only its answer writes the topic's
+  *  lifecycle note, so an older one that comes back later changes nothing. */
+ private readonly lifecycleSeq = new Map<string, number>();
+ /** The topic whose lifecycle note the list shows: the last one closed or reopened from its row. */
+ private listLifecycle: string | null = null;
  private inbox = "";
  private wide = false;
  private shown = false;
@@ -274,7 +279,7 @@ export class TopicsPane {
    this.chat = new TopicChat(this.host, topic, () => this.showList(), {
     read: (topicID, slot) => this.notes[slot].get(topicID) ?? null,
     write: (topicID, slot, note) => this.setNote(topicID, slot, note),
-   });
+   }, (topicID, item) => this.lifecycle(topicID, item, false));
    this.chat.setActive(this.shown);
    this.side.replaceChildren(this.chat.root);
    this.chat.focus();
@@ -285,17 +290,32 @@ export class TopicsPane {
   this.layout();
  }
 
- /** A topic's note in one slot, drawn now when that topic is the one open. */
+ /** A topic's note in one slot, drawn now when that topic is the one open (and in the list, for
+  *  the lifecycle note of the topic last closed or reopened from its row). */
  private setNote(topicID: string, slot: NoteSlot, note: string | null) {
   if (note) this.notes[slot].set(topicID, note); else this.notes[slot].delete(topicID);
   if (this.chat?.topicID === topicID) this.chat.drawNote(slot, note);
+  if (slot === "lifecycle" && this.listLifecycle === topicID) this.drawList();
+ }
+
+ /** Close or Reopen of one topic, from its row's menu (fromList) or its conversation's: the newest
+  *  request per topic owns the topic's lifecycle note, which a refusal sets and a success clears. */
+ private lifecycle(topicID: string, item: "Close" | "Reopen", fromList: boolean) {
+  const seq = (this.lifecycleSeq.get(topicID) ?? 0) + 1;
+  this.lifecycleSeq.set(topicID, seq);
+  if (fromList) { this.actionNote = null; this.listLifecycle = topicID; this.drawList(); }
+  const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose;
+  void call(this.host.token, topicID).then(() => null, (error: unknown) => errorText(error)).then(note => {
+   if (!this.disposed && this.lifecycleSeq.get(topicID) === seq) this.setNote(topicID, "lifecycle", note);
+  });
  }
 
  private drawList() {
   const u = this.update, query = this.searchInput.value;
   // Why the newest read failed shows only while the list has no rows: the rows it kept say more
   // (the agent busy with another topic misses a read; its topics are still there).
-  const note = this.actionNote ?? (this.topics().length ? "" : u?.problem ?? "");
+  const listed = this.listLifecycle === null ? undefined : this.notes.lifecycle.get(this.listLifecycle);
+  const note = this.actionNote ?? listed ?? (this.topics().length ? "" : u?.problem ?? "");
   this.problem.replaceChildren(); this.problem.hidden = note === "" && this.organiseText === null;
   // A refusal or problem has a dot; what Organise is doing is plain dim text (TopicsView: topics-organise-note).
   if (note) { const dot = el("span", "topics-problem-dot"); dot.setAttribute("aria-hidden", "true"); this.problem.append(dot, el("span", "", note)); }
@@ -422,7 +442,7 @@ export class TopicsPane {
  }
 
  private row(topic: TopicInfo): HTMLElement {
-  const row = button("", "topic-row", () => { this.actionNote = null; this.select(topic.topic_id); });
+  const row = button("", "topic-row", () => { this.actionNote = null; this.listLifecycle = null; this.select(topic.topic_id); });
   row.dataset.topic = topic.topic_id;
   if (topic.state === "closed") row.dataset.closed = "";
   if (this.wide && this.selected === topic.topic_id) row.setAttribute("aria-current", "true");
@@ -443,8 +463,7 @@ export class TopicsPane {
   if (line.childElementCount) row.append(line);
   const menu = () => popup(["Rename…", topic.state === "closed" ? "Reopen" : "Close"], item => {
    if (item === "Rename…") this.openRename(topic);
-   else if (item === "Reopen") void this.act(() => Desk.topicsReopen(this.host.token, topic.topic_id));
-   else if (item === "Close") void this.act(() => Desk.topicsClose(this.host.token, topic.topic_id));
+   else if (item === "Reopen" || item === "Close") this.lifecycle(topic.topic_id, item, true);
   });
   row.setAttribute("aria-haspopup", "menu");
   row.addEventListener("contextmenu", event => { event.preventDefault(); menu(); });
@@ -618,7 +637,8 @@ class TopicChat {
  /** What the page's composer needs of this topic while it writes here. */
  private readonly composer: TopicComposer;
 
- constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, private readonly notes: TopicNotes) {
+ constructor(private readonly host: TopicsHost, private topic: TopicInfo, showList: () => void, private readonly notes: TopicNotes,
+  lifecycle: (topicID: string, item: "Close" | "Reopen") => void) {
   // The topic's header (Apple clean, owner picks 2026-11-24, items 14 and 15): [sidebar Topics ⌥⌘T |]
   // ‹ Inbox | title, status … •••, its text buttons capsules.
   this.listButton = button("Topics", "topic-list-open button-compact", showList);
@@ -632,8 +652,7 @@ class TopicChat {
   void host.symbol("chevron.left", 13, "semibold").then(icon => chevron.append(icon));
   inbox.append(chevron, el("span", "", "Inbox"));
   const actions = button("", "topic-actions", () => popup([this.topic.state === "closed" ? "Reopen" : "Close"], item => {
-   const call = item === "Reopen" ? Desk.topicsReopen : Desk.topicsClose, topicID = this.topic.topic_id;
-   void call(this.host.token, topicID).then(() => notes.write(topicID, "lifecycle", null), error => notes.write(topicID, "lifecycle", errorText(error)));
+   if (item === "Reopen" || item === "Close") lifecycle(this.topic.topic_id, item);
   }));
   actions.setAttribute("aria-label", "Topic actions"); actions.setAttribute("aria-haspopup", "menu");
   // The page's own ••• (interaction.ts showMuted): ellipsis has no Windows/Linux stand-in.
