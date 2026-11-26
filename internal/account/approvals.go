@@ -31,18 +31,22 @@ const (
 
 // ApprovalRequest is one browser waiting for approval.
 type ApprovalRequest struct {
-	ID      string `json:"id"`
-	Browser struct {
-		DeviceID  string `json:"device_id"`
-		DevicePub string `json:"device_pub"`
-		Name      string `json:"name"`
-		Platform  string `json:"platform"`
-		CreatedMs int64  `json:"created_ms"`
-	} `json:"browser"`
-	Commit string `json:"commit"`
+	ID      string        `json:"id"`
+	Browser RequestDevice `json:"browser"`
+	Commit  string        `json:"commit"`
 	// Claimed is "no", "you" or "other".
 	Claimed   string `json:"claimed"`
 	ExpiresIn int64  `json:"expires_in"`
+}
+
+// RequestDevice is the device that asks, as GET /v1/approvals lists it: a
+// browser, or the new device of a pair request.
+type RequestDevice struct {
+	DeviceID  string `json:"device_id"`
+	DevicePub string `json:"device_pub"`
+	Name      string `json:"name"`
+	Platform  string `json:"platform"`
+	CreatedMs int64  `json:"created_ms"`
 }
 
 // ApprovalStatus is GET /v1/approvals/<id> as the approver reads it.
@@ -60,6 +64,12 @@ type ApprovalStatus struct {
 	// it computed from the clock. For an expiry, no finish can be recorded
 	// after it (herdrup #801).
 	OutcomeStored bool `json:"outcome_stored,omitempty"`
+	// Kind, Commit, SSHPub and Device come with a pair request only
+	// (pairs.go): what an approver opening it by id needs.
+	Kind   string         `json:"kind,omitempty"`
+	Commit string         `json:"commit,omitempty"`
+	SSHPub string         `json:"ssh_pub,omitempty"`
+	Device *RequestDevice `json:"device,omitempty"`
 }
 
 // ApprovalGrant is what the approver reports with an approval: the scope and
@@ -90,7 +100,8 @@ func (c *Client) WebApproveOffered(ctx context.Context) (bool, error) {
 	return slices.Contains(features, WebApproveFeature), nil
 }
 
-// Approvals lists the browsers waiting for this account's approval.
+// Approvals lists the browsers waiting for this account's approval (pair
+// requests are listed apart: PairRequests).
 func (c *Client) Approvals(ctx context.Context, acct string) ([]ApprovalRequest, error) {
 	var out struct {
 		Requests []ApprovalRequest `json:"requests"`

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -164,7 +163,7 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 	}
 	// Once acknowledged, finish saving even if the scanner has been dismissed.
 	// Otherwise its successful remote grant would silently lose its private key.
-	keyPath, err := d.savePairedIdentity(identity.PrivatePEM)
+	keyPath, err := pairing.SaveIdentity(d.dir, identity.PrivatePEM)
 	if err != nil {
 		return PairedMachine{}, errors.New("Your key was added to that computer, but this device couldn't save it. Remove the herdr-pair line from ~/.ssh/authorized_keys on that computer before pairing again.")
 	}
@@ -179,31 +178,4 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 		label = machine.Host
 	}
 	return PairedMachine{ID: id, Label: label}, nil
-}
-
-func (d *Desk) savePairedIdentity(private []byte) (string, error) {
-	dir := filepath.Join(d.dir, "identities")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	file, err := os.CreateTemp(dir, "herdr-pair-*.key")
-	if err != nil {
-		return "", err
-	}
-	name := file.Name()
-	if _, err := file.Write(private); err != nil {
-		_ = file.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	return name, nil
 }
