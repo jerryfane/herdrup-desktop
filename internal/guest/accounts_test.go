@@ -851,3 +851,39 @@ func TestOpeningASyncedShareStaysInItsSignIn(t *testing.T) {
 		t.Fatalf("open: %+v, %v, devices %d", opened, err, h.relay.Devices())
 	}
 }
+
+// An open drops every statement the host refuses, the retry's too, as a
+// redemption and a connect do: after both are refused, the next open asks
+// for a new statement instead of sending a refused one again.
+func TestAnOpenDropsEveryRefusedStatement(t *testing.T) {
+	h := newAccountHost(t, true)
+	access := h.accept(t, h.statements)
+	second, err := LoadIdentity(filepath.Join(t.TempDir(), "second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	share := Access{GuestID: access.GuestID, Endpoint: access.Endpoint, MachineLabel: access.MachineLabel, OwnerName: access.OwnerName, AgentName: access.AgentName}
+	statements := h.statementsFor("acct", second, "second")
+	// The device the share already holds (an open before, the grant since
+	// let go here): herdr picks the grant by its key, then refuses the
+	// statement itself.
+	if opened, err := Open(context.Background(), share, second, h.now, statements); err != nil || opened.Account != "acct" {
+		t.Fatalf("first open: %+v, %v", opened, err)
+	}
+	h.mu.Lock()
+	h.refuse = "statement_invalid"
+	h.mu.Unlock()
+	if _, err := Open(context.Background(), share, second, h.now, statements); !errors.Is(err, ErrStatementInvalid) {
+		t.Fatalf("both refused: %v", err)
+	}
+	h.mu.Lock()
+	h.refuse = ""
+	h.mu.Unlock()
+	if _, err := Open(context.Background(), share, second, h.now, statements); err != nil {
+		t.Fatal(err)
+	}
+	host := h.relay.HostID()
+	if hellos := h.relay.Hellos()[1:]; !slices.Equal(hellos, []string{"acct.second1." + host, "acct.second1." + host, "acct.second2." + host, "acct.second3." + host}) {
+		t.Fatalf("hellos %q; want two refused, then a third statement", hellos)
+	}
+}
