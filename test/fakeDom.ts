@@ -77,6 +77,7 @@ export class FakeElement extends Listened {
  constructor(readonly tagName: string, readonly ownerDocument: FakeDocument) { super(); }
  setAttribute(name: string, value: string) { this.attributes.set(name, String(value)); }
  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+ removeAttribute(name: string) { this.attributes.delete(name); }
  append(...nodes: (FakeElement | string)[]) {
   for (const n of nodes) {
    if (typeof n === "string") { this.textContent += n; continue; }

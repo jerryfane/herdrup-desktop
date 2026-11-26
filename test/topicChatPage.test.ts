@@ -440,6 +440,39 @@ test("a Refresh that fails keeps a question's terminal-only refusal", async () =
  expect(calls.filter(c => c.method === "Desk.ChatAnswerForm").length).toBe(1);
 });
 
+// #581: an older page already being read when Refresh is pressed comes back cursor_expired
+// before Refresh's page lands. Refresh already owes the newest page: the older page's recovery
+// starts no poll of its own, which would supersede Refresh and keep the refusal it drops.
+test("an older page that expires while Refresh reads leaves Refresh to drop the question's refusal", async () => {
+ const session = { session_id: "s581", before: "b1" };
+ const older = Promise.withResolvers<string>(), newest = Promise.withResolvers<void>();
+ let held = false;
+ const reads: string[] = [];
+ await openPage("chat", topicPage(), async (_token: unknown, after: unknown, before: unknown) => {
+  reads.push(`${after}|${before}`);
+  if (before) return older.promise;
+  if (held && !after) await newest.promise;
+  return askPage(session);
+ }, { askForm: true });
+ // The top is in view as the chat lands: its older page is being read (checkTop). (Its first
+ // read may go on from the chat an earlier test left remembered.)
+ expect(reads.at(-1)).toBe("|b1");
+ answers["Desk.ChatAnswerForm"] = () => ({ code: "ask_form_moved", message: "the form changed" });
+ answerAsk("Ledger");
+ withClass(inboxTranscript(), "ask-form-submit")[0]!.click();
+ await settle();
+ expect(withClass(inboxTranscript(), "chat-question-terminal").length).toBe(1);
+ held = true; reads.length = 0;
+ refreshButton().click();
+ await settle();
+ older.reject(new Error(EXPIRED));
+ await settle();
+ newest.resolve();
+ await settle();
+ expect(reads).toEqual(["|"]);
+ expect([reviewed(), withClass(inboxTranscript(), "chat-question-terminal").length, withClass(inboxTranscript(), "ask-form-submit").length]).toEqual(["Ledger", 0, 1]);
+});
+
 test("the Inbox whose cursor herdr expired keeps an unsent answer to the question still pending", async () => {
  const session = { session_id: "s565-expired" };
  await openPage("chat", topicPage(), askPage(session), { askForm: true });
@@ -620,6 +653,25 @@ test("a topic hides Earlier messages as soon as its cursor stops being usable", 
  expect(withClass(reopened.chat, "chat-earlier")[0]!.hidden).toBe(true);
 });
 
+// #579 review P3: an older page that lands after Refresh was pressed keeps the restart Refresh
+// set: the topic's next read is its newest page, never the held after cursor.
+test("a topic's older page that lands after Refresh leaves its next read starting over", async () => {
+ const { chat } = await openTopic(topicPage({ before: "b1", entries: [reply("old", "Projected before the update")] }));
+ const older = Promise.withResolvers<string>();
+ const reads: string[] = [];
+ answers["Desk.TopicTranscript"] = (_token: unknown, _topic: unknown, after: unknown, before: unknown) => {
+  reads.push(`${after}|${before}`);
+  return before ? older.promise : topicPage({ after: "a2", entries: [reply("n1", "The newest page")] });
+ };
+ withClass(chat, "chat-earlier")[0]!.click();
+ await settle();
+ expect(page.refreshInteraction()).toBe(true);
+ await settle();
+ older.resolve(topicPage({ before: "b0", entries: [reply("older", "Older still")] }));
+ await settle();
+ expect(reads).toEqual(["|b1", "|"]);
+});
+
 test("an older Inbox page whose cursor herdr expired stops paging; the Inbox starts over from its newest page", async () => {
  const session = { session_id: "s-older" };
  const reads: string[] = [];
@@ -633,6 +685,30 @@ test("an older Inbox page whose cursor herdr expired stops paging; the Inbox sta
  // page at once (checkTop), whose cursor herdr expired.
  expect(reads.slice(-2)).toEqual(["|b1", "|"]);
  expect(startedOver(inboxTranscript())).toEqual([true, false, false]);
+});
+
+// #579 review P3: the Inbox's top follows its paging state as it changes: Refresh makes the held
+// cursor unusable, so the Retry an older page's failure left goes at once, while Refresh's read
+// is held, and a click that reaches it reads nothing.
+test("Refresh hides the Inbox's Earlier messages Retry while its newest page is read", async () => {
+ const session = { session_id: "s579", before: "b1" };
+ const reads: string[] = [];
+ let held = false;
+ await openPage("chat", topicPage(), (_token: unknown, after: unknown, before: unknown) => {
+  reads.push(`${after}|${before}`);
+  if (before) throw new Error("herdr: unavailable: herdr is restarting");
+  return held && !after ? new Promise<string>(() => {}) : topicPage({ ...session, entries: [reply("old", "Projected before the update")] });
+ });
+ const top = withClass(inboxTranscript(), "chat-earlier")[0]!;
+ expect([reads.at(-1), top.hidden, top.text()]).toEqual(["|b1", false, "Couldn't load earlier messages · Retry"]);
+ const retry = top.all().find(n => n.tagName === "button")!;
+ held = true; reads.length = 0;
+ refreshButton().click();
+ await settle();
+ expect([reads, top.hidden]).toEqual([["|"], true]);
+ retry.dispatchEvent(new Event("click"));
+ await settle();
+ expect(reads).toEqual(["|"]);
 });
 
 // #555: herdr may leave relay_entries off a fallback page and set it on a later page of the same
