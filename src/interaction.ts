@@ -1173,7 +1173,7 @@ class Detail {
    token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
    harness: view.harness,
    topicSessions: view.topicSessions,
-   renderRow: (row, unfolded) => this.renderRow(row, unfolded),
+   renderRow: (row, unfolded, live) => this.renderRow(row, unfolded, live && !this.guestPaused),
    // The Inbox's own cards, drawn into the topic's transcript; a topic's subagents don't open.
    renderPlan: (items, container, session) => this.renderPlan(items, container, session),
    renderSubagents: (agents, container) => this.renderSubagents(agents, container, false),
@@ -1240,8 +1240,9 @@ class Detail {
    if (mode === "terminal") await this.ensureTerminal(generation);
   } else if (mode === "chat") {
    // A chat restored from memory while Terminal showed (openChat draws only in Chat) draws now,
-   // at its tail, rather than after the read (review of #212).
-   if (this.chat && !this.transcript.querySelector("[data-id]")) this.drawChat();
+   // at its tail, rather than after the read (review of #212). Retained rows also redraw in place
+   // so liveness changes that arrived while hidden (e.g. Stopped while on Topics) apply immediately.
+   if (this.chat) this.drawChat(!this.transcript.querySelector("[data-id]"));
    void this.refreshChat(generation);
   } else if (mode === "topics") {
    // Topics draws from Go's list (TopicsChanged); nothing to read here.
@@ -1903,15 +1904,17 @@ class Detail {
   const start = this.findOpen ? 0 : windowStart;
   this.drawnIndex = start;
   const now = new Date();
+  const live = this.chatLive();
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
+   const rowLive = row.kind === "work" && row.live && live;
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, ...this.questionKey(row.entry.id)]
     : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null]
-    : row.kind === "work" ? [rowShown(row, now), this.chatLive()]
+    : row.kind === "work" ? [rowShown(row, now), rowLive]
     : row.kind === "mark" ? row : rowShown(row, now));
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "suggestion" || row.kind === "mark" ? this.renderSuggestionRow(row, true)
-    : row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row);
+    : row.kind === "entry" && row.entry.kind === "ask" ? this.renderQuestion(row.entry, this.chat?.pending_ask) : this.renderRow(row, this.unfoldedRelays, live);
    node.dataset.id = row.id; node.dataset.signature = signature;
    disclosures(node).forEach((d, i) => { d.open = opened.has(disclosureKey(d, row.id, i)); });
    return node;
@@ -2187,8 +2190,9 @@ class Detail {
     entries = mergeTranscript(entries, next.entries, { older, resent: next.resent });
     if (older) before = next.before; else page = next;
     const expanded = new Set([...messages.querySelectorAll<HTMLDetailsElement>("details[open]")].map(node => node.dataset.id));
+    const subagentLive = !!page?.working && !this.guestPaused;
     const nodes = groupTranscript(entries, !!page?.working).map(row => {
-     const node = this.renderRow(row, unfolded);
+     const node = this.renderRow(row, unfolded, subagentLive);
      node.dataset.id = row.id;
      if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
      node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
@@ -2224,7 +2228,7 @@ class Detail {
   details.addEventListener("toggle", draw); draw();
   return summary;
  }
- renderWork(work: WorkRow): HTMLElement {
+ renderWork(work: WorkRow, liveChat = this.chatLive()): HTMLElement {
   const group = el("section", "chat-work");
   const thought = work.thoughts.at(-1);
   if (thought) {
@@ -2240,10 +2244,11 @@ class Detail {
    const details = el("details", "chat-work-steps"); details.dataset.id = `s:${work.id}`;
    const duration = chatDuration(work.endMs - work.startMs);
    const summary = this.workSummary(details), label = el("span");
-   label.append(el("span", "", work.live ? "Working" : `Worked for ${duration}`), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
+   const live = liveChat && work.live;
+   const heading = live ? "Working" : work.live ? "Activity" : `Worked for ${duration}`;
+   label.append(el("span", "", heading), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
    summary.append(label);
    const list = el("div", "chat-work-list");
-   const live = this.chatLive() && work.live;
    for (const step of work.steps) {
     const detail = el("details", "chat-tool"); detail.dataset.id = step.id;
     const title = el("summary");
@@ -2482,9 +2487,9 @@ class Detail {
   const row = el("div", "chat-day"); row.append(el("strong", "", day), document.createTextNode(` ${time}`));
   return row;
  }
- renderRow(row: ChatRow, unfolded = this.unfoldedRelays): HTMLElement {
+ renderRow(row: ChatRow, unfolded = this.unfoldedRelays, live = this.chatLive()): HTMLElement {
   if (row.kind === "day") return this.renderDay(row.ms);
-  if (row.kind === "work") return this.renderWork(row);
+  if (row.kind === "work") return this.renderWork(row, live);
   return this.renderEntry(row.entry, unfolded);
  }
  /** Who reads this chat (ChatView.swift ChatViewer). */
