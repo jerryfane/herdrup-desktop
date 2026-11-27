@@ -655,7 +655,10 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 // the machine this computer is connected to, otherwise a short SSH session
 // with its key file. done closes what was opened.
 func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func(), error) {
-	c, done, err := d.ownerBridge(ctx, m, d.pinsFor(m))
+	if c := d.liveBridge(m); c != nil {
+		return engine.New(engine.Bridge(c)), func() {}, nil
+	}
+	c, done, err := d.dialMachine(ctx, m, d.pinsFor(m), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -666,21 +669,29 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 // which it never keeps: it isn't the one connected now and has no key file.
 var errNeedsKey = errors.New("needs a key file")
 
-// ownerBridge is ownerClient's SSH connection: this computer's own, never a
-// guest's. A new session checks the host key with pins.
-func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore) (*bridge.Client, func(), error) {
-	id := machineID(m)
+// liveBridge is the live connection when it is m's, else nil.
+func (d *Desk) liveBridge(m Machine) *bridge.Client {
 	d.mu.Lock()
-	if d.link != nil && d.link.id == id && d.link.client != nil {
-		c := d.link.client
-		d.mu.Unlock()
-		return c, func() {}, nil
+	defer d.mu.Unlock()
+	if d.link != nil && d.link.id == machineID(m) {
+		return d.link.client
 	}
-	d.mu.Unlock()
+	return nil
+}
+
+// dialMachine is a short SSH session to m with its key file: this
+// computer's own, never a guest's. It checks the host key with pins,
+// negotiating it with algos, or as m was pinned when nil
+// (pairingHostKeyAlgorithms for a Paired machine, SSH's defaults
+// otherwise).
+func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore, algos []string) (*bridge.Client, func(), error) {
 	if m.KeyPath == "" {
 		return nil, nil, errNeedsKey
 	}
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: hostKeyAlgorithms(m)}
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: algos}
+	if algos == nil {
+		cfg.HostKeyAlgorithms = hostKeyAlgorithms(m)
+	}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
 		return nil, nil, err

@@ -16,10 +16,12 @@ package main
 // one from the page.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -187,8 +189,9 @@ var pairNow = time.Now
 // it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
 // "needs_update" (Version is its herdr's, when it said), "needs_key" (a
 // password machine not connected now), "needs_pin" (never opened from
-// this computer, so no host key is kept for it) or "unsendable" (the list
-// the new device gets can't carry it; Reason says why).
+// this computer, so no host key is kept for it) or "unsendable" (it can't
+// be shared now: the list the new device gets can't carry it, or its host
+// key can't be checked here; Reason says why).
 type PairProbe struct {
 	State   string `json:"state"`
 	Version string `json:"version,omitempty"`
@@ -231,6 +234,9 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 	case errors.Is(err, errNoPin):
 		return PairProbe{State: "needs_pin"}, nil
 	case err != nil:
+		if unread := (*pinsUnreadError)(nil); errors.As(err, &unread) {
+			return PairProbe{State: "unsendable", Reason: truncate(unread.Error(), pairReasonRunes)}, nil
+		}
 		return PairProbe{State: "unreachable"}, nil
 	}
 	defer done()
@@ -243,9 +249,13 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 		pong, _ := client.Ping(ctx)
 		return PairProbe{State: "needs_update", Version: pong.Version}, nil
 	}
-	hostKey, err := d.verifiedHostKey(c, m)
+	hostKey, err := d.verifiedHostKey(ctx, c, m)
 	if err != nil {
-		return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
+		var unread *pinsUnreadError
+		if errors.Is(err, errHostKeyType) || errors.Is(err, errCertNoPlainKey) || errors.Is(err, errNotPinned) || errors.As(err, &unread) {
+			return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
+		}
+		return PairProbe{State: "unreachable"}, nil
 	}
 	if err := pairFits([]pairRow{{entry: pairEntry(m), hostKey: hostKey}}); err != nil {
 		return PairProbe{State: "unsendable", Reason: pairHeldReason(err)}, nil
@@ -276,16 +286,125 @@ func (p *pairPins) SetPin(string, string) error {
 	return errNoPin
 }
 
-// pairBridge is ownerBridge for a pair approval: a machine without a pin
-// kept here is errNoPin, never pinned.
+func (p *pairPins) Pin(addr string) (string, bool, error) {
+	pin, ok, err := p.PinStore.Pin(addr)
+	if err != nil {
+		return "", false, &pinsUnreadError{err}
+	}
+	return pin, ok, nil
+}
+
+// pinsUnreadError is a pin store this computer couldn't read: no host key
+// can be checked, so no machine is used.
+type pinsUnreadError struct{ err error }
+
+func (e *pinsUnreadError) Error() string {
+	return "couldn't read the host keys pinned here (" + e.err.Error() + ")"
+}
+
+func (e *pinsUnreadError) Unwrap() error { return e.err }
+
+// pairBridge is this computer's own SSH session to m for a pair approval.
+// The live connection is used, however it signed in (a password machine
+// is usable only then), while its host key is the one pinned here now; a
+// pin store not read is its error. Otherwise a new session (dialMachine)
+// negotiates as the machine was pinned, as the live one did, so the host
+// shows the key this computer trusts. The pin holds a fingerprint only:
+// when that session's key isn't the pinned one (a host pinned by its
+// ed25519 key or certificate that offers an ECDSA one since, which SSH's
+// defaults prefer), one session per plain and certificate type in
+// pairHostKeyTypes looks for it, and the first whose key or certificate
+// is the pinned one is used. A session failing otherwise than on its
+// host key ends the search with its error; none found, the host key
+// changed. A machine without a pin is errNoPin; nothing is ever pinned.
+// The key is sent if the new device checks its type (verifiedHostKey).
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
+	if c := d.liveBridge(m); c != nil {
+		if key, addr := c.HostKey(); key != nil {
+			switch err := d.pinnedKey(key, addr, m); {
+			case err == nil:
+				return c, func() {}, nil
+			case !errors.Is(err, errNotPinned):
+				return nil, nil, err
+			}
+		}
+	}
 	pins := &pairPins{PinStore: d.pinsFor(m)}
-	c, done, err := d.ownerBridge(ctx, m, pins)
-	if err != nil && pins.missing.Load() {
+	c, done, err := d.dialMachine(ctx, m, pins, nil)
+	var changed *bridge.HostKeyChangedError
+	switch {
+	case err != nil && pins.missing.Load():
 		return nil, nil, errNoPin
+	case errors.As(err, &changed):
+		for _, plain := range pairHostKeyOrder {
+			for _, algo := range [...]string{plain, pairHostKeyTypes[plain]} {
+				tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
+				var other *bridge.HostKeyChangedError
+				var none *ssh.AlgorithmNegotiationError
+				switch {
+				case terr == nil:
+					return tc, tdone, nil
+				case errors.As(terr, &other):
+					continue
+				case errors.As(terr, &none) && none.What == "host key":
+					continue
+				}
+				// The key was the pinned one and the session failed after
+				// (its sign-in, say), or it failed on something else (its key
+				// exchange): it says why.
+				return nil, nil, terr
+			}
+		}
 	}
 	return c, done, err
 }
+
+// errNotPinned is a host key other than the one pinned here.
+var errNotPinned = errors.New("its host key doesn't match the one pinned here")
+
+// pinnedKey says whether key, from a session to addr, is the one pinned
+// for m (pinsFor): nil when it is (either the key/certificate itself or,
+// for a host certificate, the key it certifies), errNotPinned when not
+// (or no pin), and a pinsUnreadError when the pin store can't be read.
+func (d *Desk) pinnedKey(key ssh.PublicKey, addr string, m Machine) error {
+	pin, ok, err := d.pinsFor(m).Pin(addr)
+	cert, isCert := key.(*ssh.Certificate)
+	switch {
+	case err != nil:
+		return &pinsUnreadError{err}
+	case ok && pin == bridge.Fingerprint(key):
+		return nil
+	case ok && isCert && cert.Key != nil && pin == bridge.Fingerprint(cert.Key):
+		return nil
+	}
+	return errNotPinned
+}
+
+// pairHostKeyOrder gives a deterministic search order over pairHostKeyTypes
+// (desk_pairing.go), which maps each supported plain type to its certificate.
+// Keeping one map prevents wire eligibility (verifiedHostKey), pairing
+// (desk_pairing.go), and pin fallback (pairBridge) from diverging.
+var pairHostKeyOrder = []string{
+	ssh.KeyAlgoED25519,
+	ssh.KeyAlgoECDSA256,
+	ssh.KeyAlgoECDSA384,
+	ssh.KeyAlgoECDSA521,
+}
+
+func pairHostKeySupported(algo string) bool {
+	_, ok := pairHostKeyTypes[algo]
+	return ok
+}
+
+// errHostKeyType is a machine whose verified host key the new device
+// can't check (an RSA key, say): it is held out of the list before any
+// key is added there.
+var errHostKeyType = errors.New("can't share this machine: its host key type isn't supported")
+
+// errCertNoPlainKey is a machine pinned by a host certificate that does
+// not offer the exact plain key certified by that certificate: held out
+// before any key is added, because the new device negotiates plain keys only.
+var errCertNoPlainKey = errors.New("can't share this machine: it doesn't offer the plain host key in its certificate")
 
 // pairTrialHostKey stands for a machine's host key when its entry is
 // checked before the machine is reached.
@@ -345,6 +464,11 @@ func pairFits(rows []pairRow) error {
 	return err
 }
 
+// errMachineGone is a machine the store, read, no longer has.
+var errMachineGone = errors.New("that machine is no longer saved here")
+
+// savedMachine is the machine saved here as id, errMachineGone when the
+// store has none; any other error is the store unread.
 func (d *Desk) savedMachine(id string) (Machine, error) {
 	d.storeMu.Lock()
 	st, err := d.load()
@@ -354,7 +478,7 @@ func (d *Desk) savedMachine(id string) (Machine, error) {
 	}
 	i := slices.IndexFunc(st.Machines, func(m Machine) bool { return machineID(m) == id })
 	if i < 0 {
-		return Machine{}, errors.New("that machine is no longer saved here")
+		return Machine{}, errMachineGone
 	}
 	return st.Machines[i], nil
 }
@@ -787,24 +911,32 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 	addBy := pairNow().Add(left - pairReportTime)
 	addCtx, cancelAdds := context.WithTimeout(ctx, max(left-pairReportTime, 0))
 	defer cancelAdds()
-	tried, late, settled := p.unsent, false, false
+	tried, late, answered := p.unsent, false, false
 	for i, r := range p.rows {
 		if !r.retryable() || !slices.Contains(machineIDs, machineID(r.m)) {
 			continue
 		}
 		// Only a machine still saved here, as it is saved now: its key
 		// file or address may have changed, and one removed is not reached.
+		// Only a store read that has no such machine, or a saved profile
+		// the list can't carry, ends its retries: a store not read (an
+		// error, a change not yet committed) may be read next time.
 		m, err := d.savedMachine(machineID(r.m))
-		reason := ""
-		if err != nil {
+		reason, retry := "", false
+		switch {
+		case errors.Is(err, errMachineGone):
 			reason = err.Error()
-		} else if err := pairSendable(m); err != nil {
-			reason = pairHeldReason(err)
+		case err != nil:
+			reason, retry = fmt.Sprintf("couldn't read the machines saved here (%v)", err), true
+		default:
+			if err := pairSendable(m); err != nil {
+				reason = pairHeldReason(err)
+			}
 		}
 		if reason != "" {
-			p.rows[i].fail(reason, false)
+			p.rows[i].fail(reason, retry)
 			publishPairProgress(PairApproveProgress{ID: id, MachineID: machineID(r.m), Status: account.PairFailed, Reason: p.rows[i].entry.Reason})
-			settled = true
+			answered = true
 			continue
 		}
 		if addBy.Sub(pairNow()) < pairAddTime {
@@ -822,9 +954,9 @@ func (d *Desk) PairApproveRetry(ctx context.Context, id string, machineIDs []str
 			res := p.result()
 			res.Ended, res.Problem = true, pairTooLate
 			return res, nil
-		case settled:
-			// Rows a retry can't mend any more: the sheet shows why, with
-			// no Try again for them.
+		case answered:
+			// Rows with a new reason (and Try again only for those a retry
+			// may still mend): the sheet shows them.
 			return p.result(), nil
 		}
 		return p.result(), errors.New("nothing to try again")
@@ -877,6 +1009,11 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.entry.Reason})
 		return row
 	}
+	hold := func(reason string) pairRow {
+		row.hold(reason)
+		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.held})
+		return row
+	}
 	ctx, cancel := context.WithTimeout(ctx, pairAddTime)
 	defer cancel()
 	c, done, err := d.pairBridge(ctx, row.m)
@@ -889,21 +1026,19 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 		return fail(pairReason(ctx, err))
 	}
 	defer done()
-	hostKey, err := d.verifiedHostKey(c, row.m)
-	if errors.Is(err, errNoPlainKey) {
-		row.hold(err.Error())
-		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.held})
-		return row
-	}
-	if err != nil {
+	hostKey, err := d.verifiedHostKey(ctx, c, row.m)
+	switch {
+	case errors.Is(err, errHostKeyType), errors.Is(err, errCertNoPlainKey):
+		return hold(err.Error())
+	case errors.Is(err, errNotPinned):
 		return fail(err.Error(), false)
+	case err != nil:
+		return fail(pairReason(ctx, err))
 	}
 	sized := slices.Clone(rows)
 	sized[i].hostKey = hostKey
 	if pairFits(sized) != nil {
-		row.hold(pairNoRoom)
-		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.held})
-		return row
+		return hold(pairNoRoom)
 	}
 	row.hostKey, row.entry.HostKey = hostKey, hostKey
 	added, err := engine.New(engine.Bridge(c)).PairAddKey(ctx, engine.PairAddKeyParams{PublicKey: key, Label: label})
@@ -919,39 +1054,84 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 	return row
 }
 
+// errPlainKeyVerified ends probePlainHostKey immediately inside HostKeyCallback
+// once SSH key exchange has verified the server's host-key signature, without
+// starting user authentication (so servers that disconnect unknown users never
+// break the probe).
+var errPlainKeyVerified = errors.New("plain host key verified")
+
+// probePlainHostKey verifies that addr offers plain as a plain (non-cert)
+// SSH host key and proves possession during key exchange. A host that only
+// offers certificates, or offers a different plain key of that type, gets
+// errCertNoPlainKey; transport or context errors are returned as themselves.
+func probePlainHostKey(ctx context.Context, addr string, plain ssh.PublicKey) error {
+	var d net.Dialer
+	tcp, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer tcp.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = tcp.SetDeadline(deadline)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = tcp.SetDeadline(time.Now()) })
+	defer stop()
+
+	want := plain.Marshal()
+	sc, _, _, err := ssh.NewClientConn(tcp, addr, &ssh.ClientConfig{
+		HostKeyAlgorithms: []string{plain.Type()},
+		HostKeyCallback: func(_ string, _ net.Addr, got ssh.PublicKey) error {
+			if _, isCert := got.(*ssh.Certificate); isCert || got.Type() != plain.Type() || !bytes.Equal(got.Marshal(), want) {
+				return errCertNoPlainKey
+			}
+			return errPlainKeyVerified
+		},
+	})
+	if sc != nil {
+		_ = sc.Close()
+	}
+	if errors.Is(err, errPlainKeyVerified) {
+		return nil
+	}
+	if errors.Is(err, errCertNoPlainKey) {
+		return errCertNoPlainKey
+	}
+	var neg *ssh.AlgorithmNegotiationError
+	if errors.As(err, &neg) && neg.What == "host key" {
+		return errCertNoPlainKey
+	}
+	return err
+}
+
 // verifiedHostKey is the host key c's first handshake verified, as an
 // OpenSSH line with no comment, once it matches m's pin (pinsFor) under
-// the address it dialled: the certificate's pin or, for a host certificate,
-// that of the key it certifies. The list carries plain keys only (pair-v1
-// host_key): for a host certificate it is the key the certificate
-// certifies, which is what the new device pins, errNoPlainKey when there
-// is none.
-func (d *Desk) verifiedHostKey(c *bridge.Client, m Machine) (string, error) {
+// the address it dialled. The list carries plain keys the new device
+// checks only (pairHostKeyTypes): for a host certificate it is the key
+// the certificate certifies, after verifying addr actually offers that
+// exact plain key (the new device never negotiates certificates);
+// errHostKeyType for any unsupported key type and errCertNoPlainKey for a
+// certificate host that doesn't offer its certified plain key.
+func (d *Desk) verifiedHostKey(ctx context.Context, c *bridge.Client, m Machine) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
 		return "", errors.New("no host key from this connection")
 	}
-	pin, ok, err := d.pinsFor(m).Pin(addr)
-	cert, isCert := key.(*ssh.Certificate)
-	switch {
-	case err != nil:
+	if err := d.pinnedKey(key, addr, m); err != nil {
 		return "", err
-	case ok && pin == bridge.Fingerprint(key):
-	case ok && isCert && cert.Key != nil && pin == bridge.Fingerprint(cert.Key):
-	default:
-		return "", errors.New("its host key doesn't match the one pinned here")
 	}
 	if cert, isCert := key.(*ssh.Certificate); isCert {
-		if _, nested := cert.Key.(*ssh.Certificate); cert.Key == nil || nested {
-			return "", errNoPlainKey
-		}
 		key = cert.Key
+		if key == nil || !pairHostKeySupported(key.Type()) {
+			return "", errHostKeyType
+		}
+		if err := probePlainHostKey(ctx, addr, key); err != nil {
+			return "", err
+		}
+	} else if !pairHostKeySupported(key.Type()) {
+		return "", errHostKeyType
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
 }
-
-// errNoPlainKey is a host certificate with no plain key to send.
-var errNoPlainKey = errors.New("can't share this machine: its host certificate has no plain key")
 
 // pairReason says why adding the key failed, and whether Try again may
 // mend it (a timeout, a connection, a write; not a herdr too old, nor one
@@ -959,9 +1139,12 @@ var errNoPlainKey = errors.New("can't share this machine: its host certificate h
 func pairReason(ctx context.Context, err error) (string, bool) {
 	var old *engine.ErrUnsupported
 	var api *bridge.APIError
+	var unread *pinsUnreadError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil:
 		return "timed out", true
+	case errors.As(err, &unread):
+		return unread.Error(), true
 	case errors.As(err, &old):
 		return "needs a herdr update", false
 	case errors.Is(err, engine.ErrPairKeyInvalid):
