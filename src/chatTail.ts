@@ -10,6 +10,13 @@ function el(tag: string, cls: string, text?: string): HTMLElement {
  const node = document.createElement(tag); node.className = cls; if (text !== undefined) node.textContent = text; return node;
 }
 
+export function workingDots(compact = false): HTMLElement {
+ const dots = el("span", compact ? "chat-working-dots compact" : "chat-working-dots");
+ dots.setAttribute("aria-hidden", "true");
+ for (let i = 0; i < 3; i++) dots.append(el("span", "chat-working-dot"));
+ return dots;
+}
+
 export class ChatTail {
  private workingRow: HTMLElement | null = null;
  private recapRow: HTMLElement | null = null;
@@ -22,9 +29,7 @@ export class ChatTail {
   const row = this.workingRow ??= el("div", "chat-working");
   if (row.dataset.intent !== intent || !row.firstChild) {
    row.dataset.intent = intent;
-   const dots = el("span", "chat-working-dots"); dots.setAttribute("aria-hidden", "true");
-   for (let i = 0; i < 3; i++) dots.append(el("span", "chat-working-dot"));
-   row.replaceChildren(dots, el("span", "chat-working-text", intent || "Working"));
+   row.replaceChildren(workingDots(), el("span", "chat-working-text", intent || "Working"));
    row.setAttribute("role", "status"); row.setAttribute("aria-label", intent ? `Working: ${intent}` : "Working");
   }
   return row;

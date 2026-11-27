@@ -1,6 +1,6 @@
 import qrcode from "qrcode-generator";
 import { Desk } from "./mygo";
-import { guestName, guestOwnerName, inviteValidity, shareableInviteURL, type CreatedGuestInvite } from "./guestInviteModel";
+import { guestName, guestOwnerName, inviteMachineLabel, inviteValidity, shareableInviteURL, type CreatedGuestInvite } from "./guestInviteModel";
 import "./guestShare.css";
 import { errorText } from "./errors";
 
@@ -98,7 +98,7 @@ export function openGuestShare(token: string, agentName: string): HTMLDialogElem
       const actions = el("div", "guest-invite-actions"); actions.append(copy);
       const details = el("div", "guest-card guest-invite-details");
       const gramState = created.invite.share_gram ? "Shared" : requestedGram ? "Not shared · update Herdr to share Gram" : "Not shared";
-      for (const [label, value] of [["Agent", agentName], ["Machine", machineLabel], ["Shown as", `${created.invite.name} (via HerdrUp)`], ["Gram", gramState]]) {
+      for (const [label, value] of [["Agent", agentName], ["Machine", inviteMachineLabel(created.invite, machineLabel)], ["Shown as", `${created.invite.name} (via HerdrUp)`], ["Gram", gramState]]) {
         const row = el("div", "guest-invite-row"), text = el("span", label === "Agent" || label === "Shown as" ? "guest-machine-text" : "", value);
         row.append(el("span", "guest-invite-key", label), text); details.append(row);
       }

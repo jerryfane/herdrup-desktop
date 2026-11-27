@@ -44,12 +44,16 @@ export interface TopicsHost {
  guestSelf: string;
  /** The agent's name as its row shows it: "SUGGESTED BY <NAME>". */
  agentName: string;
+ /** The pane's agent harness ("omp", "agy", etc.), used as fallback prefix on the model footer. */
+ harness?: string;
+ /** Whether the shared pane is currently paused (unavailable to the guest). */
+ paused?: () => boolean;
  guest: boolean;
  /** The topics the agent's session file holds: the list until the agent answers. */
  topicSessions: readonly TopicSession[];
  /** The chat's renderer for one transcript row; a question in it is not answered here (#745
   *  ChatModel.answersQuestions: a topic's question is the Inbox's, in the terminal). */
- renderRow(row: ChatRow, unfolded: Set<string>): HTMLElement;
+ renderRow(row: ChatRow, unfolded: Set<string>, live: boolean): HTMLElement;
  /** The chat's to-do card and subagents card (interaction.ts), drawn into a topic's transcript as
   *  into the Inbox's; a topic's subagents don't open. */
  renderPlan(items: PlanItem[], container: HTMLElement, session: string | undefined): HTMLElement;
@@ -206,6 +210,11 @@ export class TopicsPane {
   this.disposed = true; this.resize.disconnect(); clearTimeout(this.organiseTimer);
   this.sheet?.close(); this.chat?.dispose(); this.chat = null;
   if (this.shown) void Desk.topicsFollow(this.host.token, false).catch(() => undefined);
+ }
+
+ /** Redraws the open topic in place when host availability (e.g. guest pause/resume) changes. */
+ refreshLiveness() {
+  if (!this.disposed) this.chat?.refreshLiveness();
  }
 
  /** The Inbox row's second line: what the agent does in its own conversation. */
@@ -671,6 +680,7 @@ class TopicChat {
   *  newest-page read puts off. */
  private setPaging(before: string | undefined, restart: boolean) { this.before = before; this.restart = restart; this.earlier.hidden = !this.paging; }
  private active = false;
+ private readFailed = false;
  private disposed = false;
  private timer: number | undefined;
  /** The working dots, the recap and the model line under the topic, as under the Inbox. */
@@ -792,6 +802,11 @@ class TopicChat {
    if (state) void this.load(false);
   };
  }
+ /** Redraws retained rows and footer after a host liveness change (e.g. guest pause/resume). */
+ refreshLiveness() {
+  if (!this.disposed && this.page) this.draw(false);
+ }
+
  private async load(older: boolean) {
   if (this.disposed || !this.active || (older && !this.paging)) return;
   if (this.busy) { if (!older) this.again = true; return; }
@@ -830,13 +845,17 @@ class TopicChat {
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    }
    this.notice.textContent = "";
+   if (!older) this.readFailed = false;
    this.draw(follow);
    if (older) this.messages.scrollTop += this.messages.scrollHeight - height;
   } catch (error) {
    // herdr expired the older page's cursor: paging stops, and the topic starts over from its
    // newest page.
    if (older && cursorExpired(error)) { this.setPaging(this.before, true); this.again = true; }
-   else if (!this.disposed) this.notice.textContent = errorText(error);
+   else if (!this.disposed) {
+    this.notice.textContent = errorText(error);
+    if (!older && !this.readFailed) { this.readFailed = true; this.draw(false); }
+   }
   } finally {
    this.busy = false; this.earlier.disabled = false;
    if (!this.disposed && this.active) {
@@ -859,11 +878,13 @@ class TopicChat {
   const kept = new Map<string, HTMLElement>();
   for (const node of this.messages.children) if (node instanceof HTMLElement && node.dataset.id) kept.set(node.dataset.id, node);
   const now = new Date();
+  const working = !this.readFailed && !this.host.paused?.() && topicWorking(this.topic, page);
   const nodes = groupTranscript(this.entries, !!page?.working).map(row => {
-   const signature = JSON.stringify(rowShown(row, now));
+   const rowLive = row.kind === "work" && row.steps.length > 0 && row.live && working;
+   const signature = JSON.stringify(row.kind === "work" ? [rowShown(row, now), rowLive] : rowShown(row, now));
    const old = kept.get(row.id);
    if (old?.dataset.signature === signature) return old;
-   const node = this.host.renderRow(row, this.unfolded);
+   const node = this.host.renderRow(row, this.unfolded, working);
    node.dataset.id = row.id; node.dataset.signature = signature;
    if (node instanceof HTMLDetailsElement) node.open = expanded.has(row.id);
    node.querySelectorAll<HTMLDetailsElement>("details").forEach(detail => { detail.open = expanded.has(detail.dataset.id); });
@@ -875,8 +896,7 @@ class TopicChat {
   if (plan.length) nodes.push(this.host.renderPlan(plan, this.messages, page?.session_id));
   const agents = page?.subagents ?? [];
   if (agents.length) nodes.push(this.host.renderSubagents(agents, this.messages));
-  const working = topicWorking(this.topic, page);
-  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model, "omp")];
+  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model, this.host.harness)];
   for (const node of tail) if (node) nodes.push(node);
   // The tail's rows stay attached, so the dots' animation runs on across polls.
   placeRows(this.messages, [this.earlier, ...nodes]);
