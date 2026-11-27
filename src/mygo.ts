@@ -250,6 +250,11 @@ export interface AgentView {
    */
   askForm: boolean;
   /**
+   * TranscriptAgy: the host serves Antigravity CLI (agy) transcripts
+   * (capabilities.agent_transcript && capabilities.transcript_agy).
+   */
+  transcriptAgy?: boolean;
+  /**
    * TopicSessions: the topics the agent's session file already holds
    * (topic_sessions, read from disk): the page offers Topics before or
    * without a list answer (herdrup #745 topicsAvailable), and lists them
@@ -712,6 +717,7 @@ export interface GramUploadProgress {
 export interface GuestChat {
   available: boolean;
   ownerOrigin: boolean;
+  transcriptAgy?: boolean;
 }
 
 export interface GuestConnection {
@@ -834,6 +840,20 @@ export interface Machine {
    */
   paired?: boolean;
   /**
+   * HostKeyType is the type of a Paired machine's pinned host key when
+   * another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+   * connection offers only that type and its certificate form
+   * (hostKeyAlgorithms). "" is herdr pair's own key.
+   */
+  hostKeyType?: string;
+  /**
+   * HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+   * kept in the profile rather than with the pins this computer trusts
+   * on first use: the machine's connections check it (pinsFor), and it is
+   * saved with the profile in one write.
+   */
+  hostKeyPin?: string;
+  /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
    */
@@ -955,6 +975,19 @@ export interface PairApproveUpdate {
 }
 
 /**
+ * PairOpenTarget is the saved profile a result row opens, edits or
+ * removes, as the page drew it: its id, and the profile id and address the
+ * row joined it by.
+ */
+export interface PairOpenTarget {
+  id: string;
+  profileId: string;
+  user: string;
+  host: string;
+  port: number;
+}
+
+/**
  * PairProbe is what the sheet learns of one machine before the user ticks
  * it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
  * "needs_update" (Version is its herdr's, when it said), "needs_key" (a
@@ -967,6 +1000,71 @@ export interface PairProbe {
   state: string;
   version?: string;
   reason?: string;
+}
+
+/**
+ * PairRequestMachine is one machine of the approver's list and what became
+ * of it here.
+ */
+export interface PairRequestMachine {
+  /** ID is the saved machine's id (user@host:port) when saved or kept. */
+  id?: string;
+  /**
+   * ProfileID is that saved profile's own id (Machine.LocalID, never
+   * reused): a profile saved later at the same address is another one.
+   */
+  profileId?: string;
+  label: string;
+  /**
+   * Host, Port and User: the profile's address as saved (or kept) here,
+   * else the list's.
+   */
+  host: string;
+  port: number;
+  user: string;
+  /**
+   * SyncedID is the account's record of the machine (SyncedMachine.ID)
+   * when the account lists it.
+   */
+  syncedId?: string;
+  /** Result is PairSaved, PairKept, PairPinDiffers or PairNotAdded. */
+  result: string;
+  /** Reason is the approver's, for PairNotAdded. */
+  reason?: string;
+  /**
+   * Reach is a saved machine's connection try: "" until tried, then
+   * PairOnline, PairUnreachable, PairRefused (Problem), PairRemoved or
+   * PairChanged.
+   */
+  reach?: string;
+  problem?: string;
+}
+
+/** PairRequestView is a pair request as the page draws it. */
+export interface PairRequestView {
+  id: string;
+  phase: string;
+  /** ExpiresIn is the seconds the request had at the last read. */
+  expiresIn: number;
+  /** Device is this computer's name as the account lists it. */
+  device: string;
+  /** Approver is the device that opened the request, once one has. */
+  approver?: string;
+  /** Code is the 4 digits to type on the approver, once it opened it. */
+  code?: string;
+  machines: PairRequestMachine[];
+  /**
+   * RetryOpen: the approver may still send a retry's list, so the page
+   * keeps reading.
+   */
+  retryOpen: boolean;
+  /**
+   * SaveFailed: the last list couldn't be saved here (Problem says why);
+   * it is read and saved again until the retry window ends. The page
+   * backs off as for a failed read.
+   */
+  saveFailed?: boolean;
+  problem?: string;
 }
 
 export interface PairedMachine {
@@ -1210,6 +1308,20 @@ export interface SavedMachine {
    * rather than an unrelated ECDSA key or certificate served by the same sshd.
    */
   paired?: boolean;
+  /**
+   * HostKeyType is the type of a Paired machine's pinned host key when
+   * another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+   * connection offers only that type and its certificate form
+   * (hostKeyAlgorithms). "" is herdr pair's own key.
+   */
+  hostKeyType?: string;
+  /**
+   * HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+   * kept in the profile rather than with the pins this computer trusts
+   * on first use: the machine's connections check it (pinsFor), and it is
+   * saved with the profile in one write.
+   */
+  hostKeyPin?: string;
   /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
@@ -2245,6 +2357,58 @@ export const Desk = {
   pairOpenedLink(id: string): Promise<PairedMachine> {
     return call("Desk.PairOpenedLink", id);
   },
+  /**
+   * PairRequestCancel ends request id: the service cancels it, so no device
+   * can approve it any more. It is fenced here first (it reveals nothing more,
+   * opens no list and saves nothing, a read in flight included), so when the
+   * service can't be told it still ends here.
+   */
+  pairRequestCancel(id: string): Promise<void> {
+    return call("Desk.PairRequestCancel", id);
+  },
+  /**
+   * PairRequestConnect tries each machine saved by request id that hasn't
+   * been tried: online, unreachable from here, or refused (why).
+   */
+  pairRequestConnect(id: string): Promise<PairRequestView> {
+    return call("Desk.PairRequestConnect", id);
+  },
+  /**
+   * PairRequestCurrent is the request this computer runs, as last read; nil
+   * when there is none. A page opened again shows it.
+   */
+  pairRequestCurrent(): Promise<PairRequestView | null> {
+    return call("Desk.PairRequestCurrent");
+  },
+  /**
+   * PairRequestOffered reports whether this computer can ask another device
+   * to pair it: signed in, and the account service offers pair_v1.
+   */
+  pairRequestOffered(): Promise<boolean> {
+    return call("Desk.PairRequestOffered");
+  },
+  /**
+   * PairRequestRead reads request id once and moves it on: the code once a
+   * device opened it, and, once approved, the approver's machine list, saved
+   * here (the save rules in app/desk_pair_request.go). A list sent again at a
+   * higher seq is saved too, while RetryOpen. A list that couldn't be saved
+   * is the view's Problem (SaveFailed), and is read and saved again until
+   * the retry window ends; then the problem is final. An error is a read
+   * that failed (no answer); the page reads again.
+   */
+  pairRequestRead(id: string): Promise<PairRequestView> {
+    return call("Desk.PairRequestRead", id);
+  },
+  /**
+   * PairRequestStart asks the account's other devices to pair this computer,
+   * with a new key S. It replaces this computer's earlier request, here and
+   * at the service. One Start asks and installs its request at a time
+   * (d.pairStartMu): a later one asks only once the earlier one is installed,
+   * so the request installed here is always the service's newest.
+   */
+  pairRequestStart(): Promise<PairRequestView> {
+    return call("Desk.PairRequestStart");
+  },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
     return call("Desk.PaneAttachFiles", token, paths);
@@ -2332,6 +2496,14 @@ export const Desk = {
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
   },
+  /**
+   * RemovePairedMachine is RemoveMachine for a result row's menu: it removes
+   * target.ID only while that profile is still the row's. removed is false,
+   * and nothing changes, when it isn't.
+   */
+  removePairedMachine(target: PairOpenTarget): Promise<boolean> {
+    return call("Desk.RemovePairedMachine", target);
+  },
   removeSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.RemoveSettingsAccount", token, id);
   },
@@ -2385,6 +2557,15 @@ export const Desk = {
     return call("Desk.SaveMachine", m, replacing);
   },
   /**
+   * SavePairedMachine is SaveMachine for an edit begun from a result row's
+   * menu: it saves m over target.ID only while that profile is still the
+   * row's, as SelectPairedMachine opens it. saved is false, and nothing
+   * changes, when it isn't.
+   */
+  savePairedMachine(m: Machine, target: PairOpenTarget): Promise<boolean> {
+    return call("Desk.SavePairedMachine", m, target);
+  },
+  /**
    * SavePrompt adds p (ID "") at the end, or replaces the saved prompt with
    * its ID in place, and returns the saved prompts.
    */
@@ -2415,6 +2596,16 @@ export const Desk = {
    */
   selectMachine(id: string, password: string): Promise<void> {
     return call("Desk.SelectMachine", id, password);
+  },
+  /**
+   * SelectPairedMachine is SelectMachine for a result row: it opens
+   * target.ID only while that saved profile is still the row's (its profile
+   * id and address), checked under the store lock. opened is false, and
+   * nothing changes, when it isn't (removed, edited or replaced since): the
+   * page draws its rows again.
+   */
+  selectPairedMachine(target: PairOpenTarget, password: string): Promise<boolean> {
+    return call("Desk.SelectPairedMachine", target, password);
   },
   /**
    * SelectSession switches the active machine to another herdr session and

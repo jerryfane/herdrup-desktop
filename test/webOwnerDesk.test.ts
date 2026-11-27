@@ -816,6 +816,18 @@ test("an owner link's Chat and its up arrow follow the same fresh pong: a host g
  } finally { desk.disconnectOwner(); relay.stop(); }
 });
 
+test("guestChatAvailable forwards transcript_agy only when ping advertises it", async () => {
+ let agy = true;
+ const relay = host({ other: (session, req) => answer(session, req, req.method === "ping" ? pong(agy ? { transcript_agy: true } : {}) : { error: { code: "owner_forbidden", message: "no" } }) });
+ const desk = await deskWithKey();
+ try {
+  await openP1(desk, relay);
+  expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: false, transcriptAgy: true });
+  agy = false;
+  expect(await desk.guestChatAvailable("view-1")).toEqual({ available: true, ownerOrigin: false });
+ } finally { desk.disconnectOwner(); relay.stop(); }
+});
+
 // #584: in page order. The view's first Chat check meets a failed ping and throws (no pong said
 // Chat is unsupported); the owner's Refresh asks again, and that pong opens Chat with the arrow.
 test("an owner link whose first Chat check failed has Chat and the up arrow from Refresh's check", async () => {

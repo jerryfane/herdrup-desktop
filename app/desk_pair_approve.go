@@ -249,7 +249,7 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 		pong, _ := client.Ping(ctx)
 		return PairProbe{State: "needs_update", Version: pong.Version}, nil
 	}
-	hostKey, err := d.verifiedHostKey(ctx, c)
+	hostKey, err := d.verifiedHostKey(ctx, c, m)
 	if err != nil {
 		var unread *pinsUnreadError
 		if errors.Is(err, errHostKeyType) || errors.Is(err, errCertNoPlainKey) || errors.Is(err, errNotPinned) || errors.As(err, &unread) {
@@ -321,7 +321,7 @@ func (e *pinsUnreadError) Unwrap() error { return e.err }
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
 	if c := d.liveBridge(m); c != nil {
 		if key, addr := c.HostKey(); key != nil {
-			switch err := d.pinnedKey(key, addr); {
+			switch err := d.pinnedKey(key, addr, m); {
 			case err == nil:
 				return c, func() {}, nil
 			case !errors.Is(err, errNotPinned):
@@ -329,15 +329,15 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 			}
 		}
 	}
-	pins := &pairPins{PinStore: d.pins}
+	pins := &pairPins{PinStore: d.pinsFor(m)}
 	c, done, err := d.dialMachine(ctx, m, pins, nil)
 	var changed *bridge.HostKeyChangedError
 	switch {
 	case err != nil && pins.missing.Load():
 		return nil, nil, errNoPin
 	case errors.As(err, &changed):
-		for _, kt := range pairHostKeyTypes {
-			for _, algo := range [...]string{kt.plain, kt.cert} {
+		for _, plain := range pairHostKeyOrder {
+			for _, algo := range [...]string{plain, pairHostKeyTypes[plain]} {
 				tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
 				var other *bridge.HostKeyChangedError
 				var none *ssh.AlgorithmNegotiationError
@@ -363,42 +363,37 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 var errNotPinned = errors.New("its host key doesn't match the one pinned here")
 
 // pinnedKey says whether key, from a session to addr, is the one pinned
-// here: nil when it is, errNotPinned when not (or no pin), and a
-// pinsUnreadError when the pin store can't be read.
-func (d *Desk) pinnedKey(key ssh.PublicKey, addr string) error {
-	pin, ok, err := d.pins.Pin(addr)
+// for m (pinsFor): nil when it is (either the key/certificate itself or,
+// for a host certificate, the key it certifies), errNotPinned when not
+// (or no pin), and a pinsUnreadError when the pin store can't be read.
+func (d *Desk) pinnedKey(key ssh.PublicKey, addr string, m Machine) error {
+	pin, ok, err := d.pinsFor(m).Pin(addr)
+	cert, isCert := key.(*ssh.Certificate)
 	switch {
 	case err != nil:
 		return &pinsUnreadError{err}
-	case !ok || pin != bridge.Fingerprint(key):
-		return errNotPinned
+	case ok && pin == bridge.Fingerprint(key):
+		return nil
+	case ok && isCert && cert.Key != nil && pin == bridge.Fingerprint(cert.Key):
+		return nil
 	}
-	return nil
+	return errNotPinned
 }
 
-// pairHostKeyType pairs one plain host key algorithm the new device checks
-// (pair-v1 host_key) with its OpenSSH host certificate algorithm. Keeping
-// both in one list prevents wire eligibility (verifiedHostKey) and pin
-// fallback (pairBridge) from diverging.
-type pairHostKeyType struct {
-	plain string
-	cert  string
-}
-
-var pairHostKeyTypes = []pairHostKeyType{
-	{plain: ssh.KeyAlgoED25519, cert: ssh.CertAlgoED25519v01},
-	{plain: ssh.KeyAlgoECDSA256, cert: ssh.CertAlgoECDSA256v01},
-	{plain: ssh.KeyAlgoECDSA384, cert: ssh.CertAlgoECDSA384v01},
-	{plain: ssh.KeyAlgoECDSA521, cert: ssh.CertAlgoECDSA521v01},
+// pairHostKeyOrder gives a deterministic search order over pairHostKeyTypes
+// (desk_pairing.go), which maps each supported plain type to its certificate.
+// Keeping one map prevents wire eligibility (verifiedHostKey), pairing
+// (desk_pairing.go), and pin fallback (pairBridge) from diverging.
+var pairHostKeyOrder = []string{
+	ssh.KeyAlgoED25519,
+	ssh.KeyAlgoECDSA256,
+	ssh.KeyAlgoECDSA384,
+	ssh.KeyAlgoECDSA521,
 }
 
 func pairHostKeySupported(algo string) bool {
-	for _, kt := range pairHostKeyTypes {
-		if kt.plain == algo {
-			return true
-		}
-	}
-	return false
+	_, ok := pairHostKeyTypes[algo]
+	return ok
 }
 
 // errHostKeyType is a machine whose verified host key the new device
@@ -1031,7 +1026,7 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 		return fail(pairReason(ctx, err))
 	}
 	defer done()
-	hostKey, err := d.verifiedHostKey(ctx, c)
+	hostKey, err := d.verifiedHostKey(ctx, c, row.m)
 	switch {
 	case errors.Is(err, errHostKeyType), errors.Is(err, errCertNoPlainKey):
 		return hold(err.Error())
@@ -1109,18 +1104,19 @@ func probePlainHostKey(ctx context.Context, addr string, plain ssh.PublicKey) er
 }
 
 // verifiedHostKey is the host key c's first handshake verified, as an
-// OpenSSH line with no comment, once it matches the pin kept here under
+// OpenSSH line with no comment, once it matches m's pin (pinsFor) under
 // the address it dialled. The list carries plain keys the new device
 // checks only (pairHostKeyTypes): for a host certificate it is the key
 // the certificate certifies, after verifying addr actually offers that
 // exact plain key (the new device never negotiates certificates);
-// errHostKeyType for any other key or a certificate-only host.
-func (d *Desk) verifiedHostKey(ctx context.Context, c *bridge.Client) (string, error) {
+// errHostKeyType for any unsupported key type and errCertNoPlainKey for a
+// certificate host that doesn't offer its certified plain key.
+func (d *Desk) verifiedHostKey(ctx context.Context, c *bridge.Client, m Machine) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
 		return "", errors.New("no host key from this connection")
 	}
-	if err := d.pinnedKey(key, addr); err != nil {
+	if err := d.pinnedKey(key, addr, m); err != nil {
 		return "", err
 	}
 	if cert, isCert := key.(*ssh.Certificate); isCert {

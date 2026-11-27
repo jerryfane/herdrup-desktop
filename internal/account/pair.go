@@ -127,33 +127,30 @@ func (m PairMachine) HostPublicKey() (ssh.PublicKey, error) {
 	return key, nil
 }
 
-func (m PairMachine) check() error {
+// check holds m to the envelope's rules and returns its parsed host key
+// (nil for a failed machine without one).
+func (m PairMachine) check() (ssh.PublicKey, error) {
 	if err := m.HostBody().Check(); err != nil {
-		return fmt.Errorf("pair-v1: %w", err)
+		return nil, fmt.Errorf("pair-v1: %w", err)
 	}
 	switch {
 	case m.Port < 1:
 		// The envelope always names the port.
-		return fmt.Errorf("pair-v1: machine port %d", m.Port)
+		return nil, fmt.Errorf("pair-v1: machine port %d", m.Port)
 	case strings.Contains(m.Host, "@") || strings.ContainsAny(m.User, " \t\r\n@"):
 		// user@host has to split back into the two.
-		return errors.New("pair-v1: machine user or host has an @ or a space")
+		return nil, errors.New("pair-v1: machine user or host has an @ or a space")
 	}
 	switch m.Status {
 	case PairAdded, PairAlready:
-		if _, err := m.HostPublicKey(); err != nil {
-			return err
-		}
+		return m.HostPublicKey()
 	case PairFailed:
 		if m.HostKey != "" {
-			if _, err := m.HostPublicKey(); err != nil {
-				return err
-			}
+			return m.HostPublicKey()
 		}
-	default:
-		return fmt.Errorf("pair-v1: machine status %q", m.Status)
+		return nil, nil
 	}
-	return nil
+	return nil, fmt.Errorf("pair-v1: machine status %q", m.Status)
 }
 
 // Marshal is e's JSON, checked: version 1, every machine well formed, and
@@ -166,7 +163,7 @@ func (e PairEnvelope) Marshal() ([]byte, error) {
 		e.Machines = []PairMachine{}
 	}
 	for _, m := range e.Machines {
-		if err := m.check(); err != nil {
+		if _, err := m.check(); err != nil {
 			return nil, err
 		}
 	}
@@ -182,19 +179,29 @@ func (e PairEnvelope) Marshal() ([]byte, error) {
 
 // ParsePairEnvelope reads an opened envelope, with Marshal's checks.
 func ParsePairEnvelope(plain []byte) (PairEnvelope, error) {
+	e, _, err := parsePairEnvelope(plain)
+	return e, err
+}
+
+// parsePairEnvelope is ParsePairEnvelope, with each machine's host key as
+// its check parsed it (nil for a failed machine without one).
+func parsePairEnvelope(plain []byte) (PairEnvelope, []ssh.PublicKey, error) {
 	var e PairEnvelope
 	if err := json.Unmarshal(plain, &e); err != nil {
-		return PairEnvelope{}, fmt.Errorf("pair-v1: envelope: %w", err)
+		return PairEnvelope{}, nil, fmt.Errorf("pair-v1: envelope: %w", err)
 	}
 	if e.V != PairEnvelopeVersion {
-		return PairEnvelope{}, fmt.Errorf("pair-v1: envelope version %d", e.V)
+		return PairEnvelope{}, nil, fmt.Errorf("pair-v1: envelope version %d", e.V)
 	}
-	for _, m := range e.Machines {
-		if err := m.check(); err != nil {
-			return PairEnvelope{}, err
+	keys := make([]ssh.PublicKey, len(e.Machines))
+	for i, m := range e.Machines {
+		key, err := m.check()
+		if err != nil {
+			return PairEnvelope{}, nil, err
 		}
+		keys[i] = key
 	}
-	return e, nil
+	return e, keys, nil
 }
 
 // SSHAuthorizedKey is S as the "ssh-ed25519 AAAA…" line herdr's

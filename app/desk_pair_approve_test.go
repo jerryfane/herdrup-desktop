@@ -952,6 +952,46 @@ func TestPairApproveSizesTheListWithTheProbedHostKeys(t *testing.T) {
 	}
 }
 
+// A machine this computer was itself paired to by another device's
+// approval is checked against the pin in its profile, not the pins kept
+// here; when it serves a certificate of that plain key, the list carries
+// the plain key, the one the pin is of.
+func TestPairApproveSendsAProfilePinnedMachinesPlainKey(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	plainSigner := ed25519HostKey(t)
+	host := certOf(t, plainSigner, 10)
+	w.keyMachineWith(t, "chained", host, true, false, plainSigner)
+	plain := plainSigner.PublicKey()
+	w.d.storeMu.Lock()
+	st, err := w.d.load()
+	if err == nil {
+		i := st.find(w.ids["chained"])
+		st.Machines[i].Paired, st.Machines[i].HostKeyType, st.Machines[i].HostKeyPin = true, plain.Type(), bridge.Fingerprint(plain)
+		err = w.d.store(st)
+	}
+	w.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["chained"]); err != nil || p.State != "ready" {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["chained"]})
+	if err != nil || !res.Sent || rowsByLabel(res)["chained"].Status != account.PairAdded {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	env := w.delivered(t).Envelope
+	if len(env.Machines) != 1 || env.Machines[0].HostKey != hostKeyLine(plain) {
+		t.Fatalf("envelope %+v", env)
+	}
+	if _, ok, _ := w.d.pins.Pin(net.JoinHostPort(env.Machines[0].Host, strconv.Itoa(env.Machines[0].Port))); ok {
+		t.Fatal("pinned with the pins kept here")
+	}
+}
+
 // With no probe to size it by, each connection's verified host key sizes
 // the list again before its key is added: the one machine that would make
 // it too long (whichever gets there last) gets no key, and the list still

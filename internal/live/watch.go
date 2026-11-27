@@ -38,8 +38,11 @@ type Update struct {
 	// Agents is the latest agent.list with every live change since applied.
 	Agents []herdrapi.AgentInfo
 	Pong   herdrapi.ResponseResultPong
-	Live   bool // true when events_v2 drives updates, false when polling
-	Listed time.Time
+	// TranscriptAgy is capabilities.transcript_agy from the same ping
+	// (read from raw JSON until the pinned herdr schema carries it).
+	TranscriptAgy bool
+	Live          bool // true when events_v2 drives updates, false when polling
+	Listed        time.Time
 	// Lifecycle alerts come from actual stream events, never a pane merely
 	// disappearing from a filtered list or an unavailable federation peer.
 	ExitedPaneID   string
@@ -60,6 +63,7 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 	if err != nil {
 		return err
 	}
+	transcriptAgy := c.CachedTranscriptAgy()
 	live := herdrapi.CapabilityEventsV2.Supported(pong.Capabilities)
 
 	type listed struct {
@@ -108,7 +112,7 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 		}
 		agents = replayed
 		unlisted.published(r.start)
-		update(Update{Agents: agents, Pong: pong, Live: live, Listed: time.Now()})
+		update(Update{Agents: agents, Pong: pong, TranscriptAgy: transcriptAgy, Live: live, Listed: time.Now()})
 		if queued {
 			queued = false
 			load()
@@ -147,7 +151,7 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 			reload()
 		case m := <-stream:
 			if m.exitedPaneID != "" {
-				update(Update{Agents: agents, Pong: pong, Live: live, Listed: m.at, ExitedPaneID: m.exitedPaneID})
+				update(Update{Agents: agents, Pong: pong, TranscriptAgy: transcriptAgy, Live: live, Listed: m.at, ExitedPaneID: m.exitedPaneID})
 			}
 			if m.change == nil {
 				if m.reload {
@@ -172,7 +176,7 @@ func Watch(ctx context.Context, c *engine.Client, t Timing, update func(Update))
 					}
 				}
 				agents = patched
-				update(Update{Agents: agents, Pong: pong, Live: live, Listed: m.at, FinishedPaneID: finished})
+				update(Update{Agents: agents, Pong: pong, TranscriptAgy: transcriptAgy, Live: live, Listed: m.at, FinishedPaneID: finished})
 			case ReloadUnlisted:
 				if unlisted.request(m.change.PaneID, m.at) {
 					reload()

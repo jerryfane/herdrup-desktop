@@ -658,7 +658,7 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 	if c := d.liveBridge(m); c != nil {
 		return engine.New(engine.Bridge(c)), func() {}, nil
 	}
-	c, done, err := d.dialMachine(ctx, m, d.pins, nil)
+	c, done, err := d.dialMachine(ctx, m, d.pinsFor(m), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -689,8 +689,8 @@ func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore,
 		return nil, nil, errNeedsKey
 	}
 	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: algos}
-	if algos == nil && m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
+	if algos == nil {
+		cfg.HostKeyAlgorithms = hostKeyAlgorithms(m)
 	}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {

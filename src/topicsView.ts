@@ -876,7 +876,7 @@ class TopicChat {
   const agents = page?.subagents ?? [];
   if (agents.length) nodes.push(this.host.renderSubagents(agents, this.messages));
   const working = topicWorking(this.topic, page);
-  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model)];
+  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model, "omp")];
   for (const node of tail) if (node) nodes.push(node);
   // The tail's rows stay attached, so the dots' animation runs on across polls.
   placeRows(this.messages, [this.earlier, ...nodes]);

@@ -17,7 +17,7 @@ import { composerExpanded } from "./gramModel";
 import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
-import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, cursorExpired, groupTranscript, mergeOlder, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
+import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, cursorExpired, groupTranscript, mergeOlder, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, runningCommandPreview, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
 import { ChatTail, placeRows } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
@@ -37,7 +37,7 @@ import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } 
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane, type TopicComposer } from "./topicsView";
-import { foldKey, nextTopicsOffer, ompHarness, resolvedMode, sendNote, topicsShown, type TopicsOffer } from "./topicsModel";
+import { chatAvailableFor, chatHarness, foldKey, nextTopicsOffer, ompHarness, resolvedMode, sendNote, topicsShown, type TopicsOffer } from "./topicsModel";
 import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
 import chatTextIcon from "../third_party/phosphor/web/chat-text.svg?url";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -783,7 +783,7 @@ class Detail {
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
    // A failed check (null) is no answer: Refresh asks again (#584).
-   const chat = ompHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : undefined;
+   const chat = chatHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : undefined;
    if (this.disposed) return;
    this.attach.hidden = view.guest && !view.guestGram;
    if (view.guest) {
@@ -1587,16 +1587,16 @@ class Detail {
   *  skip them for an older prompt sent from the app (#575). A failed check has neither. */
  async acceptChat(view: AgentView, chat: GuestChat | null | undefined, modes: HTMLElement) {
   this.chatUnknown = chat === null;
-  const chatAvailable = ompHarness(view.harness) && (!view.guest || !!chat?.available);
+  const chatAvailable = chatAvailableFor(view.harness, view.guest, view.transcriptAgy, chat);
   this.chatAvailable = chatAvailable;
   this.jumpMine = !view.guest || !!chat?.ownerOrigin;
-  this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
+  this.topicsCapable = chatAvailable && ompHarness(view.harness) && await Desk.topicsAvailable(this.token).catch(() => false);
   if (this.disposed) return;
   if (this.topicsCapable) this.mountTopics(view);
   modes.hidden = !chatAvailable && !view.guestGram;
   if (view.guest) {
    this.guestChat = chatAvailable;
-   modes.replaceChildren(...(chatAvailable ? [this.topicsButton, this.chatButton] : []), this.terminalButton, ...(this.guestGramButton ? [this.guestGramButton] : []));
+   modes.replaceChildren(...(chatAvailable ? (ompHarness(view.harness) ? [this.topicsButton, this.chatButton] : [this.chatButton]) : []), this.terminalButton, ...(this.guestGramButton ? [this.guestGramButton] : []));
   }
   this.asked = chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal";
   this.topicsButton.hidden = !this.topicsAvailable();
@@ -1960,7 +1960,7 @@ class Detail {
   * its board status, or with none yet the transcript's working turn — and the chat loads. */
  private renderWorking(): HTMLElement | null {
   const group = this.shownStatus[0];
-  return this.tail.working(!this.guestPaused && !this.chatFailed && (group === "working" || (!group && !!this.chat?.working)), this.chat?.working?.intent || "");
+  return this.tail.working(!this.guestPaused && !this.chatFailed && (group === "working" || !!this.chat?.working), this.chat?.working?.intent || "");
  }
  /** ChatView.outgoingBubble: a prompt sent from here, at the tail until the transcript shows it,
   *  with its receipt under it. It enters once (motion spec §1.3: from opacity 0, 14 px down and
@@ -2007,7 +2007,7 @@ class Detail {
   return this.tail.recap(this.chat?.recap, !this.chat?.working && this.shownStatus[0] !== "working" && !this.outgoing.length);
  }
  /** ChatView.sessionFooter's model line, under the conversation. */
- private renderModel(): HTMLElement | null { return this.tail.model(this.chat?.model); }
+ private renderModel(): HTMLElement | null { return this.tail.model(this.chat?.model, this.view?.harness); }
  private fitPromptBubbles() {
   const first = this.transcript.querySelector<HTMLElement>(".chat-message.user");
   const width = first?.getBoundingClientRect().width ?? 0;
@@ -2234,15 +2234,41 @@ class Detail {
    label.append(el("span", "", work.live ? "Working" : `Worked for ${duration}`), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
    summary.append(label);
    const list = el("div", "chat-work-list");
+   const makeWorkingDots = () => {
+    const dots = el("span", "chat-working-dots compact"); dots.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < 3; i++) dots.append(el("span", "chat-working-dot"));
+    return dots;
+   };
+   const live = !this.guestPaused;
    for (const step of work.steps) {
     const detail = el("details", "chat-tool"); detail.dataset.id = step.id;
     const title = el("summary");
-    title.append(el("span", `tool-dot ${step.status ?? ""}`), el("code", "", step.tool ?? ""), el("span", "", step.intent ?? ""));
+    const marker = step.status === "running" && live ? makeWorkingDots() : el("span", `tool-dot ${step.status ?? ""}`);
+    title.append(marker, el("code", "", step.tool ?? ""), el("span", "", step.intent ?? ""));
     detail.append(title);
     if (step.detail) detail.append(el("pre", "", step.detail));
     list.append(detail);
    }
    details.append(summary, list); group.append(details);
+   if (live) {
+    const running = work.steps.filter(step => step.status === "running");
+    if (running.length) {
+     const active = el("div", "chat-running-steps");
+     for (const step of running) {
+      const item = el("details", "chat-running-step"); item.dataset.id = `r:${step.id}`;
+      const title = el("summary");
+      title.append(makeWorkingDots());
+      if (step.tool) title.append(el("code", "", step.tool));
+      title.append(el("span", "chat-running-step-intent", step.intent ?? ""));
+      item.append(title);
+      const preview = runningCommandPreview(step.detail);
+      if (preview && preview !== step.intent) item.append(el("div", "chat-running-cmd", preview));
+      if (step.detail) item.append(el("pre", "", step.detail));
+      active.append(item);
+     }
+     group.append(active);
+    }
+   }
   }
   return group;
  }

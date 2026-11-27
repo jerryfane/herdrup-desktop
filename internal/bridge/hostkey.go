@@ -43,7 +43,9 @@ func (e *HostKeyChangedError) Error() string {
 }
 
 // pinningCallback trusts a machine's key on first use and refuses any other
-// key afterwards.
+// key afterwards. A host certificate is that machine when it certifies the
+// pinned plain key (another device's approval pins the plain key); a pin of
+// the certificate itself, set on first use, still holds as before.
 func pinningCallback(pins PinStore) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		offered := Fingerprint(key)
@@ -54,10 +56,13 @@ func pinningCallback(pins PinStore) ssh.HostKeyCallback {
 		if !ok {
 			return pins.SetPin(hostname, offered)
 		}
-		if pinned != offered {
-			return &HostKeyChangedError{HostPort: hostname, Pinned: pinned, Offered: offered}
+		if pinned == offered {
+			return nil
 		}
-		return nil
+		if cert, isCert := key.(*ssh.Certificate); isCert && Fingerprint(cert.Key) == pinned {
+			return nil
+		}
+		return &HostKeyChangedError{HostPort: hostname, Pinned: pinned, Offered: offered}
 	}
 }
 
