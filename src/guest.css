@@ -77,6 +77,10 @@
 /* GuestShellStyle.card, 16 sides; its rows carry their own padding (the share sheet's
    .guest-card pads itself, guestShare.css). */
 .guest-settings .guest-settings-card { margin: 0 16px; padding: 0; }
+/* YOUR SHARED AGENTS (web/main.ts, the host home's list): on the cards' 16 sides, spaced as a
+   section; hidden (signed out, none), it takes no room. */
+.guest-settings .guest-shared-list .host-home-saved { margin: 26px 16px 0; }
+.guest-settings .guest-shared-list :is(.host-shared-note, .host-home-message) { margin: 8px 18px 0; }
 /* The header (GuestSettingsView.swift 24-29): "Settings" in app 20 semibold, leading, 16 by 12. */
 .guest-settings .settings-page-title { place-items: center start; padding: 0 16px; font-size: calc(20px * var(--ui-font-scale, 1)); }
 /* GuestShellStyle.keyValue (GuestAcceptView.swift 34-40): app 15, the key textDim, 16 by

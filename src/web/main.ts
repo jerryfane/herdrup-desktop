@@ -27,6 +27,7 @@ import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAc
 import { ownerAccess, pageExit, signInEnded, signInReturned } from "./mygo";
 import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst } from "./bootChoice";
 import { boardAfter, connectionChanged } from "../shellModel";
+import { sharedListStale, sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -48,10 +49,26 @@ let ready = false;
 
 // The HerdrUp account (design #698 §2.3): on the guest's Settings and on the plain screen without
 // a grant, once the account service offers web sign-in on this origin (guest.herdrup.app only).
-const account = new HerdrUpAccountPanel(() => { if (shownWelcome) showWelcome(shownWelcome); else render(); });
+const account = new HerdrUpAccountPanel(() => { void refreshShared(); if (shownWelcome) showWelcome(shownWelcome); else render(); });
 const accountRoot = () => account.available ? account.root : null;
 
-// main.ts guestActions; "hosts" is Leave share or Remove share: this browser holds no other.
+// The shares in the guest's Settings (#543): the owner host home's list (sharedWithYou.ts) of
+// every grant this browser holds and, while signed in, the account's shares. Any of them opens in
+// place of the share open now, which stays saved (Leave alone forgets it); the agents' tab then
+// shows it.
+const sharedProblem = el("p", "host-home-message"); sharedProblem.setAttribute("role", "alert"); sharedProblem.hidden = true;
+const sharedList = sharedSection(symbol, () => guestActions.agents(), error => { sharedProblem.textContent = errorText(error); sharedProblem.hidden = false; }, () => false, "YOUR SHARED AGENTS");
+sharedList.root.append(sharedProblem);
+const sharedRoot = el("div", "host-home guest-shared-list"); sharedRoot.append(sharedList.root);
+let sharedVersion = 0;
+async function refreshShared() {
+ const at = ++sharedVersion, signedIn = account.signedIn;
+ const [grants, synced] = await Promise.all([Desk.sharedConnections().catch(() => []), syncedSharesNow(signedIn)]);
+ if (at === sharedVersion) { sharedProblem.hidden = true; await sharedList.draw(sharedMachines(grants, synced)); }
+}
+events.syncedSharesChanged.on(() => { void refreshShared(); });
+
+// main.ts guestActions; "hosts" is Leave share or Remove share.
 const guestActions = {
  agents: () => { guestTab = "agents"; render(); },
  settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },
@@ -196,6 +213,8 @@ trackPhotoConnections(events);
 events.stateChanged.on((s) => {
  // Another share (shellModel.ts, the shell's rule too): its own tab, and not the last one's board.
  if (connectionChanged(state, s)) guestTab = "agents";
+ // The shares list names the share open now, and its machine as its owner names it now.
+ if (sharedListStale(state, s)) void refreshShared();
  board = boardAfter(state, s, board);
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
@@ -220,8 +239,7 @@ async function init() {
  reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
  animateDisclosures(document.body);
  enableLongPress();
- // Leave forgets this browser's grant only: the account's shares aren't synced here yet.
- guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot, leavesAccount: false });
+ guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot, shared: () => sharedRoot });
  initInteraction($("detail"), symbol, target => { selectedAgent = target; render(); });
  await initGram({
   el, symbol, placeInitials, spinner: spinnerSVG,

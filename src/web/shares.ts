@@ -1,9 +1,13 @@
 // The account's shares collection for the web guest (AccountService DESIGN §5.1, sync.ts shares;
-// herdrup#700), as far as "Add to my account" goes: this browser joins the account as a device, and
-// a share herdr bound to the account is written there in one request, whose outcome is told as the
-// service answered it, never guessed (ShareAdd). The grant stays on this browser whatever the
-// outcome. Reading the account's shares, leaving a share on every device and settling a write whose
-// outcome wasn't known belong to the shares sync (#543's second part), not to this module yet.
+// herdrup#700): a share bound to the account is written there when it is accepted, read on every
+// device of the account (SHARED WITH YOU, "Open on this device"), and deleted when it is left, which
+// leaves it on every device. One record per account in localStorage: the shares as last pulled
+// (with the revisions of those seen deleted), the revision to pull from next, and this browser's
+// writes not yet taken by the service. As every sync write, each carries base_rev: the revision
+// last seen for its id (0: none). A put's conflict leaves the service's item standing: the write
+// goes, and the pull that follows shows what the account holds. A delete's conflict with a live
+// item keeps the delete, based next on that item's revision: it goes only once the share is gone.
+// "Add to my account" is a put told as the service answered it, never guessed (ShareAdd).
 
 import type { Access as PageAccess } from "../mygo";
 import { grantKey } from "../grantKey";
@@ -11,7 +15,25 @@ import { accountShareNotice } from "../notices";
 import { toB64url } from "../webguest/b64url";
 import type { StaticKey } from "../webguest/noise";
 import type { Access } from "../webguest/transport";
-import { AccountServiceError, bindSessionDevice, SignedOutError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
+import { AccountServiceError, batches, bindSessionDevice, pullSince, retains, SignedOutError, type SyncChange, type SyncPushAnswer, type WebAccount } from "./account";
+import { withStorageLock, type AbortableLocks } from "./locks";
+
+/** One account's record: SHARES_KEY_PREFIX + the account id. */
+export const SHARES_KEY_PREFIX = "herdrup.web.shares.";
+/** The Web Lock a tab holds for an account's sync round: SYNC_LOCK_PREFIX + the account id. */
+export const SYNC_LOCK_PREFIX = "herdrup.web.shares.sync.";
+
+/** A browser without Web Locks (none the page supports: its build targets browsers that all have
+ *  them) can't take turns with its other tabs, so it syncs no share: it writes nothing to the
+ *  account rather than race another tab's writes. */
+export class SharesUnsupported extends Error {
+ constructor() { super("This browser can't sync shared access. Update it."); this.name = "SharesUnsupported"; }
+}
+/** A Leave done on this browser whose delete no request carried yet (another sign-in here, or its
+ *  round failed before sending it): kept, it goes with a later round. */
+export class LeaveUnsent extends Error {
+ constructor() { super("You left this shared access on this browser. Your HerdrUp account still lists it; it will be removed there at the next sync."); this.name = "LeaveUnsent"; }
+}
 
 /** The shares collection's allowlist (sync.ts SCHEMAS.shares). */
 export interface ShareBody {
@@ -25,7 +47,168 @@ export interface ShareBody {
  share_gram?: boolean;
 }
 
-// The service's label caps (sync.ts text(): at most this many code points).
+/** How writing a share to the account went (ShareSync.add), as the service told it:
+ *  - added: it holds the share (it wrote the item, or answered that the account has it live);
+ *  - refused: it didn't write it and never will: it refused the write alone (a 400) or holds the
+ *    share deleted, or this browser couldn't keep it; nothing of it is left to send, and the share
+ *    is on this browser only. error says why;
+ *  - unknown: no answer said yet (a timeout, the network, a 5xx, a 4xx of the whole push, an
+ *    answer that names no outcome for it, signed out or another sign-in here, or the write still
+ *    waiting its turn): the item may be there or not. It stays queued or journaled, and the
+ *    shares sync settles it (SharesRecord sent). */
+export type ShareAdd = { outcome: "added" } | { outcome: "refused"; error: unknown } | { outcome: "unknown"; error: unknown };
+
+/** The browser Desk's acceptGuestInvitation result: the access, and for a share herdr bound to the
+ *  account, how writing it there went. The desktop's Go writes its item through its own sync. */
+export type AcceptedAccess = PageAccess & { added?: ShareAdd };
+
+/** The words for an add that isn't confirmed (owner's text, herdr-app msg 561930). */
+export const ADD_UNKNOWN = "Added on this device; we'll finish adding it to your account.";
+
+/** The words for a refused add: the share is on this browser only. */
+export function addRefused(error: unknown): string {
+ return `Added on this device only. Your HerdrUp account didn't take it: ${error instanceof Error ? error.message : String(error)}.`;
+}
+
+/** The notice after a share herdr bound to the account: in the account only once the service said
+ *  so (frame com-g3's words); else that it is on this device, and why. */
+export function boundNotice(agentName: string, added: ShareAdd): string {
+ if (added.outcome === "added") return accountShareNotice(agentName);
+ return added.outcome === "refused" ? addRefused(added.error) : ADD_UNKNOWN;
+}
+
+/** How long an add may take before its outcome counts as unknown (its round goes on). */
+export const ADD_MS = 15_000;
+
+const record = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+/** A revision or a time in ms as the service writes one (AccountService src/sync.ts isRev; D1's
+ *  INTEGER columns and clock): a safe integer, 0 up. */
+const natural = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
+/** Whether answer is POST /v1/sync's success envelope as the service writes it (AccountService
+ *  src/sync.ts handlePush, DESIGN.md §5): {rev, applied: [{collection, id, rev}], conflicts:
+ *  [{collection, id, server}], now_ms?}. Required: rev; applied and conflicts, each entry naming
+ *  its collection and id; an applied entry's rev; a conflict's server, null or a whole item
+ *  (itemJson: collection, id, rev, updated_ms, deleted, and body, null exactly when deleted, as
+ *  migrations/0003_sync.sql's CHECK holds). Optional: now_ms, the clock extension (#826), absent
+ *  from a service without it; when present, a time in ms. Revisions and times are naturals. A 2xx
+ *  with a required field missing, or any field mistyped, tells no outcome, a matching entry in it
+ *  included: its writes stay journaled. */
+function pushAnswer(answer: unknown): answer is SyncPushAnswer {
+ const named = (c: unknown): c is Record<string, unknown> => record(c) && typeof c.collection === "string" && typeof c.id === "string";
+ const item = (s: unknown) => named(s) && natural(s.rev) && natural(s.updated_ms) && typeof s.deleted === "boolean" && "body" in s && s.deleted === (s.body === null);
+ return record(answer) && natural(answer.rev) && (!("now_ms" in answer) || natural(answer.now_ms))
+  && Array.isArray(answer.applied) && answer.applied.every(a => named(a) && natural(a.rev))
+  && Array.isArray(answer.conflicts) && answer.conflicts.every(c => named(c) && (c.server === null || item(c.server)));
+}
+/** An account share as pulled; id is its grant's key, "<host_id>/<guest_id>" (§5.1; grantKey). */
+export interface RemoteShare { id: string; rev: number; body: ShareBody }
+/** A write not yet taken: the body to put, or a delete. */
+interface PendingWrite { id: string; deleted?: true; body?: ShareBody }
+/** A write as a push sent it: based on base_rev. */
+interface SentWrite extends PendingWrite { base_rev: number }
+/** A write handed to a request no answer came for (SharesRecord sent): not_after, the service's
+ *  cutoff it went with (0: none, a service without now_ms); sent_at, the revision the record was
+ *  pulled to when it went; unproven, a put of a new share (base 0) whose landing a pull since may
+ *  have missed (a full pull past sent_at), until the service's history proves it either way. */
+interface JournalEntry extends SentWrite { not_after: number; sent_at: number; unproven?: true }
+/** p as written (its id, its delete or body), whatever else is stored with it. */
+const bare = (p: PendingWrite): PendingWrite => p.deleted ? { id: p.id, deleted: true } : { id: p.id, body: p.body! };
+/** p's key: one write of one share, whatever it is based on. */
+const writeKey = (p: PendingWrite) => JSON.stringify(bare(p));
+/** gone: the revisions of the shares seen deleted, which a write of the same id is based on.
+ *  drop: the shares left here (kept in the same write as the delete) or a pull saw leave the
+ *  account (a tombstone, or, in a full pull, a share seen live that it no longer holds) whose
+ *  grants this browser may still hold. A pull's are stored in the same write that moves rev past
+ *  them, so a pull never forgets one before its grant is gone. Each stays until a listener has
+ *  removed its grant (cleared), whichever tab left or pulled it.
+ *  sent: the journal, each write of unknown outcome: handed to a request no answer came for. It is
+ *  written before the request goes; the request's answer, or its refusal (a 4xx, or cancelled
+ *  before it went: nothing written), takes its entries out. The rule:
+ *   - A write of unknown outcome is never sent again, and no other write of its share goes while
+ *     it is journaled: it may still land, however late, until its not_after (the service writes
+ *     nothing past it: sync.ts Deadline), and a write sent meanwhile could be undone by it (a
+ *     tombstone the service prunes by count, 2,000 newer ones, makes a late put's base 0 good
+ *     again).
+ *   - The first pull whose now_ms (read before its rows) is past its not_after settles it against
+ *     what that pull shows (settleJournal). A share still at the revision the write was based on:
+ *     it never landed, and it goes again, as a fresh write, while it is still the one queued.
+ *     Else the share moved on: by the write itself, or by another past it (another device's
+ *     write, its Leave's tombstone). A put is then done or superseded: either way it is dropped,
+ *     never put back over another's write. A delete stays while its share is live (a Leave
+ *     wins), based next on the pulled revision, as when a delete is answered with a conflict.
+ *  One sent without not_after (a service without now_ms, themartianapp/herdrup#826) can't be
+ *  bounded: the next pull settles it.
+ *  A put of a new share (base 0) that a full pull past its sent_at doesn't list may have landed
+ *  and been deleted since, its tombstone pruned or the history started over (as Go's needsProof):
+ *  the pull can't tell. It is settled only once the service's history from sent_at (at least 1:
+ *  a pull from 0 is never refused) is asked (retains): held still, any landing since would have
+ *  been listed, so it never landed and goes again, once; gone (410), what happened is past
+ *  knowing, and it is superseded (dropped, its grant with it). Unasked or unanswered, it is
+ *  unproven: kept, never sent, never dropped, and asked again at every later pull. */
+interface SharesRecord { rev: number; shares: RemoteShare[]; gone: Record<string, number>; pending: PendingWrite[]; drop?: string[]; sent?: JournalEntry[] }
+
+/** Where a pull starts that, not refused, proves a full pull lists any landing of e since it was
+ *  sent (as Go's retainedFrom). */
+const retainedFrom = (e: JournalEntry) => Math.max(e.sent_at, 1);
+
+/** e's key in the journal: its write and the revision it was based on. */
+const sentKey = (s: SentWrite) => JSON.stringify({ ...bare(s), base_rev: s.base_rev });
+
+/** Settles r's journal entries a pull at now (its now_ms, null: none told; full, rev: whether it
+ *  read the whole account, and to which revision) proves can't land any more, against r as that
+ *  pull left it (SharesRecord sent). A share live is done (the write landed, or another's stands);
+ *  one moved past the write's base is superseded; one still at it never landed, and its write
+ *  goes again while it is still the one queued, but for a put of a new share whose landing a full
+ *  pull may have missed: kept, it is marked unproven, and owed a proof (owed, keyed sentKey, from
+ *  retainedFrom) once past its not_after. Returns the ids whose queued
+ *  write it took off (done or superseded: a grant held here for one the account no longer holds
+ *  goes) and the proofs owed. */
+function settleJournal(r: SharesRecord, now: number | null, full: boolean, rev: number): { off: string[]; owed: { key: string; from: number }[] } {
+ const off: string[] = [], owed: { key: string; from: number }[] = [];
+ r.sent = (r.sent ?? []).filter(e => {
+  const live = r.shares.find(s => s.id === e.id);
+  const missed = !e.deleted && e.base_rev === 0 && live === undefined && (r.gone[e.id] ?? 0) === 0 && (e.unproven === true || (full && rev > e.sent_at));
+  if (e.not_after !== 0 && (now === null || now <= e.not_after)) {
+   if (missed) e.unproven = true;
+   return true;
+  }
+  const queued = r.pending.some(p => writeKey(p) === writeKey(e));
+  if (missed && queued) { e.unproven = true; owed.push({ key: sentKey(e), from: retainedFrom(e) }); return true; }
+  const stays = e.deleted ? live !== undefined : live === undefined && (r.gone[e.id] ?? 0) === e.base_rev;
+  if (!stays && queued) { r.pending = r.pending.filter(p => writeKey(p) !== writeKey(e)); off.push(e.id); }
+  return false;
+ });
+ return { off, owed };
+}
+
+/** Notes in r.drop the grants of ids that may still be held here though the account no longer
+ *  holds them: none put here and still queued, none live on the account unless left here (its
+ *  delete queued). */
+function noteDrops(r: SharesRecord, ids: Iterable<string>) {
+ const puts = new Set(r.pending.filter(p => p.body).map(p => p.id)), deletes = new Set(r.pending.filter(p => p.deleted).map(p => p.id));
+ const live = new Set(r.shares.map(s => s.id));
+ r.drop = [...new Set([...r.drop ?? [], ...ids])].filter(id => !puts.has(id) && (deletes.has(id) || !live.has(id)));
+}
+
+type KeyValue = Pick<Storage, "getItem" | "setItem">;
+
+/** Where the record lives and how tabs take turns writing it; name is this browser's device name.
+ *  background: the shares sync on their own, at each sign-in and every SYNC_EVERY_MS (tests sync
+ *  by hand). roundMs: how long a round may hold its turn (ROUND_MS unless a test passes its own);
+ *  addMs: how long an add waits for its round (ADD_MS unless a test passes its own). */
+export interface SharesPlace { storage(): KeyValue; locks: AbortableLocks | null; name: string; background: boolean; roundMs?: number; addMs?: number }
+
+/** How long one round may run once it has its turn: its requests are then cancelled, so a stalled
+ *  one can't keep every other tab's round (a Leave's delete) waiting (as the prompts' round). */
+const ROUND_MS = 60_000;
+/** How long past the service's newest now_ms a push may still be written (its not_after), longer
+ *  than a round (as the prompts', prompts.ts NOT_AFTER_MS). */
+const NOT_AFTER_MS = 2 * ROUND_MS;
+
+/** How often a signed-in page pulls the account's shares while open (as its prompts). */
+const SYNC_EVERY_MS = 15 * 60_000;
+
+/** The most code points of each label the service keeps (sync.ts SCHEMAS.shares). */
 const MAX_AGENT_NAME = 128, MAX_OWNER_NAME = 64, MAX_MACHINE_LABEL = 128;
 
 /** Whether the service stores text as a label of at most max code points (sync.ts text()):
@@ -44,106 +227,413 @@ export function shareBody(access: Access): ShareBody {
  return body;
 }
 
-/** How writing a share to the account went, as the service told it:
- *  - added: it holds the share (it wrote the item, or answered that the account has it live);
- *  - refused: it didn't write it, and said so (a 4xx, the share's item deleted there), or nothing
- *    was sent (signed out, or this browser now signed in to another account); error says why;
- *  - unknown: no answer said (a timeout, the network, a 5xx, an answer that names no outcome for
- *    it): the item may be there or not. The shares sync settles it later. */
-export type ShareAdd = { outcome: "added" } | { outcome: "refused"; error: unknown } | { outcome: "unknown"; error: unknown };
-
-/** The browser Desk's acceptGuestInvitation result: the access, and for a share herdr bound to the
- *  account, how writing it there went. The desktop's Go writes its item through its own sync. */
-export type AcceptedAccess = PageAccess & { added?: ShareAdd };
-
-/** The words for an add that isn't confirmed (owner's text, herdr-app msg 561930). */
-export const ADD_UNKNOWN = "Added on this device; we'll finish adding it to your account.";
-
-/** The words for a refused add: the share is on this browser only. */
-export function addRefused(error: unknown): string {
- const why = error instanceof SignedOutError ? "you're signed out of HerdrUp"
-  : error instanceof AccountServiceError && error.code === "account_changed" ? "this browser is now signed in to another HerdrUp account"
-  : error instanceof AccountServiceError && error.status === 401 ? "your sign-in expired"
-  : error instanceof Error ? error.message : String(error);
- return `Added on this device only. Your HerdrUp account didn't take it: ${why}.`;
+function validBody(body: unknown): body is ShareBody {
+ if (typeof body !== "object" || body === null) return false;
+ const b = body as Record<string, unknown>;
+ return typeof b.relay === "string" && typeof b.host_id === "string" && typeof b.node_pub === "string" && typeof b.guest_id === "string";
 }
 
-/** The notice after a share herdr bound to the account: in the account only once the service said
- *  so (frame com-g3's words); else that it is on this device, and why. */
-export function boundNotice(agentName: string, added: ShareAdd): string {
- if (added.outcome === "added") return accountShareNotice(agentName);
- return added.outcome === "refused" ? addRefused(added.error) : ADD_UNKNOWN;
-}
+/** What listeners hear after every round, sign-in change and write here: whose shares they are
+ *  (null: signed out) and the account's shares now. What a pull saw leave the account is in the
+ *  record (dropping), whichever tab of this browser pulled it, until a listener clears it. */
+export interface SharesChange { account: string | null; shares: RemoteShare[] }
 
-/** How long the write may take before its outcome counts as unknown. */
-export const ADD_MS = 15_000;
+export function createShareSync(account: WebAccount, place: SharesPlace) {
+ const listeners = new Set<(change: SharesChange) => void | Promise<void>>();
+ const keyOf = (acct: string) => SHARES_KEY_PREFIX + acct;
+ const read = (acct: string): SharesRecord => {
+  const raw = place.storage().getItem(keyOf(acct));
+  return raw === null ? { rev: 0, shares: [], gone: {}, pending: [] } : JSON.parse(raw) as SharesRecord;
+ };
+ /** Reads, changes and writes acct's record in one step under its storage lock. */
+ const update = async <T>(acct: string, change: (record: SharesRecord) => T): Promise<T> => {
+  let out: { value: T } | null = null;
+  const ran = await withStorageLock(keyOf(acct), () => {
+   const record = read(acct);
+   out = { value: change(record) };
+   place.storage().setItem(keyOf(acct), JSON.stringify(record));
+  }, place.locks);
+  if (!ran || out === null) throw new Error("This browser's storage is locked by another tab. Try again.");
+  return (out as { value: T }).value;
+ };
+ /** The shares as last pulled, with this browser's own unsent puts and without its unsent deletes. */
+ const visible = (record: SharesRecord): RemoteShare[] => {
+  const pending = new Set(record.pending.map(p => p.id));
+  const shown = record.shares.filter(s => !pending.has(s.id)).concat(record.pending.flatMap(p => p.body ? [{ id: p.id, rev: 0, body: p.body }] : []));
+  return shown.sort((a, b) => a.id.localeCompare(b.id));
+ };
+ /** Tells the listeners, and waits for them: a sync is done once what it pulled is reconciled. */
+ const tell = async (change: SharesChange): Promise<void> => {
+  await Promise.allSettled([...listeners].map(async f => f(change)));
+ };
 
-/** Whether error says the request wrote nothing: the service refused it (a 4xx; a 401 too, as the
- *  one request isn't sent again), or it never went (signed out; another sign-in now,
- *  account_changed, refused before sending). Anything else (a 5xx, the network, a timeout) leaves
- *  the write's outcome unknown. */
-const refusal = (error: unknown) =>
- error instanceof SignedOutError || (error instanceof AccountServiceError && error.status >= 400 && error.status < 500);
-
-const record = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
-/** A revision or a time in ms as the service writes one (AccountService src/sync.ts isRev; D1's
- *  INTEGER columns and clock): a safe integer, 0 up. */
-const natural = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
-/** Whether answer is POST /v1/sync's success envelope as the service writes it (AccountService
- *  src/sync.ts handlePush, DESIGN.md §5): {rev, applied: [{collection, id, rev}], conflicts:
- *  [{collection, id, server}], now_ms?}. Required: rev; applied and conflicts, each entry naming
- *  its collection and id; an applied entry's rev; a conflict's server, null or a whole item
- *  (itemJson: collection, id, rev, updated_ms, deleted, and body, null exactly when deleted, as
- *  migrations/0003_sync.sql's CHECK holds). Optional: now_ms, the clock extension (#826), absent
- *  from a service without it; when present, a time in ms. Revisions and times are naturals. A 2xx
- *  with a required field missing, or any field mistyped, tells no outcome, a matching entry in it
- *  included. */
-function pushAnswer(answer: unknown): answer is SyncPushAnswer {
- const named = (c: unknown): c is Record<string, unknown> => record(c) && typeof c.collection === "string" && typeof c.id === "string";
- const item = (s: unknown) => named(s) && natural(s.rev) && natural(s.updated_ms) && typeof s.deleted === "boolean" && "body" in s && s.deleted === (s.body === null);
- return record(answer) && natural(answer.rev) && (!("now_ms" in answer) || natural(answer.now_ms))
-  && Array.isArray(answer.applied) && answer.applied.every(a => named(a) && natural(a.rev))
-  && Array.isArray(answer.conflicts) && answer.conflicts.every(c => named(c) && (c.server === null || item(c.server)));
-}
-
-/** "Add to my account" against account: name is this browser's on the account's devices. */
-export function createShareAdder(account: WebAccount, name: string, options: { addMs?: number } = {}) {
- return {
-  /** Binds this sign-in's session, on its current account, to key as an account device (the
-   *  statements a bound share needs are issued only to a session with a device). */
-  async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {
-   await bindSessionDevice(account, key, name, await account.currentAccount(signal), signal);
-  },
-  /** Writes a bound grant's share to the account it is bound to (Access.account), its id the
-   *  grant's key, as one POST /v1/sync of one change based on no item (base_rev 0: the key is
-   *  new, as the grant is), sent once (WebAccount.syncPushOnce: a token near expiry is refreshed
-   *  first, and a 401 is a refusal, never a second POST). An error status refuses it as it
-   *  arrives, whatever its body does; a 2xx whose body isn't the success envelope (pushAnswer)
-   *  tells nothing, so its outcome is unknown. Never rejects: the outcome is ShareAdd's. */
-  async add(access: Access): Promise<ShareAdd> {
-   if (access.account === undefined) return { outcome: "refused", error: new Error("this shared access isn't bound to a HerdrUp account") };
-   const id = grantKey(access);
-   const change: SyncChange = { collection: "shares", id, base_rev: 0, body: shareBody(access) };
-   // The deadline's own timer, cleared once answered (a timeout signal nothing holds may be
-   // collected before it fires, in some engines).
-   const deadline = new AbortController();
-   const timer = setTimeout(() => deadline.abort(new DOMException("The account service didn't answer in time.", "TimeoutError")), options.addMs ?? ADD_MS);
-   let answer: unknown;
-   try {
-    answer = await account.syncPushOnce({ changes: [change] }, access.account, deadline.signal);
-   } catch (error) {
-    return refusal(error) ? { outcome: "refused", error } : { outcome: "unknown", error };
-   } finally {
-    clearTimeout(timer);
+ /** Sends acct's queue in pushes the service takes (at most 100 changes and 256 KiB each,
+  *  account.ts batches), each with notAfter as its not_after (0: none). Each push is made at
+  *  dispatch from the record as it is then, read again for every one: the writes queued whose
+  *  share has none journaled (SharesRecord sent), each based on the revision last seen. A write
+  *  replaced since (a put by a Leave's delete, in this tab or another) is never sent, and a write
+  *  kept since goes in a later push. Each push is journaled before it goes and settled as it is
+  *  answered: one that fails leaves its writes for the next round, and the others still go. A
+  *  write goes at most once a round; dispatched gets each as its request is handed to fetch
+  *  (writeKey). */
+ async function pushQueue(acct: string, signal: AbortSignal, generation: number, notAfter: number, dispatched: Set<string>, refusedAlone: Map<string, unknown>): Promise<void> {
+  const change = (s: SentWrite): SyncChange => s.deleted
+   ? { collection: "shares", id: s.id, base_rev: s.base_rev, deleted: true }
+   : { collection: "shares", id: s.id, base_rev: s.base_rev, body: s.body };
+  /** p as it goes now: based on the revision last seen of its share. */
+  const based = (r: SharesRecord, p: PendingWrite): SentWrite => ({ ...bare(p), base_rev: r.shares.find(s => s.id === p.id)?.rev ?? r.gone[p.id] ?? 0 });
+  /** Settles the writes sent that the answer (or refused: the service refused them alone) does:
+   *  their outcome known, their journal entries leave. Off the queue go one applied, a put refused
+   *  for its base (the service's item stands), a delete of a share already gone, and one refused
+   *  alone (malformed, never to be taken). A delete refused while the share is still live stays,
+   *  based next on the service's row. A write replaced since it was sent stays (it goes next).
+   *  What an applied write left the share at is what its next write is based on, and a conflict's
+   *  row (the service's item, live or deleted) is the share as the account holds it. */
+  const settle = (sent: SentWrite[], answer: SyncPushAnswer | null, refused: SentWrite[] = []) => update(acct, r => {
+   const sentAs = new Map(sent.map(s => [s.id, s] as const));
+   const done = new Set(refused.map(writeKey)), known = new Set([...sent, ...refused].map(sentKey));
+   const rows: { id: string; rev: number; body: ShareBody | null }[] = [];
+   for (const c of answer?.applied ?? []) {
+    const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
+    if (s === undefined) continue;
+    done.add(writeKey(s));
+    rows.push({ id: c.id, rev: c.rev, body: s.deleted ? null : s.body! });
    }
-   if (!pushAnswer(answer)) return { outcome: "unknown", error: new Error("the account service's answer wasn't one it gives") };
-   const mine = (c: { collection: string; id: string }) => c.collection === "shares" && c.id === id;
-   if (answer.applied.some(mine)) return { outcome: "added" };
-   const conflict = answer.conflicts.find(mine);
-   if (conflict?.server?.deleted === false) return { outcome: "added" };
-   if (conflict !== undefined) return { outcome: "refused", error: new Error("this shared access was removed from your account") };
-   return { outcome: "unknown", error: new Error("the account service's answer didn't name this shared access") };
+   for (const c of answer?.conflicts ?? []) {
+    const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
+    if (s === undefined) continue;
+    const server = c.server;
+    if (server !== null && (server.deleted || validBody(server.body))) rows.push({ id: c.id, rev: server.rev, body: server.deleted ? null : server.body as ShareBody });
+    if (!(s.deleted && server !== null && !server.deleted && validBody(server.body))) done.add(writeKey(s));
+   }
+   r.pending = r.pending.filter(p => !done.has(writeKey(p)));
+   r.sent = (r.sent ?? []).filter(e => !known.has(sentKey(e)));
+   for (const row of rows) {
+    if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
+    r.shares = r.shares.filter(s => s.id !== row.id);
+    delete r.gone[row.id];
+    if (row.body !== null) r.shares = r.shares.concat({ id: row.id, rev: row.rev, body: row.body }).sort((a, b) => a.rev - b.rev);
+    else if (row.rev > 0) r.gone[row.id] = row.rev;
+   }
+  });
+  let failed: { error: unknown } | null = null;
+  /** The writes a push of this round took (writeKey), whether or not its request went: none is
+   *  taken twice. */
+  const taken = new Set<string>();
+  /** One push of what pick takes from the record at dispatch, journaled, then settled; how many
+   *  writes it took. A request refused (a 4xx, or cancelled before it went) takes its entries out
+   *  of the journal. A failure other than a 400 (the journal's own write refused included) is kept
+   *  (failed) and leaves its writes queued, journaled if their request went. A 400 refuses the
+   *  whole push for one change the service won't keep, and none of it is written: each write then
+   *  goes alone, while it is still the one queued, and only one refused alone leaves unwritten. */
+  const push = async (pick: (r: SharesRecord) => SentWrite[]): Promise<number> => {
+   let sent: SentWrite[] = [];
+   let answer: SyncPushAnswer | null;
+   try {
+    answer = await account.syncPush({
+     prepare: () => update(acct, r => {
+      sent = pick(r);
+      r.sent = (r.sent ?? []).concat(sent.map(s => ({ ...s, not_after: notAfter, sent_at: r.rev })));
+      if (sent.length === 0) return null;
+      return notAfter === 0 ? { changes: sent.map(change) } : { changes: sent.map(change), not_after: notAfter };
+     }),
+     sending() { for (const s of sent) dispatched.add(writeKey(s)); },
+     refused: async () => {
+      const out = new Set(sent.map(sentKey));
+      if (out.size > 0) await update(acct, r => { r.sent = (r.sent ?? []).filter(e => !out.has(sentKey(e))); });
+     },
+    }, acct, signal, generation);
+   } catch (error) {
+    for (const s of sent) taken.add(writeKey(s));
+    if (!(error instanceof AccountServiceError && error.status === 400)) { failed ??= { error }; return sent.length; }
+    if (sent.length === 1) { refusedAlone.set(writeKey(sent[0]!), error); await settle([], null, sent); }
+    else for (const w of sent) await push(r => still(r, w));
+    return sent.length;
+   }
+   for (const s of sent) taken.add(writeKey(s));
+   // An answer that isn't the service's tells no outcome: its writes stay journaled.
+   if (answer !== null && !pushAnswer(answer)) { failed ??= { error: new Error("the account service's answer wasn't one it gives") }; return sent.length; }
+   await settle(sent, answer);
+   return sent.length;
+  };
+  /** w, sent in a push the service refused whole, as it goes alone now: while it is still the
+   *  write queued and its share has none journaled; else none. */
+  const still = (r: SharesRecord, w: SentWrite): SentWrite[] => (r.sent ?? []).some(e => e.id === w.id)
+   ? [] : r.pending.filter(p => writeKey(p) === writeKey(w)).map(p => based(r, p));
+  /** The next push: the writes queued whose share has none journaled, none taken yet this round,
+   *  as many as one push takes. */
+  const next = (r: SharesRecord) => {
+   const held = new Set((r.sent ?? []).map(e => e.id));
+   const left = r.pending.filter(p => !held.has(p.id) && !taken.has(writeKey(p))).map(p => based(r, p));
+   return left.slice(0, batches(left.map(change))[0]?.length ?? 0);
+  };
+  // Cancelled, or another sign-in now: nothing more goes for this one.
+  while (await push(next) > 0 && !signal.aborted && account.generation === generation);
+  if (failed !== null) throw (failed as { error: unknown }).error;
+ }
+
+ /** Pulls what acct holds since the record's revision and folds it in, in one write: the
+  *  revision, the shares, the journal entries it settles (settleJournal), those it saw leave
+  *  (drop), and the puts of new shares only the service's history can settle, marked unproven
+  *  (owed, found in that same write from the record it read). Only after that write, and only
+  *  when one is owed, does it ask the history (proofs: one page each from where they went, lowest
+  *  first; once held, held from every later one). A second write applies the answers, only while
+  *  this round is still acct's (the session it began in): held, the put never landed and goes
+  *  again; gone (410), it is superseded, dropped with its grant. One unanswered (the probe failed,
+  *  or ran out the round's time) stays unproven, and nothing else changes: a failed probe never
+  *  undoes or delays what the pull settled; it comes back as unproven for the round to fail with
+  *  at its end. Its newest now_ms is what a push next counts its not_after from (null: none
+  *  told). */
+ async function pullInto(acct: string, signal: AbortSignal, generation: number): Promise<{ change: SharesChange; newestMs: number | null; unproven?: { error: unknown } }> {
+  const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
+  const newestMs = pulled.nowMs === null ? null : pulled.newestMs;
+  const { change, owed } = await update(acct, r => {
+   const before = new Set(r.shares.map(s => s.id));
+   const live = new Map(pulled.full ? [] : r.shares.map(s => [s.id, s] as const));
+   const gone = pulled.full ? {} : r.gone;
+   for (const it of [...pulled.items].sort((a, b) => a.rev - b.rev)) {
+    if (it.collection !== "shares" || Math.max(live.get(it.id)?.rev ?? -1, gone[it.id] ?? -1) > it.rev) continue;
+    if (it.deleted) { live.delete(it.id); gone[it.id] = it.rev; }
+    else if (validBody(it.body)) { live.set(it.id, { id: it.id, rev: it.rev, body: it.body }); delete gone[it.id]; }
+   }
+   r.rev = pulled.rev;
+   r.shares = [...live.values()].sort((a, b) => a.rev - b.rev);
+   r.gone = gone;
+   const { off, owed } = settleJournal(r, pulled.nowMs, pulled.full, pulled.rev);
+   const tombstoned = pulled.items.filter(it => it.collection === "shares" && it.deleted).map(it => it.id);
+   // A share left here stays until its grant is gone, live on the account or not (its delete
+   // not taken yet).
+   noteDrops(r, [...before, ...tombstoned, ...off]);
+   return { change: { account: acct, shares: visible(r) }, owed };
+  });
+  if (owed.length === 0) return { change, newestMs };
+  const froms = [...new Set(owed.map(o => o.from))].sort((a, b) => a - b);
+  const proofs = new Map<number, boolean>();
+  let unproven: { error: unknown } | undefined;
+  try {
+   for (const [i, from] of froms.entries()) {
+    if (await retains(account, acct, from, signal, generation)) { for (const f of froms.slice(i)) proofs.set(f, true); break; }
+    proofs.set(from, false);
+   }
+  } catch (error) { unproven = { error }; }
+  // Applied only while the round is still this account's, in the session it began in.
+  if (proofs.size === 0 || account.generation !== generation || account.current?.accountID !== acct) return unproven === undefined ? { change, newestMs } : { change, newestMs, unproven };
+  const answered = new Map(owed.map(o => [o.key, proofs.get(o.from)] as const));
+  const proven = await update(acct, r => {
+   const off: string[] = [];
+   r.sent = (r.sent ?? []).filter(e => {
+    const held = answered.get(sentKey(e));
+    if (held === undefined) return true;
+    if (!held && r.pending.some(p => writeKey(p) === writeKey(e))) { r.pending = r.pending.filter(p => writeKey(p) !== writeKey(e)); off.push(e.id); }
+    return false;
+   });
+   noteDrops(r, off);
+   return { account: acct, shares: visible(r) };
+  });
+  return unproven === undefined ? { change: proven, newestMs } : { change: proven, newestMs, unproven };
+ }
+
+ /** One round for acct: this browser's writes, then what the account holds since the last pull.
+  *  With writes to send it pulls first: the service's clock, which each push's not_after counts
+  *  from (NOT_AFTER_MS past it), and the journal entries it settles. dispatched gets each write
+  *  whose request was handed to fetch (writeKey), as it goes, and refusedAlone each the service
+  *  refused alone, with why: a round that fails after still says what it sent. A write held
+  *  behind a journal entry gets a round once the earliest such entry can be settled (followUp),
+  *  and each round sets that again. A proof a pull couldn't get fails the round at its end, once
+  *  the rest of it ran. */
+ async function round(acct: string, signal: AbortSignal, dispatched: Set<string>, refusedAlone: Map<string, unknown>): Promise<SharesChange> {
+  const generation = account.generation;
+  const writes = (r: SharesRecord) => r.pending.length > 0 || (r.sent ?? []).length > 0;
+  let unproven: { error: unknown } | undefined;
+  if (writes(read(acct))) {
+   const first = await pullInto(acct, signal, generation);
+   unproven = first.unproven;
+   if (first.newestMs === null) console.warn("account sync: the service gives no now_ms; a share write of unknown outcome can't be fenced (themartianapp/herdrup#826)");
+   await pushQueue(acct, signal, generation, first.newestMs === null ? 0 : first.newestMs + NOT_AFTER_MS, dispatched, refusedAlone);
+  }
+  const pulled = await pullInto(acct, signal, generation);
+  unproven ??= pulled.unproven;
+  const r = read(acct), queued = new Set(r.pending.map(p => p.id));
+  const holding = (r.sent ?? []).filter(e => e.not_after > 0 && queued.has(e.id)).map(e => e.not_after);
+  if (holding.length > 0 && pulled.newestMs !== null) followUp(Math.min(...holding) - pulled.newestMs);
+  if (unproven !== undefined) throw unproven.error;
+  return pulled.change;
+ }
+
+ /** Runs f as acct's sync turn across this browser's tabs (Web Locks, SYNC_LOCK_PREFIX): one
+  *  tab's round at a time, so no tab sends or settles writes while another does (a push of
+  *  another tab's still answering can't come after a Leave this tab sent and settled). f's signal
+  *  aborts roundMs after the turn was granted: its requests are cancelled and the turn passes, a
+  *  stalled request holding no other tab's round. What a push cancelled so may still write stays
+  *  journaled (SharesRecord sent) until a pull settles it. Without Web Locks nothing runs
+  *  (SharesUnsupported); a lock the browser refuses fails the turn. */
+ async function turn<T>(acct: string, f: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const locks = place.locks;
+  if (locks === null) throw new SharesUnsupported();
+  return locks.request(SYNC_LOCK_PREFIX + acct, () => f(AbortSignal.timeout(place.roundMs ?? ROUND_MS)));
+ }
+
+ /** A turn of this tab's: the account it ran for (null: signed out, none ran), the writes whose
+  *  request its round handed to fetch (writeKey), those the service refused alone (writeKey: why),
+  *  and why it failed. */
+ interface Turn { account: string | null; sent: Set<string>; refused: Map<string, unknown>; error?: unknown }
+ let running: Promise<Turn> | null = null, queued: Promise<Turn> | null = null;
+ /** A turn now, for the account signed in as it starts. One that fails still tells what its pulls
+  *  settled in the record (a share the account no longer holds: its grant goes), while that
+  *  account is still the one signed in. */
+ const turnNow = (): Promise<Turn> => {
+  const now = (async (): Promise<Turn> => {
+   const acct = account.current?.accountID;
+   if (acct === undefined) return { account: null, sent: new Set(), refused: new Map() };
+   const sent = new Set<string>(), refused = new Map<string, unknown>();
+   try {
+    await tell(await turn(acct, signal => round(acct, signal, sent, refused)));
+    return { account: acct, sent, refused };
+   } catch (error) {
+    // Storage that can't be read now leaves it to the next change heard.
+    if (account.current?.accountID === acct) await Promise.resolve().then(() => tell({ account: acct, shares: visible(read(acct)) })).catch(() => {});
+    return { account: acct, sent, refused, error };
+   }
+  })();
+  running = now;
+  void now.then(() => { if (running === now) running = null; });
+  return now;
+ };
+ /** A turn that starts after this call: now when none runs, else the one queued after the turn
+  *  running (callers that come meanwhile share it), which starts once that one has settled, as it
+  *  succeeded or failed. So whatever was kept before the call is in a round begun after it. */
+ const nextTurn = (): Promise<Turn> => {
+  if (queued !== null) return queued;
+  if (running === null) return turnNow();
+  return queued = running.then(() => { queued = null; return turnNow(); });
+ };
+ /** A round after this call (as nextTurn); a round that fails leaves the writes for the next one.
+  *  Signed out: nothing to do. */
+ const sync = async (): Promise<void> => {
+  const done = await nextTurn();
+  if (done.error !== undefined) throw done.error;
+ };
+
+ /** Keeps change for acct, the account the share is bound to, in this browser's record: one
+  *  storage refuses rejects, and nothing is kept. */
+ const keep = (acct: string, change: PendingWrite): Promise<void> => update(acct, r => {
+  r.pending = r.pending.filter(p => p.id !== change.id).concat(change);
+  // A share put here again is held again: its grant no longer goes. One left here owes the removal
+  // of its grant here, kept with its delete (dropping) until it is done: whether or not the
+  // service ever held the share, so whether or not a tombstone of it comes.
+  r.drop = change.body ? (r.drop ?? []).filter(id => id !== change.id) : [...new Set([...r.drop ?? [], change.id])];
+ });
+ /** Sends acct's kept writes while acct is signed in here, in a turn begun after this call: never
+  *  to another account. Under another sign-in (or none) they wait for acct's next round on this
+  *  browser (null); a round that fails sends them with the next one. */
+ const send = async (acct: string): Promise<Turn | null> => {
+  if (account.current?.accountID !== acct) return null;
+  await tell({ account: acct, shares: visible(read(acct)) });
+  return nextTurn();
+ };
+
+ // Another sign-in shows its own account's shares (and pulls them); signed out, none.
+ account.onSessionChange(() => {
+  const acct = account.current?.accountID;
+  void tell({ account: acct ?? null, shares: acct === undefined ? [] : visible(read(acct)) });
+  if (acct !== undefined && place.background) void sync().catch(() => {});
+ });
+ if (place.background) setInterval(() => { if (account.current) void sync().catch(() => {}); }, SYNC_EVERY_MS);
+ let followed: ReturnType<typeof setTimeout> | undefined;
+ /** A round ms from now plus a second: once the service's clock is past the not_after of the
+  *  journal entry that a write queued waits on first (a Leave's delete goes then, not at the next
+  *  round due). Only in the background (tests sync by hand). */
+ function followUp(ms: number) {
+  if (!place.background) return;
+  clearTimeout(followed);
+  followed = setTimeout(() => { if (account.current) void sync().catch(() => {}); }, Math.max(0, ms) + 1_000);
+ }
+
+ return {
+  /** The current account's shares as this browser knows them; none signed out. */
+  list(): RemoteShare[] {
+   const acct = account.current?.accountID;
+   return acct === undefined ? [] : visible(read(acct));
   },
+  /** Whether share id is on acct as this browser knows it (pulled live or put here, and neither
+   *  seen deleted nor left here), read under acct's record lock: a round's update of the record
+   *  (what its pull showed) is wholly before or after it. */
+  async listed(acct: string, id: string): Promise<boolean> {
+   let listed = false;
+   const ran = await withStorageLock(keyOf(acct), () => { listed = visible(read(acct)).some(s => s.id === id); }, place.locks);
+   if (!ran) throw new Error("This browser's storage is locked by another tab. Try again.");
+   return listed;
+  },
+  /** The shares left here, or a pull saw leave acct (in any tab of this browser), whose grants may
+   *  still be held here: each until cleared, and none put here again or pulled live since (but
+   *  for one left here, while its delete waits). */
+  dropping(acct: string): string[] {
+   const r = read(acct), shown = new Set(visible(r).map(s => s.id));
+   return (r.drop ?? []).filter(id => !shown.has(id));
+  },
+  /** The grants of ids are gone from this browser (removed, or never held): they leave dropping. */
+  cleared: (acct: string, ids: string[]) => update(acct, r => { r.drop = (r.drop ?? []).filter(id => !ids.includes(id)); }),
+  sync,
+  /** "Add to my account": keeps a bound grant's share for the account it is bound to
+   *  (Access.account), its id the grant's key, sends it in a round begun after (journaled as any
+   *  write), and tells how that went (ShareAdd) as the record says once that round ends, or
+   *  unknown past addMs (ADD_MS; the round goes on). Refused only when nothing of it is left to
+   *  send (the service refused it alone, or holds the share deleted; or it couldn't be kept):
+   *  the share is then this browser's only, as the notice says. Else, queued or journaled, the
+   *  sync settles it (unknown): under another sign-in here, or none, at the account's next sync
+   *  on this browser. Never rejects. */
+  async add(access: Access): Promise<ShareAdd> {
+   const acct = access.account;
+   if (acct === undefined) return { outcome: "refused", error: new Error("this shared access isn't bound to a HerdrUp account") };
+   if (place.locks === null) return { outcome: "refused", error: new SharesUnsupported() };
+   const put: PendingWrite = { id: grantKey(access), body: shareBody(access) }, key = writeKey(put);
+   try { await keep(acct, put); } catch (error) { return { outcome: "refused", error }; }
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const late = new Promise<"late">(resolve => { timer = setTimeout(() => resolve("late"), place.addMs ?? ADD_MS); });
+   let turned: Turn | null | "late";
+   try { turned = await Promise.race([send(acct), late]); } finally { clearTimeout(timer); }
+   if (turned === "late") return { outcome: "unknown", error: new DOMException("The account service didn't answer in time.", "TimeoutError") };
+   let r: SharesRecord;
+   try { r = read(acct); } catch (error) { return { outcome: "unknown", error }; }
+   if (!(r.sent ?? []).some(e => writeKey(e) === key) && !r.pending.some(p => writeKey(p) === key)) {
+    if (r.shares.some(s => s.id === put.id)) return { outcome: "added" };
+    return { outcome: "refused", error: turned?.refused.get(key) ?? new Error("this shared access was removed from your account") };
+   }
+   const why = turned === null ? (account.current === null ? new SignedOutError() : new AccountServiceError(409, "account_changed")) : turned.error;
+   return { outcome: "unknown", error: why ?? new Error("this shared access is still waiting its turn to be written to your account") };
+  },
+  /** Leaves share id of acct, the account it is bound to, as one operation: keeps its delete, and
+   *  with it the removal of its grant owed here (dropping; rejected: storage refused them, and
+   *  nothing else ran, so the Leave can be tried again), runs forget (this browser's own part: its
+   *  link, its grant), then sends the delete in a turn of its own, whether forget succeeded or
+   *  not: kept, it leaves every device either way, and a grant forget failed to remove goes at the
+   *  next change heard (each round's), tombstone or not. Rejects as forget did; else where this
+   *  browser can't sync (SharesUnsupported), or when the delete is still queued after that turn
+   *  and no request of it carried it (LeaveUnsent: another sign-in here, a round that failed
+   *  first; it goes with a later one). One another tab's round took meanwhile went. */
+  async leave(id: string, acct: string, forget: () => Promise<void>): Promise<void> {
+   const remove: PendingWrite = { id, deleted: true };
+   await keep(acct, remove);
+   let failed: { error: unknown } | null = null;
+   try { await forget(); } catch (error) { failed = { error }; }
+   const sent = await send(acct);
+   if (failed !== null) throw (failed as { error: unknown }).error;
+   if (sent?.error instanceof SharesUnsupported) throw sent.error;
+   const queued = read(acct).pending.some(p => writeKey(p) === writeKey(remove));
+   if (queued && !sent?.sent.has(writeKey(remove))) throw new LeaveUnsent();
+  },
+  /** Binds this sign-in's session to key as an account device (the statements a bound share
+   *  needs are issued only to a session with a device); a session bound already is fine. Where
+   *  this browser can't sync shares (SharesUnsupported), nothing is bound: a share isn't taken
+   *  into the account (accepted, opened) only to never reach it. */
+  async bindDevice(key: StaticKey, signal?: AbortSignal): Promise<void> {
+   if (place.locks === null) throw new SharesUnsupported();
+   await bindSessionDevice(account, key, place.name, await account.currentAccount(signal), signal);
+  },
+  /** Hears every change: after each round (which waits for it), each local write, and each
+   *  session change. */
+  onChange(f: (change: SharesChange) => void | Promise<void>): () => void { listeners.add(f); return () => { listeners.delete(f); }; },
  };
 }
-export type ShareAdder = ReturnType<typeof createShareAdder>;
+
+export type ShareSync = ReturnType<typeof createShareSync>;

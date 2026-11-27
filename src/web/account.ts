@@ -148,6 +148,13 @@ export interface PushDispatch { prepare(): Promise<SyncPushBody | null>; sending
 /** One page of GET /v1/sync: a page that isn't the last carries the cursor for the next. now_ms
  *  as SyncPushAnswer's. */
 export interface SyncPage { rev: number; changes: SyncItem[]; more: boolean; cursor?: string; now_ms?: number }
+/** Reading the service's changes (account.Pull): full means items are the whole account (a pull
+ *  since 0); restarted that it is so because the service answered 410 (a reset: the account's
+ *  history started over, SyncState.history), not because it was asked from 0. nowMs is the
+ *  service's clock when the pull began (its earliest page's now_ms), null when a page had none
+ *  (a service without now_ms: themartianapp/herdrup#826); newestMs the latest now_ms of its pages
+ *  (null: none had one), which the next push's not_after counts from. */
+export interface Pull { rev: number; items: SyncItem[]; full: boolean; restarted: boolean; nowMs: number | null; newestMs: number | null }
 
 /** GET /v1/approvals/<id> (approve-v1). The approver and nonce_t appear once a trusted device
  *  claimed the request; outcome_stored once the service holds its outcome. */
@@ -365,11 +372,10 @@ export class WebAccount {
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
-  *  fresh token when the service says the one sent is no longer good (401), unless once: a call
-  *  sent at most once takes that 401 as its answer. The call is bound to account, else to the
-  *  account this page already signed in to, before any refresh; only with none yet does the first
-  *  token's account bind it. A token for another account (the cookie now holds another sign-in) is
-  *  refused before anything is sent, so a write never goes there.
+  *  fresh token when the service says the one sent is no longer good (401). The call is bound to
+  *  account, else to the account this page already signed in to, before any refresh; only with
+  *  none yet does the first token's account bind it. A token for another account (the cookie now
+  *  holds another sign-in) is refused before anything is sent, so a write never goes there.
   *  signal, when it aborts, stops the call: nothing is sent once it has, not even the retry, and a
   *  request in flight is cancelled. A push (dispatch, in place of body) makes its body right before
   *  each request (the retry included), once the token is in hand; null sends nothing and the call
@@ -377,7 +383,7 @@ export class WebAccount {
  *  is read (which may stall until the call is aborted); what it throws ends the call, as itself.
  *  Errors are AccountServiceError with the service's code, SignedOutError, or the abort's
  *  reason. */
- private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void, once = false): Promise<T> {
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void): Promise<T> {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
@@ -412,21 +418,16 @@ export class WebAccount {
    if (dispatch && response.status >= 400 && response.status < 500) await dispatch.refused();
    if (response.status === 401 && attempt === 0) {
     if (this.access === token) { this.access = ""; this.accessUntil = 0; }
-    if (!once) continue;
+    continue;
    }
    if (!response.ok) {
-    // A call sent once has its answer on the status line: an abort while its error body is read
-    // (one that stalls) leaves that status, with no code, never the abort.
-    if (once) throw new AccountServiceError(response.status, signal ? await untilAborted(errorCode(response), signal).catch(() => "") : await errorCode(response));
     const code = await errorCode(response);
     // An abort while the error body was read is the caller's, not the service's answer.
     signal?.throwIfAborted();
     throw new AccountServiceError(response.status, code);
    }
-   // 204 (a device removed) has no body. A call sent once stops reading one that stalls when its
-   // signal aborts.
-   if (response.status === 204) return undefined as T;
-   return await (once && signal ? untilAborted(response.json(), signal) : response.json()) as T;
+   // 204 (a device removed) has no body.
+   return response.status === 204 ? undefined as T : await response.json() as T;
   }
  }
 
@@ -545,13 +546,6 @@ export class WebAccount {
   return this.authed("POST", "/v1/sync", undefined, account, signal, dispatch, generation);
  }
 
- /** POST /v1/sync of body as account, sent at most once: the token is refreshed before it when
-  *  it is near expiry (accessToken), and a 401 is the answer (AccountServiceError 401), not a
-  *  reason to send it again. The answer is the service's JSON as it came, for the caller to read. */
- syncPushOnce(body: SyncPushBody, account: string, signal?: AbortSignal): Promise<unknown> {
-  return this.authed("POST", "/v1/sync", body, account, signal, undefined, undefined, undefined, true);
- }
-
  /** Calls changed whenever this page's session or sign-out attempt changes, at the moment it does
   *  (a sign-out tells at once, before its request completes), with what changed. Returns what
   *  stops it. */
@@ -577,6 +571,88 @@ export class WebAccount {
 export async function bindSessionDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
  try { await account.enrol(key, name, acct, signal); }
  catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
+}
+
+const MAX_PULL_PAGES = 64; // 64 × 500 items, past the 2,000-item account cap
+
+/** One pull, page by page; generation is the session the pages must be read in
+ *  (WebAccount.syncPage), and reset is told of a 410 on any page as its status line comes in
+ *  (the page then ends with SyncResetRequired, the same outcome).
+ *  Its items keep the order they came in: prompts.ts landItems matches them that way, once the
+ *  pull completed (a reset's restart brings only the full pull's). */
+async function pull(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
+ const out: Pull = { rev: 0, items: [], full: since === 0, restarted: false, nowMs: null, newestMs: null };
+ let query = `since=${since}`, told = true;
+ for (let page = 0; page < MAX_PULL_PAGES; page++) {
+  const answer = await account.syncPage(query, acct, signal, generation, reset);
+  out.items.push(...answer.changes);
+  out.rev = answer.rev;
+  if (typeof answer.now_ms !== "number") told = false;
+  else {
+   if (out.nowMs === null || answer.now_ms < out.nowMs) out.nowMs = answer.now_ms;
+   out.newestMs = Math.max(out.newestMs ?? answer.now_ms, answer.now_ms);
+  }
+  if (!told) out.nowMs = null;
+  if (!answer.more) return out;
+  if (!answer.cursor) throw new Error("account service: a page with more and no cursor");
+  query = `cursor=${encodeURIComponent(answer.cursor)}`;
+ }
+ throw new Error(`account service: more than ${MAX_PULL_PAGES} sync pages`);
+}
+
+/** Every change after since, following the cursor (PullSince). A 410, on any page, even of a pull
+ *  from 0, is a reset: reset is told at once, on the status line, before anything waits or its
+ *  body is read (resetKey), then the pull starts over from 0, once. The result is full and
+ *  restarted, and what the pages before it held is dropped with them. */
+export async function pullSince(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number, reset?: () => void): Promise<Pull> {
+ let restarted = false;
+ for (;;) {
+  try {
+   const out = await pull(account, acct, restarted ? 0 : since, signal, generation, reset);
+   return restarted ? { ...out, restarted } : out;
+  } catch (error) {
+   if (!(error instanceof SyncResetRequired) || restarted) throw error;
+   restarted = true;
+  }
+ }
+}
+
+/** Whether acct's history still holds every change after since (Go account.Retains): one page of
+ *  GET /v1/sync?since=<since>, in generation; answered, it does (true); a 410, its floor is past
+ *  since (false). Anything else fails as the page did. */
+export async function retains(account: WebAccount, acct: string, since: number, signal?: AbortSignal, generation?: number): Promise<boolean> {
+ try {
+  await account.syncPage(`since=${since}`, acct, signal, generation);
+  return true;
+ } catch (error) {
+  if (error instanceof SyncResetRequired) return false;
+  throw error;
+ }
+}
+
+// AccountService sync.ts: a push holds at most MAX_CHANGES (100) changes, and its body at most
+// MAX_SYNC_BODY_BYTES (256 KiB); one past either is refused whole (413 too_large).
+const MAX_PUSH_CHANGES = 100, MAX_PUSH_BYTES = 256 * 1024;
+/** The request around a push's changes: `{"changes":[`, `]` and its deadline (the largest
+ *  not_after a push can carry, prompts.ts PromptAttempt Expiry) and `}`. */
+const PUSH_OVERHEAD = `{"changes":[],"not_after":${Number.MAX_SAFE_INTEGER}}`.length;
+
+/** changes split into pushes the service takes (account.Batches): at most 100 each, and each
+ *  request body at most 256 KiB. Order is kept. */
+export function batches(changes: SyncChange[]): SyncChange[][] {
+ const out: SyncChange[][] = [];
+ let start = 0, size = PUSH_OVERHEAD;
+ changes.forEach((c, i) => {
+  const raw = new TextEncoder().encode(JSON.stringify(c)).byteLength;
+  let n = raw + (i > start ? 1 : 0); // the comma
+  if (i > start && (i - start === MAX_PUSH_CHANGES || size + n > MAX_PUSH_BYTES)) {
+   out.push(changes.slice(start, i));
+   start = i; size = PUSH_OVERHEAD; n = raw;
+  }
+  size += n;
+ });
+ if (start < changes.length) out.push(changes.slice(start));
+ return out;
 }
 
 async function errorCode(response: Response): Promise<string> {

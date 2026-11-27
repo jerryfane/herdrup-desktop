@@ -2,6 +2,7 @@
 // whose host admits owner hellos as herdr's guest/owner.rs does and serves agent.list.
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { isGuestPaused } from "../src/guestPaused";
+import { sharedMachines } from "../src/sharedWithYou";
 import { cursorExpired, readLive } from "../src/interactionModel";
 import { generateIdentity, MemoryIdentityStore, staticKey, type IdentityStore } from "../src/webguest/identity";
 import { toB64url } from "../src/webguest/b64url";
@@ -391,14 +392,15 @@ test("a late hello naming the machine anew doesn't bring back a grant forgotten 
   await other.forgetGuestConnection(id);
   reply.resolve();
   await replied.promise; await listed.promise; off();
-  expect([await grants.get(), (await late.state()).machine]).toEqual([undefined, "Studio Mac"]);
+  expect([await grants.list(), (await late.state()).machine]).toEqual([[], "Studio Mac"]);
  } finally { await late.forgetGuestConnection(id); relay.stop(); }
 }, CONNECTS_LIMIT_MS);
 
-// The IndexedDB grant store's relabel (#558): one read-write transaction that reads the grant and
-// writes only its machine name, and only when it is still the grant named; a grant missing or
-// replaced is left as it is. Bun has no IndexedDB: this fake keeps one object store whose
-// transactions complete once their requests and the callbacks they started are done.
+// The IndexedDB grant store's relabel (#558): one read-write transaction that reads the grants and
+// writes only the machine name of the one named, and only while it is still saved; another grant
+// held (a grant per share, #543), even on the same machine, and a grant removed, are left as they
+// are. Bun has no IndexedDB: this fake keeps one object store whose transactions complete once
+// their requests and the callbacks they started are done.
 test("the IndexedDB grant store relabels only the saved grant named, in one read-write transaction", async () => {
  const data = new Map<string, unknown>();
  const modes: string[] = [];
@@ -426,18 +428,106 @@ test("the IndexedDB grant store relabels only the saved grant named, in one read
  const store = new IndexedDBGrantStore(factory);
  const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
   endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ // Another share on the same machine, held too (a grant per share).
+ const sibling = { ...grant, guestID: "grant-2", agentName: "Other worker" };
  await store.put(grant);
+ await store.put(sibling);
  modes.length = 0;
  await store.relabel("host-1", "grant-1", "Studio Mac");
  const used = [...modes];
- expect([used, await store.get()]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac" }]);
- await store.relabel("host-1", "grant-2", "Other");
+ // Numbered in the store's write: the two puts were 1 and 2, this hello 3.
+ expect([used, await store.get("host-1/grant-1"), await store.get("host-1/grant-2")]).toEqual([["readwrite"], { ...grant, machineLabel: "Studio Mac", labelSeq: 3 }, { ...sibling, labelSeq: 2 }]);
+ await store.relabel("host-1", "grant-3", "Other");
  await store.relabel("host-2", "grant-1", "Other");
- expect((await store.get())?.machineLabel).toBe("Studio Mac");
- await store.remove();
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-1", "Studio Mac"], ["grant-2", "Machine"]]);
+ await store.remove("host-1/grant-1");
  await store.relabel("host-1", "grant-1", "Again");
- expect(await store.get()).toBeUndefined();
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-2", "Machine"]]);
 });
+
+// The page's grant store (MemoryGrantStore, the same record rules): the grant named, no other.
+test("the memory grant store relabels the one share named; a share removed stays removed", async () => {
+ const store = new MemoryGrantStore();
+ const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ await store.put(grant);
+ await store.put({ ...grant, guestID: "grant-2" });
+ await store.activate("host-1/grant-2");
+ await store.relabel("host-1", "grant-2", "Studio Mac");
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-2", "Studio Mac"], ["grant-1", "Machine"]]);
+ await store.remove("host-1/grant-2");
+ await store.relabel("host-1", "grant-2", "Again");
+ expect((await store.list()).map(g => [g.guestID, g.machineLabel])).toEqual([["grant-1", "Machine"]]);
+});
+
+// SHARED WITH YOU names a machine as its latest hello did (each grant keeps its own label saved),
+// by the order the grant store numbered the hellos in (labelSeq), not by their clock (two hellos
+// may share a tick) nor by which grant was opened last.
+test("the shares list names a machine as its latest hello did, whichever of its grants was opened last", async () => {
+ const grants = new MemoryGrantStore();
+ const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Old Studio", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ await grants.put(grant);
+ await grants.put({ ...grant, guestID: "grant-2", agentName: "Other worker" });
+ await grants.put({ ...grant, endpoint: { ...grant.endpoint, hostID: "host-2" }, machineLabel: "Laptop", acceptedAt: new Date(9_000) });
+ await grants.activate("host-1/grant-1");
+ // grant-2's hello names the machine as it was, then, in the same clock tick, grant-1's names it anew.
+ await grants.relabel("host-1", "grant-2", "Old Studio");
+ await grants.relabel("host-1", "grant-1", "New Studio");
+ const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const headings = async () => sharedMachines(await desk.sharedConnections(), []).map(m => m.machine);
+ expect(await headings()).toEqual(["New Studio", "Laptop"]);
+ // The sibling opened: first now, its saved label still the old one; no new hello.
+ await grants.activate("host-1/grant-2");
+ expect([(await grants.list())[0]!.machineLabel, await headings()]).toEqual(["Old Studio", ["New Studio", "Laptop"]]);
+ // Its hello names the machine as it is now (renamed back): the latest hello's name is the machine's.
+ await grants.relabel("host-1", "grant-2", "Old Studio");
+ expect(await headings()).toEqual(["Old Studio", "Laptop"]);
+ await grants.activate("host-1/grant-1");
+ expect(await headings()).toEqual(["Old Studio", "Laptop"]);
+});
+
+// Grants saved before labels were numbered, accepted at the same time: one name, whichever is first.
+test("grants with no numbered label name their machine the same whichever was opened last", async () => {
+ const grants = new MemoryGrantStore();
+ const grant = { guestID: "grant-1", guestName: "visitor", machineLabel: "Old Studio", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: "https://relay.example", hostID: "host-1", hostPublicKey: new Uint8Array(32) }, acceptedAt: new Date(1_000) };
+ grants.record = { grants: [grant, { ...grant, guestID: "grant-2", machineLabel: "New Studio" }], active: null };
+ const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const heading = async () => sharedMachines(await desk.sharedConnections(), [])[0]!.machine;
+ await grants.activate("host-1/grant-1");
+ const first = await heading();
+ await grants.activate("host-1/grant-2");
+ expect([first, await heading()]).toEqual(["New Studio", "New Studio"]);
+});
+
+// A hello naming the machine as the grant already does is still numbered as the latest: the
+// latest hello's name is the machine's even after a sibling's hello named it otherwise.
+test("a hello naming the machine as the grant does is still numbered as its latest name", async () => {
+ const relay = startRelay({
+  async serve(_conn, handshake) {
+   const session = (await handshake()).reply({ ok: true, guest_id: "grant-1", machine_label: "Machine", features: { multi_request: false } });
+   const line = await session.readLine();
+   if (line === null) return;
+   answer(session, JSON.parse(line) as Request, { result: { type: "agent_list", agents: [{ pane_id: "p1", terminal_id: "t1", name: "Worker", agent: "claude" }] } });
+  },
+ });
+ const identities = new MemoryIdentityStore();
+ await identities.add(await generateIdentity());
+ const grants = new MemoryGrantStore();
+ await grants.put({ guestID: "grant-1", guestName: "visitor", machineLabel: "Machine", ownerName: "Owner", agentName: "Worker", agentTarget: "t1",
+  endpoint: { relay: relay.url, hostID: relay.hostID, hostPublicKey: relay.hostPublic }, acceptedAt: new Date(1_000) });
+ const desk = createGuestDesk({ identities, grants, owner: new MemoryOwnerHint(), webSocket: url => new WebSocket(url) });
+ const id = `${relay.hostID}/grant-1`;
+ try {
+  const listed = Promise.withResolvers<void>();
+  const off = events.boardChanged.on(b => { if (b?.machineID === `guest:${id}`) listed.resolve(); });
+  await desk.connectGuest(id);
+  await listed.promise; off();
+  const saved = await grants.get(id);
+  expect([saved?.machineLabel, saved?.labelSeq]).toEqual(["Machine", 2]);
+ } finally { await desk.forgetGuestConnection(id); relay.stop(); }
+}, CONNECTS_LIMIT_MS);
 
 test("a link whose list failed once and came back is still the link a session's end closes (the owner page reopens it when restored)", async () => {
  let fail = false;
