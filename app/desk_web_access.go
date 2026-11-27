@@ -658,7 +658,7 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 	if c := d.liveBridge(m); c != nil {
 		return engine.New(engine.Bridge(c)), func() {}, nil
 	}
-	c, done, err := d.dialMachine(ctx, m, d.pinsFor(m), nil)
+	c, done, err := d.dialMachine(ctx, m, d.pinsFor(m), nil, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -683,8 +683,10 @@ func (d *Desk) liveBridge(m Machine) *bridge.Client {
 // computer's own, never a guest's. It checks the host key with pins,
 // negotiating it with algos, or as m was pinned when nil
 // (pairingHostKeyAlgorithms for a Paired machine, SSH's defaults
-// otherwise).
-func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore, algos []string) (*bridge.Client, func(), error) {
+// otherwise). When pinFallback is true and no explicit algorithms are set,
+// a HostKeyChangedError retries across supported host-key types without
+// repinning (#603).
+func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore, algos []string, pinFallback bool) (*bridge.Client, func(), error) {
 	if m.KeyPath == "" {
 		return nil, nil, errNeedsKey
 	}
@@ -698,7 +700,12 @@ func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore,
 	}
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	c, err := bridge.Dial(dctx, cfg)
+	var c *bridge.Client
+	if pinFallback {
+		c, err = dialWithPinFallback(dctx, cfg)
+	} else {
+		c, err = bridge.Dial(dctx, cfg)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
